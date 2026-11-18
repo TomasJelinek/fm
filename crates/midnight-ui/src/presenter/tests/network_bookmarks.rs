@@ -79,7 +79,10 @@ fn network_hot_path_restart_keeps_unavailable_and_stale_locations_typed() {
     let saved = first.bookmarks()[0].clone();
     let mut p = Presenter::new(test_root().join("new session"), test_root().join("right"));
     p.apply(Event::PreferencesLoaded(Ok(Box::new(
-        first.preferences.values.clone(),
+        midnight_core::AcceptedPreferences {
+            preferences: first.preferences.values.clone(),
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
     ))));
     p.apply(Event::NetworkAvailability(false));
     let commands = RefCell::new(Vec::new());

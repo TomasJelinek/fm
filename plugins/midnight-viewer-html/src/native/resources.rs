@@ -3,8 +3,8 @@ use super::*;
 use crate::policy::Access;
 use std::collections::{HashMap, VecDeque};
 
-/// Host resource requests awaiting a reply. Kept well below the output control
-/// capacity, so resource traffic alone can never overflow it.
+/// Ordinary and navigation host requests awaiting a reply. Kept well below the
+/// output control capacity, so resource traffic alone can never overflow it.
 pub(super) const MAX_IN_FLIGHT: usize = 32;
 /// Browser requests waiting for an in-flight slot. Beyond this (bounded memory)
 /// further assets are cancelled.
@@ -32,6 +32,9 @@ pub(super) struct Requests {
 }
 
 impl Requests {
+    pub(super) fn in_flight(&self) -> usize {
+        self.active.len()
+    }
     pub(super) fn drain(&mut self) -> Vec<Arc<Mutex<Stream>>> {
         let mut streams: Vec<_> = self.active.drain().map(|(_, stream)| stream).collect();
         streams.extend(self.waiting.drain(..).map(|(stream, _)| stream));
@@ -77,7 +80,10 @@ impl Document {
         let Ok(mut requests) = self.requests.lock() else {
             return false;
         };
-        if requests.active.len() >= MAX_IN_FLIGHT {
+        let Ok(navigation) = self.navigation.lock() else {
+            return false;
+        };
+        if requests.active.len() + navigation.pending_requests() >= MAX_IN_FLIGHT {
             if requests.waiting.len() >= MAX_WAITING {
                 return false;
             }
@@ -86,6 +92,7 @@ impl Document {
         }
         let id = self.request_sequence.fetch_add(1, Ordering::Relaxed);
         requests.active.insert(id, stream);
+        drop(navigation);
         drop(requests);
         self.emit(self.request_event(id, &request));
         true
@@ -95,7 +102,10 @@ impl Document {
     fn admit_waiting(&self) {
         let mut events = Vec::new();
         if let Ok(mut requests) = self.requests.lock() {
-            while requests.active.len() < MAX_IN_FLIGHT {
+            let Ok(navigation) = self.navigation.lock() else {
+                return;
+            };
+            while requests.active.len() + navigation.pending_requests() < MAX_IN_FLIGHT {
                 let Some((stream, request)) = requests.waiting.pop_front() else {
                     break;
                 };
@@ -131,6 +141,256 @@ pub(super) fn captured_path(policy: &crate::policy::DocumentPolicy, url: &str) -
     (!path.is_empty() && path.len() <= MAX_RESOURCE_URL_BYTES).then(|| path.to_owned())
 }
 
+#[cfg(test)]
+pub(super) mod tests {
+    use super::*;
+
+    pub(in crate::native) fn document() -> (Arc<Document>, crate::output::Receiver) {
+        let (output, events) = crate::output::channel();
+        let viewport = api::Viewport {
+            revision: 1,
+            width: 1,
+            height: 1,
+            scale: 1.0,
+        };
+        let doc = Arc::new(Document {
+            header: api::Header {
+                session: 1,
+                document: 1,
+                sequence: 1,
+            },
+            source: api::Resource {
+                id: 1,
+                length: 0,
+                mime: "text/html".into(),
+            },
+            policy: crate::policy::DocumentPolicy::new(1, false, false).unwrap(),
+            viewport: Mutex::new(viewport),
+            surface: Mutex::new(crate::surface::Surface::new(1, 1, 1).unwrap()),
+            layers: Mutex::new(crate::surface::Layers::default()),
+            output,
+            active: AtomicBool::new(true),
+            closed: AtomicBool::new(false),
+            finding: Mutex::new(crate::find::FindQueue::default()),
+            request_sequence: AtomicU64::new(1),
+            requests: Mutex::new(Requests::default()),
+            selection: Mutex::new(crate::selection::Selection::default()),
+            mouse_buttons: AtomicU64::new(0),
+            wheel_remainder: Mutex::new([0.0; 2]),
+            host_shortcuts: false,
+            navigation: Mutex::new(admission::Navigation::new(
+                1,
+                1,
+                api::Resource {
+                    id: 1,
+                    length: 0,
+                    mime: "text/html".into(),
+                },
+            )),
+            bootstrap: AtomicBool::new(true),
+        });
+        (doc, events)
+    }
+
+    #[test]
+    fn canceled_resolution_releases_late_resource_without_releasing_main_authority() {
+        let (doc, events) = document();
+        let stream = Arc::new(Mutex::new(Stream::new(&doc, None)));
+        doc.requests
+            .lock()
+            .unwrap()
+            .active
+            .insert(7, stream.clone());
+        let handler =
+            CapturedResource::new(doc.clone(), stream, "https://mewv-1.invalid/a.css".into());
+        handler.cancel();
+        assert!(doc.requests.lock().unwrap().active.is_empty());
+        reply(
+            &doc,
+            api::ResourceReply::Resolved {
+                request: 7,
+                resource: api::Resource {
+                    id: 42,
+                    length: 20,
+                    mime: "text/css".into(),
+                },
+            },
+        );
+        assert_eq!(
+            events.controls.try_recv().unwrap().kind,
+            api::EventKind::ResourceRelease { resource: 42 }
+        );
+        reply(
+            &doc,
+            api::ResourceReply::Resolved {
+                request: 8,
+                resource: doc.source.clone(),
+            },
+        );
+        reply(
+            &doc,
+            api::ResourceReply::Data {
+                request: 9,
+                resource: 42,
+                offset: 0,
+                bytes: vec![1],
+            },
+        );
+        reply(
+            &doc,
+            api::ResourceReply::Denied {
+                request: 10,
+                reason: "canceled".into(),
+            },
+        );
+        assert!(events.controls.try_recv().is_err());
+    }
+
+    pub(in crate::native) fn admitted(doc: &Arc<Document>) -> navigation::ResponseLease {
+        let now = Instant::now();
+        let bound = admission::Binding {
+            session: 1,
+            document: 1,
+            browser: 1,
+            frame: "main".into(),
+            url: "https://mewv-1.invalid/a".into(),
+        };
+        let response = {
+            let mut nav = doc.navigation.lock().unwrap();
+            assert!(nav.begin(
+                admission::Intent {
+                    binding: bound.clone(),
+                    root: false
+                },
+                now
+            ));
+            assert_eq!(
+                nav.next_effect(now, 100, true),
+                Some(admission::Effect::Resolve {
+                    request: 100,
+                    base: 1,
+                    url: "a".into(),
+                })
+            );
+            nav.receive(
+                api::ResourceReply::Resolved {
+                    request: 100,
+                    resource: api::Resource {
+                        id: 42,
+                        length: 3,
+                        mime: "text/html".into(),
+                    },
+                },
+                now,
+            )
+            .unwrap();
+            assert_eq!(
+                nav.next_effect(now, 101, true),
+                Some(admission::Effect::Read {
+                    request: 101,
+                    resource: 42,
+                    offset: 0,
+                    length: 3,
+                })
+            );
+            nav.receive(
+                api::ResourceReply::Data {
+                    request: 101,
+                    resource: 42,
+                    offset: 0,
+                    bytes: b"abc".to_vec(),
+                },
+                now,
+            )
+            .unwrap();
+            let reissue = nav.next_reissue(now).unwrap();
+            assert!(nav.allow(&reissue.marker, &bound, now));
+            nav.claim(&reissue.marker, &bound).unwrap()
+        };
+        navigation::ResponseLease::new(response, doc)
+    }
+
+    #[test]
+    fn admitted_response_cursor_releases_once_at_eof_without_postallow_host_read() {
+        let (doc, events) = document();
+        let stream = Arc::new(Mutex::new(Stream::new(&doc, Some(admitted(&doc)))));
+        let handler = CapturedResource::new(
+            doc.clone(),
+            stream.clone(),
+            "https://mewv-1.invalid/a".into(),
+        );
+        let mut bytes = [0_u8; 2];
+        let mut count = 0;
+        assert_eq!(
+            handler.read_response(bytes.as_mut_ptr(), 2, Some(&mut count), None),
+            1
+        );
+        assert_eq!(count, 2);
+        assert_eq!(&bytes, b"ab");
+        assert!(events.controls.try_recv().is_err());
+        assert_eq!(
+            handler.read_response(bytes.as_mut_ptr(), 2, Some(&mut count), None),
+            1
+        );
+        assert_eq!(count, 1);
+        assert_eq!(bytes[0], b'c');
+        assert_eq!(
+            events.controls.try_recv().unwrap().kind,
+            api::EventKind::ResourceRelease { resource: 42 }
+        );
+        assert_eq!(
+            handler.read_response(bytes.as_mut_ptr(), 2, Some(&mut count), None),
+            0
+        );
+        assert!(doc.requests.lock().unwrap().active.is_empty());
+        drop(handler);
+        drop(stream);
+        assert!(
+            events.controls.try_recv().is_err(),
+            "metadata must not release the lease twice"
+        );
+    }
+
+    #[test]
+    fn actual_response_owner_drop_unblocks_latest_only_after_serving_allocation_is_gone() {
+        let (doc, events) = document();
+        let stream = Stream::new(&doc, Some(admitted(&doc)));
+        let now = Instant::now();
+        let bound = admission::Binding {
+            session: 1,
+            document: 1,
+            browser: 1,
+            frame: "main".into(),
+            url: "https://mewv-1.invalid/b".into(),
+        };
+        {
+            let mut nav = doc.navigation.lock().unwrap();
+            assert!(nav.begin(
+                admission::Intent {
+                    binding: bound,
+                    root: false
+                },
+                now
+            ));
+            assert!(nav.next_effect(now, 102, true).is_none());
+        }
+        drop(stream);
+        assert_eq!(
+            events.controls.try_recv().unwrap().kind,
+            api::EventKind::ResourceRelease { resource: 42 }
+        );
+        assert_eq!(
+            doc.navigation.lock().unwrap().next_effect(now, 103, true),
+            Some(admission::Effect::Resolve {
+                request: 103,
+                base: 1,
+                url: "b".into()
+            })
+        );
+        assert!(events.controls.try_recv().is_err());
+    }
+}
+
 pub(super) struct Stream {
     pub resource: Option<api::Resource>,
     pub offset: u64,
@@ -140,25 +400,35 @@ pub(super) struct Stream {
     pending_offset: u64,
     pending_length: u32,
     owner: std::sync::Weak<Document>,
+    pub admitted: Option<navigation::ResponseLease>,
+    owns_resource: bool,
 }
 
 impl Stream {
-    fn new(owner: &Arc<Document>) -> Self {
+    fn new(doc: &Arc<Document>, admitted: Option<navigation::ResponseLease>) -> Self {
+        let resource = admitted.as_ref().map(|owner| owner.resource().clone());
+        let owns_resource = admitted.is_none();
         Self {
-            resource: None,
+            resource,
             offset: 0,
             bytes: Vec::new(),
             callback: None,
             failed: false,
             pending_offset: 0,
             pending_length: 0,
-            owner: Arc::downgrade(owner),
+            owner: Arc::downgrade(doc),
+            admitted,
+            owns_resource,
         }
     }
 }
 
 impl Drop for Stream {
     fn drop(&mut self) {
+        drop(self.admitted.take());
+        if !self.owns_resource {
+            return;
+        }
         if let (Some(resource), Some(doc)) = (self.resource.take(), self.owner.upgrade())
             && resource.id != doc.source.id
         {
@@ -170,6 +440,18 @@ impl Drop for Stream {
 }
 
 pub(super) fn reply(doc: &Document, reply: api::ResourceReply) {
+    let reply = match doc.navigation.lock() {
+        Ok(mut navigation) => navigation.receive(reply, Instant::now()).err(),
+        Err(_) => {
+            doc.output.failed.store(true, Ordering::Release);
+            Some(reply)
+        }
+    };
+    let Some(reply) = reply else {
+        // Navigation released an in-flight slot; do not strand queued ordinary assets.
+        doc.admit_waiting();
+        return;
+    };
     let request = match &reply {
         api::ResourceReply::Resolved { request, .. }
         | api::ResourceReply::Data { request, .. }
@@ -194,7 +476,6 @@ pub(super) fn reply(doc: &Document, reply: api::ResourceReply) {
         }
         return;
     };
-    doc.admit_waiting();
     let Ok(mut stream) = stream.lock() else {
         return;
     };
@@ -218,7 +499,10 @@ pub(super) fn reply(doc: &Document, reply: api::ResourceReply) {
     }
     let failed = stream.failed;
     let callback = stream.callback.take();
+    let response = if failed { stream.admitted.take() } else { None };
     drop(stream);
+    drop(response);
+    doc.admit_waiting();
     if let Some(callback) = callback {
         if failed {
             callback.cancel();
@@ -248,30 +532,38 @@ wrap_resource_handler! {
         fn process_request(&self, _request: Option<&mut Request>, callback: Option<&mut Callback>) -> i32 {
             if !self.doc.active.load(Ordering::Acquire) { return 0; }
             let Some(callback) = callback else { return 0; };
-            if self.url.split(['?', '#']).next() == Some(self.doc.policy.main_url().as_str()) {
-                let Ok(mut stream) = self.stream.lock() else { return 0; };
-                stream.resource = Some(self.doc.source.clone());
+            let saved_callback = callback.clone();
+            let Ok(mut stream) = self.stream.lock() else { return 0; };
+            if stream.failed { return 0; }
+            if !stream.owns_resource
+                || self.url.split(['?', '#']).next() == Some(self.doc.policy.main_url().as_str()) {
+                if stream.resource.is_none() { stream.resource = Some(self.doc.source.clone()); }
                 drop(stream);
                 callback.cont();
-                return 1;
-            }
-            // Deny an over-long or out-of-root URL here: it must neither reach the host
-            // nor exceed the protocol budget (which used to stop the whole provider).
-            let Some(url) = captured_path(&self.doc.policy, &self.url) else { return 0; };
-            let Ok(mut stream) = self.stream.lock() else { return 0; };
-            stream.callback = Some(callback.clone());
-            drop(stream);
-            if !self.doc.request(self.stream.clone(), HostRequest::Resolve { url }) {
-                if let Ok(mut stream) = self.stream.lock() { stream.callback = None; }
-                return 0;
+            } else {
+                // Keep main's URL/protocol guard before admitting a captured asset.
+                let Some(path) = captured_path(&self.doc.policy, &self.url) else { return 0; };
+                stream.callback = Some(saved_callback);
+                drop(stream);
+                if !self.doc.request(self.stream.clone(), HostRequest::Resolve { url: path }) {
+                    if let Ok(mut stream) = self.stream.lock() { stream.callback = None; }
+                    return 0;
+                }
             }
             1
         }
         fn response_headers(&self, response: Option<&mut Response>, response_length: Option<&mut i64>, _redirect_url: Option<&mut CefString>) {
-            let Ok(stream) = self.stream.lock() else { return; };
+            let (failed, resource, finished) = {
+                let Ok(mut stream) = self.stream.lock() else { return; };
+                let finished = if stream.resource.as_ref().is_some_and(|resource| resource.length == 0) {
+                    stream.admitted.take()
+                } else { None };
+                (stream.failed, stream.resource.clone(), finished)
+            };
+            drop(finished);
             if let Some(response) = response {
-                response.set_status(if stream.failed { 403 } else { 200 });
-                if let Some(resource) = &stream.resource {
+                response.set_status(if failed { 403 } else { 200 });
+                if let Some(resource) = &resource {
                     response.set_mime_type(Some(&CefString::from(resource.mime.as_str())));
                     if let Some(length) = response_length { *length = i64::try_from(resource.length).unwrap_or(-1); }
                 }
@@ -287,8 +579,25 @@ wrap_resource_handler! {
             let Some(bytes_read) = bytes_read else { return 0; };
             *bytes_read = 0;
             if data_out.is_null() || bytes_to_read <= 0 || !self.doc.active.load(Ordering::Acquire) { return 0; }
+            let saved_callback = callback.as_ref().map(|callback| (**callback).clone());
             let Ok(mut stream) = self.stream.lock() else { return 0; };
             if stream.failed { return 0; }
+            if let Some(body) = stream.admitted.as_ref().and_then(navigation::ResponseLease::body) {
+                let Ok(offset) = usize::try_from(stream.offset) else { return 0; };
+                let Some(available) = body.get(offset..) else { return 0; };
+                let count = available.len().min(bytes_to_read as usize);
+                // SAFETY: CEF supplies data_out capacity for this callback. The
+                // immutable admitted body stays owned through the checked copy.
+                unsafe { std::ptr::copy_nonoverlapping(available.as_ptr(), data_out, count); }
+                stream.offset += count as u64;
+                *bytes_read = count as i32;
+                let finished = if stream.resource.as_ref().is_some_and(|resource| stream.offset == resource.length) {
+                    stream.admitted.take()
+                } else { None };
+                drop(stream);
+                drop(finished);
+                return i32::from(count != 0);
+            }
             if !stream.bytes.is_empty() {
                 let count = stream.bytes.len().min(bytes_to_read as usize);
                 // SAFETY: CEF owns data_out for this callback and guarantees bytes_to_read capacity.
@@ -297,48 +606,67 @@ wrap_resource_handler! {
                 stream.bytes.drain(..count);
                 stream.offset += count as u64;
                 *bytes_read = count as i32;
+                let finished = if stream.resource.as_ref().is_some_and(|resource| stream.offset == resource.length) {
+                    stream.admitted.take()
+                } else { None };
+                drop(stream);
+                drop(finished);
                 return 1;
             }
             let Some(resource) = stream.resource.clone() else { return 0; };
             if stream.offset >= resource.length { return 0; }
-            let Some(callback) = callback else { return 0; };
+            let Some(saved_callback) = saved_callback else { return 0; };
             if stream.callback.is_some() { return 1; }
             let offset = stream.offset;
             let length = (resource.length-offset).min(bytes_to_read as u64).min(api::MAX_READ_BYTES as u64) as u32;
             stream.pending_offset = offset;
             stream.pending_length = length;
-            stream.callback = Some(callback.clone());
+            stream.callback = Some(saved_callback);
             drop(stream);
             if !self.doc.request(self.stream.clone(), HostRequest::Read { resource: resource.id, offset, length }) {
                 if let Ok(mut stream) = self.stream.lock() { stream.callback = None; }
-                callback.cancel();
+                if let Some(callback) = callback { callback.cancel(); }
             }
             1
         }
         fn cancel(&self) {
-            if let Ok(mut stream) = self.stream.lock() { stream.failed = true; stream.callback = None; }
+            let (callback, response) = if let Ok(mut stream) = self.stream.lock() {
+                stream.failed = true;
+                (stream.callback.take(), stream.admitted.take())
+            } else { (None, None) };
+            drop(callback);
+            drop(response);
             self.doc.forget(&self.stream);
         }
     }
 }
 
 wrap_resource_request_handler! {
-    pub(super) struct RequestPolicy { doc: Arc<Document> }
+    pub(super) struct RequestPolicy { doc: Arc<Document>, admission: navigation::RequestAdmission }
     impl ResourceRequestHandler {
-        fn on_before_resource_load(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _callback: Option<&mut Callback>) -> ReturnValue {
-            if !self.doc.active.load(Ordering::Acquire) || request.is_none_or(|r| self.doc.policy.access(&CefString::from(&r.url()).to_string()) == Access::Deny) {
+        fn on_before_resource_load(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>, _callback: Option<&mut Callback>) -> ReturnValue {
+            if !self.doc.active.load(Ordering::Acquire) || request.is_none_or(|r|
+                !self.admission.before_load(&self.doc, browser.as_deref(), frame.as_deref(), r)
+                    || self.doc.policy.access(&CefString::from(&r.url()).to_string()) == Access::Deny) {
                 ReturnValue::CANCEL
             } else { ReturnValue::CONTINUE }
         }
-        fn resource_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>) -> Option<ResourceHandler> {
-            let url = CefString::from(&request?.url()).to_string();
+        fn resource_handler(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>) -> Option<ResourceHandler> {
+            let request = request?;
+            let url = CefString::from(&request.url()).to_string();
             if self.doc.policy.access(&url) != Access::Captured { return None; }
-            Some(CapturedResource::new(self.doc.clone(), Arc::new(Mutex::new(Stream::new(&self.doc))), url))
+            let admitted = if self.admission.ordinary() { None } else {
+                Some(self.admission.take_response(&self.doc, browser.as_deref(), frame.as_deref(), request)?)
+            };
+            Some(CapturedResource::new(self.doc.clone(), Arc::new(Mutex::new(Stream::new(&self.doc, admitted))), url))
         }
         fn on_resource_redirect(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, _response: Option<&mut Response>, new_url: Option<&mut CefString>) {
             if let Some(url) = new_url
                 && self.doc.policy.access(&url.to_string()) == Access::Deny { *url = CefString::from("https://mewv-denied.invalid/");
             }
+        }
+        fn on_resource_load_complete(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _response: Option<&mut Response>, _status: UrlrequestStatus, _received_content_length: i64) {
+            self.admission.completed(request.as_deref().map(ImplRequest::identifier));
         }
         fn on_protocol_execution(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, allow_os_execution: Option<&mut i32>) {
             if let Some(allow) = allow_os_execution { *allow = 0; }
@@ -348,4 +676,4 @@ wrap_resource_request_handler! {
 
 #[cfg(test)]
 #[path = "resources_tests.rs"]
-mod tests;
+mod queue_tests;

@@ -405,3 +405,490 @@ fn scrollbar_short_byte_limited_fragment_keeps_its_current_position_without_a_re
     assert_eq!(next.position, first.position);
     assert!(worker.viewport_request.is_none());
 }
+
+fn mapped_prefix_source(dense_first: bool) -> String {
+    let dense: String = ['A', 'B', 'C']
+        .into_iter()
+        .map(|letter| format!("{}\n", letter.to_string().repeat(99)))
+        .collect();
+    let body = if dense_first {
+        format!("{dense}{}", "y\n".repeat(5))
+    } else {
+        format!("{}{dense}{}", "x\n".repeat(3), "y\n".repeat(2))
+    };
+    assert_eq!(body.len(), 310);
+    assert_eq!(body.bytes().filter(|&byte| byte == b'\n').count(), 8);
+    let mut source = "p\n".repeat(2000);
+    source.push_str(&body);
+    source.push_str(&"z\n".repeat((20_000 - source.len()) / 2));
+    assert_eq!(source.len(), 20_000);
+    source
+}
+
+/// An authored ASCII Source response: eight included LFs, scalar anchors and
+/// the real source slice. The plugin's foreground byte budget cannot crop it.
+fn mapped_prefix_page(source: &str, anchor: u64) -> viewer::TextPage {
+    assert!(source.is_ascii());
+    let start = usize::try_from(anchor).unwrap();
+    let text: String = source[start..].split_inclusive('\n').take(8).collect();
+    assert!(text.len() <= 8192);
+    let end = start + text.len();
+    let page = viewer::TextPage {
+        revision: 1,
+        source: viewer::SourceRange {
+            offset: anchor,
+            length: text.len() as u64,
+        },
+        anchors: text
+            .char_indices()
+            .map(|(at, _)| viewer::Anchor {
+                text_offset: at as u32,
+                source_offset: anchor + at as u64,
+            })
+            .chain(std::iter::once(viewer::Anchor {
+                text_offset: text.len() as u32,
+                source_offset: anchor + text.len() as u64,
+            }))
+            .collect(),
+        partial_line: (start > 0 && !source[..start].ends_with('\n'))
+            || (end < source.len() && !text.ends_with('\n')),
+        text,
+        spans: Vec::new(),
+        has_before: start > 0,
+        has_after: end < source.len(),
+    };
+    midnight_plugin_host::api::codec::Model::validate(&page).unwrap();
+    page
+}
+
+fn mapped_prefix_worker(page: viewer::TextPage, length: u64) -> (Worker, Mailbox) {
+    let (mut worker, output) = worker();
+    worker.mode = viewer::MODE_SOURCE;
+    worker.wrap = false;
+    worker.raster.enabled = false;
+    worker.length = length;
+    worker.geometry = ViewerGeometry {
+        width: 900,
+        height: 1,
+        scale: 1.0,
+    };
+    worker.positions.reset().unwrap();
+    assert!(worker.set_page(Page::text(page.clone(), &worker.appearance), &output));
+    let rows = worker.shaped.as_ref().unwrap().scroll_anchors();
+    assert!(
+        rows.len() >= 9,
+        "eight authored LF rows need real row boundaries"
+    );
+    // Keep the viewport near six actual rows on the platform's chosen font.
+    // Rounding down leaves the two edge rows in the ordinary Source budget.
+    worker.geometry.height = (rows[6].1 - rows[0].1).floor().max(1.0) as u32;
+    assert!(worker.set_page(Page::text(page, &worker.appearance), &output));
+    assert!(worker.scroll_map.is_some());
+    assert_eq!(worker.geometry.width, 900);
+    assert!(!worker.raster.enabled);
+    (worker, output)
+}
+
+#[test]
+fn scrollbar_source_uneven_rows_correct_once_and_complete_the_actual_camera() {
+    let source = mapped_prefix_source(false);
+    let page = mapped_prefix_page(&source, 4000);
+    assert_eq!(page.source.length, 310);
+    assert_eq!(page.text.bytes().filter(|&byte| byte == b'\n').count(), 8);
+    let (mut worker, output) = mapped_prefix_worker(page, source.len() as u64);
+    let first = rendered(&mut worker, &output);
+    // This source point lies after the short leading rows, yet before the
+    // long A row ends. It cannot be displayed by the initial bounded layout.
+    let target = (4000.0 + 35.5) / (20_000.0 - 306.0);
+    let maximum = crate::viewport::available_height(
+        worker.page.as_ref().unwrap(),
+        worker.shaped.as_ref().unwrap(),
+        worker.geometry.height as f32,
+    ) - worker.geometry.height as f32;
+    assert!(
+        worker
+            .scroll_map
+            .as_ref()
+            .unwrap()
+            .inverse_near(
+                target,
+                f64::from(worker.geometry.height),
+                0.0,
+                f64::from(maximum),
+                0.0
+            )
+            .is_none(),
+        "the authored target must need a replacement fragment"
+    );
+    assert!(worker.positions.accept(first.generation, 4, false, target));
+    read_target(&mut worker, 91, 4, target);
+    let super::super::position::LoadedPosition::Reload {
+        sequence,
+        anchor,
+        backwards,
+    } = worker.refine_position()
+    else {
+        panic!("valid uneven Source rows must get one useful correction");
+    };
+    assert_eq!(sequence, 4);
+    assert!(!backwards);
+    let corrected = mapped_prefix_page(&source, anchor);
+    assert!(corrected.text.starts_with('A'));
+    assert!(corrected.partial_line);
+    worker.positions.requested(92, sequence);
+    worker.viewport_request = Some(92);
+    worker.event(92, EventKind::TextPage(corrected), &output);
+    assert!(worker.positions.has_pending());
+    assert_eq!(worker.positions.acknowledged[0], 0);
+    worker.event(92, EventKind::Completed, &output);
+    let frame = rendered(&mut worker, &output);
+    assert_eq!(frame.generation, first.generation);
+    assert_eq!(frame.position_sequence[0], 4);
+    assert!((frame.position - target).abs() < 0.0001);
+    let actual = worker
+        .scroll_map
+        .as_ref()
+        .unwrap()
+        .metrics(
+            f64::from(worker.origin[1]),
+            f64::from(worker.geometry.height),
+        )
+        .unwrap();
+    assert!((actual.0 - target).abs() < 0.0001);
+    assert!(worker.origin[1] > 0.0);
+    assert!(worker.viewport_request.is_none());
+    assert!(!worker.positions.has_pending());
+    assert_eq!(
+        frame.pixels.len(),
+        worker.geometry.width as usize * worker.geometry.height as usize * 4
+    );
+    assert!(
+        frame.pixels != first.pixels,
+        "the acknowledged authored camera must differ from the initial pixels"
+    );
+    assert!(
+        frame
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel != &frame.pixels[..4]),
+        "the acknowledged camera must render the authored content"
+    );
+}
+
+#[test]
+fn scrollbar_mapped_leading_plateau_keeps_a_zero_byte_prefix() {
+    let source = mapped_prefix_source(false);
+    let mut page = mapped_prefix_page(&source, 4000);
+    // Public TextPage anchors may map generated/blank visual content to one
+    // source boundary. This is a valid plateau, rather than missing mapping.
+    page.source.length -= 6;
+    for anchor in &mut page.anchors {
+        anchor.source_offset = page.source.offset + u64::from(anchor.text_offset.saturating_sub(6));
+    }
+    midnight_plugin_host::api::codec::Model::validate(&page).unwrap();
+    let (mut worker, output) = mapped_prefix_worker(page, source.len() as u64);
+    let target = 0.7;
+    let unprefixed =
+        navigation::scrollbar_viewport(target, worker.length, worker.position_metrics().unwrap().1)
+            .0;
+    read_target(&mut worker, 91, 1, target);
+    let super::super::position::LoadedPosition::Reload {
+        anchor, backwards, ..
+    } = worker.refine_position()
+    else {
+        panic!("the distant target needs one bounded request");
+    };
+    assert!(!backwards);
+    assert_eq!(
+        anchor, unprefixed,
+        "a valid plateau does not invent source bytes"
+    );
+    worker.event(91, EventKind::Completed, &output);
+    assert_eq!(worker.positions.acknowledged[0], 0);
+    assert!(worker.status.contains("not completed"));
+}
+
+#[test]
+fn scrollbar_dense_leading_rows_keep_the_quarter_page_prefix_cap() {
+    let source = mapped_prefix_source(true);
+    let page = mapped_prefix_page(&source, 4000);
+    let byte_cap = page.source.length.div_ceil(4);
+    let (mut worker, output) = mapped_prefix_worker(page, source.len() as u64);
+    let target = 0.7;
+    let unprefixed =
+        navigation::scrollbar_viewport(target, worker.length, worker.position_metrics().unwrap().1)
+            .0;
+    read_target(&mut worker, 91, 1, target);
+    let super::super::position::LoadedPosition::Reload {
+        anchor, backwards, ..
+    } = worker.refine_position()
+    else {
+        panic!("the distant target needs one bounded request");
+    };
+    assert!(!backwards);
+    assert_eq!(unprefixed - anchor, byte_cap);
+    assert_eq!(worker.positions.acknowledged[0], 0);
+    worker.event(91, EventKind::Completed, &output);
+    assert_eq!(worker.positions.acknowledged[0], 0);
+    assert!(worker.viewport_request.is_none());
+    assert!(worker.status.contains("not completed"));
+}
+
+#[test]
+fn scrollbar_mapped_huge_offsets_stay_bounded_and_refuse_uncovered_completion() {
+    let source = mapped_prefix_source(false);
+    let shift = 1_u64 << 60;
+    let mut page = mapped_prefix_page(&source, 4000);
+    let byte_cap = page.source.length.div_ceil(4);
+    page.source.offset += shift;
+    for anchor in &mut page.anchors {
+        anchor.source_offset += shift;
+    }
+    midnight_plugin_host::api::codec::Model::validate(&page).unwrap();
+    let (mut worker, output) = mapped_prefix_worker(page, shift + source.len() as u64);
+    let generation = worker.positions.generation;
+    let target = 0.5;
+    let unprefixed =
+        navigation::scrollbar_viewport(target, worker.length, worker.position_metrics().unwrap().1)
+            .0;
+    read_target(&mut worker, 91, 4, target);
+    let super::super::position::LoadedPosition::Reload {
+        anchor, backwards, ..
+    } = worker.refine_position()
+    else {
+        panic!("huge source offsets still allow one bounded correction");
+    };
+    assert!(!backwards);
+    assert!(anchor > u64::from(u32::MAX));
+    assert!(anchor <= unprefixed);
+    assert!(unprefixed - anchor <= byte_cap);
+    assert_eq!(worker.positions.generation, generation);
+    assert_eq!(worker.positions.acknowledged[0], 0);
+    assert_eq!(
+        worker.refine_position(),
+        super::super::position::LoadedPosition::Unavailable
+    );
+    worker.event(91, EventKind::Completed, &output);
+    let frame = rendered(&mut worker, &output);
+    assert_eq!(frame.position_sequence[0], 0);
+    assert_ne!(frame.generation, generation);
+    assert!(worker.viewport_request.is_none());
+    assert!(worker.status.contains("not completed"));
+}
+
+#[test]
+fn scrollbar_prefix_preserves_absolute_endpoints_with_and_without_a_map() {
+    for mapped in [false, true] {
+        for position in [0.0, 1.0] {
+            let source = mapped_prefix_source(false);
+            let page = mapped_prefix_page(&source, 4000);
+            let (mut worker, _) = mapped_prefix_worker(page, source.len() as u64);
+            if !mapped {
+                worker.scroll_map = None;
+            }
+            read_target(&mut worker, 91, 1, position);
+            let super::super::position::LoadedPosition::Reload {
+                anchor, backwards, ..
+            } = worker.refine_position()
+            else {
+                panic!("a partial middle fragment cannot answer a real file endpoint");
+            };
+            if position == 0.0 {
+                assert_eq!(anchor, 0);
+                assert!(!backwards);
+            } else {
+                assert_eq!(anchor, worker.length);
+                assert!(backwards);
+            }
+            assert_eq!(worker.positions.acknowledged[0], 0);
+        }
+    }
+}
+
+#[test]
+fn scrollbar_no_map_fallback_keeps_the_loaded_visual_camera_without_a_read() {
+    let source = mapped_prefix_source(false);
+    let page = mapped_prefix_page(&source, 4000);
+    let (mut worker, output) = mapped_prefix_worker(page, source.len() as u64);
+    worker.scroll_map = None;
+    let page = worker.page.as_ref().unwrap();
+    let shaped = worker.shaped.as_ref().unwrap();
+    let maximum = crate::viewport::available_height(page, shaped, worker.geometry.height as f32)
+        - worker.geometry.height as f32;
+    let wanted_y = maximum * 0.4;
+    let target = navigation::scroll_metrics(
+        page.start,
+        page.end,
+        worker.length,
+        shaped.height(),
+        worker.geometry.height as f32,
+        wanted_y,
+    )
+    .0;
+    let generation = worker.positions.generation;
+    worker.input(
+        ViewerInput::Position {
+            generation,
+            sequence: 4,
+            horizontal: false,
+            position: target,
+        },
+        &output,
+    );
+    let frame = rendered(&mut worker, &output);
+    assert_eq!(frame.generation, generation);
+    assert_eq!(frame.position_sequence[0], 4);
+    assert!((frame.position - target).abs() < 0.0001);
+    assert!((worker.origin[1] - wanted_y).abs() < 0.001);
+    assert!(worker.scroll_map.is_none());
+    assert!(worker.viewport_request.is_none());
+}
+
+// The raster test module's crop helper is private to that sibling module.
+// Compose the actual visible body and pinned gutter, preserving pixel phase.
+fn corrected_source_visible_pixels(frame: &ViewerFrame) -> Vec<u8> {
+    let info = frame.raster.as_ref().expect("actual retained Source frame");
+    assert!(info.settled, "the corrected Source camera must be settled");
+    let gutter = info.gutter.as_ref().expect("pinned Source line numbers");
+    assert!(gutter.width > 0 && gutter.width < info.viewport[0]);
+    let dx = info.origin[0] - info.raster_origin[0];
+    let dy = info.origin[1] - info.raster_origin[1];
+    assert!(
+        dx >= 0.0 && dy >= 0.0 && (dx - dx.round()).abs() < 1e-5 && (dy - dy.round()).abs() < 1e-5,
+        "settled Source pixels must permit an exact crop: {dx},{dy}"
+    );
+    let [width, height] = info.viewport;
+    let mut visible = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height as usize {
+        let source_y = y + dy.round() as usize;
+        let gutter_at = source_y * gutter.width as usize * 4;
+        visible.extend_from_slice(&gutter.pixels[gutter_at..gutter_at + gutter.width as usize * 4]);
+        let body_at = (source_y * frame.width as usize + dx.round() as usize) * 4;
+        visible.extend_from_slice(
+            &frame.pixels[body_at..body_at + (width - gutter.width) as usize * 4],
+        );
+    }
+    visible
+}
+
+#[test]
+fn scrollbar_source_correction_retains_actual_pixels_and_exact_numbered_gutter() {
+    let source = mapped_prefix_source(false);
+    let page = mapped_prefix_page(&source, 4000);
+    let (mut worker, output) = mapped_prefix_worker(page, source.len() as u64);
+    worker.input(ViewerInput::RetainedRaster(true), &output);
+
+    // The owned prefix contains exactly 2,000 LFs. Use the real Locate event
+    // path so the pixel comparison includes numbered, rather than blank, gutters.
+    worker.text.locate_request = Some((90, 4000));
+    worker.event(
+        90,
+        EventKind::TextPosition(viewer::TextPosition {
+            revision: 1,
+            source_offset: 4000,
+            line: 2001,
+            column: 1,
+        }),
+        &output,
+    );
+    worker.event(90, EventKind::Completed, &output);
+    let first = rendered(&mut worker, &output);
+    let first_visible = corrected_source_visible_pixels(&first);
+    let generation = first.generation;
+    let target = (4000.0 + 35.5) / (20_000.0 - 306.0);
+
+    // This unit fixture models admitted request arrival, as do the existing
+    // correction tests. It has no live Session or uncovered Position dispatcher.
+    // No acknowledgement is set here: Worker::event must produce it on completion.
+    assert!(worker.positions.accept(generation, 4, false, target));
+    read_target(&mut worker, 91, 4, target);
+    let super::super::position::LoadedPosition::Reload {
+        sequence,
+        anchor,
+        backwards,
+    } = worker.refine_position()
+    else {
+        panic!("the nonuniform Source target must require one corrective page");
+    };
+    assert_eq!(sequence, 4);
+    assert!(!backwards);
+    let corrected = mapped_prefix_page(&source, anchor);
+    assert!(corrected.text.starts_with('A') && corrected.partial_line);
+    worker.positions.requested(92, sequence);
+    worker.viewport_request = Some(92);
+    worker.event(92, EventKind::TextPage(corrected), &output);
+    assert!(worker.positions.has_pending());
+    assert_eq!(worker.positions.acknowledged[0], 0);
+    worker.paint(&output).unwrap();
+    assert!(
+        !output
+            .take()
+            .iter()
+            .any(|message| matches!(message, ViewerOutput::Frame(_))),
+        "an unterminated correction must not publish acknowledged pixels"
+    );
+    worker.event(92, EventKind::Completed, &output);
+    let frame = rendered(&mut worker, &output);
+    assert_eq!(frame.generation, generation);
+    assert_eq!(frame.position_sequence[0], 4);
+    assert!((frame.position - target).abs() < 0.0001);
+    assert!(worker.origin[1] > 0.0);
+    assert!(worker.viewport_request.is_none() && !worker.positions.has_pending());
+
+    let coordinate = worker
+        .text
+        .coordinate
+        .expect("transferred Source coordinate");
+    let prefix = &source[..anchor as usize];
+    assert_eq!(coordinate.source_offset, anchor);
+    assert_eq!(
+        coordinate.line,
+        prefix.bytes().filter(|&b| b == b'\n').count() as u64 + 1
+    );
+    assert_eq!(
+        coordinate.column,
+        Some(prefix.rsplit('\n').next().unwrap().len() as u64 + 1)
+    );
+    let visible = corrected_source_visible_pixels(&frame);
+    let info = frame.raster.as_ref().unwrap();
+    let mapped_position = info
+        .scroll_map
+        .as_ref()
+        .expect("retained Source map")
+        .metrics(info.origin[1], f64::from(info.viewport[1]))
+        .unwrap()
+        .0;
+    assert!((mapped_position - target).abs() < 0.0001);
+    assert!(
+        visible != first_visible,
+        "the correction must replace the initial pixels"
+    );
+    let gutter_bytes = info.gutter.as_ref().unwrap().width as usize * 4;
+    assert!(
+        visible
+            .chunks_exact(worker.geometry.width as usize * 4)
+            .any(|row| {
+                row[..gutter_bytes]
+                    .chunks_exact(4)
+                    .any(|pixel| pixel != &row[..4])
+            }),
+        "the actual visible Source gutter must contain line-number glyphs"
+    );
+
+    let origin = worker.origin;
+    worker.input(ViewerInput::RetainedRaster(false), &output);
+    assert_eq!(worker.origin, origin);
+    let reference = rendered(&mut worker, &output);
+    assert!(reference.raster.is_none());
+    assert_eq!(reference.generation, generation);
+    assert_eq!(reference.position_sequence[0], 4);
+    assert_eq!(visible.len(), reference.pixels.len());
+    let first_mismatch = visible
+        .iter()
+        .zip(reference.pixels.iter())
+        .position(|(actual, expected)| actual != expected);
+    assert_eq!(
+        first_mismatch, None,
+        "corrected retained body and numbered gutter must match the CPU viewport"
+    );
+}

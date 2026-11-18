@@ -49,9 +49,12 @@ bugs were reproduced. Startup now reserves a plain cleanup worker and bounded sl
 before taking provider ownership. The synchronous Engine run wrapper owns suspended
 execution and the complete command inbox; Copy/Move/Delete handoffs, shared snapshots
 and drag state retain their cleanup reservations through actual destruction.
-The [engine contract](developer/ENGINE_LIFETIME.md) now describes 329 payload slots,
-eight reusable waiter tokens, eight shared terminal/editor/Custom Command process
-slots and sixteen independent opener slots. The
+The [engine contract](developer/ENGINE_LIFETIME.md#capacity-and-ownership) records
+329 payload slots on pre-merge main and 330 on the pre-merge work branch, both
+with eight reusable waiter tokens. The merge source accounts for 332 payload
+slots and eight waiter tokens. Eight shared terminal/editor/Custom Command
+process slots and sixteen
+independent opener slots are separate process-admission limits. The
 [initial integrated evidence](verification/2026-11-12-engine-lifetime-integration.md)
 remains historical; the [child-task verification](verification/2026-11-12-task-services.md)
 records the additional shared service guard for Find, preferences and fonts,
@@ -90,9 +93,9 @@ the reproduced caller-side cleanup and the focused Linux correction; combined Wi
 qualification passed and is recorded in the
 [combined checkpoint](verification/2026-11-12-config-rename-cmd-checkpoint.md).
 No service-configuration retirement capacity was added.
-Native tree Rename added four reserved capture slots to the domain, bringing the combined
-ledger to 308 at that time (the current contract above states 329); accepted captures
-retain admission until actual worker-side destruction.
+The earlier native tree Rename checkpoint added four reserved capture slots,
+bringing its dated ledger to 308. Accepted captures retain admission until
+actual worker-side destruction.
 This is not an exhaustive completion audit. The
 [runtime-independent retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md)
 tracks implementation and outstanding cross-actor qualification.

@@ -18,6 +18,7 @@ i-slint-core = { version = "=1.18.1", default-features = false, features = ["std
 slint-build.workspace = true
 
 [dev-dependencies]
+midnight-work-budget = { path = "../midnight-work-budget", features = ["resident-workers"] }
 slint = { workspace = true, features = ["unstable-wgpu-30"] }
 midnight-plugin-host = { path = "../midnight-plugin-host" }
 tokio.workspace = true

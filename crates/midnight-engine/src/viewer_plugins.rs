@@ -1,23 +1,44 @@
 //! Executable-relative catalog discovery is bounded backend work, independent of browsing.
 use crate::Outbox;
-use midnight_core::{Event, ViewerPluginInfo, viewer_plugin_name};
-use std::path::Path;
+use midnight_core::{
+    ComparatorCapabilities, ComparatorImageCapability, Event, ViewerPluginInfo, viewer_plugin_name,
+};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use tokio::{sync::mpsc, task::JoinSet};
 #[path = "filesystem_plugins.rs"]
 mod filesystems;
 
 pub(crate) struct Controller {
     sender: mpsc::Sender<()>,
+    pending: Arc<Mutex<Pending>>,
+}
+
+#[derive(Default)]
+struct Pending {
+    catalog: bool,
+    comparators: Option<Arc<[String]>>,
 }
 
 impl Controller {
     pub(crate) fn new(outbox: Outbox, tasks: &mut JoinSet<()>) -> Self {
         let (sender, mut requests) = mpsc::channel(1);
+        let pending = Arc::new(Mutex::new(Pending::default()));
+        let worker_pending = pending.clone();
         tasks.spawn(async move {
+            let mut revision = 0_u64;
             while requests.recv().await.is_some() {
-                let result =
-                    tokio::task::spawn_blocking(
-                        || match midnight_plugin_host::installed_executable() {
+                let pending = {
+                    let mut pending = worker_pending
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    std::mem::take(&mut *pending)
+                };
+                if pending.catalog {
+                    let result = tokio::task::spawn_blocking(|| {
+                        match midnight_plugin_host::installed_executable() {
                             Ok(executable) => (
                                 catalog(&executable),
                                 filesystems::catalog(&executable),
@@ -29,26 +50,113 @@ impl Controller {
                                 Err(error.to_string()),
                                 Err(error.to_string()),
                             ),
-                        },
-                    )
+                        }
+                    })
                     .await
                     .unwrap_or_else(|error| {
                         let message = format!("Plugin discovery worker failed: {error}");
                         (Err(message.clone()), Err(message.clone()), Err(message))
                     });
-                if !outbox.send(Event::ViewerPluginsListed(result.0)).await
-                    || !outbox.send(Event::FilesystemPluginsListed(result.1)).await
-                    || !outbox.send(Event::ThumbnailerPluginsListed(result.2)).await
-                {
-                    break;
+                    if !outbox.send(Event::ViewerPluginsListed(result.0)).await
+                        || !outbox.send(Event::FilesystemPluginsListed(result.1)).await
+                        || !outbox.send(Event::ThumbnailerPluginsListed(result.2)).await
+                    {
+                        break;
+                    }
+                }
+                if let Some(disabled_plugins) = pending.comparators {
+                    let Some(next_revision) = revision.checked_add(1) else {
+                        break;
+                    };
+                    revision = next_revision;
+                    let disabled = disabled_plugins.clone();
+                    let images = tokio::task::spawn_blocking(move || {
+                        midnight_core::validate_disabled_viewers(&disabled)
+                            .map_err(str::to_owned)?;
+                        let executable = midnight_plugin_host::installed_executable()
+                            .map_err(|error| error.to_string())?;
+                        comparator_images(&executable, &disabled)
+                    })
+                    .await
+                    .unwrap_or_else(|error| {
+                        Err(format!("Comparator coverage worker failed: {error}"))
+                    });
+                    if !outbox
+                        .send(Event::ComparatorCapabilitiesListed(
+                            ComparatorCapabilities {
+                                revision,
+                                disabled_plugins,
+                                images,
+                            },
+                        ))
+                        .await
+                    {
+                        break;
+                    }
                 }
             }
         });
-        Self { sender }
+        Self { sender, pending }
     }
     pub(crate) fn refresh(&self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .catalog = true;
         let _ = self.sender.try_send(());
     }
+    pub(crate) fn comparator_capabilities(&self, disabled_plugins: Arc<[String]>) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .comparators = Some(disabled_plugins);
+        let _ = self.sender.try_send(());
+    }
+}
+
+fn comparator_images(
+    executable: &Path,
+    disabled: &[String],
+) -> Result<Arc<[ComparatorImageCapability]>, String> {
+    let discovery = midnight_image_viewer_host::discover_with_diagnostics(executable)
+        .map_err(|error| error.to_string())?;
+    if !discovery.diagnostics.is_empty() {
+        return Err(format!(
+            "Image comparison coverage is incomplete: {}",
+            discovery
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    Ok(effective_comparator_images(
+        discovery.providers.iter().map(|provider| {
+            (
+                provider.id.as_str(),
+                provider.extensions.as_slice(),
+                provider.is_document(),
+            )
+        }),
+        disabled,
+    ))
+}
+
+fn effective_comparator_images<'a>(
+    providers: impl IntoIterator<Item = (&'a str, &'a [String], bool)>,
+    disabled: &[String],
+) -> Arc<[ComparatorImageCapability]> {
+    providers
+        .into_iter()
+        .filter(|(id, _, document)| {
+            !*document && !disabled.iter().any(|disabled| disabled.as_str() == *id)
+        })
+        .map(|(id, extensions, _)| ComparatorImageCapability {
+            provider_id: id.to_owned(),
+            extensions: extensions.to_vec(),
+        })
+        .collect()
 }
 
 fn catalog(executable: &Path) -> Result<Vec<ViewerPluginInfo>, String> {
@@ -162,6 +270,41 @@ fn description(id: &str, supplied: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn comparator_coverage_uses_only_enabled_non_document_discovered_metadata() {
+        let images = vec!["png".into(), "webp".into()];
+        let other = vec!["avif".into()];
+        let documents = vec!["pdf".into()];
+        let providers = || {
+            [
+                ("images.primary", images.as_slice(), false),
+                ("images.optional", other.as_slice(), false),
+                ("documents.pdf", documents.as_slice(), true),
+            ]
+        };
+        let enabled = effective_comparator_images(providers(), &["images.optional".into()]);
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].provider_id, "images.primary");
+        assert_eq!(enabled[0].extensions, images);
+        let none = effective_comparator_images(
+            providers(),
+            &["images.primary".into(), "images.optional".into()],
+        );
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn failed_or_untrusted_discovery_is_reported_as_unknown_coverage() {
+        let root = tempfile::tempdir().unwrap();
+        let package = root.path().join("viewers/broken");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("image-viewer.json"), br#"{"schema":1}"#).unwrap();
+        let result = comparator_images(&root.path().join("me.exe"), &[]);
+        assert!(
+            result.is_err(),
+            "unavailable discovery cannot claim known empty coverage"
+        );
+    }
     #[test]
     #[ignore = "requires PLUGIN_CATALOG_TEST_EXECUTABLE in a trusted installed package"]
     fn installed_viewer_catalog_has_one_html_row_and_readable_viewer_names() {

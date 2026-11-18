@@ -143,6 +143,10 @@ impl FixedPitchFonts {
             deliver,
         };
         if let Some(waiting) = &mut state.waiting {
+            // A replacement in the same session only needs the latest reply.
+            waiting.retain(|pending| {
+                !pending.cancel.load(Ordering::Acquire) && !Arc::ptr_eq(&pending.cancel, cancel)
+            });
             waiting.push(waiter);
             return None;
         }

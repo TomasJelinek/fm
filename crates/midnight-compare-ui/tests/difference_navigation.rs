@@ -11,6 +11,8 @@ use slint::{
     },
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
+#[path = "support/resident.rs"]
+mod resident;
 #[path = "support/mod.rs"]
 mod support;
 use support::{TestPlatform, wait_for};
@@ -35,17 +37,21 @@ fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overri
             .collect();
         std::fs::write(path, text).unwrap();
     }
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = resident::TestRuntime::new(tokio::runtime::Runtime::new().unwrap());
     let manager = ComparatorWindows::new(midnight_compare_engine::Service::new(
         runtime.handle().clone(),
+        runtime.spawner(),
     ));
     let map = Rc::new(RefCell::new(ShortcutMap::new(&[]).unwrap()));
     let keys = map.clone();
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let window = manager
         .open(
             FileCompareLaunch {
                 sources: paths.into_iter().map(FileCompareSource::Focused).collect(),
                 disabled_plugins: Arc::from([]),
+                comparators: comparator_snapshot.preferences.clone(),
+                comparator_policy: comparator_snapshot.id,
             },
             ViewerAppearance {
                 family: "monospace".into(),

@@ -9,6 +9,8 @@ use slint::{
 };
 use std::{rc::Rc, sync::Arc};
 
+#[path = "support/resident.rs"]
+mod resident;
 #[path = "support/mod.rs"]
 mod support;
 use support::TestPlatform;
@@ -17,16 +19,20 @@ use support::TestPlatform;
 fn actual_comparator_window_exposes_three_modes_and_always_closes_on_escape() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = resident::TestRuntime::new(tokio::runtime::Runtime::new().unwrap());
     let manager = ComparatorWindows::new(midnight_compare_engine::Service::new(
         runtime.handle().clone(),
+        runtime.spawner(),
     ));
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     for escape in [false, true] {
         let window = manager
             .open(
                 FileCompareLaunch {
                     sources: Vec::new(),
                     disabled_plugins: Arc::from([]),
+                    comparators: comparator_snapshot.preferences.clone(),
+                    comparator_policy: comparator_snapshot.id,
                 },
                 ViewerAppearance {
                     family: "monospace".into(),

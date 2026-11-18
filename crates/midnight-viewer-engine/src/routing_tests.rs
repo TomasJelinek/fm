@@ -99,6 +99,7 @@ fn route(
         basic,
         disabled,
         associations,
+        None,
     )
 }
 
@@ -296,5 +297,321 @@ fn routing_source_binary_plugin_keeps_selected_source_mode_and_native_defaults()
             mode: viewer::MODE_SOURCE,
             detect_binary: false
         })
+    );
+}
+
+const OFFICE_ID: &str = "midnight.viewer.office-preview";
+const HTML_ID: &str = "midnight.viewer.html";
+
+fn office_route(
+    native: &[PluginInfo],
+    process: &[(&str, Vec<String>)],
+    name: &str,
+    basic: bool,
+    disabled: &[String],
+    associations: &ViewerAssociations,
+    office_renderer: Option<usize>,
+) -> Option<Route> {
+    choose(
+        native,
+        process
+            .iter()
+            .map(|(id, extensions)| ProcessCandidate { id, extensions }),
+        Path::new(name),
+        basic,
+        disabled,
+        associations,
+        office_renderer,
+    )
+}
+
+#[test]
+fn routing_office_builtin_requires_actual_enabled_html_renderer_and_builtin() {
+    let native = [native(
+        "basic",
+        &[],
+        &[viewer::MODE_TEXT, viewer::MODE_BINARY],
+        0,
+    )];
+    let process = [(HTML_ID, vec!["html".into()])];
+    let preferences = ViewerAssociations::default();
+    assert_eq!(
+        office_route(
+            &native,
+            &process,
+            "čísla.XLSX",
+            false,
+            &[],
+            &preferences,
+            Some(0)
+        ),
+        Some(Route::Office { renderer: 0 }),
+    );
+    for disabled in [vec![HTML_ID.into()], vec![OFFICE_ID.into()]] {
+        assert_eq!(
+            office_route(
+                &native,
+                &process,
+                "čísla.xlsx",
+                false,
+                &disabled,
+                &preferences,
+                Some(0)
+            ),
+            Some(Route::Native {
+                index: 0,
+                mode: viewer::MODE_TEXT,
+                detect_binary: true
+            }),
+        );
+    }
+    for (candidates, renderer) in [
+        (&process[..], None),
+        (&process[..], Some(5)),
+        (&[][..], Some(0)),
+    ] {
+        assert_eq!(
+            office_route(
+                &native,
+                candidates,
+                "čísla.xlsx",
+                false,
+                &[],
+                &preferences,
+                renderer
+            ),
+            Some(Route::Native {
+                index: 0,
+                mode: viewer::MODE_TEXT,
+                detect_binary: true
+            }),
+        );
+    }
+}
+
+#[test]
+fn routing_office_builtin_defaults_cover_only_six_xml_container_extensions() {
+    let process = [(HTML_ID, vec!["html".into()])];
+    let preferences = ViewerAssociations::default();
+    for extension in ["docx", "xlsx", "pptx", "odt", "ods", "odp"] {
+        assert_eq!(
+            office_route(
+                &[],
+                &process,
+                &format!("report.{extension}"),
+                false,
+                &[],
+                &preferences,
+                Some(0)
+            ),
+            Some(Route::Office { renderer: 0 }),
+            "{extension}",
+        );
+    }
+    // These routing matches do not claim parser support for unimplemented formats.
+    for extension in [
+        "doc", "xls", "ppt", "xlsb", "docm", "xlsm", "pptm", "zip", "xlsx.exe", "xslx",
+    ] {
+        assert_eq!(
+            office_route(
+                &[],
+                &process,
+                &format!("report.{extension}"),
+                false,
+                &[],
+                &preferences,
+                Some(0)
+            ),
+            None,
+            "{extension}",
+        );
+    }
+}
+
+#[test]
+fn routing_office_basic_and_explicit_disabled_choices_remain_authoritative() {
+    let native = [native(
+        "basic",
+        &[],
+        &[viewer::MODE_TEXT, viewer::MODE_BINARY],
+        0,
+    )];
+    let process = [(HTML_ID, vec!["html".into()])];
+    let preferences = ViewerAssociations {
+        overrides: Default::default(),
+        order: vec![OFFICE_ID.into()],
+    };
+    assert_eq!(
+        office_route(
+            &native,
+            &process,
+            "report.xlsx",
+            true,
+            &[],
+            &preferences,
+            Some(0)
+        ),
+        Some(Route::Native {
+            index: 0,
+            mode: viewer::MODE_TEXT,
+            detect_binary: false
+        }),
+    );
+    assert_eq!(
+        office_route(
+            &native,
+            &process,
+            "report.xlsx",
+            true,
+            &["basic".into()],
+            &preferences,
+            Some(0)
+        ),
+        None,
+    );
+    assert_eq!(
+        office_route(
+            &[],
+            &process,
+            "report.xlsx",
+            false,
+            &[OFFICE_ID.into()],
+            &preferences,
+            Some(0)
+        ),
+        None,
+    );
+}
+
+#[test]
+fn routing_office_builtin_participates_in_suffix_user_order_and_empty_overrides() {
+    let native = [native(
+        "source",
+        &["xlsx", "report.xlsx"],
+        &[viewer::MODE_SOURCE],
+        999,
+    )];
+    let process = [(HTML_ID, vec!["html".into()])];
+    let mut preferences = ViewerAssociations::default();
+    assert_eq!(
+        office_route(
+            &native,
+            &process,
+            "annual.xlsx",
+            false,
+            &[],
+            &preferences,
+            Some(0)
+        ),
+        Some(Route::Office { renderer: 0 }),
+    );
+    preferences.order = vec!["source".into(), OFFICE_ID.into()];
+    assert_eq!(
+        office_route(
+            &native,
+            &process,
+            "annual.xlsx",
+            false,
+            &[],
+            &preferences,
+            Some(0)
+        ),
+        Some(Route::Native {
+            index: 0,
+            mode: viewer::MODE_SOURCE,
+            detect_binary: false
+        }),
+    );
+    preferences.order = vec![OFFICE_ID.into(), "source".into()];
+    assert_eq!(
+        office_route(
+            &native,
+            &process,
+            "annual.report.xlsx",
+            false,
+            &[],
+            &preferences,
+            Some(0)
+        ),
+        Some(Route::Native {
+            index: 0,
+            mode: viewer::MODE_SOURCE,
+            detect_binary: false
+        }),
+    );
+    preferences.overrides.insert(OFFICE_ID.into(), vec![]);
+    assert_eq!(
+        office_route(
+            &native,
+            &process,
+            "annual.xlsx",
+            false,
+            &[],
+            &preferences,
+            Some(0)
+        ),
+        Some(Route::Native {
+            index: 0,
+            mode: viewer::MODE_SOURCE,
+            detect_binary: false
+        }),
+    );
+}
+
+#[test]
+fn routing_office_uses_selected_html_renderer_index_without_confusing_image_transport() {
+    let process = [
+        ("midnight.viewer.image", vec!["png".into()]),
+        (HTML_ID, vec!["html".into()]),
+    ];
+    let preferences = ViewerAssociations::default();
+    assert_eq!(
+        office_route(
+            &[],
+            &process,
+            "report.xlsx",
+            false,
+            &[],
+            &preferences,
+            Some(1)
+        ),
+        Some(Route::Office { renderer: 1 }),
+    );
+    assert_eq!(
+        office_route(
+            &[],
+            &process,
+            "report.xlsx",
+            false,
+            &[],
+            &preferences,
+            Some(0)
+        ),
+        None,
+        "an image candidate cannot become the Office HTML renderer",
+    );
+    assert_eq!(
+        office_route(
+            &[],
+            &process,
+            "photo.png",
+            false,
+            &[],
+            &preferences,
+            Some(1)
+        ),
+        Some(Route::Process { index: 0 }),
+    );
+    assert_eq!(
+        office_route(
+            &[],
+            &process,
+            "page.html",
+            false,
+            &[],
+            &preferences,
+            Some(1)
+        ),
+        Some(Route::Process { index: 1 }),
     );
 }

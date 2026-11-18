@@ -289,6 +289,10 @@ impl midnight_plugin_host::ContentSource for Document {
         let end = offset.saturating_add(u64::from(length)).min(5) as usize;
         Ok(b"hello"[(offset as usize).min(end)..end].to_vec())
     }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), midnight_plugin_host::Error> {
+        drop(self);
+        Ok(())
+    }
 }
 
 fn document() -> CapturedFile {
@@ -309,6 +313,10 @@ impl Resources for Capture {
         let _ = locked(&self.release).recv_timeout(WAIT);
         assert!(!self.panics, "a resource capture defect");
         Err("denied".into())
+    }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), String> {
+        drop(self);
+        Ok(())
     }
 }
 
@@ -580,7 +588,7 @@ fn a_reader_that_ends_without_output_fails_the_session() {
 }
 
 #[test]
-fn the_stop_guard_ends_the_watchdog_when_the_actor_panics() {
+fn a_resource_worker_panic_wakes_the_actor_and_ends_the_watchdog() {
     let (resources, started, release) = capture(true);
     release.send(()).unwrap();
     let harness = open(Script::Ready, Some(resources), Limits::default());
@@ -591,18 +599,21 @@ fn the_stop_guard_ends_the_watchdog_when_the_actor_panics() {
     assert_eq!(harness.browser.kills(), 1, "the watchdog ended the browser");
     assert_eq!(
         runtime_error(&harness.kinds()),
-        "Browser session failed; reopen the document."
+        "HTML resource worker panicked; cleanup is unconfirmed"
     );
 }
 
-/// The actor is inside a resource capture while the browser floods the host: the reader
-/// queued two messages and waits for room with a third.
+/// A resource worker is inside capture. Hold the actor inside a presentation wake,
+/// so the reader queues two messages and waits for room with a third.
 fn flooded(panics: bool) -> (Harness, mpsc::Sender<()>) {
     let (resources, started, release) = capture(panics);
     let harness = open(Script::Ready, Some(resources), Limits::default());
     harness.shown();
     harness.browser.emit(resolve());
     started.recv_timeout(WAIT).unwrap();
+    harness.consumer.hold();
+    harness.browser.emit(state());
+    harness.consumer.until("the actor held", |woken| woken.held);
     for _ in 0..4 {
         harness.browser.emit(state());
     }
@@ -621,25 +632,27 @@ fn closing_a_flooded_session_ends_it() {
     let (harness, release) = flooded(false);
     harness.session.close();
     release.send(()).unwrap();
+    harness.consumer.release();
     harness.finished();
     assert_eq!(harness.browser.kills(), 1);
     assert_eq!(
         harness.kinds(),
-        shown(),
+        [shown(), vec![state()]].concat(),
         "a requested end publishes nothing"
     );
 }
 
 #[test]
-fn an_actor_that_panics_while_the_browser_floods_still_ends_the_session() {
+fn a_resource_worker_that_panics_while_the_browser_floods_still_ends_the_session() {
     let (harness, release) = flooded(true);
     // Only the stop guard can wake the reader, which waits for room.
     release.send(()).unwrap();
+    harness.consumer.release();
     harness.finished();
     assert_eq!(harness.browser.kills(), 1);
     assert_eq!(
         runtime_error(&harness.kinds()),
-        "Browser session failed; reopen the document."
+        "HTML resource worker panicked; cleanup is unconfirmed"
     );
 }
 
@@ -672,6 +685,26 @@ fn a_command_wakes_an_idle_actor() {
     harness.actor_idle();
     assert!(harness.session.send(api::CommandKind::Copy));
     assert!(matches!(harness.browser.receive(), api::CommandKind::Copy));
+}
+
+#[test]
+fn a_resource_completion_wakes_an_idle_actor_without_browser_output() {
+    let (resources, started, release) = capture(false);
+    let harness = open(Script::Ready, Some(resources), Limits::default());
+    harness.shown();
+    harness.browser.emit(resolve());
+    started.recv_timeout(WAIT).unwrap();
+    harness.actor_idle();
+    release.send(()).unwrap();
+    assert!(matches!(
+        harness.browser.receive(),
+        api::CommandKind::ResourceReply(api::ResourceReply::Denied { request: 1, .. })
+    ));
+    assert_eq!(
+        harness.consumer.count(),
+        2,
+        "resource replies do not repaint the UI"
+    );
 }
 
 #[test]

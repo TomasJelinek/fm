@@ -1,8 +1,13 @@
 //! Thin UI adapters. Reading, parsing, search, layout and selection run on the backend.
 #![deny(unsafe_code)]
 
+mod appearance;
 #[cfg(test)]
 mod control_sync_tests;
+#[cfg(test)]
+mod document_layout_tests;
+#[cfg(test)]
+mod find_action_tests;
 mod image_camera;
 mod image_motion;
 #[cfg(test)]
@@ -83,10 +88,19 @@ impl LayoutState {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DocumentLayoutIntent {
+    token: u64,
+    layout: DocumentLayout,
+    requested_frame: u64,
+    submitted_frame: Option<u64>,
+}
+
 pub struct ViewerWindows {
     service: Service,
     windows: RefCell<Vec<Rc<OpenWindow>>>,
     preferences_listener: PreferencesRelay,
+    appearance: RefCell<Option<appearance::AppAppearance>>,
 }
 
 struct OpenWindow {
@@ -99,6 +113,7 @@ struct OpenWindow {
     opening_succeeded: Cell<bool>,
     preparation: RefCell<Option<pixel_preparation::Preparation>>,
     prepared_pixels: RefCell<Option<pixel_preparation::PreparedPixels>>,
+    palette: appearance::PaletteGate,
     last_geometry: Cell<(u32, u32, u32)>,
     layout: RefCell<LayoutState>,
     frame: Cell<u64>,
@@ -106,10 +121,11 @@ struct OpenWindow {
     raster_size: Cell<(u32, u32)>,
     modes: RefCell<Vec<u16>>,
     /// Chooser index of the mode presented by the last frame or requested since.
-    /// The chooser is two-way bound, so a refused request restores this value.
+    /// A refused request restores this authoritative value.
     mode_index: Cell<i32>,
     preferences_listener: PreferencesRelay,
     image_info: RefCell<Option<ViewerImageInfo>>,
+    document_layout: RefCell<Option<DocumentLayoutIntent>>,
     font_catalog_ready: Cell<bool>,
     image_zoom: RefCell<image_zoom::Intent>,
     image_camera: RefCell<image_camera::Camera>,
@@ -148,6 +164,30 @@ impl OpenWindow {
         if self.closed.get() {
             return false;
         }
+        if !self.window.get_web_policy_change_allowed()
+            && matches!(
+                &input,
+                ViewerInput::Web {
+                    input: viewer_web::CommandKind::Policy(_),
+                    ..
+                }
+            )
+        {
+            return false;
+        }
+        if let ViewerInput::DocumentLayout { frame, .. } = &input
+            && (*frame == 0
+                || *frame != self.frame.get()
+                || !self.text_position.borrow().context_available()
+                || self
+                    .image_info
+                    .borrow()
+                    .as_ref()
+                    .and_then(|info| info.document_layout)
+                    .is_none())
+        {
+            return false;
+        }
         if self.layout.borrow().awaiting_frame
             && !matches!(
                 input,
@@ -183,7 +223,17 @@ impl OpenWindow {
                 | ViewerInput::Pan(_)
                 | ViewerInput::Position { .. }
         );
+        let retires_document = matches!(
+            input,
+            ViewerInput::Mode(_)
+                | ViewerInput::NextFile
+                | ViewerInput::PreviousFile
+                | ViewerInput::Close
+        );
         let accepted = sender(input);
+        if accepted && retires_document {
+            self.document_layout.borrow_mut().take();
+        }
         if accepted && interrupts {
             raster_motion::cancel(self);
         }
@@ -201,11 +251,48 @@ impl ViewerWindows {
             service,
             windows: RefCell::new(Vec::new()),
             preferences_listener: Rc::new(RefCell::new(Rc::new(|_| {}))),
+            appearance: RefCell::new(None),
         }
     }
 
     pub fn set_preferences_listener(&self, listener: Rc<dyn Fn(ViewerPreferenceChange)>) {
         *self.preferences_listener.borrow_mut() = listener;
+    }
+
+    /// Apply the displayed app theme to chrome and four document palette colors.
+    /// Document fonts, zoom, layout and preference listeners are unaffected.
+    pub fn apply_appearance(
+        &self,
+        appearance: &ViewerAppearance,
+        theme: PreferenceTheme,
+        density: UiDensity,
+        desktop_font_size: u16,
+        touch_font_size: u16,
+    ) {
+        let next = appearance::AppAppearance::new(
+            appearance,
+            theme,
+            density,
+            desktop_font_size,
+            touch_font_size,
+        );
+        let changed = self.appearance.borrow().as_ref() != Some(&next);
+        if changed {
+            *self.appearance.borrow_mut() = Some(next.clone());
+        }
+        for open in self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|open| !open.closed.get())
+        {
+            if changed {
+                next.present(&open.window);
+            }
+            // Equal app tuples do not resubmit accepted colors. A refused
+            // admission remains retryable without rewriting widget properties.
+            next.restore_palette(open);
+        }
     }
 
     /// Restore without reporting a user edit or writing application settings.
@@ -264,7 +351,7 @@ impl ViewerWindows {
     pub fn open_with_ready(
         &self,
         launch: ViewerLaunch,
-        appearance: ViewerAppearance,
+        mut appearance: ViewerAppearance,
         placement: impl Into<WindowPlacement>,
         keys: KeyResolver,
         copy: Rc<dyn Fn(String)>,
@@ -295,6 +382,10 @@ impl ViewerWindows {
         window.set_compact(size.width < 500.0);
         window.set_narrow_typography(size.width < 680.0);
         placement.apply(window.window());
+        let app_appearance = self.appearance.borrow().clone();
+        if let Some(app) = &app_appearance {
+            app.merge_palette(&mut appearance);
+        }
         window.set_foreground(color(appearance.foreground));
         window.set_background_color(color(appearance.background));
         window.set_accent(color(appearance.accent));
@@ -306,6 +397,9 @@ impl ViewerWindows {
                 + u16::from(appearance.background[2])
                 > 384,
         );
+        if let Some(app) = &app_appearance {
+            app.present(&window);
+        }
         // Showing supplies native size and scale for provisional geometry. The
         // selected backend route receives its measured canvas through LayoutReady.
         if let Err(error) = window.show() {
@@ -314,6 +408,7 @@ impl ViewerWindows {
             return Err(error.to_string());
         }
         let geometry = window_geometry(&window);
+        let opening_palette = appearance.clone();
         let session = match self.service.open_with_layout(launch, appearance, geometry) {
             Ok(session) => Rc::new(session),
             Err(error) => {
@@ -321,11 +416,14 @@ impl ViewerWindows {
                 return Err(error);
             }
         };
-        if !session.send(ViewerInput::RetainedRaster(true)) {
-            session.close();
-            let _ = window.hide();
-            return Err("Viewer input is unavailable.".into());
-        }
+        let palette = match prepare_session(&session, &opening_palette) {
+            Ok(palette) => palette,
+            Err(error) => {
+                session.close();
+                let _ = window.hide();
+                return Err(error);
+            }
+        };
         let input = Rc::downgrade(&session);
         let open = Rc::new(OpenWindow {
             window,
@@ -339,6 +437,7 @@ impl ViewerWindows {
             opening_succeeded: Cell::new(false),
             preparation: RefCell::new(None),
             prepared_pixels: RefCell::new(None),
+            palette,
             last_geometry: Cell::new((geometry.width, geometry.height, geometry.scale.to_bits())),
             layout: RefCell::new(LayoutState::default()),
             frame: Cell::new(0),
@@ -348,6 +447,7 @@ impl ViewerWindows {
             mode_index: Cell::new(0),
             preferences_listener: self.preferences_listener.clone(),
             image_info: RefCell::new(None),
+            document_layout: RefCell::new(None),
             font_catalog_ready: Cell::new(false),
             image_zoom: RefCell::new(Default::default()),
             image_camera: RefCell::new(Default::default()),
@@ -387,6 +487,7 @@ impl ViewerWindows {
                 image_motion::refresh_scale(&open);
                 pump_geometry(&open);
                 present_output(&open, &service, copy.as_ref());
+                flush_document_layout(&open);
                 image_motion::fallback(&open);
                 flush_position(&open);
             });
@@ -411,6 +512,17 @@ impl ViewerWindows {
 /// to physical pixels and clips at most half a pixel instead of stretching.
 fn physical_extent(logical: f32, scale: f32) -> u32 {
     (logical * scale).round().max(1.0) as u32
+}
+
+fn prepare_session(
+    session: &WindowSession,
+    opening_palette: &ViewerAppearance,
+) -> Result<appearance::PaletteGate, String> {
+    let palette = appearance::PaletteGate::opening(session, opening_palette);
+    if !session.send(ViewerInput::RetainedRaster(true)) {
+        return Err("Viewer input is unavailable.".into());
+    }
+    Ok(palette)
 }
 
 fn window_geometry(window: &ViewerWindow) -> ViewerGeometry {
@@ -462,6 +574,7 @@ fn apply_mode(open: &OpenWindow, mode: u16, image_mode: bool, reset_policy: bool
     let web_mode = mode == VIEWER_MODE_HTML;
     let web_changed = web_mode != window.get_web_mode();
     if web_changed || reset_policy {
+        window.set_web_policy_change_allowed(false);
         web_input::present_policy(open, Default::default());
     }
     if web_changed {
@@ -498,6 +611,7 @@ fn select_layout(open: &OpenWindow, token: u64, mode: u16, generation: u64) {
     open.raster_redraw.stop();
     open.image_camera.borrow_mut().suspend();
     open.image_zoom.borrow_mut().clear();
+    open.document_layout.borrow_mut().take();
     open.image_redraw.stop();
     open.text_position.borrow_mut().cancel();
     open.window
@@ -615,6 +729,93 @@ fn image_viewport(open: &OpenWindow) -> [f32; 2] {
     ]
 }
 
+fn change_document_layout(open: &OpenWindow, layout: DocumentLayout) {
+    if open.closed.get()
+        || open.layout.borrow().awaiting_frame
+        || !open.text_position.borrow().context_available()
+    {
+        return;
+    }
+    let Some(current) = open
+        .image_info
+        .borrow()
+        .as_ref()
+        .and_then(|info| info.document_layout)
+    else {
+        return;
+    };
+    let pending = *open.document_layout.borrow();
+    if pending.is_none() && current == layout {
+        return;
+    }
+    if !pending.is_some_and(|pending| pending.layout == layout) {
+        *open.document_layout.borrow_mut() = Some(DocumentLayoutIntent {
+            token: open.layout.borrow().token,
+            layout,
+            requested_frame: open.frame.get(),
+            submitted_frame: None,
+        });
+    }
+    flush_document_layout(open);
+}
+
+fn flush_document_layout(open: &OpenWindow) {
+    if open.closed.get()
+        || open.layout.borrow().awaiting_frame
+        || !open.text_position.borrow().context_available()
+    {
+        return;
+    }
+    let Some(mut pending) = *open.document_layout.borrow() else {
+        return;
+    };
+    if pending.token != open.layout.borrow().token
+        || open
+            .image_info
+            .borrow()
+            .as_ref()
+            .and_then(|info| info.document_layout)
+            .is_none()
+    {
+        open.document_layout.borrow_mut().take();
+        return;
+    }
+    let frame = open.frame.get();
+    if pending.submitted_frame == Some(frame) {
+        return;
+    }
+    if open.enqueue(ViewerInput::DocumentLayout {
+        frame,
+        layout: pending.layout,
+    }) {
+        let mut slot = open.document_layout.borrow_mut();
+        if *slot == Some(pending) {
+            pending.submitted_frame = Some(frame);
+            *slot = Some(pending);
+        }
+        open.image_zoom.borrow_mut().clear();
+    }
+}
+
+fn present_document_layout(open: &OpenWindow, frame: &ViewerFrame) {
+    let layout = frame.image.as_ref().and_then(|image| image.document_layout);
+    open.window.set_document_layout(match layout {
+        None => -1,
+        Some(DocumentLayout::Paged) => 0,
+        Some(DocumentLayout::Continuous) => 1,
+    });
+    let mut slot = open.document_layout.borrow_mut();
+    // LayoutSelected retires source/route authority. Frame generations may
+    // advance within the same document, so they are not pending-intent identity.
+    if slot.is_some_and(|pending| {
+        layout.is_none()
+            || pending.token != open.layout.borrow().token
+            || (layout == Some(pending.layout) && frame.revision > pending.requested_frame)
+    }) {
+        slot.take();
+    }
+}
+
 fn send_input(open: &OpenWindow, input: ViewerInput) -> bool {
     let preference = match &input {
         ViewerInput::Image { input, .. } => image_preference(open, input),
@@ -722,13 +923,18 @@ fn present_output(open: &OpenWindow, service: &Service, copy: &dyn Fn(String)) {
     pixel_delivery::receive(open, service, copy);
 }
 
+#[cfg(test)]
 fn present_outputs(
     open: &OpenWindow,
     service: &Service,
     copy: &dyn Fn(String),
     outputs: Vec<ViewerOutput>,
 ) {
-    let window = &open.window;
+    apply_output_controls(open, &outputs);
+    present_controlled_outputs(open, service, copy, outputs);
+}
+
+fn apply_output_controls(open: &OpenWindow, outputs: &[ViewerOutput]) {
     // A newly selected route fences every frame in this batch, including an old
     // frame prepared before its layout control reached the UI. Closed batches
     // cannot start another opening or acknowledge its canvas.
@@ -736,7 +942,8 @@ fn present_outputs(
         .iter()
         .any(|output| matches!(output, ViewerOutput::Closed))
     {
-        for output in &outputs {
+        open.palette.observe(outputs);
+        for output in outputs {
             if let ViewerOutput::LayoutSelected {
                 token,
                 mode,
@@ -747,19 +954,39 @@ fn present_outputs(
             }
         }
     }
+}
+
+fn accepts_frame(open: &OpenWindow, frame: &ViewerFrame) -> bool {
+    !open.closed.get()
+        && frame.revision > open.frame.get()
+        && frame.generation >= open.frame_generation.get()
+        && open.layout.borrow().accepts_frame(frame)
+        && open.palette.allows(frame)
+        && raster_rebase::allows(open, frame.raster_rebase)
+        && open.text_position.borrow().accepts_frame(
+            frame.generation,
+            frame.position_sequence,
+            [frame.position, frame.horizontal_position],
+        )
+}
+
+/// Controls have already been applied once, including before pixel-error handling.
+fn present_controlled_outputs(
+    open: &OpenWindow,
+    service: &Service,
+    copy: &dyn Fn(String),
+    outputs: Vec<ViewerOutput>,
+) {
+    let window = &open.window;
     for output in outputs {
         if open.closed.get() {
             service.retire(output);
             continue;
         }
         match &output {
-            ViewerOutput::LayoutSelected { .. } => {}
+            ViewerOutput::LayoutSelected { .. } | ViewerOutput::PaletteApplied { .. } => {}
             ViewerOutput::Frame(frame) => {
-                if frame.revision <= open.frame.get()
-                    || frame.generation < open.frame_generation.get()
-                    || !open.layout.borrow().accepts_frame(frame)
-                    || !raster_rebase::allows(open, frame.raster_rebase)
-                {
+                if !accepts_frame(open, frame) {
                     service.retire(output);
                     continue;
                 }
@@ -905,6 +1132,7 @@ fn present_outputs(
                     layout.generation_floor = layout.generation_floor.max(frame.generation);
                     layout.awaiting_frame = false;
                 }
+                present_document_layout(open, frame);
                 window.set_accessible_text(frame.accessible_text.as_ref().into());
                 window.set_position(frame.position as f32);
                 window.set_displayed_position(frame.position as f32);
@@ -986,6 +1214,7 @@ fn present_outputs(
                     open.frame_generation.set(*generation);
                     open.text_position.borrow_mut().changing_content();
                     open.image_zoom.borrow_mut().clear();
+                    open.document_layout.borrow_mut().take();
                     open.image_camera.borrow_mut().suspend();
                     open.image_redraw.stop();
                     raster_motion::cancel(open);
@@ -997,6 +1226,7 @@ fn present_outputs(
             ViewerOutput::WebState {
                 generation,
                 policy,
+                policy_change_allowed,
                 zoom,
             } => {
                 if *generation >= open.frame_generation.get()
@@ -1004,6 +1234,7 @@ fn present_outputs(
                     && !open.layout.borrow().awaiting_frame
                     && open.text_position.borrow().context_available()
                 {
+                    window.set_web_policy_change_allowed(*policy_change_allowed);
                     web_input::present_policy(open, *policy);
                     window.set_zoom_percent((zoom * 100.0) as f32);
                 }
@@ -1014,6 +1245,7 @@ fn present_outputs(
     }
     if !open.closed.get() {
         flush_layout_ack(open);
+        flush_document_layout(open);
         // A control-only delivery can overtake preparation of the first frame.
         // Do not report successful opening before any pixels were admitted.
         open.acknowledge_opening(open.session.mailbox.take_open_result());
@@ -1081,8 +1313,7 @@ fn bind(open: &Rc<OpenWindow>) {
         let Some(open) = weak.upgrade() else {
             return;
         };
-        // The two-way bound chooser already shows `index`; compare with the mode
-        // in force, and restore it when the request cannot be delivered.
+        // Present accepted choices explicitly; a refused request restores the mode in force.
         let current = open.mode_index.get();
         if index == current {
             return;
@@ -1094,6 +1325,7 @@ fn bind(open: &Rc<OpenWindow>) {
             && open.enqueue(ViewerInput::Mode(mode))
         {
             open.mode_index.set(index);
+            open.window.set_mode_index(index);
             open.text_position.borrow_mut().changing_content();
             open.window
                 .set_position_context(format!("mode:{index}").into());
@@ -1149,6 +1381,12 @@ fn bind(open: &Rc<OpenWindow>) {
         action.is_some_and(|action| dispatch_keyboard_shortcut(&open, &action))
     });
     bind_pointer(open);
+    let weak = Rc::downgrade(open);
+    open.window.on_find(move || {
+        if let Some(open) = weak.upgrade() {
+            dispatch_key(&open, "viewer.find");
+        }
+    });
     let weak = Rc::downgrade(open);
     open.window.on_search(move |backwards| {
         if let Some(open) = weak.upgrade()
@@ -1456,6 +1694,17 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
 
 fn bind_image(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
+    open.window.on_change_document_layout(move |layout| {
+        if let Some(open) = weak.upgrade() {
+            let layout = match layout {
+                0 => DocumentLayout::Paged,
+                1 => DocumentLayout::Continuous,
+                _ => return,
+            };
+            change_document_layout(&open, layout);
+        }
+    });
+    let weak = Rc::downgrade(open);
     open.window.on_document_turn(move |delta| {
         if let Some(open) = weak.upgrade() {
             dispatch_key(
@@ -1538,6 +1787,7 @@ fn close(open: &OpenWindow) {
         open.session.close();
         open.timer.stop();
         open.image_zoom.borrow_mut().clear();
+        open.document_layout.borrow_mut().take();
         open.image_redraw.stop();
         open.raster_redraw.stop();
         let _ = open.window.hide();

@@ -51,10 +51,15 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
     key(&window, "echo ");
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            windows_shell: WindowsShell::Cmd,
-            ..Default::default()
-        }))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    windows_shell: WindowsShell::Cmd,
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     midnight_ui::refresh(&window, &presenter.borrow());
     assert_eq!(
         window.get_terminal_index(),

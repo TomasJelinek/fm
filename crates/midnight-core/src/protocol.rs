@@ -40,7 +40,7 @@ pub struct SelectedFiles {
     pub fallback: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Command {
     SetCommandIconView {
         generation: u64,
@@ -134,6 +134,10 @@ pub enum Command {
         sort: SortSpec,
     },
     ListViewerPlugins,
+    /// Metadata-only effective image coverage for the established startup-disabled snapshot.
+    ListComparatorCapabilities {
+        disabled_plugins: Arc<[String]>,
+    },
     LoadLocale,
     ManageNetworkConnections {
         disconnect: bool,
@@ -243,6 +247,8 @@ pub enum Command {
         location: crate::SystemLocation,
     },
     LoadPreferences,
+    /// Already armed backend ownership; all sender/permit paths must use guarded admission.
+    LaunchExternalComparison(crate::ExternalCompareRequest),
     ListFontFamilies,
     ResolveDefaultEditor,
     EditCapturedFile {
@@ -455,6 +461,7 @@ pub enum Event {
     },
     ArchiveAvailability(Vec<crate::ArchiveFormat>),
     ViewerPluginsListed(Result<Vec<crate::ViewerPluginInfo>, String>),
+    ComparatorCapabilitiesListed(crate::ComparatorCapabilities),
     FilesystemPluginsListed(Result<Vec<crate::FilesystemPluginInfo>, String>),
     ThumbnailerPluginsListed(Result<Vec<crate::ThumbnailerPluginInfo>, String>),
     DirectoriesCompared {
@@ -525,10 +532,10 @@ pub enum Event {
     },
     FontFamiliesLoaded(Result<Vec<String>, FsError>),
     EditorDefaultResolved(Result<crate::EditorCommand, FsError>),
-    PreferencesLoaded(Result<Box<UserPreferences>, FsError>),
+    PreferencesLoaded(Result<Box<crate::AcceptedPreferences>, crate::PreferencesApplyError>),
     PreferencesSaved {
         revision: PreferencesRevision,
-        result: Result<(), FsError>,
+        result: Result<crate::FileComparatorSnapshot, crate::PreferencesApplyError>,
     },
     DirectoryChanged {
         pane: PaneId,

@@ -1,7 +1,7 @@
 //! Opt-in qualification against an X11 window manager. This owns one clearly titled
 //! software-rendered window; preferences and captured saves remain entirely in memory.
 use super::*;
-use midnight_core::{Event, UserPreferences};
+use midnight_core::{AcceptedPreferences, Event, UserPreferences};
 use slint::winit_030::winit::{
     platform::x11::EventLoopBuilderExtX11,
     raw_window_handle::{HasWindowHandle, RawWindowHandle},
@@ -113,14 +113,17 @@ fn restored_x11_position_survives_first_map_and_normal_capture_has_no_drift() {
                             height: 460,
                         };
                         presenter.apply_with_sender(
-                            Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                                window_geometry: Some(WindowGeometry {
-                                    normal: bounds,
-                                    maximized: false,
-                                    fullscreen: false,
-                                    monitor: Some(display.identity.clone()),
-                                }),
-                                ..Default::default()
+                            Event::PreferencesLoaded(Ok(Box::new(AcceptedPreferences {
+                                preferences: UserPreferences {
+                                    window_geometry: Some(WindowGeometry {
+                                        normal: bounds,
+                                        maximized: false,
+                                        fullscreen: false,
+                                        monitor: Some(display.identity.clone()),
+                                    }),
+                                    ..Default::default()
+                                },
+                                comparators: Default::default(),
                             }))),
                             &|_| true,
                         );

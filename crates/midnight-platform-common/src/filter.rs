@@ -5,7 +5,7 @@ use midnight_core::{
 use regex::{Regex, RegexBuilder};
 use std::ffi::OsStr;
 
-const REGEX_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const REGEX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MASKS: usize = 64;
 
 pub struct CompiledFilter {
@@ -15,39 +15,7 @@ pub struct CompiledFilter {
 
 impl CompiledFilter {
     pub fn new(filter: &PanelFilter) -> Result<Self, String> {
-        filter.validate_bounds().map_err(str::to_owned)?;
-        let compile = |pattern: &str| {
-            RegexBuilder::new(pattern)
-                .case_insensitive(!filter.case_sensitive)
-                .dot_matches_new_line(filter.mode == FilterMode::Masks)
-                .size_limit(REGEX_BYTES)
-                .dfa_size_limit(REGEX_BYTES)
-                .nest_limit(64)
-                .build()
-                .map_err(|error| error.to_string())
-        };
-        match filter.mode {
-            // Rejected even when disabled: a name filter can never evaluate metadata.
-            FilterMode::Expression => Err(
-                "Metadata expressions require entry metadata; filename filters support Masks or Regex."
-                    .into(),
-            ),
-            _ if !filter.enabled => Ok(Self {
-                include: None,
-                exclude: None,
-            }),
-            FilterMode::Regex => Ok(Self {
-                include: Some(compile(&filter.expression)?),
-                exclude: None,
-            }),
-            FilterMode::Masks => {
-                let (include, exclude) = masks(&filter.expression)?;
-                Ok(Self {
-                    include: Some(compile(&include)?),
-                    exclude: exclude.as_deref().map(compile).transpose()?,
-                })
-            }
-        }
+        FilterPlan::new(filter)?.compile(REGEX_BYTES)
     }
 
     /// Invalid Unicode names remain visible. Their raw identity is never replaced.
@@ -62,6 +30,71 @@ impl CompiledFilter {
                 .exclude
                 .as_ref()
                 .is_some_and(|regex| regex.is_match(name))
+    }
+}
+
+/// Bounded pattern preparation shared by ordinary filters and comparator budget planning.
+/// Preparation parses the existing mask grammar without constructing any regex engine.
+pub(crate) struct FilterPlan {
+    include: Option<String>,
+    exclude: Option<String>,
+    case_sensitive: bool,
+    dot_matches_new_line: bool,
+}
+
+impl FilterPlan {
+    pub(crate) fn new(filter: &PanelFilter) -> Result<Self, String> {
+        filter.validate_bounds().map_err(str::to_owned)?;
+        if filter.mode == FilterMode::Expression {
+            return Err("Metadata expressions require entry metadata; filename filters support Masks or Regex.".into());
+        }
+        if !filter.enabled {
+            return Ok(Self {
+                include: None,
+                exclude: None,
+                case_sensitive: filter.case_sensitive,
+                dot_matches_new_line: filter.mode == FilterMode::Masks,
+            });
+        }
+        let (include, exclude) = match filter.mode {
+            FilterMode::Regex => (filter.expression.clone(), None),
+            FilterMode::Masks => masks(&filter.expression)?,
+            FilterMode::Expression => {
+                return Err("Metadata expressions require entry metadata.".into());
+            }
+        };
+        Ok(Self {
+            include: Some(include),
+            exclude,
+            case_sensitive: filter.case_sensitive,
+            dot_matches_new_line: filter.mode == FilterMode::Masks,
+        })
+    }
+
+    pub(crate) fn engine_count(&self) -> usize {
+        usize::from(self.include.is_some()) + usize::from(self.exclude.is_some())
+    }
+
+    /// Each retained engine receives this program ceiling AND this DFA ceiling.
+    /// The caller accounts for both before constructing engines. Ordinary filters keep 2 MiB.
+    pub(crate) fn compile(self, engine_bytes: usize) -> Result<CompiledFilter, String> {
+        if engine_bytes == 0 || engine_bytes > REGEX_BYTES {
+            return Err("Filename matcher engine budget must be between 1 byte and 2 MiB.".into());
+        }
+        let compile = |pattern: &str| {
+            RegexBuilder::new(pattern)
+                .case_insensitive(!self.case_sensitive)
+                .dot_matches_new_line(self.dot_matches_new_line)
+                .size_limit(engine_bytes)
+                .dfa_size_limit(engine_bytes)
+                .nest_limit(64)
+                .build()
+                .map_err(|error| error.to_string())
+        };
+        Ok(CompiledFilter {
+            include: self.include.as_deref().map(compile).transpose()?,
+            exclude: self.exclude.as_deref().map(compile).transpose()?,
+        })
     }
 }
 

@@ -216,8 +216,9 @@ impl Drop for Session {
 /// unwinds), so the worker thread ends by itself; the runtime does not wait for it.
 struct Harness {
     controller: Option<Controller>,
-    tasks: JoinSet<()>,
+    tasks: ResidentTasks,
     events: mpsc::Receiver<Event>,
+    _owner: midnight_work_budget::resident::Owner,
     runtime: tokio::runtime::Runtime,
 }
 impl Harness {
@@ -227,7 +228,7 @@ impl Harness {
             .build()
             .unwrap();
         let (sender, events) = mpsc::channel(4);
-        let controller = Controller::testing(
+        let (owner, controller) = Controller::testing(
             Some(Arc::new(Owner(shared.clone()))),
             Outbox {
                 sender,
@@ -237,8 +238,9 @@ impl Harness {
         Self {
             runtime,
             controller: Some(controller),
-            tasks: JoinSet::new(),
+            tasks: ResidentTasks::default(),
             events,
+            _owner: owner,
         }
     }
     /// Submit a copy; returns after the controller queued it and called the waker.

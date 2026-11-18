@@ -58,15 +58,26 @@ impl Drop for Source {
             .push(std::thread::current().id());
     }
 }
-fn setup() -> (Controller, mpsc::Receiver<Event>, JoinSet<()>) {
+fn setup() -> (
+    midnight_work_budget::resident::Owner,
+    Controller,
+    mpsc::Receiver<Event>,
+    ResidentTasks,
+) {
+    let (owner, resident) =
+        midnight_work_budget::resident::Owner::start("reports-test", WORKERS).unwrap();
     let (sender, receiver) = mpsc::channel(32);
     (
-        Controller::new(Outbox {
-            sender,
-            wakeup: Arc::new(|| {}),
-        }),
+        owner,
+        Controller::new(
+            resident,
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+        ),
         receiver,
-        JoinSet::new(),
+        ResidentTasks::default(),
     )
 }
 async fn entered(probe: &Probe, expected: usize) {
@@ -78,7 +89,7 @@ async fn entered(probe: &Probe, expected: usize) {
     .await
     .unwrap();
 }
-async fn stop(controller: &mut Controller, tasks: &mut JoinSet<()>) {
+async fn stop(controller: &mut Controller, tasks: &mut ResidentTasks) {
     controller.shutdown();
     tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(result) = tasks.join_next().await {
@@ -94,7 +105,7 @@ async fn preview_reads_and_retires_captured_sources_off_the_caller_and_correlate
     let caller = std::thread::current().id();
     let probe = Arc::new(Probe::default());
     probe.release();
-    let (mut controller, mut events, mut tasks) = setup();
+    let (_owner, mut controller, mut events, mut tasks) = setup();
     controller
         .preview(
             DesktopRequestId(57),
@@ -133,7 +144,7 @@ async fn preview_reads_and_retires_captured_sources_off_the_caller_and_correlate
 async fn cancelled_late_read_is_not_published() {
     let probe = Arc::new(Probe::default());
     let _release = ReleaseOnDrop(probe.clone());
-    let (mut controller, mut events, mut tasks) = setup();
+    let (_owner, mut controller, mut events, mut tasks) = setup();
     let cancel = Cancellation::default();
     controller
         .preview(
@@ -165,7 +176,7 @@ async fn preview_queue_uses_existing_two_workers_and_eight_pending_budget() {
     let caller = std::thread::current().id();
     let probe = Arc::new(Probe::default());
     let _release = ReleaseOnDrop(probe.clone());
-    let (mut controller, mut events, mut tasks) = setup();
+    let (_owner, mut controller, mut events, mut tasks) = setup();
     for id in 0..WORKERS {
         controller
             .preview(
@@ -218,7 +229,7 @@ impl GeneratedTextSource for Panicking {
 
 #[tokio::test]
 async fn a_source_panic_becomes_a_correlated_error_without_losing_the_pool() {
-    let (mut controller, mut events, mut tasks) = setup();
+    let (_owner, mut controller, mut events, mut tasks) = setup();
     controller
         .preview(
             DesktopRequestId(91),

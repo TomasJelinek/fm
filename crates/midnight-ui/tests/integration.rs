@@ -27,6 +27,8 @@ mod commander_dialogs;
 mod commander_edges;
 mod compact_controls;
 mod compact_feedback;
+mod comparator_options;
+mod comparator_transaction;
 mod comparison_toolbar;
 mod copy_dialog;
 mod copy_errors;

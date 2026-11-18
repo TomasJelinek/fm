@@ -305,8 +305,8 @@ async fn refused_native_drop_reaches_the_ui_and_keeps_the_native_session() {
     let (pumps, mut pumped) = watch::channel(0u64);
     let (sender, mut events) = mpsc::channel(16);
     let mut tasks = JoinSet::new();
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_resident_owner, mut controller) = Controller::testing(
         Some(Arc::new(RefusesOneDrop(Arc::new(pumps)))),
         None,
         fixture.sink.snapshots.clone(),
@@ -320,7 +320,7 @@ async fn refused_native_drop_reaches_the_ui_and_keeps_the_native_session() {
     let mut host = fixture.sink.host.clone();
     host.native = NativeDragWindow::Windows { hwnd: 1 };
     controller
-        .attach(host, fixture.sink.targets.clone(), &mut tasks)
+        .attach(host, fixture.sink.targets.clone(), &mut resident_tasks)
         .await;
     let reported = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -361,6 +361,7 @@ async fn refused_native_drop_reaches_the_ui_and_keeps_the_native_session() {
     let later = events_before_left_hover(&mut events).await;
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
+    while resident_tasks.join_next().await.is_some() {}
     assert!(
         matches!(kept, Ok(Ok(()))),
         "the native session must stay open after a refused drop"

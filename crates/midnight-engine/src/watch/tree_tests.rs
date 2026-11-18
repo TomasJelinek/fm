@@ -77,7 +77,7 @@ async fn same_navigation_success_then_exact_commit_quiets_watch() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events, native) =
+    let (_owner, controller, mut tasks, mut events, native) =
         batch_controller(files.clone(), Duration::from_millis(70));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
@@ -117,7 +117,7 @@ async fn a_failed_batch_reports_polling_only_until_a_batch_registers() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events, native) =
+    let (_owner, controller, mut tasks, mut events, native) =
         batch_controller(files.clone(), Duration::from_millis(60));
     native.fail.store(true, Ordering::SeqCst);
     let handle = controller.handle();
@@ -177,7 +177,7 @@ async fn persistently_unreadable_entry_metadata_stays_quiet_from_the_first_probe
     // later stat keeps failing in exactly the same way.
     files.metadata_failed.store(true, Ordering::SeqCst);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));
     let probes = files.probes.load(Ordering::SeqCst);
     controller.handle().set_tree_scope(scope);
@@ -202,7 +202,7 @@ async fn file_only_poll_between_sweep_and_commit_survives() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(70));
     let handle = controller.handle();
     let probes = files.probes.load(Ordering::SeqCst);
@@ -233,7 +233,7 @@ async fn late_flat_ack_cannot_replace_adopted_scope() {
     let (_session, scope) = scope(&files, &path);
     // Changed after the accepted listing: only the adopted tree scope reports it.
     files.put(&path, 8);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(60));
     controller.handle().set_tree_scope(scope);
     controller.set_visible(files.visible(PaneId::Left, 4, &path));
@@ -309,11 +309,19 @@ impl Batches {
 fn batch_controller(
     files: Arc<Files>,
     poll: Duration,
-) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>, Arc<Batches>) {
+) -> (
+    midnight_work_budget::resident::Owner,
+    Controller,
+    JoinSet<()>,
+    mpsc::Receiver<Event>,
+    Arc<Batches>,
+) {
     let native = Arc::new(Batches::default());
     let (sender, events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
+    let (owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files,
@@ -325,7 +333,7 @@ fn batch_controller(
         &mut tasks,
         timing(poll),
     );
-    (controller, tasks, events, native)
+    (owner, controller, tasks, events, native)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -339,7 +347,7 @@ async fn callback_between_admission_and_commit_survives_ack_and_unchanged_commit
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events, native) =
+    let (_owner, controller, mut tasks, mut events, native) =
         batch_controller(files, Duration::from_secs(3));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
@@ -381,7 +389,8 @@ async fn failed_scope_preserves_commit_identity_without_acknowledging_ticket() {
     let (_session, scope) = scope(&files, &path);
     // Changed after the accepted listing, so the first probe dirties the scope.
     files.put(&path, 8);
-    let (controller, mut tasks, mut events) = controller(files, None, Duration::from_millis(60));
+    let (_owner, controller, mut tasks, mut events) =
+        controller(files, None, Duration::from_millis(60));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
     let stamp = tree_changed(&mut events).await;
@@ -455,7 +464,9 @@ async fn stable_slots_cap_one_batch_and_poll_all_remaining() {
     let native = Arc::new(Batches::default());
     let (sender, mut events) = mpsc::channel(16);
     let mut tasks = JoinSet::new();
+    let (_owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
@@ -494,7 +505,7 @@ async fn folder_only_accepted_branch_with_files_is_quiet_after_success() {
     let branch = scope.targets[1].path.clone();
     files.put(branch.to_str().unwrap(), 12);
     let before = files.probes.load(Ordering::SeqCst);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(60));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
@@ -532,7 +543,7 @@ async fn blocked_probe_is_logically_cancelled_but_keeps_provider_scope_until_ret
     let stamp = scope.stamp;
     let retained = Arc::downgrade(&scope.targets[0]);
     drop(session);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(50));
     let handle = controller.handle();
     handle.set_tree_scope(scope);
@@ -570,7 +581,7 @@ async fn failed_sweep_and_ignored_hint_retry_at_poll_cadence() {
     // Changed after the accepted listing, so the first probe dirties the scope.
     files.put(&path, 8);
     let poll = Duration::from_millis(120);
-    let (controller, mut tasks, mut events) = controller(files, None, poll);
+    let (_owner, controller, mut tasks, mut events) = controller(files, None, poll);
     let handle = controller.handle();
     handle.set_tree_scope(scope);
     let stamp = tree_changed(&mut events).await;
@@ -618,7 +629,7 @@ async fn a_retry_driven_hint_is_not_repeated_by_its_debounce() {
     // Changed after the accepted listing, so the first probe dirties the scope.
     files.put(path.to_str().unwrap(), 8);
     let poll = Duration::from_millis(200);
-    let (controller, mut tasks, mut events) = controller(files.clone(), None, poll);
+    let (_owner, controller, mut tasks, mut events) = controller(files.clone(), None, poll);
     let handle = controller.handle();
     handle.set_tree_scope(scope);
     let installed = Instant::now();
@@ -649,7 +660,7 @@ async fn a_change_after_a_quiet_poll_interval_waits_for_its_debounce() {
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
     let poll = Duration::from_millis(100);
-    let (controller, mut tasks, mut events, native) = batch_controller(files.clone(), poll);
+    let (_owner, controller, mut tasks, mut events, native) = batch_controller(files.clone(), poll);
     let handle = controller.handle();
     handle.set_tree_scope(scope);
     let installed = Instant::now();
@@ -680,7 +691,7 @@ async fn fatal_session_retirement_suppresses_callbacks_and_delayed_flat_ack() {
     files.put(&path, 7);
     let (session, scope) = scope(&files, &path);
     let retained = Arc::downgrade(&scope.targets[0]);
-    let (controller, mut tasks, mut events, native) =
+    let (_owner, controller, mut tasks, mut events, native) =
         batch_controller(files.clone(), Duration::from_millis(60));
     let handle = controller.handle();
     handle.set_tree_scope(scope);
@@ -719,7 +730,7 @@ async fn failed_probe_retries_after_a_successful_listing_ack_without_losing_hist
     // The directory itself becomes unreadable. (An unreadable entry inside a
     // readable directory is not a probe failure; the listing keeps that row.)
     files.listing_failed.store(true, Ordering::SeqCst);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(80));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());

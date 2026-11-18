@@ -87,7 +87,7 @@ impl StoredFilenameColor {
     }
 }
 
-// Exact historical preset; customized, reordered and cleared lists stay untouched.
+// Exact historical five-rule preset; only this complete list is replaced.
 fn legacy_defaults() -> Vec<FilenameColorRule> {
     [
         (
@@ -135,19 +135,72 @@ pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColo
     bright_defaults.remove(2);
     bright_defaults[2].expression = "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub".into();
     let mut slate_defaults = bright_defaults.clone();
-    // Compare the complete historical list, preserving every custom rule and order.
+    // Retain the existing complete-preset migration, including earlier palette changes.
     for index in [2, 9] {
         slate_defaults[index].style.foreground = Some(RgbColor(100, 116, 139));
     }
     let mut amber_defaults = slate_defaults.clone();
     amber_defaults[7].style.foreground = Some(RgbColor(217, 119, 6));
-    if rules == legacy_defaults()
+    let mut migrated = if rules == legacy_defaults()
         || rules == bright_defaults
         || rules == slate_defaults
         || rules == amber_defaults
     {
         midnight_core::default_filename_colors()
     } else {
-        rules
+        split_unchanged_document_rules(rules)
+    };
+    // Promote only exact historical DOC/TEXT signatures, including disabled rules.
+    // This adds no rows, so it also applies when the PDF split has no free slot.
+    for rule in &mut migrated {
+        if rule.mode == FilterMode::Masks
+            && matches!(
+                rule.expression.as_str(),
+                "*.doc;*.docx;*.odt;*.rtf;*.epub"
+                    | "*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*"
+            )
+            && !rule.case_sensitive
+            && rule.target == FilenameColorTarget::Files
+            && rule.style.background.is_none()
+            && rule.style.foreground == Some(RgbColor(100, 116, 139))
+        {
+            rule.style.foreground = Some(RgbColor(196, 207, 224));
+        }
     }
+    migrated
+}
+
+fn split_unchanged_document_rules(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
+    let mut available = midnight_core::MAX_FILENAME_COLOR_RULES.saturating_sub(rules.len());
+    if available == 0 {
+        // Never truncate a custom rule or turn valid persisted preferences into an error.
+        return rules;
+    }
+    let mut migrated = Vec::with_capacity(rules.len() + 1);
+    for mut rule in rules {
+        if available > 0 && unchanged_document_rule(&rule) {
+            let mut pdf = rule.clone();
+            pdf.expression = "*.pdf".into();
+            pdf.style.foreground = Some(RgbColor(239, 90, 90));
+            migrated.push(pdf);
+            rule.expression = "*.doc;*.docx;*.odt;*.rtf;*.epub".into();
+            available -= 1;
+        }
+        migrated.push(rule);
+    }
+    migrated
+}
+
+fn unchanged_document_rule(rule: &FilenameColorRule) -> bool {
+    // Match only the historical combined category, never a standalone gray PDF rule.
+    // Preserve enabled on both split rules so disabled categories remain disabled.
+    rule.mode == FilterMode::Masks
+        && rule.expression == "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub"
+        && !rule.case_sensitive
+        && rule.target == FilenameColorTarget::Files
+        && rule.style.background.is_none()
+        && matches!(
+            rule.style.foreground,
+            Some(RgbColor(100, 116, 139) | RgbColor(196, 207, 224))
+        )
 }

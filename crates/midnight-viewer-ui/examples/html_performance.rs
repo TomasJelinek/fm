@@ -1,4 +1,7 @@
 //! Native HTML wheel measurement against an explicit, script-free diagnostic document.
+#[path = "support/resident.rs"]
+mod resident;
+
 #[path = "performance_probe/native_parent.rs"]
 mod native_parent;
 #[path = "performance_probe/render_observer.rs"]
@@ -99,7 +102,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let service = midnight_viewer_engine::Service::new(runtime.handle().clone());
+    let runtime = resident::ResidentRuntime::new(runtime)?;
+    let service = midnight_viewer_engine::Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
     let manager = Rc::new(ViewerWindows::new(service));
     let state = Rc::new(RefCell::new(State {
         start: Instant::now(),

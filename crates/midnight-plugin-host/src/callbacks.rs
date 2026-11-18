@@ -348,7 +348,7 @@ mod tests {
             let shared = shared();
             lock(&shared.state)
                 .requests
-                .insert(1, crate::session::RequestState::default());
+                .insert(1, crate::session::RequestState::new(abi::REQUEST_VIEWPORT));
             let (bridge, receivers) = Bridge::new(shared.clone());
             let (_registration, api) = bridge.register().unwrap();
             let work = abi::Work {
@@ -404,7 +404,7 @@ mod tests {
         let shared = shared();
         lock(&shared.state)
             .requests
-            .insert(1, crate::session::RequestState::default());
+            .insert(1, crate::session::RequestState::new(abi::REQUEST_VIEWPORT));
         let (bridge, receivers) = Bridge::new(shared.clone());
         let (_registration, api) = bridge.register().unwrap();
         let work = abi::Work {

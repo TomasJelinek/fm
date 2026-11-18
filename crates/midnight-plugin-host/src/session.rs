@@ -7,7 +7,7 @@ use crate::{
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, SyncSender},
     },
@@ -22,6 +22,24 @@ pub(crate) const MAX_REQUESTS: usize = 32;
 pub(crate) const MAX_EVENTS: usize = 64;
 pub(crate) const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
 
+/// Local admission failures are distinct from native request-scoped Failed
+/// events. Only Capacity is temporary; callers never classify error prose.
+#[derive(Clone, Debug)]
+pub enum AdmissionError {
+    Capacity,
+    Closing,
+    Invalid(Error),
+}
+impl AdmissionError {
+    fn into_error(self) -> Error {
+        match self {
+            Self::Capacity => Error("Viewer request queue full".into()),
+            Self::Closing => Error("Viewer is closing".into()),
+            Self::Invalid(error) => error,
+        }
+    }
+}
+
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
@@ -30,17 +48,79 @@ pub(crate) struct Command {
     pub kind: u32,
     pub payload: Vec<u8>,
 }
-/// Host view of one admitted request. Only the dispatcher submits commands and
-/// delivers native cancellation: once, and only for a request the plugin has seen.
-#[derive(Clone, Copy, Debug, Default)]
+
+/// A single application-wide background request leaves command/work capacity
+/// available for foreground viewport delivery. Cancellation retains ownership
+/// until the plugin actually reports its terminal or the dispatcher shuts down.
+struct BackgroundPermit(Arc<AtomicBool>);
+impl BackgroundPermit {
+    fn acquire() -> Result<Self, AdmissionError> {
+        static BUSY: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+        Self::reserve(
+            BUSY.get_or_init(|| Arc::new(AtomicBool::new(false)))
+                .clone(),
+        )
+    }
+
+    fn reserve(busy: Arc<AtomicBool>) -> Result<Self, AdmissionError> {
+        busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| AdmissionError::Capacity)?;
+        Ok(Self(busy))
+    }
+}
+impl Drop for BackgroundPermit {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+pub(crate) struct Preparation {
+    pub request: messages::PrepareSource,
+    pub result_seen: bool,
+}
+
 pub(crate) struct RequestState {
+    pub kind: u32,
     pub cancelled: bool,
     pub submitted: bool,
     pub cancel_delivered: bool,
+    pub accepted: bool,
+    pub preparation: Option<Preparation>,
+    _background: Option<BackgroundPermit>,
 }
+impl Default for RequestState {
+    fn default() -> Self {
+        Self::new(abi::REQUEST_VIEWPORT)
+    }
+}
+impl RequestState {
+    pub fn new(kind: u32) -> Self {
+        Self {
+            kind,
+            cancelled: false,
+            submitted: false,
+            cancel_delivered: false,
+            accepted: false,
+            preparation: None,
+            _background: None,
+        }
+    }
+
+    pub fn preparation(request: messages::PrepareSource) -> Self {
+        Self {
+            preparation: Some(Preparation {
+                request,
+                result_seen: false,
+            }),
+            ..Self::new(abi::REQUEST_PREPARE_SOURCE)
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct State {
     pub requests: HashMap<u64, RequestState>,
+    pub opened: bool,
     pub events: VecDeque<(HostEvent, usize)>,
     pub bytes: usize,
     /// Reserved slot for the session-fatal failure (`HostEvent::fatal`). The
@@ -117,7 +197,7 @@ impl Session {
         .map_err(|_| Error("Invalid open request".into()))?;
         lock(&shared.state)
             .requests
-            .insert(OPEN_REQUEST_ID, RequestState::default());
+            .insert(OPEN_REQUEST_ID, RequestState::new(abi::REQUEST_OPEN));
         send.try_send(Command {
             id: OPEN_REQUEST_ID,
             kind: abi::REQUEST_OPEN,
@@ -131,9 +211,10 @@ impl Session {
                 {
                     let _permit = permit;
                     crate::dispatch::run(loaded, reader, file, worker_shared.clone(), receive);
+                    // Quiescent native destruction completed before releasing background admission.
+                    lock(&worker_shared.state).requests.clear();
                 }
-                // The quota is free before anyone can observe the end, so a consumer that
-                // waited for it can open its next session at once.
+                // Release the session quota before notifying consumers that it ended.
                 worker_shared.ended();
             })?;
         Ok(Self {
@@ -143,38 +224,88 @@ impl Session {
         })
     }
     pub fn viewport(&self, viewport: messages::Viewport) -> Result<u64, Error> {
-        self.submit(abi::REQUEST_VIEWPORT, &viewport)
+        self.try_viewport(viewport)
+            .map_err(AdmissionError::into_error)
+    }
+    /// Typed local admission for a foreground or internal refresh request.
+    pub fn try_viewport(&self, viewport: messages::Viewport) -> Result<u64, AdmissionError> {
+        self.submit(abi::REQUEST_VIEWPORT, &viewport, None)
     }
     pub fn search(&self, search: messages::Search) -> Result<u64, Error> {
-        self.submit(abi::REQUEST_SEARCH, &search)
+        self.submit(abi::REQUEST_SEARCH, &search, None)
+            .map_err(AdmissionError::into_error)
     }
     /// Optional independent lookup. Unsupported plugins report a request-scoped
     /// Failed event with code UNSUPPORTED; ordinary viewing remains available.
     pub fn locate(&self, locate: messages::Locate) -> Result<u64, Error> {
-        self.submit(abi::REQUEST_LOCATE, &locate)
+        self.try_locate(locate).map_err(AdmissionError::into_error)
     }
-    fn submit<T: codec::Model>(&self, kind: u32, value: &T) -> Result<u64, Error> {
-        let payload = codec::encode(value)
-            .map_err(|_| Error("Invalid or oversized viewer request".into()))?;
+    /// Typed admission into the shared Locate/preparation background capacity.
+    pub fn try_locate(&self, locate: messages::Locate) -> Result<u64, AdmissionError> {
+        self.submit(abi::REQUEST_LOCATE, &locate, None)
+    }
+    /// Prepare exact syntax state for a later matching foreground viewport.
+    /// The typed result remains provisional until the matching Completed event.
+    /// Only an opened Source session with the captured revision is eligible;
+    /// older plugins can fail this optional request with UNSUPPORTED.
+    pub fn prepare_source(&self, preparation: messages::PrepareSource) -> Result<u64, Error> {
+        self.try_prepare_source(preparation)
+            .map_err(AdmissionError::into_error)
+    }
+    /// Typed local admission; native rejection codes arrive unchanged in Failed.
+    pub fn try_prepare_source(
+        &self,
+        preparation: messages::PrepareSource,
+    ) -> Result<u64, AdmissionError> {
+        self.submit(
+            abi::REQUEST_PREPARE_SOURCE,
+            &preparation,
+            Some(preparation.clone()),
+        )
+    }
+
+    fn submit<T: codec::Model>(
+        &self,
+        kind: u32,
+        value: &T,
+        preparation: Option<messages::PrepareSource>,
+    ) -> Result<u64, AdmissionError> {
+        let payload = codec::encode(value).map_err(|_| {
+            AdmissionError::Invalid(Error("Invalid or oversized viewer request".into()))
+        })?;
         let id = self
             .ids
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .map_err(|_| Error("Request IDs exhausted".into()))?;
+            .map_err(|_| AdmissionError::Invalid(Error("Request IDs exhausted".into())))?;
         let mut state = lock(&self.shared.state);
         if self.shared.closing.load(Ordering::Acquire) {
-            return Err(Error("Viewer is closing".into()));
+            return Err(AdmissionError::Closing);
         }
         if state.requests.len() >= MAX_REQUESTS {
-            return Err(Error("Viewer request queue full".into()));
+            return Err(AdmissionError::Capacity);
         }
-        state.requests.insert(id, RequestState::default());
-        if self
-            .commands
-            .try_send(Command { id, kind, payload })
-            .is_err()
+        if let Some(preparation) = &preparation
+            && (!state.opened
+                || self.shared.mode != crate::api::viewer::MODE_SOURCE
+                || preparation.revision != self.shared.revision
+                || preparation.viewport.source_anchor > self.shared.length)
         {
+            return Err(AdmissionError::Invalid(Error(
+                "Preparation does not match the opened source".into(),
+            )));
+        }
+        let mut request =
+            preparation.map_or_else(|| RequestState::new(kind), RequestState::preparation);
+        if matches!(kind, abi::REQUEST_LOCATE | abi::REQUEST_PREPARE_SOURCE) {
+            request._background = Some(BackgroundPermit::acquire()?);
+        }
+        state.requests.insert(id, request);
+        if let Err(error) = self.commands.try_send(Command { id, kind, payload }) {
             state.requests.remove(&id);
-            return Err(Error("Viewer request queue full".into()));
+            return Err(match error {
+                mpsc::TrySendError::Full(_) => AdmissionError::Capacity,
+                mpsc::TrySendError::Disconnected(_) => AdmissionError::Closing,
+            });
         }
         drop(state);
         self.shared.dispatcher.notify();
@@ -185,6 +316,11 @@ impl Session {
         let mut state = lock(&self.shared.state);
         if let Some(request) = state.requests.get_mut(&id) {
             request.cancelled = true;
+        }
+        for (event, _) in &mut state.events {
+            if event.request_id == id && matches!(event.kind, EventKind::Completed) {
+                event.kind = EventKind::Cancelled;
+            }
         }
         let mut removed = 0;
         state.events.retain(|(event, bytes)| {
@@ -288,7 +424,14 @@ impl Shared {
             message.truncate(end);
         }
         let mut state = lock(&self.state);
-        state.requests.remove(&id);
+        // Background admission stays owned until a native terminal or quiescent shutdown.
+        if state
+            .requests
+            .get(&id)
+            .is_none_or(|request| request._background.is_none())
+        {
+            state.requests.remove(&id);
+        }
         let first = !std::mem::replace(&mut state.failed, true);
         if first {
             state.fatal = Some(HostEvent {
@@ -331,12 +474,24 @@ impl Shared {
             8192,
         );
     }
-    pub fn push(&self, event: HostEvent, bytes: usize) {
+    pub fn push(&self, mut event: HostEvent, bytes: usize) {
         let terminal = matches!(
             event.kind,
             EventKind::Completed | EventKind::Cancelled | EventKind::Failed(_)
         );
         let mut state = lock(&self.state);
+        if state
+            .requests
+            .get(&event.request_id)
+            .is_some_and(|request| request.cancelled)
+        {
+            if !terminal {
+                return;
+            }
+            if matches!(event.kind, EventKind::Completed) {
+                event.kind = EventKind::Cancelled;
+            }
+        }
         if terminal {
             state.requests.remove(&event.request_id);
         }
@@ -370,6 +525,10 @@ impl Shared {
                 && state.bytes <= MAX_EVENT_BYTES - 4 * 1024 * 1024)
     }
 }
+
+#[cfg(test)]
+#[path = "source_preparation_session_tests.rs"]
+mod source_preparation;
 
 pub(crate) fn worker(
     bridge: Arc<Bridge>,
@@ -443,7 +602,7 @@ pub(crate) mod tests {
         let shared = shared();
         lock(&shared.state)
             .requests
-            .insert(1, RequestState::default());
+            .insert(1, RequestState::new(abi::REQUEST_VIEWPORT));
         shared.push(
             HostEvent {
                 request_id: 1,

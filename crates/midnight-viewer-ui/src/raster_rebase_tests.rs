@@ -1,4 +1,5 @@
 //! Rebase handoffs preserve the displayed camera and undelivered wheel intent.
+use super::image_presentation_tests::present as present_outputs;
 use super::*;
 
 fn frame(open: &OpenWindow, revision: u64, surface: u64, ack: Option<u64>) -> ViewerOutput {

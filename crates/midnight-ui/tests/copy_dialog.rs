@@ -340,7 +340,10 @@ fn destination_editor(
         preferences.tabs[1].paths = vec![base.join("target")];
         owned_commands::run(&state, &begin, |state, _| {
             state.apply_with_sender(
-                Event::PreferencesLoaded(Ok(Box::new(preferences))),
+                Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+                    preferences,
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                }))),
                 &|command| {
                     commands.borrow_mut().push(command);
                     true
@@ -813,7 +816,13 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
         preferences.tabs[slot].paths = vec![path.clone()];
     }
     owned_commands::run(&state, &begin, |state, send| {
-        state.apply_with_sender(Event::PreferencesLoaded(Ok(Box::new(preferences))), send)
+        state.apply_with_sender(
+            Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+                preferences,
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            }))),
+            send,
+        )
     });
     for pane in [PaneId::Left, PaneId::Right] {
         let navigation = commands

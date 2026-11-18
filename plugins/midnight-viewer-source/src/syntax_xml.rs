@@ -1,5 +1,4 @@
 //! XML 1.0 lexical colouring only: no validation, entity expansion or external reads.
-use super::{Highlight, Poll, Spans};
 use midnight_plugin_sdk::api::viewer::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -13,7 +12,12 @@ enum Mode {
     Text,
     Tag {
         processing: bool,
-        name: bool,
+        first: bool,
+        closing: bool,
+    },
+    Name {
+        processing: bool,
+        role: u16,
     },
     Quote {
         quote: u8,
@@ -21,23 +25,68 @@ enum Mode {
     },
     Comment {
         declaration: Option<u8>,
+        matched: u8,
     },
-    Cdata,
+    Cdata {
+        matched: u8,
+    },
     Declaration {
         depth: u8,
         quote: Option<u8>,
     },
+    Reference {
+        length: u64,
+        kind: Reference,
+    },
 }
 
-pub(super) fn highlight<F: Fn() -> bool>(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reference {
+    Start,
+    Numeric,
+    HexStart,
+    Decimal,
+    Hex,
+    Name,
+}
+
+impl State {
+    pub(super) fn pending_style(&self) -> bool {
+        self.pending_span().is_some()
+    }
+
+    /// Entity validity is unresolved until its semicolon or an invalid scalar.
+    pub(super) fn pending_span(&self) -> Option<(u64, u64)> {
+        match self.mode {
+            Mode::Reference { length, .. } => Some((length, 0)),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn scan(
     text: &str,
     state: &mut State,
-    poll: &mut Poll<F>,
-) -> Option<Highlight> {
-    // The caller caps the decoded input at 64 KiB. Commit only a complete scan;
-    // a cancellation or exhausted bound must leave the last checkpoint intact.
+    styles: &mut crate::styles::Styles,
+    cancelled: impl Fn() -> bool,
+) -> Option<()> {
+    (stream(text, state, styles, true, cancelled)? == text.len()).then_some(())
+}
+
+/// Complete scalar prefixes use compact exact continuation state. Only a fixed
+/// XML opening delimiter, at most eight bytes, may remain with the caller.
+pub(super) fn stream(
+    text: &str,
+    state: &mut State,
+    styles: &mut crate::styles::Styles,
+    final_chunk: bool,
+    cancelled: impl Fn() -> bool,
+) -> Option<usize> {
+    let mut poll = super::Poll::new(cancelled);
+    if text.len() > 65_536 || poll.cancelled(0) {
+        return None;
+    }
     let mut current = *state;
-    let mut spans = Spans::default();
     let bytes = text.as_bytes();
     let mut at = 0;
     while at < bytes.len() {
@@ -45,21 +94,39 @@ pub(super) fn highlight<F: Fn() -> bool>(
             return None;
         }
         let start = at;
+        let tail = &bytes[at..];
+        let byte = bytes[at];
+        let ch = text[at..].chars().next()?;
+        let width = ch.len_utf8();
         let role = match current.mode {
             Mode::Text => {
-                if bytes[at..].starts_with(b"<!--") {
-                    current.mode = Mode::Comment { declaration: None };
-                    continue;
-                } else if bytes[at..].starts_with(b"<![CDATA[") {
-                    current.mode = Mode::Cdata;
-                    continue;
-                } else if bytes[at..].starts_with(b"<!") {
+                if byte == b'<'
+                    && !final_chunk
+                    && [b"<!--".as_slice(), b"<![CDATA[", b"<?", b"</"]
+                        .iter()
+                        .any(|open| open.starts_with(tail) && tail.len() < open.len())
+                {
+                    break;
+                }
+                if tail.starts_with(b"<!--") {
+                    at += 4;
+                    current.mode = Mode::Comment {
+                        declaration: None,
+                        matched: 0,
+                    };
+                    Some(STYLE_COMMENT)
+                } else if tail.starts_with(b"<![CDATA[") {
+                    at += 9;
+                    current.mode = Mode::Cdata { matched: 0 };
+                    Some(STYLE_STRING)
+                } else if tail.starts_with(b"<!") {
+                    at += 2;
                     current.mode = Mode::Declaration {
                         depth: 0,
                         quote: None,
                     };
-                    continue;
-                } else if bytes[at] == b'<' {
+                    Some(STYLE_KEYWORD)
+                } else if byte == b'<' {
                     at += 1;
                     let processing = bytes.get(at) == Some(&b'?');
                     if processing || bytes.get(at) == Some(&b'/') {
@@ -67,82 +134,110 @@ pub(super) fn highlight<F: Fn() -> bool>(
                     }
                     current.mode = Mode::Tag {
                         processing,
-                        name: true,
+                        first: true,
+                        closing: false,
                     };
                     Some(STYLE_OPERATOR)
-                } else if bytes[at] == b'&' {
-                    let (end, role) = reference(text, at, poll)?;
-                    at = end;
-                    role
+                } else if byte == b'&' {
+                    at += 1;
+                    current.mode = Mode::Reference {
+                        length: 1,
+                        kind: Reference::Start,
+                    };
+                    None
                 } else {
-                    while at < bytes.len() && !matches!(bytes[at], b'<' | b'&') {
-                        if poll.cancelled(at) {
-                            return None;
-                        }
-                        at += text[at..].chars().next().unwrap().len_utf8();
-                    }
+                    at += width;
                     None
                 }
             }
-            Mode::Tag { processing, name } => {
-                let close = if processing { b"?>" } else { b"/>" };
-                if bytes[at..].starts_with(close) {
-                    at += 2;
-                    current.mode = Mode::Text;
-                    Some(STYLE_OPERATOR)
-                } else if !processing && bytes[at] == b'>' {
+            Mode::Tag {
+                processing,
+                first,
+                closing,
+            } => {
+                if byte == b'>' && (!processing || closing) {
                     at += 1;
                     current.mode = Mode::Text;
                     Some(STYLE_OPERATOR)
-                } else if matches!(bytes[at], b'\'' | b'"') {
-                    let quote = bytes[at];
+                } else if matches!(byte, b'\'' | b'"') {
                     at += 1;
-                    current.mode = Mode::Quote { quote, processing };
+                    current.mode = Mode::Quote {
+                        quote: byte,
+                        processing,
+                    };
                     Some(STYLE_STRING)
-                } else if name_start(text[at..].chars().next().unwrap()) {
-                    at = name_end(text, at, poll)?;
+                } else if name_start(ch) {
+                    current.mode = Mode::Name {
+                        processing,
+                        role: if first { STYLE_KEYWORD } else { STYLE_TYPE },
+                    };
+                    continue;
+                } else {
+                    at += width;
                     current.mode = Mode::Tag {
                         processing,
-                        name: false,
+                        first,
+                        closing: byte == if processing { b'?' } else { b'/' },
                     };
-                    Some(if name { STYLE_KEYWORD } else { STYLE_TYPE })
+                    matches!(byte, b'=' | b'?' | b'/' | b'>').then_some(STYLE_OPERATOR)
+                }
+            }
+            Mode::Name { processing, role } => {
+                if name_char(ch) {
+                    at += width;
+                    Some(role)
                 } else {
-                    let operator = matches!(bytes[at], b'=' | b'?' | b'/' | b'>');
-                    at += text[at..].chars().next().unwrap().len_utf8();
-                    operator.then_some(STYLE_OPERATOR)
+                    current.mode = Mode::Tag {
+                        processing,
+                        first: false,
+                        closing: false,
+                    };
+                    continue;
                 }
             }
             Mode::Quote { quote, processing } => {
-                while at < bytes.len() {
-                    if poll.cancelled(at) {
-                        return None;
-                    }
-                    let closed = bytes[at] == quote;
-                    at += text[at..].chars().next().unwrap().len_utf8();
-                    if closed {
-                        current.mode = Mode::Tag {
-                            processing,
-                            name: false,
-                        };
-                        break;
-                    }
+                at += width;
+                if byte == quote {
+                    current.mode = Mode::Tag {
+                        processing,
+                        first: false,
+                        closing: false,
+                    };
                 }
                 Some(STYLE_STRING)
             }
-            Mode::Comment { declaration } => {
-                let (end, closed) = delimited(text, at, b"-->", poll)?;
-                at = end;
-                if closed {
+            Mode::Comment {
+                declaration,
+                mut matched,
+            } => {
+                at += width;
+                if byte == b'>' && matched == 2 {
                     current.mode = declaration
                         .map_or(Mode::Text, |depth| Mode::Declaration { depth, quote: None });
+                } else {
+                    matched = if byte == b'-' {
+                        (matched + 1).min(2)
+                    } else {
+                        0
+                    };
+                    current.mode = Mode::Comment {
+                        declaration,
+                        matched,
+                    };
                 }
                 Some(STYLE_COMMENT)
             }
-            Mode::Cdata => {
-                let (end, closed) = delimited(text, at, b"]]>", poll)?;
-                at = end;
-                if closed {
+            Mode::Cdata { mut matched } => {
+                at += width;
+                if byte == b'>' && matched == 2 {
                     current.mode = Mode::Text;
+                } else {
+                    matched = if byte == b']' {
+                        (matched + 1).min(2)
+                    } else {
+                        0
+                    };
+                    current.mode = Mode::Cdata { matched };
                 }
                 Some(STYLE_STRING)
             }
@@ -150,134 +245,103 @@ pub(super) fn highlight<F: Fn() -> bool>(
                 mut depth,
                 mut quote,
             } => {
-                while at < bytes.len() {
-                    if poll.cancelled(at) {
-                        return None;
+                if let Some(delimiter) = quote {
+                    if byte == delimiter {
+                        quote = None;
                     }
-                    if let Some(delimiter) = quote {
-                        if bytes[at] == delimiter {
-                            quote = None;
-                        }
-                    } else if bytes[at..].starts_with(b"<!--") {
-                        current.mode = Mode::Comment {
-                            declaration: Some(depth),
-                        };
-                        break;
-                    } else {
-                        match bytes[at] {
-                            b'\'' | b'"' => quote = Some(bytes[at]),
-                            b'[' => {
-                                if depth == 16 {
-                                    return None;
-                                }
-                                depth += 1;
+                } else if byte == b'<'
+                    && !final_chunk
+                    && b"<!--".starts_with(tail)
+                    && tail.len() < 4
+                {
+                    break;
+                } else if tail.starts_with(b"<!--") {
+                    at += 4;
+                    styles.push(start, at, STYLE_COMMENT);
+                    current.mode = Mode::Comment {
+                        declaration: Some(depth),
+                        matched: 0,
+                    };
+                    continue;
+                } else {
+                    match byte {
+                        b'\'' | b'"' => quote = Some(byte),
+                        b'[' => {
+                            if depth == 16 {
+                                return None;
                             }
-                            b']' => depth = depth.saturating_sub(1),
-                            b'>' if depth == 0 => {
-                                at += 1;
-                                current.mode = Mode::Text;
-                                break;
-                            }
-                            _ => {}
+                            depth += 1;
                         }
+                        b']' => depth = depth.saturating_sub(1),
+                        b'>' if depth == 0 => {
+                            at += 1;
+                            current.mode = Mode::Text;
+                            styles.push(start, at, STYLE_KEYWORD);
+                            continue;
+                        }
+                        _ => {}
                     }
-                    at += text[at..].chars().next().unwrap().len_utf8();
-                    current.mode = Mode::Declaration { depth, quote };
                 }
+                at += width;
+                current.mode = Mode::Declaration { depth, quote };
                 Some(STYLE_KEYWORD)
+            }
+            Mode::Reference { length, kind } => {
+                let next = match kind {
+                    Reference::Start if byte == b'#' => Some(Reference::Numeric),
+                    Reference::Start if name_start(ch) => Some(Reference::Name),
+                    Reference::Numeric if byte == b'x' => Some(Reference::HexStart),
+                    Reference::Numeric if byte.is_ascii_digit() => Some(Reference::Decimal),
+                    Reference::HexStart if byte.is_ascii_hexdigit() => Some(Reference::Hex),
+                    Reference::Decimal if byte.is_ascii_digit() => Some(kind),
+                    Reference::Hex if byte.is_ascii_hexdigit() => Some(kind),
+                    Reference::Name if name_char(ch) => Some(kind),
+                    _ => None,
+                };
+                if let Some(kind) = next {
+                    at += width;
+                    current.mode = Mode::Reference {
+                        length: length.checked_add(width as u64)?,
+                        kind,
+                    };
+                } else {
+                    if byte == b';'
+                        && matches!(kind, Reference::Name | Reference::Decimal | Reference::Hex)
+                    {
+                        at += 1;
+                        styles.push_back(
+                            length.checked_add(1)?,
+                            at,
+                            if kind == Reference::Name {
+                                STYLE_OPERATOR
+                            } else {
+                                STYLE_NUMBER
+                            },
+                        );
+                    } else {
+                        styles.push_back(length, at, STYLE_PLAIN);
+                    }
+                    current.mode = Mode::Text;
+                }
+                continue;
             }
         };
         if let Some(role) = role {
-            spans.push(start, at, role);
+            styles.push(start, at, role);
         }
+    }
+    if final_chunk
+        && at == text.len()
+        && let Mode::Reference { length, .. } = current.mode
+    {
+        styles.push_back(length, at, STYLE_PLAIN);
+        current.mode = Mode::Text;
+    }
+    if poll.cancelled(at) {
+        return None;
     }
     *state = current;
-    Some(spans.0)
-}
-
-fn delimited<F: Fn() -> bool>(
-    text: &str,
-    mut at: usize,
-    close: &[u8],
-    poll: &mut Poll<F>,
-) -> Option<(usize, bool)> {
-    while at < text.len() {
-        if poll.cancelled(at) {
-            return None;
-        }
-        if text.as_bytes()[at..].starts_with(close) {
-            return Some((at + close.len(), true));
-        }
-        at += text[at..].chars().next().unwrap().len_utf8();
-    }
-    Some((at, false))
-}
-
-fn name_end<F: Fn() -> bool>(text: &str, mut at: usize, poll: &mut Poll<F>) -> Option<usize> {
-    for ch in text[at..].chars() {
-        if poll.cancelled(at) {
-            return None;
-        }
-        if !name_char(ch) {
-            break;
-        }
-        at += ch.len_utf8();
-    }
     Some(at)
-}
-
-fn reference<F: Fn() -> bool>(
-    text: &str,
-    start: usize,
-    poll: &mut Poll<F>,
-) -> Option<(usize, Option<u16>)> {
-    let bytes = text.as_bytes();
-    let mut at = start + 1;
-    let numeric = bytes.get(at) == Some(&b'#');
-    if numeric {
-        at += 1;
-        let hex = bytes.get(at) == Some(&b'x');
-        if hex {
-            at += 1;
-        }
-        let digits = at;
-        while let Some(byte) = bytes.get(at) {
-            if poll.cancelled(at) {
-                return None;
-            }
-            if !(if hex {
-                byte.is_ascii_hexdigit()
-            } else {
-                byte.is_ascii_digit()
-            }) {
-                break;
-            }
-            at += 1;
-        }
-        if at == digits {
-            return Some((at, None));
-        }
-    } else if text
-        .get(at..)
-        .and_then(|tail| tail.chars().next())
-        .is_some_and(name_start)
-    {
-        at = name_end(text, at, poll)?;
-    } else {
-        return Some((at, None));
-    }
-    if bytes.get(at) == Some(&b';') {
-        Some((
-            at + 1,
-            Some(if numeric {
-                STYLE_NUMBER
-            } else {
-                STYLE_OPERATOR
-            }),
-        ))
-    } else {
-        Some((at, None))
-    }
 }
 
 // XML 1.0 Fifth Edition productions [4] / [4a]. Names are lexed, not validated
@@ -289,7 +353,12 @@ fn name_start(ch: char) -> bool {
         | '\u{2070}'..='\u{218f}' | '\u{2c00}'..='\u{2fef}' | '\u{3001}'..='\u{d7ff}'
         | '\u{f900}'..='\u{fdcf}' | '\u{fdf0}'..='\u{fffd}' | '\u{10000}'..='\u{effff}')
 }
+
 fn name_char(ch: char) -> bool {
     name_start(ch)
         || matches!(ch, '-' | '.' | '0'..='9' | '\u{b7}' | '\u{300}'..='\u{36f}' | '\u{203f}'..='\u{2040}')
 }
+
+#[cfg(test)]
+#[path = "syntax_xml_stream_tests.rs"]
+mod stream_tests;

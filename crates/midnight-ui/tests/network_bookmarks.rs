@@ -37,7 +37,12 @@ fn restored_network_hot_path_remapping_routes_exact_address_to_either_pane() {
     )));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences,
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     presenter
         .borrow_mut()
         .apply(Event::NetworkAvailability(false));

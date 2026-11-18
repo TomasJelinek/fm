@@ -21,8 +21,8 @@ async fn rejected_capture(failed_preparation: bool) {
     let weak = Arc::downgrade(&source);
     let (sender, mut events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_owner, mut controller) = Controller::testing(
         None,
         None,
         fixture.sink.snapshots.clone(),
@@ -37,7 +37,7 @@ async fn rejected_capture(failed_preparation: bool) {
         .attach(
             fixture.sink.host.clone(),
             fixture.sink.targets.clone(),
-            &mut tasks,
+            &mut resident_tasks,
         )
         .await;
     if failed_preparation {
@@ -110,4 +110,5 @@ async fn rejected_capture(failed_preparation: bool) {
     assert!(controller.pending.lock().unwrap().is_empty());
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
+    while resident_tasks.join_next().await.is_some() {}
 }

@@ -325,11 +325,16 @@ fn same_folder_refresh_keeps_committed_rows_cursor_and_selection_usable() {
 fn preference_loading_is_global_and_does_not_disturb_navigation() {
     let mut p = Presenter::new("left".into(), "right".into());
     let generation = begin(&mut p, PaneId::Left, "left");
-    p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-        theme: PreferenceTheme::Light,
-        density: UiDensity::Touch,
-        ..Default::default()
-    }))));
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                theme: PreferenceTheme::Light,
+                density: UiDensity::Touch,
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     assert!(p.panes[0].loading);
     finish(&mut p, PaneId::Left, generation, vec![entry(1, "left/a")]);
     assert_eq!(p.panes[0].rows().len(), 1);
@@ -345,10 +350,15 @@ fn loaded_windows_shell_is_frozen_in_the_explicit_terminal_request() {
         shell: ShellFlavor::PowerShell,
         locations: vec![],
     });
-    p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-        windows_shell: WindowsShell::Cmd,
-        ..Default::default()
-    }))));
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                windows_shell: WindowsShell::Cmd,
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     assert!(p.submit_command("echo 文档 👩🏽‍💻", &|command| {
         match command {
             Command::LaunchTerminal { terminal, .. } => {

@@ -53,6 +53,28 @@ impl SettingsService for Settings {
     fn save_preferences(&self, _: UserPreferences) -> Result<(), FsError> {
         Ok(())
     }
+
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        self.load_preferences()
+    }
+
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        proof: ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        if !proof.matches(&preferences.file_comparators) {
+            return Err(FsError::from_io(
+                "save settings",
+                std::path::Path::new(""),
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Comparator validation proof does not match preferences.",
+                ),
+            ));
+        }
+        self.save_preferences(preferences)
+    }
 }
 
 pub struct Harness {

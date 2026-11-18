@@ -82,7 +82,9 @@ fn check(
         }
         let was_busy = draft.settings_picker.busy();
         draft.flush_settings_picker(send.as_ref());
-        was_busy != draft.settings_picker.busy()
+        // Context cancellation can empty the slot before this scheduled tick.
+        // Publish the final idle state even without a later PathPicked reply.
+        !was_busy || !draft.settings_picker.busy()
     };
     if changed {
         crate::refresh(&w, &p.borrow());

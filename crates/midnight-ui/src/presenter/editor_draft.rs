@@ -355,10 +355,15 @@ mod tests {
             executable: Some(std::env::current_exe().unwrap()),
             ..Default::default()
         };
-        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            editor: original.clone(),
-            ..Default::default()
-        }))));
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    editor: original.clone(),
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
         p.editor_rule_action(0);
         p.editor_rule_action(0);
         let mut draft = p.editor_draft();
@@ -392,10 +397,15 @@ mod tests {
             rules: vec![EditorRule::default(), EditorRule::default()],
             ..Default::default()
         };
-        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            editor: original.clone(),
-            ..Default::default()
-        }))));
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    editor: original.clone(),
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
         p.editor_rule_action(0);
         let draft = p.editor_draft();
         assert_eq!(draft.selected, Some(2));

@@ -1,6 +1,7 @@
 //! Independent actors must not become executor-thread final service owners.
 use crate::{
-    Outbox, find, fonts, preferences, retirement::RetirementDomain, task_lifetime::TaskLifetime,
+    Outbox, find, fonts, preferences, resident_tasks::ResidentTasks, retirement::RetirementDomain,
+    task_lifetime::TaskLifetime,
 };
 use midnight_core::*;
 use std::{path::Path, sync::Arc, thread::ThreadId, time::Duration};
@@ -13,6 +14,17 @@ impl Drop for Service {
     }
 }
 impl SettingsService for Service {
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        self.load_preferences()
+    }
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        comparators: ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        assert!(comparators.matches(&preferences.file_comparators));
+        self.save_preferences(preferences)
+    }
     fn load_preferences(&self) -> Result<UserPreferences, FsError> {
         Ok(UserPreferences::default())
     }
@@ -91,6 +103,8 @@ fn cancelled_actor_retires_service(actor: Actor) {
         wakeup: Arc::new(|| {}),
     };
     let mut tasks = JoinSet::new();
+    let mut resident_tasks = ResidentTasks::default();
+    let _resident_owner;
     let controller: Box<dyn std::any::Any> = {
         let _entered = runtime.enter();
         match actor {
@@ -109,6 +123,9 @@ fn cancelled_actor_retires_service(actor: Actor) {
                 service.clone(),
                 outbox,
                 &mut tasks,
+                crate::comparator_policy_lifetime::ComparatorPolicies::testing(Arc::new(
+                    FileComparatorPolicyStore::default(),
+                )),
             )),
             Actor::Fonts => Box::new(fonts::Controller::new(
                 scope.clone(),
@@ -142,15 +159,21 @@ fn cancelled_actor_retires_service(actor: Actor) {
                 outbox,
                 &mut tasks,
             )),
-            Actor::FolderPresence => Box::new(crate::folder_presence::Controller::new(
-                scope.clone(),
-                crate::ReportArena::testing(),
-                service.clone(),
-                crate::test_snapshots(Default::default()),
-                std::array::from_fn(|_| Arc::new(tokio::sync::Semaphore::new(1))),
-                outbox,
-                &mut tasks,
-            )),
+            Actor::FolderPresence => {
+                let (owner, resident) =
+                    midnight_work_budget::resident::Owner::start("presence-test", 2).unwrap();
+                _resident_owner = owner;
+                Box::new(crate::folder_presence::Controller::new(
+                    &resident,
+                    scope.clone(),
+                    crate::ReportArena::testing(),
+                    service.clone(),
+                    crate::test_snapshots(Default::default()),
+                    std::array::from_fn(|_| Arc::new(tokio::sync::Semaphore::new(1))),
+                    outbox,
+                    &mut resident_tasks,
+                ))
+            }
             Actor::EntrySizes => Box::new(crate::entry_sizes::Controller::new(
                 crate::entry_sizes::Services {
                     reports: crate::ReportArena::testing(),
@@ -172,7 +195,11 @@ fn cancelled_actor_retires_service(actor: Actor) {
     assert!(dropped.try_recv().is_err());
     drop(controller);
     tasks.abort_all();
-    runtime.block_on(async { while tasks.join_next().await.is_some() {} });
+    resident_tasks.abort_all();
+    runtime.block_on(async {
+        while tasks.join_next().await.is_some() {}
+        while resident_tasks.join_next().await.is_some() {}
+    });
     let thread = dropped.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_ne!(
         thread,

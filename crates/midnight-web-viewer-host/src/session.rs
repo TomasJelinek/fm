@@ -1,3 +1,4 @@
+use crate::resource_jobs::{CleanupStatus, Generation, SourceOwner};
 use crate::{Provider, Resources, api};
 use midnight_plugin_host::CapturedFile;
 use std::{
@@ -15,6 +16,14 @@ mod actor;
 /// Consumer commands the session queues for its actor.
 const QUEUED_COMMANDS: usize = 64;
 
+/// Immutable host ceiling. A renderer or injected command cannot raise this permission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PolicyCeiling {
+    #[default]
+    UserChoice,
+    OfflineOnly,
+}
+
 #[derive(Default)]
 struct Output {
     events: VecDeque<api::Event>,
@@ -24,6 +33,39 @@ struct Output {
     ended: bool,
 }
 impl Output {
+    fn put_source_changed(&mut self, origin: api::Event) -> Result<(), String> {
+        if self.ended {
+            return Ok(());
+        }
+        if self
+            .events
+            .len()
+            .checked_add(2)
+            .is_none_or(|length| length > 64)
+        {
+            return Err("Browser event queue exhausted".into());
+        }
+        let header = origin.header;
+        // The header is resource-request provenance. Its asynchronous denial may
+        // finish after newer output was queued; retain main's queued header order.
+        let key = (header.document, header.sequence);
+        let at = self
+            .events
+            .partition_point(|event| (event.header.document, event.header.sequence) <= key);
+        self.events.insert(at, origin);
+        self.events.insert(
+            at + 1,
+            api::Event {
+                header,
+                kind: api::EventKind::Error {
+                    code: api::ErrorCode::ResourceChanged,
+                    message: "Source changed; showing previous contents. Reopen to refresh.".into(),
+                },
+            },
+        );
+        Ok(())
+    }
+
     fn put(&mut self, event: api::Event) -> Result<(), String> {
         // The actor can still receive output after a failed send stopped the session.
         if self.ended {
@@ -114,8 +156,10 @@ fn supervise(
     document: &AtomicU64,
     wake: &dyn Fn() -> bool,
 ) {
-    let result = std::panic::catch_unwind(AssertUnwindSafe(actor))
-        .unwrap_or_else(|_| Err("Browser session failed; reopen the document.".into()));
+    let result = std::panic::catch_unwind(AssertUnwindSafe(actor)).unwrap_or_else(|panic| {
+        std::mem::forget(panic);
+        Err("Browser session failed; reopen the document.".into())
+    });
     if !matches!(result, Ok(actor::End::Requested))
         && !stopped.load(Ordering::Acquire)
         && output.lock().is_ok_and(|mut output| {
@@ -137,12 +181,37 @@ fn supervise(
 /// drops every handle the thread holds when it returns, before `Exit` publishes the exit.
 fn supervised(shared: Shared, actor: impl FnOnce(&Shared) -> Result<actor::End, String>) {
     supervise(
-        || actor(&shared),
+        || {
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| actor(&shared)))
+                .unwrap_or_else(|panic| {
+                    std::mem::forget(panic);
+                    let message = "Browser actor panicked; cleanup is unconfirmed".to_owned();
+                    *shared
+                        .cleanup
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(message.clone());
+                    Err(message)
+                });
+            let cleanup = shared
+                .cleanup
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            let receipt = cleanup.map_or(Ok(()), Err);
+            *shared
+                .terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(receipt.clone());
+            // Keep terminal publication ahead of the stopped flag, as in the main actor.
+            receipt.and(result)
+        },
         &shared.output,
         &shared.closed,
         &shared.document,
         &*shared.wake,
     );
+    shared.generation.close();
+    shared.signal.interrupt();
 }
 
 /// What a session shares with its actor thread.
@@ -155,6 +224,10 @@ struct Shared {
     /// The newest document the consumer requested.
     document: Arc<AtomicU64>,
     wake: Arc<dyn Fn() -> bool + Send + Sync>,
+    generation: Arc<Generation>,
+    ceiling: PolicyCeiling,
+    cleanup: CleanupStatus,
+    terminal: Arc<Mutex<Option<Result<(), String>>>>,
 }
 
 /// Publishes the actor thread's exit, then wakes the consumer. Created first on that
@@ -175,6 +248,7 @@ impl Drop for Exit {
 /// viewer backend; the frontend talks only to its existing ViewerSession queue.
 pub struct Session {
     signal: Arc<actor::Signal>,
+    admission: Mutex<()>,
     sequence: AtomicU64,
     output: Arc<Mutex<Output>>,
     closed: Arc<AtomicBool>,
@@ -182,6 +256,9 @@ pub struct Session {
     wake: Arc<dyn Fn() -> bool + Send + Sync>,
     /// The actor thread published its exit (see `Exit`).
     exited: Arc<AtomicBool>,
+    generation: Arc<Generation>,
+    ceiling: PolicyCeiling,
+    terminal: Arc<Mutex<Option<Result<(), String>>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -193,13 +270,33 @@ impl Session {
         viewport: api::Viewport,
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Self, String> {
+        Self::open_with_policy_ceiling(
+            provider,
+            source,
+            resources,
+            viewport,
+            wake,
+            PolicyCeiling::UserChoice,
+        )
+    }
+
+    pub fn open_with_policy_ceiling(
+        provider: Provider,
+        source: CapturedFile,
+        resources: Option<Arc<dyn Resources>>,
+        viewport: api::Viewport,
+        wake: Arc<dyn Fn() -> bool + Send + Sync>,
+        ceiling: PolicyCeiling,
+    ) -> Result<Self, String> {
         let resources = resources.or_else(|| {
             source
                 .resources()
                 .map(|value| Arc::new(CapturedResources(value)) as Arc<dyn Resources>)
         });
-        Self::start(wake, move |shared| {
-            actor::run(provider, source, resources, viewport, shared)
+        let cleanup = Arc::new(Mutex::new(None));
+        let owner = SourceOwner::new(source, resources, cleanup.clone());
+        Self::start(wake, ceiling, cleanup, move |shared| {
+            actor::run(provider, owner, viewport, shared)
         })
     }
 
@@ -213,9 +310,10 @@ impl Session {
         limits: actor::Limits,
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Self, String> {
-        let store = crate::resources::Store::new(source, resources);
-        Self::start(wake, move |shared| {
-            actor::run_with(transport, store, viewport, shared, limits)
+        let cleanup = Arc::new(Mutex::new(None));
+        let owner = SourceOwner::new(source, resources, cleanup.clone());
+        Self::start(wake, PolicyCeiling::UserChoice, cleanup, move |shared| {
+            actor::run_with(transport, owner, viewport, shared, limits)
         })
     }
 
@@ -223,14 +321,26 @@ impl Session {
     /// publishes its exit and wakes the consumer last (see `Exit`).
     fn start(
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
+        ceiling: PolicyCeiling,
+        cleanup: CleanupStatus,
         actor: impl FnOnce(&Shared) -> Result<actor::End, String> + Send + 'static,
     ) -> Result<Self, String> {
+        let signal = Arc::new(actor::Signal::new(QUEUED_COMMANDS)?);
+        let resource_signal = signal.clone();
         let shared = Shared {
-            signal: Arc::new(actor::Signal::new(QUEUED_COMMANDS)?),
+            signal,
             output: Arc::default(),
             closed: Arc::default(),
             document: Arc::new(AtomicU64::new(1)),
             wake,
+            // Resource-worker completion revokes I/O before supervision publishes the end.
+            // Its cancellation flag must not suppress that terminal publication.
+            generation: Arc::new(Generation::with_wake(Arc::new(move || {
+                resource_signal.resources_ready();
+            }))),
+            ceiling,
+            cleanup,
+            terminal: Arc::new(Mutex::new(None)),
         };
         let exited = Arc::new(AtomicBool::new(false));
         let exit = (exited.clone(), shared.wake.clone());
@@ -247,12 +357,16 @@ impl Session {
             .map_err(|error| error.to_string())?;
         Ok(Self {
             signal: shared.signal,
+            admission: Mutex::new(()),
             sequence: AtomicU64::new(1),
             output: shared.output,
             closed: shared.closed,
             document: shared.document,
             wake: shared.wake,
             exited,
+            generation: shared.generation,
+            ceiling: shared.ceiling,
+            terminal: shared.terminal,
             thread: Some(thread),
         })
     }
@@ -268,6 +382,19 @@ impl Session {
         {
             return false;
         }
+        if self.ceiling == PolicyCeiling::OfflineOnly
+            && matches!(command, api::CommandKind::Policy(_))
+        {
+            return false;
+        }
+        // Keep document assignment and queue admission ordered for concurrent callers.
+        let Ok(_admission) = self.admission.lock() else {
+            self.fail("Browser command admission unavailable; reopen the document.");
+            return false;
+        };
+        if self.closed.load(Ordering::Acquire) {
+            return false;
+        }
         if matches!(command, api::CommandKind::Policy(_)) {
             // The actor publishes the session's end under this lock, before it marks the
             // session stopped. An end published since the check above stays, and refuses
@@ -276,17 +403,17 @@ impl Session {
             if output.as_ref().is_ok_and(|output| output.ended) {
                 return false;
             }
-            if self
-                .document
-                .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                    value.checked_add(1)
-                })
-                .is_err()
-            {
+            let Some(next) = self.document.load(Ordering::Acquire).checked_add(1) else {
                 drop(output);
                 self.fail("Browser document IDs are exhausted; reopen the document.");
                 return false;
+            };
+            if self.generation.advance(next).is_err() {
+                drop(output);
+                self.fail("Browser resource generation was revoked; reopen the document.");
+                return false;
             }
+            self.document.store(next, Ordering::Release);
             if let Ok(output) = output.as_mut() {
                 output.frame = None;
                 output.events.clear();
@@ -322,6 +449,7 @@ impl Session {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.generation.close();
         if self.output.lock().is_ok_and(|mut output| {
             output.terminal(self.document.load(Ordering::Acquire), message.into())
         }) {
@@ -373,6 +501,7 @@ impl Session {
     /// Stop the session. Its actor wakes at once and ends without publishing anything.
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
+        self.generation.close();
         self.signal.interrupt();
     }
     /// The actor thread ended its work; dropping the session then only joins the thread's
@@ -380,13 +509,34 @@ impl Session {
     pub fn finished(&self) -> bool {
         self.thread.is_none() || self.exited.load(Ordering::Acquire)
     }
+
+    pub fn policy_change_allowed(&self) -> bool {
+        self.ceiling == PolicyCeiling::UserChoice
+    }
+
+    /// Consume on the viewer backend and qualify all captured-resource cleanup.
+    pub fn release_on_worker(mut self) -> Result<(), String> {
+        self.finish()
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        self.close();
+        if let Some(thread) = self.thread.take()
+            && let Err(panic) = thread.join()
+        {
+            std::mem::forget(panic);
+            return Err("Browser actor cleanup panicked".into());
+        }
+        self.terminal
+            .lock()
+            .map_err(|_| "Browser completion unavailable")?
+            .take()
+            .unwrap_or(Ok(()))
+    }
 }
 impl Drop for Session {
     fn drop(&mut self) {
-        self.close();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        let _ = self.finish();
     }
 }
 
@@ -396,7 +546,22 @@ impl Resources for CapturedResources {
     fn capture(&self, segments: &[String]) -> Result<CapturedFile, String> {
         self.0.capture(segments).map_err(|error| error.to_string())
     }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), String> {
+        match Arc::try_unwrap(self) {
+            Ok(CapturedResources(resources)) => resources
+                .release_on_worker()
+                .map_err(|error| error.to_string()),
+            Err(shared) => {
+                drop(shared);
+                Ok(())
+            }
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "session_policy_tests.rs"]
+mod policy_tests;
 
 #[cfg(test)]
 mod tests {
@@ -432,12 +597,16 @@ mod tests {
     ) -> Session {
         Session {
             signal: Arc::new(actor::Signal::new(capacity).unwrap()),
+            admission: Mutex::new(()),
             sequence: AtomicU64::new(1),
             output,
             closed,
             document: Arc::new(AtomicU64::new(1)),
             wake: Arc::new(wake),
             exited: Arc::default(),
+            generation: Arc::default(),
+            ceiling: PolicyCeiling::UserChoice,
+            terminal: Arc::new(Mutex::new(None)),
             thread: None,
         }
     }

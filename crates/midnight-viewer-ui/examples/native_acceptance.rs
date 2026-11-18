@@ -1,4 +1,7 @@
 //! Run beside an explicitly staged trusted `viewers/` directory. This probe never uses settings.
+#[path = "support/resident.rs"]
+mod resident;
+
 mod acceptance;
 
 use midnight_core::*;
@@ -24,9 +27,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let manager = Rc::new(ViewerWindows::new(midnight_viewer_engine::Service::new(
-        runtime.handle().clone(),
-    )));
+    let runtime = resident::ResidentRuntime::new(runtime)?;
+    let service = midnight_viewer_engine::Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
+    let manager = Rc::new(ViewerWindows::new(service));
     let parent = ViewerWindow::new()?;
     parent.set_caption("Viewer acceptance parent — no preferences".into());
     parent

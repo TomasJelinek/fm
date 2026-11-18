@@ -3,9 +3,13 @@ use crate::{
     Outbox, Snapshots, copy_operations,
     engine_lifetime::DragRetirement,
     file_targets,
+    resident_tasks::ResidentTasks,
     retirement::{RetirementWaiter, WorkerOwned},
+    spawn_resident,
+    task_lifetime::TaskLifetime,
 };
 use midnight_core::*;
+use midnight_work_budget::resident::Spawner;
 use std::{
     collections::HashMap,
     io,
@@ -464,7 +468,14 @@ impl State {
     }
 }
 
+pub(crate) struct Services {
+    pub(crate) scope: TaskLifetime,
+    pub(crate) native: Option<Arc<dyn FileDragDropService>>,
+    pub(crate) transfers: Option<Arc<dyn TransferService>>,
+}
+
 pub(crate) struct Controller {
+    resident: Spawner,
     state: SharedState,
     backlog: tokio::sync::Mutex<RetirementWaiter>,
     snapshots: Snapshots,
@@ -476,12 +487,14 @@ pub(crate) struct Controller {
     cancel: Cancellation,
     service: Option<Arc<dyn FileDragDropService>>,
     transfers: Option<Arc<dyn TransferService>>,
+    outbox: Outbox,
     events: mpsc::Sender<DragDropEvent>,
     native: Option<mpsc::Sender<Start>>,
     /// Wakes the native actor after a host change, a queued start or shutdown.
     native_wake: Option<actor::Wake>,
     /// Wakes the preparation worker after queued work; retired owners wake it themselves.
     prepare: Option<std::sync::mpsc::SyncSender<()>>,
+    scope: TaskLifetime,
 }
 
 impl Controller {
@@ -496,9 +509,9 @@ impl Controller {
             .await;
     }
     pub(crate) fn new(
+        resident: Spawner,
         retirement: DragRetirement,
-        service: Option<Arc<dyn FileDragDropService>>,
-        transfers: Option<Arc<dyn TransferService>>,
+        services: Services,
         snapshots: Snapshots,
         capacity: copy_operations::Admission,
         outbox: Outbox,
@@ -509,12 +522,13 @@ impl Controller {
         let (hover, refused) = reports();
         tasks.spawn(forward(
             receiver,
-            outbox,
+            outbox.clone(),
             hover.clone(),
             refused.clone(),
             cancel.clone(),
         ));
         Self {
+            resident,
             state: Arc::new(retirement.state.own(Mutex::new(State::default()))),
             backlog: tokio::sync::Mutex::new(retirement.backlog),
             snapshots,
@@ -524,81 +538,148 @@ impl Controller {
             hover,
             refused,
             cancel,
-            service,
-            transfers,
+            service: services.native,
+            transfers: services.transfers,
+            outbox,
             events,
             native: None,
             native_wake: None,
             prepare: None,
+            scope: services.scope,
         }
+    }
+
+    #[cfg(test)]
+    fn testing(
+        native: Option<Arc<dyn FileDragDropService>>,
+        transfers: Option<Arc<dyn TransferService>>,
+        snapshots: Snapshots,
+        capacity: copy_operations::Admission,
+        outbox: Outbox,
+        tasks: &mut JoinSet<()>,
+    ) -> (midnight_work_budget::resident::Owner, Self) {
+        let (owner, resident) =
+            midnight_work_budget::resident::Owner::start("drag-test", 2).unwrap();
+        let scope = TaskLifetime::testing((native.clone(), transfers.clone()));
+        let controller = Self::new(
+            resident,
+            DragRetirement::testing(),
+            Services {
+                scope,
+                native,
+                transfers,
+            },
+            snapshots,
+            capacity,
+            outbox,
+            tasks,
+        );
+        (owner, controller)
     }
 
     pub(crate) async fn attach(
         &mut self,
         host: DragHost,
         targets: SharedDropTargets,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let starting = self.native.is_none();
+        let admitted = {
+            let shared = self.state.clone();
+            let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
             if host.generation == 0 || host.generation <= state.highest_host {
                 return;
             }
-            if let Some(old) = state.host.take() {
-                old.host.lifetime.cancel();
-            }
-            state.clear_source();
             state.highest_host = host.generation;
-            state.host = Some(Host {
-                host: host.clone(),
-                targets: targets.clone(),
-                sink: Arc::new(Sink {
-                    host,
-                    targets,
-                    snapshots: self.snapshots.clone(),
-                    pending: self.pending.clone(),
-                    capacity: self.capacity.clone(),
-                    events: self.events.clone(),
-                    next: self.next.clone(),
-                    hover: self.hover.clone(),
-                    refused: self.refused.clone(),
-                    cancel: self.cancel.clone(),
-                }),
-            });
+
+            // Both admissions are synchronous. Hold the state lock through
+            // publication so a new actor sees the host on its first pass.
+            if self.cancel.is_cancelled()
+                || (starting && !self.start_workers(&mut state.retired, tasks))
+            {
+                Err(host)
+            } else {
+                if let Some(old) = state.host.take() {
+                    old.host.lifetime.cancel();
+                }
+                state.clear_source();
+                state.host = Some(Host {
+                    host: host.clone(),
+                    targets: targets.clone(),
+                    sink: Arc::new(Sink {
+                        host,
+                        targets,
+                        snapshots: self.snapshots.clone(),
+                        pending: self.pending.clone(),
+                        capacity: self.capacity.clone(),
+                        events: self.events.clone(),
+                        next: self.next.clone(),
+                        hover: self.hover.clone(),
+                        refused: self.refused.clone(),
+                        cancel: self.cancel.clone(),
+                    }),
+                });
+                Ok(())
+            }
+        };
+        match admitted {
+            Ok(()) if !starting => self.wake_native(),
+            Ok(()) => {}
+            Err(host) => self.attachment_failed(&host).await,
         }
-        // A running native actor opens the new host's session now; a new one
-        // reads the host first.
-        self.wake_native();
-        if self.native.is_none() {
-            let (sender, receiver) = mpsc::channel(1);
-            self.native = Some(sender);
-            let (wake, woken) = actor::wake();
-            self.native_wake = Some(wake);
-            let state = self.state.clone();
-            let events = self.events.clone();
-            let cancel = self.cancel.clone();
-            let service = self.service.clone();
-            // Both actors live for the rest of the session: keep them off the
-            // bounded blocking pool that listings and scans need.
-            crate::actor_thread::spawn("midnight-drag-drop", tasks, move || {
-                actor::run(state, service, receiver, woken, events, cancel)
-            });
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            // Owners retired from now on wake the worker; it drops earlier ones first.
-            self.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .retired
-                .wake = Some(sender.clone());
-            self.prepare = Some(sender);
-            let state = self.state.clone();
-            let events = self.events.clone();
-            let snapshots = self.snapshots.clone();
-            let cancel = self.cancel.clone();
-            crate::actor_thread::spawn("midnight-drag-prepare", tasks, move || {
-                prepare_worker(state, snapshots, receiver, events, cancel)
-            });
-        }
+    }
+
+    fn start_workers(&mut self, retired: &mut Retired, tasks: &mut ResidentTasks) -> bool {
+        let (native, receiver) = mpsc::channel(1);
+        let (wake, woken) = actor::wake();
+        let state = self.state.clone();
+        let events = self.events.clone();
+        let cancel = self.cancel.clone();
+        let service = self.service.clone();
+        let work = self
+            .scope
+            .blocking(move || actor::run(state, service, receiver, woken, events, cancel));
+        let Some(ticket) = spawn_resident(&self.resident, "native drag", Box::new(work)) else {
+            return false;
+        };
+        tasks.insert(ticket);
+        self.native = Some(native);
+        self.native_wake = Some(wake);
+
+        let (prepare, receiver) = std::sync::mpsc::sync_channel(1);
+        let state = self.state.clone();
+        let events = self.events.clone();
+        let snapshots = self.snapshots.clone();
+        let cancel = self.cancel.clone();
+        let work = Box::new(move || prepare_worker(state, snapshots, receiver, events, cancel));
+        let Some(ticket) = spawn_resident(&self.resident, "drag preparation", work) else {
+            return false;
+        };
+        tasks.insert(ticket);
+        retired.wake = Some(prepare.clone());
+        self.prepare = Some(prepare);
+        true
+    }
+
+    async fn attachment_failed(&self, host: &DragHost) {
+        host.lifetime.cancel();
+        self.shutdown();
+        // The ordinary forwarding task stops with the attachment.
+        self.outbox
+            .send(Event::DragDrop(DragDropEvent::Failed {
+                id: None,
+                error: error(
+                    io::ErrorKind::WouldBlock,
+                    "File drag worker is unavailable.",
+                ),
+            }))
+            .await;
+        self.outbox
+            .send(Event::DragDrop(DragDropEvent::Ready {
+                host_generation: host.generation,
+                supported: false,
+            }))
+            .await;
     }
 
     pub(crate) fn detach(&self, generation: u64) {

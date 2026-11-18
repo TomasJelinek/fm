@@ -1,6 +1,6 @@
 use super::*;
 use crate::native_events::{MainWindowEvents, Observer};
-use midnight_core::{Event, UserPreferences};
+use midnight_core::{AcceptedPreferences, Event, UserPreferences};
 use slint::winit_030::winit::platform::windows::EventLoopBuilderExtWindows;
 use std::cell::Cell;
 
@@ -26,7 +26,7 @@ fn native_moves_and_resizes_reach_the_sampler_through_the_application_handler() 
     events.bind(&window);
     let mut presenter = Presenter::new("left".into(), "right".into());
     presenter.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences::default()))),
+        Event::PreferencesLoaded(Ok(Box::new(AcceptedPreferences::default()))),
         &|_| true,
     );
     let presenter = Rc::new(RefCell::new(presenter));
@@ -161,9 +161,12 @@ fn native_maximized_restore_keeps_normal_bounds_and_repeated_capture_has_no_drif
         };
         let mut presenter = Presenter::new("left".into(), "right".into());
         presenter.apply_with_sender(
-            Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                window_geometry: Some(saved),
-                ..Default::default()
+            Event::PreferencesLoaded(Ok(Box::new(AcceptedPreferences {
+                preferences: UserPreferences {
+                    window_geometry: Some(saved),
+                    ..Default::default()
+                },
+                comparators: Default::default(),
             }))),
             &|_| true,
         );

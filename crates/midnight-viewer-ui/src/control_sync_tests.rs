@@ -1,5 +1,6 @@
 //! Widgets that assign their own value must keep showing the state in force.
-//! Drives the real Fluent controls through accessibility actions and keys.
+//! Drives the real controls through accessibility actions and keys.
+use super::image_presentation_tests::present as present_outputs;
 use super::*;
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},
@@ -133,8 +134,15 @@ fn web_policy_boxes_show_policy_in_force_after_document_change_and_refusal() {
     let present = |output| present_outputs(&open, &service, &|_| {}, vec![output]);
     let checked = |label| shown(&open, label, AccessibleStringProperty::Checked);
     let html = [VIEWER_MODE_HTML];
+    let state = |generation| ViewerOutput::WebState {
+        generation,
+        policy: viewer_web::Policy::default(),
+        policy_change_allowed: true,
+        zoom: 1.0,
+    };
 
     present(text_frame(10, 7, VIEWER_MODE_HTML, &html));
+    present(state(7));
     control(&open, ONLINE).accessible_action(&AccessibilityAction::Default);
     control(&open, SCRIPTS).accessible_action(&AccessibilityAction::Default);
     assert_eq!([checked(ONLINE), checked(SCRIPTS)], ["true", "true"]);
@@ -163,6 +171,7 @@ fn web_policy_boxes_show_policy_in_force_after_document_change_and_refusal() {
     assert_eq!(checked(ONLINE), "false");
 
     present(text_frame(11, 8, VIEWER_MODE_HTML, &html));
+    present(state(8));
     control(&open, ONLINE).accessible_action(&AccessibilityAction::Default);
     assert_eq!(checked(ONLINE), "true");
     // A full command queue refuses the change: network stays enabled and shown.
@@ -176,17 +185,7 @@ fn web_policy_boxes_show_policy_in_force_after_document_change_and_refusal() {
         &open,
         &service,
         &|_| {},
-        vec![
-            text_frame(12, 9, VIEWER_MODE_HTML, &html),
-            ViewerOutput::WebState {
-                generation: 9,
-                policy: viewer_web::Policy {
-                    network: false,
-                    scripts: false,
-                },
-                zoom: 1.0,
-            },
-        ],
+        vec![text_frame(12, 9, VIEWER_MODE_HTML, &html), state(9)],
     );
     assert_eq!([checked(ONLINE), checked(SCRIPTS)], ["false", "false"]);
 }

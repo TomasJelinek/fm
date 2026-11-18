@@ -402,7 +402,12 @@ fn controller(
     files: Arc<Files>,
     native: Option<Arc<Native>>,
     poll: Duration,
-) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>) {
+) -> (
+    midnight_work_budget::resident::Owner,
+    Controller,
+    JoinSet<()>,
+    mpsc::Receiver<Event>,
+) {
     controller_with(files, native, timing(poll), 8)
 }
 
@@ -411,10 +416,17 @@ fn controller_with(
     native: Option<Arc<Native>>,
     timing: Timing,
     capacity: usize,
-) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>) {
+) -> (
+    midnight_work_budget::resident::Owner,
+    Controller,
+    JoinSet<()>,
+    mpsc::Receiver<Event>,
+) {
     let (sender, events) = mpsc::channel(capacity);
     let mut tasks = JoinSet::new();
+    let (owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files,
@@ -426,7 +438,7 @@ fn controller_with(
         &mut tasks,
         timing,
     );
-    (controller, tasks, events)
+    (owner, controller, tasks, events)
 }
 
 async fn next_event(events: &mut mpsc::Receiver<Event>) -> Event {
@@ -482,7 +494,7 @@ async fn stop(controller: &Controller, tasks: &mut JoinSet<()>) {
 async fn a_native_burst_is_coalesced_and_later_bursts_still_refresh() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 4, "left"));
     native.registrations(1).await;
@@ -513,7 +525,7 @@ async fn a_native_burst_is_coalesced_and_later_bursts_still_refresh() {
 async fn switching_target_ignores_old_callbacks_and_preserves_new_navigation_identity() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 1, "old"));
     native.registrations(1).await;
@@ -535,7 +547,7 @@ async fn switching_target_ignores_old_callbacks_and_preserves_new_navigation_ide
 async fn panes_watching_the_same_path_receive_independent_generation_hints() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 3, "same"));
     controller.set_visible(files.visible(PaneId::Right, 8, "same"));
@@ -554,7 +566,7 @@ async fn panes_watching_the_same_path_receive_independent_generation_hints() {
 async fn unchanged_poll_is_quiet_and_failed_refresh_hints_are_retried_until_acknowledged() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(40));
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     files.wait_probes(2).await;
@@ -589,7 +601,7 @@ async fn recovered_metadata_refreshes_once_and_stable_unknown_metadata_stays_qui
         .unwrap()[0]
         .metadata = EntryMetadata::default();
     let visible = files.visible(PaneId::Left, 1, "left");
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(40));
     controller.set_visible(visible);
     files.wait_probes(2).await;
@@ -631,7 +643,7 @@ async fn persistently_unreadable_entry_metadata_stays_quiet_after_acceptance() {
         .metadata = EntryMetadata::default();
     files.metadata_failed.store(true, Ordering::SeqCst);
     let visible = files.visible(PaneId::Left, 1, "left");
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));
     controller.set_visible(visible);
     files.wait_probes(4).await;
@@ -649,7 +661,7 @@ async fn complete_enumeration_metadata_is_compared_without_per_entry_stats() {
         ..Files::default()
     });
     files.put("left", 7);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     files.wait_probes(2).await;
@@ -675,7 +687,7 @@ async fn assert_polling_observes_compression_only_change(
         .metadata
         .compression = initial;
     let original = files.visible(PaneId::Left, 1, "left");
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));
     controller.set_visible(original.clone());
     files.wait_probes(2).await;
@@ -729,7 +741,7 @@ async fn failed_native_registration_reports_polling_only_once_and_keeps_polling(
         fail: true,
         ..Native::default()
     });
-    let (controller, mut tasks, mut events) = controller(
+    let (_owner, controller, mut tasks, mut events) = controller(
         files.clone(),
         Some(native.clone()),
         Duration::from_millis(40),
@@ -791,7 +803,9 @@ async fn a_status_waiting_for_capacity_is_sent_while_a_failed_navigation_shows_i
         .await
         .unwrap();
     let mut tasks = JoinSet::new();
+    let (_owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
@@ -859,7 +873,7 @@ async fn a_panicking_probe_restarts_the_worker_at_once_then_at_most_once_per_int
     files.panic_probes.store(2, Ordering::SeqCst);
     let native = Arc::new(Native::default());
     let restart = Duration::from_millis(300);
-    let (controller, mut tasks, mut events) = controller_with(
+    let (_owner, controller, mut tasks, mut events) = controller_with(
         files.clone(),
         Some(native.clone()),
         Timing {
@@ -909,7 +923,7 @@ async fn a_panicking_registration_restarts_at_once_without_a_status() {
         panics: AtomicUsize::new(1),
         ..Native::default()
     });
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(30));
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(2).await;
@@ -931,7 +945,7 @@ async fn a_registration_that_keeps_panicking_is_only_polled() {
     // The second panic must come before the second restart is due, or that
     // restart is immediate and reports nothing; it follows the first restart
     // at once, so only an implausibly slow worker could miss 300 ms.
-    let (controller, mut tasks, mut events) = controller_with(
+    let (_owner, controller, mut tasks, mut events) = controller_with(
         files.clone(),
         Some(native.clone()),
         Timing {
@@ -963,7 +977,7 @@ async fn a_blocked_probe_cannot_starve_the_other_pane() {
     });
     let _release = ReleaseOnDrop(files.clone());
     files.put("right", 7);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     controller.set_visible(files.visible(PaneId::Right, 9, "right"));
@@ -988,7 +1002,9 @@ async fn shutdown_releases_full_output_queue_waiters_and_ignores_late_callbacks(
         .await
         .unwrap();
     let mut tasks = JoinSet::new();
+    let (_owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
@@ -1029,7 +1045,7 @@ async fn computed_folder_totals_do_not_look_like_filesystem_changes() {
         .insert("left".into(), vec![directory]);
     let mut visible = files.visible(PaneId::Left, 1, "left");
     Arc::make_mut(&mut visible.entries)[0].metadata.size = Some(8_192);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(40));
     controller.set_visible(visible);
     files.wait_probes(2).await;
@@ -1050,7 +1066,7 @@ async fn computed_folder_totals_do_not_look_like_filesystem_changes() {
 async fn continuous_native_notifications_eventually_emit_without_waiting_for_the_writer() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
@@ -1072,7 +1088,7 @@ async fn continuous_native_notifications_eventually_emit_without_waiting_for_the
 async fn delayed_stale_visibility_ack_cannot_replace_the_current_target() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 9, "new"));
     native.registrations(1).await;

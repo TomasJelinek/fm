@@ -280,12 +280,94 @@ impl FileDragDropSession for FailsWhilePumping {
 }
 
 #[tokio::test]
+async fn partial_drag_admission_rejects_initial_and_later_hosts_without_registration() {
+    use midnight_work_budget::resident::Owner;
+    use std::sync::atomic::AtomicUsize;
+
+    #[derive(Default)]
+    struct Native(AtomicUsize);
+    impl FileDragDropService for Native {
+        fn open_session(
+            &self,
+            _: DragHost,
+            _: SharedDropTargets,
+            _: Arc<dyn FileDropSink>,
+        ) -> Result<Box<dyn FileDragDropSession>, FsError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FailsWhilePumping))
+        }
+    }
+
+    let fixture = Harness::new();
+    let native = Arc::new(Native::default());
+    let (owner, resident) = Owner::start("drag-partial-test", 2).unwrap();
+    let transient = tokio::runtime::Handle::current();
+    let holders = crate::engine_resident_tests::hold_workers(&resident, &transient, 2);
+    // One of two queue slots stays available. The native actor can queue
+    // while the preparation actor's admission is refused.
+    assert!(resident.spawn(&transient, Box::new(|| {})).is_ok());
+    let (sender, mut events) = mpsc::channel(8);
+    let mut forwarders = JoinSet::new();
+    let mut tasks = ResidentTasks::default();
+    let mut controller = Controller::new(
+        resident,
+        DragRetirement::testing(),
+        Services {
+            scope: TaskLifetime::testing(native.clone()),
+            native: Some(native.clone()),
+            transfers: None,
+        },
+        fixture.sink.snapshots.clone(),
+        fixture.sink.capacity.clone(),
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        &mut forwarders,
+    );
+    for generation in [3, 4] {
+        let lifetime = Cancellation::default();
+        let targets = fixture.sink.targets.clone();
+        targets.lock().unwrap().host_generation = generation;
+        let host = DragHost {
+            generation,
+            native: NativeDragWindow::Windows { hwnd: 1 },
+            lifetime: lifetime.clone(),
+        };
+        controller.attach(host, targets, &mut tasks).await;
+        assert!(lifetime.is_cancelled());
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            Event::DragDrop(DragDropEvent::Failed { id: None, error })
+                if error.kind == io::ErrorKind::WouldBlock
+        ));
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            Event::DragDrop(DragDropEvent::Ready { host_generation, supported: false })
+                if host_generation == generation
+        ));
+        assert!(controller.state.lock().unwrap().host.is_none());
+    }
+    drop(holders);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while tasks.join_next().await.is_some() {}
+        while forwarders.join_next().await.is_some() {}
+    })
+    .await
+    .unwrap();
+    assert_eq!(native.0.load(Ordering::SeqCst), 0);
+    assert!(events.try_recv().is_err());
+    drop(controller);
+    owner.shutdown(&transient).await.unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_failure_revokes_ready_before_another_gesture() {
     let fixture = Harness::new();
     let (sender, mut events) = mpsc::channel(16);
     let mut tasks = JoinSet::new();
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_owner, mut controller) = Controller::testing(
         Some(Arc::new(FailsWhilePumping)),
         None,
         fixture.sink.snapshots.clone(),
@@ -299,7 +381,7 @@ async fn native_runtime_failure_revokes_ready_before_another_gesture() {
     let mut host = fixture.sink.host.clone();
     host.native = NativeDragWindow::Windows { hwnd: 1 };
     controller
-        .attach(host, fixture.sink.targets.clone(), &mut tasks)
+        .attach(host, fixture.sink.targets.clone(), &mut resident_tasks)
         .await;
     let revoked = tokio::time::timeout(Duration::from_secs(1), async {
         let mut was_ready = false;
@@ -319,6 +401,7 @@ async fn native_runtime_failure_revokes_ready_before_another_gesture() {
     .await;
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
+    while resident_tasks.join_next().await.is_some() {}
     assert!(
         revoked.is_ok(),
         "a failed native session must revoke the UI's ready state"
@@ -526,8 +609,8 @@ async fn accepted_drop(
         crate::transfer_leases::IoBudget::new(Arc::new(midnight_work_budget::Gate::new(1))),
         &mut tasks,
     );
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_owner, mut controller) = Controller::testing(
         None,
         Some(service),
         snapshots.clone(),
@@ -543,7 +626,7 @@ async fn accepted_drop(
                 lifetime: Cancellation::default(),
             },
             targets.clone(),
-            &mut tasks,
+            &mut resident_tasks,
         )
         .await;
     let occurrence = TreeCopyOccurrence {
@@ -719,6 +802,7 @@ async fn accepted_drop(
     controller.shutdown();
     copies.shutdown();
     while tasks.join_next().await.is_some() {}
+    while resident_tasks.join_next().await.is_some() {}
 }
 
 #[tokio::test]
@@ -726,8 +810,8 @@ async fn shutdown_releases_unclaimed_native_drop_reservations() {
     let fixture = Harness::new();
     let (sender, _events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_owner, mut controller) = Controller::testing(
         None,
         None,
         fixture.sink.snapshots.clone(),
@@ -742,7 +826,7 @@ async fn shutdown_releases_unclaimed_native_drop_reservations() {
         .attach(
             fixture.sink.host.clone(),
             fixture.sink.targets.clone(),
-            &mut tasks,
+            &mut resident_tasks,
         )
         .await;
     let sink = controller
@@ -758,6 +842,7 @@ async fn shutdown_releases_unclaimed_native_drop_reservations() {
     assert_eq!(fixture.sink.capacity.capacity().available_permits(), 31);
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
+    while resident_tasks.join_next().await.is_some() {}
     capacity_returned(fixture.sink.capacity.capacity(), 32).await;
     assert!(controller.pending.lock().unwrap().is_empty());
 }
@@ -829,8 +914,8 @@ async fn native_drag_keeps_one_actor_thread_and_cancellation_remains_responsive(
     let service = Arc::new(BlockingNative(observations.clone()));
     let (sender, mut events) = mpsc::channel(32);
     let mut tasks = JoinSet::new();
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_owner, mut controller) = Controller::testing(
         Some(service.clone()),
         None,
         fixture.sink.snapshots.clone(),
@@ -844,7 +929,7 @@ async fn native_drag_keeps_one_actor_thread_and_cancellation_remains_responsive(
     let mut host = fixture.sink.host.clone();
     host.native = NativeDragWindow::Windows { hwnd: 1 };
     controller
-        .attach(host, fixture.sink.targets, &mut tasks)
+        .attach(host, fixture.sink.targets, &mut resident_tasks)
         .await;
     controller
         .prepare(
@@ -902,5 +987,6 @@ async fn native_drag_keeps_one_actor_thread_and_cancellation_remains_responsive(
     .unwrap();
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
+    while resident_tasks.join_next().await.is_some() {}
     assert!(observations.dropped.load(Ordering::SeqCst));
 }

@@ -5,8 +5,12 @@ use std::time::Duration;
 #[test]
 fn installed_font_catalog_arrives_without_content_and_is_shared_between_windows() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
     let service = Service::with_native_capture(
         runtime.handle().clone(),
+        resident,
         Arc::new(|_, _| Err("No content is needed for a font chooser".into())),
     );
     let entries: Arc<[Entry]> = vec![Entry::new(

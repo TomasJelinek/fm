@@ -130,6 +130,8 @@ fn pane_workers_run_on_named_threads_without_blocking_pool_capacity() {
         .enable_all()
         .build()
         .unwrap();
+    let (resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("tree-model-test", 2).unwrap();
     // The only blocking-pool thread stays occupied until the end of the test.
     let (entered, ready) = mpsc::channel();
     let (release, wait) = mpsc::channel::<()>();
@@ -151,12 +153,15 @@ fn pane_workers_run_on_named_threads_without_blocking_pool_capacity() {
     let retained = Arc::downgrade(&entries);
     runtime.block_on(async {
         let (sender, _events) = tokio::sync::mpsc::channel(4);
+        let filesystem = Arc::new(Idle);
         let mut controller = Controller::new(
+            &resident,
             Services {
+                scope: TaskLifetime::testing(filesystem.clone()),
                 shared_native: None,
                 qualified_locale: None,
                 rename: crate::tree_rename::Retirement::testing(),
-                filesystem: Arc::new(Idle),
+                filesystem,
                 locale: None,
                 reports: crate::ReportArena::testing(),
             },
@@ -196,12 +201,19 @@ fn pane_workers_run_on_named_threads_without_blocking_pool_capacity() {
         }
     });
     assert!(retained.upgrade().is_none());
-    assert_eq!(
-        last_owner.try_recv().unwrap().as_deref(),
-        Some("midnight-tree-worker")
+    let released_on = last_owner.try_recv().unwrap();
+    assert!(
+        matches!(
+            released_on.as_deref(),
+            Some("tree-model-test-0" | "tree-model-test-1")
+        ),
+        "the last outbox owner must retire on an actual resident model worker: {released_on:?}"
     );
     release.send(()).unwrap();
     runtime.block_on(blocker).unwrap();
+    runtime
+        .block_on(resident_owner.shutdown(runtime.handle()))
+        .unwrap();
 }
 
 #[test]

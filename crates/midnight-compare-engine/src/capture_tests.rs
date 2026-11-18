@@ -14,6 +14,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "identity_lifecycle_tests.rs"]
+mod identity_lifecycle;
+
+#[path = "image_identity_tests.rs"]
+mod image_identity;
+
 #[derive(Debug)]
 struct Memory {
     bytes: &'static [u8],
@@ -88,7 +94,7 @@ fn fixture() -> tempfile::TempDir {
         .unwrap()
         .parent()
         .unwrap()
-        .join("_build/compare-capture-tests");
+        .join("_build/verification/viewer-refresh-20261117/viewer/compare-identity/captured");
     std::fs::create_dir_all(&root).unwrap();
     tempfile::tempdir_in(root).unwrap()
 }
@@ -101,6 +107,7 @@ fn paths(root: &Path) -> [PathBuf; 2] {
 }
 
 fn launch(paths: &[PathBuf; 2]) -> FileCompareLaunch {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     FileCompareLaunch {
         sources: paths
             .iter()
@@ -108,17 +115,22 @@ fn launch(paths: &[PathBuf; 2]) -> FileCompareLaunch {
             .map(FileCompareSource::Focused)
             .collect(),
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     }
 }
 
 fn unresolved() -> FileCompareLaunch {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     FileCompareLaunch {
         sources: Vec::new(),
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     }
 }
 
-fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, String> {
+fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, crate::OpenError> {
     open_in_family(service, launch, "monospace")
 }
 
@@ -126,7 +138,7 @@ fn open_in_family(
     service: &Service,
     launch: FileCompareLaunch,
     family: &str,
-) -> Result<Session, String> {
+) -> Result<Session, crate::OpenError> {
     service.open(
         launch,
         ViewerAppearance {
@@ -165,6 +177,9 @@ fn frame(session: &Session) -> Frame {
     wait_for(|last_status| match session.mailbox.take() {
         Some(Output::Frame { frame, .. }) => Some(frame),
         Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
         Some(Output::Status(status)) => {
             *last_status = Some(status);
             None
@@ -173,9 +188,21 @@ fn frame(session: &Session) -> Frame {
     })
 }
 
+fn catalog_frame(session: &Session) -> Frame {
+    loop {
+        let frame = frame(session);
+        if frame.fonts.is_some() {
+            return frame;
+        }
+    }
+}
+
 fn choice(session: &Session) -> FileChoice {
     wait_for(|last_status| match session.mailbox.take() {
         Some(Output::ChooseFiles(choice)) => Some(choice),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
         Some(Output::Frame { .. }) => panic!("Capture failure must not produce a frame"),
         Some(Output::Status(status)) => {
             *last_status = Some(status);
@@ -204,7 +231,8 @@ fn storage_hints_are_queried_on_the_worker_and_viewers_are_discovered_once_per_s
     let discoveries = Arc::new(AtomicUsize::new(0));
     let discovered_by = discoveries.clone();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture)
         .with_storage_hint(Arc::new(move |path| {
             assert_ne!(
                 std::thread::current().id(),
@@ -245,6 +273,113 @@ fn storage_hints_are_queried_on_the_worker_and_viewers_are_discovered_once_per_s
 }
 
 #[test]
+fn whole_decoded_text_identity_is_typed_and_does_not_claim_different_bom_bytes_identical() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let expected = paths.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if path == expected[0] {
+            memory(b"same text\n", &reads)
+        } else if path == expected[1] {
+            memory(b"\xef\xbb\xbfsame text\n", &reads)
+        } else {
+            Err("Unexpected provider identity".into())
+        }
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
+    let session = open(&service, launch(&paths)).unwrap();
+    let result = wait_for(|last_status| match session.mailbox.take() {
+        Some(Output::Frame { frame, .. }) if frame.identity != crate::IdentityVerdict::Pending => {
+            Some(frame)
+        }
+        Some(Output::Status(status)) => {
+            *last_status = Some(status);
+            None
+        }
+        Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
+        _ => None,
+    });
+    assert_eq!(result.identity, crate::IdentityVerdict::IdenticalText);
+    assert!(result.comparison_generation > 0);
+    assert!(result.status.contains("UTF-8 without BOM"));
+    assert!(result.status.contains("UTF-8 with BOM"));
+    session.close();
+}
+
+#[test]
+fn complete_utf16_text_identity_reports_each_actual_byte_order_and_bom() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let expected = paths.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if path == expected[0] {
+            memory(&[0xff, 0xfe, 0xe9, 0, 0x0a, 0], &reads)
+        } else {
+            memory(&[0xfe, 0xff, 0, 0xe9, 0, 0x0a], &reads)
+        }
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
+    let session = open(&service, launch(&paths)).unwrap();
+    let result = wait_for(|_| match session.mailbox.take() {
+        Some(Output::Frame { frame, .. }) if frame.identity != crate::IdentityVerdict::Pending => {
+            Some(frame)
+        }
+        Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
+        _ => None,
+    });
+    assert_eq!(result.identity, crate::IdentityVerdict::IdenticalText);
+    assert!(result.accessible_text.contains('é'));
+    assert!(
+        result
+            .status
+            .contains("File A UTF-16 little-endian with BOM")
+    );
+    assert!(result.status.contains("File B UTF-16 big-endian with BOM"));
+    session.close();
+}
+
+#[test]
+fn differences_outside_the_visible_text_page_still_produce_typed_different() {
+    let root = fixture();
+    let paths = paths(root.path());
+    for path in &paths {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    }
+    std::fs::write(&paths[0], format!("{}left tail\n", "same\n".repeat(500))).unwrap();
+    std::fs::write(&paths[1], format!("{}right tail\n", "same\n".repeat(500))).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::new(runtime.handle().clone(), spawner);
+    let session = open(&service, launch(&paths)).unwrap();
+    let result = wait_for(|_| match session.mailbox.take() {
+        Some(Output::Frame { frame, .. }) if frame.identity != crate::IdentityVerdict::Pending => {
+            Some(frame)
+        }
+        Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
+        _ => None,
+    });
+    assert_eq!(result.identity, crate::IdentityVerdict::Different);
+    assert!(!result.accessible_text.contains("left tail"));
+    assert!(!result.accessible_text.contains("right tail"));
+    session.close();
+}
+
+#[test]
 fn injected_capture_compares_both_panel_sources_without_opening_native_paths() {
     let root = fixture();
     let paths = paths(root.path());
@@ -270,7 +405,8 @@ fn injected_capture_compares_both_panel_sources_without_opening_native_paths() {
         }
     });
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture);
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
     let entries: Arc<[Entry]> =
         vec![Entry::new(EntryId(7), paths[1].clone(), EntryKind::File)].into();
     let mut launch = launch(&paths);
@@ -312,7 +448,8 @@ fn explicit_compare_submission_uses_the_injected_capture_for_both_choices() {
         }
     });
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture);
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
     let session = open(&service, unresolved()).unwrap();
     assert!(!choice(&session).is_error);
     session.send(Input::Compare(paths)).unwrap();
@@ -337,7 +474,8 @@ fn send_tells_a_full_queue_from_a_worker_that_stopped_after_an_internal_error() 
         panic!("deliberate capture fault: the comparison worker stops");
     });
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture);
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
     let session = open(&service, launch(&paths)).unwrap();
     entry.recv_timeout(Duration::from_secs(15)).unwrap();
     for _ in 0..crate::INPUT_QUEUE {
@@ -377,7 +515,8 @@ fn injected_rejection_on_either_side_never_falls_back_to_readable_native_files()
                 memory(b"provider bytes\n", &reads)
             }
         });
-        let service = Service::with_native_capture(runtime.handle().clone(), capture);
+        let (_owner, spawner) = crate::resident_test_support::workers();
+        let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
         let session = open(&service, launch(&paths)).unwrap();
         let choice = choice(&session);
         assert!(choice.is_error);
@@ -421,7 +560,8 @@ fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_lat
             }
             memory(b"late provider content\n", &observed_reads)
         });
-        let service = Service::with_native_capture(runtime.handle().clone(), capture);
+        let (_owner, spawner) = crate::resident_test_support::workers();
+        let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
         let session = open(&service, launch(&paths)).unwrap();
         assert_eq!(
             entry.recv_timeout(Duration::from_secs(5)).unwrap(),
@@ -468,7 +608,8 @@ fn a_failed_image_viewer_discovery_is_explained_and_retried_by_the_next_comparis
     let discoveries = Arc::new(AtomicUsize::new(0));
     let attempts = discoveries.clone();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture)
         .with_font_scan(|_| Some(Arc::from([])))
         .with_image_viewer_discovery(move || {
             if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -506,10 +647,13 @@ fn a_failed_image_viewer_discovery_is_explained_and_retried_by_the_next_comparis
     third.close();
 }
 
-fn text_service(runtime: &tokio::runtime::Runtime) -> Service {
+fn text_service(
+    runtime: &tokio::runtime::Runtime,
+    spawner: midnight_work_budget::resident::Spawner,
+) -> Service {
     let reads = Arc::new(AtomicUsize::new(0));
     let capture: NativeCapture = Arc::new(move |_, _| memory(b"same\nline\n", &reads));
-    Service::with_native_capture(runtime.handle().clone(), capture)
+    Service::with_native_capture(runtime.handle().clone(), spawner, capture)
         .with_image_viewer_discovery(|| Ok(Vec::new()))
 }
 
@@ -520,8 +664,9 @@ fn the_first_frame_is_painted_while_the_font_scan_runs_and_repainted_with_its_ca
     let (deliver, catalog) = mpsc::channel::<Arc<[String]>>();
     let catalog = Mutex::new(catalog);
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service =
-        text_service(&runtime).with_font_scan(move |_| catalog.lock().unwrap().recv().ok());
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = text_service(&runtime, spawner)
+        .with_font_scan(move |_| catalog.lock().unwrap().recv().ok());
     let session = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
     let first = frame(&session);
     assert!(
@@ -529,7 +674,7 @@ fn the_first_frame_is_painted_while_the_font_scan_runs_and_repainted_with_its_ca
         "the first frame must not wait for a running font scan"
     );
     deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
-    let repainted = frame(&session);
+    let repainted = catalog_frame(&session);
     let fonts = repainted.fonts.expect("the completed catalog is painted");
     assert_eq!(fonts.selected, "Wide Mono");
     session.close();
@@ -554,7 +699,8 @@ fn the_first_comparison_paints_in_the_preferred_family_while_the_scan_runs() {
     let checks = Arc::new(Mutex::new(Vec::new()));
     let checked = checks.clone();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (service, deliver) = held_scan(text_service(&runtime), &Arc::default());
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let (service, deliver) = held_scan(text_service(&runtime, spawner), &Arc::default());
     let service = service.with_font_check(move |candidates, _| {
         checked.lock().unwrap().push(
             candidates
@@ -582,7 +728,7 @@ fn the_first_comparison_paints_in_the_preferred_family_while_the_scan_runs() {
             "Consolas".to_owned(),
         ]))
         .unwrap();
-    let repainted = frame(&session);
+    let repainted = catalog_frame(&session);
     let fonts = repainted
         .fonts
         .expect("the catalog publishes the chooser list");
@@ -597,8 +743,9 @@ fn a_missing_preferred_family_falls_back_to_consolas_then_monospace_before_the_c
     let root = fixture();
     let paths = paths(root.path());
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
     for (installed, painted) in [(Some("Consolas"), "Consolas"), (None, "monospace")] {
-        let (service, release) = held_scan(text_service(&runtime), &Arc::default());
+        let (service, release) = held_scan(text_service(&runtime, spawner), &Arc::default());
         let service = service.with_font_check(move |candidates, _| {
             installed
                 .filter(|family| candidates.contains(family))
@@ -621,12 +768,21 @@ fn no_worker_turn_while_the_catalog_is_pending() {
     let paths = paths(root.path());
     let turns = Arc::new(AtomicUsize::new(0));
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (service, deliver) = held_scan(text_service(&runtime), &Arc::default());
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let (service, deliver) = held_scan(text_service(&runtime, spawner), &Arc::default());
     let service = service
         .with_font_check(|_, _| None)
         .with_turn_counter(turns.clone());
     let session = open(&service, launch(&paths)).unwrap();
-    assert!(frame(&session).fonts.is_none());
+    // Leave the frame unread so whole-input verification is also waiting.
+    let has_catalog = || {
+        let state = session.mailbox.state.lock().unwrap();
+        match &state.output {
+            Some(Output::Frame { frame, .. }) => Some(frame.fonts.is_some()),
+            _ => None,
+        }
+    };
+    assert!(!wait_for(|_| has_catalog()));
     assert_eq!(
         turns.load(Ordering::SeqCst),
         1,
@@ -640,7 +796,7 @@ fn no_worker_turn_while_the_catalog_is_pending() {
         "no worker turn while the catalog loads"
     );
     deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
-    assert!(frame(&session).fonts.is_some());
+    wait_for(|_| (has_catalog() == Some(true)).then_some(()));
     assert_eq!(
         turns.load(Ordering::SeqCst),
         2,
@@ -668,8 +824,9 @@ fn a_comparison_after_a_failed_one_gets_the_catalog_of_the_same_scan() {
     });
     let scans = Arc::new(AtomicUsize::new(0));
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
     let (service, deliver) = held_scan(
-        Service::with_native_capture(runtime.handle().clone(), capture)
+        Service::with_native_capture(runtime.handle().clone(), spawner, capture)
             .with_image_viewer_discovery(|| Ok(Vec::new())),
         &scans,
     );
@@ -710,7 +867,8 @@ fn a_scan_without_a_thread_answers_at_once_even_while_the_input_queue_is_full() 
         memory(b"same\nline\n", &reads)
     });
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture)
         .with_image_viewer_discovery(|| Ok(Vec::new()))
         .without_font_thread();
     let session = open(&service, launch(&paths)).unwrap();
@@ -735,7 +893,8 @@ fn a_panicking_scan_answers_its_waiters_and_the_next_comparison_scans_again() {
     let scans = Arc::new(AtomicUsize::new(0));
     let scanned = scans.clone();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = text_service(&runtime)
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = text_service(&runtime, spawner)
         .with_font_scan(move |_| {
             if scanned.fetch_add(1, Ordering::SeqCst) == 0 {
                 panic!("deliberate font scan fault");
@@ -745,9 +904,9 @@ fn a_panicking_scan_answers_its_waiters_and_the_next_comparison_scans_again() {
         .with_font_check(|_, _| None)
         .with_turn_counter(turns.clone());
     let first = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
-    assert!(frame(&first).fonts.is_none());
-    // The panicking scan's reply (`None`) gives the worker its second turn.
+    // The panicking scan's reply (`None`) wakes the worker before any frame is taken.
     wait_for(|_| (turns.load(Ordering::SeqCst) >= 2).then_some(()));
+    assert!(frame(&first).fonts.is_none());
     let second = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
     let fonts = loop {
         if let Some(fonts) = frame(&second).fonts {
@@ -793,7 +952,8 @@ fn a_failed_scan_of_an_earlier_comparison_does_not_answer_the_next_one() {
     let (finish, finished) = mpsc::sync_channel::<()>(1);
     let (failure, finished) = (Mutex::new(failure), Mutex::new(finished));
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture)
         .with_image_viewer_discovery(|| Ok(Vec::new()))
         .with_font_scan(move |_| {
             if scanned.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -863,8 +1023,9 @@ fn a_window_with_a_full_queue_neither_delays_nor_loses_a_catalog_reply() {
         source(b"same\nline\n", &reads, gate)
     });
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
     let (service, deliver) = held_scan(
-        Service::with_native_capture(runtime.handle().clone(), capture)
+        Service::with_native_capture(runtime.handle().clone(), spawner, capture)
             .with_image_viewer_discovery(|| Ok(Vec::new())),
         &Arc::default(),
     );
@@ -873,6 +1034,13 @@ fn a_window_with_a_full_queue_neither_delays_nor_loses_a_catalog_reply() {
     assert!(frame(&first).fonts.is_none());
     let second = open_in_family(&service, launch(&idle), "Wide Mono").unwrap();
     assert!(frame(&second).fonts.is_none());
+    // Finish the first worker's identity checks before arming the validation hold.
+    wait_for(|_| match first.mailbox.take() {
+        Some(Output::Frame { frame, .. }) if frame.identity != crate::IdentityVerdict::Pending => {
+            Some(())
+        }
+        _ => None,
+    });
     // The first worker repaints and is held in revalidating its source.
     gate.armed.store(true, Ordering::Release);
     first
@@ -916,9 +1084,20 @@ fn the_inbox_keeps_a_close_and_the_current_reply_that_a_full_queue_refused() {
     let (sender, receiver) = mpsc::sync_channel(crate::INPUT_QUEUE);
     let inbox = Inbox::new(sender);
     for _ in 0..crate::INPUT_QUEUE {
-        inbox.send(Input::Fit).unwrap();
+        inbox
+            .send(crate::Command {
+                input: Input::Fit,
+                generation: 0,
+            })
+            .unwrap();
     }
-    assert_eq!(inbox.send(Input::Fit), Err(Refused::Full));
+    assert_eq!(
+        inbox.send(crate::Command {
+            input: Input::Fit,
+            generation: 0
+        }),
+        Err(Refused::Full)
+    );
     let earlier = inbox.font_request();
     let current = inbox.font_request();
     let catalog: Arc<[String]> = Arc::from(["Wide Mono".to_owned()]);
@@ -955,7 +1134,8 @@ fn first_comparison_font_timing() {
     let root = fixture();
     let paths = paths(root.path());
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = text_service(&runtime);
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = text_service(&runtime, spawner);
     let (woken, wakes) = mpsc::sync_channel(1);
     let started = Instant::now();
     let session = service
@@ -1011,7 +1191,8 @@ fn a_kept_font_catalog_paints_the_first_frame_of_a_later_comparison_in_the_prefe
     let (release, held) = mpsc::channel::<()>();
     let held = Mutex::new(held);
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = text_service(&runtime).with_font_scan(move |_| {
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = text_service(&runtime, spawner).with_font_scan(move |_| {
         if scanned.fetch_add(1, Ordering::SeqCst) == 0 {
             return Some(Arc::from([
                 "Narrow Mono".to_owned(),

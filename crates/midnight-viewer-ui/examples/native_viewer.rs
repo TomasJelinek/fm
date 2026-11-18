@@ -1,4 +1,7 @@
 //! Native UI smoke probe; deploy its executable beside the three viewer packages.
+#[path = "support/resident.rs"]
+mod resident;
+
 use midnight_core::*;
 use midnight_viewer_ui::ViewerWindows;
 use slint::{
@@ -32,7 +35,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let service = midnight_viewer_engine::Service::new(runtime.handle().clone());
+    let runtime = resident::ResidentRuntime::new(runtime)?;
+    let service = midnight_viewer_engine::Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
     let manager = Rc::new(ViewerWindows::new(service));
     let entries: Arc<[Entry]> = paths[..3]
         .iter()

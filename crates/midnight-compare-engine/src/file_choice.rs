@@ -56,6 +56,7 @@ impl Picker {
         FileChoice {
             paths,
             is_error: result.is_err(),
+            external_outcome: None,
             message: result.err().unwrap_or_default(),
         }
     }
@@ -86,6 +87,7 @@ pub(crate) fn resolve(
             paths: Default::default(),
             message: "Choose two files to compare.".into(),
             is_error: false,
+            external_outcome: None,
         });
     }
     for (side, source) in launch.sources.iter().enumerate() {
@@ -146,6 +148,7 @@ pub(crate) fn resolve(
         Err(FileChoice {
             paths,
             is_error: false,
+            external_outcome: None,
             message: error.unwrap_or_else(|| "Choose file A and file B to compare.".into()),
         })
     }

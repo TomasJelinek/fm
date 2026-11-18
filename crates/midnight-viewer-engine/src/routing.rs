@@ -3,6 +3,10 @@ use midnight_core::ViewerAssociations;
 use midnight_plugin_host::{PluginInfo, api::viewer};
 use std::path::Path;
 
+pub(crate) const OFFICE_ID: &str = "midnight.viewer.office-preview";
+pub(crate) const HTML_ID: &str = "midnight.viewer.html";
+const OFFICE_EXTENSIONS: [&str; 6] = ["docx", "xlsx", "pptx", "odt", "ods", "odp"];
+
 pub(crate) struct ProcessCandidate<'a> {
     pub id: &'a str,
     pub extensions: &'a [String],
@@ -18,6 +22,10 @@ pub(crate) enum Route {
     Process {
         index: usize,
     },
+    Office {
+        /// Index in the same flattened process candidate list as Process.index.
+        renderer: usize,
+    },
 }
 
 pub(crate) fn choose<'a>(
@@ -27,6 +35,7 @@ pub(crate) fn choose<'a>(
     basic: bool,
     disabled: &[String],
     associations: &ViewerAssociations,
+    office_renderer: Option<usize>,
 ) -> Option<Route> {
     // Native identities remain raw. An undecodable filename simply has no text suffix match.
     let filename = path
@@ -90,9 +99,44 @@ pub(crate) fn choose<'a>(
                     Route::Process { index },
                 );
             }
+            if office_renderer == Some(index)
+                && provider.id == HTML_ID
+                && !disabled.iter().any(|id| id == OFFICE_ID)
+            {
+                let defaults = OFFICE_EXTENSIONS.map(str::to_owned);
+                if let Some(length) = associations.suffix_match(OFFICE_ID, &defaults, filename) {
+                    consider(
+                        &mut best,
+                        (length, associations.priority(OFFICE_ID), true, 0, 0),
+                        OFFICE_ID,
+                        Route::Office { renderer: index },
+                    );
+                }
+            }
         }
     }
     best.map(|(_, _, route)| route)
+}
+
+/// Used only for an unavailable-renderer diagnostic after ordinary routing has
+/// preserved any explicit native/process match or Basic choice.
+pub(crate) fn office_requested(
+    path: &Path,
+    basic: bool,
+    disabled: &[String],
+    associations: &ViewerAssociations,
+) -> bool {
+    !basic
+        && !disabled.iter().any(|id| id == OFFICE_ID)
+        && associations
+            .suffix_match(
+                OFFICE_ID,
+                &OFFICE_EXTENSIONS.map(str::to_owned),
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(""),
+            )
+            .is_some()
 }
 
 // Specific suffix > user order > existing transport/mode/manifest defaults.

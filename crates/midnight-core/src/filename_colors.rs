@@ -1,5 +1,5 @@
 //! Bounded filename color preferences and immutable worker presentation results.
-use crate::{Entry, EntryId, FilterMode, PaneId, PanelFilter};
+use crate::{Entry, EntryId, FilterMode, PaneId, PanelFilter, TreeProjection};
 use std::{collections::HashMap, sync::Arc};
 
 pub const MAX_FILENAME_COLOR_RULES: usize = 32;
@@ -158,13 +158,17 @@ pub struct FilenameColorsRequest {
     pub id: u64,
     pub pane: PaneId,
     pub source: Arc<[Entry]>,
+    /// Exact accepted tree projection, or None for the flat root listing.
+    /// When present, source must be the same Arc as tree.root.entries.
+    pub tree: Option<Arc<TreeProjection>>,
     pub rules: Arc<[FilenameColorRule]>,
 }
 
 #[derive(Clone, Debug)]
 pub struct FilenameColorsResult {
     pub request: FilenameColorsRequest,
-    /// IDs are checked for uniqueness before publication; source Arc is authoritative.
+    /// Unique entry IDs from the retained source, or synthetic row.entry.id for Tree.
+    /// The exact source/rules/tree snapshot in request is authoritative.
     pub styles: HashMap<EntryId, FilenameStyle>,
 }
 

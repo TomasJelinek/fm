@@ -5,6 +5,12 @@ import { TipBody } from "controls.slint";
 import { ListHeader } from "list-header.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
+export struct LiteralArgumentInsertion {
+    label: string,
+    value: string,
+    hint: string,
+}
+
 // Each selected list row is exactly one argument, including an empty string.
 export component ArgumentEditor inherits VerticalLayout {
     in property <[string]> values;
@@ -12,6 +18,10 @@ export component ArgumentEditor inherits VerticalLayout {
     in property <bool> command-values;
     in property <bool> narrow;
     in property <bool> enabled: true;
+    // Supplied rows replace the editor/command choices without interpreting values.
+    in property <[LiteralArgumentInsertion]> literal-insertions: [];
+    out property <length> value-top: argument-value.absolute-position.y - root.absolute-position.y;
+    out property <length> value-height: argument-value.height;
     callback edit(int, string);
     callback add(string);
     callback remove(int);
@@ -28,6 +38,15 @@ export component ArgumentEditor inherits VerticalLayout {
         root.reveal-selection();
     }
     init => { root.selected = root.count == 0 ? -1 : 0; }
+    public function focus-value() {
+        if !root.enabled { return; }
+        if root.count == 0 { root.begin-argument(); }
+        else {
+            root.selected = clamp(root.selected, 0, root.count - 1);
+            if !root.adding { argument-value.text = root.selected-value; }
+            argument-value.focus();
+        }
+    }
     changed selected => { root.reveal-selection(); }
     changed selected-value => {
         // Editing assigns LineEdit.text and replaces its binding. Synchronize
@@ -161,14 +180,14 @@ export component ArgumentEditor inherits VerticalLayout {
     }
     GridLayout {
         spacing: 6px;
-        if root.command-values : HintedComboBox {
+        if root.literal-insertions.length == 0 && root.command-values : HintedComboBox {
             row: 0; col: 0;
             enabled: root.enabled;
             current-index <=> root.value-choice; accessible-label: "Argument value"; horizontal-stretch: 1; min-width: 0px;
             model: ["File path", "File name", "Name without extension", "Extension", "Active folder", "Other folder", "Selected paths"];
             hint: "Choose a captured value to append as one complete argument.";
         }
-        if root.command-values : HintedActionButton {
+        if root.literal-insertions.length == 0 && root.command-values : HintedActionButton {
             row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
             text: "Insert value"; accessible-label: "Insert argument value";
             hint: "Append the chosen value as a new argument and select it. Existing arguments are unchanged.";
@@ -177,11 +196,17 @@ export component ArgumentEditor inherits VerticalLayout {
                 : root.value-choice == 2 ? "${file.stem}" : root.value-choice == 3 ? "${file.extension}"
                 : root.value-choice == 4 ? "${active.path}" : root.value-choice == 5 ? "${other.path}" : "${selected.paths}"); }
         }
-        if !root.command-values : HintedActionButton {
+        if root.literal-insertions.length == 0 && !root.command-values : HintedActionButton {
             row: 0; col: 0; horizontal-stretch: 0;
             text: "Insert file"; accessible-label: "Insert editor file argument";
             hint: "Append the focused file as a new argument for F4. Existing arguments are unchanged.";
             enabled: root.enabled && root.count < 64; clicked => { root.append("{file}"); }
+        }
+        for insertion[index] in root.literal-insertions : HintedActionButton {
+            row: root.narrow ? index : 0; col: root.narrow ? 0 : index;
+            text: insertion.label; accessible-label: insertion.label; hint: insertion.hint;
+            enabled: root.enabled && root.count < 64;
+            clicked => { root.append(insertion.value); }
         }
     }
 }

@@ -571,10 +571,15 @@ fn settings_preview_blocked_by_bulk_selection_reports_inside_options() {
 #[test]
 fn loaded_dynamic_command_can_assign_and_remove_alias_without_changing_other_commands() {
     let mut p = Presenter::new("left".into(), "right".into());
-    p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-        user_commands: Arc::new(vec![command("first", "Command 文档")]),
-        ..Default::default()
-    }))));
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                user_commands: Arc::new(vec![command("first", "Command 文档")]),
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     let index = p
         .keyboard
         .snapshot

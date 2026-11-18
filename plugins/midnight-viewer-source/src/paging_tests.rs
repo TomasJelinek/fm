@@ -1,4 +1,5 @@
 use super::*;
+use crate::checkpoints::{BATCH_HOT, MAX_RECORDS};
 use crate::{decode::Encoding, plugin::Metadata, positions};
 use std::sync::{Mutex, atomic::AtomicBool};
 
@@ -8,7 +9,116 @@ fn comment_state() -> State {
     state
 }
 
-fn opened(hints: Hints) -> Session {
+#[test]
+fn staging_keeps_the_latest_states_in_a_fixed_memory_budget() {
+    let mut batch = CheckpointBatch::new();
+    let state = comment_state();
+    for offset in 1..=32769 {
+        batch.push((offset, state));
+        assert!(batch.retained_len() < MAX_RECORDS);
+    }
+    let retained = batch.iter().collect::<Vec<_>>();
+    assert!(
+        retained.ends_with(
+            &(32770 - BATCH_HOT as u64..=32769)
+                .map(|at| (at, state))
+                .collect::<Vec<_>>()
+        )
+    );
+    assert!(
+        retained.iter().any(|(at, _)| *at <= 4096),
+        "keep distributed early coverage too"
+    );
+    assert!(size_of::<CheckpointBatch>() <= 8192);
+    println!(
+        "checkpoint_state_bytes={} staging_bytes={} staging_slots={}",
+        size_of::<State>(),
+        size_of::<CheckpointBatch>(),
+        batch.retained_len()
+    );
+}
+
+#[test]
+fn live_cache_is_bounded_before_insertion_and_keeps_the_bom() {
+    let mut hints = Hints::new("dense.cpp", MODE_SOURCE);
+    hints.initialize("", 3);
+    for offset in 4..=32769 {
+        hints.insert_checkpoint(offset, State::default());
+        assert!(hints.checkpoints.retained_len() <= MAX_RECORDS);
+    }
+    assert_eq!(hints.checkpoints.get(&3), Some(&State::default()));
+    assert_eq!(hints.checkpoints.nearest(16390).unwrap().0, 16387);
+    assert_eq!(hints.checkpoints.nearest(32769).unwrap().0, 32769);
+
+    // Revisited older lines retain their exact state without losing the newest point.
+    hints.insert_checkpoint(4, comment_state());
+    assert_eq!(hints.checkpoints.get(&4), Some(&comment_state()));
+    assert!(hints.checkpoints.get(&32769).is_some());
+    assert!(hints.checkpoints.retained_len() <= MAX_RECORDS);
+    // Updating an existing state must not evict an unrelated checkpoint.
+    hints.insert_checkpoint(32769, comment_state());
+    let records = hints.checkpoints.retained_len();
+    assert_eq!(hints.checkpoints.get(&32769), Some(&comment_state()));
+    hints.insert_checkpoint(32769, comment_state());
+    assert_eq!(
+        hints.checkpoints.retained_len(),
+        records,
+        "updating must not allocate/evict"
+    );
+    assert_eq!(hints.checkpoints.get(&3), Some(&State::default()));
+}
+
+#[test]
+fn eviction_does_not_expand_the_replay_horizon_or_overflow_u64() {
+    let mut hints = Hints::new("dense.cpp", MODE_SOURCE);
+    hints.initialize("", 3);
+    for offset in 4..=70000 {
+        hints.insert_checkpoint(offset, State::default());
+    }
+    let session = session(hints);
+    for (anchor, expected) in [
+        (3, 3),
+        (32771, 32771),
+        (32772, 32771),
+        (70000, 70000),
+        (u64::MAX, u64::MAX - 4),
+    ] {
+        let request = Viewport {
+            source_anchor: anchor,
+            backwards: false,
+            max_bytes: 1,
+            max_lines: 1,
+        };
+        let ReadPlan {
+            offset,
+            count,
+            anchor: selected,
+            ..
+        } = plan(&session, &request);
+        assert_eq!(offset, expected, "anchor {anchor}");
+        assert_eq!(selected, anchor);
+        assert!(count <= 65536);
+        assert!(offset.checked_add(u64::from(count)).is_some());
+    }
+}
+
+#[test]
+fn uncached_prefix_replay_still_stops_at_the_exact_32k_horizon() {
+    let mut hints = Hints::new("dense.cpp", MODE_SOURCE);
+    hints.initialize("", 3);
+    let session = session(hints);
+    for (anchor, expected) in [(32771, 3), (32772, 32768)] {
+        let request = Viewport {
+            source_anchor: anchor,
+            backwards: false,
+            max_bytes: 1,
+            max_lines: 1,
+        };
+        assert_eq!(plan(&session, &request).offset, expected);
+    }
+}
+
+fn session(hints: Hints) -> Session {
     Session {
         reader: 1,
         revision: 3,
@@ -21,151 +131,55 @@ fn opened(hints: Hints) -> Session {
         }),
         hints: Mutex::new(hints),
         positions: Mutex::new(positions::Index::default()),
+        preparation: Mutex::new(preparation::Index::default()),
     }
-}
-
-/// Stages one pass of newline-dense line starts, as a viewport would.
-fn pass(hints: &mut Hints, offsets: impl IntoIterator<Item = u64>, state: State) {
-    let mut staged = Staged::new(hints.checkpoints.spacing);
-    for offset in offsets {
-        staged.push(offset, state);
-    }
-    hints.checkpoints.commit(&staged);
 }
 
 #[test]
-fn staging_keeps_the_latest_and_spaced_states_in_a_fixed_memory_budget() {
-    let mut staged = Staged::new(INITIAL_SPACING);
-    let state = comment_state();
-    for offset in 1..=65536 {
-        staged.push(offset, state);
-    }
-    assert_eq!(
-        staged.recent().collect::<Vec<_>>(),
-        (65473..=65536).map(|at| (at, state)).collect::<Vec<_>>()
-    );
-    let spaced: Vec<_> = staged.spaced[..staged.spaced_len]
-        .iter()
-        .map(|&(at, _)| at)
-        .collect();
-    assert_eq!(spaced, (0..32).map(|n| 1 + n * 2048).collect::<Vec<_>>());
-    println!(
-        "checkpoint_state_bytes={} staging_bytes={} recent_slots={MAX_RECENT} spaced_slots={MAX_SPACED}",
-        size_of::<State>(),
-        size_of::<Staged>(),
-    );
-}
-
-#[test]
-fn cover_is_bounded_keeps_the_bom_and_accepts_lower_revisits() {
-    let mut hints = Hints::new("dense.cpp", MODE_SOURCE);
+fn read_plans_keep_main_bounds_and_reserve_only_bounded_streaming_lookahead() {
+    let mut hints = Hints::new("bounds.cpp", MODE_SOURCE);
     hints.initialize("", 3);
-    // Page through 4 MiB of newline-dense text, 32 KiB per pass.
-    for pass_start in (4..4 << 20).step_by(32768) {
-        pass(&mut hints, pass_start..pass_start + 32768, State::default());
-        let checkpoints = &hints.checkpoints;
-        assert!(checkpoints.coverage.len() <= MAX_COVERAGE);
-        assert!(checkpoints.recent.len() <= MAX_RECENT);
-        assert_eq!(checkpoints.coverage.keys().next(), Some(&3));
-        if pass_start < 3 << 20 {
-            // Every forward and backward replay window still holds a state.
-            let keys: Vec<_> = checkpoints.coverage.keys().copied().collect();
-            assert!(keys.windows(2).all(|pair| pair[1] - pair[0] < 32752));
-        }
+    for offset in (3..=70000).step_by(2048) {
+        hints.insert_checkpoint(offset, State::default());
     }
-    let spacing = hints.checkpoints.spacing;
-    assert!(spacing <= 32768, "4 MiB stays replayable: {spacing}");
-    // Every visited region keeps a state within one spacing (plus a gap).
-    let keys: Vec<_> = hints.checkpoints.coverage.keys().copied().collect();
-    assert!(keys.windows(2).all(|pair| pair[1] - pair[0] < 2 * spacing));
-    assert!(*keys.last().unwrap() > (4 << 20) - 2 * spacing);
-    // The latest pass is retained densely for continuation.
-    assert_eq!(hints.checkpoints.recent.keys().next_back(), Some(&4194307));
-
-    // Revisiting an early region replaces dense continuation and refines the
-    // cover there instead of being rejected as lower than the latest window.
-    pass(&mut hints, 100_000..100_100, comment_state());
-    assert_eq!(
-        hints.checkpoints.recent.keys().copied().collect::<Vec<_>>(),
-        (100_036..100_100).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        hints.checkpoints.latest(100_050).unwrap().1,
-        comment_state()
-    );
-    assert_eq!(hints.checkpoints.coverage[&3], State::default());
-}
-
-#[test]
-fn replay_horizon_and_u64_bounds_hold_for_checkpoint_and_plain_plans() {
-    let mut hints = Hints::new("dense.cpp", MODE_SOURCE);
-    hints.initialize("", 3);
-    pass(&mut hints, 4..=70000, State::default());
-    let session = opened(hints);
-    // The pass covers line starts every 2 KiB (4 + n * 2048) after the BOM.
-    for (anchor, expected) in [
-        (3, 3),
-        (2051, 3),
-        (32771, 30724),
-        (70000, 70000),
-        (u64::MAX, u64::MAX - 4),
-    ] {
-        let request = Viewport {
-            source_anchor: anchor,
-            backwards: false,
-            max_bytes: 1,
-            max_lines: 1,
-        };
-        let planned = plan(&session, &request);
-        assert_eq!(planned.offset, expected, "anchor {anchor}");
-        assert_eq!(planned.anchor, anchor);
-        assert_eq!(
-            planned.state.is_some(),
-            anchor != u64::MAX,
-            "anchor {anchor}"
-        );
-        assert!(planned.count <= 65536);
-        assert!(
-            planned
-                .offset
-                .checked_add(u64::from(planned.count))
-                .is_some()
-        );
-    }
-    // A backward page replays from a covered state at most 32 KiB before the
-    // 8,192 text bytes and 51 line breaks (8,251 UTF-8 bytes) it can occupy.
-    let request = Viewport {
+    let active = session(hints);
+    let viewport = Viewport {
         source_anchor: 70000,
         backwards: true,
         max_bytes: 8192,
         max_lines: 50,
     };
-    let planned = plan(&session, &request);
-    assert!(planned.state.is_some());
+    let backward = plan(&active, &viewport);
     let span = 8192 + 51 + 8;
-    assert!((70000 - span - 32768..=70000 - span).contains(&planned.offset));
-    assert_eq!(u64::from(planned.count), 70000 + 8 - planned.offset);
-    // Forward reads stop at the page's maximum source span.
-    let request = Viewport {
-        backwards: false,
-        ..request
-    };
-    let planned = plan(&session, &request);
+    assert!(backward.snapshot.is_some());
+    assert!((70000 - span - 32768..=70000 - span).contains(&backward.offset));
+    assert_eq!(backward.offset + u64::from(backward.count), 70008);
+    let forward = plan(
+        &active,
+        &Viewport {
+            backwards: false,
+            ..viewport
+        },
+    );
     assert_eq!(
-        planned.offset + u64::from(planned.count),
-        70000 + 8192 + 50 + 8
+        forward.offset + u64::from(forward.count),
+        70000 + 8192 + 50 + 8 + preparation::LOOKAHEAD
     );
 
-    // Plain sessions never replay from the BOM.
-    let mut hints = Hints::new("text.cpp", MODE_TEXT);
-    hints.initialize("", 3);
-    let session = opened(hints);
-    let request = Viewport {
-        source_anchor: 30000,
-        backwards: false,
-        max_bytes: 8192,
-        max_lines: 50,
-    };
-    let planned = plan(&session, &request);
-    assert_eq!((planned.offset, planned.state), (29996, None));
+    for (name, mode) in [("plain.cpp", MODE_TEXT), ("plain.unknown", MODE_SOURCE)] {
+        let mut hints = Hints::new(name, mode);
+        hints.initialize("", 3);
+        let active = session(hints);
+        let plain = plan(
+            &active,
+            &Viewport {
+                source_anchor: 30000,
+                backwards: false,
+                ..viewport
+            },
+        );
+        assert_eq!(plain.offset, 29996);
+        assert!(plain.snapshot.is_none());
+        assert_eq!(plain.offset + u64::from(plain.count), 30000 + 8192 + 50 + 8);
+    }
 }

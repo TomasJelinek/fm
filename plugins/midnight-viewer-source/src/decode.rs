@@ -51,7 +51,7 @@ pub fn decode(
     cancelled: impl Fn() -> bool,
 ) -> Option<Decoded> {
     decode_until(
-        bytes, offset, encoding, eof, max_bytes, max_lines, None, cancelled,
+        bytes, offset, encoding, eof, max_bytes, max_lines, None, 0, cancelled,
     )
 }
 
@@ -64,6 +64,7 @@ fn decode_until(
     max_bytes: usize,
     max_lines: usize,
     tail: Option<Tail>,
+    lookahead: usize,
     cancelled: impl Fn() -> bool,
 ) -> Option<Decoded> {
     offset.checked_add(bytes.len() as u64)?;
@@ -76,7 +77,12 @@ fn decode_until(
     let mut scalars = bytes.len().min(limit);
     if let Some(tail) = tail {
         let before = usize::try_from(tail.source.saturating_sub(offset)).unwrap_or(usize::MAX);
-        scalars = scalars.min(before.saturating_add(tail.bytes).saturating_add(1));
+        scalars = scalars.min(
+            before
+                .saturating_add(tail.bytes)
+                .saturating_add(lookahead)
+                .saturating_add(1),
+        );
     }
     let mut decoded = Decoded {
         text: String::with_capacity(limit.min(bytes.len())),
@@ -89,6 +95,7 @@ fn decode_until(
     });
     // Text offset and newline count since the tail boundary, once reached.
     let mut page = tail.filter(|tail| offset >= tail.source).map(|_| (0, 0));
+    let mut after_page = None;
     let mut lines = 0;
     while decoded.consumed < bytes.len() && lines < max_lines {
         if decoded.anchors.len().is_multiple_of(POLL_SCALARS) && cancelled() {
@@ -121,7 +128,9 @@ fn decode_until(
             // Implicit direction marks (LRM, RLM, ALM) remain for ordinary RTL text.
             ch = '\u{fffd}';
         }
-        if decoded.text.len() + ch.len_utf8() > limit {
+        if decoded.text.len() + ch.len_utf8() > limit
+            || after_page.is_some_and(|end| decoded.text.len() + ch.len_utf8() > end)
+        {
             break;
         }
         decoded.text.push(ch);
@@ -133,11 +142,18 @@ fn decode_until(
         if ch == '\n' {
             lines += 1;
         }
-        if let Some(tail) = tail {
+        if let Some(end) = after_page {
+            if decoded.text.len() >= end {
+                break;
+            }
+        } else if let Some(tail) = tail {
             if let Some((start, newlines)) = &mut page {
                 *newlines += usize::from(ch == '\n');
                 if decoded.text.len() - *start >= tail.bytes || *newlines >= tail.lines {
-                    break;
+                    if lookahead == 0 {
+                        break;
+                    }
+                    after_page = Some(decoded.text.len().saturating_add(lookahead));
                 }
             } else if offset + decoded.consumed as u64 >= tail.source {
                 page = Some((decoded.text.len(), 0));
@@ -241,6 +257,19 @@ pub fn fragment(
     tail: Option<Tail>,
     cancelled: impl Fn() -> bool,
 ) -> Option<Decoded> {
+    fragment_with_lookahead(bytes, location, eof, max_bytes, tail, 0, cancelled)
+}
+
+/// Streaming syntax needs only this bounded suffix beyond the selected page.
+pub(crate) fn fragment_with_lookahead(
+    bytes: &[u8],
+    location: (u64, Encoding, bool),
+    eof: bool,
+    max_bytes: usize,
+    tail: Option<Tail>,
+    lookahead: usize,
+    cancelled: impl Fn() -> bool,
+) -> Option<Decoded> {
     let (offset, encoding, known_boundary) = location;
     let skip = if known_boundary {
         0
@@ -272,6 +301,7 @@ pub fn fragment(
         max_bytes,
         usize::MAX,
         tail,
+        lookahead,
         cancelled,
     )?;
     decoded.consumed += skip;
@@ -296,4 +326,37 @@ pub fn suffix_start(text: &str, end: usize, max_bytes: usize, max_lines: usize) 
         start = at;
     }
     start
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_forward_tail_keeps_only_the_requested_streaming_lookahead() {
+        let bytes = b"prefix\nline0\nline1\nline2\n";
+        let tail = Some(Tail {
+            source: 7,
+            bytes: 8192,
+            lines: 1,
+        });
+        let page = fragment(bytes, (0, Encoding::Utf8, true), true, 65536, tail, || {
+            false
+        })
+        .unwrap();
+        assert_eq!(page.text, "prefix\nline0\n");
+        let with_context = fragment_with_lookahead(
+            bytes,
+            (0, Encoding::Utf8, true),
+            true,
+            65536,
+            tail,
+            3,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(with_context.text, "prefix\nline0\nlin");
+        assert_eq!(with_context.consumed, 16);
+        assert_eq!(with_context.anchors.last().unwrap().source_offset, 16);
+    }
 }

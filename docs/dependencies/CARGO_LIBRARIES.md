@@ -432,7 +432,7 @@ captures and does not prove that old captures match today's source files.
 | [pxfm](https://crates.io/crates/pxfm/0.1.30) | 0.1.30 | BSD-3-Clause OR Apache-2.0 | app, image-decoder, image-viewer, pdf-viewer, thumbnail-image | Linux, Windows | — |
 | [quick-error](https://crates.io/crates/quick-error/2.0.1) | 2.0.1 | MIT/Apache-2.0 | app, image-decoder, image-viewer, thumbnail-image | Linux, Windows | — |
 | [quick-xml](https://crates.io/crates/quick-xml/0.39.4) | 0.39.4 | MIT | renderer-tests | Linux | — |
-| [quick-xml](https://crates.io/crates/quick-xml/0.41.0) | 0.41.0 | MIT | app | Linux | — |
+| [quick-xml](https://crates.io/crates/quick-xml/0.41.0) | 0.41.0 | MIT | app | Linux, Windows | yes |
 | [quote](https://crates.io/crates/quote/1.0.45) | 1.0.45 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [quote](https://crates.io/crates/quote/1.0.47) | 1.0.47 | MIT OR Apache-2.0 | api, app, basic, conformance, html-viewer, image-decoder, image-viewer, markdown, pdf-viewer, source, thumbnail-image, thumbnail-video | Linux, Windows | — |
 | [rand](https://crates.io/crates/rand/0.10.2) | 0.10.2 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
@@ -581,7 +581,7 @@ captures and does not prove that old captures match today's source files.
 | [ttf-parser](https://crates.io/crates/ttf-parser/0.25.1) | 0.25.1 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
 | [twox-hash](https://crates.io/crates/twox-hash/2.1.5) | 2.1.5 | MIT | archive | Linux, Windows | — |
 | [typed-index-collections](https://crates.io/crates/typed-index-collections/3.5.0) | 3.5.0 | MIT OR Apache-2.0 | app | Linux, Windows | — |
-| [typed-path](https://crates.io/crates/typed-path/0.12.4) | 0.12.4 | MIT OR Apache-2.0 | archive | Linux, Windows | — |
+| [typed-path](https://crates.io/crates/typed-path/0.12.4) | 0.12.4 | MIT OR Apache-2.0 | app, archive | Linux, Windows | — |
 | [typenum](https://crates.io/crates/typenum/1.20.1) | 1.20.1 | MIT OR Apache-2.0 | api, app, archive | Linux, Windows | — |
 | [unicase](https://crates.io/crates/unicase/2.10.0) | 2.10.0 | MIT OR Apache-2.0 | app, markdown | Linux, Windows | yes |
 | [unicode-bidi](https://crates.io/crates/unicode-bidi/0.3.18) | 0.3.18 | MIT OR Apache-2.0 | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
@@ -694,7 +694,7 @@ captures and does not prove that old captures match today's source files.
 | [zerovec](https://crates.io/crates/zerovec/0.11.9) | 0.11.9 | Unicode-3.0 | app | Linux, Windows | — |
 | [zerovec-derive](https://crates.io/crates/zerovec-derive/0.11.6) | 0.11.6 | Unicode-3.0 | renderer-tests | Linux, Windows | — |
 | [zerovec-derive](https://crates.io/crates/zerovec-derive/0.11.7) | 0.11.7 | Unicode-3.0 | app | Linux, Windows | — |
-| [zip](https://crates.io/crates/zip/8.6.0) | 8.6.0 | MIT | archive | Linux, Windows | yes |
+| [zip](https://crates.io/crates/zip/8.6.0) | 8.6.0 | MIT | app, archive | Linux, Windows | yes |
 | [zlib-rs](https://crates.io/crates/zlib-rs/0.6.8) | 0.6.8 | Zlib | pdf-viewer | Linux, Windows | — |
 | [zmij](https://crates.io/crates/zmij/1.0.23) | 1.0.23 | MIT | api, app, html-viewer, renderer-tests | Linux, Windows | — |
 | [zune-core](https://crates.io/crates/zune-core/0.5.1) | 0.5.1 | MIT OR Apache-2.0 OR Zlib | renderer-tests | Linux, Windows | — |

@@ -33,6 +33,7 @@ fn counterpart(directory: &str, names: &[&str]) -> FileCompareSource {
 
 #[test]
 fn same_name_finds_exact_unicode_in_either_opposite_panel_without_changing_order() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let name = "Žluťoučký 世界 🐈.txt";
     for active in 0..2 {
         let mut sources = vec![
@@ -45,6 +46,8 @@ fn same_name_finds_exact_unicode_in_either_opposite_panel_without_changing_order
         let launch = FileCompareLaunch {
             sources,
             disabled_plugins: Arc::from([]),
+            comparators: comparator_snapshot.preferences.clone(),
+            comparator_policy: comparator_snapshot.id,
         };
         assert_eq!(
             resolve(&launch, &AtomicBool::new(false)).unwrap(),
@@ -58,6 +61,7 @@ fn same_name_finds_exact_unicode_in_either_opposite_panel_without_changing_order
 
 #[test]
 fn same_name_uses_the_single_selected_file_and_its_captured_snapshot() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let entries: Arc<[Entry]> = vec![
         Entry::new(EntryId(40), "left/focused.txt".into(), EntryKind::File),
         Entry::new(EntryId(90), "left/selected.txt".into(), EntryKind::File),
@@ -75,6 +79,8 @@ fn same_name_uses_the_single_selected_file_and_its_captured_snapshot() {
             counterpart("right", &["focused.txt", "selected.txt"]),
         ],
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     };
     assert_eq!(
         resolve(&launch, &AtomicBool::new(false)).unwrap(),
@@ -88,6 +94,7 @@ fn same_name_uses_the_single_selected_file_and_its_captured_snapshot() {
 
 #[test]
 fn same_name_rejects_missing_ambiguous_hidden_or_nonidentical_native_names() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     for names in [
         vec!["different.txt"],
         vec!["same.txt", "same.txt"],
@@ -99,6 +106,8 @@ fn same_name_rejects_missing_ambiguous_hidden_or_nonidentical_native_names() {
                 counterpart("right", &names),
             ],
             disabled_plugins: Arc::from([]),
+            comparators: comparator_snapshot.preferences.clone(),
+            comparator_policy: comparator_snapshot.id,
         };
         assert!(resolve(&launch, &AtomicBool::new(false)).is_err());
     }
@@ -109,6 +118,8 @@ fn same_name_rejects_missing_ambiguous_hidden_or_nonidentical_native_names() {
     let launch = FileCompareLaunch {
         sources: vec![FileCompareSource::Focused("left/same.txt".into()), hidden],
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     };
     assert!(resolve(&launch, &AtomicBool::new(false)).is_err());
     let launch = FileCompareLaunch {
@@ -117,12 +128,15 @@ fn same_name_rejects_missing_ambiguous_hidden_or_nonidentical_native_names() {
             counterpart("right", &["e\u{301}.txt"]),
         ],
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     };
     assert!(resolve(&launch, &AtomicBool::new(false)).is_err());
 }
 
 #[test]
 fn same_name_rejects_nonfiles_and_mismatched_folder_or_index() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     for kind in [EntryKind::Directory, EntryKind::Symlink, EntryKind::Other] {
         let mut source = counterpart("right", &["same.txt"]);
         if let FileCompareSource::SameName { entries, .. } = &mut source {
@@ -131,6 +145,8 @@ fn same_name_rejects_nonfiles_and_mismatched_folder_or_index() {
         let launch = FileCompareLaunch {
             sources: vec![FileCompareSource::Focused("left/same.txt".into()), source],
             disabled_plugins: Arc::from([]),
+            comparators: comparator_snapshot.preferences.clone(),
+            comparator_policy: comparator_snapshot.id,
         };
         assert!(resolve(&launch, &AtomicBool::new(false)).is_err());
     }
@@ -149,6 +165,8 @@ fn same_name_rejects_nonfiles_and_mismatched_folder_or_index() {
         let launch = FileCompareLaunch {
             sources: vec![FileCompareSource::Focused("left/same.txt".into()), source],
             disabled_plugins: Arc::from([]),
+            comparators: comparator_snapshot.preferences.clone(),
+            comparator_policy: comparator_snapshot.id,
         };
         assert!(resolve(&launch, &AtomicBool::new(false)).is_err());
     }
@@ -156,6 +174,7 @@ fn same_name_rejects_nonfiles_and_mismatched_folder_or_index() {
 
 #[test]
 fn same_name_preserves_long_paths_and_ignores_display_labels() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let directory = format!("right/{}", "long-directory/".repeat(30));
     let mut source = counterpart(&directory, &["same.txt"]);
     if let FileCompareSource::SameName { entries, .. } = &mut source {
@@ -164,6 +183,8 @@ fn same_name_preserves_long_paths_and_ignores_display_labels() {
     let launch = FileCompareLaunch {
         sources: vec![FileCompareSource::Focused("left/same.txt".into()), source],
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     };
     assert_eq!(
         resolve(&launch, &AtomicBool::new(false)).unwrap()[1],
@@ -173,6 +194,7 @@ fn same_name_preserves_long_paths_and_ignores_display_labels() {
 
 #[test]
 fn selected_pair_preserves_display_order_and_rejects_directories() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let entries: Arc<[Entry]> = vec![
         Entry::new(EntryId(0), PathBuf::from("z/český.txt"), EntryKind::File),
         Entry::new(EntryId(1), PathBuf::from("z/世界.txt"), EntryKind::File),
@@ -187,6 +209,8 @@ fn selected_pair_preserves_display_order_and_rejects_directories() {
             selection,
         }],
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     };
     assert_eq!(
         resolve(&launch, &AtomicBool::new(false)).unwrap(),
@@ -208,12 +232,15 @@ fn selected_pair_preserves_display_order_and_rejects_directories() {
             selection,
         }],
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     };
     assert!(resolve(&launch, &AtomicBool::new(false)).is_err());
 }
 
 #[test]
 fn service_reads_and_renders_real_unicode_sources_off_thread() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let directory = tempfile::tempdir().unwrap();
     let name = "Žluťoučký 世界 🐈.txt";
     let paths = [
@@ -226,7 +253,8 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
     std::fs::write(&paths[0], "český 🐈\nold\n").unwrap();
     std::fs::write(&paths[1], "český 🐈\nnew\n").unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = crate::Service::new(runtime.handle().clone());
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = crate::Service::new(runtime.handle().clone(), spawner);
     let session = service
         .open(
             FileCompareLaunch {
@@ -235,6 +263,8 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
                     counterpart(paths[1].parent().unwrap().to_str().unwrap(), &[name]),
                 ],
                 disabled_plugins: Arc::from([]),
+                comparators: comparator_snapshot.preferences.clone(),
+                comparator_policy: comparator_snapshot.id,
             },
             ViewerAppearance {
                 family: "monospace".into(),
@@ -270,6 +300,9 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
                 last_status = Some(error);
             }
             Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+            Some(Output::ExternalStarted { .. }) => {
+                panic!("Built-in fixture launched an external program")
+            }
             None => {}
         }
         assert!(
@@ -284,13 +317,17 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
 
 #[test]
 fn unresolved_pair_keeps_session_available_for_manual_file_selection() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = crate::Service::new(runtime.handle().clone());
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = crate::Service::new(runtime.handle().clone(), spawner);
     let session = service
         .open(
             FileCompareLaunch {
                 sources: Vec::new(),
                 disabled_plugins: Arc::from([]),
+                comparators: comparator_snapshot.preferences.clone(),
+                comparator_policy: comparator_snapshot.id,
             },
             ViewerAppearance {
                 family: "monospace".into(),
@@ -337,6 +374,7 @@ fn unresolved_pair_keeps_session_available_for_manual_file_selection() {
 
 #[test]
 fn root_same_name_uses_only_visible_native_aliases_and_preserves_opposite_file() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     for visible in [false, true] {
         let FileCompareSource::SameName {
             directory,
@@ -348,6 +386,8 @@ fn root_same_name_uses_only_visible_native_aliases_and_preserves_opposite_file()
         };
         let launch = FileCompareLaunch {
             disabled_plugins: Arc::from([]),
+            comparators: comparator_snapshot.preferences.clone(),
+            comparator_policy: comparator_snapshot.id,
             sources: vec![
                 FileCompareSource::Focused("left/文档.txt".into()),
                 FileCompareSource::RootSameName {

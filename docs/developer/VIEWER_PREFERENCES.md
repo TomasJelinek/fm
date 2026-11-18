@@ -87,6 +87,33 @@ starts at the new page's top; dimensions smaller than the viewport are centered.
 It does not change the saved zoom preference. This policy belongs to the viewer
 backend; the independent PDF plugin renders the supplied page and viewport.
 
+## PDF layouts (in development)
+
+Use **Paged** to view one PDF page at a time, with the previous/next page buttons
+or **Ctrl+PageUp / Ctrl+PageDown**. Use **Continuous** to scroll through a sequence
+of pages. **Fit**, **1:1** and the zoom controls remain beside the layout buttons.
+The backend prepares bounded page regions as the view changes.
+
+The new layout controls remain in development until their UI/application gates pass.
+The prior Fit/Paged footer regression and two keyboard cases now pass within the31
+continuation. Selected39 remains38/1 because Options focus still fails. The current
+canonical104-source/159-selection packet is source-derived, not159 passes; the separate
+The earlier Viewer46 timeout and subsequent45/1 retain their dated source.
+On the canonical `fc4fcdf7…` shared-helper checkpoint, the exact former failure
+passed first and the other45 then passed: **46 actual passes /0 failures**.
+Both raw logs retain their separate1+45 counts; all nine document cases and
+19 image-presentation cases passed, including the genuine immediate-open errors.
+These overlap earlier scopes and are not additional unique passes or all159.
+Options focus, native/full-app and production migration acceptance remain open.
+
+The preceding backend slice and two final native PDF cases passed, including
+mixed page sizes and rapid camera replacement with the real C PDF worker. Those
+functional fixtures do not establish full-app input, production native-filesystem
+capture or scrolling performance. See the [current checkpoint](../ACTIVE_WORK.md#current-checkpoint)
+for the exact accepted source and outstanding gates.
+
+## Preference updates
+
 `ViewerPreferenceChange` describes one changed field. The viewer service accepts
 and validates the small configuration update independently of rendering and file
 I/O. The window invokes the application's preference listener immediately after
@@ -143,3 +170,66 @@ tests cover restoration and immediate Escape. Type/codec and recreation tests
 are not an actual application restart. Live restart, concurrent-window field
 changes, disabled plugins and failed writes remain part of the integrated
 persistence gate; see [current evidence](../verification/2026-11-08-viewer-controls.md).
+
+## Office contents preview (in development)
+
+The built-in Office preview is intended to open readable text, tables or sheet
+contents immediately, with navigation to further bounded content pages. It aims
+at readable contents rather than faithful Office page layout. An index-only
+opening screen is not the accepted final workflow; the initial-content helper
+contract is approved, with initial-content adapter cases passing in the scoped
+headless gate. Native and application qualification remain open.
+
+**XLSX was the first backend slice.** DOCX, XLSX, PPTX, ODT, ODS and ODP now have
+a scoped six-format gate:68 service,18 XLSX integration and27 Viewer adapter/
+frame-guard cases passed, with clean compilation. The later scoped repair gate passed60 checks and strict
+Clippy/format0; prior113/86 overlap. The earlier native CEF attempt rendered
+content but failed a resource-policy assertion; that failed snapshot remains
+historical. The coherent CSS/
+reader/diagnostic checkpoint later passed86 scoped headless checks. Worker image
+review found readable minimum-width columns with horizontal scrolling. Its native
+navigation now passed all11 content proofs with expected generated requests only
+and no denied/unexpected requests. Parent-change then failed with the browser
+exiting before requested evidence. The separately authorized close/cancel case
+then passed once on the same old harness. Those two native passes/one failure
+retain their source identity. The latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**:
+completed real Find returned0, Copy failed and Session stayed live. Its blank902×602
+diagnostic frame is not validated fresh content/resize proof (resize_ok=false,
+fresh_contrasted_frame=false). Source refusal remains required; no provider/Find/
+loading root cause is established. Host47 +Viewer44 =91/0 retain their frozen source;
+the later four assertion-style lint fixes passed strict Clippy0/format13files0 and
+two overlapping resource tests, not93 unique tests or a full91 rerun.
+
+Root accepted the generic provider small-body navigation contract for private
+implementation: captured main-frame GET/no-post targets of0..1MiB are completely
+admitted through genuine Resolve/ResourceRead/Data before replacement navigation;
+larger targets retain streaming through the same resolved capability. Small-body
+failure cannot fall back to streaming/old bytes. Preserve one body credit through
+actual response release, exact one-shot request binding, a30-second admission
+deadline and current authority checks. This changes no public API/SDK or dependency
+pins. The strong retained-document boundary applies to eligible small targets;
+large streaming retains its late-Read-denial limitation. Office V3's exact16 sources are now canonical (freeze `10d0a5e6…`), with
+132 nonowned guards unchanged and public API/SDK, Cargo, executable and runtime
+preserved. The unchanged pure navigation core `c6596c4c…` passed **34/0**, compile0;
+the existing CEF version-metadata manifest warning remains, so this is not a
+zero-warning gate. These tests exclude CEF/native execution and do not qualify
+new V3 route/adapter integration. Five native cases await a legitimate complete
+new C product; no new executable or deployment is claimed.
+
+Root accepted the Viewer/Compare live-appearance contract for private
+implementation; it is not implemented or passing. Application UI font is separate
+from document font. Frontend apply_appearance consumes actual applied/preview Theme,
+density and UI font scalars for existing/new windows; backend restore_palette accepts
+foreground/background/selection/accent only. Accepted revision is not painted/native
+acknowledgement. Bounded latest requests, A→B→A, rollback and frame-generation fences
+must preserve source/layout/position without recapture, relaunch or source I/O.
+Source/Markdown semantic roles must recolor active/cached content, gutters and raster;
+Office/author HTML CSS and original image/PDF pixels remain content-owned. Reuse
+supported UI controls and preserve input/accessibility; no SDK expansion is selected.
+
+Generated preview pages use bounded inert HTML. The preview does not require
+external Office, run macros, evaluate formulas or refresh external data. A sheet
+may show a stored formula result or inert formula text. Find searches only the
+currently generated page, not the complete workbook or document. See
+[Viewer protocol](VIEWER_PROTOCOL.md) and the [current checkpoint](../ACTIVE_WORK.md#current-checkpoint)
+for implementation and qualification boundaries.

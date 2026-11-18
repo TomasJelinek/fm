@@ -41,7 +41,12 @@ impl Harness {
             vec!["文档$(FileName)$(CRLF)".into(), "$(FileSize)$(LF)".into()];
         state
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences,
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
         let commands = Rc::new(RefCell::new(Vec::new()));
         let accepting = Rc::new(Cell::new(true));
         install(

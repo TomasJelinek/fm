@@ -230,6 +230,118 @@ fn solid_sevenzip_members_share_block_decodes_in_production_reads() {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct SourceCounts {
+    reads: u64,
+    seeks: u64,
+    bytes: u64,
+    largest_read: usize,
+}
+
+struct CountingReadSeek {
+    inner: Cursor<Vec<u8>>,
+    counts: Rc<Cell<SourceCounts>>,
+}
+impl Read for CountingReadSeek {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(output)?;
+        let mut counts = self.counts.get();
+        counts.reads += 1;
+        counts.bytes += read as u64;
+        counts.largest_read = counts.largest_read.max(output.len());
+        self.counts.set(counts);
+        Ok(read)
+    }
+}
+impl Seek for CountingReadSeek {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let mut counts = self.counts.get();
+        counts.seeks += 1;
+        self.counts.set(counts);
+        self.inner.seek(from)
+    }
+}
+
+fn directory_nodes(archive: &Archive, directory: u64) -> Vec<midnight_filesystem_api::Node> {
+    let mut nodes = Vec::new();
+    let mut after = 0;
+    loop {
+        let batch = archive.list(directory, after).unwrap();
+        let Some(last) = batch.last() else {
+            return nodes;
+        };
+        after = last.id;
+        nodes.extend(batch);
+    }
+}
+
+#[test]
+fn many_entry_zip_listing_reuses_source_bytes_without_changing_member_identity() {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    writer.add_directory("folder/", options).unwrap();
+    for index in 0..2048 {
+        writer
+            .start_file(format!("folder/member-{index:04}.txt"), options)
+            .unwrap();
+        write!(writer, "contents for member {index:04}").unwrap();
+    }
+    let bytes = writer.finish().unwrap().into_inner();
+    let length = bytes.len() as u64;
+    let counts = Rc::new(Cell::new(SourceCounts::default()));
+    let mut archive = Archive::open_stream(
+        Format::Zip,
+        Box::new(CountingReadSeek {
+            inner: Cursor::new(bytes.clone()),
+            counts: counts.clone(),
+        }),
+        length,
+        Rc::new(MemoryStorage::default()),
+        Limits::default(),
+    )
+    .unwrap();
+    let root = archive.list(1, 0).unwrap();
+    assert_eq!(root.len(), 1);
+    assert_eq!(root[0].id, 2);
+    assert_eq!(root[0].parent, 1);
+    assert_eq!(root[0].name, b"folder");
+    assert_eq!(root[0].kind, midnight_filesystem_api::Kind::Directory);
+    let nodes = directory_nodes(&archive, 2);
+    assert_eq!(nodes.len(), 2048);
+    let indexed = counts.get();
+    let reopened = Archive::open(Format::Zip, bytes, Limits::default()).unwrap();
+    assert_eq!(root, reopened.list(1, 0).unwrap());
+    assert_eq!(nodes, directory_nodes(&reopened, 2));
+    for (index, id, name, contents) in [
+        (0, 3, "member-0000.txt", b"contents for member 0000"),
+        (1024, 1027, "member-1024.txt", b"contents for member 1024"),
+        (2047, 2050, "member-2047.txt", b"contents for member 2047"),
+    ] {
+        let node = &nodes[index];
+        assert_eq!(node.id, id);
+        assert_eq!(node.parent, 2);
+        assert_eq!(node.name, name.as_bytes());
+        assert_eq!(node.display, name);
+        assert_eq!(node.kind, midnight_filesystem_api::Kind::File);
+        assert_eq!(node.size, Some(24));
+        assert!(node.readable);
+        assert_eq!(archive.read(id, 0, 24).unwrap(), (contents.to_vec(), true));
+    }
+    eprintln!(
+        "zip_members=2048 source_bytes={length} index={indexed:?} after_three_members={:?}; \
+         root=(2,folder) samples=(3,member-0000.txt),(1027,member-1024.txt),(2050,member-2047.txt)",
+        counts.get()
+    );
+    // Count at the production broker's Read + Seek boundary, independently of time.
+    // A metadata listing must not reread a large buffer for every tiny entry.
+    assert!(
+        indexed.bytes <= length * 4 + 8 * u64::from(midnight_filesystem_api::MAX_READ),
+        "many-entry index amplified source reads: {indexed:?}, source bytes={length}"
+    );
+    assert!(indexed.largest_read <= midnight_filesystem_api::MAX_READ as usize);
+}
+
 struct DiskFull;
 impl Storage for DiskFull {
     fn begin(&self, _: StagePurpose, _: Option<u64>, _: u64) -> io::Result<u64> {

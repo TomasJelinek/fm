@@ -50,7 +50,10 @@ impl Harness {
             }),
         );
         p.borrow_mut().apply(Event::PreferencesLoaded(Ok(Box::new(
-            UserPreferences::default(),
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences::default(),
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
         ))));
         refresh(&ui.window, &p.borrow());
         let mut h = Self {

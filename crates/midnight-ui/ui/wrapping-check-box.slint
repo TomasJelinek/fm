@@ -11,9 +11,10 @@ export component WrappingCheckBox inherits Rectangle {
     in property <bool> enabled: true;
     in-out property <bool> checked;
     in property <length> font-size: Theme.font-size;
+    in property <length> control-height: Theme.control-height;
     callback toggled();
     min-width: 0px;
-    height: max(Theme.control-height, caption.preferred-height);
+    height: max(root.control-height, caption.preferred-height);
     forward-focus: checkbox;
     HorizontalLayout {
         spacing: 6px; cross-axis-alignment: center;

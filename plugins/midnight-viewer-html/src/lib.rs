@@ -7,6 +7,8 @@ mod key_codes;
 #[cfg(feature = "native-cef")]
 mod native;
 #[cfg(any(feature = "native-cef", test))]
+mod navigation_route;
+#[cfg(any(feature = "native-cef", test))]
 mod output;
 #[cfg(feature = "native-cef")]
 mod platform;

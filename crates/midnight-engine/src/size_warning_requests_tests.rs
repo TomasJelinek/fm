@@ -95,15 +95,26 @@ async fn entered(probe: &Probe, count: usize) {
     .await
     .unwrap();
 }
-fn setup() -> (Controller, mpsc::Receiver<Event>, JoinSet<()>) {
+fn setup() -> (
+    midnight_work_budget::resident::Owner,
+    Controller,
+    mpsc::Receiver<Event>,
+    ResidentTasks,
+) {
+    let (owner, resident) =
+        midnight_work_budget::resident::Owner::start("reports-test", WORKERS).unwrap();
     let (sender, receiver) = mpsc::channel(32);
     (
-        Controller::new(Outbox {
-            sender,
-            wakeup: Arc::new(|| {}),
-        }),
+        owner,
+        Controller::new(
+            resident,
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+        ),
         receiver,
-        JoinSet::new(),
+        ResidentTasks::default(),
     )
 }
 
@@ -111,7 +122,7 @@ fn setup() -> (Controller, mpsc::Receiver<Event>, JoinSet<()>) {
 async fn snapshots_run_on_two_workers_and_full_queue_retires_ownership_off_caller() {
     let caller = std::thread::current().id();
     let probe = Arc::new(Probe::default());
-    let (mut controller, mut events, mut tasks) = setup();
+    let (_owner, mut controller, mut events, mut tasks) = setup();
     for id in 0..WORKERS {
         controller
             .open(
@@ -183,7 +194,7 @@ async fn snapshots_run_on_two_workers_and_full_queue_retires_ownership_off_calle
 async fn shutdown_cancels_active_snapshots_and_retires_pending_sources_on_workers() {
     let caller = std::thread::current().id();
     let probe = Arc::new(Probe::default());
-    let (mut controller, _events, mut tasks) = setup();
+    let (_owner, mut controller, _events, mut tasks) = setup();
     for id in 0..WORKERS {
         controller
             .open(
@@ -228,7 +239,7 @@ async fn shutdown_cancels_active_snapshots_and_retires_pending_sources_on_worker
 #[tokio::test]
 async fn cancelled_request_is_correlated_and_does_not_open_the_source() {
     let probe = Arc::new(Probe::default());
-    let (mut controller, mut events, mut tasks) = setup();
+    let (_owner, mut controller, mut events, mut tasks) = setup();
     let cancel = Cancellation::default();
     cancel.cancel();
     controller

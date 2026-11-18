@@ -1,4 +1,6 @@
 //! Real Slint form, worker session and keyboard input; fixtures never touch user files.
+#[path = "support/resident.rs"]
+mod resident;
 #[path = "support/mod.rs"]
 mod support;
 use midnight_compare_ui::{ComparatorWindow, ComparatorWindows};
@@ -75,19 +77,34 @@ fn render(native: &MinimalSoftwareWindow, window: &ComparatorWindow, width: u32,
 fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(support::TestPlatform(native.clone()))).unwrap();
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = resident::TestRuntime::new(tokio::runtime::Runtime::new().unwrap());
     let (requests, requested) = std::sync::mpsc::channel();
     let (responses, respond) = std::sync::mpsc::channel();
     let manager = ComparatorWindows::new(
-        midnight_compare_engine::Service::new(runtime.handle().clone()).with_path_picker(Arc::new(
-            TestPicker {
+        midnight_compare_engine::Service::new(runtime.handle().clone(), runtime.spawner())
+            .with_path_picker(Arc::new(TestPicker {
                 requests,
                 responses: std::sync::Mutex::new(respond),
-            },
-        )),
+            })),
     )
     .with_picker_owner(|_| midnight_core::PathPickerOwner::X11(42));
+    let app_appearance = ViewerAppearance {
+        family: "Segoe UI".into(),
+        font_size: 18.0,
+        foreground: [48, 48, 48, 255],
+        background: [255, 255, 255, 255],
+        selection: [204, 204, 204, 255],
+        accent: [69, 69, 69, 255],
+    };
+    manager.apply_appearance(
+        &app_appearance,
+        midnight_core::PreferenceTheme::Light,
+        midnight_core::UiDensity::Desktop,
+        18,
+        22,
+    );
     let known = std::env::current_dir().unwrap().join("Cargo.toml");
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let open_window = || {
         manager
             .open(
@@ -97,6 +114,8 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
                         FileCompareSource::Unspecified,
                     ],
                     disabled_plugins: Arc::from([]),
+                    comparators: comparator_snapshot.preferences.clone(),
+                    comparator_policy: comparator_snapshot.id,
                 },
                 ViewerAppearance {
                     family: "sans-serif".into(),
@@ -114,6 +133,8 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
             .unwrap()
     };
     let window = open_window();
+    assert_eq!(window.get_ui_font_family(), "Segoe UI");
+    assert_eq!(window.get_ui_font_size(), 18.0);
     render(&native, &window, 1000, 700);
     window
         .window()
@@ -144,6 +165,28 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
     let request = request.unwrap();
     assert_eq!(request.owner, midnight_core::PathPickerOwner::X11(42));
     assert!(request.title.contains("B"));
+    let mut preview = app_appearance.clone();
+    preview.family = "Arial".into();
+    preview.font_size = 24.0;
+    preview.foreground = [255, 255, 255, 255];
+    preview.background = [0, 0, 0, 255];
+    preview.selection = [255, 255, 255, 255];
+    preview.accent = [191, 255, 255, 255];
+    manager.apply_appearance(
+        &preview,
+        midnight_core::PreferenceTheme::HighContrastDark,
+        midnight_core::UiDensity::Desktop,
+        24,
+        28,
+    );
+    assert!(
+        window.get_choice_busy(),
+        "Appearance must not cancel or replay the picker"
+    );
+    assert_eq!(window.get_file_a().as_str(), known.to_str().unwrap());
+    assert!(window.get_file_b().is_empty());
+    assert_eq!(window.get_ui_font_family(), "Arial");
+    assert!(requested.try_recv().is_err());
     responses.send(None).unwrap();
     wait_for(&window, "finish the cancelled picker", || {
         !window.get_choice_busy()

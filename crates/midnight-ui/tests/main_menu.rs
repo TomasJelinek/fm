@@ -187,7 +187,12 @@ fn shortcut_menu_on(mut test: ui::TestUi, bindings: &[(&str, &[&str])]) -> (ui::
         ..Default::default()
     };
     preferences.validate().unwrap();
-    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     let shortcuts = Shortcuts::install(&test.window, presenter);
     test.window.set_left_can_target_cursor(true);
     open_menu(&mut test);

@@ -32,7 +32,10 @@ fn installed_hot_paths_keep_opening_location_and_ignore_retired_callbacks() {
         state
             .borrow_mut()
             .apply(midnight_core::Event::PreferencesLoaded(Ok(Box::new(
-                preferences,
+                midnight_core::AcceptedPreferences {
+                    preferences,
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
             ))));
         install(&main, state.clone(), Rc::new(|_| true));
         crate::refresh(&main, &state.borrow());

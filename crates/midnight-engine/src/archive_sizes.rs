@@ -13,11 +13,11 @@ use midnight_core::{
     ArchiveSizeCommand as Command, ArchiveSizeEvent as Event, Cancellation, EntryId,
     FolderSizeScanId, PaneId, SelectionRevision, SelectionSizeId,
 };
+use midnight_work_budget::resident::{Spawner, Ticket};
 use std::{
     collections::{HashSet, VecDeque},
     sync::{Arc, Condvar, Mutex, Weak},
 };
-use tokio::task::JoinHandle;
 
 const MAX_PENDING: usize = 8;
 
@@ -92,20 +92,29 @@ impl Lane {
 
 pub(crate) struct Controller {
     lanes: [Arc<Lane>; 2],
-    workers: [Option<JoinHandle<()>>; 2],
+    workers: [Option<Ticket>; 2],
     snapshots: Snapshots,
     outbox: Outbox,
 }
 impl Controller {
     pub(crate) fn new(
+        resident: &Spawner,
         retirement: Retirement,
         reports: crate::ReportArena,
         snapshots: Snapshots,
         outbox: Outbox,
     ) -> Self {
-        Self::with_progress_interval(retirement, reports, snapshots, outbox, worker::INTERVAL)
+        Self::with_progress_interval(
+            resident,
+            retirement,
+            reports,
+            snapshots,
+            outbox,
+            worker::INTERVAL,
+        )
     }
     fn with_progress_interval(
+        resident: &Spawner,
         retirement: Retirement,
         reports: crate::ReportArena,
         snapshots: Snapshots,
@@ -118,9 +127,17 @@ impl Controller {
             let reports = reports.clone();
             let outbox = outbox.clone();
             let snapshots = snapshots.clone();
-            Some(tokio::task::spawn_blocking(move || {
-                worker::Worker::new(lane, outbox, snapshots, reports, interval).run()
-            }))
+            let ticket = crate::spawn_resident(
+                resident,
+                "archive size",
+                Box::new(move || {
+                    worker::Worker::new(lane, outbox, snapshots, reports, interval).run()
+                }),
+            );
+            if ticket.is_none() {
+                lanes[index].close();
+            }
+            ticket
         });
         Self {
             lanes,
@@ -139,8 +156,30 @@ impl Controller {
         let lane = self.lanes[pane.index()].clone();
         let snapshots = self.snapshots.clone();
         let outbox = self.outbox.clone();
+        let unavailable = self.workers[pane.index()].is_none();
         // Exact capture is a short lock, but rejected large payloads also retire here.
-        let _ = tokio::task::spawn_blocking(move || admit(lane, snapshots, outbox, command)).await;
+        let rejected = tokio::task::spawn_blocking(move || {
+            if unavailable {
+                let scan = match command {
+                    Command::Compute { scan, .. } | Command::Entry { scan, .. } => Some(scan),
+                    Command::Observe { .. } => None,
+                    Command::Acknowledge { .. } | Command::Cancel { .. } => return None,
+                };
+                return Some(midnight_core::Event::ArchiveSizes(Box::new(
+                    Event::Rejected {
+                        pane,
+                        scan,
+                        message: "Archive size worker is unavailable.".into(),
+                    },
+                )));
+            }
+            admit(lane, snapshots, outbox, command);
+            None
+        })
+        .await;
+        if let Ok(Some(event)) = rejected {
+            self.outbox.send(event).await;
+        }
     }
     pub(crate) async fn shutdown(mut self) {
         for lane in &self.lanes {

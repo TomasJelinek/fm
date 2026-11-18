@@ -1,10 +1,19 @@
 //! Bounded lexical syntax catalogue. No grammar or regex comes from file content.
+use crate::styles::Styles;
 use midnight_plugin_sdk::api::viewer::*;
 use regex::{Regex, RegexBuilder};
 use std::sync::OnceLock;
 
+#[path = "syntax_stream.rs"]
+mod common;
+#[path = "syntax_cpp.rs"]
+mod cpp;
+#[path = "syntax_lua.rs"]
+mod lua;
 #[path = "syntax_xml.rs"]
 mod xml;
+#[path = "syntax_yaml.rs"]
+mod yaml;
 
 /// Host cancellation callbacks cross the plugin ABI and take host locks, so the
 /// lexers poll them at most once per this many input bytes.
@@ -31,6 +40,7 @@ pub enum Language {
     Sql,
     Yaml,
     Xml,
+    Lua,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -40,6 +50,13 @@ enum Mode {
     Block(u8),
     Quote(Quote),
     Raw(u8),
+    Identifier,
+    Number(common::Number),
+    LineComment,
+    CppRaw(cpp::Raw),
+    Xml(xml::State),
+    Lua(lua::State),
+    Yaml(yaml::State),
 }
 
 /// An open string literal closed by `count` (1 or 3) `quote` bytes.
@@ -63,21 +80,6 @@ enum Escape {
     Verbatim,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct State {
-    mode: Mode,
-    xml: xml::State,
-}
-
-/// Styles of one lexed text. `truncated` reports more than `MAX_SPANS` styled
-/// tokens: the extra spans are omitted, but the lexical state still advanced
-/// over the whole text, so later checkpoints remain exact.
-#[derive(Debug, Default)]
-pub struct Highlight {
-    pub spans: Vec<Span>,
-    pub truncated: bool,
-}
-
 /// Calls a cancellation callback at most once per `POLL_BYTES` of input.
 struct Poll<F> {
     cancelled: F,
@@ -98,37 +100,9 @@ impl<F: Fn() -> bool> Poll<F> {
     }
 }
 
-/// Collects merged spans up to `MAX_SPANS`, recording any overflow.
-#[derive(Default)]
-struct Spans(Highlight);
-
-impl Spans {
-    fn push(&mut self, start: usize, end: usize, role: u16) {
-        if start == end {
-            return;
-        }
-        let spans = &mut self.0.spans;
-        if let Some(last) = spans.last_mut()
-            && last.end == start as u32
-            && last.role == role
-        {
-            last.end = end as u32;
-        } else if spans.len() < MAX_SPANS {
-            spans.push(Span {
-                start: start as u32,
-                end: end as u32,
-                role,
-                flags: 0,
-            });
-        } else {
-            self.0.truncated = true;
-        }
-    }
-}
-
 /// Whether a Batch `::`/`rem` would start a command: the text since the last
 /// `&`, `|`, `(`, `)` or newline is whitespace with optional leading `@`s.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BatchStart {
     Command,
     At,
@@ -144,6 +118,30 @@ impl BatchStart {
             (Self::Command | Self::At, '@') => Self::At,
             (Self::At | Self::AtSpace, ch) if ch.is_whitespace() => Self::AtSpace,
             _ => Self::Argument,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct State {
+    mode: Mode,
+    command_start: BatchStart,
+}
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Normal,
+            command_start: BatchStart::Command,
+        }
+    }
+}
+impl State {
+    pub(crate) fn pending_span(&self) -> Option<(u64, u64)> {
+        match self.mode {
+            Mode::Lua(state) if state.pending_style() => state.pending_span(),
+            Mode::Xml(state) if state.pending_style() => state.pending_span(),
+            Mode::Yaml(state) if state.pending_style() => state.pending_span(),
+            _ => None,
         }
     }
 }
@@ -170,6 +168,7 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "rb" => Some(Ruby),
         "sql" => Some(Sql),
         "yaml" | "yml" => Some(Yaml),
+        "lua" => Some(Lua),
         "xml" | "xsd" | "xsl" | "xslt" | "xaml" | "csproj" | "fsproj" | "vbproj" | "vcxproj"
         | "props" | "targets" | "resx" => Some(Xml),
         _ => None,
@@ -195,6 +194,7 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "python" | "python3" | "python2" => Some(Python),
         "sh" | "bash" | "zsh" | "dash" => Some(Shell),
         "node" | "nodejs" => Some(JavaScript),
+        "lua" | "lua5.1" | "lua5.2" | "lua5.3" | "lua5.4" | "luajit" => Some(Lua),
         _ => None,
     }
 }
@@ -206,206 +206,113 @@ fn tokens() -> &'static Regex {
     ).size_limit(128 * 1024).dfa_size_limit(128 * 1024).build().unwrap())
 }
 
-/// Lexes `text` from `state`. `None` means cancellation or an exhausted
-/// nesting/length bound; `state` then keeps its previous value.
+/// Public standalone lexical output. Collection overflow does not stop state progress.
+#[derive(Debug, Default)]
+pub struct Highlight {
+    pub spans: Vec<Span>,
+    pub truncated: bool,
+}
 pub fn highlight(
     text: &str,
     language: Language,
     state: &mut State,
     cancelled: impl Fn() -> bool,
 ) -> Option<Highlight> {
-    let mut poll = Poll::new(cancelled);
-    if text.len() > 64 * 1024 || poll.cancelled(0) {
+    let mut current = *state;
+    let mut styles = Styles::new(0..text.len(), false);
+    scan(text, language, &mut current, &mut styles, cancelled)?;
+    let (spans, _, truncated) = styles.finish();
+    *state = current;
+    Some(Highlight { spans, truncated })
+}
+
+pub(crate) fn scan(
+    text: &str,
+    language: Language,
+    state: &mut State,
+    styles: &mut Styles,
+    cancelled: impl Fn() -> bool,
+) -> Option<()> {
+    (stream(text, language, state, styles, true, cancelled)? == text.len()).then_some(())
+}
+
+/// Incremental decoded input. Incomplete lexical suffixes belong to the caller.
+pub(crate) fn stream(
+    text: &str,
+    language: Language,
+    state: &mut State,
+    styles: &mut Styles,
+    final_chunk: bool,
+    cancelled: impl Fn() -> bool,
+) -> Option<usize> {
+    if text.len() > 65536 || cancelled() {
         return None;
     }
-    if language == Language::Xml {
-        return xml::highlight(text, &mut state.xml, &mut poll);
+    match language {
+        Language::Lua => {
+            let mut current = if let Mode::Lua(current) = state.mode {
+                current
+            } else {
+                lua::State::default()
+            };
+            let consumed = if final_chunk {
+                lua::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                lua::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == lua::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Lua(current)
+            };
+            Some(consumed)
+        }
+        Language::Xml => {
+            let mut current = if let Mode::Xml(current) = state.mode {
+                current
+            } else {
+                xml::State::default()
+            };
+            let consumed = if final_chunk {
+                xml::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                xml::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == xml::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Xml(current)
+            };
+            Some(consumed)
+        }
+        Language::Yaml => {
+            let mut current = if let Mode::Yaml(current) = state.mode {
+                current
+            } else {
+                yaml::State::default()
+            };
+            let consumed = if final_chunk {
+                yaml::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                yaml::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == yaml::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Yaml(current)
+            };
+            Some(consumed)
+        }
+        _ => common::stream(text, language, state, styles, final_chunk, cancelled),
     }
-    let mut current = *state;
-    let mut spans = Spans::default();
-    let bytes = text.as_bytes();
-    let mut at = 0;
-    // Each call starts at a line start, where a Batch command can begin.
-    let mut batch = BatchStart::Command;
-    while at < bytes.len() {
-        if poll.cancelled(at) {
-            return None;
-        }
-        let start = at;
-        let role = match current.mode {
-            Mode::Block(mut depth) => {
-                while at < bytes.len() {
-                    if poll.cancelled(at) {
-                        return None;
-                    }
-                    if bytes[at..].starts_with(b"*/") {
-                        at += 2;
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                    } else if language == Language::Rust && bytes[at..].starts_with(b"/*") {
-                        if depth == 16 {
-                            return None;
-                        }
-                        depth += 1;
-                        at += 2;
-                    } else {
-                        at += text[at..].chars().next().unwrap().len_utf8();
-                    }
-                }
-                current.mode = if depth == 0 {
-                    Mode::Normal
-                } else {
-                    Mode::Block(depth)
-                };
-                STYLE_COMMENT
-            }
-            Mode::Quote(mut quote) => {
-                let mut closed = false;
-                while at < bytes.len() {
-                    if poll.cancelled(at) {
-                        return None;
-                    }
-                    let delimiter = &[quote.quote; 3][..quote.count as usize];
-                    if quote.escaped {
-                        quote.escaped = false;
-                        at += text[at..].chars().next().unwrap().len_utf8();
-                    } else if bytes[at] == b'\\' && quote.escape == Escape::Backslash {
-                        quote.escaped = true;
-                        at += 1;
-                    } else if bytes[at..].starts_with(delimiter) {
-                        if quote.escape == Escape::Doubled
-                            && bytes.get(at + 1) == Some(&quote.quote)
-                        {
-                            at += 2;
-                            continue;
-                        }
-                        at += delimiter.len();
-                        closed = true;
-                        break;
-                    } else if bytes[at] == b'\n' && !quote.multiline {
-                        // An unterminated single-line literal ends with its line.
-                        closed = true;
-                        break;
-                    } else {
-                        at += text[at..].chars().next().unwrap().len_utf8();
-                    }
-                }
-                current.mode = if closed {
-                    Mode::Normal
-                } else {
-                    Mode::Quote(quote)
-                };
-                STYLE_STRING
-            }
-            Mode::Raw(hashes) => {
-                let mut closed = false;
-                while at < bytes.len() {
-                    if poll.cancelled(at) {
-                        return None;
-                    }
-                    if bytes[at] == b'"'
-                        && bytes[at + 1..].starts_with(&[b'#'; 16][..hashes as usize])
-                    {
-                        at += 1 + hashes as usize;
-                        closed = true;
-                        break;
-                    }
-                    at += text[at..].chars().next().unwrap().len_utf8();
-                }
-                if closed {
-                    current.mode = Mode::Normal;
-                }
-                STYLE_STRING
-            }
-            Mode::Normal => {
-                let c_style = matches!(
-                    language,
-                    Language::Rust
-                        | Language::C
-                        | Language::Cpp
-                        | Language::JavaScript
-                        | Language::TypeScript
-                        | Language::Java
-                        | Language::CSharp
-                        | Language::Go
-                        | Language::Swift
-                        | Language::Kotlin
-                );
-                let hash_style = matches!(
-                    language,
-                    Language::Python
-                        | Language::Shell
-                        | Language::Toml
-                        | Language::Ruby
-                        | Language::Yaml
-                );
-                let batch_comment = language == Language::Batch
-                    && batch != BatchStart::Argument
-                    && (bytes[at..].starts_with(b"::")
-                        || (bytes
-                            .get(at..at + 3)
-                            .is_some_and(|word| word.eq_ignore_ascii_case(b"rem"))
-                            && bytes.get(at + 3).is_none_or(u8::is_ascii_whitespace)));
-                if batch_comment
-                    || (c_style && bytes[at..].starts_with(b"//"))
-                    || (hash_style && bytes[at] == b'#')
-                    || (language == Language::Sql && bytes[at..].starts_with(b"--"))
-                {
-                    at += text[at..].find('\n').unwrap_or(bytes.len() - at);
-                    STYLE_COMMENT
-                } else if (c_style || language == Language::Sql) && bytes[at..].starts_with(b"/*") {
-                    at += 2;
-                    current.mode = Mode::Block(1);
-                    STYLE_COMMENT
-                } else if language == Language::Rust
-                    && bytes[at] == b'r'
-                    && let Some(hashes) = raw_start(&bytes[at..])
-                {
-                    at += 2 + hashes as usize;
-                    current.mode = Mode::Raw(hashes);
-                    STYLE_STRING
-                } else if let Some(quote) = quote_start(language, text, at) {
-                    at += quote.count as usize;
-                    current.mode = Mode::Quote(quote);
-                    STYLE_STRING
-                } else if language == Language::Rust && bytes[at] == b'\'' {
-                    // A lifetime or loop label, never a character literal.
-                    at += 1;
-                    let name: usize = text[at..]
-                        .chars()
-                        .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
-                        .map(char::len_utf8)
-                        .sum();
-                    at += name;
-                    if name == 0 { STYLE_PLAIN } else { STYLE_TYPE }
-                } else if let Some(token) = tokens().find(&text[at..]) {
-                    let token = token.as_str();
-                    at += token.len();
-                    if token.as_bytes()[0].is_ascii_digit() {
-                        STYLE_NUMBER
-                    } else if keyword(language, token) {
-                        STYLE_KEYWORD
-                    } else {
-                        STYLE_PLAIN
-                    }
-                } else {
-                    at += text[at..].chars().next().unwrap().len_utf8();
-                    STYLE_PLAIN
-                }
-            }
-        };
-        if role != STYLE_PLAIN {
-            spans.push(start, at, role);
-        }
-        if language == Language::Batch {
-            batch = text[start..at].chars().fold(batch, BatchStart::next);
-        }
-    }
-    *state = current;
-    Some(spans.0)
 }
+
+#[cfg(test)]
+#[path = "syntax_stream_tests.rs"]
+mod stream_tests;
 
 /// The string literal that a delimiter at `at` opens in `language`, if any.
 fn quote_start(language: Language, text: &str, at: usize) -> Option<Quote> {
@@ -534,12 +441,12 @@ fn keyword_list(language: Language) -> &'static str {
             "select from where as join left right inner outer on group by order having limit offset insert into values update set delete create table drop alter index view distinct union all null true false and or not is like in exists case when then else end begin commit rollback"
         }
         Language::Yaml => "true false null True False Null TRUE FALSE NULL yes no on off",
-        Language::Xml => "",
+        Language::Xml | Language::Lua => "",
     }
 }
 
 fn keyword(language: Language, token: &str) -> bool {
-    const LANGUAGES: usize = Language::Xml as usize + 1;
+    const LANGUAGES: usize = Language::Lua as usize + 1;
     static TABLES: [OnceLock<Box<[&'static str]>>; LANGUAGES] =
         [const { OnceLock::new() }; LANGUAGES];
     let words = TABLES[language as usize].get_or_init(|| {

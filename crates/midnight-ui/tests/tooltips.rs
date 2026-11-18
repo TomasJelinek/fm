@@ -87,11 +87,10 @@ fn options_topic(
         click(window, center(&button));
     } else {
         // Large-font Options uses the compact picker instead of sidebar buttons.
-        let current = window.get_options_topic_index();
-        let current_index = if current >= 3 { current - 1 } else { current };
-        let target_index = if topic >= 3 { topic - 1 } else { topic };
+        let current_index = ui::options_topic_position(window.get_options_topic_index());
+        let target_index = ui::options_topic_position(topic);
         ui::click_popup(window, "Options topic", AccessibleRole::Combobox);
-        for _ in 0..(target_index - current_index).abs() {
+        for _ in 0..target_index.abs_diff(current_index) {
             ui::key(
                 window,
                 if target_index > current_index {
@@ -376,13 +375,18 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                density,
-                desktop_font_size: font,
-                touch_font_size: font,
-                theme: scheme,
-                ..Default::default()
-            }))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences: UserPreferences {
+                        density,
+                        desktop_font_size: font,
+                        touch_font_size: font,
+                        theme: scheme,
+                        ..Default::default()
+                    },
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
         presenter.borrow_mut().apply(Event::DesktopContext {
             system_locations: Vec::new(),
             network_position: 0,

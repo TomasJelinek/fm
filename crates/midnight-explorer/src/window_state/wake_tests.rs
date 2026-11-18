@@ -40,9 +40,7 @@ fn the_sampler_stops_when_quiet_and_runs_after_geometry_events() {
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(
-            UserPreferences::default(),
-        ))));
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     let geometry = WindowState::install(&window, presenter, Rc::new(|_| true), true);
     window.show().unwrap();
     let pulse = geometry.pulse.clone().unwrap();
@@ -78,9 +76,7 @@ fn a_window_minimized_before_its_save_stops_sampling_until_the_next_geometry_eve
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(
-            UserPreferences::default(),
-        ))));
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     let geometry = WindowState::install(&window, presenter, Rc::new(|_| true), true);
     window.show().unwrap();
     let pulse = geometry.pulse.clone().unwrap();
@@ -128,9 +124,7 @@ fn a_refused_save_waits_without_polling_while_the_window_cannot_be_observed() {
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(
-            UserPreferences::default(),
-        ))));
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     let geometry = WindowState::install(&window, presenter, Rc::new(|_| true), true);
     window.show().unwrap();
     let pulse = geometry.pulse.clone().unwrap();
@@ -177,10 +171,15 @@ fn a_refused_save_stays_pending_until_its_retry_is_accepted() {
     moved.normal.x += 40;
     let root = std::env::current_dir().unwrap();
     let mut presenter = Presenter::new(root.clone(), root);
-    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-        window_geometry: Some(saved.clone()),
-        ..Default::default()
-    }))));
+    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                window_geometry: Some(saved.clone()),
+                ..Default::default()
+            },
+            comparators: Default::default(),
+        },
+    ))));
     let mut state = State {
         initialized: true,
         last: Some(saved),
@@ -232,10 +231,15 @@ fn a_window_moved_back_to_its_saved_geometry_settles_without_a_save() {
     moved.normal.x += 40;
     let root = std::env::current_dir().unwrap();
     let mut presenter = Presenter::new(root.clone(), root);
-    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-        window_geometry: Some(saved.clone()),
-        ..Default::default()
-    }))));
+    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                window_geometry: Some(saved.clone()),
+                ..Default::default()
+            },
+            comparators: Default::default(),
+        },
+    ))));
     let mut state = State {
         initialized: true,
         last: Some(saved.clone()),

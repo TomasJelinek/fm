@@ -10,6 +10,11 @@ pub(super) struct State {
 }
 
 pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
+    // Metadata can reuse an existing pixel key without calling pixels(). Fence
+    // that path too, before it changes the camera or any native property.
+    if !open.palette.allows(frame) {
+        return false;
+    }
     let Some(info) = &frame.raster else {
         return false;
     };

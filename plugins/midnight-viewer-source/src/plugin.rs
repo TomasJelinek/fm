@@ -1,6 +1,6 @@
 use crate::{
     decode::{self, Encoding},
-    paging, positions, search,
+    paging, positions, preparation, search,
 };
 use midnight_plugin_sdk::{
     Context, Output, Request, Viewer,
@@ -14,9 +14,9 @@ use std::{
     },
 };
 
-// Concurrent operations per instance; Locate never takes the last slot.
+// Concurrent operations per instance; optional background work leaves one slot.
 const MAX_WORK: usize = 4;
-const MAX_LOCATE_WORK: usize = MAX_WORK - 1;
+const MAX_BACKGROUND_WORK: usize = MAX_WORK - 1;
 
 pub struct Plugin {
     sessions: Mutex<HashMap<u64, Arc<Session>>>,
@@ -35,11 +35,11 @@ pub struct Session {
     pub metadata: Mutex<Metadata>,
     pub hints: Mutex<paging::Hints>,
     pub(crate) positions: Mutex<positions::Index>,
+    pub(crate) preparation: Mutex<preparation::Index>,
 }
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
-
 /// Bounds the operations an instance runs at once. The SDK keeps a superseded
 /// request's pending read continuation, and so its permit, until the host
 /// replies; admission therefore reclaims permits of cancelled requests instead
@@ -128,8 +128,11 @@ impl Viewer for Plugin {
         if context.is_cancelled() {
             return;
         }
-        let limit = if request.kind() == abi::REQUEST_LOCATE {
-            MAX_LOCATE_WORK
+        let limit = if matches!(
+            request.kind(),
+            abi::REQUEST_LOCATE | abi::REQUEST_PREPARE_SOURCE
+        ) {
+            MAX_BACKGROUND_WORK
         } else {
             MAX_WORK
         };
@@ -167,6 +170,7 @@ impl Viewer for Plugin {
                 }),
                 hints: Mutex::new(paging::Hints::new(&open.display_name, open.mode)),
                 positions: Mutex::new(positions::Index::default()),
+                preparation: Mutex::new(preparation::Index::default()),
             });
             {
                 let mut sessions = lock(&self.sessions);
@@ -219,6 +223,16 @@ impl Viewer for Plugin {
             return;
         }
         match request.kind() {
+            abi::REQUEST_PREPARE_SOURCE => {
+                let prepare: messages::PrepareSource = match request.decode() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        let _ = context.fail(abi::INVALID, "Invalid PrepareSource");
+                        return;
+                    }
+                };
+                preparation::start(context, session, prepare, Box::new(move || drop(permit)));
+            }
             abi::REQUEST_LOCATE => {
                 let locate: messages::Locate = match request.decode() {
                     Ok(value) => value,
@@ -238,13 +252,12 @@ impl Viewer for Plugin {
                     }
                 };
                 let plan = paging::plan(&session, &viewport);
-                let (offset, count) = (plan.offset, plan.count);
                 let next = session.clone();
                 read(
                     context,
                     session,
-                    offset,
-                    count,
+                    plan.offset,
+                    plan.count,
                     Box::new(move |context, data, eof| {
                         let _permit = permit;
                         paging::viewport(context, next, data, plan, viewport, eof);

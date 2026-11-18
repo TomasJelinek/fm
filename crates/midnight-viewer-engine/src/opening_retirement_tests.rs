@@ -20,7 +20,10 @@ impl GeneratedTextSource for Source {
 
 fn rejected(invalid_preferences: bool) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::new(runtime.handle().clone());
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = Service::new(runtime.handle().clone(), resident);
     let (drop_sender, drops) = std::sync::mpsc::channel();
     let path = PathBuf::from("diagnostic.txt");
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();

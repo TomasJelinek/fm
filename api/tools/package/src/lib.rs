@@ -1,8 +1,10 @@
 use serde_json::{Value, json};
 mod archive;
 mod bundle;
+mod releases;
 pub use archive::canonical_package;
 pub use bundle::{bundle_configuration, crate_member, packaged_crate, run_cargo};
+pub use releases::{append_registry_package, seed_legacy_releases};
 
 pub const REGISTRY: &str = "https://midnight-explorer.invalid/api-index";
 pub const CRATES_IO: &str = "https://github.com/rust-lang/crates.io-index";

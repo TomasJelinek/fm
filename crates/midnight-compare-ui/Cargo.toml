@@ -18,6 +18,7 @@ slint-build.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+midnight-work-budget = { path = "../midnight-work-budget", features = ["resident-workers"] }
 
 [[test]]
 name = "integration"

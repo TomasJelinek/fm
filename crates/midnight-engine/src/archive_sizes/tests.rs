@@ -153,6 +153,7 @@ fn root(
     result
 }
 fn setup() -> (
+    midnight_work_budget::resident::Owner,
     Controller,
     Snapshots,
     tokio::sync::mpsc::Receiver<midnight_core::Event>,
@@ -164,13 +165,17 @@ fn setup() -> (
 fn setup_with_interval(
     interval: Duration,
 ) -> (
+    midnight_work_budget::resident::Owner,
     Controller,
     Snapshots,
     tokio::sync::mpsc::Receiver<midnight_core::Event>,
 ) {
     let snapshots = crate::test_snapshots(Default::default());
     let (sender, events) = tokio::sync::mpsc::channel(64);
+    let (owner, resident) =
+        midnight_work_budget::resident::Owner::start("archive-size-test", 2).unwrap();
     let controller = Controller::with_progress_interval(
+        &resident,
         Retirement::testing(),
         crate::ReportArena::testing(),
         snapshots.clone(),
@@ -180,7 +185,7 @@ fn setup_with_interval(
         },
         interval,
     );
-    (controller, snapshots, events)
+    (owner, controller, snapshots, events)
 }
 async fn raw_next(events: &mut tokio::sync::mpsc::Receiver<midnight_core::Event>) -> Event {
     match tokio::time::timeout(Duration::from_secs(5), events.recv())
@@ -235,7 +240,7 @@ fn snapshot(events: &[Event]) -> Arc<ArchiveSizeSnapshot> {
 
 #[tokio::test]
 async fn selected_only_and_space_share_subdirectory_cache_without_content_reads() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     let ready = root(&snapshots, mount.clone(), 1, false);
     controller
@@ -291,7 +296,7 @@ async fn selected_only_and_space_share_subdirectory_cache_without_content_reads(
 }
 #[tokio::test]
 async fn empty_and_files_only_selection_do_not_fall_back_to_all_directories() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     let ready = root(&snapshots, mount.clone(), 1, false);
     for (scan, selected) in [(1, HashSet::new()), (2, HashSet::from([EntryId(4)]))] {
@@ -309,7 +314,7 @@ async fn empty_and_files_only_selection_do_not_fall_back_to_all_directories() {
 }
 #[tokio::test]
 async fn resort_reuses_identity_cache_and_observation_is_backend_summary() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     let ready = root(&snapshots, mount.clone(), 1, false);
     controller
@@ -352,7 +357,7 @@ async fn resort_reuses_identity_cache_and_observation_is_backend_summary() {
 }
 #[tokio::test]
 async fn reconstructed_stale_and_descendant_ids_are_rejected_without_fallback() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     let ready = root(&snapshots, mount.clone(), 1, false);
     let mut forged = ready.clone();
@@ -398,7 +403,7 @@ async fn reconstructed_stale_and_descendant_ids_are_rejected_without_fallback() 
 }
 #[tokio::test]
 async fn changed_source_never_reuses_completed_cache() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     let ready = root(&snapshots, mount.clone(), 1, false);
     controller
@@ -429,7 +434,7 @@ async fn changed_source_never_reuses_completed_cache() {
 
 #[tokio::test]
 async fn bounded_queue_rejects_overflow_and_full_scan_supersedes_pending_requests() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     mount.block();
     let ready = root(&snapshots, mount.clone(), 1, false);
@@ -519,7 +524,7 @@ fn selected_summary_overflow_is_unknown_and_equal_ids_do_not_reuse_other_mount_o
 
 #[tokio::test]
 async fn observer_and_unacknowledged_publication_do_not_keep_a_departed_mount_alive() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     let weak = Arc::downgrade(&mount);
     let ready = root(&snapshots, mount, 1, false);
@@ -552,7 +557,7 @@ async fn observer_and_unacknowledged_publication_do_not_keep_a_departed_mount_al
 
 #[tokio::test]
 async fn selected_root_cannot_alias_a_captured_unselected_sibling() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mut mount = Mount::default();
     mount
         .rows
@@ -594,7 +599,7 @@ async fn selected_root_cannot_alias_a_captured_unselected_sibling() {
 
 #[tokio::test]
 async fn only_one_snapshot_is_in_flight_and_exact_ack_flushes_the_latest_cache() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     let ready = root(&snapshots, mount, 1, false);
     controller
@@ -669,7 +674,7 @@ async fn only_one_snapshot_is_in_flight_and_exact_ack_flushes_the_latest_cache()
 
 #[tokio::test]
 async fn newer_same_mount_observer_keeps_final_results_from_an_older_running_capture() {
-    let (controller, snapshots, mut events) = setup_with_interval(Duration::ZERO);
+    let (_owner, controller, snapshots, mut events) = setup_with_interval(Duration::ZERO);
     let mount = fixture();
     mount.block();
     let ready = root(&snapshots, mount.clone(), 1, false);
@@ -716,7 +721,7 @@ async fn newer_same_mount_observer_keeps_final_results_from_an_older_running_cap
 }
 #[tokio::test]
 async fn sorting_does_not_cancel_active_capture_but_explicit_cancel_does() {
-    let (controller, snapshots, mut events) = setup();
+    let (_owner, controller, snapshots, mut events) = setup();
     let mount = fixture();
     mount.block();
     let ready = root(&snapshots, mount.clone(), 1, false);

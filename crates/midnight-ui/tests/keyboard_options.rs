@@ -755,7 +755,7 @@ impl Harness {
             .unwrap();
         self.presenter.borrow_mut().apply(Event::PreferencesSaved {
             revision,
-            result: Ok(()),
+            result: Ok(midnight_core::FileComparatorSnapshot::default()),
         });
         refresh(&self.ui.window, &self.presenter.borrow());
         self.draw();
@@ -822,7 +822,13 @@ impl Harness {
         };
         values.validate().unwrap();
         owned_commands::run(&presenter, &begin, |p, send| {
-            p.apply_with_sender(Event::PreferencesLoaded(Ok(values.into())), send);
+            p.apply_with_sender(
+                Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+                    preferences: values,
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                }))),
+                send,
+            );
         });
         let mut h = Self {
             ui,

@@ -27,12 +27,13 @@ no host-source, other-plugin, Slint, filesystem-open or network dependency.
 | Ruby | rb |
 | SQL | sql |
 | YAML | yaml, yml |
+| Lua | lua |
 | XML / XAML / MSBuild projects and resources | xml, xsd, xsl, xslt, xaml, csproj, fsproj, vbproj, vcxproj, props, targets, resx |
 
 Extension recognition is ASCII case insensitive. Extensionless Python, shell
-and Node scripts are recognized from their first shebang line after Open.
+Node and Lua scripts are recognized from their first shebang line after Open.
 Host routing must choose this package before a shebang can be inspected; the
-manifest does not claim every extensionless file. The 19 profiles have fixtures
+manifest does not claim every extensionless file. The 20 profiles have fixtures
 checking their actual lexical styles (JSON has no comments). These are lexical profiles, not compiler grammars: interpolation,
 heredocs, JSX markup, macro expansion and language-specific semantic analysis
 are not promised. Unknown names remain plain text.
@@ -45,40 +46,67 @@ not XML validation: DTDs are inert text, references are never expanded, and no
 external resources are read. Declaration nesting is bounded to 16. XML defaults
 do not claim HTML or SVG. Saved per-plugin extension overrides remain in control.
 
+Lua highlights keywords, numbers, short strings and comments, and matched-level
+long bracket strings/comments. Short-string escaped newlines and `\z` whitespace
+escapes retain their state. YAML highlights mapping keys, scalar strings,
+numbers/booleans/null, flow indicators and comments. Quoted scalars and literal or
+folded block scalars retain state, including indentation/chomp indicators, blank
+lines and dedent. Hashes inside unquoted scalar values such as URLs stay literal.
+Neither profile executes content, resolves tags or validates a whole document.
+
 Multiline strings and C-style block comments retain explicit state. Rust nested
 block comments support depth 16; Python/TOML triple quotes and Rust raw strings
-with up to 16 hashes are recognized. Literals follow each profile's delimiters:
-single-line literals (C-family, Java, C#, Go, Kotlin, Swift, JavaScript and
-TypeScript quotes, JSON, Batch, non-triple Python/TOML) end at an unescaped
-newline; Rust lifetimes and loop labels are not character literals; JSON has no
-`'` strings; YAML quotes only start whole scalars, so `Don't` stays plain;
-Java/Kotlin/Swift/C# `"""`, Go and JavaScript backtick strings span lines; and
-TOML/shell single quotes, Go raw strings, C# verbatim/raw strings and SQL/YAML
-doubled-quote literals take backslashes literally.
+with up to 16 hashes are recognized. Single-line C-family, Java, C#, Go,
+Kotlin, Swift, JavaScript/TypeScript, JSON, Batch and non-triple Python/TOML
+literals end at an unescaped newline. Rust lifetimes and loop labels do not
+open character literals, and JSON has no single-quoted strings. Java, Kotlin,
+Swift and C# triple quotes and Go/JavaScript backticks span lines. TOML/shell
+single quotes, Go raw strings and C# verbatim/raw literals take backslashes
+literally; SQL and C# verbatim strings support doubled delimiters.
 
-At most 256 complete-line states are retained per session: the line starts of
-the latest highlighted page, for continuation in either direction, plus a sparse
-cover of every visited region that always keeps the BOM. The cover keeps states
-at least 2 KiB apart and doubles that spacing whenever its 192 entries are full,
-so earlier regions stay covered instead of being displaced by later ones. A page
-replays at most 32 KiB before the source its text can occupy: its anchor for a
-forward page, and the requested bytes and lines before the anchor for a backward
-page (for UTF-8, one byte per text byte plus one per line). While the visited text spans
-up to about 3 MiB, covered states stay less than 32 KiB apart (lines longer than
-that aside), so every revisit is highlighted; beyond that the cover thins and a
-distant revisit can render plain until paging reaches a covered state again.
-Positions never visited render plain text, and Text mode or unrecognized names
-never replay. A nesting overflow (depth 16) leaves its page plain but keeps the
-states before it. A page touching a line with more than 4096 styled tokens is
-plain, while lexing continues so later pages stay highlighted. Source text and
-byte anchors remain identical when colouring is omitted.
+At most 256 syntax-state records are retained per session: 128 distributed
+complete-line points, 126 recent hot points, an exact streaming frontier and a
+reserved target snapshot. Distributed coverage starts with 2 KiB spacing and
+doubles that spacing when full, retaining the BOM and earlier visited regions.
+The fixed record split also bounds the aggregate preparation index to 64 KiB.
+C++ raw strings retain their custom delimiter (up to 16 characters).
+A viewport can rescan at most 32 KiB before its anchor;
+distant uncached positions initially render plain text. A host supporting the
+optional preparation request recovers the true lexer state in background quanta
+and refreshes the latest stationary view. The first page remains window-bounded.
+Huge files have no preparation size cutoff; a cold distant target can require
+O(prefix) background I/O. Exhausted lexical depth/counter limits fail preparation
+explicitly while the existing readable page remains available.
+
+Dense pages are shortened at exact character/source boundaries when their styles
+and anchors exceed the wire budget. Forward pages retain their beginning and
+backward pages their end; continuation flags permit fetching the remaining text.
+Styles are retained rather than clearing all colouring to fit a larger page.
 
 ## Bounds and protocol
 
-Open, Viewport, Search and Close use only public API/SDK 0.1.0. Open returns
+This independent package uses only the released public API/SDK 0.2.0. Open returns
 Opened; the host then requests its first viewport. All reads use owned SDK
 continuations. Short reads continue until the requested bounded slice or EOF.
 Close discards session state; the host owns closing the content reader lease.
+
+Optional `PrepareSource` (request 7) is separate from ordinary Open/Viewport.
+Each successful quantum emits one `SourcePrepared` (event 8), then Completed;
+readiness is provisional until that terminal event. The full Viewport and source
+revision identify the reservation. Its exact lexer snapshot and any resolved
+token-role hints survive ordinary checkpoint insertion until a matching foreground
+request takes an owned copy before its asynchronous read. Older hosts never send
+this optional request and retain ordinary viewing; C ABI remains 1.0.
+
+Preparation uses at most one 16 KiB positional read at a time, at most 64 service
+replies and 256 KiB delivered bytes per quantum (including short replies), and
+at most 64 KiB decoded text per turn. Its frontier excludes incomplete encoded
+units and unconsumed lexical suffixes. A fixed raw tail handles one-byte replies;
+huge identifiers, raw strings, Lua brackets, YAML keys/blocks and XML names/entities
+use streaming state/counters instead of token or line buffers. Token roles that
+depend on distant terminators are resolved by bounded background lookahead before
+readiness, with at most two small role hints. The complete retained syntax index,
+frontier and target state are bounded to 64 KiB and 256 records per session.
 
 Optional Locate requests never build a whole-file line index. They use the nearest
 exact checkpoint and a cumulative 256 KiB read budget, including boundary lookahead
@@ -90,39 +118,40 @@ Returning near an exact checkpoint can recover line/column values. Explicit
 search remains a separate cancellable streaming operation.
 
 UTF-8 and BOM UTF-16 LE/BE, surrogate pairs, malformed units, CR/LF/CRLF and
-control pictures are supported. C1 controls and the explicit bidirectional
-embedding, override and isolate controls (U+202A-U+202E, U+2066-U+2069) display
-as U+FFFD, so file content cannot reorder the displayed text; implicit direction
-marks remain. No terminal escape interpretation occurs.
+control pictures are supported. C1 controls and explicit bidirectional embedding,
+override and isolate controls (U+202A-U+202E, U+2066-U+2069) display as U+FFFD;
+implicit direction marks remain. No terminal escape interpretation occurs.
 Offsets use checked u64 arithmetic. Every displayed scalar boundary has an
 exact source-byte anchor; incomplete encoded units are deferred to the next
 read. Maximum emitted text is 8192 UTF-8 bytes, with a further requested line
-limit. A page reads only the source that text can occupy: one byte per text byte
-and line break for UTF-8, two for UTF-16, plus an 8-byte margin for a split
-scalar or CRLF. Enormous logical lines are fragments with `partial_line`/`has_after`.
+limit. Ordinary reads use encoding-aware page spans: one source byte per text
+byte and normalized line break for UTF-8, two for UTF-16, plus an 8-byte boundary
+margin. Highlighted forward reads also reserve bounded lexical lookahead;
+decoding stops after the replay prefix, selected page and 128 text bytes of
+lookahead. Plain and unrecognized profiles never replay syntax checkpoints.
+Enormous logical lines are fragments with `partial_line`/`has_after`.
 Uncached seeks use four bytes of look-behind after UTF-16 word alignment and
 select actual decoded boundaries. Backward pages retain the original source
 anchor as an upper bound and select the nearest preceding displayed lines.
 Forward search uses the same bounded alignment and excludes earlier matches.
 
-Each instance permits 16 sessions and four active operations; Locate never takes
-the last one. The SDK keeps a superseded request's pending read until the host
-replies, so admission reclaims the slots of cancelled requests rather than
-rejecting new viewports while stale reads drain on slow storage. Reads are at most
+Each instance permits 16 sessions and four active operations; Locate and
+PrepareSource leave one slot for foreground work. Admission reclaims cancelled
+requests' operation slots while the SDK retains their pending read continuations
+until the host replies. Reads are at most
 64 KiB, decoder text at most 64 KiB, styles at most 4096, and checkpoint state
-at most 256 items per session. A forward page decodes only its replay prefix and
-the page itself, never the rest of its read. Four scratch decoders plus their
-inputs, output models and state remain below the 16 MiB plugin budget. SDK queues
-separately enforce their public byte/item caps. Host cancellation is polled
-between asynchronous reads and once per 4 KiB of decoded, lexed or searched text;
-each poll crosses the plugin ABI.
+at most 256 items per session. Four scratch decoders plus their inputs, output
+models and state remain below the 16 MiB plugin budget. SDK queues separately
+enforce their public byte/item caps. Host cancellation polling is batched during
+decoding, lexing and search, and checked between asynchronous reads. Foreground
+lexical replay polls between bounded chunks rather than once per token or line.
 
 Search uses streaming KMP with a bounded query window across page boundaries.
 Insensitive search compares Unicode lowercase expansions; this is not locale
 collation or full Unicode case folding. Each 32 KiB read is decoded and scanned
-completely, so every source byte is requested once. Backward search scans from
-the start and retains the last match before the supplied anchor, trading latency
-for bounded memory. Reads yield host workers; progress is emitted at most four
+completely, so source bytes are requested about once. Backward search scans from the start
+and retains the last match before the supplied anchor, trading latency for
+bounded memory. Reads yield host workers; progress is emitted at most four
 times per second. There is no whole-file size cap and cancellation interrupts
 the scan.
 

@@ -143,6 +143,7 @@ impl TestUi {
             1 => "Appearance",
             3 => "Keyboard",
             4 => "Editors",
+            10 => "Comparators",
             5 => "Plugins",
             6 => "Previews",
             7 => "Archives",
@@ -153,16 +154,10 @@ impl TestUi {
         if let Some(button) = try_popup_item(&self.window, label, AccessibleRole::Button) {
             click_item(&self.window, button);
         } else {
-            // Mirror OptionsTopics.index: the removed topic 2 is shown as General.
-            let index = |topic: i32| match topic {
-                2 => 0,
-                3.. => topic - 1,
-                _ => topic,
-            };
-            let current_index = index(self.window.get_options_topic_index());
-            let target_index = index(topic);
+            let current_index = options_topic_position(self.window.get_options_topic_index());
+            let target_index = options_topic_position(topic);
             click_popup(&self.window, "Options topic", AccessibleRole::Combobox);
-            for _ in 0..(target_index - current_index).abs() {
+            for _ in 0..target_index.abs_diff(current_index) {
                 key(
                     &self.window,
                     if target_index > current_index {
@@ -181,6 +176,14 @@ impl TestUi {
     pub fn pixel(&self, x: f32, y: f32) -> slint::Rgb8Pixel {
         self.pixels[y as usize * self.width + x as usize]
     }
+}
+
+/// The OptionsTopics picker position, with the removed Command topic mapped to General.
+pub fn options_topic_position(topic: i32) -> usize {
+    [0, 1, 3, 4, 10, 5, 6, 7, 8, 9]
+        .iter()
+        .position(|&id| id == topic)
+        .unwrap_or(0)
 }
 
 /// Advance a [`TestUi::with_virtual_clock`] clock and run the timers and animations

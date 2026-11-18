@@ -101,14 +101,14 @@ async fn read(
         reads: reads.clone(),
     };
     let (sender, mut events) = mpsc::channel(1);
-    let mut controller = Controller::testing(
+    let (_owner, mut controller) = Controller::testing(
         Some(Arc::new(service)),
         Outbox {
             sender,
             wakeup: Arc::new(|| {}),
         },
     );
-    let mut tasks = JoinSet::new();
+    let mut tasks = ResidentTasks::default();
     controller
         .read_captured_files(
             DesktopRequestId(91),

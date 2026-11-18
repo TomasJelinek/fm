@@ -109,6 +109,9 @@ impl CustomApplicationHandler for Observe {
     }
 }
 
+#[path = "../tests/support/resident.rs"]
+mod resident;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seconds = std::env::args()
         .nth(1)
@@ -135,15 +138,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     std::fs::write(&paths[0], text("old"))?;
     std::fs::write(&paths[1], text("new"))?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = resident::TestRuntime::new(tokio::runtime::Runtime::new()?);
     let manager = ComparatorWindows::new(midnight_compare_engine::Service::new(
         runtime.handle().clone(),
+        runtime.spawner(),
     ));
     probe.opened.set(Some(Instant::now()));
+    let policy = midnight_core::FileComparatorSnapshot::default();
     let window = manager.open(
         FileCompareLaunch {
             sources: paths.into_iter().map(FileCompareSource::Focused).collect(),
             disabled_plugins: Arc::from([]),
+            comparators: policy.preferences,
+            comparator_policy: policy.id,
         },
         ViewerAppearance {
             family: "Consolas".into(),

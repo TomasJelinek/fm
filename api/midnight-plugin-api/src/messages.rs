@@ -45,6 +45,21 @@ pub struct Locate {
     pub source_anchor: u64,
 }
 
+/// Optional bounded preparation for an opened Source session. The session owner
+/// checks revision identity and the target anchor against a known source length.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[cbor(map)]
+pub struct PrepareSource {
+    #[n(0)]
+    pub revision: u64,
+    /// The entire target, including direction and fragment budgets.
+    #[n(1)]
+    pub viewport: Viewport,
+    /// Raw bytes delivered during this quantum, from 1 through 262144 inclusive.
+    #[n(2)]
+    pub max_scan_bytes: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 #[cbor(map)]
 pub struct Search {
@@ -108,6 +123,22 @@ pub struct Opened {
     pub estimated_lines: Option<u64>,
 }
 
+/// Exactly one provisional result precedes a successful preparation's Completed.
+/// Failure or cancellation never authorizes a refresh, even after this is drained.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[cbor(map)]
+pub struct SourcePrepared {
+    #[n(0)]
+    pub revision: u64,
+    /// Exact fully decoded raw-source boundary reached by this walk, not coverage.
+    #[n(1)]
+    pub frontier: u64,
+    /// The matching ordinary Viewport can use exact lexer/decoder state within
+    /// its foreground limits. A distant frontier alone does not imply readiness.
+    #[n(2)]
+    pub ready: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 #[cbor(map)]
 pub struct SearchMatch {
@@ -159,6 +190,13 @@ impl Model for Locate {
     }
 }
 
+impl Model for PrepareSource {
+    fn validate(&self) -> Result<(), WireError> {
+        self.viewport.validate()?;
+        limit((1..=262_144).contains(&self.max_scan_bytes))
+    }
+}
+
 impl Model for Search {
     fn validate(&self) -> Result<(), WireError> {
         limit((1..=4096).contains(&self.query.len()))
@@ -193,6 +231,12 @@ impl Model for Opened {
                     .length
                     .is_none_or(|length| self.initial_anchor <= length),
         )
+    }
+}
+
+impl Model for SourcePrepared {
+    fn validate(&self) -> Result<(), WireError> {
+        Ok(()) // The session owner checks revision identity and known source length.
     }
 }
 

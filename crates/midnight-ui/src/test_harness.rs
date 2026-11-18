@@ -119,7 +119,12 @@ impl Harness {
         );
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences,
+                    comparators: Default::default(),
+                },
+            ))));
         crate::refresh(&window, &presenter.borrow());
         window.show().unwrap();
         window

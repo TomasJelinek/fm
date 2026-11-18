@@ -10,11 +10,19 @@
 //! test reads the probe count.
 use super::*;
 
-fn watcher(files: &Arc<Files>) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>, Arc<Native>) {
+fn watcher(
+    files: &Arc<Files>,
+) -> (
+    midnight_work_budget::resident::Owner,
+    Controller,
+    JoinSet<()>,
+    mpsc::Receiver<Event>,
+    Arc<Native>,
+) {
     let native = Arc::new(Native::default());
-    let (controller, tasks, events) =
+    let (owner, controller, tasks, events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(30));
-    (controller, tasks, events, native)
+    (owner, controller, tasks, events, native)
 }
 
 fn probes(files: &Files) -> usize {
@@ -52,7 +60,7 @@ async fn hint_for(events: &mut mpsc::Receiver<Event>, navigation: u64) {
 async fn an_event_driven_refresh_without_later_changes_is_not_probed_again() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     native.fire(0);
@@ -75,7 +83,7 @@ async fn an_event_driven_refresh_without_later_changes_is_not_probed_again() {
 async fn events_during_a_same_path_refresh_are_checked_against_the_accepted_rows() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     native.fire(0);
@@ -107,7 +115,7 @@ async fn events_during_a_same_path_refresh_are_checked_against_the_accepted_rows
 async fn a_refresh_started_before_a_hinted_change_is_checked_once_accepted() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     // The user refreshes before anything changed; the listing reads the old
@@ -138,7 +146,7 @@ async fn a_change_found_by_a_probe_during_a_refresh_listing_is_checked_once_acce
     });
     let _release = ReleaseOnDrop(files.clone());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     native.fire(0);
@@ -173,7 +181,7 @@ async fn a_change_found_by_a_probe_during_a_refresh_listing_is_checked_once_acce
 async fn a_resort_keeps_what_its_rows_include() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     native.fire(0);
@@ -195,7 +203,7 @@ async fn a_resort_keeps_what_its_rows_include() {
 async fn a_check_that_finds_the_rows_current_spares_a_later_resort() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     // The refresh lists the directory after its last write, whose notification
@@ -223,7 +231,7 @@ async fn a_check_that_finds_the_rows_current_spares_a_later_resort() {
 async fn a_failed_refresh_keeps_hinting_for_the_rows_still_shown() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     // The refresh fails, and the pane keeps showing navigation 1.
@@ -251,7 +259,7 @@ async fn a_failed_refresh_keeps_checking_the_rows_still_shown() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) = controller(
+    let (_owner, controller, mut tasks, mut events) = controller(
         files.clone(),
         Some(native.clone()),
         Duration::from_millis(40),
@@ -272,7 +280,7 @@ async fn a_failed_refresh_keeps_checking_the_rows_still_shown() {
 async fn a_superseded_listing_failure_does_not_rearm_the_watch() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     list(&controller, 2, "left");
@@ -301,7 +309,7 @@ async fn a_superseded_listing_failure_does_not_rearm_the_watch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listing_another_directory_keeps_the_shown_rows_watched_until_it_is_accepted() {
     let files = Arc::new(Files::default());
-    let (controller, mut tasks, _events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, _events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     list(&controller, 2, "right");
@@ -325,7 +333,7 @@ async fn listing_another_directory_keeps_the_shown_rows_watched_until_it_is_acce
 async fn a_failed_navigation_to_another_directory_keeps_hinting_for_the_rows_still_shown() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     // Navigating elsewhere fails, and the pane keeps showing navigation 1.
@@ -354,7 +362,7 @@ async fn rows_accepted_while_the_worker_is_busy_are_watched_when_the_next_naviga
     let release = ReleaseOnDrop(files.clone());
     files.put("left", 7);
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) = controller(
+    let (_owner, controller, mut tasks, mut events) = controller(
         files.clone(),
         Some(native.clone()),
         Duration::from_millis(30),
@@ -384,7 +392,7 @@ async fn a_restart_keeps_hinting_for_the_rows_a_failed_navigation_shows() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) = controller(
+    let (_owner, controller, mut tasks, mut events) = controller(
         files.clone(),
         Some(native.clone()),
         Duration::from_millis(40),
@@ -409,7 +417,7 @@ async fn a_navigated_directory_is_subscribed_while_it_is_listed() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
     files.put("right", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     list(&controller, 2, "right");
@@ -444,7 +452,7 @@ async fn a_change_notified_while_a_navigated_directory_is_listed_is_checked_once
     let files = Arc::new(Files::default());
     files.put("left", 7);
     files.put("right", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     list(&controller, 2, "right");
@@ -483,7 +491,7 @@ async fn a_change_notified_while_a_navigated_directory_is_listed_is_checked_once
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dispatch_whose_listing_reads_nothing_registers_only_when_accepted() {
     let files = Arc::new(Files::default());
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     // The backend records a dispatch before it clears the pane's scope. An
@@ -518,7 +526,7 @@ async fn a_dispatch_whose_listing_reads_nothing_registers_only_when_accepted() {
 async fn a_failed_navigation_releases_the_directory_subscribed_while_it_was_listed() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     list(&controller, 2, "right");
@@ -543,7 +551,7 @@ async fn a_failed_navigation_releases_the_directory_subscribed_while_it_was_list
 async fn a_dispatch_back_to_the_shown_directory_releases_the_subscribed_one() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     list(&controller, 2, "right");
@@ -581,7 +589,7 @@ fn blocked_files() -> (Arc<Files>, ReleaseOnDrop) {
 async fn a_check_interrupted_by_a_resort_runs_when_the_resort_is_shown() {
     let (files, _release) = blocked_files();
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) = controller(
+    let (_owner, controller, mut tasks, mut events) = controller(
         files.clone(),
         Some(native.clone()),
         Duration::from_millis(200),
@@ -617,7 +625,7 @@ async fn a_check_interrupted_by_a_resort_runs_when_the_resort_is_shown() {
 async fn a_refresh_that_interrupts_a_check_is_not_listed_again() {
     let (files, _release) = blocked_files();
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) = controller(
+    let (_owner, controller, mut tasks, mut events) = controller(
         files.clone(),
         Some(native.clone()),
         Duration::from_millis(500),
@@ -646,7 +654,7 @@ async fn a_refresh_that_interrupts_a_check_is_not_listed_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_view_without_a_flat_listing_releases_the_watch_at_dispatch() {
     let files = Arc::new(Files::default());
-    let (controller, mut tasks, _events, native) = watcher(&files);
+    let (_owner, controller, mut tasks, _events, native) = watcher(&files);
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
     list(&controller, 2, "left");

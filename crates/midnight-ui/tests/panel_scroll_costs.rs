@@ -105,7 +105,12 @@ impl Harness {
         }
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences,
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
         let commands = Rc::new(RefCell::new(Vec::new()));
         let sent = commands.clone();
         install(

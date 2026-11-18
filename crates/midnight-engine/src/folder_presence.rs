@@ -2,17 +2,19 @@
 use crate::{
     Outbox, Snapshots,
     providers::{NativeProvider, ProviderError},
+    resident_tasks::ResidentTasks,
+    spawn_resident,
     task_lifetime::TaskLifetime,
 };
 use midnight_core::*;
-use midnight_work_budget::{Admission, Gate, Permit};
+use midnight_work_budget::{Admission, Gate, Permit, resident::Spawner};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
-use tokio::{sync::Semaphore, task::JoinSet};
+use tokio::sync::Semaphore;
 
 #[derive(Default)]
 struct Pending {
@@ -22,19 +24,25 @@ struct Pending {
 }
 type Mailbox = Arc<Mutex<Pending>>;
 pub(crate) struct Controller {
-    lanes: [(Mailbox, mpsc::SyncSender<()>); 2],
+    lanes: [(Mailbox, Option<mpsc::SyncSender<()>>); 2],
     stop: Cancellation,
+    outbox: Outbox,
 }
 
 impl Controller {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the pane listing budgets and actor dependencies are explicit"
+    )]
     pub(crate) fn new(
+        resident: &Spawner,
         scope: TaskLifetime,
         reports: crate::ReportArena,
         filesystem: Arc<dyn FileSystem>,
         snapshots: Snapshots,
         listings: [Arc<Semaphore>; 2],
         outbox: Outbox,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) -> Self {
         let stop = Cancellation::default();
         // Both lanes serialize their storage classification queries.
@@ -48,34 +56,65 @@ impl Controller {
             let filesystem = filesystem.clone();
             let reports = reports.clone();
             let listing = listings[side].clone();
-            let outbox = outbox.clone();
+            let worker_outbox = outbox.clone();
             let admissions =
                 Admissions::new(midnight_work_budget::shared_io(), classification.clone());
-            crate::actor_thread::spawn(
-                "midnight-folder-presence",
-                tasks,
-                scope.blocking(move || {
-                    worker(
-                        pending,
-                        receiver,
-                        stopping,
-                        WorkerContext {
-                            snapshots,
-                            filesystem,
-                            listing,
-                            outbox,
-                            reports,
-                            admissions,
-                        },
-                    )
-                }),
-            );
+            let work = scope.blocking(move || {
+                worker(
+                    pending,
+                    receiver,
+                    stopping,
+                    WorkerContext {
+                        snapshots,
+                        filesystem,
+                        listing,
+                        outbox: worker_outbox,
+                        reports,
+                        admissions,
+                    },
+                )
+            });
+            let ticket = spawn_resident(resident, "folder presence", Box::new(work));
+            let wake = ticket.map(|ticket| {
+                tasks.insert(ticket);
+                wake
+            });
             (lane, wake)
         });
-        Self { lanes, stop }
+        Self {
+            lanes,
+            stop,
+            outbox,
+        }
     }
     pub(crate) async fn submit(&self, request: Arc<FolderPresenceRequest>) {
         let (lane, wake) = &self.lanes[request.root.pane.index()];
+        let Some(wake) = wake else {
+            let event = tokio::task::spawn_blocking(move || {
+                if request.cancel.is_cancelled()
+                    || request.revision.0 == 0
+                    || request.visible.len() > FolderPresenceRequest::MAX_VISIBLE
+                {
+                    return None;
+                }
+                let diagnostic = TreeDiagnostic::new("Folder presence worker is unavailable.");
+                let values = request
+                    .visible
+                    .iter()
+                    .map(|id| (*id, FolderPresence::Unavailable(diagnostic.clone())))
+                    .collect::<Vec<_>>();
+                Some(Event::FolderPresence(Box::new(FolderPresenceSnapshot {
+                    root: request.root.clone(),
+                    revision: request.revision,
+                    values: values.into(),
+                })))
+            })
+            .await;
+            if let Ok(Some(event)) = event {
+                self.outbox.send(event).await;
+            }
+            return;
+        };
         let retired = {
             let mut pending = lane.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(active) = pending.active.take() {

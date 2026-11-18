@@ -4,6 +4,7 @@ use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
 #[test]
 fn same_name_preserves_non_utf8_native_identity() {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let name = OsString::from_vec(b"raw\x80.txt".to_vec());
     let decoy = OsString::from_vec(b"raw\x81.txt".to_vec());
     assert_eq!(name.to_string_lossy(), decoy.to_string_lossy());
@@ -31,6 +32,8 @@ fn same_name_preserves_non_utf8_native_identity() {
             source,
         ],
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     };
     assert_eq!(
         resolve(&launch, &AtomicBool::new(false)).unwrap()[1],

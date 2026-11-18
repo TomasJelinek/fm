@@ -1,0 +1,417 @@
+import { ListView } from "std-widgets.slint";
+import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { ArgumentEditor } from "argument-editor.slint";
+import { ListHeader } from "list-header.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { TipBody } from "controls.slint";
+import { Theme } from "theme.slint";
+
+// Presentation strings are never file identities, matcher input authority or shell syntax.
+export struct ComparatorOptionsDraft {
+    enabled: bool,
+    mode: int,
+    expression: string,
+    case-sensitive: bool,
+    target: int,
+    executable: string,
+    working-directory: string,
+}
+
+export global ComparatorOptionsView {
+    in-out property <ComparatorOptionsDraft> draft;
+    in property <[string]> labels;
+    in property <[string]> argument-rows;
+    in property <int> selected: -1;
+    in property <int> rule-count;
+    in property <string> revision;
+    in property <bool> ready;
+    in property <bool> dirty;
+    in property <bool> busy;
+    in property <string> error;
+    in property <int> error-field: -1;
+    in property <int> focus-revision;
+    in property <string> image-coverage;
+    in property <string> coverage-state;
+    in property <string> coverage-error;
+    in property <bool> coverage-busy;
+    callback select(int);
+    callback action(int);
+    callback edit(ComparatorOptionsDraft);
+    callback argument(int, int, string);
+    callback browse();
+    callback browse-directory();
+    callback refresh-coverage();
+}
+
+component ComparatorPriorityList inherits Rectangle {
+    in property <length> available-height;
+    private property <int> selected: ComparatorOptionsView.selected;
+    private property <int> count: ComparatorOptionsView.labels.length;
+    private property <bool> enabled: ComparatorOptionsView.ready && !ComparatorOptionsView.busy;
+    private property <bool> rule-selected: root.selected >= 0
+        && root.selected < ComparatorOptionsView.rule-count;
+    private property <length> row-height: Theme.control-height;
+    private property <int> visible-rows: clamp(floor(root.available-height / (root.row-height * 3)), 1, 4);
+    height: root.row-height * clamp(root.count, 1, root.visible-rows) + 2px;
+    min-width: 0px; background: Theme.pane-background; border-width: 1px; clip: true;
+    border-color: list-focus.has-focus ? Theme.active-frame : Theme.frame;
+    changed selected => { root.reveal-selection(); }
+    changed count => { root.reveal-selection(); }
+    changed row-height => { root.reveal-selection(); }
+    init => { root.reveal-selection(); }
+    public function focus-list() { if root.enabled { list-focus.focus(); root.reveal-selection(); } }
+    function reveal-selection() {
+        if root.selected < 0 { return; }
+        let top = root.selected * root.row-height;
+        if top < -rows.content-y { rows.content-y = -top; }
+        else if top + root.row-height > -rows.content-y + rows.visible-height {
+            rows.content-y = min(0px, rows.visible-height - top - root.row-height);
+        }
+    }
+    function select-row(index: int) {
+        if !root.enabled || index < 0 || index >= root.count { return; }
+        list-focus.focus(); ComparatorOptionsView.select(index);
+    }
+    function act(operation: int) {
+        if !root.enabled { return; }
+        if operation == 0 && ComparatorOptionsView.rule-count < 64 {
+            ComparatorOptionsView.action(0);
+        } else if root.rule-selected && (operation == 1
+            || (operation == 2 && root.selected > 0)
+            || (operation == 3 && root.selected + 1 < ComparatorOptionsView.rule-count)) {
+            ComparatorOptionsView.action(operation);
+        }
+    }
+    list-focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if !root.enabled { return reject; }
+            if event.text == Key.Insert { root.act(0); return accept; }
+            if event.text == Key.Delete { root.act(1); return accept; }
+            if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                root.act(event.text == Key.UpArrow ? 2 : 3); return accept;
+            }
+            if event.text == Key.UpArrow || event.text == Key.DownArrow
+                || event.text == Key.Home || event.text == Key.End {
+                root.select-row(event.text == Key.Home ? 0 : event.text == Key.End ? root.count - 1
+                    : clamp(root.selected + (event.text == Key.DownArrow ? 1 : -1), 0, root.count - 1));
+                return accept;
+            }
+            reject
+        }
+        rows := ListView {
+            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+            horizontal-scrollbar-policy: always-off;
+            accessible-label: "Comparator rules"; accessible-item-count: root.count;
+            changed visible-height => { root.reveal-selection(); }
+            for label[index] in ComparatorOptionsView.labels : Rectangle {
+                width: rows.visible-width; height: root.row-height;
+                private property <bool> selected: index == root.selected;
+                background: self.selected ? Theme.selected-background
+                    : area.has-hover ? Theme.hover : Theme.pane-background;
+                accessible-role: list-item; accessible-label: label;
+                accessible-description: index == ComparatorOptionsView.rule-count
+                    ? "Fixed Automatic fallback. This row cannot be edited, removed or moved." : label;
+                accessible-enabled: root.enabled; accessible-item-index: index;
+                accessible-item-selectable: true; accessible-item-selected: self.selected;
+                accessible-action-default => { root.select-row(index); }
+                Text {
+                    x: 8px;
+                    width: max(0px, parent.width - 16px
+                        - (rows.content-height > rows.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                    text: label; font-size: Theme.font-size; overflow: elide;
+                    color: parent.selected ? Theme.selected-text : Theme.text;
+                    vertical-alignment: center;
+                }
+                area := TouchArea {
+                    enabled: root.enabled;
+                    clicked => { root.select-row(index); }
+                }
+                Tooltip { TipBody { text: label; } }
+            }
+        }
+    }
+}
+
+component ComparatorRuleFields inherits VerticalLayout {
+    in property <bool> narrow;
+    in property <bool> enabled;
+    private property <bool> external: ComparatorOptionsView.draft.target == 3;
+    out property <length> error-target-top: ComparatorOptionsView.error-field == 1
+        ? mode.absolute-position.y - root.absolute-position.y
+        : ComparatorOptionsView.error-field == 3 && root.external
+        ? executable.absolute-position.y - root.absolute-position.y
+        : ComparatorOptionsView.error-field == 4 && root.external
+        ? arguments.absolute-position.y - root.absolute-position.y + arguments.value-top
+        : ComparatorOptionsView.error-field == 5 && root.external
+        ? directory.absolute-position.y - root.absolute-position.y
+        : expression.absolute-position.y - root.absolute-position.y;
+    out property <length> error-target-height: ComparatorOptionsView.error-field == 1
+        ? mode.height : ComparatorOptionsView.error-field == 3 && root.external
+        ? executable.height : ComparatorOptionsView.error-field == 4 && root.external
+        ? arguments.value-height : ComparatorOptionsView.error-field == 5 && root.external
+        ? directory.height : expression.height;
+    public function focus-error() {
+        if !root.enabled { return; }
+        if ComparatorOptionsView.error-field == 1 { mode.focus(); }
+        else if ComparatorOptionsView.error-field == 3 && root.external { executable.focus(); }
+        else if ComparatorOptionsView.error-field == 4 && root.external { arguments.focus-value(); }
+        else if ComparatorOptionsView.error-field == 5 && root.external { directory.focus(); }
+        else { expression.focus(); }
+    }
+    min-width: 0px; spacing: 6px; alignment: start;
+    WrappingCheckBox {
+        text: "Enable this rule"; accessible-name: "Enable this comparator rule";
+        checked <=> ComparatorOptionsView.draft.enabled; enabled: root.enabled;
+        hint: "Disabled rules remain saved but are skipped when choosing a comparator.";
+        toggled => { ComparatorOptionsView.edit(ComparatorOptionsView.draft); }
+    }
+    GridLayout {
+        spacing: 6px;
+        mode := HintedComboBox {
+            row: 0; col: 0;
+            model: ["Wildcards", "Regular expression"];
+            current-index <=> ComparatorOptionsView.draft.mode;
+            enabled: root.enabled; accessible-label: "Comparator matching mode";
+            min-width: 0px; horizontal-stretch: root.narrow ? 1 : 0;
+            hint: "Match both filenames using wildcard masks or a regular expression.";
+            selected => { ComparatorOptionsView.edit(ComparatorOptionsView.draft); }
+        }
+        expression := HintedLineEdit {
+            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+            text <=> ComparatorOptionsView.draft.expression;
+            enabled: root.enabled; accessible-label: "Comparator filename pattern";
+            min-width: 0px; horizontal-stretch: 1;
+            placeholder-text: ComparatorOptionsView.draft.mode == 0 ? "*.c;*.cpp" : "\\.(c|cpp)$";
+            hint: ComparatorOptionsView.draft.mode == 0
+                ? "Use * and ?, separate masks with ; and exclusions with |. Both basenames must match."
+                : "Regular expression searched in both basenames. Use ^ and $ to anchor it.";
+            edited => { ComparatorOptionsView.edit(ComparatorOptionsView.draft); }
+        }
+    }
+    Text {
+        accessible-label: "Selected comparator pattern";
+        text: ComparatorOptionsView.draft.expression; wrap: char-wrap;
+        color: Theme.secondary-text; font-size: Theme.small-font; min-width: 0px;
+    }
+    WrappingCheckBox {
+        text: "Case sensitive"; accessible-name: "Comparator case sensitive";
+        checked <=> ComparatorOptionsView.draft.case-sensitive; enabled: root.enabled;
+        hint: "Distinguish uppercase and lowercase filename characters.";
+        toggled => { ComparatorOptionsView.edit(ComparatorOptionsView.draft); }
+    }
+    Text { text: "Compare using"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+    HintedComboBox {
+        model: ["Automatic", "Built-in text", "Built-in image", "External program"];
+        current-index <=> ComparatorOptionsView.draft.target;
+        enabled: root.enabled; accessible-label: "Comparator target"; min-width: 0px;
+        hint: "Automatic uses the current built-in assignments. External program uses the literal arguments below.";
+        selected => { ComparatorOptionsView.edit(ComparatorOptionsView.draft); }
+    }
+    // Keep the field instances alive through target changes and width reflow.
+    Rectangle {
+        min-width: 0px; height: root.external ? external-fields.preferred-height : 0px;
+        visible: root.external;
+        external-fields := VerticalLayout {
+            width: parent.width; height: self.preferred-height;
+            min-width: 0px; spacing: 6px; alignment: start;
+            Text {
+                accessible-label: "Comparator original file notice";
+                text: "Built-in comparison is read-only. External programs receive the original files and may change or delete them.";
+                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-width: 0px;
+            }
+            Text { text: "Executable"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+            GridLayout {
+                spacing: 6px;
+                executable := HintedLineEdit {
+                    row: 0; col: 0;
+                    text <=> ComparatorOptionsView.draft.executable;
+                    enabled: root.enabled && root.external; accessible-label: "Comparator executable";
+                    hint: "Choose a program or enter its complete absolute path.";
+                    min-width: 0px; horizontal-stretch: 1;
+                    edited => { ComparatorOptionsView.edit(ComparatorOptionsView.draft); }
+                }
+                HintedActionButton {
+                    row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                    text: "Browse…"; accessible-label: "Browse comparator executable";
+                    hint: "Choose the executable path for this draft.";
+                    enabled: root.enabled && root.external;
+                    clicked => { ComparatorOptionsView.browse(); }
+                }
+            }
+            arguments := ArgumentEditor {
+                narrow: root.narrow; values: ComparatorOptionsView.argument-rows;
+                label-prefix: "Comparator"; enabled: root.enabled && root.external;
+                literal-insertions: [
+                    { label: "Insert left file", value: "{left}",
+                      hint: "Append {left} as one complete argument for the left file path." },
+                    { label: "Insert right file", value: "{right}",
+                      hint: "Append {right} as one complete argument for the right file path." },
+                ];
+                edit(row, value) => { ComparatorOptionsView.argument(0, row, value); }
+                add(value) => { ComparatorOptionsView.argument(1, 0, value); }
+                remove(row) => { ComparatorOptionsView.argument(2, row, ""); }
+                move(row, direction) => { ComparatorOptionsView.argument(direction < 0 ? -1 : 3, row, ""); }
+            }
+            Text { text: "Working directory"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+            GridLayout {
+                spacing: 6px;
+                directory := HintedLineEdit {
+                    row: 0; col: 0;
+                    text <=> ComparatorOptionsView.draft.working-directory;
+                    enabled: root.enabled && root.external; accessible-label: "Comparator working directory";
+                    placeholder-text: "Executable folder (default)";
+                    hint: "Absolute folder path. Leave empty to use the executable's folder.";
+                    min-width: 0px; horizontal-stretch: 1;
+                    edited => { ComparatorOptionsView.edit(ComparatorOptionsView.draft); }
+                }
+                HintedActionButton {
+                    row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                    text: "Browse…"; accessible-label: "Browse comparator working directory";
+                    hint: "Choose the working directory for this draft.";
+                    enabled: root.enabled && root.external;
+                    clicked => { ComparatorOptionsView.browse-directory(); }
+                }
+            }
+            Text {
+                text: "Argument help — no program is run";
+                color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
+            }
+            Text {
+                accessible-label: "Comparator program value";
+                text: "Program: " + ComparatorOptionsView.draft.executable;
+                color: Theme.secondary-text; font-size: Theme.small-font; wrap: char-wrap; min-width: 0px;
+            }
+            for value[index] in ComparatorOptionsView.argument-rows : Text {
+                accessible-label: "Comparator argument help " + (index + 1);
+                text: "Argument " + (index + 1) + ": " + (value == "" ? "\"\" (empty string)" : value);
+                color: Theme.secondary-text; font-size: Theme.small-font;
+                wrap: char-wrap; min-width: 0px;
+            }
+            if ComparatorOptionsView.argument-rows.length == 0 : Text {
+                text: "No arguments"; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+            }
+            Text {
+                accessible-label: "Comparator working directory value";
+                text: "Working directory: " + (ComparatorOptionsView.draft.working-directory == ""
+                    ? "Executable folder (default)" : ComparatorOptionsView.draft.working-directory);
+                color: Theme.secondary-text; font-size: Theme.small-font; wrap: char-wrap; min-width: 0px;
+            }
+            Text {
+                text: "A complete {left} argument stands for the left file path; a complete {right} argument stands for the right file path. Other arguments remain literal. Each row is separate; no arguments are appended automatically.";
+                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-width: 0px;
+            }
+        }
+    }
+}
+
+export component ComparatorOptions inherits VerticalLayout {
+    in property <bool> narrow;
+    in property <length> available-height;
+    callback reveal-field(length, length);
+    private property <bool> rule-selected: ComparatorOptionsView.selected >= 0
+        && ComparatorOptionsView.selected < ComparatorOptionsView.rule-count;
+    private property <int> focus-revision: ComparatorOptionsView.focus-revision;
+    out property <length> error-target-top: !root.rule-selected || ComparatorOptionsView.error-field == 0
+        ? priority.absolute-position.y - root.absolute-position.y + 1px
+        : fields.absolute-position.y - root.absolute-position.y + fields.error-target-top;
+    out property <length> error-target-height: !root.rule-selected || ComparatorOptionsView.error-field == 0
+        ? Theme.control-height : fields.error-target-height;
+    function reveal-error() {
+        if ComparatorOptionsView.error != "" && ComparatorOptionsView.ready && !ComparatorOptionsView.busy {
+            root.reveal-field(root.error-target-top, root.error-target-height);
+        }
+    }
+    public function focus-error() {
+        if ComparatorOptionsView.error == "" || !ComparatorOptionsView.ready || ComparatorOptionsView.busy { return; }
+        if ComparatorOptionsView.error-field >= 0 {
+            if !root.rule-selected || ComparatorOptionsView.error-field == 0 { priority.focus-list(); }
+            else { fields.focus-error(); }
+        }
+        root.reveal-error();
+    }
+    init => { root.focus-error(); }
+    changed focus-revision => { root.focus-error(); }
+    changed error-target-top => { root.reveal-error(); }
+    changed error-target-height => { root.reveal-error(); }
+    min-width: 0px; spacing: 8px; alignment: start;
+    if root.narrow : Text {
+        text: "Rules"; color: Theme.strong-text; font-size: Theme.font-size;
+        wrap: word-wrap;
+    }
+    ListHeader {
+        title: root.narrow ? "" : "Rules";
+        hint: "The first enabled rule matching both basenames wins. The final Automatic fallback is fixed.";
+        enabled: ComparatorOptionsView.ready && !ComparatorOptionsView.busy;
+        can-add: ComparatorOptionsView.rule-count < 64;
+        can-remove: root.rule-selected;
+        can-move-up: root.rule-selected && ComparatorOptionsView.selected > 0;
+        can-move-down: root.rule-selected && ComparatorOptionsView.selected + 1 < ComparatorOptionsView.rule-count;
+        action-labels: ["Add comparator rule", "Remove comparator rule", "Move comparator rule up", "Move comparator rule down"];
+        action-hints: ["Add an override (Insert)", "Remove the selected override (Delete)",
+            "Increase priority (Alt+Up)", "Decrease priority (Alt+Down)"];
+        action(operation) => { ComparatorOptionsView.action(operation); }
+    }
+    priority := ComparatorPriorityList { available-height: root.available-height; }
+    if ComparatorOptionsView.ready && ComparatorOptionsView.rule-count == 0 : Text {
+        accessible-label: "Comparator empty overrides";
+        text: "No overrides. The built-in assignments below apply.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-width: 0px;
+    }
+    if ComparatorOptionsView.error != "" : Text {
+        accessible-label: "Comparator validation error";
+        text: ComparatorOptionsView.error;
+        color: Theme.error-text; font-size: Theme.font-size; wrap: char-wrap; min-width: 0px;
+    }
+    Rectangle {
+        min-width: 0px; height: root.rule-selected ? fields.preferred-height : 0px;
+        visible: root.rule-selected;
+        fields := ComparatorRuleFields {
+            width: parent.width; height: self.preferred-height; narrow: root.narrow;
+            enabled: root.rule-selected && ComparatorOptionsView.ready && !ComparatorOptionsView.busy;
+        }
+    }
+    Text {
+        text: "First enabled rule matching both basenames wins. Automatic handles all other regular files.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-width: 0px;
+    }
+    Text {
+        text: "Built-in types — when no override matches";
+        color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap; min-width: 0px;
+    }
+    if ComparatorOptionsView.image-coverage != "" : Text {
+        accessible-label: "Comparator enabled image types";
+        text: ComparatorOptionsView.image-coverage + " → Automatic → Built-in image";
+        color: Theme.text; font-size: Theme.font-size; wrap: char-wrap; min-width: 0px;
+    }
+    if ComparatorOptionsView.coverage-state != "" : Text {
+        accessible-label: "Comparator image coverage status";
+        text: ComparatorOptionsView.coverage-state;
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-width: 0px;
+    }
+    if ComparatorOptionsView.coverage-busy : Text {
+        text: "Reading enabled image types…";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    if ComparatorOptionsView.coverage-error != "" : Text {
+        accessible-label: "Comparator image coverage error";
+        text: ComparatorOptionsView.coverage-error;
+        color: Theme.error-text; font-size: Theme.small-font; wrap: char-wrap; min-width: 0px;
+    }
+    Text {
+        accessible-label: "Comparator text fallback";
+        text: "Other regular files → Automatic → Built-in text";
+        color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; min-width: 0px;
+    }
+    Text {
+        text: "Text must be UTF-8 or UTF-16 with a BOM. Image types describe enabled non-document decoders for this session; matching extensions do not guarantee decodability. Plugin changes awaiting restart do not change this list.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-width: 0px;
+    }
+    HintedActionButton {
+        text: "Refresh"; accessible-label: "Refresh comparator image types";
+        hint: "Refresh current-session image decoder metadata.";
+        enabled: ComparatorOptionsView.ready && !ComparatorOptionsView.busy && !ComparatorOptionsView.coverage-busy;
+        clicked => { ComparatorOptionsView.refresh-coverage(); }
+    }
+}

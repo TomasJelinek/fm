@@ -6,6 +6,7 @@ import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { KeyboardEditor, KeyboardEditorView } from "keyboard-editor.slint";
 import { OptionsNavigation, OptionsTopics } from "options-navigation.slint";
 import { EditorOptions, EditorOptionsView } from "editor-options.slint";
+import { ComparatorOptions, ComparatorOptionsView } from "comparator-options.slint";
 import { PluginOptions } from "plugin-options.slint";
 import { ThumbnailOptions } from "thumbnail-options.slint";
 import { ArchiveOptions } from "archive-options.slint";
@@ -115,22 +116,47 @@ export component OptionsBody inherits Rectangle {
             content.content-y = min(0px, content.visible-height - content.content-height);
         }
     }
-    private property <bool> page-dirty: root.topic-index == 4 ? EditorOptionsView.dirty
+    private property <bool> page-dirty: root.topic-index == 10 ? ComparatorOptionsView.dirty
+        : root.topic-index == 4 ? EditorOptionsView.dirty
         : root.topic-index == 8 ? ColorOptionsView.dirty
         : root.topic-index == 9 ? UserCommandSettingsView.dirty : false;
-    private property <bool> page-busy: root.topic-index == 4 ? EditorOptionsView.busy
+    private property <bool> page-busy: root.topic-index == 10 ? ComparatorOptionsView.busy
+        : root.topic-index == 4 ? EditorOptionsView.busy
         : root.topic-index == 8 ? ColorOptionsView.busy
         : root.topic-index == 9 ? UserCommandSettingsView.busy : false;
-    private property <string> page-error: root.topic-index == 4 ? EditorOptionsView.error
+    private property <string> page-error: root.topic-index == 10 ? ComparatorOptionsView.error
+        : root.topic-index == 4 ? EditorOptionsView.error
         : root.topic-index == 8 ? ColorOptionsView.error
         : root.topic-index == 9 ? UserCommandSettingsView.error : "";
+    // Comparator diagnostics already live beside their fields in the scrolling
+    // body. A fixed duplicate would remove a control's height at compact sizes.
+    private property <string> fixed-page-error: root.topic-index == 10 ? "" : root.page-error;
+    private property <bool> comparator-validation-error: ComparatorOptionsView.error != "" && ComparatorOptionsView.error-field >= 0;
+    private property <bool> fixed-save-error: root.preferences-save-failed && !root.comparator-validation-error;
     private property <string> save-status: root.page-error != "" ? "Check the highlighted settings."
         : root.page-busy ? "Checking settings…"
         : root.options-busy ? "Saving settings…"
         : root.page-dirty ? "Changes will be saved with OK."
         : root.preferences-save-status;
+    private property <bool> comparator-focus-after-show: false;
+    private property <length> comparator-error-top: -1px;
+    private property <length> comparator-error-height;
+    function reveal-comparator-error() {
+        if root.topic-index != 10 || root.comparator-error-top < 0px
+            || ComparatorOptionsView.error == "" || ComparatorOptionsView.busy
+            || content.visible-height <= 0px { return; }
+        let top = max(0px, root.comparator-error-top);
+        let height = min(max(1px, root.comparator-error-height), content.visible-height);
+        if top < -content.content-y { content.content-y = -top; }
+        else if top + height > -content.content-y + content.visible-height {
+            content.content-y = -max(0px, top + height - content.visible-height);
+        }
+        content.content-y = clamp(content.content-y, min(0px, content.visible-height - content.content-height), 0px);
+    }
     changed topic-index => {
         if root.topic-index == 2 { root.topic-index = 0; }
+        root.comparator-error-top = -1px;
+        if root.topic-index == 10 && ComparatorOptionsView.error == "" { content.content-y = 0px; }
         UserCommandSettingsView.drag-cancel(); ColorOptionsView.picker-field = -1; UserCommandSettingsView.picker-context(root.topic-index);
     }
     function close-options() {
@@ -139,7 +165,15 @@ export component OptionsBody inherits Rectangle {
     }
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
-    init => { if root.preferences-ready { save-button.focus(); } else { footer.focus-dismiss(); } }
+    init => {
+        if !root.preferences-ready { footer.focus-dismiss(); }
+        // Conditional page init can precede popup activation, which clears focus.
+        // Route the diagnostic again from this post-activation parent init.
+        else if root.topic-index != 10 || ComparatorOptionsView.error == ""
+            || !ComparatorOptionsView.ready || ComparatorOptionsView.busy
+            || ComparatorOptionsView.error-field < 0 { save-button.focus(); }
+        else { root.comparator-focus-after-show = true; }
+    }
     forward-focus: option-focus;
     option-focus := FocusScope {
     forward-focus: save-button;
@@ -212,6 +246,8 @@ export component OptionsBody inherits Rectangle {
                 horizontal-stretch: 1; min-height: 0px; min-width: 0px;
                 horizontal-scrollbar-policy: always-off;
                 content-width: self.visible-width;
+                changed visible-height => { root.reveal-comparator-error(); }
+                changed content-height => { root.reveal-comparator-error(); }
             // Flickable derives content extent from direct, non-repeated layouts.
             // Keep the wrapper unconditional; the page itself remains conditional.
             VerticalLayout {
@@ -219,7 +255,18 @@ export component OptionsBody inherits Rectangle {
               // Fluent scrollbars overlay the reported visible width. Keep
               // rightmost actions out of their pointer/input region.
               padding-right: FluentScrollMetrics.overlay-size;
-              padding-bottom: root.topic-index == 9 || root.topic-index == 4 || root.topic-index == 7 || root.topic-index == 8 ? Theme.control-height + FluentScrollMetrics.overlay-size : 0px;
+              padding-bottom: root.topic-index == 10 || root.topic-index == 9 || root.topic-index == 4 || root.topic-index == 7 || root.topic-index == 8 ? Theme.control-height + FluentScrollMetrics.overlay-size : 0px;
+              if root.topic-index == 10 : ComparatorOptions {
+                private property <bool> focus-after-show: root.comparator-focus-after-show;
+                changed focus-after-show => { if self.focus-after-show { self.focus-error(); } }
+                narrow: root.narrow;
+                available-height: content.visible-height;
+                reveal-field(top, height) => {
+                    root.comparator-error-top = top;
+                    root.comparator-error-height = height;
+                    root.reveal-comparator-error();
+                }
+              }
               if root.topic-index == 5 : PluginOptions {
                 available-height: content.visible-height;
                 open-archive-associations => { root.topic-index = 7; }
@@ -365,11 +412,13 @@ export component OptionsBody inherits Rectangle {
         }
         }
         Rectangle { height: 1px; background: Theme.frame; }
-        if root.page-error != "" || root.preferences-save-failed : Text {
-            text: root.page-error != "" ? root.page-error : root.preferences-save-status;
+        if root.fixed-page-error != "" || root.fixed-save-error : Text {
+            accessible-label: "Options error";
+            accessible-value: self.text;
+            text: root.fixed-page-error != "" ? root.fixed-page-error : root.preferences-save-status;
             min-width: 0px; overflow: elide; font-size: Theme.small-font;
             color: Theme.error-text;
-            Tooltip { TipBody { text: root.page-error != "" ? root.page-error : root.preferences-save-status; } }
+            Tooltip { TipBody { text: root.fixed-page-error != "" ? root.fixed-page-error : root.preferences-save-status; } }
         }
         footer := DialogFooter {
             compact-height: root.compact;

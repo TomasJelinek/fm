@@ -1,4 +1,7 @@
 //! Read-only, bounded-page qualification through the production native viewer service.
+#[path = "support/resident.rs"]
+mod resident;
+
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
 use std::{
@@ -167,7 +170,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let service = Service::new(runtime.handle().clone());
+    let runtime = resident::ResidentRuntime::new(runtime)?;
+    let service = Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     let opening = Instant::now();
     let session = service.open(
@@ -244,7 +249,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     session.close();
     drop(session);
     drop(service);
-    runtime.shutdown_timeout(Duration::from_secs(2));
+    runtime.shutdown_timeout(Duration::from_secs(2))?;
     println!(
         "PASS total_ms={:.3}",
         started.elapsed().as_secs_f64() * 1000.0

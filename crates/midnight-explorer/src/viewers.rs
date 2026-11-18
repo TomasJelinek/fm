@@ -134,14 +134,15 @@ pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<dyn Fn(Command) -> bool>,
-    runtime: &tokio::runtime::Handle,
+    execution: &crate::ContentExecution,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
     resources: std::sync::Arc<dyn midnight_core::TransferService>,
     retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
 ) -> (Rc<ViewerWindows>, Rc<ImagePreparation>) {
     let service = midnight_viewer_engine::Service::with_native_capture(
-        runtime.clone(),
-        crate::native_content::factory_with_resources(filesystem, resources, runtime),
+        execution.transient.clone(),
+        execution.resident.clone(),
+        crate::native_content::factory_with_resources(filesystem, resources, &execution.transient),
     );
     // The outer run owns this ticket on every later Result/early-return path.
     // Register before the settings response or ViewerWindows can start catalog preparation.
@@ -352,18 +353,27 @@ mod preparation_tests {
             .enable_all()
             .build()
             .unwrap();
+        let (owner, spawner) = midnight_work_budget::resident::Owner::start(
+            "viewer-preparation-test",
+            midnight_viewer_engine::RESIDENT_WORKERS,
+        )
+        .unwrap();
         let released = Arc::new(AtomicBool::new(false));
         let lifetime = CaptureLifetime(released.clone());
         let capture: midnight_viewer_engine::NativeCapture = Arc::new(move |_, _| {
             let _lifetime = &lifetime;
             Err("Lifetime-only capture must not be invoked".into())
         });
-        let service =
-            midnight_viewer_engine::Service::with_native_capture(runtime.handle().clone(), capture);
+        let service = midnight_viewer_engine::Service::with_native_capture(
+            runtime.handle().clone(),
+            spawner.clone(),
+            capture,
+        );
         let preparation = Rc::new(ImagePreparation::new(service));
         let viewers = Rc::new(ViewerWindows::new(
             midnight_viewer_engine::Service::with_native_capture(
                 runtime.handle().clone(),
+                spawner,
                 Arc::new(|_, _| Err("No content is read".into())),
             ),
         ));
@@ -377,6 +387,8 @@ mod preparation_tests {
         // A late response after shutdown reaches nothing.
         let root = std::env::current_dir().unwrap();
         loaded.applied(&RefCell::new(Presenter::new(root.clone(), root)));
+        drop(viewers);
+        runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
     }
 
     type Calls = Rc<RefCell<Vec<Option<Arc<[String]>>>>>;
@@ -392,7 +404,12 @@ mod preparation_tests {
     fn presenter(read: Result<UserPreferences, FsError>) -> Presenter {
         let root = std::env::current_dir().unwrap();
         let mut presenter = Presenter::new(root.clone(), root);
-        presenter.apply(Event::PreferencesLoaded(read.map(Box::new)));
+        presenter.apply(Event::PreferencesLoaded(read.map(|preferences| {
+            Box::new(midnight_core::AcceptedPreferences {
+                preferences,
+                comparators: Default::default(),
+            })
+        })));
         presenter
     }
 
@@ -492,9 +509,14 @@ mod restore_tests {
     #[test]
     fn the_settings_read_restores_merged_choices_into_viewers_opened_before_it() {
         slint::platform::set_platform(Box::new(Windows)).unwrap();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = crate::resident_test_runtime::TestRuntime::new(
+            tokio::runtime::Runtime::new().unwrap(),
+            "viewer-settings-restore",
+            midnight_viewer_engine::RESIDENT_WORKERS,
+        );
         let service = midnight_viewer_engine::Service::with_native_capture(
             runtime.handle().clone(),
+            runtime.spawner(),
             Arc::new(|_, _| Err("Content is deliberately unavailable.".into())),
         );
         let viewers = Rc::new(ViewerWindows::new(service));
@@ -521,10 +543,15 @@ mod restore_tests {
         loaded.text_font.size = 19;
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                viewer: loaded,
-                ..Default::default()
-            }))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences: UserPreferences {
+                        viewer: loaded,
+                        ..Default::default()
+                    },
+                    comparators: Default::default(),
+                },
+            ))));
         let preparation = Rc::new(ImagePreparation::with(|_, _| {}));
         SettingsLoaded::new(&viewers, &preparation).applied(&presenter);
         let presented = (
@@ -553,18 +580,10 @@ fn open(
     ready: Option<midnight_viewer_ui::OpenReady>,
 ) -> Result<(), String> {
     let theme = window.global::<Theme>();
-    let rgba = |color: slint::Color| {
-        let color = color.to_argb_u8();
-        [color.red, color.green, color.blue, color.alpha]
-    };
-    let appearance = ViewerAppearance {
-        family: theme.get_font_family().to_string(),
-        font_size: theme.get_font_size().max(11.0),
-        foreground: rgba(theme.get_text()),
-        background: rgba(theme.get_pane_background()),
-        selection: rgba(theme.get_selection_background()),
-        accent: rgba(theme.get_accent()),
-    };
+    let mut appearance = crate::content_appearance::capture(window);
+    // Preserve the opening document snapshot; only the UI cache uses the resolved UI family.
+    appearance.family = theme.get_font_family().to_string();
+    appearance.font_size = appearance.font_size.max(11.0);
     let key_state = presenter.clone();
     let keys = Rc::new(move |chord: &_, search| key_state.borrow().viewer_key(chord, search));
     let copy_state = presenter.clone();
@@ -585,11 +604,13 @@ fn open(
 #[cfg(test)]
 fn service(
     runtime: &tokio::runtime::Handle,
+    viewer_spawner: midnight_work_budget::resident::Spawner,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> midnight_viewer_engine::Service {
     let capture = crate::native_content::factory(filesystem);
     midnight_viewer_engine::Service::with_native_capture(
         runtime.clone(),
+        viewer_spawner,
         std::sync::Arc::new(move |path, closed| capture(path, closed)),
     )
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{image_geometry::ImageGeometry, image_worker::Event};
+use crate::{document_view::DocumentView, image_geometry::ImageGeometry, image_worker::Event};
 
 impl Worker {
     pub(super) fn image_input(&mut self, input: &ViewerInput) -> bool {
@@ -8,14 +8,58 @@ impl Worker {
         };
         let before = image.geometry.clone();
         let page_before = image.page;
-        let pan_ack = matches!(
-            input,
-            ViewerInput::Image {
-                input: ViewerImageInput::PanTo { .. },
-                ..
+        let layout_before = image.document_view.as_ref().map(|view| view.layout);
+        let mut page_turn = false;
+        let pan_ack = !image.document
+            && matches!(
+                input,
+                ViewerInput::Image {
+                    input: ViewerImageInput::PanTo { .. },
+                    ..
+                }
+            );
+        if let ViewerInput::Resize(geometry) = input {
+            self.image_size = [geometry.width.max(1), geometry.height.max(1)];
+            self.geometry = bounded_geometry(*geometry);
+            if let Some(document) = &mut image.document_view {
+                document.resize(self.image_size);
+            } else {
+                image.frames.resized();
+                if let Some(view) = &mut image.geometry {
+                    view.resize(self.image_size);
+                }
             }
-        );
-        if let ViewerInput::Image {
+        } else if let Some(document) = &mut image.document_view {
+            match input {
+                ViewerInput::DocumentLayout { frame, layout } => {
+                    if !image.frames.accepts_document(*frame, true)
+                        || !document.set_layout(*frame, *layout)
+                    {
+                        return true;
+                    }
+                }
+                ViewerInput::DocumentPage { frame, delta } => {
+                    if !self.frames.accepts(*frame) || !document.change_page(*delta) {
+                        return true;
+                    }
+                    page_turn = true;
+                }
+                ViewerInput::Scroll { x, y } => document.scroll([f64::from(*x), f64::from(*y)]),
+                ViewerInput::Seek(position) => document.seek(1, *position),
+                ViewerInput::Pan(position) => document.seek(0, *position),
+                ViewerInput::Image { frame, input } => {
+                    if !image.frames.accepts_document_image(*frame, input)
+                        || !document.image_input(input)
+                    {
+                        return true;
+                    }
+                }
+                ViewerInput::NextFile | ViewerInput::PreviousFile | ViewerInput::Close => {
+                    return false;
+                }
+                _ => return true,
+            }
+        } else if let ViewerInput::Image {
             input:
                 ViewerImageInput::PanTo {
                     surface,
@@ -28,13 +72,6 @@ impl Worker {
             if !image.pan_to(*surface, *sequence, *origin) {
                 return true;
             }
-        } else if let ViewerInput::Resize(geometry) = input {
-            image.frames.resized();
-            self.image_size = [geometry.width.max(1), geometry.height.max(1)];
-            self.geometry = bounded_geometry(*geometry);
-            if let Some(view) = &mut image.geometry {
-                view.resize(self.image_size);
-            }
         } else {
             let Some(view) = &mut image.geometry else {
                 return !matches!(
@@ -43,22 +80,6 @@ impl Worker {
                 );
             };
             match input {
-                ViewerInput::DocumentPage { frame, delta } => {
-                    if !image.document || !self.frames.accepts(*frame) {
-                        return true;
-                    }
-                    let page = image
-                        .page
-                        .saturating_add_signed(*delta as isize)
-                        .min(image.pages.len().saturating_sub(1));
-                    if page == image.page {
-                        return true;
-                    }
-                    let metadata = image.pages[page];
-                    image.page = page;
-                    view.change_page(metadata.width, metadata.height);
-                    image.frames = Default::default();
-                }
                 ViewerInput::Scroll { x, y } => view.scroll([f64::from(*x), f64::from(*y)]),
                 ViewerInput::Seek(position) => view.seek(1, *position),
                 ViewerInput::Pan(position) => view.seek(0, *position),
@@ -73,8 +94,21 @@ impl Worker {
                 _ => return true,
             }
         }
+        if let Some(document) = &image.document_view {
+            image.geometry = Some(document.geometry.clone());
+            image.page = document.page;
+        }
         // A clamped Fit pan does not rerender or upload an unchanged viewport.
-        if image.geometry != before || image.page != page_before || pan_ack {
+        if image.geometry != before
+            || image.page != page_before
+            || image.document_view.as_ref().map(|view| view.layout) != layout_before
+            || pan_ack
+        {
+            if page_turn {
+                image.frames = Default::default();
+            } else if image.document_view.is_some() && matches!(input, ViewerInput::Resize(_)) {
+                image.frames.resized();
+            }
             image.changed();
             self.frames.invalidate();
             self.dirty = true;
@@ -91,16 +125,18 @@ impl Worker {
             return;
         };
         let result = match event {
-            Event::Opened { pages, document } => {
+            Event::Opened { pages, document } => (|| {
                 if let Some(image) = &mut self.image {
-                    let Some(metadata) = pages.first().copied() else {
-                        return;
-                    };
+                    let metadata = pages.first().copied().ok_or("Image contains no pages.")?;
+                    let document_view = document
+                        .then(|| DocumentView::new(&pages, self.image_size))
+                        .transpose()?;
                     image.pages = pages;
                     image.document = document;
+                    image.document_view = document_view;
                     // Each PDF source begins in Fit; page turns retain live geometry.
-                    let view = if document {
-                        ImageGeometry::document(metadata.width, metadata.height, self.image_size)
+                    let view = if let Some(document) = &image.document_view {
+                        document.geometry.clone()
                     } else {
                         let mut view =
                             ImageGeometry::new(metadata.width, metadata.height, self.image_size);
@@ -112,7 +148,7 @@ impl Worker {
                     self.dirty = true;
                 }
                 Ok(())
-            }
+            })(),
             Event::Frame {
                 revision,
                 key,
@@ -136,10 +172,14 @@ impl Worker {
             }
             Event::DocumentFrame { revision, raster } => {
                 if let Some(image) = &mut self.image {
-                    image.pending = None;
-                    if image.revision == revision {
-                        image.document_frame = Some((revision, raster));
-                    }
+                    image.complete_document(revision, Some(raster));
+                    self.dirty = true;
+                }
+                Ok(())
+            }
+            Event::DocumentSuperseded(revision) => {
+                if let Some(image) = &mut self.image {
+                    image.complete_document(revision, None);
                     self.dirty = true;
                 }
                 Ok(())
@@ -175,10 +215,19 @@ impl Worker {
         let Some(plan) = &image.scene.plan else {
             return Ok(());
         };
-        let (position, vertical_extent) = view.metrics(1);
-        let (horizontal_position, horizontal_extent) = view.metrics(0);
+        let metrics = |axis| {
+            image
+                .document_view
+                .as_ref()
+                .map_or_else(|| view.metrics(axis), |document| document.metrics(axis))
+        };
+        let (position, vertical_extent) = metrics(1);
+        let (horizontal_position, horizontal_extent) = metrics(0);
         let revision = self.frames.painted()?;
         image.frames.painted(revision);
+        if let Some(document) = &mut image.document_view {
+            document.painted(revision);
+        }
         let (width, height, pixels, tiles) = match paint {
             crate::image_view::Paint::Tiles(tiles) => (
                 plan.raster_size[0],
@@ -215,6 +264,7 @@ impl Worker {
                     0
                 },
                 page_count: image.pages.len() as u32,
+                document_layout: image.document_view.as_ref().map(|document| document.layout),
             }),
             raster: None,
             raster_rebase: None,

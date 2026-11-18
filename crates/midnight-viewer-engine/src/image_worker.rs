@@ -1,11 +1,12 @@
 //! One bounded, cancellable image actor per viewer window. Owned and reaped by the backend.
+use crate::document_render::{Composition, DocumentRenderPlan};
 use crate::image_tiles::{Charge, EDGE, Key};
 use midnight_core::ViewerPixels;
 use midnight_image_viewer_host::{ImageSession, Metadata, Provider, Source, Viewport};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     thread::JoinHandle,
@@ -45,6 +46,7 @@ pub(crate) enum Event {
         revision: u64,
         raster: DocumentRaster,
     },
+    DocumentSuperseded(u64),
     Failed(String),
 }
 
@@ -65,8 +67,7 @@ enum Render {
     Validate(u64),
     Document {
         revision: u64,
-        page: usize,
-        viewport: Viewport,
+        plan: DocumentRenderPlan,
     },
 }
 
@@ -106,6 +107,7 @@ pub(crate) struct ImageWorker {
     cancel: Arc<AtomicBool>,
     /// The actor thread published its exit (see `Exit`).
     exited: Arc<AtomicBool>,
+    wanted_document: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -136,6 +138,7 @@ impl ImageWorker {
             events,
             cancel: Arc::new(AtomicBool::new(false)),
             exited,
+            wanted_document: Arc::new(AtomicU64::new(0)),
             thread,
         }
     }
@@ -157,6 +160,8 @@ impl ImageWorker {
         let (output, events) = mpsc::sync_channel(1);
         let cancel = Arc::new(AtomicBool::new(false));
         let stopped = cancel.clone();
+        let wanted_document = Arc::new(AtomicU64::new(0));
+        let wanted = wanted_document.clone();
         let exited = Arc::new(AtomicBool::new(false));
         let thread = spawn(exited.clone(), wake.clone(), move || {
             let result = run_actor(
@@ -273,32 +278,31 @@ impl ImageWorker {
                                                 .map_err(|error| error.to_string())?;
                                             Event::Validated(revision)
                                         }
-                                        Render::Document {
-                                            revision,
-                                            page,
-                                            viewport,
-                                        } => {
+                                        Render::Document { revision, plan } => {
                                             if !session.is_document() {
                                                 return Err(
                                                     "Unexpected document render request.".into()
                                                 );
                                             }
-                                            let mut frame = session
-                                                .render_page(
-                                                    page,
-                                                    viewport,
-                                                    &stopped,
-                                                    Duration::from_secs(15),
-                                                )
-                                                .map_err(|error| error.to_string())?;
-                                            crate::image_pixels::premultiply(&mut frame.rgba);
-                                            Event::DocumentFrame {
+                                            match crate::document_render::compose(
+                                                &mut session,
+                                                &plan,
                                                 revision,
-                                                raster: DocumentRaster {
-                                                    width: frame.width,
-                                                    height: frame.height,
-                                                    rgba: Arc::from(frame.rgba),
+                                                &wanted,
+                                                &stopped,
+                                                Duration::from_secs(15),
+                                            )? {
+                                                Composition::Frame(frame) => Event::DocumentFrame {
+                                                    revision,
+                                                    raster: DocumentRaster {
+                                                        width: frame.width,
+                                                        height: frame.height,
+                                                        rgba: frame.rgba.into(),
+                                                    },
                                                 },
+                                                Composition::Superseded => {
+                                                    Event::DocumentSuperseded(revision)
+                                                }
                                             }
                                         }
                                     };
@@ -351,6 +355,7 @@ impl ImageWorker {
             events,
             cancel,
             exited,
+            wanted_document,
             thread: Some(thread),
         })
     }
@@ -372,12 +377,12 @@ impl ImageWorker {
     pub fn validate(&self, revision: u64) -> bool {
         self.send(Render::Validate(revision))
     }
-    pub fn document(&self, revision: u64, page: usize, viewport: Viewport) -> bool {
-        self.send(Render::Document {
-            revision,
-            page,
-            viewport,
-        })
+    pub fn want_document(&self, revision: u64) {
+        self.wanted_document.store(revision, Ordering::Release);
+    }
+
+    pub fn document(&self, revision: u64, plan: DocumentRenderPlan) -> bool {
+        self.send(Render::Document { revision, plan })
     }
 
     pub fn cancel(&mut self) {
@@ -419,6 +424,7 @@ mod tests {
             events,
             cancel: Arc::new(AtomicBool::new(false)),
             exited: Arc::new(AtomicBool::new(false)),
+            wanted_document: Arc::new(AtomicU64::new(0)),
             thread: None,
         };
         let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
@@ -457,6 +463,7 @@ mod tests {
             events,
             cancel: Arc::new(AtomicBool::new(false)),
             exited: Arc::new(AtomicBool::new(false)),
+            wanted_document: Arc::new(AtomicU64::new(0)),
             thread: None,
         };
         let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
@@ -491,6 +498,7 @@ mod tests {
             events,
             cancel: Arc::new(AtomicBool::new(false)),
             exited: Arc::new(AtomicBool::new(false)),
+            wanted_document: Arc::new(AtomicU64::new(0)),
             thread: None,
         };
         let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
@@ -501,17 +509,24 @@ mod tests {
             [1200.0, 900.0],
             [500.0, 350.0],
         ));
-        view.geometry = Some(geometry);
+        let mut document = crate::document_view::DocumentView::new(
+            &[Metadata {
+                width: 2400,
+                height: 1800,
+            }],
+            [1000, 700],
+        )
+        .unwrap();
+        document.geometry = geometry;
+        view.document_view = Some(document);
         view.changed();
         assert!(view.request().unwrap().is_none());
-        let Render::Document {
-            revision,
-            page,
-            viewport,
-        } = requests.try_recv().unwrap()
-        else {
+        let Render::Document { revision, plan } = requests.try_recv().unwrap() else {
             panic!("document must use whole bounded viewport")
         };
+        assert_eq!(plan.slices.len(), 1);
+        let page = plan.slices[0].page;
+        let viewport = plan.slices[0].viewport;
         assert_eq!((page, viewport.width, viewport.height), (0, 1000, 700));
         assert_eq!(viewport.scale, 2.0);
         assert_eq!(view.scene.plan.as_ref().unwrap().scale, viewport.scale);
@@ -529,5 +544,82 @@ mod tests {
         assert!(matches!(view.request().unwrap(), Some(Paint::Raster(_))));
         assert!(view.request().unwrap().is_none());
         assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn document_bursts_keep_one_active_and_only_the_latest_wanted_demand() {
+        let (sender, requests) = mpsc::sync_channel(1);
+        let (_, events) = mpsc::sync_channel(1);
+        let worker = ImageWorker {
+            sender: Some(sender),
+            events,
+            cancel: Arc::new(AtomicBool::new(false)),
+            exited: Arc::new(AtomicBool::new(false)),
+            wanted_document: Arc::new(AtomicU64::new(0)),
+            thread: None,
+        };
+        let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
+        view.document = true;
+        let mut document = crate::document_view::DocumentView::new(
+            &[Metadata {
+                width: 2400,
+                height: 1800,
+            }],
+            [1000, 700],
+        )
+        .unwrap();
+        document.geometry.actual();
+        view.document_view = Some(document);
+        view.changed();
+        assert!(view.request().unwrap().is_none());
+        let Render::Document {
+            revision: active, ..
+        } = requests.try_recv().unwrap()
+        else {
+            panic!("document demand expected")
+        };
+        for _ in 0..64 {
+            view.document_view.as_mut().unwrap().scroll([3.0, 2.0]);
+            view.changed();
+            assert!(view.request().unwrap().is_none());
+            assert!(
+                requests.try_recv().is_err(),
+                "intermediate demand was queued"
+            );
+        }
+        assert_eq!(view.pending, Some(active));
+        assert_eq!(
+            view.worker.wanted_document.load(Ordering::Acquire),
+            view.revision
+        );
+        assert!(!view.worker.cancel.load(Ordering::Acquire));
+        view.complete_document(active, None);
+        assert!(view.request().unwrap().is_none());
+        let Render::Document {
+            revision: latest,
+            plan,
+        } = requests.try_recv().unwrap()
+        else {
+            panic!("latest document demand expected")
+        };
+        assert_eq!(latest, view.revision);
+        assert_eq!(latest, active + 64);
+        assert_eq!(plan.slices.len(), 1);
+        assert_eq!(plan.slices[0].viewport.origin_x, 892.0);
+        assert_eq!(plan.slices[0].viewport.origin_y, 678.0);
+        view.complete_document(
+            active,
+            Some(midnight_image_viewer_host::Frame {
+                width: 1,
+                height: 1,
+                rgba: vec![0; 4],
+            }),
+        );
+        assert_eq!(
+            view.pending,
+            Some(latest),
+            "stale completion released newer work"
+        );
+        assert!(view.document_frame.is_none());
     }
 }

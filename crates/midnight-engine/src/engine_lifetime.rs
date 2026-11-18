@@ -1,18 +1,23 @@
 //! Startup-reserved cleanup resources; no provider values enter fallible admission.
 use crate::{retirement::*, worker_retirement::ActorRetirement};
+use midnight_work_budget::resident;
 use std::io;
 
-/// Reserved engine cleanup capacity, established before accepting provider ownership.
+/// Reserved engine cleanup and resident workers, established before accepting providers.
 ///
 /// Create with [`crate::Engine::lifetime`]. Plain cleanup and process-tracking workers
 /// remain alive while admitted owners exist, independently of Tokio. Drop never joins.
 pub struct EngineLifetime {
     pub(crate) run: RetirementLease,
+    pub(crate) comparator_policies: RetirementLease,
+    pub(crate) comparator_policy_pins: RetirementDomain,
     pub(crate) services: RetirementLease,
     pub(crate) commands: RetirementLease,
     pub(crate) resources: Resources,
 }
 pub(crate) struct Resources {
+    pub(crate) resident_owner: resident::Owner,
+    pub(crate) resident: resident::Spawner,
     pub(crate) operations: ActorRetirement,
     pub(crate) copies: ActorRetirement,
     pub(crate) drag: DragRetirement,
@@ -47,6 +52,8 @@ pub(crate) struct DragRetirement {
 pub(crate) const DOMAIN_CAPACITY: usize = crate::operations::MAX_JOBS
     + crate::copy_operations::MAX_JOBS
     + 11
+    + 1 // Shared comparator policy store.
+    + 2 // Two comparison sessions, including pending pin cleanup.
     + crate::checksum_actor::RETIREMENT_CAPACITY
     + crate::user_commands::MAX_JOBS
     + 1
@@ -67,6 +74,9 @@ pub(crate) const DOMAIN_CAPACITY: usize = crate::operations::MAX_JOBS
 pub(crate) const DOMAIN_WAITERS: usize = 8;
 impl EngineLifetime {
     pub(crate) fn new() -> io::Result<Self> {
+        // Model, presence, archive and watch lanes (2 each), drag (2),
+        // clipboard (1), and report readers (2).
+        let (resident_owner, resident) = resident::Owner::start("midnight-engine", 13)?;
         let domain = RetirementDomain::try_start(DOMAIN_CAPACITY, DOMAIN_WAITERS)?;
         // No native child exists until this separate fixed process tracker is ready.
         let user_command_processes = crate::user_command_runtime::ProcessTracker::try_start()?;
@@ -80,9 +90,13 @@ impl EngineLifetime {
         };
         Ok(Self {
             run: domain.try_reserve().map_err(io::Error::other)?,
+            comparator_policies: domain.try_reserve().map_err(io::Error::other)?,
+            comparator_policy_pins: domain.clone(),
             services: domain.try_reserve().map_err(io::Error::other)?,
             commands: domain.try_reserve().map_err(io::Error::other)?,
             resources: Resources {
+                resident_owner,
+                resident,
                 operations: actor()?,
                 copies: actor()?,
                 drag: DragRetirement {
@@ -142,6 +156,9 @@ impl EngineLifetime {
                 },
                 desktop: crate::desktop::Retirement {
                     intake: domain.new_waiter().map_err(io::Error::other)?,
+                    external: crate::desktop_external_compare::ExternalComparisonFrontDoor::new(
+                        domain.clone(),
+                    ),
                 },
             },
         })
@@ -170,17 +187,15 @@ mod tests {
         let words = [
             "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
         ];
-        let stated = format!(
-            "domain with {DOMAIN_CAPACITY} payload slots and {} reusable waiter tokens",
-            words[DOMAIN_WAITERS]
-        );
+        let capacity = format!("{DOMAIN_CAPACITY} payload slots");
+        let waiters = format!("{} reusable waiter tokens", words[DOMAIN_WAITERS]);
         let text = LIFETIME_DOC
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
         assert!(
-            text.contains(&stated),
-            "ENGINE_LIFETIME.md must state: {stated}"
+            text.contains(&capacity) && text.contains(&waiters),
+            "ENGINE_LIFETIME.md must document {capacity} and {waiters}"
         );
 
         let table = LIFETIME_DOC

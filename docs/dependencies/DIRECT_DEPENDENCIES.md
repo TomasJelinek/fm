@@ -18,7 +18,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [dav1d](https://crates.io/crates/dav1d/0.11.0) | 0.11.0 | MIT | midnight-image-decoder |
 | [ffmpeg-next](https://crates.io/crates/ffmpeg-next/9.0.0) | 9.0.0 | WTFPL | midnight-thumbnail-video |
 | [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.15) | 0.1.15 | MIT OR Apache-2.0 | midnight-explorer |
-| [flate2](https://crates.io/crates/flate2/1.1.10) | 1.1.10 | MIT OR Apache-2.0 | midnight-api-package, midnight-fs-archive |
+| [flate2](https://crates.io/crates/flate2/1.1.10) | 1.1.10 | MIT OR Apache-2.0 | midnight-api-package, midnight-fs-archive, midnight-office-preview |
 | [fontdb](https://crates.io/crates/fontdb/0.24.0) | 0.24.0 | MIT | midnight-platform-linux |
 | [futures-lite](https://crates.io/crates/futures-lite/2.6.1) | 2.6.1 | Apache-2.0 OR MIT | midnight-platform-linux |
 | [getrandom](https://crates.io/crates/getrandom/0.3.4) | 0.3.4 | MIT OR Apache-2.0 | midnight-elevation, midnight-platform-windows |
@@ -40,6 +40,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [png](https://crates.io/crates/png/0.18.1) | 0.18.1 | MIT OR Apache-2.0 | midnight-viewer-ui |
 | [prettyplease](https://crates.io/crates/prettyplease/0.2.37) | 0.2.37 | MIT OR Apache-2.0 | midnight-ui-bindings |
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.6) | 0.13.6 | MIT | midnight-viewer-markdown |
+| [quick-xml](https://crates.io/crates/quick-xml/0.41.0) | 0.41.0 | MIT | midnight-office-preview |
 | [regex](https://crates.io/crates/regex/1.13.1) | 1.13.1 | MIT OR Apache-2.0 | midnight-platform-common, midnight-viewer-source |
 | [resvg](https://crates.io/crates/resvg/0.48.1) | 0.48.1 | Apache-2.0 OR MIT | midnight-image-decoder, midnight-platform-linux |
 | [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | midnight-platform-common, midnight-platform-linux, midnight-worker-platform |
@@ -71,4 +72,4 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [x11-dl](https://crates.io/crates/x11-dl/2.21.0) | 2.21.0 | MIT | midnight-ui |
 | [x11rb](https://crates.io/crates/x11rb/0.13.2) | 0.13.2 | MIT OR Apache-2.0 | midnight-platform-linux |
 | [zbus](https://crates.io/crates/zbus/5.19.0) | 5.19.0 | MIT | midnight-platform-linux |
-| [zip](https://crates.io/crates/zip/8.6.0) | 8.6.0 | MIT | midnight-fs-archive |
+| [zip](https://crates.io/crates/zip/8.6.0) | 8.6.0 | MIT | midnight-fs-archive, midnight-office-preview |

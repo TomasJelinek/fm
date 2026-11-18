@@ -1,3 +1,6 @@
+#[path = "../examples/support/resident.rs"]
+mod resident;
+
 use midnight_viewer_ui::ViewerWindow;
 use slint::{
     ComponentHandle,
@@ -116,9 +119,10 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let manager = ViewerWindows::new(midnight_viewer_engine::Service::new(
-        runtime.handle().clone(),
-    ));
+    let runtime = resident::ResidentRuntime::new(runtime).unwrap();
+    let service = midnight_viewer_engine::Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
+    let manager = ViewerWindows::new(service);
     let path = std::env::current_dir()
         .unwrap()
         .join("viewer-input-test.txt");

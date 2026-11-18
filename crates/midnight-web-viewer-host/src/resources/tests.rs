@@ -19,6 +19,9 @@ impl ContentSource for Bytes {
     fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
         Ok(b"hello"[offset as usize..(offset + u64::from(length)).min(5) as usize].to_vec())
     }
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -73,29 +76,21 @@ fn parent_segments_resolve_inside_the_scope_but_never_above_it() {
 
 #[test]
 fn permissions_revoke_old_resource_ids_and_never_restore_them() {
-    let mut store = Store::new(CapturedFile::from_source(Arc::new(Bytes)).unwrap(), None);
+    let main = CapturedFile::from_source(Arc::new(Bytes)).unwrap();
+    let mut store = Store::new(&main, ResourcePathPolicy::RelativeAssets).unwrap();
     let first = store.reset(false).unwrap();
+    store.read(1, first.id, 0, 5).unwrap();
     assert!(
-        matches!(store.read(1, first.id, 0, 5), ResourceReply::Data { bytes, .. } if bytes == b"hello")
+        matches!(store.accept_read(1, first.id, 0, b"hello".to_vec()),
+        ResourceReply::Data { bytes, .. } if bytes == b"hello")
     );
     let second = store.reset(true).unwrap();
     assert_ne!(first.id, second.id);
-    assert!(matches!(
-        store.read(2, first.id, 0, 5),
-        ResourceReply::Denied { .. }
-    ));
-    assert!(matches!(
-        store.resolve(3, second.id, "sibling.html"),
-        ResourceReply::Denied { .. }
-    ));
+    assert!(store.read(2, first.id, 0, 5).is_err());
+    assert!(store.resolve(3, second.id, "sibling.html", None).is_err());
     let third = store.reset(false).unwrap();
     assert_ne!(third.id, first.id);
-    assert!(matches!(
-        store.read(4, second.id, 0, 5),
-        ResourceReply::Denied { .. }
-    ));
-    assert!(matches!(
-        store.read(5, third.id, u64::MAX, 1),
-        ResourceReply::Denied { .. }
-    ));
+    assert!(store.read(4, second.id, 0, 5).is_err());
+    assert!(store.read(5, third.id, u64::MAX, 1).is_err());
+    main.release_on_worker().unwrap();
 }

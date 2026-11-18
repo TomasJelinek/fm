@@ -203,14 +203,14 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "midnight-api-headergen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cbindgen",
 ]
 
 [[package]]
 name = "midnight-api-package"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "serde_json",
@@ -221,14 +221,14 @@ dependencies = [
 
 [[package]]
 name = "midnight-plugin-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "minicbor",
 ]
 
 [[package]]
 name = "midnight-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "midnight-plugin-api",
 ]

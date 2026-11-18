@@ -60,10 +60,15 @@ impl Harness {
         );
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                filename_colors: rules.into(),
-                ..Default::default()
-            }))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences: UserPreferences {
+                        filename_colors: rules.into(),
+                        ..Default::default()
+                    },
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
         refresh(&ui.window, &presenter.borrow());
         ui.window.invoke_show_options();
         ui.window.set_options_topic_index(8);

@@ -10,7 +10,16 @@ impl Worker {
         // A pending opening needs no retry: a closing plugin session signals the end of its
         // dispatcher (see `Worker::closing`), and closing browser and image actors wake this
         // worker once they finished (see `actors_finished`).
-        self.dirty.then_some(RETRY)
+        let deadline = self
+            .source_retry_deadline()
+            .into_iter()
+            .chain(self.locate_retry_deadline())
+            .min();
+        self.dirty
+            .then_some(RETRY)
+            .into_iter()
+            .chain(deadline.map(|at| at.saturating_duration_since(std::time::Instant::now())))
+            .min()
     }
 
     pub(super) fn closings_finished(&self) -> bool {

@@ -1,4 +1,7 @@
 //! Bounded production scrollbar pipeline timing without a native window or pixel upload.
+#[path = "support/resident.rs"]
+mod resident;
+
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
 use std::{
@@ -33,7 +36,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let service = Service::new(runtime.handle().clone());
+    let runtime = resident::ResidentRuntime::new(runtime)?;
+    let service = Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
     let scale = std::env::var("MIDNIGHT_VIEWER_SEEK_SCALE")
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
@@ -145,5 +150,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !final_received {
         return Err("final position timed out".into());
     }
+    drop(session);
+    drop(service);
+    runtime.shutdown_timeout(Duration::from_secs(15))?;
     Ok(())
 }

@@ -1,6 +1,69 @@
 use midnight_viewer_source::decode::{Encoding, decode, encoding};
 
 #[test]
+fn utf16_crlf_keeps_one_newline_when_the_following_word_is_split() {
+    for big_endian in [false, true] {
+        let bytes: Vec<_> = "\r\n"
+            .encode_utf16()
+            .flat_map(|u| {
+                if big_endian {
+                    u.to_be_bytes()
+                } else {
+                    u.to_le_bytes()
+                }
+            })
+            .collect();
+        let encoding = if big_endian {
+            Encoding::Be
+        } else {
+            Encoding::Le
+        };
+        for split in 0..=bytes.len() {
+            let first = decode(&bytes[..split], 2, encoding, false, 65536, 512, || false).unwrap();
+            let second = decode(
+                &bytes[first.consumed..],
+                2 + first.consumed as u64,
+                encoding,
+                true,
+                65536,
+                512,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(
+                format!("{}{}", first.text, second.text),
+                "\n",
+                "endian={big_endian}, split={split}"
+            );
+            assert_eq!(first.consumed + second.consumed, bytes.len());
+            assert_eq!(second.anchors.last().unwrap().source_offset, 6);
+        }
+        let mut pending = Vec::new();
+        let mut offset = 2;
+        let mut text = String::new();
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            pending.push(byte);
+            let decoded = decode(
+                &pending,
+                offset,
+                encoding,
+                index + 1 == bytes.len(),
+                65536,
+                512,
+                || false,
+            )
+            .unwrap();
+            text.push_str(&decoded.text);
+            pending.drain(..decoded.consumed);
+            offset += decoded.consumed as u64;
+        }
+        assert_eq!(text, "\n", "one-byte replies endian={big_endian}");
+        assert!(pending.is_empty());
+        assert_eq!(offset, 6);
+    }
+}
+
+#[test]
 fn exact_utf8_malformed_control_and_newline_anchors_above_four_gib() {
     let offset = 1_u64 << 35;
     let decoded = decode(

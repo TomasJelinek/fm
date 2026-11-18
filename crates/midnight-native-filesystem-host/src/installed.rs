@@ -1,6 +1,8 @@
 //! Lazy composition of the installed filesystem; no hidden native fallback.
 use crate::services::fs_error;
-use crate::{Cancel, CaptureCache, NativeProvider, client::check_cancel, discovery::invalid};
+use crate::{
+    Cancel, CaptureCache, CaptureFailure, NativeProvider, client::check_cancel, discovery::invalid,
+};
 use midnight_core::{
     Cancellation, DirectoryService, Entry, EntryMetadata, FsError, SpaceInfo, StorageKind,
     StorageService, Volume, VolumeInformation, VolumeService,
@@ -112,11 +114,28 @@ impl InstalledProvider {
         path: &Path,
         cancelled: Cancel<'_>,
     ) -> Result<midnight_plugin_host::CapturedFile, Failure> {
-        check_cancel(cancelled)?;
-        let provider = self.provider()?;
+        self.capture_checked(path, cancelled)
+            .map_err(|failure| failure.error)
+    }
+
+    /// Typed failed-capture cleanup status through this installation's SAME
+    /// bounded cache. No direct opener or alternate provider is consulted.
+    pub fn capture_checked(
+        &self,
+        path: &Path,
+        cancelled: Cancel<'_>,
+    ) -> Result<midnight_plugin_host::CapturedFile, CaptureFailure> {
+        check_cancel(cancelled).map_err(|error| CaptureFailure {
+            error,
+            cleanup_unconfirmed: false,
+        })?;
+        let provider = self.provider().map_err(|error| CaptureFailure {
+            error,
+            cleanup_unconfirmed: false,
+        })?;
         self.captures
             .get_or_init(|| CaptureCache::new(provider.clone()))
-            .capture(path, cancelled)
+            .capture_checked(path, cancelled)
     }
 
     /// Capture through the installed provider and require a persisted native revision, if supplied.

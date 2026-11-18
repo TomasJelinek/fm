@@ -1,6 +1,9 @@
 //! Viewer messages contain immutable snapshots; all file work belongs to the backend.
 use crate::{DirectoryIndex, Entry};
 use std::{path::PathBuf, sync::Arc};
+#[path = "viewer_document.rs"]
+mod document;
+pub use document::DocumentLayout;
 #[path = "viewer_tiles.rs"]
 mod tiles;
 pub use tiles::*;
@@ -204,6 +207,8 @@ pub struct ViewerImageInfo {
     /// One-based document page; zero for ordinary images.
     pub page: u32,
     pub page_count: u32,
+    /// Session-only document layout; None for ordinary images. New documents use Paged + Fit.
+    pub document_layout: Option<DocumentLayout>,
 }
 
 #[derive(Clone, Debug)]
@@ -258,6 +263,11 @@ pub enum ViewerInput {
     DocumentPage {
         frame: u64,
         delta: i32,
+    },
+    /// Change layout against the actually published document camera, never stale coordinates.
+    DocumentLayout {
+        frame: u64,
+        layout: DocumentLayout,
     },
     Search {
         query: String,
@@ -320,9 +330,21 @@ pub enum ViewerOutput {
         mode: u16,
         content_generation: u64,
     },
+    /// App-private palette acceptance fenced to the matching ViewerFrame generation.
+    /// This is neither plugin/session identity nor layout/content authority. A text
+    /// fence follows successful construction of the real frame at the stated floor.
+    /// None applies only to that generation's author-painted image/PDF/web route.
+    PaletteApplied {
+        revision: u64,
+        generation: u64,
+        minimum_frame_revision: Option<u64>,
+    },
     WebState {
         generation: u64,
         policy: viewer_web::Policy,
+        /// Whether this session permits user policy changes. Ordinary HTML is true;
+        /// fixed offline previews are false. The backend enforces the ceiling.
+        policy_change_allowed: bool,
         zoom: f64,
     },
     /// Host-owned commands from an interactive viewer, after browser arbitration.

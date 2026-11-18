@@ -1,11 +1,33 @@
 //! Presentation and short input callbacks only. The comparator service owns file work.
 #![deny(unsafe_code)]
+mod admission;
+#[cfg(test)]
+mod admission_tests;
+mod appearance;
+#[cfg(test)]
+mod external_outcome_tests;
+#[cfg(test)]
+mod external_retry_tests;
 mod file_choice;
 mod fonts;
+#[cfg(test)]
+mod identity_tests;
 mod images;
+mod presentation;
+#[cfg(all(test, unix))]
+#[path = "external_outcome_unix_tests.rs"]
+mod raw_paths;
+#[cfg(all(test, windows))]
+#[path = "external_outcome_windows_tests.rs"]
+mod raw_paths;
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod support;
 #[cfg(test)]
 mod wake_tests;
-use midnight_compare_engine::{ImageMode, Input, Output, Refused, Service, Session};
+use midnight_compare_engine::{
+    ExternalCompareChoiceOutcome, ImageMode, Input, Refused, Service, Session, Wake,
+};
 use midnight_core::{FileCompareLaunch, ShortcutChord, ViewerAppearance, ViewerGeometry};
 use slint::{
     ComponentHandle, EventLoopError, Timer, TimerMode,
@@ -33,6 +55,9 @@ pub struct ComparatorWindows {
     windows: RefCell<Vec<Rc<OpenWindow>>>,
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
+    appearance: RefCell<Option<appearance::Presentation>>,
+    #[cfg(test)]
+    poll_outputs: bool,
 }
 /// One comparison window. It arms no timer while idle (Slint's own text cursor still
 /// blinks in a focused file field): the worker's outputs arrive through `output-ready`,
@@ -49,6 +74,9 @@ struct OpenWindow {
     closed: Cell<bool>,
     geometry: Cell<(u32, u32, u32)>,
     geometry_revision: Cell<u64>,
+    comparison_generation: Cell<u64>,
+    comparison_requested: Cell<bool>,
+    external_outcome: Cell<Option<ExternalCompareChoiceOutcome>>,
     pending: RefCell<Vec<Input>>,
     choice_paths: RefCell<[std::path::PathBuf; 2]>,
     fonts: RefCell<Option<midnight_compare_engine::FontChoices>>,
@@ -56,6 +84,7 @@ struct OpenWindow {
     /// A loaded comparison font that waits for the font catalog (`fonts::restore`).
     restored_font: RefCell<Option<String>>,
     surfaces: RefCell<images::Surfaces>,
+    appearance: appearance::PaletteState,
 }
 /// Inputs waiting for room in the bounded session queue.
 const MAX_PENDING: usize = 64;
@@ -65,7 +94,8 @@ const MAX_PENDING: usize = 64;
 const BATCH_INTERVAL: Duration = Duration::from_millis(16);
 
 impl OpenWindow {
-    fn new(window: ComparatorWindow, session: Session) -> Rc<Self> {
+    fn new(window: ComparatorWindow, session: Session, appearance: &ViewerAppearance) -> Rc<Self> {
+        let appearance = appearance::PaletteState::new(appearance, session.palette_revision());
         Rc::new_cyclic(|me| OpenWindow {
             window,
             session,
@@ -75,22 +105,42 @@ impl OpenWindow {
             closed: Cell::new(false),
             geometry: Cell::new((0, 0, 0)),
             geometry_revision: Cell::new(0),
+            comparison_generation: Cell::new(0),
+            comparison_requested: Cell::new(false),
+            external_outcome: Cell::new(None),
             pending: RefCell::new(Vec::new()),
             choice_paths: RefCell::new(Default::default()),
             fonts: RefCell::new(None),
             requested_font: RefCell::new(None),
             restored_font: RefCell::new(None),
             surfaces: RefCell::new(images::Surfaces::default()),
+            appearance,
         })
     }
-    fn send(&self, input: Input) {
+    fn send(&self, input: Input) -> bool {
         if self.closed.get() {
-            return;
+            return false;
+        }
+        let compare = matches!(&input, Input::Compare(_));
+        let choosing = compare || matches!(&input, Input::Browse { .. });
+        if choosing {
+            // Explicit choices use Session admission and are never retained for replay.
+            if self.session.send(input).is_err() {
+                return false;
+            }
+            self.external_outcome.set(None);
+            if compare {
+                self.comparison_requested.set(true);
+                self.window.set_identity_state(-1);
+                self.window.set_status("Preparing comparison…".into());
+            }
+            return true;
         }
         queue_input(&mut self.pending.borrow_mut(), input);
         if !self.batch.running() {
             self.flush();
         }
+        true
     }
     /// Send queued inputs while the session accepts them, then hold later inputs for one
     /// interval. The timer sends what arrived meanwhile or retries what the full queue
@@ -101,10 +151,12 @@ impl OpenWindow {
         let mut refused = None;
         let sent = pending
             .iter()
-            .take_while(|input| {
-                let result = self.session.send((*input).clone());
-                refused = result.err();
-                result.is_ok()
+            .take_while(|input| match self.session.send((*input).clone()) {
+                Ok(()) | Err(Refused::Rejected) => true,
+                Err(error) => {
+                    refused = Some(error);
+                    false
+                }
             })
             .count();
         if refused == Some(Refused::Stopped) {
@@ -159,51 +211,15 @@ impl OpenWindow {
         let Some(output) = self.session.mailbox.take() else {
             return;
         };
-        let window = &self.window;
-        match &output {
-            Output::Frame { frame, names } => {
-                fonts::present(self, frame.fonts.as_ref());
-                if window.get_choosing_files() {
-                    window.set_choosing_files(false);
-                    window.set_choice_busy(false);
-                    window.invoke_focus_content();
-                }
-                window.set_frame_revision(frame.geometry_revision as i32);
-                window.set_rendered_mode(match frame.mode {
-                    Some(ImageMode::SideBySide) => 0,
-                    Some(ImageMode::Swipe) => 1,
-                    Some(ImageMode::OnionSkin) => 2,
-                    None => -1,
-                });
-                show_names(window, names);
-                window.set_image_mode(frame.image);
-                window.set_position(frame.position as f32);
-                window.set_status(midnight_core::visible_name(&frame.status).as_ref().into());
-                window.set_accessible_text(frame.accessible_text.as_str().into());
-                if let Some(layers) = &frame.layers {
-                    self.surfaces.borrow_mut().present(
-                        window,
-                        layers,
-                        frame.mode == Some(ImageMode::SideBySide),
-                    );
-                } else {
-                    let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                        &frame.pixels,
-                        frame.width,
-                        frame.height,
-                    );
-                    window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
-                }
-            }
-            Output::Status(message) => {
-                window.set_status(midnight_core::visible_name(message).as_ref().into())
-            }
-            Output::ChooseFiles(choice) => self.show_file_choice(choice),
-        }
+        self.present_output(&output);
         service.retire(output);
     }
     fn close(&self) {
         if !self.closed.replace(true) {
+            self.external_outcome.set(None);
+            self.comparison_requested.set(false);
+            self.window.set_identity_state(-1);
+            self.window.set_status("".into());
             self.session.close();
             self.batch.stop();
             self.poll.stop();
@@ -224,6 +240,17 @@ impl ComparatorWindows {
             windows: RefCell::new(Vec::new()),
             picker_owner: |_| midnight_core::PathPickerOwner::None,
             font_listener: Rc::new(RefCell::new(None)),
+            appearance: RefCell::new(None),
+            #[cfg(test)]
+            poll_outputs: false,
+        }
+    }
+    /// A headless fixture may run alongside the process-wide event-loop proxy test.
+    #[cfg(test)]
+    fn new_polled(service: Service) -> Self {
+        Self {
+            poll_outputs: true,
+            ..Self::new(service)
         }
     }
     /// Persist an explicitly chosen family through the application's preferences backend.
@@ -245,6 +272,16 @@ impl ComparatorWindows {
         placement: impl Into<WindowPlacement>,
         keys: KeyResolver,
     ) -> Result<slint::Weak<ComparatorWindow>, String> {
+        self.open_with_observer(launch, appearance, placement, keys, |_| {})
+    }
+    fn open_with_observer(
+        &self,
+        launch: FileCompareLaunch,
+        mut appearance: ViewerAppearance,
+        placement: impl Into<WindowPlacement>,
+        keys: KeyResolver,
+        before_palette_read: impl FnOnce(&Session),
+    ) -> Result<slint::Weak<ComparatorWindow>, String> {
         self.windows.borrow_mut().retain(|open| !open.closed.get());
         if self.windows.borrow().len() >= 2 {
             return Err("Close a comparator before opening another (maximum two).".into());
@@ -254,38 +291,40 @@ impl ComparatorWindows {
         let size = placement.logical_size();
         window.set_compact(size.width < 500.0);
         placement.apply(window.window());
-        window.set_foreground(color(appearance.foreground));
-        window.set_background_color(color(appearance.background));
-        window.set_accent(color(appearance.accent));
-        window.set_ui_font_size(appearance.font_size);
-        window.set_ui_font_family(appearance.family.as_str().into());
+        let presentation = self
+            .appearance
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| appearance::Presentation::legacy(&appearance));
+        presentation.apply_window(&window);
+        presentation.opening_palette(&mut appearance);
         window.set_picker_available(self.service.has_path_picker());
-        window.invoke_apply_palette(
-            appearance.background[..3]
-                .iter()
-                .map(|channel| u16::from(*channel))
-                .sum::<u16>()
-                > 384,
-        );
-        // Runs on the worker: schedules one `output-ready` pass per burst of outputs. It
-        // holds only a weak handle, so the worker never keeps the window alive, and a pass
-        // that runs after the window is gone does nothing.
+        // The worker wakes the event loop once per output burst using a weak window handle.
         let ready = window.as_weak();
-        let session = self.service.open_with_wake(
+        #[cfg(test)]
+        let force_poll = self.poll_outputs;
+        #[cfg(not(test))]
+        let force_poll = false;
+        let wake: Wake = Arc::new(move || {
+            !force_poll
+                && ready
+                    .upgrade_in_event_loop(|window| window.invoke_output_ready())
+                    .is_ok()
+        });
+        let session = admission::open_with_wake(
+            &self.service,
             launch,
-            appearance,
+            appearance.clone(),
             ViewerGeometry {
                 width: size.width.max(2.0) as u32,
                 height: (size.height - 100.0).max(1.0) as u32,
                 scale: window.window().scale_factor(),
             },
-            Arc::new(move || {
-                ready
-                    .upgrade_in_event_loop(|window| window.invoke_output_ready())
-                    .is_ok()
-            }),
-        )?;
-        let open = OpenWindow::new(window, session);
+            wake,
+        )
+        .map_err(|error| error.to_string())?;
+        before_palette_read(&session);
+        let open = OpenWindow::new(window, session, &appearance);
         bind(&open, keys, self.service.clone());
         fonts::bind(&open, self.font_listener.clone());
         file_choice::bind(&open, self.picker_owner);
@@ -297,8 +336,11 @@ impl ComparatorWindows {
         // The first presentation pass also shows whether the worker can wake this event
         // loop. A platform without a cross-thread event-loop proxy (a headless test
         // platform) cannot be woken, so there the window polls its mailbox instead.
-        if let Err(EventLoopError::NoEventLoopProvider) =
-            weak.upgrade_in_event_loop(|window| window.invoke_output_ready())
+        if force_poll
+            || matches!(
+                weak.upgrade_in_event_loop(|window| window.invoke_output_ready()),
+                Err(EventLoopError::NoEventLoopProvider)
+            )
         {
             let poll = Rc::downgrade(&open);
             let service = self.service.clone();
@@ -450,8 +492,8 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
 }
 
 /// Navigation only moves the view, so a full queue may shed it. Every other input sets
-/// state the window already shows (geometry, image mode, font, fit or actual pixels) or
-/// answers a file choice that keeps the chooser busy until it is handled.
+/// state the window already shows (geometry, image mode, font, fit or actual pixels).
+/// Explicit file choices use session admission directly.
 fn navigation(input: &Input) -> bool {
     matches!(
         input,
@@ -475,10 +517,6 @@ fn same_state(old: &Input, new: &Input) -> bool {
             | (
                 Input::Fit | Input::ActualPixels,
                 Input::Fit | Input::ActualPixels
-            )
-            | (
-                Input::Compare(_) | Input::Browse { .. },
-                Input::Compare(_) | Input::Browse { .. }
             )
             | (Input::Close, Input::Close)
     )
@@ -613,8 +651,17 @@ mod window_tests {
     #[test]
     fn a_restored_font_reaches_the_worker_with_its_catalog_and_is_not_saved() {
         slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let service = Service::new(runtime.handle().clone());
+        let runtime = super::identity_tests::runtime();
+        let service = Service::new(runtime.handle().clone(), runtime.spawner());
+        let appearance = ViewerAppearance {
+            family: "monospace".into(),
+            font_size: 14.0,
+            foreground: [240, 240, 240, 255],
+            background: [20, 20, 20, 255],
+            selection: [60, 80, 120, 255],
+            accent: [100, 150, 220, 255],
+        };
+        let policy = service.comparator_snapshot();
         // A worker for the file form. Its outputs are never presented here, and it has no
         // wake, so it cannot reach the process-wide event-loop proxy.
         let session = service
@@ -622,15 +669,10 @@ mod window_tests {
                 FileCompareLaunch {
                     sources: Vec::new(),
                     disabled_plugins: Arc::from([]),
+                    comparators: policy.preferences,
+                    comparator_policy: policy.id,
                 },
-                ViewerAppearance {
-                    family: "monospace".into(),
-                    font_size: 14.0,
-                    foreground: [240, 240, 240, 255],
-                    background: [20, 20, 20, 255],
-                    selection: [60, 80, 120, 255],
-                    accent: [100, 150, 220, 255],
-                },
+                appearance.clone(),
                 ViewerGeometry {
                     width: 200,
                     height: 100,
@@ -639,7 +681,7 @@ mod window_tests {
                 Arc::new(|| false),
             )
             .unwrap();
-        let open = OpenWindow::new(ComparatorWindow::new().unwrap(), session);
+        let open = OpenWindow::new(ComparatorWindow::new().unwrap(), session, &appearance);
         let saved = Rc::new(Cell::new(0));
         let counted = saved.clone();
         let listener: FontListener = Rc::new(move |_| counted.set(counted.get() + 1));
@@ -757,8 +799,7 @@ mod queue_tests {
     #[test]
     fn newer_state_replaces_queued_state_of_its_kind_and_stays_after_earlier_navigation() {
         let mut pending = Vec::new();
-        let paths = [std::path::PathBuf::from("a.txt"), "b.txt".into()];
-        queue_input(&mut pending, Input::Compare(paths.clone()));
+        queue_input(&mut pending, resize(100, 1));
         // Alternating state kinds cannot fill the queue: one of each kind waits.
         for round in 0..MAX_PENDING {
             queue_input(&mut pending, Input::Mode(ImageMode::Swipe));
@@ -774,10 +815,7 @@ mod queue_tests {
             queue_input(&mut pending, Input::FontFamily(format!("Mono {round}")));
         }
         assert_eq!(pending.len(), MAX_PENDING);
-        assert!(
-            matches!(&pending[0], Input::Compare(queued) if *queued == paths),
-            "a queued file choice is never dropped"
-        );
+        assert!(matches!(pending[0], Input::Resize(_, 1)));
         assert_eq!(count(&pending, |input| !navigation(input)), 4);
         // The last fit choice follows the zoom steps queued before it.
         let fit = pending

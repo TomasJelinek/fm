@@ -10,10 +10,20 @@ pub(crate) const OPTIONS_TOPIC_CUSTOM_COMMANDS: i32 = 9;
 pub(crate) enum Target {
     Editor,
     EditorWorkingDirectory,
+    ComparatorProgram,
+    ComparatorWorkingDirectory,
     CommandProgram,
     WorkingDirectory,
     CommandIcon,
     CommandIconResource,
+}
+impl Target {
+    fn comparator(self) -> bool {
+        matches!(
+            self,
+            Self::ComparatorProgram | Self::ComparatorWorkingDirectory
+        )
+    }
 }
 struct Pending {
     id: DesktopRequestId,
@@ -21,6 +31,7 @@ struct Pending {
     revision: u64,
     token: String,
     configuration: std::sync::Weak<Vec<UserCommand>>,
+    comparator_context: Option<(u64, u64, super::comparator_draft::RowId)>,
     cancelled: bool,
 }
 #[derive(Default)]
@@ -58,7 +69,60 @@ impl Presenter {
         if self.settings_picker.busy() || !self.preferences.loaded || self.operations.closing {
             return;
         }
+        let comparator_context = if target.comparator() {
+            let Some(context) = self.comparator_picker_context() else {
+                return;
+            };
+            Some(context)
+        } else {
+            None
+        };
         let (kind, title, initial, revision, token) = match target {
+            Target::ComparatorProgram | Target::ComparatorWorkingDirectory => {
+                let Some(rule) = self
+                    .comparators
+                    .draft
+                    .as_ref()
+                    .and_then(|draft| draft.selected_rule())
+                else {
+                    return;
+                };
+                let directory = target == Target::ComparatorWorkingDirectory;
+                let external = &rule.external;
+                let initial = if directory {
+                    external.native_working_directory.clone().or_else(|| {
+                        let path = PathBuf::from(&external.working_directory);
+                        path.is_absolute().then_some(path)
+                    })
+                } else {
+                    external
+                        .native_executable
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .map(Path::to_path_buf)
+                        .or_else(|| {
+                            let path = PathBuf::from(&external.executable);
+                            path.is_absolute()
+                                .then(|| path.parent().map(Path::to_path_buf))
+                                .flatten()
+                        })
+                };
+                (
+                    if directory {
+                        PathPickerKind::Directory
+                    } else {
+                        PathPickerKind::Program
+                    },
+                    if directory {
+                        "Choose comparator working directory"
+                    } else {
+                        "Choose comparator program"
+                    },
+                    initial,
+                    self.comparators.edit_revision,
+                    String::new(),
+                )
+            }
             Target::Editor | Target::EditorWorkingDirectory => {
                 let draft = self.editor_draft();
                 let form = draft.selected_form();
@@ -148,7 +212,10 @@ impl Presenter {
                         "Choose initial directory",
                         Some(PathBuf::from(&draft.working_directory)),
                     ),
-                    Target::Editor | Target::EditorWorkingDirectory => unreachable!(),
+                    Target::Editor
+                    | Target::EditorWorkingDirectory
+                    | Target::ComparatorProgram
+                    | Target::ComparatorWorkingDirectory => unreachable!(),
                 };
                 (
                     kind,
@@ -175,11 +242,16 @@ impl Presenter {
                 revision,
                 token,
                 configuration: Arc::downgrade(&self.preferences.values.user_commands),
+                comparator_context,
                 cancelled: false,
             });
         } else {
             let error = "The file picker queue is busy. Try Browse again.";
-            if matches!(target, Target::Editor | Target::EditorWorkingDirectory) {
+            if target.comparator() {
+                self.comparators.error = error.into();
+                self.comparators.error_field = -1;
+                self.comparators.revision = self.comparators.revision.saturating_add(1);
+            } else if matches!(target, Target::Editor | Target::EditorWorkingDirectory) {
                 self.editor.error = error.into();
             } else {
                 self.user_command_settings.error = error.into();
@@ -188,7 +260,9 @@ impl Presenter {
     }
     pub(crate) fn settings_picker_context(&mut self, page: i32, send: &dyn Fn(Command) -> bool) {
         if let Some(pending) = &mut self.settings_picker.pending {
-            let expected = if matches!(
+            let expected = if pending.target.comparator() {
+                10
+            } else if matches!(
                 pending.target,
                 Target::Editor | Target::EditorWorkingDirectory
             ) {
@@ -233,6 +307,10 @@ impl Presenter {
         let current = !pending.cancelled
             && !self.operations.closing
             && match pending.target {
+                Target::ComparatorProgram | Target::ComparatorWorkingDirectory => {
+                    pending.comparator_context.is_some()
+                        && pending.comparator_context == self.comparator_picker_context()
+                }
                 Target::Editor | Target::EditorWorkingDirectory => {
                     pending.revision == self.editor.revision
                         && self
@@ -257,7 +335,11 @@ impl Presenter {
             Ok(None) => return,
             Err(error) => {
                 let message = crate::error_presentation::describe(&error);
-                if matches!(
+                if pending.target.comparator() {
+                    self.comparators.error = message;
+                    self.comparators.error_field = -1;
+                    self.comparators.revision = self.comparators.revision.saturating_add(1);
+                } else if matches!(
                     pending.target,
                     Target::Editor | Target::EditorWorkingDirectory
                 ) {
@@ -269,6 +351,10 @@ impl Presenter {
             }
         };
         if !path.is_absolute() {
+            return;
+        }
+        if pending.target.comparator() {
+            self.comparator_path_picked(path, pending.target == Target::ComparatorWorkingDirectory);
             return;
         }
         if matches!(
@@ -305,7 +391,10 @@ impl Presenter {
                 // Dollar signs in a picked literal must not become template substitutions.
                 draft.working_directory = text.replace('$', "$$");
             }
-            Target::Editor | Target::EditorWorkingDirectory => unreachable!(),
+            Target::Editor
+            | Target::EditorWorkingDirectory
+            | Target::ComparatorProgram
+            | Target::ComparatorWorkingDirectory => unreachable!(),
         }
         self.remember_user_command_form(&pending.token, draft);
         self.user_command_settings.draft_revision =

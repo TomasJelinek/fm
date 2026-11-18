@@ -38,10 +38,15 @@ fn localized_rows(test: &mut ui::TestUi) {
     );
     state
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            size_display: SizeDisplay::Bytes,
-            ..Default::default()
-        }))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    size_display: SizeDisplay::Bytes,
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     let entries: Arc<[Entry]> = [
         ("first", "05.11.2025", "9:04:03"),
         ("second", "5. listopadu 2026", "12:34:56 PM"),

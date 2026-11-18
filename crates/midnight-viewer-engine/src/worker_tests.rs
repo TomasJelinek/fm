@@ -12,10 +12,16 @@ mod event_loop;
 #[path = "worker_position_tests.rs"]
 mod position;
 
+#[path = "worker_pdf_continuous_tests.rs"]
+mod pdf_continuous;
+
 #[path = "worker_raster_tests.rs"]
 mod raster;
 #[path = "worker_source_continuity_tests.rs"]
 mod source_continuity;
+
+#[path = "worker_syntax_tests.rs"]
+mod syntax;
 
 #[test]
 fn opening_acknowledges_a_missing_plugin_as_failure_instead_of_window_success() {
@@ -92,12 +98,42 @@ fn opening_reports_plugin_open_and_initial_viewport_errors_without_a_frame() {
     }
 }
 
+#[test]
+fn browser_cleanup_failure_blocks_later_opens_and_survives_window_close() {
+    let (mut worker, output) = worker();
+    let failure = "Browser cleanup is unconfirmed";
+    worker.web_retirement_error = Some(failure.into());
+    let generation = worker.generation;
+    for _ in 0..2 {
+        worker.pending_open = true;
+        worker.open(&output);
+        assert!(!worker.pending_open);
+        assert_eq!(worker.generation, generation);
+        assert_eq!(worker.status, failure);
+        assert!(worker.web.is_none());
+    }
+    assert_eq!(worker.finish_web(), Err(failure.into()));
+}
+
 pub(super) fn worker() -> (Worker, Mailbox) {
     let root = tempfile::tempdir().unwrap();
     let runtime = Arc::new(Runtime::discover(root.path()).unwrap());
     let raster_budget = Arc::new(crate::raster_budget::Budget::default());
+    let appearance = ViewerAppearance {
+        family: "monospace".into(),
+        font_size: 14.0,
+        foreground: [220; 4],
+        background: [20; 4],
+        selection: [80; 4],
+        accent: [180; 4],
+    };
+    let palette_state = Arc::new(crate::palette::State::new(&appearance));
     let worker = Worker {
+        palette_state,
+        palette_revision: 1,
+        palette_ack: None,
         wake: Arc::new(|| true),
+        window_closed: Arc::new(AtomicBool::new(false)),
         preference_state: Arc::new(crate::preferences::Preferences::new(Arc::new(
             ViewerPreferences::default(),
         ))),
@@ -109,6 +145,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         web_providers: Arc::from([]),
         web: None,
         closing_web: None,
+        web_retirement_error: None,
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
@@ -144,14 +181,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         raster: Default::default(),
         raster_owner: raster_budget.owner(),
         raster_budget,
-        appearance: ViewerAppearance {
-            family: "monospace".into(),
-            font_size: 14.0,
-            foreground: [220; 4],
-            background: [20; 4],
-            selection: [80; 4],
-            accent: [180; 4],
-        },
+        appearance,
         geometry: ViewerGeometry {
             width: 240,
             height: 100,
@@ -383,10 +413,13 @@ fn document_frames_reach_the_ui_in_the_buffer_the_image_actor_shared() {
         worker.image_ids.clone(),
     ));
     worker.poll_image(&output);
+    let image = worker.image.as_mut().unwrap();
+    let revision = image.revision;
+    image.pending = Some(revision);
     let rgba: Arc<[u8]> = vec![255; 8 * 8 * 4].into();
     actor
         .send(Event::DocumentFrame {
-            revision: worker.image.as_ref().unwrap().revision,
+            revision,
             raster: DocumentRaster {
                 width: 8,
                 height: 8,
@@ -424,6 +457,7 @@ fn text_page(text: String) -> Page {
         end: 8000 + text.len() as u64,
         text: text.into(),
         spans: vec![],
+        roles: vec![],
         styles: vec![],
         tables: vec![],
         document_blocks: Vec::new(),
@@ -1106,3 +1140,6 @@ fn markdown_start_keeps_its_top_margin_before_and_after_returning() {
         "initial document padding must remain visible"
     );
 }
+
+#[path = "worker_palette_tests.rs"]
+mod palette;

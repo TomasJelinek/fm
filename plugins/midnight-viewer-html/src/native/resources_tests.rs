@@ -42,7 +42,7 @@ fn resolves(events: &crate::output::Receiver) -> Vec<(u64, String)> {
 #[test]
 fn canceled_resolution_releases_late_resource_without_releasing_main_authority() {
     let (doc, events) = document();
-    let stream = Arc::new(Mutex::new(Stream::new(&doc)));
+    let stream = Arc::new(Mutex::new(Stream::new(&doc, None)));
     doc.requests
         .lock()
         .unwrap()
@@ -104,7 +104,7 @@ fn excess_captured_requests_wait_for_a_slot_instead_of_being_cancelled() {
     // An offline gallery with 200 images: requests beyond the window used to be
     // cancelled, and 128 in flight overflowed the 64-entry control queue.
     let streams: Vec<_> = (0..200)
-        .map(|_| Arc::new(Mutex::new(Stream::new(&doc))))
+        .map(|_| Arc::new(Mutex::new(Stream::new(&doc, None))))
         .collect();
     for (index, stream) in streams.iter().enumerate() {
         let url = format!("img/{index}.png");
@@ -157,7 +157,7 @@ fn excess_captured_requests_wait_for_a_slot_instead_of_being_cancelled() {
 #[test]
 fn requests_that_cannot_be_encoded_are_refused_before_reaching_the_host() {
     let (doc, events) = document();
-    let stream = Arc::new(Mutex::new(Stream::new(&doc)));
+    let stream = Arc::new(Mutex::new(Stream::new(&doc, None)));
     let read = HostRequest::Read {
         resource: 3,
         offset: 0,
@@ -168,6 +168,57 @@ fn requests_that_cannot_be_encoded_are_refused_before_reaching_the_host() {
     assert!(!doc.request(stream, HostRequest::Resolve { url }));
     assert!(resolves(&events).is_empty());
     assert!(doc.requests.lock().unwrap().active.is_empty());
+}
+
+#[test]
+fn navigation_shares_the_in_flight_bound_and_its_reply_admits_waiting_assets() {
+    let (doc, events) = document();
+    let now = Instant::now();
+    {
+        let mut navigation = doc.navigation.lock().unwrap();
+        assert!(navigation.begin(
+            admission::Intent {
+                binding: admission::Binding {
+                    session: 1,
+                    document: 1,
+                    browser: 1,
+                    frame: "main".into(),
+                    url: "https://mewv-1.invalid/page.html".into(),
+                },
+                root: false,
+            },
+            now
+        ));
+        assert!(matches!(
+            navigation.next_effect(now, 900, true),
+            Some(admission::Effect::Resolve { request: 900, .. })
+        ));
+    }
+    let streams: Vec<_> = (0..MAX_IN_FLIGHT)
+        .map(|_| Arc::new(Mutex::new(Stream::new(&doc, None))))
+        .collect();
+    for (index, stream) in streams.iter().enumerate() {
+        assert!(doc.request(
+            stream.clone(),
+            HostRequest::Resolve {
+                url: format!("img/{index}.png"),
+            }
+        ));
+    }
+    assert_eq!(resolves(&events).len(), MAX_IN_FLIGHT - 1);
+    assert_eq!(doc.requests.lock().unwrap().waiting.len(), 1);
+    reply(
+        &doc,
+        api::ResourceReply::Denied {
+            request: 900,
+            reason: "missing".into(),
+        },
+    );
+    assert_eq!(resolves(&events).len(), 1);
+    let requests = doc.requests.lock().unwrap();
+    assert_eq!(requests.active.len(), MAX_IN_FLIGHT);
+    assert!(requests.waiting.is_empty());
+    assert!(!doc.output.failed.load(Ordering::Acquire));
 }
 
 #[test]

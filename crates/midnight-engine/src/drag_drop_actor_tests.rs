@@ -55,8 +55,8 @@ async fn without_a_native_session_the_actor_sleeps_until_a_controller_change() {
     let (snapshots, files) = dragged_file();
     let (sender, mut events) = mpsc::channel(16);
     let mut tasks = JoinSet::new();
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_resident_owner, mut controller) = Controller::testing(
         None,
         None,
         snapshots,
@@ -74,7 +74,7 @@ async fn without_a_native_session_the_actor_sleeps_until_a_controller_change() {
     };
     let targets = SharedDropTargets::default();
     controller
-        .attach(host(1), targets.clone(), &mut tasks)
+        .attach(host(1), targets.clone(), &mut resident_tasks)
         .await;
     next(&mut events, |event| {
         matches!(
@@ -120,7 +120,9 @@ async fn without_a_native_session_the_actor_sleeps_until_a_controller_change() {
     })
     .await;
     // So does a new host.
-    controller.attach(host(2), targets, &mut tasks).await;
+    controller
+        .attach(host(2), targets, &mut resident_tasks)
+        .await;
     next(&mut events, |event| {
         matches!(
             event,
@@ -135,6 +137,7 @@ async fn without_a_native_session_the_actor_sleeps_until_a_controller_change() {
     controller.shutdown();
     tokio::time::timeout(Duration::from_secs(5), async {
         while tasks.join_next().await.is_some() {}
+        while resident_tasks.join_next().await.is_some() {}
     })
     .await
     .expect("shutdown did not stop the actors");
@@ -260,6 +263,8 @@ struct Harness {
     controller: Controller,
     events: mpsc::Receiver<Event>,
     tasks: JoinSet<()>,
+    resident_tasks: ResidentTasks,
+    _resident_owner: midnight_work_budget::resident::Owner,
     runtime: tokio::runtime::Runtime,
 }
 impl Harness {
@@ -270,10 +275,9 @@ impl Harness {
             .unwrap();
         let (sender, events) = mpsc::channel(16);
         let mut tasks = JoinSet::new();
-        let controller = {
+        let (resident_owner, controller) = {
             let _entered = runtime.enter();
-            Controller::new(
-                crate::engine_lifetime::DragRetirement::testing(),
+            Controller::testing(
                 Some(Arc::new(WakingService(shared.clone()))),
                 None,
                 snapshots,
@@ -289,6 +293,8 @@ impl Harness {
             controller,
             events,
             tasks,
+            resident_tasks: ResidentTasks::default(),
+            _resident_owner: resident_owner,
             runtime,
         }
     }
@@ -301,7 +307,7 @@ impl Harness {
         self.runtime.block_on(self.controller.attach(
             host,
             SharedDropTargets::default(),
-            &mut self.tasks,
+            &mut self.resident_tasks,
         ));
     }
     fn next(&mut self, expected: impl Fn(&DragDropEvent) -> bool) {
@@ -310,10 +316,12 @@ impl Harness {
     fn shutdown(mut self) {
         self.controller.shutdown();
         let tasks = &mut self.tasks;
+        let resident_tasks = &mut self.resident_tasks;
         self.runtime
             .block_on(async {
                 tokio::time::timeout(Duration::from_secs(5), async {
                     while tasks.join_next().await.is_some() {}
+                    while resident_tasks.join_next().await.is_some() {}
                 })
                 .await
             })

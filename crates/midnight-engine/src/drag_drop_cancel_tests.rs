@@ -60,8 +60,8 @@ async fn cancelled_blocked_internal_drop_does_not_publish_a_late_failure() {
     });
     let (sender, mut events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_owner, mut controller) = Controller::testing(
         None,
         Some(service.clone()),
         fixture.sink.snapshots.clone(),
@@ -76,7 +76,7 @@ async fn cancelled_blocked_internal_drop_does_not_publish_a_late_failure() {
         .attach(
             fixture.sink.host.clone(),
             fixture.sink.targets.clone(),
-            &mut tasks,
+            &mut resident_tasks,
         )
         .await;
     controller
@@ -151,4 +151,5 @@ async fn cancelled_blocked_internal_drop_does_not_publish_a_late_failure() {
     assert!(controller.pending.lock().unwrap().is_empty());
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
+    while resident_tasks.join_next().await.is_some() {}
 }

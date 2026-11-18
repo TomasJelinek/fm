@@ -10,10 +10,12 @@
 //! one, and the only one whose worker can wake an event loop: the workers of other tests
 //! have wakes that return false. The integration tests use proxy-less platforms, on which
 //! windows poll instead.
+use super::identity_tests::TestRuntime;
 use super::*;
 use midnight_compare_engine::INPUT_QUEUE;
 use midnight_core::{
-    Cancellation, FileCompareSource, FsError, PathPickerRequest, PathPickerService,
+    Cancellation, FileComparatorSnapshot, FileCompareSource, FsError, PathPickerRequest,
+    PathPickerService,
 };
 use slint::platform::{
     EventLoopProxy, Platform, PlatformError, WindowAdapter, WindowEvent,
@@ -240,21 +242,26 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
     let files = [fixture.join("left.txt"), fixture.join("right.txt")];
     std::fs::write(&files[0], "same\nold\nsame\n").unwrap();
     std::fs::write(&files[1], "same\nnew\nsame\n").unwrap();
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = TestRuntime::new(tokio::runtime::Runtime::new().unwrap());
     let (asked, asks) = mpsc::channel();
     let (answer, answers) = mpsc::channel();
-    let manager = ComparatorWindows::new(Service::new(runtime.handle().clone()).with_path_picker(
-        Arc::new(Picker {
-            asked,
-            answers: Mutex::new(answers),
-        }),
-    ));
+    let manager = ComparatorWindows::new(
+        Service::new(runtime.handle().clone(), runtime.spawner()).with_path_picker(Arc::new(
+            Picker {
+                asked,
+                answers: Mutex::new(answers),
+            },
+        )),
+    );
+    let policy = FileComparatorSnapshot::default();
     let open_choice = || {
         manager
             .open(
                 FileCompareLaunch {
                     sources: Vec::new(),
                     disabled_plugins: Arc::from([]),
+                    comparators: policy.preferences.clone(),
+                    comparator_policy: policy.id,
                 },
                 appearance(),
                 slint::LogicalSize::new(800.0, 600.0),
@@ -311,7 +318,7 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
     let revision = window.get_geometry_revision();
     assert_eq!(
         open.pending.borrow().len(),
-        INPUT_QUEUE + extra + 1,
+        INPUT_QUEUE + extra,
         "inputs right after a sent batch wait for the next one"
     );
     event_loop.advance(BATCH_INTERVAL);
@@ -329,9 +336,17 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
         window.get_file_b() == picked.as_str()
     });
     window.set_file_a(files[0].to_string_lossy().as_ref().into());
-    window.invoke_compare_chosen_files();
-    // The worker drains its queue meanwhile; retries deliver the held geometry and then
-    // the request queued behind it, so the first frame carries that geometry.
+    event_loop.wait_for(&window, "deliver the queued geometry", true, || {
+        open.pending.borrow().is_empty()
+    });
+    // During backpressure the chooser must report a refusal, so retry explicitly
+    // if the worker is still finishing an earlier batch.
+    event_loop.wait_for(&window, "accept the chosen files", true, || {
+        if !window.get_choice_busy() && window.get_choosing_files() {
+            window.invoke_compare_chosen_files();
+        }
+        window.get_choice_busy() || !window.get_choosing_files()
+    });
     event_loop.wait_for(&window, "present the comparison", true, || {
         !window.get_choosing_files() && window.get_frame_revision() >= 0
     });
@@ -388,8 +403,10 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
 
     // A worker that stopped after an internal error takes no more input: what waits is
     // dropped and no timer retries it.
+    let stopping_runtime = TestRuntime::new(tokio::runtime::Runtime::new().unwrap());
     let stopping = ComparatorWindows::new(Service::with_native_capture(
-        runtime.handle().clone(),
+        stopping_runtime.handle().clone(),
+        stopping_runtime.spawner(),
         Arc::new(|_, _| panic!("deliberate capture fault: the comparison worker stops")),
     ));
     let stopped = stopping
@@ -401,6 +418,8 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
                     .map(FileCompareSource::Focused)
                     .collect(),
                 disabled_plugins: Arc::from([]),
+                comparators: policy.preferences,
+                comparator_policy: policy.id,
             },
             appearance(),
             slint::LogicalSize::new(800.0, 600.0),
@@ -437,7 +456,7 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
         "the window of a stopped worker must not wake the event loop"
     );
     stopping.close_all();
-    drop((stopped, stopped_native, broken, stopping));
+    drop((stopped, stopped_native, broken, stopping, stopping_runtime));
 
     // Closing: workers hold only weak handles, and a wake that arrives late touches
     // nothing. The second worker waits in its picker; the first posts a frame's wake.

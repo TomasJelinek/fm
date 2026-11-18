@@ -56,8 +56,12 @@ fn options_on(
         }]),
         ..Default::default()
     };
-    p.borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+    p.borrow_mut().apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     refresh(&ui.window, &p.borrow());
     ui.window.invoke_show_options();
     ui.draw();

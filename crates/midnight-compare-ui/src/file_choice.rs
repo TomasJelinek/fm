@@ -1,6 +1,6 @@
 //! Short presentation callbacks; native path identities survive lossy display captions.
 use super::{Input, OpenWindow};
-use midnight_compare_engine::FileChoice;
+use midnight_compare_engine::{ExternalCompareChoiceOutcome, FileChoice};
 use midnight_core::PathPickerOwner;
 use slint::ComponentHandle;
 use std::{
@@ -19,14 +19,22 @@ pub(crate) type PickerOwner = fn(&slint::Window) -> PathPickerOwner;
 
 impl OpenWindow {
     pub(crate) fn show_file_choice(&self, choice: &FileChoice) {
+        self.external_outcome.set(choice.external_outcome);
+        self.comparison_requested.set(false);
+        self.window.set_identity_state(-1);
+        let message = outcome_message(
+            choice.external_outcome,
+            midnight_core::visible_name(&choice.message).as_ref(),
+        );
+        self.window.set_status(message.as_str().into());
         self.window
             .set_file_a(choice.paths[0].to_string_lossy().as_ref().into());
         self.window
             .set_file_b(choice.paths[1].to_string_lossy().as_ref().into());
         *self.choice_paths.borrow_mut() = choice.paths.clone();
+        self.window.set_choice_message(message.into());
         self.window
-            .set_choice_message(midnight_core::visible_name(&choice.message).as_ref().into());
-        self.window.set_choice_error(choice.is_error);
+            .set_choice_error(choice.is_error || choice.external_outcome.is_some());
         self.window.set_choice_busy(false);
         self.window.set_choosing_files(true);
         self.window.set_surface(slint::Image::default());
@@ -47,9 +55,34 @@ impl OpenWindow {
         if self.closed.get() || !self.window.get_choosing_files() || self.window.get_choice_busy() {
             return;
         }
-        self.window.set_choice_busy(true);
-        self.window.set_choice_message("".into());
-        self.send(request(self.chosen_paths()));
+        if self.send(request(self.chosen_paths())) {
+            self.window.set_choice_busy(true);
+            self.window.set_choice_message("".into());
+        } else {
+            let message = outcome_message(
+                self.external_outcome.get(),
+                "The comparator could not accept the request. It may be busy or stopped.",
+            );
+            self.window.set_choice_busy(false);
+            self.window.set_choice_error(true);
+            self.window.set_choice_message(message.as_str().into());
+            self.window.set_status(message.into());
+        }
+    }
+}
+
+fn outcome_message(outcome: Option<ExternalCompareChoiceOutcome>, message: &str) -> String {
+    let prefix = match outcome {
+        Some(ExternalCompareChoiceOutcome::NotStarted) => "The external comparison did not start.",
+        Some(ExternalCompareChoiceOutcome::Unknown) => {
+            "The external comparison may have started. Check the other application before retrying."
+        }
+        None => return message.into(),
+    };
+    if message.is_empty() {
+        prefix.into()
+    } else {
+        format!("{prefix}\n{message}")
     }
 }
 

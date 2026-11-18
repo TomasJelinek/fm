@@ -12,6 +12,7 @@ fn info() -> ViewerImageInfo {
         fitted: false,
         page: 0,
         page_count: 1,
+        document_layout: None,
         pan_sequence: 0,
     }
 }

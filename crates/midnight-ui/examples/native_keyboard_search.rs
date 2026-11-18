@@ -3,7 +3,7 @@
 mod ui;
 
 use i_slint_core::items::AccessibleRole;
-use midnight_core::Event;
+use midnight_core::{AcceptedPreferences, Event};
 use midnight_ui::{KeyboardEditorView, MainWindow, Presenter};
 use slint::{ComponentHandle, platform::Key};
 use std::{cell::RefCell, rc::Rc, time::Duration};
@@ -32,7 +32,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     midnight_ui::install(&window, presenter.clone(), Rc::new(|_| true));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            AcceptedPreferences {
+                preferences,
+                comparators: Default::default(),
+            },
+        ))));
     midnight_ui::refresh(&window, &presenter.borrow());
     midnight_ui::install_file_keys(&window);
     window

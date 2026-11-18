@@ -1,5 +1,6 @@
 use midnight_api_package::{
-    bundle_configuration, canonical_package, crate_member, index_record, packaged_crate, run_cargo,
+    append_registry_package, bundle_configuration, canonical_package, crate_member, index_record,
+    packaged_crate, run_cargo, seed_legacy_releases,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -38,7 +39,7 @@ fn main() -> Result<()> {
     fs::write(&config, bundle_configuration(SOURCE, false))?;
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let manifest = root.join("api/Cargo.toml");
-    let mut records = Vec::new();
+    let mut records = seed_legacy_releases(&output)?;
     for name in ["midnight-plugin-api", "midnight-plugin-sdk"] {
         run_cargo(
             &cargo,
@@ -74,13 +75,10 @@ fn main() -> Result<()> {
         let manifest: toml::Value = toml::from_str(std::str::from_utf8(&manifest_bytes)?)?;
         let checksum = format!("{:x}", Sha256::digest(&bytes));
         let record = index_record(&manifest, &checksum)?;
-        let index = registry.join("index").join(&name[..2]).join(&name[2..4]);
-        fs::create_dir_all(&index)?;
-        fs::write(index.join(name), format!("{record}\n"))?;
-        fs::write(registry.join(filename), &bytes)?;
+        append_registry_package(&registry, &serde_json::to_vec(&record)?, &bytes)?;
         if name == "midnight-plugin-api" {
             let include = output.join("include");
-            fs::create_dir(&include)?;
+            fs::create_dir_all(&include)?;
             fs::write(
                 include.join("midnight_plugin_v1.h"),
                 crate_member(&bytes, &format!("{prefix}/include/midnight_plugin_v1.h"))?,

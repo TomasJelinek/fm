@@ -1,4 +1,7 @@
 //! Read-only source/JSON scrolling probe through the production worker and installed plugin.
+#[path = "support/resident.rs"]
+mod resident;
+
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
 use std::{
@@ -101,7 +104,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let service = Service::new(runtime.handle().clone());
+    let runtime = resident::ResidentRuntime::new(runtime)?;
+    let service = Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     let session = service.open(
         ViewerLaunch {
@@ -302,5 +307,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         latencies[latencies.len() * 95 / 100]
     );
     session.close();
+    drop(session);
+    drop(service);
+    runtime.shutdown_timeout(Duration::from_secs(15))?;
     Ok(())
 }

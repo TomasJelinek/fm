@@ -46,8 +46,8 @@ async fn accepted_tree_drag_retains_provider_until_rejection_and_retires_on_work
     let weak = Arc::downgrade(&source);
     let (sender, mut events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
-    let mut controller = Controller::new(
-        crate::engine_lifetime::DragRetirement::testing(),
+    let mut resident_tasks = ResidentTasks::default();
+    let (_owner, mut controller) = Controller::testing(
         None,
         None,
         fixture.sink.snapshots.clone(),
@@ -62,7 +62,7 @@ async fn accepted_tree_drag_retains_provider_until_rejection_and_retires_on_work
         .attach(
             fixture.sink.host.clone(),
             fixture.sink.targets.clone(),
-            &mut tasks,
+            &mut resident_tasks,
         )
         .await;
     controller
@@ -132,6 +132,7 @@ async fn accepted_tree_drag_retains_provider_until_rejection_and_retires_on_work
     capacity_returned(fixture.sink.capacity.capacity(), 32).await;
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
+    while resident_tasks.join_next().await.is_some() {}
 }
 
 #[test]
@@ -147,11 +148,10 @@ fn unattached_drag_backlog_retires_after_runtime_shutdown() {
         .build()
         .unwrap();
     let mut tasks = JoinSet::new();
-    let controller = {
+    let (_owner, controller) = {
         let _entered = runtime.enter();
         let (sender, _events) = mpsc::channel(1);
-        Controller::new(
-            crate::engine_lifetime::DragRetirement::testing(),
+        Controller::testing(
             None,
             None,
             crate::test_snapshots(Default::default()),

@@ -12,6 +12,26 @@ use midnight_ui::{ColorOptionsView, EditorOptionsView, Presenter, install, refre
 use slint::{ComponentHandle, platform::Key};
 use std::{cell::RefCell, rc::Rc};
 
+type AppearanceNotice = (i32, i32, String, f32);
+
+fn observe_appearance(window: &midnight_ui::MainWindow) -> Rc<RefCell<Vec<AppearanceNotice>>> {
+    let observations = Rc::new(RefCell::new(Vec::new()));
+    let output = observations.clone();
+    let weak = window.as_weak();
+    window.on_refresh_content_appearance(move || {
+        if let Some(window) = weak.upgrade() {
+            let theme = window.global::<midnight_ui::Theme>();
+            output.borrow_mut().push((
+                theme.get_scheme(),
+                theme.get_density(),
+                theme.get_effective_font_family().to_string(),
+                theme.get_font_size(),
+            ));
+        }
+    });
+    observations
+}
+
 struct Harness {
     ui: ui::TestUi,
     presenter: Rc<RefCell<Presenter>>,
@@ -36,7 +56,12 @@ impl Harness {
         );
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences,
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
         refresh(&ui.window, &presenter.borrow());
         Self {
             ui,
@@ -114,7 +139,7 @@ fn disk_io_general_picker_defaults_to_automatic_and_only_ok_saves_manual_boundar
             );
             h.event(Event::PreferencesSaved {
                 revision: writes[0].0,
-                result: Ok(()),
+                result: Ok(midnight_core::FileComparatorSnapshot::default()),
             });
             assert!(!ui::has_popup(&h.ui.window));
         } else {
@@ -138,8 +163,10 @@ fn disk_io_general_picker_defaults_to_automatic_and_only_ok_saves_manual_boundar
 #[test]
 fn disk_io_general_picker_keeps_a_failed_save_draft_and_cancel_restores_automatic() {
     let mut h = Harness::new();
+    let appearances = observe_appearance(&h.ui.window);
     h.ui.resize(320, 600);
     h.ui.window.invoke_show_options();
+    h.ui.window.invoke_preferences_changed(24, 0, 0);
     h.ui.draw();
     disk_io_choice(&mut h, 1);
     ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
@@ -154,13 +181,16 @@ fn disk_io_general_picker_keeps_a_failed_save_draft_and_cancel_restores_automati
             "save",
             std::path::Path::new("settings"),
             std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        )),
+        )
+        .into()),
     });
     assert!(ui::has_popup(&h.ui.window));
     assert_eq!(h.ui.window.get_disk_io_concurrency_index(), 1);
+    assert_eq!(appearances.borrow().last().unwrap().0, 24);
     ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
     h.ui.draw();
     assert_eq!(h.ui.window.get_disk_io_concurrency_index(), 0);
+    assert_eq!(appearances.borrow().last().unwrap().0, 0);
     assert_eq!(h.saves().len(), 1);
 }
 
@@ -209,7 +239,7 @@ fn panel_history_changes_are_staged_until_ok_and_cancel_restores_them() {
             assert!(saves[0].1.command_history.is_empty());
             h.event(Event::PreferencesSaved {
                 revision: saves[0].0,
-                result: Ok(()),
+                result: Ok(midnight_core::FileComparatorSnapshot::default()),
             });
             assert!(!ui::has_popup(&h.ui.window));
         } else {
@@ -249,7 +279,7 @@ fn checksum_option_is_visible_defaults_on_and_only_ok_persists_quick_mode() {
             assert!(!writes[0].1.copy_checksum_verification);
             h.event(Event::PreferencesSaved {
                 revision: writes[0].0,
-                result: Ok(()),
+                result: Ok(midnight_core::FileComparatorSnapshot::default()),
             });
             assert!(!ui::has_popup(&h.ui.window));
         } else {
@@ -262,6 +292,7 @@ fn checksum_option_is_visible_defaults_on_and_only_ok_persists_quick_mode() {
 #[test]
 fn cancel_escape_and_x_restore_preview_without_writing_settings() {
     let mut h = Harness::new();
+    let appearances = observe_appearance(&h.ui.window);
     for close in ["Cancel", "Escape", "Cancel dialog"] {
         h.ui.window.invoke_show_options();
         h.ui.window.invoke_preferences_changed(1, 0, 0);
@@ -270,6 +301,8 @@ fn cancel_escape_and_x_restore_preview_without_writing_settings() {
         h.ui.draw();
         render::snapshot(&h.ui, "options-preview");
         assert_eq!(h.ui.window.get_theme_index(), 1);
+        assert_eq!(appearances.borrow().last().unwrap().0, 1);
+        assert_eq!(appearances.borrow().last().unwrap().3, 18.0);
         assert!(h.saves().is_empty(), "preview must never reach disk");
         if close == "Escape" {
             ui::key(&h.ui.window, Key::Escape);
@@ -280,6 +313,8 @@ fn cancel_escape_and_x_restore_preview_without_writing_settings() {
         assert!(!ui::has_popup(&h.ui.window));
         assert_eq!(h.ui.window.get_theme_index(), 0);
         assert_eq!(h.ui.window.get_desktop_font_size(), 12);
+        assert_eq!(appearances.borrow().last().unwrap().0, 0);
+        assert_eq!(appearances.borrow().last().unwrap().3, 12.0);
         assert!(!h.ui.window.get_sizes_in_bytes());
         assert!(h.saves().is_empty());
     }
@@ -296,6 +331,7 @@ fn reset_defaults_is_a_preview_and_cancel_restores_the_saved_options() {
         ..Default::default()
     };
     let mut h = Harness::with_preferences(preferences);
+    let appearances = observe_appearance(&h.ui.window);
     h.ui.window.invoke_show_options();
     h.ui.draw();
     ui::click_popup(&h.ui.window, "Reset to defaults", AccessibleRole::Button);
@@ -305,6 +341,8 @@ fn reset_defaults_is_a_preview_and_cancel_restores_the_saved_options() {
         PreferenceTheme::default().index()
     );
     assert_eq!(h.ui.window.get_desktop_font_size(), 12);
+    assert_eq!(appearances.borrow().last().unwrap().0, 0);
+    assert_eq!(appearances.borrow().last().unwrap().3, 12.0);
     assert!(!h.ui.window.get_sizes_in_bytes());
     assert!(!h.ui.window.get_quick_search_filter());
     assert!(h.ui.window.get_thumbnails_enabled());
@@ -314,6 +352,8 @@ fn reset_defaults_is_a_preview_and_cancel_restores_the_saved_options() {
     h.ui.draw();
     assert_eq!(h.ui.window.get_theme_index(), 1);
     assert_eq!(h.ui.window.get_desktop_font_size(), 18);
+    assert_eq!(appearances.borrow().last().unwrap().0, 1);
+    assert_eq!(appearances.borrow().last().unwrap().3, 18.0);
     assert!(h.ui.window.get_sizes_in_bytes());
     assert!(h.ui.window.get_quick_search_filter());
     assert!(!h.ui.window.get_thumbnails_enabled());
@@ -347,6 +387,7 @@ fn reset_defaults_button_is_reachable_in_the_smallest_options_window() {
 #[test]
 fn ok_saves_once_and_closes_only_after_backend_success() {
     let mut h = Harness::new();
+    let appearances = observe_appearance(&h.ui.window);
     h.ui.window.invoke_show_options();
     h.ui.window.invoke_preferences_changed(1, 0, 0);
     h.ui.draw();
@@ -361,12 +402,13 @@ fn ok_saves_once_and_closes_only_after_backend_success() {
     );
     h.presenter.borrow_mut().apply(Event::PreferencesSaved {
         revision: saves[0].0,
-        result: Ok(()),
+        result: Ok(midnight_core::FileComparatorSnapshot::default()),
     });
     refresh(&h.ui.window, &h.presenter.borrow());
     h.ui.draw();
     assert!(!ui::has_popup(&h.ui.window));
     assert_eq!(h.ui.window.get_theme_index(), 1);
+    assert_eq!(appearances.borrow().last().unwrap().0, 1);
     h.ui.window.invoke_show_options();
     h.ui.draw();
     ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
@@ -450,7 +492,7 @@ fn ok_waits_for_color_validation_on_another_page_and_cancel_rejects_late_results
             );
             h.event(Event::PreferencesSaved {
                 revision: saves[0].0,
-                result: Ok(()),
+                result: Ok(midnight_core::FileComparatorSnapshot::default()),
             });
             assert!(!ui::has_popup(&h.ui.window));
         }

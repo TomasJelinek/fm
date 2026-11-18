@@ -1,4 +1,6 @@
 use crate::{
+    document_render::DocumentRenderPlan,
+    document_view::DocumentView,
     image_geometry::ImageGeometry,
     image_scene::Scene,
     image_worker::{DocumentRaster, ImageWorker},
@@ -20,6 +22,7 @@ pub(crate) struct ImageView {
     pub pages: Vec<midnight_image_viewer_host::Metadata>,
     pub page: usize,
     pub document: bool,
+    pub document_view: Option<DocumentView>,
     pub scene: Scene,
     pub validated: Option<u64>,
     published: Option<(u64, usize)>,
@@ -39,6 +42,7 @@ impl ImageView {
             pages: Vec::new(),
             page: 0,
             document: false,
+            document_view: None,
             scene: Scene::new(ids),
             validated: None,
             published: None,
@@ -52,6 +56,11 @@ impl ImageView {
         match self.revision.checked_add(1) {
             Some(revision) => self.revision = revision,
             None => self.failure = Some("Image camera identity exhausted.".into()),
+        }
+        if let Some(document) = &self.document_view {
+            self.geometry = Some(document.geometry.clone());
+            self.page = document.page;
+            self.worker.want_document(self.revision);
         }
         if let Some(geometry) = &self.geometry {
             let result = if self.document {
@@ -81,7 +90,7 @@ impl ImageView {
             return Ok(None);
         }
         if self.document {
-            return Ok(self.request_document());
+            return self.request_document();
         }
         self.waiting_budget = false;
         if self.pending.is_none() {
@@ -109,30 +118,33 @@ impl ImageView {
         Ok(Some(Paint::Tiles(tiles)))
     }
 
-    fn request_document(&mut self) -> Option<Paint> {
+    /// Stale completions cannot release or overwrite a newer active composition.
+    pub fn complete_document(&mut self, revision: u64, frame: Option<DocumentRaster>) {
+        if self.pending != Some(revision) {
+            return;
+        }
+        self.pending = None;
+        if revision == self.revision {
+            self.document_frame = frame.map(|frame| (revision, frame));
+        }
+    }
+
+    fn request_document(&mut self) -> Result<Option<Paint>, String> {
         if let Some((revision, frame)) = self.document_frame.take()
             && revision == self.revision
         {
             self.published = Some((revision, 0));
-            return Some(Paint::Raster(frame));
+            return Ok(Some(Paint::Raster(frame)));
         }
         if self.pending.is_none() && self.published != Some((self.revision, 0)) {
-            let geometry = self.geometry.as_ref()?;
-            let (size, density) = geometry.raster_geometry();
-            if self.worker.document(
-                self.revision,
-                self.page,
-                midnight_image_viewer_host::Viewport {
-                    width: size[0],
-                    height: size[1],
-                    scale: geometry.scale * density,
-                    origin_x: geometry.origin[0],
-                    origin_y: geometry.origin[1],
-                },
-            ) {
+            let Some(document) = &self.document_view else {
+                return Ok(None);
+            };
+            let plan = DocumentRenderPlan::new(document)?;
+            if self.worker.document(self.revision, plan) {
                 self.pending = Some(self.revision);
             }
         }
-        None
+        Ok(None)
     }
 }

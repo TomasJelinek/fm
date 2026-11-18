@@ -142,7 +142,7 @@ impl Shortcuts {
     fn saved(&self, window: &MainWindow, revision: PreferencesRevision) {
         self.presenter.borrow_mut().apply(Event::PreferencesSaved {
             revision,
-            result: Ok(()),
+            result: Ok(midnight_core::FileComparatorSnapshot::default()),
         });
         refresh(window, &self.presenter.borrow());
     }

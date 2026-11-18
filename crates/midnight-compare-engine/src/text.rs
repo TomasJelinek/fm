@@ -1,4 +1,4 @@
-use crate::{FontChoices, Frame, check_cancel};
+use crate::{FontChoices, Frame, Palette, check_cancel, identity::DecodedText};
 use midnight_core::{ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
 use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
@@ -11,6 +11,30 @@ use std::{
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_LINES: usize = 100_000;
 const MAX_LINE_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextEncoding {
+    Utf8,
+    Utf8Bom,
+    Utf16LittleBom,
+    Utf16BigBom,
+}
+
+impl TextEncoding {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Utf8 => "UTF-8 without BOM",
+            Self::Utf8Bom => "UTF-8 with BOM",
+            Self::Utf16LittleBom => "UTF-16 little-endian with BOM",
+            Self::Utf16BigBom => "UTF-16 big-endian with BOM",
+        }
+    }
+}
+
+pub(crate) struct TextInput {
+    pub text: String,
+    pub encoding: TextEncoding,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct Row {
@@ -35,6 +59,8 @@ pub(crate) struct TextComparison {
     /// Logical row height and fully visible rows of the last painted frame.
     row_height: f32,
     page_rows: usize,
+    decoded_identity: DecodedText,
+    pub encodings: Option<[TextEncoding; 2]>,
 }
 
 /// Each 256 KiB block is admitted by the storage policy: shared on a confirmed local SSD,
@@ -43,7 +69,7 @@ pub(crate) fn read(
     file: &CapturedFile,
     confirmed_ssd: bool,
     cancel: &AtomicBool,
-) -> Result<String, String> {
+) -> Result<TextInput, String> {
     if file.length() > MAX_BYTES {
         return Err("Text comparison supports at most 4 MiB per file.".into());
     }
@@ -67,7 +93,19 @@ pub(crate) fn read(
         bytes.extend(block);
     }
     file.revalidate().map_err(|error| error.to_string())?;
-    decode(&bytes)
+    let encoding = if bytes.starts_with(&[0xff, 0xfe]) {
+        TextEncoding::Utf16LittleBom
+    } else if bytes.starts_with(&[0xfe, 0xff]) {
+        TextEncoding::Utf16BigBom
+    } else if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        TextEncoding::Utf8Bom
+    } else {
+        TextEncoding::Utf8
+    };
+    Ok(TextInput {
+        text: decode(&bytes)?,
+        encoding,
+    })
 }
 
 fn decode(bytes: &[u8]) -> Result<String, String> {
@@ -149,6 +187,8 @@ impl TextComparison {
             vertical_remainder: 0.0,
             row_height: 24.0,
             page_rows: 1,
+            decoded_identity: DecodedText::default(),
+            encodings: None,
         })
     }
 
@@ -165,6 +205,10 @@ impl TextComparison {
     /// families (`FixedPitchFonts::resolve`).
     pub fn set_family(&mut self, family: String) {
         self.family = family;
+    }
+
+    pub fn identity_turn(&mut self) -> Option<bool> {
+        self.decoded_identity.step(&self.lines)
     }
 
     pub fn scroll(&mut self, rows: i64) {
@@ -225,6 +269,7 @@ impl TextComparison {
         &mut self,
         geometry: ViewerGeometry,
         appearance: &ViewerAppearance,
+        palette: Palette,
         cancel: &AtomicBool,
     ) -> Result<Frame, String> {
         let family = self
@@ -232,9 +277,7 @@ impl TextComparison {
             .as_ref()
             .map_or(self.family.as_str(), |fonts| fonts.selected.as_str());
         let (width, height) = (geometry.width, geometry.height);
-        let mut pixels = appearance
-            .background
-            .repeat(width as usize * height as usize);
+        let mut pixels = palette.background.repeat(width as usize * height as usize);
         let row_height = (appearance.font_size * geometry.scale * 1.6)
             .ceil()
             .max(12.0) as u32;
@@ -286,20 +329,20 @@ impl TextComparison {
                         if channel == 3 {
                             255
                         } else {
-                            ((u16::from(appearance.background[channel]) * 3
+                            ((u16::from(palette.background[channel]) * 3
                                 + u16::from(tint[channel]))
                                 / 4) as u8
                         }
                     })
                 } else {
-                    appearance.background
+                    palette.background
                 };
                 let options = TextOptions {
                     family,
                     literal_family: family != "monospace",
                     size: appearance.font_size,
                     scale: geometry.scale,
-                    foreground: appearance.foreground,
+                    foreground: palette.foreground,
                     ..TextOptions::default()
                 };
                 let page = self
@@ -315,7 +358,7 @@ impl TextComparison {
                             height: row_height.min(height),
                             origin: [self.horizontal, 0.0],
                             background,
-                            selection_color: appearance.selection,
+                            selection_color: palette.selection,
                         },
                         None,
                     )
@@ -329,21 +372,19 @@ impl TextComparison {
                 }
             }
         }
-        let status = if self.differences.is_empty() {
-            "Text is identical (encoding and BOM may differ).".into()
-        } else {
-            format!(
-                "{} difference groups · row {} of {} · UTF-8 / UTF-16 · live-validated read",
-                self.differences.len(),
-                self.top + 1,
-                self.rows.len()
-            )
-        };
+        let status = format!(
+            "{} difference groups · row {} of {} · live-validated read",
+            self.differences.len(),
+            self.top + 1,
+            self.rows.len()
+        );
         Ok(Frame {
             fonts: self.fonts.clone(),
             #[cfg(test)]
             text_family: Some(family.to_owned()),
             geometry_revision: 0,
+            comparison_generation: 0,
+            identity: crate::IdentityVerdict::Pending,
             mode: None,
             width,
             height,
@@ -501,7 +542,12 @@ mod tests {
             scale: 1.0,
         };
         let frame = diff
-            .paint(geometry, &appearance(12.0), &AtomicBool::new(false))
+            .paint(
+                geometry,
+                &appearance(12.0),
+                Palette::from(&appearance(12.0)),
+                &AtomicBool::new(false),
+            )
             .unwrap();
         assert!(frame.accessible_text.contains("page 1␌"));
         assert!(frame.accessible_text.contains("␛[31mred␛[0m␋x"));
@@ -537,7 +583,14 @@ mod tests {
             height: 100,
             scale: 1.0,
         };
-        let frame = diff.paint(geometry, &appearance(12.0), &cancel).unwrap();
+        let frame = diff
+            .paint(
+                geometry,
+                &appearance(12.0),
+                Palette::from(&appearance(12.0)),
+                &cancel,
+            )
+            .unwrap();
         assert!(frame.accessible_text.contains("x\\u202Ey"));
         assert!(frame.accessible_text.contains("x\\u202Cy"));
         assert!(
@@ -570,8 +623,13 @@ mod tests {
                 height,
                 scale,
             };
-            diff.paint(geometry, &appearance(font_size), &cancel)
-                .unwrap();
+            diff.paint(
+                geometry,
+                &appearance(font_size),
+                Palette::from(&appearance(font_size)),
+                &cancel,
+            )
+            .unwrap();
             let row_height = (font_size * scale * 1.6).ceil();
             let visible = (height as f32 / row_height).floor() as usize;
             diff.scroll_pages(1);
@@ -674,7 +732,9 @@ mod tests {
             let source = std::sync::Arc::new(Observed(Default::default()));
             let file = CapturedFile::from_source(source.clone()).unwrap();
             assert_eq!(
-                read(&file, confirmed_ssd, &AtomicBool::new(false)).unwrap(),
+                read(&file, confirmed_ssd, &AtomicBool::new(false))
+                    .unwrap()
+                    .text,
                 "a\n"
             );
             let snapshot = source.0.lock().unwrap()[0];

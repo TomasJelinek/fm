@@ -1,16 +1,64 @@
 use crate::discovery::{Deliver, FixedPitchFonts, ImageViewers};
 use crate::file_choice::{self, Picker, resolve};
 use crate::{
-    FileChoice, Inbox, Input, Mailbox, Message, NativeCapture, Output, StorageHint, check_cancel,
-    images::Images, text::TextComparison,
+    Command, ExternalCompareLauncher, FileChoice, IdentityVerdict, Inbox, Input, Mailbox, Message,
+    NativeCapture, Output, OwnedFileComparatorPolicy, StorageHint, check_cancel,
+    external_compare::{self, Attempt},
+    identity::{IdentityTurn, WholeInput},
+    images::Images,
+    routing::{self, BuiltInPlan, BuiltInTarget, Target},
+    text::TextComparison,
 };
-use midnight_core::{FileCompareLaunch, ViewerAppearance, ViewerGeometry};
+use midnight_core::{
+    Cancellation, ExternalCompareSessionCredit, FileCompareLaunch, ViewerAppearance, ViewerGeometry,
+};
 use midnight_plugin_host::CapturedFile;
-use std::sync::{Arc, atomic::AtomicBool, mpsc::Receiver};
+use std::{
+    sync::{
+        Arc,
+        atomic::AtomicBool,
+        mpsc::{Receiver, RecvTimeoutError, TryRecvError},
+    },
+    time::Duration,
+};
 
 enum Content {
     Text(Box<TextComparison>),
     Images(Box<Images>),
+}
+
+impl Content {
+    fn identity_turn(
+        &mut self,
+        sources: &[CapturedFile; 2],
+        confirmed_ssd: bool,
+    ) -> Option<WholeInput> {
+        match self {
+            Self::Text(text) => text
+                .identity_turn()
+                .map(|equal| WholeInput::new(sources, Some(equal), confirmed_ssd)),
+            Self::Images(_) => Some(WholeInput::new(sources, None, confirmed_ssd)),
+        }
+    }
+
+    fn describe_identity(&self, identity: IdentityVerdict, status: &mut String) {
+        let label = match identity {
+            IdentityVerdict::Pending => "Whole-input identity pending",
+            IdentityVerdict::IdenticalFiles => "Files are identical (every raw byte compared)",
+            IdentityVerdict::IdenticalText => "Text is identical (raw file bytes differ)",
+            IdentityVerdict::Different => "Inputs differ",
+        };
+        status.push_str(" · ");
+        status.push_str(label);
+        if let Self::Text(text) = self
+            && let Some([left, right]) = text.encodings
+        {
+            status.push_str(" · File A ");
+            status.push_str(left.label());
+            status.push_str(" · File B ");
+            status.push_str(right.label());
+        }
+    }
 }
 
 struct Viewport {
@@ -18,16 +66,53 @@ struct Viewport {
     revision: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputPoll {
+    NonBlocking,
+    Wait(Duration),
+    Block,
+}
+
+impl InputPoll {
+    fn after_turn(turn: IdentityTurn, identity_ready: bool) -> Self {
+        match (identity_ready, turn) {
+            (true, IdentityTurn::Advanced) => Self::NonBlocking,
+            (true, IdentityTurn::Blocked) => Self::Wait(Duration::from_millis(10)),
+            _ => Self::Block,
+        }
+    }
+
+    fn receive<T>(self, receiver: &Receiver<T>) -> Result<T, RecvTimeoutError> {
+        match self {
+            Self::NonBlocking => receiver.try_recv().map_err(|error| match error {
+                TryRecvError::Empty => RecvTimeoutError::Timeout,
+                TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
+            }),
+            Self::Wait(delay) => receiver.recv_timeout(delay),
+            Self::Block => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        }
+    }
+}
+
 pub(crate) struct Capture<'a> {
     pub factory: &'a NativeCapture,
     pub storage: Option<&'a StorageHint>,
     pub viewers: &'a ImageViewers,
     pub fonts: &'a Arc<FixedPitchFonts>,
-    /// The session's inbox, which also receives font catalog replies.
     pub inbox: &'a Arc<Inbox>,
     pub cancel: &'a Arc<AtomicBool>,
     #[cfg(test)]
     pub turns: Option<&'a std::sync::atomic::AtomicUsize>,
+}
+
+pub(crate) struct Context<'a> {
+    pub receiver: &'a Receiver<Message>,
+    pub output: &'a Mailbox,
+    pub capture: Capture<'a>,
+    pub policy: Option<Box<dyn OwnedFileComparatorPolicy>>,
+    pub launcher: Option<Arc<dyn ExternalCompareLauncher>>,
+    pub credit: Arc<dyn ExternalCompareSessionCredit>,
+    pub cancellation: Cancellation,
 }
 
 impl Capture<'_> {
@@ -56,27 +141,29 @@ impl Capture<'_> {
         self.storage.is_some_and(|storage| storage(path))
     }
 
-    /// Image viewers are optional: a missing registered runtime or a failed discovery
-    /// cannot disable text comparison. A failure is reported on the status line and
-    /// returned, so a comparison that then fails can explain it; the next comparison
-    /// discovers again. Opening an image session revalidates its package.
     fn image_providers(
         &self,
         output: &Mailbox,
-    ) -> (Arc<[midnight_image_viewer_host::Provider]>, Option<String>) {
-        match self.viewers.get(|| {
-            output.put(Output::Status("Checking installed image viewers…".into()));
-        }) {
-            Ok(providers) => (providers, None),
-            Err(error) => {
+        generation: u64,
+    ) -> Result<Arc<[midnight_image_viewer_host::Provider]>, String> {
+        self.viewers
+            .get(|| {
+                output.put(
+                    generation,
+                    Output::Status("Checking installed image viewers…".into()),
+                );
+            })
+            .map_err(|error| {
                 let reason = format!("Installed image viewers could not be checked: {error}");
-                output.put(Output::Status(reason.clone()));
-                (Arc::from([]), Some(reason))
-            }
-        }
+                output.put(generation, Output::Status(reason.clone()));
+                reason
+            })
     }
 }
 
+#[cfg(test)]
+#[path = "worker_schedule_tests.rs"]
+mod schedule_tests;
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
@@ -85,14 +172,17 @@ pub(crate) fn run(
     launch: FileCompareLaunch,
     appearance: ViewerAppearance,
     geometry: ViewerGeometry,
-    receiver: Receiver<Message>,
-    output: &Mailbox,
-    capture: Capture<'_>,
+    mut generation: u64,
+    context: Context<'_>,
     picker: Picker,
 ) -> Result<(), String> {
-    let cancel = capture.cancel;
+    let output = context.output;
+    let cancel = context.capture.cancel;
     check_cancel(cancel)?;
-    output.put(Output::Status("Preparing file identities…".into()));
+    output.put(
+        generation,
+        Output::Status("Preparing file identities…".into()),
+    );
     let mut pair = resolve(&launch, cancel);
     let mut viewport = Viewport {
         geometry,
@@ -102,69 +192,158 @@ pub(crate) fn run(
         check_cancel(cancel)?;
         pair = match pair {
             Ok(paths) => {
-                let result = file_choice::validate(&paths).and_then(|()| {
-                    compare(
-                        &paths,
-                        &launch.disabled_plugins,
-                        &appearance,
-                        &mut viewport,
-                        &receiver,
-                        output,
-                        &capture,
-                    )
-                });
-                match result {
-                    Ok(()) => return Ok(()),
-                    Err(message) => Err(FileChoice {
+                if let Err(message) = file_choice::validate(&paths) {
+                    Err(FileChoice {
                         paths,
                         message,
                         is_error: true,
-                    }),
+                        external_outcome: None,
+                    })
+                } else {
+                    let target = context
+                        .policy
+                        .as_deref()
+                        .map_or(Target::BuiltIn(BuiltInTarget::Automatic), |policy| {
+                            routing::select(policy, &paths)
+                        });
+                    match target {
+                        Target::External(program) => match external_compare::compare(
+                            program,
+                            &paths,
+                            generation,
+                            output,
+                            context.launcher.as_ref(),
+                            &context.credit,
+                            context.cancellation.clone(),
+                        ) {
+                            Attempt::Choice(choice) => Err(choice),
+                            Attempt::Started | Attempt::Closed => return Ok(()),
+                            Attempt::Superseded => {
+                                let Some(command) = wait_replacement(&context, &mut viewport)?
+                                else {
+                                    return Ok(());
+                                };
+                                replacement(command, &mut generation, &picker)
+                            }
+                        },
+                        Target::BuiltIn(target) => {
+                            let mut viewers_unavailable = None;
+                            let result =
+                                routing::plan(target, &paths, &launch.disabled_plugins, || {
+                                    context
+                                        .capture
+                                        .image_providers(output, generation)
+                                        .inspect_err(|reason| {
+                                            viewers_unavailable = Some(reason.clone())
+                                        })
+                                })
+                                .and_then(|plan| {
+                                    compare(
+                                        &paths,
+                                        &appearance,
+                                        &mut viewport,
+                                        generation,
+                                        &context,
+                                        plan,
+                                    )
+                                    .map_err(|message| {
+                                        match viewers_unavailable {
+                                            Some(reason) => format!("{message}\n{reason}"),
+                                            None => message,
+                                        }
+                                    })
+                                });
+                            match result {
+                                Ok(None) => return Ok(()),
+                                Ok(Some(command)) => replacement(command, &mut generation, &picker),
+                                Err(message) => Err(FileChoice {
+                                    paths,
+                                    message,
+                                    is_error: true,
+                                    external_outcome: None,
+                                }),
+                            }
+                        }
+                    }
                 }
             }
             Err(choice) => {
-                output.put(Output::ChooseFiles(choice));
-                // The inbox read before each blocking receive ends the worker once the
-                // session closed, also when its full queue refused Close, so the receive
-                // needs no polling interval. It drops a late font catalog reply of a
-                // failed comparison.
-                loop {
-                    check_cancel(cancel)?;
-                    capture.inbox.check(None)?;
-                    // The worker's inbox holds a sender: the queue does not disconnect.
-                    let Ok(message) = receiver.recv() else {
-                        return Ok(());
-                    };
-                    let Message::Input(input) = message else {
-                        continue;
-                    };
-                    match input {
-                        Input::Close => return Ok(()),
-                        Input::Compare(paths) => break Ok(paths),
-                        Input::Browse { side, paths, owner } => {
-                            break Err(picker.browse(side, paths, owner));
-                        }
-                        Input::Resize(value, revision) => {
-                            viewport.geometry = value;
-                            viewport.revision = revision;
-                        }
-                        _ => {}
-                    }
-                }
+                output.put(generation, Output::ChooseFiles(choice));
+                let Some(command) = wait_replacement(&context, &mut viewport)? else {
+                    return Ok(());
+                };
+                replacement(command, &mut generation, &picker)
             }
         };
     }
 }
 
+fn wait_replacement(
+    context: &Context<'_>,
+    viewport: &mut Viewport,
+) -> Result<Option<Command>, String> {
+    loop {
+        check_cancel(context.capture.cancel)?;
+        // Close cannot be lost to a full command queue. Clear a font reply belonging
+        // to the previous attempt before sleeping for the next choice.
+        context.capture.inbox.check(None)?;
+        let Ok(message) = context.receiver.recv() else {
+            return Ok(None);
+        };
+        match message {
+            Message::Input(Command {
+                input: Input::Close,
+                ..
+            }) => return Ok(None),
+            Message::Input(Command {
+                input: Input::Resize(value, revision),
+                ..
+            }) => {
+                viewport.geometry = value;
+                viewport.revision = revision;
+            }
+            #[cfg(test)]
+            Message::Input(Command {
+                input: Input::ChooserBarrier(entered),
+                ..
+            }) => {
+                let _ = entered.try_send(std::thread::current().id());
+            }
+            Message::Input(command)
+                if context.output.is_current(command.generation)
+                    && matches!(command.input, Input::Compare(_) | Input::Browse { .. }) =>
+            {
+                return Ok(Some(command));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn replacement(
+    command: Command,
+    generation: &mut u64,
+    picker: &Picker,
+) -> Result<[std::path::PathBuf; 2], FileChoice> {
+    *generation = command.generation;
+    match command.input {
+        Input::Compare(paths) => Ok(paths),
+        Input::Browse { side, paths, owner } => Err(picker.browse(side, paths, owner)),
+        _ => unreachable!("only comparison replacements leave the active comparison loop"),
+    }
+}
+
 fn compare(
     paths: &[std::path::PathBuf; 2],
-    disabled_plugins: &[String],
     appearance: &ViewerAppearance,
     viewport: &mut Viewport,
-    receiver: &Receiver<Message>,
-    output: &Mailbox,
-    capture: &Capture<'_>,
-) -> Result<(), String> {
+    generation: u64,
+    context: &Context<'_>,
+    plan: BuiltInPlan,
+) -> Result<Option<Command>, String> {
+    let receiver = context.receiver;
+    let output = context.output;
+    let capture = &context.capture;
     let cancel = capture.cancel;
     let left = capture.open(&paths[0]).map_err(|error| {
         format!(
@@ -181,101 +360,83 @@ fn compare(
     let sources = [left, right];
     let ssd = paths.each_ref().map(|path| capture.confirmed_ssd(path));
     check_cancel(cancel)?;
-    let (providers, viewers_unavailable) = capture.image_providers(output);
-    check_cancel(cancel)?;
-    let selected = paths.each_ref().map(|path| {
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .and_then(|extension| {
-                providers.iter().find(|provider| {
-                    provider.supports_extension(extension)
-                        && !disabled_plugins.contains(&provider.id)
-                })
-            })
-    });
-    if selected
-        .iter()
-        .flatten()
-        .any(|provider| provider.is_document())
-    {
-        return Err(
-            "Document comparison is not supported. Open PDFs in the document viewer instead."
-                .into(),
-        );
-    }
-    // The font catalog request whose reply this text comparison waits for.
     let mut awaiting_fonts = None;
-    let mut content = (|| -> Result<Content, String> {
-        Ok(match selected {
-            [Some(left), Some(right)] => {
-                output.put(Output::Status(
-                    "Decoding images in restricted workers…".into(),
-                ));
-                Content::Images(Box::new(Images::open(
-                    [left, right],
-                    &sources,
-                    ssd,
-                    cancel,
-                )?))
-            }
-            [None, None] => {
-                // The catalog scan overlaps the reads and the diff. A catalog the service
-                // already holds is ready at once.
-                let request = capture.inbox.font_request();
-                let catalog = capture
-                    .fonts
-                    .request(cancel, capture.font_delivery(request));
-                output.put(Output::Status("Reading and comparing text…".into()));
-                let left = crate::text::read(&sources[0], ssd[0], cancel)?;
-                let right = crate::text::read(&sources[1], ssd[1], cancel)?;
-                let mut text = TextComparison::new(&left, &right, cancel)?;
-                match catalog {
-                    Some(families) => text.set_font_catalog(families, &appearance.family),
-                    None => {
-                        // The first frame paints in the preferred family, checked without
-                        // waiting for the scan; the catalog then publishes the chooser list.
-                        text.set_family(capture.fonts.resolve(&appearance.family, cancel));
-                        awaiting_fonts = Some(request);
-                    }
+    let mut content = match plan {
+        BuiltInPlan::Images {
+            providers,
+            selected,
+        } => {
+            output.put(
+                generation,
+                Output::Status("Decoding images in restricted workers…".into()),
+            );
+            Content::Images(Box::new(Images::open(
+                [&providers[selected[0]], &providers[selected[1]]],
+                &sources,
+                ssd,
+                cancel,
+            )?))
+        }
+        BuiltInPlan::Text => {
+            // The scan overlaps the reads and diff, and is shared by the service.
+            let request = capture.inbox.font_request();
+            let catalog = capture
+                .fonts
+                .request(cancel, capture.font_delivery(request));
+            output.put(
+                generation,
+                Output::Status("Reading and comparing text…".into()),
+            );
+            let left = crate::text::read(&sources[0], ssd[0], cancel)?;
+            let right = crate::text::read(&sources[1], ssd[1], cancel)?;
+            let mut text = TextComparison::new(&left.text, &right.text, cancel)?;
+            text.encodings = Some([left.encoding, right.encoding]);
+            match catalog {
+                Some(families) => text.set_font_catalog(families, &appearance.family),
+                None => {
+                    text.set_family(capture.fonts.resolve(&appearance.family, cancel));
+                    awaiting_fonts = Some(request);
                 }
-                Content::Text(Box::new(text))
             }
-            _ => return Err("Select two supported images or two text files.".to_owned()),
-        })
-    })()
-    .map_err(|message| match &viewers_unavailable {
-        // Without the viewer list every file was compared as text; say why.
-        Some(reason) => format!("{message}\n{reason}"),
-        None => message,
-    })?;
+            Content::Text(Box::new(text))
+        }
+    };
     viewport.geometry = bounded(viewport.geometry);
     let mut dirty = true;
+    let mut painted_appearance = 0;
+    let mut first_frame = true;
+    let mut identity = IdentityVerdict::Pending;
+    let mut whole_input = None;
+    let mut last_identity_turn = IdentityTurn::Blocked;
     loop {
         check_cancel(cancel)?;
-        // Read the inbox before painting and blocking: a closed session ends the
-        // comparison, and the awaited reply publishes the chooser list. A failed scan
-        // keeps the resolved family without a chooser list.
         if let Some(reply) = capture.inbox.check(awaiting_fonts)? {
             awaiting_fonts = None;
             if let (Some(families), Content::Text(text)) = (reply, &mut content) {
-                // Publish the chooser list, resolved against the catalog.
                 text.set_font_catalog(families, &appearance.family);
                 dirty = true;
             }
         }
         #[cfg(test)]
         capture.turn();
-        if dirty {
+        let requested = output.appearance();
+        dirty |= requested.revision != painted_appearance;
+        if dirty && output.is_current(generation) {
             for source in &sources {
                 source
                     .revalidate()
                     .map_err(|error| format!("Compared file changed: {error}"))?;
             }
             let mut frame = match &mut content {
-                Content::Text(text) => text.paint(viewport.geometry, appearance, cancel)?,
+                Content::Text(text) => {
+                    text.paint(viewport.geometry, appearance, requested.palette, cancel)?
+                }
                 Content::Images(images) => images.paint(viewport.geometry, cancel)?,
             };
             frame.geometry_revision = viewport.revision;
+            frame.comparison_generation = generation;
+            frame.identity = identity;
+            content.describe_identity(identity, &mut frame.status);
             check_cancel(cancel)?;
             for source in &sources {
                 source
@@ -283,35 +444,82 @@ fn compare(
                     .map_err(|error| format!("Compared file changed: {error}"))?;
             }
             check_cancel(cancel)?;
-            output.put(Output::Frame {
-                frame,
-                names: paths.each_ref().map(|path| path.display().to_string()),
-            });
-            dirty = false;
+            let published = output.put(
+                generation,
+                Output::Frame {
+                    frame,
+                    names: paths.each_ref().map(|path| path.display().to_string()),
+                    appearance_revision: requested.revision,
+                },
+            );
+            if published && first_frame {
+                first_frame = false;
+            }
+            if published {
+                painted_appearance = requested.revision;
+            }
+            dirty = !published;
         }
-        // Idle comparisons block until an input, Close or a font catalog wake arrives;
-        // nothing is polled while the scan runs. The worker's inbox holds a sender, so
-        // the queue does not disconnect.
-        let Ok(first) = receiver.recv() else {
-            return Ok(());
-        };
-        let batch = receiver.try_iter().take(crate::INPUT_QUEUE - 1);
-        for message in std::iter::once(first).chain(batch) {
-            match message {
-                Message::Input(Input::Close) => return Ok(()),
-                Message::Input(input) => {
-                    dirty |= apply(
-                        input,
-                        &mut content,
-                        &mut viewport.geometry,
-                        &mut viewport.revision,
-                    );
-                }
-                // The next turn reads the reply from the inbox.
-                Message::Fonts => {}
+        let identity_ready = !first_frame
+            && !dirty
+            && identity == IdentityVerdict::Pending
+            && output.is_current(generation)
+            && !output.frame_waiting(generation);
+        let first =
+            match InputPoll::after_turn(last_identity_turn, identity_ready).receive(receiver) {
+                Ok(message) => Some(message),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+        let remaining = crate::INPUT_QUEUE - usize::from(first.is_some());
+        for message in first.into_iter().chain(receiver.try_iter().take(remaining)) {
+            let Message::Input(command) = message else {
+                continue;
+            };
+            if matches!(command.input, Input::Close) {
+                return Ok(None);
+            }
+            if output.is_current(command.generation)
+                && matches!(command.input, Input::Compare(_) | Input::Browse { .. })
+            {
+                return Ok(Some(command));
+            }
+            if command.generation != generation {
+                continue;
+            }
+            dirty |= apply(
+                command.input,
+                &mut content,
+                &mut viewport.geometry,
+                &mut viewport.revision,
+            );
+        }
+        // Initial image presentation and its mailbox consumption precede any
+        // whole-file identity reads. No extra worker, thread or queue is needed.
+        last_identity_turn = IdentityTurn::Blocked;
+        if !first_frame
+            && !dirty
+            && identity == IdentityVerdict::Pending
+            && output.is_current(generation)
+            && !output.frame_waiting(generation)
+        {
+            if whole_input.is_none() {
+                whole_input = content.identity_turn(&sources, ssd[0] && ssd[1]);
+            }
+            last_identity_turn = if let Some(whole_input) = whole_input.as_mut() {
+                whole_input.step(&sources, cancel, || output.is_current(generation))?
+            } else {
+                // An incomplete decoded-text turn always advanced its bounded
+                // cursors; unlike unavailable I/O admission, it needs no wait.
+                IdentityTurn::Advanced
+            };
+            if let IdentityTurn::Complete(verdict) = last_identity_turn {
+                identity = verdict;
+                dirty = true;
             }
         }
     }
+    Ok(None)
 }
 
 fn apply(

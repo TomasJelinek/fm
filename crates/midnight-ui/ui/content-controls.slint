@@ -1,0 +1,313 @@
+import { Slider } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ActionButton } from "action-icons.slint";
+
+// Ordinary text input: its visible native editor owns selection, IME and clipboard.
+// No displayed value is interpreted as a native path or routed through PathPasteView.
+export component ThemedLineEdit inherits Rectangle {
+    in-out property <string> text <=> edit.text;
+    in property <bool> enabled: true;
+    in property <bool> read-only;
+    in property <string> placeholder-text;
+    in property <InputType> input-type: InputType.text;
+    in property <TextHorizontalAlignment> horizontal-alignment: TextHorizontalAlignment.left;
+    in property <length> font-size: Theme.font-size;
+    in property <length> control-height: Theme.control-height;
+    out property <bool> has-focus: edit.has-focus;
+    out property <string> preedit: edit.preedit-text;
+    out property <int> cursor-position-byte-offset: edit.cursor-position-byte-offset;
+    out property <int> anchor-position-byte-offset: edit.anchor-position-byte-offset;
+    callback accepted(string);
+    callback edited(string);
+    callback key-pressed(KeyEvent) -> EventResult;
+    callback key-released(KeyEvent) -> EventResult;
+    public function focus-value() { edit.focus(); }
+    public function select-all() { edit.select-all(); }
+    public function clear-selection() { edit.clear-selection(); }
+    public function set-selection-offsets(anchor: int, cursor: int) {
+        edit.set-selection-offsets(anchor, cursor);
+    }
+    public function cut() { edit.cut(); }
+    public function copy() { edit.copy(); }
+    public function paste() { edit.paste(); }
+    public function undo() { edit.undo(); }
+    public function redo() { edit.redo(); }
+    function reveal-caret() {
+        edit.set-selection-offsets(
+            edit.anchor-position-byte-offset, edit.cursor-position-byte-offset);
+    }
+    changed font-size => { root.reveal-caret(); }
+    min-width: 40px; min-height: max(root.control-height, root.font-size + 12px);
+    horizontal-stretch: 1; vertical-stretch: 0;
+    background: root.enabled ? Theme.surface : Theme.secondary-surface;
+    border-width: root.has-focus && root.enabled ? 2px : 1px;
+    border-color: root.has-focus && root.enabled ? Theme.active-frame : Theme.frame;
+    border-radius: 4px;
+    forward-focus: edit;
+    accessible-role: text-input;
+    accessible-enabled: root.enabled;
+    accessible-read-only: root.read-only;
+    accessible-value <=> root.text;
+    accessible-placeholder-text: root.placeholder-text;
+    accessible-action-default => { if root.enabled { edit.focus(); } }
+    accessible-action-set-value(value) => {
+        if root.enabled && !root.read-only && root.text != value {
+            root.text = value; root.edited(value);
+        }
+    }
+    accessible-action-set-selection-offsets(anchor, cursor) => {
+        edit.set-selection-offsets(anchor, cursor);
+    }
+    ContextMenuArea {
+        enabled: root.enabled;
+        Menu {
+            MenuItem { title: @tr("Undo"); enabled: !root.read-only; activated => { edit.undo(); } }
+            MenuItem { title: @tr("Redo"); enabled: !root.read-only; activated => { edit.redo(); } }
+            MenuSeparator {}
+            MenuItem { title: @tr("Cut"); enabled: !root.read-only; activated => { edit.cut(); } }
+            MenuItem { title: @tr("Copy"); enabled: root.text != ""; activated => { edit.copy(); } }
+            MenuItem {
+                title: @tr("Paste"); enabled: !root.read-only;
+                activated => { edit.paste(); }
+            }
+            MenuItem {
+                title: @tr("Select All"); enabled: root.text != "";
+                activated => { edit.select-all(); }
+            }
+        }
+        viewport := Rectangle {
+            x: 6px; y: 1px;
+            width: max(1px, parent.width - 12px); height: max(1px, parent.height - 2px);
+            clip: true;
+            changed width => { root.reveal-caret(); }
+            Text {
+                width: parent.width; height: parent.height;
+                text: root.text == "" && edit.preedit-text == "" ? root.placeholder-text : "";
+                font-size: root.font-size; font-family: Theme.effective-font-family;
+                color: Theme.muted-text; vertical-alignment: center;
+                horizontal-alignment: root.horizontal-alignment; accessible-role: none;
+            }
+            edit := TextInput {
+                private property <length> computed-x;
+                x: min(0px, max(parent.width - self.width - self.text-cursor-width,
+                    self.computed-x));
+                width: max(1px, parent.width - self.text-cursor-width, self.preferred-width);
+                height: parent.height;
+                font-size: root.font-size; font-family: Theme.effective-font-family;
+                changed font-family => { root.reveal-caret(); }
+                color: root.enabled ? Theme.text : Theme.muted-text;
+                selection-background-color: Theme.selection-background;
+                selection-foreground-color: Theme.selection-text;
+                horizontal-alignment: root.horizontal-alignment;
+                vertical-alignment: center; single-line: true;
+                enabled: root.enabled; read-only: root.read-only; input-type: root.input-type;
+                accessible-role: none;
+                cursor-position-changed(position) => {
+                    if position.x + self.computed-x < 0px {
+                        self.computed-x = -position.x;
+                    } else if position.x + self.computed-x > parent.width - self.text-cursor-width {
+                        self.computed-x = parent.width - position.x - self.text-cursor-width;
+                    }
+                }
+                accepted => { root.accepted(self.text); }
+                edited => { root.edited(self.text); }
+                key-pressed(event) => { root.key-pressed(event) }
+                key-released(event) => { root.key-released(event) }
+            }
+        }
+    }
+}
+
+export component ThemedSpinBox inherits Rectangle {
+    in property <int> minimum;
+    in property <int> maximum: 100;
+    in property <int> step-size: 1;
+    in property <bool> enabled: true;
+    in property <bool> read-only;
+    in property <TextHorizontalAlignment> horizontal-alignment: TextHorizontalAlignment.left;
+    in property <length> font-size: Theme.font-size;
+    in property <length> control-height: Theme.control-height;
+    in-out property <int> value: root.minimum;
+    out property <bool> has-focus: editor.has-focus;
+    callback edited(int);
+    public function focus-value() { editor.focus-value(); }
+    public function set-selection-offsets(anchor: int, cursor: int) {
+        editor.set-selection-offsets(anchor, cursor);
+    }
+    function sync-text() {
+        if editor.preedit == "" && editor.text != "" + root.value { editor.text = "" + root.value; }
+    }
+    function update-value(value: int) {
+        if root.enabled && !root.read-only && value >= root.minimum && value <= root.maximum
+            && value != root.value {
+            root.value = value; root.edited(value);
+        }
+    }
+    function commit() {
+        if editor.preedit != "" { return; }
+        root.sync-text();
+    }
+    function step(direction: int) {
+        if !root.enabled || root.read-only || root.step-size <= 0 { return; }
+        root.update-value(clamp(root.value + direction * root.step-size,
+            root.minimum, root.maximum));
+        root.sync-text();
+        editor.focus-value();
+    }
+    changed value => { root.sync-text(); }
+    changed has-focus => { if !root.has-focus { root.commit(); } }
+    min-width: 85px; min-height: max(root.control-height, root.font-size + 12px);
+    horizontal-stretch: 1; vertical-stretch: 0;
+    forward-focus: editor;
+    accessible-role: spinbox;
+    accessible-enabled: root.enabled;
+    accessible-read-only: root.read-only;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: root.step-size;
+    accessible-action-default => { if root.enabled { editor.focus-value(); } }
+    accessible-action-set-value(value) => {
+        if value.is-float() && floor(value.to-float()) == value.to-float() {
+            root.update-value(value.to-float()); root.sync-text();
+        }
+    }
+    accessible-action-increment => { root.step(1); }
+    accessible-action-decrement => { root.step(-1); }
+    accessible-action-set-selection-offsets(anchor, cursor) => {
+        editor.set-selection-offsets(anchor, cursor);
+    }
+    TouchArea {
+        enabled: root.enabled;
+        scroll-event(event) => {
+            if root.enabled && !root.read-only && event.delta-y != 0px {
+                root.step(event.delta-y > 0px ? 1 : -1); return accept;
+            }
+            reject
+        }
+        HorizontalLayout {
+            spacing: 2px;
+            editor := ThemedLineEdit {
+                text: "" + root.value;
+                enabled: root.enabled; read-only: root.read-only;
+                horizontal-alignment: root.horizontal-alignment;
+                font-size: root.font-size; control-height: root.control-height;
+                min-width: 1px; horizontal-stretch: 1; accessible-role: none;
+                edited(text) => {
+                    if text.is-float() && floor(text.to-float()) == text.to-float() {
+                        root.update-value(text.to-float());
+                    } else if !text.is-float() && text != "" {
+                        root.sync-text();
+                    }
+                }
+                accepted(text) => { root.commit(); }
+                key-pressed(event) => {
+                    if root.enabled && !root.read-only && event.text == Key.UpArrow {
+                        root.step(1); return accept;
+                    }
+                    if root.enabled && !root.read-only && event.text == Key.DownArrow {
+                        root.step(-1); return accept;
+                    }
+                    reject
+                }
+            }
+            ActionButton {
+                text: "−"; min-width: 24px; max-width: 24px; minimum-control-height: 0px;
+                compact: true;
+                vertical-padding: 0px; font-size: min(12px, root.font-size);
+                control-height: root.control-height;
+                enabled: root.enabled && !root.read-only && root.value > root.minimum;
+                focusable: false; accessible-role: none;
+                clicked => { root.step(-1); }
+            }
+            ActionButton {
+                text: "+"; min-width: 24px; max-width: 24px; minimum-control-height: 0px;
+                compact: true;
+                vertical-padding: 0px; font-size: min(12px, root.font-size);
+                control-height: root.control-height;
+                enabled: root.enabled && !root.read-only && root.value < root.maximum;
+                focusable: false; accessible-role: none;
+                clicked => { root.step(1); }
+            }
+        }
+    }
+}
+
+// The stock public Slider remains the only input implementation. Its pinned
+// Fluent handle is 20px; the face below uses that same geometry in both axes.
+export component ThemedSlider inherits Rectangle {
+    in property <float> minimum;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in property <bool> enabled: true;
+    in property <Orientation> orientation: Orientation.horizontal;
+    in property <length> control-height: Theme.control-height;
+    in-out property <float> value <=> input.value;
+    out property <bool> has-focus: input.has-focus;
+    callback changed(float);
+    callback released(float);
+    private property <bool> vertical: root.orientation == Orientation.vertical;
+    private property <float> fraction: root.maximum > root.minimum
+        ? clamp((root.value - root.minimum) / (root.maximum - root.minimum), 0, 1) : 0;
+    function set-value(value: float) {
+        if !root.enabled { return; }
+        let bounded = clamp(value, root.minimum, root.maximum);
+        if bounded != root.value { root.value = bounded; root.changed(bounded); }
+    }
+    min-width: root.vertical ? max(20px, root.control-height) : 40px;
+    min-height: root.vertical ? 40px : max(20px, root.control-height);
+    preferred-width: root.vertical ? root.control-height : 120px;
+    preferred-height: root.vertical ? 120px : root.control-height;
+    horizontal-stretch: root.vertical ? 0 : 1; vertical-stretch: root.vertical ? 1 : 0;
+    forward-focus: input;
+    accessible-role: slider;
+    accessible-enabled: root.enabled;
+    accessible-orientation: root.orientation;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: min(root.step, (root.maximum - root.minimum) / 100);
+    accessible-action-set-value(value) => {
+        if value.is-float() { root.set-value(value.to-float()); }
+    }
+    accessible-action-increment => { if root.step > 0 { root.set-value(root.value + root.step); } }
+    accessible-action-decrement => { if root.step > 0 { root.set-value(root.value - root.step); } }
+    Rectangle {
+        x: root.vertical ? (root.width - 4px) / 2 : 10px;
+        y: root.vertical ? 10px : (root.height - 4px) / 2;
+        width: root.vertical ? 4px : max(0px, root.width - 20px);
+        height: root.vertical ? max(0px, root.height - 20px) : 4px;
+        border-radius: 2px; background: Theme.frame;
+    }
+    Rectangle {
+        x: root.vertical ? (root.width - 4px) / 2 : 10px;
+        y: root.vertical ? thumb.y + 10px : (root.height - 4px) / 2;
+        width: root.vertical ? 4px : max(0px, root.width - 20px) * root.fraction;
+        height: root.vertical ? max(0px, root.height - 20px) * root.fraction : 4px;
+        border-radius: 2px; background: root.enabled ? Theme.accent : Theme.muted-text;
+    }
+    thumb := Rectangle {
+        x: root.vertical ? (root.width - 20px) / 2 : max(0px, root.width - 20px) * root.fraction;
+        y: root.vertical ? max(0px, root.height - 20px) * (1 - root.fraction)
+            : (root.height - 20px) / 2;
+        width: 20px; height: 20px; border-radius: 10px;
+        background: root.enabled ? Theme.surface : Theme.secondary-surface;
+        border-width: root.has-focus && root.enabled ? 2px : 1px;
+        border-color: root.has-focus && root.enabled ? Theme.active-frame : Theme.frame;
+        Rectangle {
+            x: 4px; y: 4px; width: 12px; height: 12px; border-radius: 6px;
+            background: !root.enabled ? Theme.muted-text
+                : hover.has-hover ? Theme.active-frame : Theme.accent;
+        }
+    }
+    hover := TouchArea {
+        enabled: root.enabled;
+        input := Slider {
+            width: parent.width; height: parent.height; opacity: 0; accessible-role: none;
+            minimum: root.minimum; maximum: root.maximum; step: root.step;
+            orientation: root.orientation; enabled: root.enabled;
+            changed(value) => { root.changed(value); }
+            released(value) => { root.released(value); }
+        }
+    }
+}

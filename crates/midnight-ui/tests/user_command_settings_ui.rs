@@ -81,10 +81,15 @@ impl Harness {
         }
         state
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                user_commands: Arc::new(configuration),
-                ..Default::default()
-            }))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences: UserPreferences {
+                        user_commands: Arc::new(configuration),
+                        ..Default::default()
+                    },
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
         refresh(&ui.window, &state.borrow());
         commands.borrow_mut().clear();
         let mut harness = Self {

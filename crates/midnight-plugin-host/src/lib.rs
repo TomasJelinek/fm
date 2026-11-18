@@ -72,7 +72,7 @@ mod events;
 pub use events::{EventKind, HostEvent};
 mod session;
 mod wake;
-pub use session::{OPEN_REQUEST_ID, Session};
+pub use session::{AdmissionError, OPEN_REQUEST_ID, Session};
 mod callbacks;
 mod dispatch;
 mod loaded;

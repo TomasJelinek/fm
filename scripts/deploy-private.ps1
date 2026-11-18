@@ -8,6 +8,12 @@ deployments of the same build output that this script created and that no
 launcher pointer selects and no running process uses. Build deployments of one
 build output run one at a time per logon session (a named mutex); a second run
 waits for the first.
+
+ValidationPayloadReceipt opts into the Build-qualified Explorer libtest payload
+described in deployment-validation-payload.ps1. It requires complete modules and
+PowerShell 7, validates the full runtime before/after copying, and records a root
+validation-payload.json before returning. The caller still owns final assembly
+inventory/freeze. Only normal me.exe is registered when RegisterRuntime is set.
 #>
 param(
     [string]$SourceDirectory,
@@ -17,10 +23,18 @@ param(
     [switch]$CreateDesktopShortcut,
     [switch]$RegisterRuntime,
     [string]$RegistrationDirectory,
-    [switch]$ReplaceBuildDeployment
+    [switch]$ReplaceBuildDeployment,
+    [ValidateNotNullOrEmpty()][string]$ValidationPayloadReceipt,
+    [string]$ValidationPython = 'python'
 )
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This deployment helper requires Windows' }
+if ($ValidationPayloadReceipt -and (-not $IncludeFilesystems -or -not $IncludeThumbnailers)) {
+    throw 'Validation payload requires IncludeFilesystems and IncludeThumbnailers'
+}
+if (-not $ValidationPayloadReceipt -and $PSBoundParameters.ContainsKey('ValidationPython')) {
+    throw 'ValidationPython requires ValidationPayloadReceipt'
+}
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if ($ReplaceBuildDeployment) {
     # Only a default-named installation without a shortcut can later be retired.
@@ -607,9 +621,17 @@ foreach ($name in @('basic', 'source', 'markdown')) {
 }
 $files = New-Object 'System.Collections.Generic.List[string]'
 $files.Add($executable)
-# midnight-elevated-listing.exe runs as Administrator, so Midnight Explorer accepts it
-# only from a folder that standard users cannot change. A private installation never
-# qualifies, so the helper is not deployed here; release archives still contain it.
+# Ordinary private installations omit the elevation helper, which is usable only
+# from an administrator-managed directory. The opt-in validation payload requires
+# the complete runtime layout; including its helper does not relax that trust check.
+if ($ValidationPayloadReceipt) {
+    $authorizationHelper = Join-Path $SourceDirectory 'midnight-elevated-listing.exe'
+    if (-not (Test-Path -LiteralPath $authorizationHelper -PathType Leaf)) {
+        throw 'Validation runtime must contain the dedicated midnight-elevated-listing.exe helper'
+    }
+    Assert-PlainPath $authorizationHelper
+    $files.Add($authorizationHelper)
+}
 $pending = New-Object 'System.Collections.Generic.Stack[string]'
 $pending.Push($viewers)
 foreach ($kind in @('filesystems', 'thumbnailers')) {
@@ -645,7 +667,13 @@ Assert-PlainPath $executable
 $launchStamp = $null
 $launchLease = $null
 $deploymentLock = $null
+$validationLease = $null
 try {
+    if ($ValidationPayloadReceipt) {
+        . (Join-Path $PSScriptRoot 'deployment-validation-payload.ps1')
+        $validationLease = Open-DeploymentValidationPayload $ValidationPayloadReceipt $projectRoot $SourceDirectory
+        Assert-DeploymentValidationRuntime $projectRoot $SourceDirectory $ValidationPython
+    }
     if ($RegisterRuntime) {
         Assert-PlainPath $originalSourceDirectory
         Initialize-LaunchRegistrationType
@@ -737,6 +765,14 @@ try {
             Assert-PrivatePath $path $true
         }
     }
+    if ($validationLease) {
+        $payloadRecord = Copy-DeploymentValidationPayload $validationLease $Destination
+        Assert-PrivatePath (Join-Path $Destination $payloadRecord.path) $true
+        Assert-DeploymentValidationRuntime $projectRoot $Destination $ValidationPython
+        $payloadRecord['full_runtime_validation'] = 'passed before external assembly freeze'
+        Write-DeploymentValidationInventory $payloadRecord $Destination
+        Assert-PrivatePath (Join-Path $Destination 'validation-payload.json') $true
+    }
     if ($RegisterRuntime) {
         Register-PrivateRuntime $RegistrationDirectory (Join-Path $Destination 'me.exe') $launchLease $privateAcl
     }
@@ -759,9 +795,19 @@ try {
     }
 
 } finally {
-    if ($null -ne $deploymentLock) {
-        $deploymentLock.ReleaseMutex()
-        $deploymentLock.Dispose()
+    try {
+        if ($null -ne $validationLease) {
+            try { $validationLease.Stream.Dispose() }
+            finally { $validationLease.ApplicationStream.Dispose() }
+        }
+    } finally {
+        try {
+            if ($null -ne $deploymentLock) {
+                try { $deploymentLock.ReleaseMutex() }
+                finally { $deploymentLock.Dispose() }
+            }
+        } finally {
+            if ($null -ne $launchLease) { $launchLease.Dispose() }
+        }
     }
-    if ($null -ne $launchLease) { $launchLease.Dispose() }
 }

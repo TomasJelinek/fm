@@ -34,6 +34,11 @@
  */
 #define MidnightREQUEST_LOCATE 6
 
+/**
+ * Optional bounded source syntax preparation. Older plugins may return UNSUPPORTED.
+ */
+#define MidnightREQUEST_PREPARE_SOURCE 7
+
 #define MidnightEVENT_OPENED 1
 
 #define MidnightEVENT_TEXT_PAGE 2
@@ -51,6 +56,11 @@
  */
 #define MidnightEVENT_TEXT_POSITION 7
 
+/**
+ * Provisional result of an accepted REQUEST_PREPARE_SOURCE until Completed.
+ */
+#define MidnightEVENT_SOURCE_PREPARED 8
+
 #define MidnightEVENT_COMPLETED 100
 
 #define MidnightEVENT_CANCELLED 101
@@ -58,6 +68,11 @@
 #define MidnightEVENT_FAILED 102
 
 #define MidnightEVENT_QUIESCENT 103
+
+/**
+ * Advisory source syntax progress; readiness requires SourcePrepared and Completed.
+ */
+#define MidnightPROGRESS_SOURCE_SYNTAX 2
 
 #define MidnightSERVICE_READ_AT 1001
 

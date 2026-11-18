@@ -14,6 +14,7 @@ pub struct Mailbox {
     opening: Mutex<Opening>,
     notify: Mutex<Option<Notify>>,
     wake_pending: AtomicBool,
+    closed: AtomicBool,
 }
 
 #[derive(Default)]
@@ -75,53 +76,87 @@ impl Mailbox {
             let layout = outputs.remove(index);
             outputs.insert(0, layout);
         }
+        if let Some(index) = outputs
+            .iter()
+            .position(|output| matches!(output, ViewerOutput::PaletteApplied { .. }))
+        {
+            let palette = outputs.remove(index);
+            let after_layout = usize::from(matches!(
+                outputs.first(),
+                Some(ViewerOutput::LayoutSelected { .. })
+            ));
+            outputs.insert(after_layout, palette);
+        }
         outputs
     }
 
     pub(crate) fn put(&self, output: ViewerOutput) {
-        let mut pending = self.output.lock().unwrap_or_else(|e| e.into_inner());
-        match &output {
-            ViewerOutput::Frame(_) => pending.retain(|old| !matches!(old, ViewerOutput::Frame(_))),
-            ViewerOutput::Status(_) => {
-                pending.retain(|old| !matches!(old, ViewerOutput::Status(_)))
-            }
-            ViewerOutput::RasterRebase { .. } | ViewerOutput::RasterUnavailable { .. } => pending
-                .retain(|old| {
-                    !matches!(
-                        old,
+        let mut pending = self
+            .output
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.closed.load(Ordering::Acquire) {
+            drop(pending);
+            drop(output);
+            return;
+        }
+        if let ViewerOutput::PaletteApplied { revision, generation, .. } = &output
+            && pending.iter().any(|old| matches!(old,
+                ViewerOutput::PaletteApplied { revision: old_revision, generation: old_generation, .. }
+                    if (*old_revision, *old_generation) > (*revision, *generation)))
+        {
+            drop(pending);
+            drop(output);
+            return;
+        }
+        let mut retired = Vec::new();
+        let mut index = 0;
+        while index < pending.len() {
+            let replace = match &output {
+                ViewerOutput::Frame(_) => matches!(pending[index], ViewerOutput::Frame(_)),
+                ViewerOutput::PaletteApplied { .. } => {
+                    matches!(pending[index], ViewerOutput::PaletteApplied { .. })
+                }
+                ViewerOutput::Status(_) => matches!(pending[index], ViewerOutput::Status(_)),
+                ViewerOutput::RasterRebase { .. } | ViewerOutput::RasterUnavailable { .. } => {
+                    matches!(
+                        pending[index],
                         ViewerOutput::RasterRebase { .. } | ViewerOutput::RasterUnavailable { .. }
                     )
-                }),
-            ViewerOutput::ImageUnavailable { .. } => {
-                pending.retain(|old| !matches!(old, ViewerOutput::ImageUnavailable { .. }))
-            }
-            ViewerOutput::Closed => pending.clear(),
-            ViewerOutput::CopyText(_) => {
-                pending.retain(|old| !matches!(old, ViewerOutput::CopyText(_)))
-            }
-            ViewerOutput::WebShortcut(_) => {}
-            ViewerOutput::WebState { .. } => {
-                pending.retain(|old| !matches!(old, ViewerOutput::WebState { .. }))
-            }
-            ViewerOutput::LayoutSelected { .. } => {
-                pending.retain(|old| !matches!(old, ViewerOutput::LayoutSelected { .. }))
+                }
+                ViewerOutput::ImageUnavailable { .. } => {
+                    matches!(pending[index], ViewerOutput::ImageUnavailable { .. })
+                }
+                ViewerOutput::CopyText(_) => matches!(pending[index], ViewerOutput::CopyText(_)),
+                ViewerOutput::WebState { .. } => {
+                    matches!(pending[index], ViewerOutput::WebState { .. })
+                }
+                ViewerOutput::LayoutSelected { .. } => {
+                    matches!(pending[index], ViewerOutput::LayoutSelected { .. })
+                }
+                ViewerOutput::Closed => true,
+                ViewerOutput::WebShortcut(_) => false,
+            };
+            if replace {
+                retired.push(pending.remove(index));
+            } else {
+                index += 1;
             }
         }
-        // Preserve content, the latest raster control and opted-in layout metadata.
-        // A full ordinary-event queue must not strand either side of a handoff.
         let frame = matches!(output, ViewerOutput::Frame(_));
-        let control = matches!(
+        let raster = matches!(
             output,
             ViewerOutput::RasterRebase { .. } | ViewerOutput::RasterUnavailable { .. }
         );
         let layout = matches!(output, ViewerOutput::LayoutSelected { .. });
+        let palette = matches!(output, ViewerOutput::PaletteApplied { .. });
         let reserved = usize::from(
             !frame
                 && !pending
                     .iter()
                     .any(|old| matches!(old, ViewerOutput::Frame(_))),
         ) + usize::from(
-            !control
+            !raster
                 && !pending.iter().any(|old| {
                     matches!(
                         old,
@@ -134,6 +169,11 @@ impl Mailbox {
                 && !pending
                     .iter()
                     .any(|old| matches!(old, ViewerOutput::LayoutSelected { .. })),
+        ) + usize::from(
+            !palette
+                && !pending
+                    .iter()
+                    .any(|old| matches!(old, ViewerOutput::PaletteApplied { .. })),
         );
         if pending.len() < 8 - reserved {
             match &output {
@@ -142,13 +182,17 @@ impl Mailbox {
                     self.finish_open(Err(message.clone()))
                 }
                 ViewerOutput::Closed => {
-                    self.finish_open(Err("Viewer closed before displaying content.".into()))
+                    self.closed.store(true, Ordering::Release);
+                    self.finish_open(Err("Viewer closed before displaying content.".into()));
                 }
                 _ => {}
             }
             pending.push(output);
+        } else {
+            retired.push(output);
         }
         drop(pending);
+        drop(retired);
         self.wake();
     }
 
@@ -326,7 +370,7 @@ mod layout_tests {
         });
 
         let outputs = mailbox.take();
-        assert_eq!(outputs.len(), 8);
+        assert_eq!(outputs.len(), 7);
         assert!(matches!(
             outputs.first(),
             Some(ViewerOutput::LayoutSelected {
@@ -340,7 +384,7 @@ mod layout_tests {
                 .iter()
                 .filter(|output| matches!(output, ViewerOutput::WebShortcut(HostShortcut::Find)))
                 .count(),
-            5
+            4
         );
         assert!(
             outputs
@@ -379,7 +423,7 @@ mod layout_tests {
         });
 
         let outputs = mailbox.take();
-        assert_eq!(outputs.len(), 8);
+        assert_eq!(outputs.len(), 7);
         assert!(matches!(
             outputs.first(),
             Some(ViewerOutput::LayoutSelected {
@@ -463,7 +507,7 @@ mod layout_tests {
     }
 
     #[test]
-    fn fixed_viewport_mailbox_keeps_six_ordinary_events() {
+    fn fixed_viewport_mailbox_reserves_palette_and_keeps_five_ordinary_events() {
         let mailbox = Mailbox::default();
         for _ in 0..100 {
             mailbox.put(ViewerOutput::WebShortcut(HostShortcut::Find));
@@ -474,13 +518,13 @@ mod layout_tests {
             transition: 41,
         });
         let outputs = mailbox.take();
-        assert_eq!(outputs.len(), 8);
+        assert_eq!(outputs.len(), 7);
         assert_eq!(
             outputs
                 .iter()
                 .filter(|output| matches!(output, ViewerOutput::WebShortcut(HostShortcut::Find)))
                 .count(),
-            6
+            5
         );
         assert!(
             outputs
@@ -529,3 +573,7 @@ mod layout_tests {
         assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "mailbox_palette_tests.rs"]
+mod palette_tests;

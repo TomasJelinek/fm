@@ -11,6 +11,8 @@ mod capture_prefetch;
 mod capture_tree;
 mod catalog_startup;
 mod content_resources;
+mod document_render;
+mod document_view;
 pub use content_resources::captured_directory_resources;
 #[cfg(test)]
 mod capture_tests;
@@ -29,17 +31,24 @@ mod interaction;
 mod layout_handshake;
 mod mailbox;
 mod navigation;
+mod office_preview;
 #[cfg(test)]
 mod opening_retirement_tests;
 mod page;
+mod palette;
 mod position_ack;
 mod preferences;
+mod prepared_catalogs;
+pub use prepared_catalogs::PreparedCatalogs;
 mod raster_budget;
+#[cfg(test)]
+mod resident_tests;
 mod routing;
 mod search_cursor;
 #[cfg(test)]
 mod tests;
 mod viewport;
+mod window_worker;
 mod worker;
 
 use midnight_core::{
@@ -61,9 +70,13 @@ pub type NativeCapture = Arc<
 >;
 pub use mailbox::Mailbox;
 
+/// Four admitted windows plus the one source-free image-spare manager.
+pub const RESIDENT_WORKERS: usize = 5;
+
 #[derive(Clone)]
 pub struct Service {
     handle: tokio::runtime::Handle,
+    resident: midnight_work_budget::resident::Spawner,
     capture: NativeCapture,
     runtime: Arc<Mutex<Option<Arc<Runtime>>>>,
     images: Arc<Mutex<Option<Arc<[midnight_image_viewer_host::Provider]>>>>,
@@ -112,6 +125,7 @@ pub struct WindowSession {
     closed: Arc<AtomicBool>,
     pub mailbox: Arc<Mailbox>,
     preferences: Arc<preferences::Preferences>,
+    palette: Arc<palette::State>,
     fonts: Arc<OnceLock<Arc<[String]>>>,
 }
 
@@ -141,6 +155,26 @@ impl Drop for WindowStart {
 }
 
 impl WindowSession {
+    /// Current accepted palette revision, including the opening configuration.
+    /// Remains readable after close or worker exit; this is not a paint acknowledgement.
+    pub fn palette_revision(&self) -> u64 {
+        self.palette.snapshot().0
+    }
+
+    /// Accept four application colors only; the returned revision is not a paint ACK.
+    /// Document family/size and independently accepted viewer preferences stay owned
+    /// by their existing controls. Full wake queues retain this bounded latest slot.
+    pub fn restore_palette(&self, appearance: &ViewerAppearance) -> Result<u64, String> {
+        self.palette.restore(appearance, || {
+            self.wakes
+                .wake()
+                .then_some(())
+                .ok_or(std::sync::mpsc::TrySendError::Disconnected(
+                    worker::Message::Ready,
+                ))
+        })
+    }
+
     /// Cached installed family names. Discovery runs on the session's backend worker.
     /// `None` means discovery is pending or the session closed before it completed.
     pub fn font_families(&self) -> Option<Arc<[String]>> {
@@ -181,7 +215,8 @@ impl WindowSession {
     }
 
     pub fn close(&self) {
-        // Publishes `closed`, then wakes the worker through its reserved channel slot.
+        self.palette.close();
+        // Publishes closed, then wakes the worker through its reserved channel slot.
         self.wakes.close(&self.closed);
         self.mailbox
             .finish_open(Err("Viewer closed before displaying content.".into()));
@@ -195,28 +230,65 @@ impl Drop for WindowSession {
 }
 
 impl Service {
-    pub fn new(handle: tokio::runtime::Handle) -> Self {
-        Self::with_native_capture(handle, capture::native())
+    /// The application retains the original transient runtime through session,
+    /// spare and resident-domain retirement, including refused-work disposal.
+    pub fn new(
+        handle: tokio::runtime::Handle,
+        resident: midnight_work_budget::resident::Spawner,
+    ) -> Self {
+        Self::with_native_capture(handle, resident, capture::native())
     }
 
     /// Install the filesystem's source authority before opening any viewer.
     /// Invoked only by viewer workers. The callback must retain its provider for
     /// the lifetime of every returned content lease.
-    pub fn with_native_capture(handle: tokio::runtime::Handle, capture: NativeCapture) -> Self {
-        let image_startup = image_startup::Startup::new(handle.clone());
+    pub fn with_native_capture(
+        handle: tokio::runtime::Handle,
+        resident: midnight_work_budget::resident::Spawner,
+        capture: NativeCapture,
+    ) -> Self {
+        Self::initialize(handle, resident, capture, None)
+    }
+
+    /// Adopt catalogs discovered from an explicitly selected trusted installation.
+    /// Discover the immutable bundle on a backend/setup worker before calling this constructor.
+    pub fn with_prepared_catalogs(
+        handle: tokio::runtime::Handle,
+        resident: midnight_work_budget::resident::Spawner,
+        capture: NativeCapture,
+        catalogs: PreparedCatalogs,
+    ) -> Self {
+        Self::initialize(handle, resident, capture, Some(catalogs))
+    }
+
+    fn initialize(
+        handle: tokio::runtime::Handle,
+        resident: midnight_work_budget::resident::Spawner,
+        capture: NativeCapture,
+        catalogs: Option<PreparedCatalogs>,
+    ) -> Self {
+        let (runtime, images, web, revision) = match catalogs {
+            Some(catalogs) => {
+                let (runtime, images, web) = catalogs.into_inner();
+                (Some(runtime), Some(images), Some(web), 1)
+            }
+            None => (None, None, None, 0),
+        };
+        let image_startup = image_startup::Startup::new(handle.clone(), resident.clone());
         Self {
             handle,
+            resident,
             capture,
-            runtime: Arc::new(Mutex::new(None)),
-            images: Arc::new(Mutex::new(None)),
-            web: Arc::new(Mutex::new(None)),
+            runtime: Arc::new(Mutex::new(runtime)),
+            images: Arc::new(Mutex::new(images)),
+            web: Arc::new(Mutex::new(web)),
             windows: Arc::new(AtomicUsize::new(0)),
             raster_budget: Arc::new(raster_budget::Budget::default()),
             fonts: Arc::new(OnceLock::new()),
             catalog_preparation: Arc::default(),
             image_startup,
             image_policy: Arc::default(),
-            image_catalog_revision: Arc::new(AtomicU64::new(0)),
+            image_catalog_revision: Arc::new(AtomicU64::new(revision)),
         }
     }
 
@@ -348,6 +420,7 @@ impl Service {
             return Err(error.to_owned());
         }
         let preferences = Arc::new(preferences::Preferences::new(launch.preferences.clone()));
+        let palette = Arc::new(palette::State::new(&appearance));
         let worker_preferences = preferences.clone();
         if self
             .windows
@@ -359,7 +432,7 @@ impl Service {
             self.retire(launch);
             return Err("Close a viewer before opening another (maximum four windows).".into());
         }
-        let mut start = WindowStart {
+        let start = WindowStart {
             _permit: WindowPermit(self.windows.clone()),
             output: Arc::new(if negotiate_layout {
                 Mailbox::with_layout()
@@ -369,55 +442,42 @@ impl Service {
             started: false,
         };
         let (wakes, receiver) = input_queue::Wakes::channel();
-        let backend_wakes = wakes.clone();
         let mailbox = start.output.clone();
         let closed = Arc::new(AtomicBool::new(false));
-        let service = self.clone();
-        let output = mailbox.clone();
-        let stop = closed.clone();
-        self.handle.spawn_blocking(move || {
-            start.started = true;
-            let _start = start;
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if service.fonts.get().is_none()
-                    && let Some(names) =
-                        midnight_viewer_render::installed_families(|| stop.load(Ordering::Acquire))
-                {
-                    let _ = service.fonts.set(names);
-                }
-                let (runtime, images, web) = service.catalogs()?;
-                worker::run(
-                    worker::Services {
-                        runtime,
-                        images,
-                        web,
-                        capture: service.capture.clone(),
-                        image_startup: service.image_startup.clone(),
-                        wakes: backend_wakes,
-                        preferences: worker_preferences,
-                        raster_budget: service.raster_budget.clone(),
-                        negotiate_layout,
-                    },
-                    launch,
-                    appearance,
-                    geometry,
-                    receiver,
-                    &output,
-                    &stop,
-                )
-            }))
-            .unwrap_or_else(|_| Err("Viewer backend stopped after an internal error.".into()));
-            if let Err(message) = result {
-                output.finish_open(Err(message.clone()));
-                output.put(ViewerOutput::Status(message));
-            }
-        });
+        let job = window_worker::Job {
+            work: window_worker::Work {
+                service: self.clone(),
+                launch,
+                appearance,
+                geometry,
+                receiver,
+                output: mailbox.clone(),
+                stop: closed.clone(),
+                wakes: wakes.clone(),
+                preferences: worker_preferences,
+                negotiate_layout,
+                palette_lifetime: palette::Lifetime::new(palette.clone()),
+            },
+            start,
+        };
+        if let Err(rejected) = self
+            .resident
+            .spawn(&self.handle, Box::new(move || job.run()))
+        {
+            let message = format!(
+                "Viewer resident worker is unavailable: {:?}.",
+                rejected.reason()
+            );
+            self.retire(rejected.into_work());
+            return Err(message);
+        }
         Ok(WindowSession {
             wakes,
             positions: Default::default(),
             closed,
             mailbox,
             preferences,
+            palette,
             fonts: self.fonts.clone(),
         })
     }
@@ -439,33 +499,8 @@ impl Service {
         }
         let executable =
             midnight_plugin_host::installed_executable().map_err(|error| error.to_string())?;
-        let directory = executable.parent().ok_or("Executable has no directory")?;
-        let cached_images = images.clone();
-        let cached_web = web.clone();
-        let catalogs = catalog_startup::parallel(
-            || match runtime.as_ref() {
-                Some(runtime) => Ok(runtime.clone()),
-                None => Runtime::discover(directory)
-                    .map(Arc::new)
-                    .map_err(|error| error.to_string()),
-            },
-            || {
-                Ok(cached_images.unwrap_or_else(|| {
-                    // Invalid process packages expose no feature. Options retains discovery diagnostics.
-                    midnight_image_viewer_host::discover(&executable)
-                        .unwrap_or_default()
-                        .into()
-                }))
-            },
-            || {
-                Ok(cached_web.unwrap_or_else(|| {
-                    midnight_web_viewer_host::discover_with_diagnostics(&executable)
-                        .map(|discovery| discovery.providers)
-                        .unwrap_or_default()
-                        .into()
-                }))
-            },
-        )?;
+        let catalogs =
+            prepared_catalogs::load(&executable, runtime.clone(), images.clone(), web.clone())?;
         *runtime = Some(catalogs.0.clone());
         *images = Some(catalogs.1.clone());
         *web = Some(catalogs.2.clone());

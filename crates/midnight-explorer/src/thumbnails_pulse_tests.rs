@@ -143,13 +143,18 @@ impl Fixture {
         });
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                thumbnails_enabled: true,
-                thumbnails_network: true,
-                panel_view_modes: [mode; 2],
-                user_commands: Arc::new(user_commands.into_iter().collect()),
-                ..Default::default()
-            }))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences: UserPreferences {
+                        thumbnails_enabled: true,
+                        thumbnails_network: true,
+                        panel_view_modes: [mode; 2],
+                        user_commands: Arc::new(user_commands.into_iter().collect()),
+                        ..Default::default()
+                    },
+                    comparators: Default::default(),
+                },
+            ))));
         let navigations = Rc::new(RefCell::new(Vec::new()));
         let recorded = navigations.clone();
         midnight_ui::install(

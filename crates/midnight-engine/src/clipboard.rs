@@ -1,6 +1,7 @@
 //! One bounded backend worker retains native ownership and services it while idle.
 use crate::{
     Outbox, file_targets,
+    resident_tasks::ResidentTasks,
     retirement::{RetirementLease, RetirementWaiter},
     task_lifetime::TaskLifetime,
 };
@@ -14,7 +15,7 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::sync::mpsc;
 
 /// Pump interval of an open session without a waker (a Linux session whose eventfd could
 /// not be created, for example). Such a session must keep serving other applications'
@@ -138,6 +139,7 @@ struct Rejected {
     _scope: TaskLifetime,
 }
 pub(crate) struct Controller {
+    resident: midnight_work_budget::resident::Spawner,
     sender: Option<mpsc::Sender<Request>>,
     wake: Arc<Wake>,
     service: Option<Arc<dyn ClipboardService>>,
@@ -153,14 +155,14 @@ impl Controller {
         id: DesktopRequestId,
         source: Arc<dyn midnight_core::CapturedClipboardFiles>,
         cancel: Cancellation,
-        actors: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Captured(source, cancel),
             },
-            actors,
+            tasks,
         )
         .await;
     }
@@ -169,14 +171,14 @@ impl Controller {
         id: DesktopRequestId,
         source: Arc<dyn midnight_core::CapturedClipboardFiles>,
         cancel: Cancellation,
-        actors: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::ReadCaptured(source, cancel),
             },
-            actors,
+            tasks,
         )
         .await;
     }
@@ -185,24 +187,26 @@ impl Controller {
         id: DesktopRequestId,
         content: Arc<dyn midnight_core::GeneratedTextSource>,
         cancel: Cancellation,
-        actors: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Generated(content, cancel),
             },
-            actors,
+            tasks,
         )
         .await;
     }
     pub(crate) fn new(
+        resident: midnight_work_budget::resident::Spawner,
         retirement: Retirement,
         scope: TaskLifetime,
         service: Option<Arc<dyn ClipboardService>>,
         outbox: Outbox,
     ) -> Self {
         Self {
+            resident,
             sender: None,
             wake: Arc::default(),
             service,
@@ -214,7 +218,12 @@ impl Controller {
         }
     }
     #[cfg(test)]
-    fn testing(service: Option<Arc<dyn ClipboardService>>, outbox: Outbox) -> Self {
+    fn testing(
+        service: Option<Arc<dyn ClipboardService>>,
+        outbox: Outbox,
+    ) -> (midnight_work_budget::resident::Owner, Self) {
+        let (owner, resident) =
+            midnight_work_budget::resident::Owner::start("clipboard-test", 1).unwrap();
         let domain =
             crate::retirement::RetirementDomain::try_start(RETIREMENT_CAPACITY, 1).unwrap();
         let retirement = Retirement {
@@ -222,32 +231,28 @@ impl Controller {
             rejected: domain.new_waiter().unwrap(),
         };
         let scope = TaskLifetime::testing(service.clone());
-        Self::new(retirement, scope, service, outbox)
+        (
+            owner,
+            Self::new(resident, retirement, scope, service, outbox),
+        )
     }
-    /// Starts the native worker on its own thread. Its completion waiter joins
-    /// `actors`, the engine's set of actors that retire native ownership themselves:
-    /// a normal `Engine::run` shutdown waits for them, at most five seconds, before it
-    /// aborts its other tasks, so it returns only after this thread has closed the
-    /// native session (which may still hand copied text over to a Linux clipboard
-    /// manager or finish an X11 transfer).
-    fn start_worker(&mut self, actors: &mut JoinSet<()>) -> mpsc::Sender<Request> {
+    /// The resident ticket tracks the thread-affine session through shutdown.
+    /// Closing the inbox and waking the native pump lets it finish any handoff.
+    fn start_worker(&mut self, tasks: &mut ResidentTasks) -> Option<mpsc::Sender<Request>> {
+        let lease = self.worker.take()?;
         let (sender, receiver) = mpsc::channel::<Request>(16);
-        let mut worker = self
-            .worker
-            .take()
-            .expect("clipboard worker starts once")
-            .own(NativeWorker {
-                receiver,
-                service: self.service.take(),
-                _scope: self.scope.clone(),
-            });
+        let mut worker = lease.own(NativeWorker {
+            receiver,
+            service: self.service.take(),
+            _scope: self.scope.clone(),
+        });
         let cancel = self.cancel.clone();
         let outbox = self.outbox.clone();
         let wake = self.wake.clone();
         // The worker lives for the rest of the session: keep it off the bounded
         // blocking pool that listings and scans need. Controller drop ends it through
         // cancellation, the closed inbox and the session waker.
-        let run = self.scope.blocking(move || {
+        let work = self.scope.blocking(move || {
             let mut native = Native::new(wake);
             while let Some(request) = next_request(&mut worker.receiver, &mut native, &cancel) {
                 let event = match prepare(&request.action, &cancel) {
@@ -289,24 +294,25 @@ impl Controller {
                 }
             }
             // Session never enters the transferable guard: create, pump and Drop stay here.
-            // The guarded inbox also covers cancellation before this closure ever starts
-            // (only possible when the OS refuses the thread and the pool runs it instead).
+            // The guarded inbox also covers cancellation before this work starts.
         });
-        crate::actor_thread::spawn("midnight-clipboard", actors, run);
-        sender
+        let ticket = crate::spawn_resident(&self.resident, "clipboard", Box::new(work))?;
+        tasks.insert(ticket);
+        Some(sender)
     }
-    async fn submit(&mut self, request: Request, actors: &mut JoinSet<()>) {
+    async fn submit(&mut self, request: Request, tasks: &mut ResidentTasks) {
         if self.sender.is_none() {
-            self.sender = Some(self.start_worker(actors));
+            self.sender = self.start_worker(tasks);
         }
-        let queued = self.sender.as_ref().unwrap().try_send(request);
+        let queued = match &self.sender {
+            Some(sender) => sender.try_send(request),
+            None => Err(mpsc::error::TrySendError::Closed(request)),
+        };
         if queued.is_ok() {
-            // Ends an idle native wait; `next_request` explains why no wake is lost.
+            // Ends an idle native wait; next_request explains why no wake is lost.
             self.wake.wake();
         }
         if let Err(failed) = queued {
-            // The single native worker lease is consumed: a stopped worker cannot
-            // be restarted, so say so instead of inviting endless retries.
             let busy = match &failed {
                 mpsc::error::TrySendError::Full(_) => error(
                     io::ErrorKind::WouldBlock,
@@ -344,24 +350,24 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         text: String,
-        actors: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Text(text),
             },
-            actors,
+            tasks,
         )
         .await;
     }
-    pub(crate) async fn read_text(&mut self, id: DesktopRequestId, actors: &mut JoinSet<()>) {
+    pub(crate) async fn read_text(&mut self, id: DesktopRequestId, tasks: &mut ResidentTasks) {
         self.submit(
             Request {
                 id,
                 action: Action::ReadText,
             },
-            actors,
+            tasks,
         )
         .await;
     }
@@ -369,14 +375,14 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         files: SelectedFiles,
-        actors: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Files(files, FileClipboardIntent::Copy),
             },
-            actors,
+            tasks,
         )
         .await;
     }
@@ -384,14 +390,14 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         destination: PathBuf,
-        actors: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Read(destination),
             },
-            actors,
+            tasks,
         )
         .await;
     }
@@ -399,19 +405,19 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         files: SelectedFiles,
-        actors: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Files(files, FileClipboardIntent::Move),
             },
-            actors,
+            tasks,
         )
         .await;
     }
     /// Stops the worker without waiting: it closes its native session on its own
-    /// thread, and the engine's actor drain waits for that thread (`start_worker`).
+    /// thread, and the engine's resident-task drain waits for that thread (`start_worker`).
     pub(crate) fn shutdown(self) {
         drop(self);
     }
@@ -837,7 +843,7 @@ mod tests {
         sender
             .try_send(Event::LocaleLoaded(Ok(Default::default())))
             .unwrap();
-        let mut controller = Controller::testing(
+        let (_owner, mut controller) = Controller::testing(
             None,
             Outbox {
                 sender,
@@ -845,7 +851,7 @@ mod tests {
             },
         );
         controller.sender = Some(native);
-        let mut tasks = JoinSet::new();
+        let mut tasks = ResidentTasks::default();
         controller
             .copy(DesktopRequestId(1), "first".into(), &mut tasks)
             .await;
@@ -889,7 +895,7 @@ mod tests {
         let (native, native_receiver) = mpsc::channel(1);
         drop(native_receiver); // The single native worker has exited.
         let (sender, mut events) = mpsc::channel(1);
-        let mut controller = Controller::testing(
+        let (_owner, mut controller) = Controller::testing(
             None,
             Outbox {
                 sender,
@@ -897,7 +903,7 @@ mod tests {
             },
         );
         controller.sender = Some(native);
-        let mut tasks = JoinSet::new();
+        let mut tasks = ResidentTasks::default();
         controller
             .copy(DesktopRequestId(1), "text".into(), &mut tasks)
             .await;

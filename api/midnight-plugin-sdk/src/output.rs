@@ -21,6 +21,12 @@ impl Output {
         Self::encode(abi::EVENT_TEXT_POSITION, value)
     }
 
+    /// Send only for an accepted PrepareSource. Complete its request from the
+    /// send continuation, after the result enters the bounded delivery queue.
+    pub fn source_prepared(value: &messages::SourcePrepared) -> Result<Self, WireError> {
+        Self::encode(abi::EVENT_SOURCE_PREPARED, value)
+    }
+
     pub fn binary(value: &viewer::BinaryPage, content: Box<[u8]>) -> Result<Self, WireError> {
         if value.source.length != content.len() as u64 {
             return Err(WireError::Malformed);
@@ -50,6 +56,22 @@ mod tests {
         viewer::{BinaryPage, SourceRange},
         wire::WireError,
     };
+
+    #[test]
+    fn source_prepared_output_has_a_typed_bounded_payload_without_raw_content() {
+        let output = Output::source_prepared(&midnight_plugin_api::messages::SourcePrepared {
+            revision: 9,
+            frontier: 23,
+            ready: true,
+        })
+        .unwrap();
+        assert_eq!(output.kind, 8);
+        assert_eq!(
+            &*output.payload,
+            &[0xa3, 0x00, 0x09, 0x01, 0x17, 0x02, 0xf5]
+        );
+        assert!(output.content.is_none());
+    }
 
     #[test]
     fn binary_output_requires_exact_raw_length_and_bounded_source_range() {

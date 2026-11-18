@@ -1,6 +1,6 @@
 //! Host navigation acceptance using the separately built, sandboxed PDF plugin.
 use super::*;
-use midnight_core::ViewerImageInput;
+use midnight_core::{DocumentLayout, ViewerImageInput};
 
 fn two_page_pdf() -> Vec<u8> {
     let mut objects = vec![
@@ -54,6 +54,51 @@ fn change_page(session: &WindowSession, previous: &ViewerFrame, delta: i32) -> V
     })
 }
 
+fn load_pdf_catalogs(service: &Service, application: &std::path::Path) {
+    let runtime = Arc::new(Runtime::discover(application.parent().unwrap()).unwrap());
+    let images = midnight_image_viewer_host::discover(application).unwrap();
+    assert!(
+        images
+            .iter()
+            .any(|provider| provider.id == "midnight.viewer.pdf")
+    );
+    let web = midnight_web_viewer_host::discover_with_diagnostics(application)
+        .unwrap()
+        .providers;
+    cache_explicit_catalogs(service, (runtime, images.into(), web.into()));
+}
+
+fn cache_explicit_catalogs(service: &Service, expected: crate::Catalogs) {
+    *service.runtime.lock().unwrap() = Some(expected.0.clone());
+    *service.images.lock().unwrap() = Some(expected.1.clone());
+    *service.web.lock().unwrap() = Some(expected.2.clone());
+    // All three caches must be populated before opening: a missing cache would
+    // resolve the harness's installed executable instead of this explicit app.
+    let cached = service.catalogs().unwrap();
+    assert!(Arc::ptr_eq(&cached.0, &expected.0));
+    assert!(Arc::ptr_eq(&cached.1, &expected.1));
+    assert!(Arc::ptr_eq(&cached.2, &expected.2));
+}
+
+#[test]
+fn explicit_pdf_fixture_catalog_cache_bypasses_installed_executable_discovery() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = Service::new(executor.handle().clone(), resident);
+    let installation = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(Runtime::discover(installation.path()).unwrap());
+    cache_explicit_catalogs(&service, (runtime.clone(), Arc::from([]), Arc::from([])));
+    let cached = service.catalogs().unwrap();
+    assert!(Arc::ptr_eq(&cached.0, &runtime));
+    assert!(cached.1.is_empty());
+    assert!(cached.2.is_empty());
+}
+
 #[test]
 #[ignore = "requires MIDNIGHT_PDF_VIEWER_TEST_APPLICATION with trusted PDF package"]
 fn pdf_page_navigation_retains_manual_zoom_and_fit_mode() {
@@ -64,17 +109,11 @@ fn pdf_page_navigation_retains_manual_zoom_and_fit_mode() {
         .enable_all()
         .build()
         .unwrap();
-    let service = Service::new(executor.handle().clone());
-    *service.runtime.lock().unwrap() = Some(Arc::new(
-        Runtime::discover(application.parent().unwrap()).unwrap(),
-    ));
-    let providers = midnight_image_viewer_host::discover(&application).unwrap();
-    assert!(
-        providers
-            .iter()
-            .any(|provider| provider.id == "midnight.viewer.pdf")
-    );
-    *service.images.lock().unwrap() = Some(providers.into());
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = Service::new(executor.handle().clone(), resident);
+    load_pdf_catalogs(&service, &application);
     let files = tempfile::tempdir().unwrap();
     let path = files.path().join("mixed-pages.pdf");
     std::fs::write(&path, two_page_pdf()).unwrap();
@@ -102,6 +141,7 @@ fn pdf_page_navigation_retains_manual_zoom_and_fit_mode() {
         "a new PDF must open in Fit despite saved zoom"
     );
     assert_eq!(initial.zoom, 0.2);
+    assert_eq!(initial.document_layout, Some(DocumentLayout::Paged));
     for input in [
         ViewerImageInput::ActualPixels,
         ViewerImageInput::Zoom {
@@ -167,5 +207,100 @@ fn pdf_page_navigation_retains_manual_zoom_and_fit_mode() {
         assert!(image.fitted);
         assert_eq!(image.zoom, if image.page == 1 { 2.0 } else { 1.2 });
     }
+    session.close();
+}
+
+#[test]
+#[ignore = "requires MIDNIGHT_PDF_VIEWER_TEST_APPLICATION with trusted PDF package"]
+fn pdf_continuous_composes_native_mixed_pages_and_survives_rapid_camera_replacement() {
+    let application =
+        std::path::PathBuf::from(std::env::var_os("MIDNIGHT_PDF_VIEWER_TEST_APPLICATION").unwrap());
+    let executor = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = Service::new(executor.handle().clone(), resident);
+    load_pdf_catalogs(&service, &application);
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("continuous-mixed-pages.pdf");
+    std::fs::write(&path, two_page_pdf()).unwrap();
+    images::settle_generated_fixture(&path);
+    let session = service
+        .open(
+            launch(files.path(), &["continuous-mixed-pages.pdf"], false),
+            appearance(),
+            ViewerGeometry {
+                width: 400,
+                height: 200,
+                scale: 1.0,
+            },
+        )
+        .unwrap();
+    let mut displayed = frame(&session, |frame| frame.image.is_some());
+    assert!(session.send(ViewerInput::Image {
+        frame: displayed.revision,
+        input: ViewerImageInput::ActualPixels,
+    }));
+    displayed = frame(&session, |frame| frame.revision > displayed.revision);
+    assert!(session.send(ViewerInput::DocumentLayout {
+        frame: displayed.revision,
+        layout: DocumentLayout::Continuous,
+    }));
+    displayed = frame(&session, |frame| {
+        frame
+            .image
+            .as_ref()
+            .is_some_and(|image| image.document_layout == Some(DocumentLayout::Continuous))
+    });
+    let published = displayed.revision;
+    // 1024 logical units total, 200 visible. A 550-unit origin crosses page one and page two.
+    assert!(session.send(ViewerInput::Seek(550.0 / 824.0)));
+    displayed = frame(&session, |frame| frame.revision > published);
+    let image = displayed.image.as_ref().unwrap();
+    assert_eq!(image.zoom, 1.0);
+    assert_eq!(image.page, 2);
+    assert_eq!((image.width, image.height), (1000, 400));
+    assert!(displayed.tiles.is_none());
+    assert!((image.origin[1] - 550.0).abs() < 0.00001);
+    fn pixel(frame: &ViewerFrame, x: u32, y: u32) -> &[u8] {
+        let index = ((y * frame.width + x) * 4) as usize;
+        &frame.pixels[index..index + 4]
+    }
+    assert_eq!(pixel(&displayed, 200, 10), [255, 0, 0, 255]);
+    assert_eq!(pixel(&displayed, 200, 60), [0, 0, 0, 0]);
+    assert_eq!(pixel(&displayed, 200, 100), [0, 0, 255, 255]);
+    // These replace demand while page crops may be active; they must not hard-cancel the worker.
+    for index in 0..32 {
+        assert!(session.send(ViewerInput::Seek(f64::from(index) / 32.0)));
+    }
+    assert!(session.send(ViewerInput::Seek(1.0)));
+    displayed = frame(&session, |frame| frame.position == 1.0);
+    assert_eq!(displayed.image.as_ref().unwrap().page, 2);
+    let current_revision = displayed.revision;
+    assert!(session.send(ViewerInput::DocumentLayout {
+        frame: published,
+        layout: DocumentLayout::Paged,
+    }));
+    assert!(session.send(ViewerInput::Scroll { x: 0.0, y: -1.0 }));
+    displayed = frame(&session, |frame| frame.revision > current_revision);
+    assert_eq!(
+        displayed.image.as_ref().unwrap().document_layout,
+        Some(DocumentLayout::Continuous)
+    );
+    assert!(session.send(ViewerInput::DocumentLayout {
+        frame: displayed.revision,
+        layout: DocumentLayout::Paged,
+    }));
+    displayed = frame(&session, |frame| {
+        frame
+            .image
+            .as_ref()
+            .is_some_and(|image| image.document_layout == Some(DocumentLayout::Paged))
+    });
+    assert_eq!(displayed.image.as_ref().unwrap().zoom, 1.0);
     session.close();
 }

@@ -4,10 +4,14 @@
 mod command_artwork;
 mod command_reclaim;
 mod comparator;
+mod comparator_external;
+mod content_appearance;
 mod idle_probe;
 mod native_content;
 mod native_events;
 mod pulse;
+#[cfg(test)]
+mod resident_test_runtime;
 mod retry_pass;
 mod shutdown;
 mod shutdown_preferences;
@@ -31,6 +35,7 @@ use midnight_core::{
 use midnight_engine::{Engine, reclaim, snapshot};
 use midnight_platform::{LocalFileSystem, home_directory};
 use midnight_ui::{MainWindow, Presenter};
+use midnight_work_budget::resident;
 use slint::ComponentHandle;
 use std::{
     cell::{Cell, OnceCell, RefCell},
@@ -167,6 +172,15 @@ fn run() -> Result<u8, String> {
     let restart_arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let restart_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let software_status = Cell::new(0);
+    // Prestart before run_window can adopt capture factories or start real actors.
+    // Owners and retained window-stop fences remain outside UI unwinding.
+    let mut content_workers = match ContentWorkers::start(&runtime) {
+        Ok(workers) => workers,
+        Err(error) => {
+            runtime.shutdown_timeout(Duration::from_secs(1));
+            return Err(error);
+        }
+    };
     let mut image_spare_retirement = None;
     // Keep runtime ownership and the registered spare fence outside UI unwinding,
     // so a panic cannot enter Tokio's unbounded blocking-pool destructor first.
@@ -178,6 +192,7 @@ fn run() -> Result<u8, String> {
             shared_native,
             &options,
             &mut image_spare_retirement,
+            &mut content_workers,
         )
     }));
     // Normal close drains mutation cancellation before hiding the window.
@@ -185,6 +200,7 @@ fn run() -> Result<u8, String> {
     shutdown::finish_after_unwind(
         result,
         || {
+            content_workers.stop_windows();
             let retirement_result = if let Some(retirement) = image_spare_retirement.as_ref() {
                 retirement.stop_spare();
                 // The event loop has closed. Await the terminal owner result before bounded
@@ -193,6 +209,8 @@ fn run() -> Result<u8, String> {
             } else {
                 Ok(())
             };
+            let content_result = content_workers.finish(&runtime);
+            let retirement_result = combine_cleanup(retirement_result, content_result);
             // Keep the ticket in this outer scope through runtime cleanup and fatal handling.
             (runtime, retirement_result)
         },
@@ -208,6 +226,110 @@ fn run() -> Result<u8, String> {
         },
     )
     .map(|()| software_status.get())
+}
+
+/// Neutral execution context; stop ownership never enters a Service or capture.
+pub(crate) struct ContentExecution {
+    transient: tokio::runtime::Handle,
+    resident: resident::Spawner,
+}
+
+struct ContentWorkers {
+    viewer_owner: resident::Owner,
+    compare_owner: resident::Owner,
+    viewer: ContentExecution,
+    compare: ContentExecution,
+    viewer_windows: Option<Rc<midnight_viewer_ui::ViewerWindows>>,
+    compare_windows: Option<Rc<midnight_compare_ui::ComparatorWindows>>,
+}
+
+impl ContentWorkers {
+    fn start(runtime: &tokio::runtime::Runtime) -> Result<Self, String> {
+        let (viewer_owner, viewer) =
+            resident::Owner::start("midnight-viewer", midnight_viewer_engine::RESIDENT_WORKERS)
+                .map_err(|error| format!("Cannot start viewer workers: {error}"))?;
+        let (compare_owner, compare) = match resident::Owner::start("midnight-compare", 2) {
+            Ok(workers) => workers,
+            Err(error) => {
+                let cleanup = runtime.block_on(async {
+                    let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
+                    wait_content_workers(
+                        "Viewer",
+                        viewer_owner.shutdown(runtime.handle()),
+                        deadline,
+                    )
+                    .await
+                });
+                let error = format!("Cannot start comparison workers: {error}");
+                return Err(match cleanup {
+                    Ok(()) => error,
+                    Err(cleanup) => format!("{error}\n{cleanup}"),
+                });
+            }
+        };
+        Ok(Self {
+            viewer_owner,
+            compare_owner,
+            viewer: ContentExecution {
+                transient: runtime.handle().clone(),
+                resident: viewer,
+            },
+            compare: ContentExecution {
+                transient: runtime.handle().clone(),
+                resident: compare,
+            },
+            viewer_windows: None,
+            compare_windows: None,
+        })
+    }
+
+    fn stop_windows(&mut self) {
+        if let Some(windows) = self.viewer_windows.take() {
+            windows.close_all();
+        }
+        if let Some(windows) = self.compare_windows.take() {
+            windows.close_all();
+        }
+    }
+
+    fn finish(self, runtime: &tokio::runtime::Runtime) -> Result<(), String> {
+        // Seal both domains before polling either waiter. The original Runtime
+        // drives timers and finite joins; each result survives its peer's timeout.
+        let viewer = self.viewer_owner.shutdown(runtime.handle());
+        let compare = self.compare_owner.shutdown(runtime.handle());
+        let (viewer, compare) = runtime.block_on(async {
+            // This content grace follows the unchanged Engine and spare waits;
+            // it does not extend the Engine's existing absolute 2500 ms deadline.
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
+            tokio::join!(
+                wait_content_workers("Viewer", viewer, deadline),
+                wait_content_workers("Comparison", compare, deadline),
+            )
+        });
+        combine_cleanup(viewer, compare)
+    }
+}
+
+async fn wait_content_workers(
+    name: &str,
+    shutdown: resident::Shutdown,
+    deadline: tokio::time::Instant,
+) -> Result<(), String> {
+    match tokio::time::timeout_at(deadline, shutdown).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("{name} worker cleanup is unconfirmed: {error}")),
+        Err(_) => Err(format!(
+            "{name} worker cleanup exceeded the content exit grace."
+        )),
+    }
+}
+
+fn combine_cleanup(first: Result<(), String>, next: Result<(), String>) -> Result<(), String> {
+    match (first, next) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(first), Err(next)) => Err(format!("{first}\n{next}")),
+    }
 }
 
 async fn smoke_test(
@@ -294,6 +416,7 @@ fn run_window(
     shared_native: midnight_native_filesystem_host::SharedInstalledProvider,
     options: &Options,
     image_spare_retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
+    content_workers: &mut ContentWorkers,
 ) -> Result<startup_recovery::Attempt, String> {
     let filesystem = shared_native.service();
     // Desktop integration and mutations keep their explicit platform services.
@@ -454,6 +577,8 @@ fn run_window(
     let (commands, command_receiver) = engine
         .command_channel(32)
         .map_err(|error| error.to_string())?;
+    let comparator_backend =
+        comparator_external::Backend::new(&engine, commands.clone(), filesystem.clone());
     let begin_owned = command_reclaim.factory(commands.clone());
     let control_commands = commands.clone();
     let control_refusals = refusals.clone();
@@ -706,11 +831,12 @@ fn run_window(
         &window,
         presenter.clone(),
         control_send.clone(),
-        runtime.handle(),
+        &content_workers.viewer,
         filesystem.clone(),
         local.clone(),
         &mut *image_spare_retirement,
     );
+    content_workers.viewer_windows = Some(viewers.clone());
     let _ = settings_loaded.set(viewers::SettingsLoaded::new(&viewers, &image_preparation));
     let thumbnails = thumbnails::install(
         &window,
@@ -722,10 +848,13 @@ fn run_window(
         &window,
         presenter.clone(),
         control_send.clone(),
-        runtime.handle(),
+        &content_workers.compare,
         local,
         filesystem,
+        comparator_backend,
     );
+    content_workers.compare_windows = Some(comparators.clone());
+    content_appearance::install(&window, &viewers, &comparators);
     let _ = comparators_loaded.set(Rc::downgrade(&comparators));
     let close_viewers = viewers.clone();
     let close_comparators = comparators.clone();
@@ -874,4 +1003,81 @@ fn run_window(
         println!("snapshot: {}", path.display());
     }
     Ok(startup_recovery::Attempt::Finished)
+}
+
+#[cfg(test)]
+mod content_worker_tests {
+    use super::*;
+
+    struct Release(Vec<std::sync::mpsc::Sender<()>>);
+
+    impl Drop for Release {
+        fn drop(&mut self) {
+            for sender in self.0.drain(..) {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    #[test]
+    fn content_domains_keep_original_transient_runtime_available_through_retirement() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(16)
+            .enable_all()
+            .build()
+            .unwrap();
+        let workers = ContentWorkers::start(&runtime).unwrap();
+        let mut release = Release(Vec::new());
+        let (ready, received) = std::sync::mpsc::channel::<(&str, bool)>();
+        for (name, execution, count) in [
+            ("viewer", &workers.viewer, 5),
+            ("comparison", &workers.compare, 2),
+        ] {
+            for _ in 0..count {
+                let (stop, stopped) = std::sync::mpsc::channel();
+                release.0.push(stop);
+                let ready = ready.clone();
+                assert!(
+                    execution
+                        .resident
+                        .spawn(
+                            &execution.transient,
+                            Box::new(move || {
+                                ready
+                                    .send((name, tokio::runtime::Handle::try_current().is_ok()))
+                                    .unwrap();
+                                let _ = stopped.recv();
+                            }),
+                        )
+                        .is_ok()
+                );
+            }
+        }
+        let held = (0..7)
+            .map(|_| received.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(held.iter().filter(|(name, _)| *name == "viewer").count(), 5);
+        assert_eq!(
+            held.iter()
+                .filter(|(name, _)| *name == "comparison")
+                .count(),
+            2
+        );
+        assert!(held.iter().all(|(_, entered)| *entered));
+        assert_eq!(
+            runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(2), tokio::task::spawn_blocking(|| 42))
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }),
+            42,
+            "all seven held content jobs must leave the original transient pool usable"
+        );
+        drop(release);
+        workers.finish(&runtime).unwrap();
+        assert_eq!(runtime.block_on(async { 43 }), 43);
+        runtime.shutdown_timeout(Duration::from_secs(1));
+    }
 }

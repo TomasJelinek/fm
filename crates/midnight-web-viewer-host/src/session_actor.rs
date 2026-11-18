@@ -3,7 +3,7 @@
 //! watchdog block on one monitor (`Signal`) until they have work, so an idle session wakes
 //! none of them.
 use super::*;
-use crate::resources::Store;
+use crate::resource_jobs::ResourceJobs;
 use std::{
     io::{self, Read, Write},
     sync::{Condvar, MutexGuard, PoisonError},
@@ -95,6 +95,8 @@ struct Inbox {
     stopping: bool,
     /// The reader ended. Once `browser` is empty, no further output comes.
     reader_done: bool,
+    /// A resource completion or worker failure needs one actor turn.
+    resources_ready: bool,
     #[cfg(test)]
     turns: Turns,
 }
@@ -130,6 +132,7 @@ impl Signal {
                 ready: false,
                 stopping: false,
                 reader_done: false,
+                resources_ready: false,
                 #[cfg(test)]
                 turns: Turns::default(),
             }),
@@ -159,6 +162,16 @@ impl Signal {
         pushed
     }
 
+    pub(super) fn resources_ready(&self) {
+        self.lock().resources_ready = true;
+        self.actor.notify_one();
+    }
+
+    #[cfg(test)]
+    pub(super) fn pop_command(&self) -> Option<api::Command> {
+        self.lock().commands.pop()
+    }
+
     /// Make a change of the session's `closed` flag visible to every waiter. A waiter that
     /// checked the flag before the change already waits once this lock is free, so the
     /// notification reaches it.
@@ -181,7 +194,8 @@ impl Signal {
                 .map_while(|_| inbox.commands.pop())
                 .collect();
             let browser = inbox.browser.pop_front();
-            if !commands.is_empty() || browser.is_some() {
+            let resources_ready = std::mem::take(&mut inbox.resources_ready);
+            if !commands.is_empty() || browser.is_some() || resources_ready {
                 break Turn { commands, browser };
             }
             if inbox.reader_done {
@@ -441,8 +455,7 @@ fn admit(
 /// Start the provider's browser and run the session over its pipes.
 pub(super) fn run(
     provider: Provider,
-    source: CapturedFile,
-    resources: Option<Arc<dyn Resources>>,
+    owner: SourceOwner,
     viewport: api::Viewport,
     shared: &Shared,
 ) -> Result<End, String> {
@@ -457,13 +470,7 @@ pub(super) fn run(
     };
     // The rest of `browser`, its private profile, is dropped when this function returns:
     // after `run_with` waited for the whole process tree.
-    run_with(
-        transport,
-        Store::new(source, resources),
-        viewport,
-        shared,
-        Limits::default(),
-    )
+    run_with(transport, owner, viewport, shared, Limits::default())
 }
 
 /// Run the session over `transport`: the actor on this thread, the reader of the browser's
@@ -471,7 +478,7 @@ pub(super) fn run(
 /// watchdog killed and waited for the browser's process tree.
 pub(super) fn run_with(
     transport: Transport,
-    mut store: Store,
+    owner: SourceOwner,
     mut viewport: api::Viewport,
     shared: &Shared,
     limits: Limits,
@@ -496,11 +503,24 @@ pub(super) fn run_with(
         let stop = Stop(signal);
         let watchdog = scope.spawn(|| watch(signal, closed, limits, &mut *process));
         let reader = scope.spawn(move || read(signal, closed, output));
-        let result = forward(&mut wire, &mut store, &mut viewport, shared);
+        let resource_signal = shared.signal.clone();
+        let mut store = ResourceJobs::with_wake(
+            owner,
+            shared.generation.clone(),
+            Arc::new(move || resource_signal.resources_ready()),
+        );
+        let result = store
+            .as_mut()
+            .map_err(|error| error.clone())
+            .and_then(|store| forward(&mut wire, store, &mut viewport, shared));
+        shared.generation.close();
         drop(stop);
         let _ = watchdog.join();
         let _ = reader.join();
-        result
+        match store {
+            Ok(store) => store.finish().and(result),
+            Err(_) => result,
+        }
     })
 }
 
@@ -508,11 +528,11 @@ pub(super) fn run_with(
 /// until the session ends.
 fn forward(
     wire: &mut Wire<'_>,
-    store: &mut Store,
+    store: &mut ResourceJobs,
     viewport: &mut api::Viewport,
     shared: &Shared,
 ) -> Result<End, String> {
-    let main = store.reset(false)?;
+    let main = store.reset(1, false)?.main;
     wire.send(api::CommandKind::Open {
         source: main,
         viewport: *viewport,
@@ -521,16 +541,27 @@ fn forward(
     let mut event_sequence = 0;
     while let Some(turn) = shared.signal.take(&shared.closed)? {
         for command in turn.commands {
+            validate_frontend_command(shared.ceiling, &command.kind)?;
             match command.kind {
                 api::CommandKind::Policy(next) => {
-                    if next.scripts && !next.network {
-                        return Err("Scripts require online mode".into());
-                    }
-                    wire.header.document = wire
+                    let document = wire
                         .header
                         .document
                         .checked_add(1)
                         .ok_or("Browser document IDs exhausted")?;
+                    shared.generation.ensure_at_least(document)?;
+                    let reset = store.reset(document, next.network)?;
+                    for reply in reset.denied {
+                        send_resource_reply(
+                            &shared.generation,
+                            &shared.output,
+                            &shared.wake,
+                            wire.header.document,
+                            reply,
+                            |reply| wire.send(api::CommandKind::ResourceReply(reply)),
+                        )?;
+                    }
+                    wire.header.document = document;
                     wire.header.sequence = 0;
                     event_sequence = 0;
                     shared
@@ -538,9 +569,8 @@ fn forward(
                         .lock()
                         .map_err(|_| "Browser output unavailable")?
                         .frame = None;
-                    let source = store.reset(next.network)?;
                     wire.send(api::CommandKind::Open {
-                        source,
+                        source: reset.main,
                         viewport: *viewport,
                         policy: next,
                     })?;
@@ -555,6 +585,19 @@ fn forward(
                 api::CommandKind::Close => return Ok(End::Requested),
                 other => wire.send(other)?,
             }
+        }
+        for reply in store.drain()? {
+            send_resource_reply(
+                &shared.generation,
+                &shared.output,
+                &shared.wake,
+                wire.header.document,
+                reply,
+                |reply| wire.send(api::CommandKind::ResourceReply(reply)),
+            )?;
+        }
+        if shared.generation.is_closed() && !shared.closed.load(Ordering::Acquire) {
+            return Err("HTML resource generation was revoked; reopen the document.".into());
         }
         let Some(incoming) = turn.browser else {
             continue;
@@ -571,19 +614,33 @@ fn forward(
         }
         let reply = match &event.kind {
             api::EventKind::ResourceResolve { request, base, url } => {
-                Some(store.resolve(*request, *base, url))
+                store.resolve_with_header(event.header, *request, *base, url)
             }
             api::EventKind::ResourceRead {
                 request,
                 resource,
                 offset,
                 length,
-            } => Some(store.read(*request, *resource, *offset, *length)),
-            api::EventKind::ResourceRelease { resource } => Some(store.release(*resource)),
+            } => store.read_with_header(event.header, *request, *resource, *offset, *length),
+            api::EventKind::ResourceRelease { resource } => store.release(*resource),
             _ => None,
         };
         if let Some(reply) = reply {
-            wire.send(api::CommandKind::ResourceReply(reply))?;
+            send_resource_reply(
+                &shared.generation,
+                &shared.output,
+                &shared.wake,
+                wire.header.document,
+                reply,
+                |reply| wire.send(api::CommandKind::ResourceReply(reply)),
+            )?;
+        }
+        if matches!(
+            event.kind,
+            api::EventKind::ResourceResolve { .. }
+                | api::EventKind::ResourceRead { .. }
+                | api::EventKind::ResourceRelease { .. }
+        ) {
             continue;
         }
         match &event.kind {
@@ -662,4 +719,58 @@ fn physical_key_launch_contract_matches_the_public_api() {
         midnight_worker_platform::browser::HOST_SHORTCUTS_PHYSICAL_V1,
         api::HOST_SHORTCUTS_PHYSICAL_V1
     );
+}
+
+/// Only a successful matching Denied write can produce the one source-change
+/// correlation pair. The original renderer header is cause metadata, not an ack.
+pub(super) fn send_resource_reply(
+    generation: &Generation,
+    output: &Arc<Mutex<Output>>,
+    wake: &Arc<dyn Fn() -> bool + Send + Sync>,
+    document: u64,
+    reply: api::ResourceReply,
+    send: impl FnOnce(api::ResourceReply) -> Result<(), String>,
+) -> Result<(), String> {
+    let denied = match &reply {
+        api::ResourceReply::Denied { request, .. } => Some(*request),
+        _ => None,
+    };
+    send(reply)?;
+    if let Some(request) = denied
+        && let Some(origin) = generation.take_revocation(document, request)
+    {
+        output
+            .lock()
+            .map_err(|_| "Browser output unavailable")?
+            .put_source_changed(origin)?;
+        wake();
+    }
+    Ok(())
+}
+
+/// The actor checks the immutable ceiling even for commands bypassing Session admission.
+pub(super) fn validated_policy(
+    ceiling: PolicyCeiling,
+    next: api::Policy,
+) -> Result<api::Policy, String> {
+    if ceiling == PolicyCeiling::OfflineOnly {
+        return Err("This document has a fixed offline policy".into());
+    }
+    if next.scripts && !next.network {
+        return Err("Scripts require online mode".into());
+    }
+    Ok(next)
+}
+
+pub(super) fn validate_frontend_command(
+    ceiling: PolicyCeiling,
+    command: &api::CommandKind,
+) -> Result<(), String> {
+    match command {
+        api::CommandKind::Policy(policy) => validated_policy(ceiling, *policy).map(|_| ()),
+        api::CommandKind::Open { .. }
+        | api::CommandKind::ResourceReply(_)
+        | api::CommandKind::FrameAck { .. } => Err("Reserved browser command".into()),
+        _ => Ok(()),
+    }
 }

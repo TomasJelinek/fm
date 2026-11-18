@@ -1,5 +1,6 @@
 //! Opt-in tests of actual app composition against independently installed providers.
 use super::*;
+use crate::resident_test_runtime::TestRuntime;
 use midnight_core::{FileCompareLaunch, FileCompareSource, ViewerAppearance, ViewerGeometry};
 use std::{
     collections::HashSet,
@@ -71,6 +72,7 @@ fn open_compare(
     service: &midnight_compare_engine::Service,
     files: [&str; 2],
 ) -> midnight_compare_engine::Session {
+    let snapshot = service.comparator_snapshot();
     service
         .open(
             FileCompareLaunch {
@@ -78,6 +80,8 @@ fn open_compare(
                     .map(|name| FileCompareSource::Focused(fixtures().join(name)))
                     .into(),
                 disabled_plugins: Arc::from([]),
+                comparators: snapshot.preferences,
+                comparator_policy: snapshot.id,
             },
             ViewerAppearance {
                 family: "monospace".into(),
@@ -99,8 +103,12 @@ fn open_compare(
 #[test]
 #[ignore = "run test executable inside protected runtime with native and image viewer packages"]
 fn actual_text_and_image_comparison_use_installed_native_content() {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = crate::comparator::service(runtime.handle(), provider());
+    let runtime = TestRuntime::new(
+        tokio::runtime::Runtime::new().unwrap(),
+        "compare-native-fixture",
+        2,
+    );
+    let service = crate::comparator::service(runtime.handle(), runtime.spawner(), provider());
     for (files, image) in [
         (["left 文档.txt", "right.txt"], false),
         (["picture 文档.bmp", "picture 文档.bmp"], true),
@@ -123,6 +131,9 @@ fn actual_text_and_image_comparison_use_installed_native_content() {
                     panic!("Provider comparison failed: {}", choice.message)
                 }
                 Some(midnight_compare_engine::Output::Status(text)) => status = text,
+                Some(midnight_compare_engine::Output::ExternalStarted { .. }) => {
+                    panic!("Automatic native comparison unexpectedly launched an external process")
+                }
                 None => {}
             }
             assert!(Instant::now() < deadline, "No comparison frame: {status}");
@@ -130,7 +141,7 @@ fn actual_text_and_image_comparison_use_installed_native_content() {
         }
         session.close();
     }
-    let service = crate::comparator::service(runtime.handle(), missing());
+    let service = crate::comparator::service(runtime.handle(), runtime.spawner(), missing());
     let session = open_compare(&service, ["left 文档.txt", "right.txt"]);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

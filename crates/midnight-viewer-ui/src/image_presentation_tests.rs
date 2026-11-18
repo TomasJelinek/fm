@@ -1,9 +1,105 @@
+use self::present as present_outputs;
 use super::*;
 use slint::platform::{
     Platform, PlatformError, WindowAdapter,
     software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
 };
-use std::sync::Arc;
+use std::{io::Write as _, sync::Arc};
+
+/// Test execution owns the resident domain outside services and keeps Tokio alive
+/// until stopped sessions/spares have released their resident work.
+pub(super) struct TestRuntime {
+    owner: Option<midnight_work_budget::resident::Owner>,
+    spawner: midnight_work_budget::resident::Spawner,
+    sessions: Vec<Rc<WindowSession>>,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl TestRuntime {
+    pub fn new() -> Self {
+        let (owner, spawner) = midnight_work_budget::resident::Owner::start(
+            "viewer-ui-test",
+            midnight_viewer_engine::RESIDENT_WORKERS,
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        Self {
+            owner: Some(owner),
+            spawner,
+            sessions: Vec::new(),
+            runtime,
+        }
+    }
+
+    pub fn spawner(&self) -> midnight_work_budget::resident::Spawner {
+        self.spawner.clone()
+    }
+}
+
+impl std::ops::Deref for TestRuntime {
+    type Target = tokio::runtime::Runtime;
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+
+impl Drop for TestRuntime {
+    fn drop(&mut self) {
+        // Other fixture handles may retain the UI/session during error unwinding.
+        // Signal the real capture before waiting for its resident worker to exit.
+        for session in &self.sessions {
+            session.close();
+        }
+        if let Some(owner) = self.owner.take()
+            && let Err(error) = self.runtime.block_on(owner.shutdown(self.runtime.handle()))
+        {
+            if std::thread::panicking() {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "viewer fixture resident shutdown failed during test unwind: {error}"
+                );
+            } else {
+                panic!("viewer fixture resident shutdown failed: {error}");
+            }
+        }
+    }
+}
+
+/// Normal synthetic producers announce the actual accepted palette and exact
+/// positions generation before their pixels, just as the backend mailbox does.
+/// Palette protocol regressions call crate::present_outputs directly instead.
+pub(super) fn present(
+    open: &OpenWindow,
+    service: &Service,
+    copy: &dyn Fn(String),
+    outputs: Vec<ViewerOutput>,
+) {
+    let revision = open.session.palette_revision();
+    assert_eq!(
+        open.palette.requested_revision(),
+        Some(revision),
+        "synthetic producer uses the real accepted token"
+    );
+    let mut acknowledged = Vec::with_capacity(outputs.len() + 1);
+    for output in &outputs {
+        if let ViewerOutput::Frame(frame) = output {
+            acknowledged.push(ViewerOutput::PaletteApplied {
+                revision,
+                generation: frame.generation,
+                minimum_frame_revision: (frame.image.is_none()
+                    && !matches!(frame.mode, VIEWER_MODE_IMAGE | VIEWER_MODE_HTML))
+                .then_some(frame.revision),
+            });
+        }
+    }
+    acknowledged.extend(outputs);
+    crate::present_outputs(open, service, copy, acknowledged);
+}
 
 thread_local! {
     static TEST_TIME: Cell<Duration> = const { Cell::new(Duration::ZERO) };
@@ -73,9 +169,10 @@ fn info() -> ViewerImageInfo {
         fitted: false,
         page: 0,
         page_count: 1,
+        document_layout: None,
     }
 }
-fn frame() -> ViewerFrame {
+pub(super) fn frame() -> ViewerFrame {
     ViewerFrame {
         generation: 1,
         raster: None,
@@ -130,21 +227,40 @@ impl Drop for TestWindows {
     }
 }
 
-pub(super) fn open() -> (
-    tokio::runtime::Runtime,
-    TestWindows,
-    Rc<OpenWindow>,
-    Service,
-) {
+pub(super) fn opening_appearance() -> ViewerAppearance {
+    ViewerAppearance {
+        family: "monospace".into(),
+        font_size: 14.0,
+        foreground: [255; 4],
+        background: [0, 0, 0, 255],
+        selection: [55; 4],
+        accent: [150; 4],
+    }
+}
+
+pub(super) fn open() -> (TestRuntime, TestWindows, Rc<OpenWindow>, Service) {
     slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .unwrap();
+    let mut runtime = TestRuntime::new();
+    let (capture_entered, capture_ready) = std::sync::mpsc::sync_channel(1);
     let service = Service::with_native_capture(
         runtime.handle().clone(),
-        Arc::new(|_, _| Err("synthetic fixture".into())),
+        runtime.spawner(),
+        Arc::new(move |_, closed| {
+            // Only entry into this real callback can acknowledge a live fixture.
+            // A second callback must never block on an already occupied signal slot.
+            let entry = if closed.load(std::sync::atomic::Ordering::Acquire) {
+                Err("synthetic capture entered after the real session closed")
+            } else {
+                Ok(())
+            };
+            let _ = capture_entered.try_send(entry);
+            // Presentation fixtures supply their own frames. Keep the real input
+            // receiver alive until normal Session::close cancels this capture.
+            while !closed.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err("synthetic fixture".into())
+        }),
     );
     let manager = ViewerWindows::new(service.clone());
     let path = std::env::temp_dir().join("synthetic-image.bmp");
@@ -164,20 +280,35 @@ pub(super) fn open() -> (
                 basic: false,
                 disabled_plugins: Arc::from([]),
             },
-            ViewerAppearance {
-                family: "monospace".into(),
-                font_size: 14.0,
-                foreground: [255; 4],
-                background: [0, 0, 0, 255],
-                selection: [55; 4],
-                accent: [150; 4],
-            },
+            opening_appearance(),
             slint::LogicalSize::new(900.0, 600.0),
             Rc::new(|_, _| None),
             Rc::new(|_| {}),
         )
         .unwrap();
     let open = manager.windows.borrow()[0].clone();
+    runtime.sessions.push(Rc::clone(&open.session));
+    // Match the existing opening fixture's 10-second setup observation budget.
+    // The original supervisor deadline and checked retirement remain unchanged.
+    let acknowledgement = capture_ready.recv_timeout(Duration::from_secs(10));
+    if !matches!(acknowledgement, Ok(Ok(()))) {
+        let opening = open.session.mailbox.take_open_result();
+        let statuses: Vec<_> = open
+            .session
+            .mailbox
+            .take()
+            .into_iter()
+            .filter_map(|output| match output {
+                ViewerOutput::Status(message) => Some(message),
+                _ => None,
+            })
+            .collect();
+        panic!(
+            "capture acknowledgement missing or rejected: {acknowledgement:?}; \
+             backend open result: {opening:?}; backend Status outputs: {statuses:?}; \
+             unavailable mailbox evidence leaves the backend cause unknown"
+        );
+    }
     present_outputs(
         &open,
         &service,
@@ -330,7 +461,7 @@ fn early_image_open_failure_is_visible_and_cannot_replace_a_later_files_status()
     manager.close_all();
 }
 
-fn match_fixture_viewport(open: &OpenWindow) -> slint::LogicalSize {
+fn match_fixture_canvas(open: &OpenWindow) -> slint::LogicalSize {
     let scale = open.window.window().scale_factor();
     let size = open.window.window().size().to_logical(scale);
     let size = slint::LogicalSize::new(
@@ -343,6 +474,11 @@ fn match_fixture_viewport(open: &OpenWindow) -> slint::LogicalSize {
         .dispatch_event(slint::platform::WindowEvent::Resized { size });
     assert!((open.window.get_content_width() - 400.0).abs() < 0.01);
     assert!((open.window.get_content_height() - 240.0).abs() < 0.01);
+    size
+}
+
+fn match_fixture_viewport(open: &OpenWindow) -> slint::LogicalSize {
+    let size = match_fixture_canvas(open);
     let preferences = ViewerPreferences {
         image_zoom: ViewerZoomPreference::ActualPixels,
         ..Default::default()
@@ -416,6 +552,7 @@ fn pdf_zoom_steps_from_displayed_fit_instead_of_an_old_saved_document_scale() {
     document.pixels = vec![255; 400 * 240 * 4].into();
     let info = document.image.as_mut().unwrap();
     info.page = 1;
+    info.document_layout = Some(DocumentLayout::Paged);
     info.page_count = 2;
     info.zoom = 0.08;
     info.fitted = true;
@@ -427,6 +564,9 @@ fn pdf_zoom_steps_from_displayed_fit_instead_of_an_old_saved_document_scale() {
         &|_| {},
         vec![ViewerOutput::Frame(Box::new(document))],
     );
+    // The synthetic frame uses a fixed canvas; account for document controls
+    // without replacing the intentionally stale saved document zoom.
+    match_fixture_canvas(&open);
     let submitted = Rc::new(RefCell::new(Vec::new()));
     let received = submitted.clone();
     *open.input.borrow_mut() = Rc::new(move |input| {
@@ -464,6 +604,7 @@ fn pdf_zoom_steps_from_displayed_fit_instead_of_an_old_saved_document_scale() {
     intermediate.pixels = vec![255; 400 * 240 * 4].into();
     let info = intermediate.image.as_mut().unwrap();
     info.page = 1;
+    info.document_layout = Some(DocumentLayout::Paged);
     info.page_count = 2;
     info.zoom = 0.1;
     info.origin = [0.0; 2];
@@ -534,6 +675,7 @@ fn zoom_after_pending_fit_enlarges_pdf_pages_but_keeps_raster_no_upscale_policy(
         small.pixels = vec![255; 400 * 240 * 4].into();
         let info = small.image.as_mut().unwrap();
         info.page = page;
+        info.document_layout = (page > 0).then_some(DocumentLayout::Paged);
         info.width = 100;
         info.height = 60;
         info.zoom = 0.5;
@@ -544,6 +686,7 @@ fn zoom_after_pending_fit_enlarges_pdf_pages_but_keeps_raster_no_upscale_policy(
             &|_| {},
             vec![ViewerOutput::Frame(Box::new(small))],
         );
+        match_fixture_canvas(&open);
         open.window.invoke_image_command(0);
         open.window.invoke_image_zoom(1.0, 100.0, 80.0);
         let preferences = open.session.preferences();
@@ -954,6 +1097,7 @@ fn accepted_zoom_intent_cannot_cross_pdf_page_or_source_identity() {
         document.pixels = vec![255; 400 * 240 * 4].into();
         let info = document.image.as_mut().unwrap();
         info.page = page;
+        info.document_layout = (page > 0).then_some(DocumentLayout::Paged);
         info.page_count = 2;
         info.zoom = zoom;
         info.visible_source = [400.0 / zoom, 240.0 / zoom];
@@ -963,6 +1107,7 @@ fn accepted_zoom_intent_cannot_cross_pdf_page_or_source_identity() {
             &|_| {},
             vec![ViewerOutput::Frame(Box::new(document))],
         );
+        match_fixture_canvas(&open);
         open.window.invoke_image_zoom(1.0, 100.0, 80.0);
         assert_eq!(
             open.session.preferences().document_zoom,
@@ -1039,6 +1184,7 @@ fn untiled_document_keeps_captured_raster_metrics_and_routes_both_scrollbars_to_
     document.position = 0.3;
     document.horizontal_position = 0.4;
     document.image.as_mut().unwrap().page = 1;
+    document.image.as_mut().unwrap().document_layout = Some(DocumentLayout::Paged);
     document.image.as_mut().unwrap().page_count = 2;
     present_outputs(
         &open,
@@ -1419,6 +1565,7 @@ fn source_resolution_tiles_reuse_pixels_across_magnified_camera_surfaces() {
         let info = other.image.as_mut().unwrap();
         info.zoom = 2.0;
         info.page = page;
+        info.document_layout = (page > 0).then_some(DocumentLayout::Paged);
         info.raster_scale = raster_scale;
         present_outputs(
             &open,
@@ -1429,4 +1576,65 @@ fn source_resolution_tiles_reuse_pixels_across_magnified_camera_surfaces() {
         assert!(!open.window.get_image_native_pixels());
     }
     manager.close_all();
+}
+
+#[test]
+fn fixture_runtime_closes_a_retained_session_before_checked_shutdown() {
+    let (runtime, manager, open, service) = open();
+    open.timer.stop();
+    open.image_redraw.stop();
+    open.raster_redraw.stop();
+    let weak_open = Rc::downgrade(&open);
+    let weak_component = open.window.as_weak();
+    // Slint keeps a shown component, including its Service-capturing callbacks,
+    // alive until hide. Release UI ownership without closing the actual session.
+    open.window.hide().unwrap();
+    let session = Rc::clone(&open.session);
+    drop((manager, open, service));
+    assert!(weak_open.upgrade().is_none(), "OpenWindow still retained");
+    assert!(
+        weak_component.upgrade().is_none(),
+        "hidden viewer component still retained"
+    );
+    let appearance = opening_appearance();
+    assert!(session.restore_palette(&appearance).is_ok());
+    drop(runtime);
+    assert_eq!(
+        session.restore_palette(&appearance),
+        Err("Viewer is closed.".into())
+    );
+}
+
+#[test]
+fn fixture_runtime_closes_a_retained_session_without_replacing_the_primary_panic() {
+    let (runtime, manager, open, service) = open();
+    open.timer.stop();
+    open.image_redraw.stop();
+    open.raster_redraw.stop();
+    let weak_open = Rc::downgrade(&open);
+    let weak_component = open.window.as_weak();
+    // Slint keeps a shown component, including its Service-capturing callbacks,
+    // alive until hide. Release UI ownership without closing the actual session.
+    open.window.hide().unwrap();
+    let session = Rc::clone(&open.session);
+    drop((manager, open, service));
+    assert!(weak_open.upgrade().is_none(), "OpenWindow still retained");
+    assert!(
+        weak_component.upgrade().is_none(),
+        "hidden viewer component still retained"
+    );
+    assert!(session.restore_palette(&opening_appearance()).is_ok());
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _runtime = runtime;
+        panic!("fixture unwind probe");
+    }))
+    .expect_err("the fixture must preserve the primary panic");
+    assert_eq!(
+        failure.downcast_ref::<&str>(),
+        Some(&"fixture unwind probe")
+    );
+    assert_eq!(
+        session.restore_palette(&opening_appearance()),
+        Err("Viewer is closed.".into())
+    );
 }

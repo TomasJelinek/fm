@@ -1,4 +1,5 @@
 //! Render the real Slint body/gutter arrangement; no font or foreground thresholds.
+use super::image_presentation_tests::present as present_outputs;
 use super::*;
 use slint::{Rgb8Pixel, platform::WindowEvent};
 

@@ -30,9 +30,12 @@ fn explicit_default_panel_mode_wins_over_late_loaded_choice() {
         panic!("initial read must precede save")
     });
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            panel_view_modes: [PanelViewMode::Brief, PanelViewMode::Thumbnails],
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                panel_view_modes: [PanelViewMode::Brief, PanelViewMode::Thumbnails],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|_| true,
     );
@@ -118,6 +121,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
             ..Default::default()
         }],
         filename_colors: Default::default(),
+        file_comparators: Default::default(),
     };
     let mut expected = saved.clone();
     expected.theme = PreferenceTheme::Dark;
@@ -136,19 +140,25 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         },
     ];
     let sent = RefCell::new(0);
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved.into())), &|command| {
-        let Command::SavePreferences {
-            revision,
-            preferences,
-        } = command
-        else {
-            panic!()
-        };
-        assert_eq!(revision, PreferencesRevision(2));
-        assert_eq!(*preferences, expected);
-        *sent.borrow_mut() += 1;
-        true
-    });
+    p.apply_with_sender(
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: saved,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        }))),
+        &|command| {
+            let Command::SavePreferences {
+                revision,
+                preferences,
+            } = command
+            else {
+                panic!()
+            };
+            assert_eq!(revision, PreferencesRevision(2));
+            assert_eq!(*preferences, expected);
+            *sent.borrow_mut() += 1;
+            true
+        },
+    );
     assert_eq!(*sent.borrow(), 1);
     assert_eq!(p.preferences.values, expected);
     assert_eq!(p.tabs(PaneId::Left), tabs);
@@ -171,13 +181,19 @@ fn early_desktop_size_edit_preserves_loaded_family_touch_size_and_bookmarks() {
     };
     let mut expected = saved.clone();
     expected.desktop_font_size = 13;
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved.into())), &|command| {
-        let Command::SavePreferences { preferences, .. } = command else {
-            panic!()
-        };
-        assert_eq!(*preferences, expected);
-        true
-    });
+    p.apply_with_sender(
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: saved,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        }))),
+        &|command| {
+            let Command::SavePreferences { preferences, .. } = command else {
+                panic!()
+            };
+            assert_eq!(*preferences, expected);
+            true
+        },
+    );
     assert_eq!(p.preferences.values, expected);
 }
 
@@ -201,15 +217,21 @@ fn early_bookmark_rename_removal_and_assignment_survive_reconciliation() {
         ..Default::default()
     };
     let sent = RefCell::new(0);
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved.into())), &|command| {
-        let Command::SavePreferences { preferences, .. } = command else {
-            panic!()
-        };
-        preferences.validate().unwrap();
-        assert_eq!(preferences.bookmarks.len(), 3);
-        *sent.borrow_mut() += 1;
-        true
-    });
+    p.apply_with_sender(
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: saved,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        }))),
+        &|command| {
+            let Command::SavePreferences { preferences, .. } = command else {
+                panic!()
+            };
+            preferences.validate().unwrap();
+            assert_eq!(preferences.bookmarks.len(), 3);
+            *sent.borrow_mut() += 1;
+            true
+        },
+    );
     assert_eq!(*sent.borrow(), 1);
     let local_bookmark = p.bookmarks().iter().find(|b| b.id == local).unwrap();
     assert_eq!(local_bookmark.name, "Local renamed");
@@ -236,9 +258,13 @@ fn startup_reconciliation_over_capacity_preserves_all_bookmarks_and_never_saves_
             .collect(),
         ..Default::default()
     };
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved.into())), &|_| {
-        panic!("128 bookmarks must never escape as a save command")
-    });
+    p.apply_with_sender(
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: saved,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        }))),
+        &|_| panic!("128 bookmarks must never escape as a save command"),
+    );
     assert_eq!(p.bookmarks().len(), 128);
     assert!(p.preferences.unsaved);
     assert!(p.desktop.notice.as_ref().unwrap().1.contains("at most 64"));
@@ -275,7 +301,8 @@ fn failed_initial_read_blocks_saves_that_could_replace_unknown_saved_bookmarks()
             "load preferences",
             &test_root(),
             io::Error::from(io::ErrorKind::PermissionDenied),
-        ))),
+        )
+        .into())),
         &|_| panic!("unread settings must not be overwritten"),
     );
     p.change_preferences(2, 1, -1, &|_| {
@@ -305,7 +332,8 @@ fn deadline_status_explains_defaults_until_a_successful_or_failed_read_applies()
                 "load preferences",
                 &test_root(),
                 io::Error::from(io::ErrorKind::PermissionDenied),
-            ))
+            )
+            .into())
         };
         p.apply_with_sender(Event::PreferencesLoaded(read), &|_| true);
         assert!(p.desktop.status.is_empty(), "loaded={loaded}");
@@ -338,12 +366,15 @@ fn explicit_same_index_default_font_preserves_loaded_sizes_and_other_preferences
         &|_| panic!("default-font preview must wait for the read"),
     );
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            font_family: "Stored custom".into(),
-            desktop_font_size: 19,
-            touch_font_size: 25,
-            bookmarks: vec![stored_bookmark(1, None)],
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                font_family: "Stored custom".into(),
+                desktop_font_size: 19,
+                touch_font_size: 25,
+                bookmarks: vec![stored_bookmark(1, None)],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
             let Command::SavePreferences { preferences, .. } = command else {
@@ -364,10 +395,13 @@ fn explicit_same_index_default_theme_preserves_loaded_density() {
     let mut p = Presenter::new(test_root(), test_root());
     p.change_preferences(0, 0, 0, &|_| panic!("theme preview must wait for the read"));
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            theme: PreferenceTheme::Dark,
-            density: UiDensity::Touch,
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                theme: PreferenceTheme::Dark,
+                density: UiDensity::Touch,
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
             let Command::SavePreferences { preferences, .. } = command else {

@@ -1,4 +1,7 @@
 //! Separate CPU raster completion from native-window submission during wheel motion.
+#[path = "support/resident.rs"]
+mod resident;
+
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
 use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
@@ -167,12 +170,16 @@ fn main() -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let service = Service::new(runtime.handle().clone());
+    let runtime = resident::ResidentRuntime::new(runtime)?;
+    let service = Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
     for (width, height, scale) in [(1000, 600, 1.0), (2250, 1400, 2.25)] {
         raster(width, height, scale)?;
         for name in ["plain.txt", "source.rs"] {
             worker(&service, directory.join(name), width, height, scale)?;
         }
     }
+    drop(service);
+    runtime.shutdown_timeout(Duration::from_secs(15))?;
     Ok(())
 }

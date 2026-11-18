@@ -432,7 +432,7 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     assert!(ui::has_popup(&window), "Options must await the save result");
     presenter.borrow_mut().apply(Event::PreferencesSaved {
         revision: saves[0].0,
-        result: Ok(()),
+        result: Ok(midnight_core::FileComparatorSnapshot::default()),
     });
     refresh(&window, &presenter.borrow());
     slint::platform::update_timers_and_animations();

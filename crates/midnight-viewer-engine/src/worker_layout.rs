@@ -17,6 +17,14 @@ impl Worker {
         path: &std::path::Path,
         file: midnight_plugin_host::CapturedFile,
     ) -> Result<PreparedOpening, String> {
+        let office_renderer = self
+            .web_providers
+            .iter()
+            .position(|provider| {
+                provider.id == crate::routing::HTML_ID
+                    && !self.disabled_plugins.contains(&provider.id)
+            })
+            .map(|index| index + self.images.len());
         let route = crate::routing::choose(
             self.runtime.catalog(),
             self.images
@@ -35,11 +43,47 @@ impl Worker {
             self.basic,
             &self.disabled_plugins,
             &self.associations,
-        )
-        .ok_or_else(|| {
+            office_renderer,
+        );
+        if office_renderer.is_none()
+            && crate::routing::office_requested(
+                path,
+                self.basic,
+                &self.disabled_plugins,
+                &self.associations,
+            )
+            && route.is_none_or(|route| match route {
+                crate::routing::Route::Native { index, .. } => {
+                    let plugin = &self.runtime.catalog()[index];
+                    plugin.extensions.is_empty()
+                        && self
+                            .associations
+                            .suffix_match(
+                                &plugin.id,
+                                &plugin.extensions,
+                                path.file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or(""),
+                            )
+                            .is_none()
+                }
+                _ => false,
+            })
+        {
+            return Err(
+                "Office preview requires an installed and enabled Chromium HTML viewer.".into(),
+            );
+        }
+        let route = route.ok_or_else(|| {
             "No compatible viewer plugin is installed beside the executable in viewers/.".to_owned()
         })?;
         let route = match route {
+            crate::routing::Route::Office { .. } => {
+                self.mode = VIEWER_MODE_HTML;
+                self.modes = vec![VIEWER_MODE_HTML];
+                self.binary = false;
+                route
+            }
             crate::routing::Route::Process { index } => {
                 self.mode = if index >= self.images.len() {
                     VIEWER_MODE_HTML
@@ -128,6 +172,19 @@ impl Worker {
     ) -> Result<(), String> {
         let PreparedOpening { file, route } = opening;
         self.session = match route {
+            crate::routing::Route::Office { renderer } => {
+                let provider = renderer
+                    .checked_sub(self.images.len())
+                    .and_then(|index| self.web_providers.get(index))
+                    .filter(|provider| {
+                        provider.id == crate::routing::HTML_ID
+                            && !self.disabled_plugins.contains(&provider.id)
+                    })
+                    .ok_or("Office HTML renderer is no longer available.")?
+                    .clone();
+                self.open_office(provider, file)?;
+                None
+            }
             crate::routing::Route::Process { index } if index >= self.images.len() => {
                 let provider = self
                     .web_providers

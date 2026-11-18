@@ -96,7 +96,7 @@ fn measure_idle_wakeups_of_the_real_windows_session() {
     let waits = Arc::new(AtomicUsize::new(0));
     let text = Arc::new(Mutex::new(None));
     let (sender, mut events) = mpsc::channel(4);
-    let mut controller = Controller::testing(
+    let (_owner, mut controller) = Controller::testing(
         Some(Arc::new(CountedService {
             inner: Arc::new(midnight_platform::NativeClipboard),
             iterations: iterations.clone(),
@@ -108,7 +108,7 @@ fn measure_idle_wakeups_of_the_real_windows_session() {
             wakeup: Arc::new(|| {}),
         },
     );
-    let mut tasks = JoinSet::new();
+    let mut tasks = ResidentTasks::default();
     let window = Duration::from_secs(2);
     let mut idle = |label: &str| {
         let event = runtime

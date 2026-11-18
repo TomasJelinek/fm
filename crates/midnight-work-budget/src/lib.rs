@@ -8,6 +8,10 @@
 //! through the same FIFO queue before its next step. Queued exclusive requests and later
 //! shared requests therefore wait for at most one step of each retained owner, never for
 //! a whole transfer.
+
+#[cfg(feature = "resident-workers")]
+pub mod resident;
+
 use std::{
     collections::VecDeque,
     future::Future,

@@ -30,7 +30,7 @@ fn outbox() -> (Outbox, mpsc::Receiver<Event>) {
 fn clipboard_retirement_idle_service_never_drops_on_caller() {
     let (sent, dropped) = channel::channel();
     let (outbox, _events) = outbox();
-    let controller = Controller::testing(Some(Arc::new(IdleService(sent))), outbox);
+    let (_owner, controller) = Controller::testing(Some(Arc::new(IdleService(sent))), outbox);
     drop(controller);
     assert_ne!(
         dropped.recv_timeout(Duration::from_secs(2)).unwrap(),
@@ -89,7 +89,7 @@ fn clipboard_retirement_controller_drop_stops_full_outbox_on_native_thread() {
         .sender
         .try_send(Event::LocaleLoaded(Ok(Default::default())))
         .unwrap();
-    let mut controller = Controller::testing(
+    let (resident_owner, mut controller) = Controller::testing(
         Some(Arc::new(PumpService {
             opened,
             copied,
@@ -98,7 +98,7 @@ fn clipboard_retirement_controller_drop_stops_full_outbox_on_native_thread() {
         outbox,
     );
     let cancel = controller.cancel.clone();
-    let mut tasks = JoinSet::new();
+    let mut tasks = ResidentTasks::default();
     runtime.block_on(controller.copy(DesktopRequestId(710), "owned fixture".into(), &mut tasks));
     let owner = opens.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(copies.recv_timeout(Duration::from_secs(2)).unwrap(), owner);
@@ -113,21 +113,29 @@ fn clipboard_retirement_controller_drop_stops_full_outbox_on_native_thread() {
         owner
     );
     assert_ne!(owner, thread::current().id());
+    runtime
+        .block_on(resident_owner.shutdown(runtime.handle()))
+        .unwrap();
 }
 
 #[derive(Debug)]
-struct Capture(channel::Sender<ThreadId>);
+struct Capture {
+    retired: channel::Sender<ThreadId>,
+    resolved: Arc<std::sync::atomic::AtomicBool>,
+}
 impl midnight_core::CapturedClipboardFiles for Capture {
     fn intent(&self) -> FileClipboardIntent {
         FileClipboardIntent::Copy
     }
     fn resolve(&self, _: &Cancellation) -> Result<FileClipboard, FsError> {
+        self.resolved
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         panic!("unstarted clipboard must not resolve a captured source")
     }
 }
 impl Drop for Capture {
     fn drop(&mut self) {
-        let _ = self.0.send(thread::current().id());
+        let _ = self.retired.send(thread::current().id());
     }
 }
 /// The worker runs on its own thread, so a saturated blocking pool cannot keep it
@@ -137,34 +145,222 @@ impl Drop for Capture {
 fn clipboard_retirement_shutdown_with_a_saturated_blocking_pool_retains_queued_capture() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
+        .enable_time()
         .build()
         .unwrap();
-    let (entered, started) = channel::channel();
-    let (release, gate) = channel::channel();
-    runtime.spawn_blocking(move || {
-        let _ = entered.send(());
-        let _ = gate.recv();
-    });
-    started.recv_timeout(Duration::from_secs(2)).unwrap();
     let (sent, dropped) = channel::channel();
     let (outbox, _events) = outbox();
-    let mut controller = Controller::testing(None, outbox);
-    let mut tasks = JoinSet::new();
+    let (owner, mut controller) = Controller::testing(None, outbox);
+    let holders =
+        crate::engine_resident_tests::hold_workers(&controller.resident, runtime.handle(), 1);
+    let resolved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut tasks = ResidentTasks::default();
     runtime.block_on(controller.copy_captured(
         DesktopRequestId(711),
-        Arc::new(Capture(sent)),
+        Arc::new(Capture {
+            retired: sent,
+            resolved: resolved.clone(),
+        }),
         Cancellation::default(),
         &mut tasks,
     ));
+    assert!(
+        dropped.try_recv().is_err(),
+        "queued work still owns the capture"
+    );
+    // The current-thread runtime is idle. Release the worker immediately
+    // after abort, before any async waiter could be polled or destroyed.
     tasks.abort_all();
-    controller.shutdown();
-    runtime.shutdown_timeout(Duration::from_millis(10));
-    let _ = release.send(());
-    drop(tasks);
+    drop(holders);
     assert_ne!(
         dropped.recv_timeout(Duration::from_secs(2)).unwrap(),
         thread::current().id()
     );
+    assert!(!resolved.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        runtime.block_on(tasks.join_next()),
+        Some(Err(midnight_work_budget::resident::TaskError::Cancelled))
+    );
+    controller.shutdown();
+    runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
+}
+
+struct SlowNative {
+    entered: channel::Sender<ThreadId>,
+    closed: channel::Sender<ThreadId>,
+    gate: std::sync::Mutex<Option<channel::Receiver<()>>>,
+}
+
+struct SlowSession {
+    thread: ThreadId,
+    entered: channel::Sender<ThreadId>,
+    closed: channel::Sender<ThreadId>,
+    gate: channel::Receiver<()>,
+}
+
+impl ClipboardService for SlowNative {
+    fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
+        Ok(Box::new(SlowSession {
+            thread: thread::current().id(),
+            entered: self.entered.clone(),
+            closed: self.closed.clone(),
+            gate: self.gate.lock().unwrap().take().unwrap(),
+        }))
+    }
+}
+
+impl ClipboardSession for SlowSession {
+    fn copy_text(&mut self, _: &str) -> Result<(), FsError> {
+        assert_eq!(thread::current().id(), self.thread);
+        self.entered.send(self.thread).unwrap();
+        let _ = self.gate.recv_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+}
+
+impl Drop for SlowSession {
+    fn drop(&mut self) {
+        let _ = self.closed.send(thread::current().id());
+    }
+}
+
+#[tokio::test]
+async fn clipboard_shutdown_stays_unconfirmed_until_native_returns_and_releases_its_lease() {
+    let (entered, started) = channel::channel();
+    let (closed, closes) = channel::channel();
+    let (release, gate) = channel::channel();
+    let service = Arc::new(SlowNative {
+        entered,
+        closed,
+        gate: std::sync::Mutex::new(Some(gate)),
+    });
+    let domain = crate::retirement::RetirementDomain::try_start(2, 1).unwrap();
+    let (owner, resident) =
+        midnight_work_budget::resident::Owner::start("clipboard-test", 1).unwrap();
+    let (outbox, _events) = outbox();
+    let mut controller = Controller::new(
+        resident,
+        Retirement {
+            worker: domain.try_reserve().unwrap(),
+            rejected: domain.new_waiter().unwrap(),
+        },
+        TaskLifetime::testing(service.clone()),
+        Some(service),
+        outbox,
+    );
+    let mut tasks = ResidentTasks::default();
+    controller
+        .copy(DesktopRequestId(713), "owned".into(), &mut tasks)
+        .await;
+    let native_thread = started.recv_timeout(Duration::from_secs(2)).unwrap();
+    let neutral = controller.resident.clone();
+    // Keep the rejected-request reservation occupied independently of the inbox.
+    let rejected = domain.try_reserve().unwrap();
+    controller.shutdown();
+    tasks.abort_all();
+    assert!(
+        tokio::time::timeout(Duration::ZERO, tasks.join_next())
+            .await
+            .is_err(),
+        "aborting a claimed actor must leave its completion pending"
+    );
+    let transient = tokio::runtime::Handle::current();
+    let mut shutdown = Box::pin(owner.shutdown(&transient));
+    assert!(
+        tokio::time::timeout(Duration::ZERO, &mut shutdown)
+            .await
+            .is_err(),
+        "cleanup cannot be confirmed while the native session is still live"
+    );
+    assert!(domain.try_reserve().is_err());
+    assert!(closes.try_recv().is_err());
+    release.send(()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), tasks.join_next())
+            .await
+            .unwrap(),
+        Some(Ok(()))
+    );
+    tokio::time::timeout(Duration::from_secs(5), shutdown)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(closes.try_recv().unwrap(), native_thread);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(lease) = domain.try_reserve() {
+            drop(lease);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::task::yield_now().await;
+    }
+    drop(rejected);
+    crate::engine_resident_tests::assert_sealed(&neutral, &transient);
+}
+
+#[tokio::test]
+async fn engine_shutdown_observes_claimed_clipboard_after_200_ms_within_outer_grace() {
+    use midnight_core::Command;
+
+    let (entered, started) = channel::channel();
+    let (closed, closes) = channel::channel();
+    let (release, gate) = channel::channel();
+    let (sender, _events) = mpsc::channel(8);
+    let mut engine = crate::Engine::new(
+        crate::Engine::lifetime().unwrap(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        sender,
+    );
+    engine
+        .configure_clipboard()
+        .unwrap()
+        .install(Arc::new(SlowNative {
+            entered,
+            closed,
+            gate: std::sync::Mutex::new(Some(gate)),
+        }));
+    let (commands, input) = engine.command_channel(2).unwrap();
+    let mut run = tokio::spawn(engine.run(input));
+    commands
+        .try_send(Command::CopyText {
+            request: DesktopRequestId(714),
+            text: "owned".into(),
+        })
+        .unwrap();
+    let native_thread = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(thread) = started.try_recv() {
+                break thread;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
+    commands.try_send(Command::Shutdown).unwrap();
+    tokio::time::timeout_at(deadline, commands.closed())
+        .await
+        .unwrap();
+    let remained_pending = tokio::time::timeout(Duration::from_millis(400), &mut run)
+        .await
+        .is_err();
+    let held_affine_session = closes.try_recv().is_err();
+    release.send(()).unwrap();
+    assert!(
+        remained_pending,
+        "Engine abandoned claimed actor completion"
+    );
+    assert!(
+        held_affine_session,
+        "native session ended before gate release"
+    );
+    tokio::time::timeout_at(deadline, run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(closes.try_recv().unwrap(), native_thread);
 }
 
 /// Reports the name of the thread that opens the native session.
@@ -201,8 +397,8 @@ fn clipboard_worker_runs_on_a_named_thread_without_blocking_pool_capacity() {
     started.recv_timeout(Duration::from_secs(2)).unwrap();
     let (named, names) = channel::channel();
     let (outbox, mut events) = outbox();
-    let mut controller = Controller::testing(Some(Arc::new(NamedService(named))), outbox);
-    let mut tasks = JoinSet::new();
+    let (_owner, mut controller) = Controller::testing(Some(Arc::new(NamedService(named))), outbox);
+    let mut tasks = ResidentTasks::default();
     runtime.block_on(controller.copy(DesktopRequestId(713), "named".into(), &mut tasks));
     let name = names.recv_timeout(Duration::from_secs(5));
     let event = runtime
@@ -220,7 +416,7 @@ fn clipboard_worker_runs_on_a_named_thread_without_blocking_pool_capacity() {
     assert_eq!(
         name.expect("the worker must start while the blocking pool is busy")
             .as_deref(),
-        Some("midnight-clipboard")
+        Some("clipboard-test-0")
     );
     assert!(
         matches!(
@@ -278,7 +474,10 @@ fn clipboard_retirement_cancelled_rejection_keeps_slot_through_source_destructio
     for generated in [false, true] {
         let domain = crate::retirement::RetirementDomain::try_start(2, 1).unwrap();
         let (outbox, mut events) = outbox();
+        let (_owner, resident) =
+            midnight_work_budget::resident::Owner::start("clipboard-test", 1).unwrap();
         let mut controller = Controller::new(
+            resident,
             Retirement {
                 worker: domain.try_reserve().unwrap(),
                 rejected: domain.new_waiter().unwrap(),
@@ -301,7 +500,7 @@ fn clipboard_retirement_cancelled_rejection_keeps_slot_through_source_destructio
         } else {
             Action::Captured(source, Cancellation::default())
         };
-        let mut tasks = JoinSet::new();
+        let mut tasks = ResidentTasks::default();
         let mut future = Box::pin(controller.submit(
             Request {
                 id: DesktopRequestId(712),

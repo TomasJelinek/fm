@@ -119,11 +119,14 @@ export component ActionButton inherits Rectangle {
     in property <image> fallback-icon;
     in property <bool> primary;
     in property <bool> compact;
+    in property <length> font-size: Theme.font-size;
+    in property <length> control-height: Theme.control-height;
     in property <length> minimum-control-height: 32px;
     in property <length> vertical-padding: 5px;
     in property <bool> removal-icon;
     in property <bool> destructive;
     in property <bool> enabled: true;
+    in property <bool> focusable: true;
     out property <bool> has-focus: input.has-focus;
     out property <bool> pressed: root.enabled && pointer.pressed;
     callback clicked();
@@ -133,7 +136,7 @@ export component ActionButton inherits Rectangle {
     private property <color> foreground: !root.enabled ? Theme.muted-text
         : root.destructive ? Theme.error-text : Theme.text;
     min-width: max(32px, content.min-width);
-    min-height: max(root.minimum-control-height, Theme.control-height, content.min-height);
+    min-height: max(root.minimum-control-height, root.control-height, content.min-height);
     horizontal-stretch: 0; vertical-stretch: 0;
     forward-focus: input;
     accessible-role: button;
@@ -143,7 +146,7 @@ export component ActionButton inherits Rectangle {
     function activate() {
         // A focused native Button can still deliver Enter after it becomes disabled.
         if !root.enabled { return; }
-        input.focus();
+        if root.focusable { input.focus(); }
         root.clicked();
     }
     background: !root.enabled ? Theme.secondary-surface
@@ -171,7 +174,7 @@ export component ActionButton inherits Rectangle {
         }
         if root.text != "": Text {
             text: root.text; color: root.foreground;
-            font-family: Theme.effective-font-family; font-size: Theme.font-size;
+            font-family: Theme.effective-font-family; font-size: root.font-size;
             horizontal-alignment: center; vertical-alignment: center;
             accessible-role: none;
         }
@@ -181,7 +184,7 @@ export component ActionButton inherits Rectangle {
         x: 0px; y: 0px;
         width: root.width; height: root.height;
         opacity: 0; accessible-role: none;
-        text: root.text; enabled: root.enabled;
+        text: root.text; enabled: root.enabled && root.focusable;
         clicked => { root.activate(); }
     }
     pointer := TouchArea {

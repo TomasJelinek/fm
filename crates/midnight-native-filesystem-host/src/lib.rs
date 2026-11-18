@@ -9,6 +9,7 @@ mod capture_cache;
 mod client;
 pub use capture_cache::CaptureCache;
 mod content;
+pub use content::CaptureFailure;
 mod discovery;
 mod ffi;
 mod installed;

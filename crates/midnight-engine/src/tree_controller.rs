@@ -8,13 +8,17 @@
 //! A closed lane drains its payloads on its model worker. A blocked provider keeps
 //! its resources and permit until it returns; neither navigation nor shutdown
 //! invents a replacement permit or waits on the UI thread.
-use crate::{Outbox, Snapshots, providers::NativeProvider, tree_actor::WorkerBudget};
+use crate::{
+    Outbox, Snapshots, providers::NativeProvider, spawn_resident, task_lifetime::TaskLifetime,
+    tree_actor::WorkerBudget,
+};
 use midnight_core::{
     Cancellation, FileSystem, LocaleService, NavigationId, PaneId, SortSpec, TreeCommand,
     TreeDiagnostic, TreeEvent, TreeProjection, TreeRequestId, TreeRowId,
 };
+use midnight_work_budget::resident::{Spawner, Ticket};
 use std::sync::{Arc, Weak};
-use tokio::{sync::Semaphore, task::JoinHandle};
+use tokio::sync::Semaphore;
 
 mod mailbox;
 mod worker;
@@ -23,6 +27,7 @@ use mailbox::{Generation, Mailbox};
 pub(crate) const CAPTURE_CAPACITY: usize = 4;
 
 pub(crate) struct Services {
+    pub(crate) scope: TaskLifetime,
     pub(crate) shared_native: Option<midnight_native_filesystem_host::SharedInstalledProvider>,
     pub(crate) qualified_locale: Option<crate::transfer_composition::QualifiedLocaleInstallation>,
     pub(crate) rename: crate::tree_rename::Retirement,
@@ -33,7 +38,7 @@ pub(crate) struct Services {
 
 pub(crate) struct Controller {
     lanes: [Arc<Mailbox>; 2],
-    workers: [Option<JoinHandle<()>>; 2],
+    workers: [Option<Ticket>; 2],
     watch: Option<crate::watch::Handle>,
 }
 
@@ -50,6 +55,7 @@ impl RootReady {
 
 impl Controller {
     pub(crate) fn new(
+        resident: &Spawner,
         services: Services,
         listings: [Arc<Semaphore>; 2],
         mutation_gate: Arc<Semaphore>,
@@ -58,6 +64,7 @@ impl Controller {
         watch: Option<crate::watch::Handle>,
     ) -> Self {
         let Services {
+            scope,
             shared_native,
             qualified_locale,
             filesystem,
@@ -99,12 +106,15 @@ impl Controller {
                 copy_capacity.clone(),
             );
             worker.watch = watch.clone();
-            // The model worker lives as long as the controller: keep it off the
-            // bounded blocking pool that branch jobs, listings and scans share.
-            Some(crate::actor_thread::spawn_in_runtime(
-                "midnight-tree-worker",
-                move || worker.run(),
-            ))
+            let ticket = spawn_resident(
+                resident,
+                "tree model",
+                Box::new(scope.blocking(move || worker.run())),
+            );
+            if ticket.is_none() {
+                lanes[pane].close();
+            }
+            ticket
         });
         Self {
             lanes,

@@ -52,8 +52,10 @@ struct Harness {
     controller: Controller,
     events: mpsc::Receiver<Event>,
     tasks: JoinSet<()>,
+    resident_tasks: ResidentTasks,
     service: Arc<Service>,
     root: tempfile::TempDir,
+    _owner: midnight_work_budget::resident::Owner,
 }
 impl Harness {
     async fn new(different_device: bool) -> Self {
@@ -94,8 +96,8 @@ impl Harness {
         });
         let (sender, events) = mpsc::channel(128);
         let mut tasks = JoinSet::new();
-        let mut controller = Controller::new(
-            crate::engine_lifetime::DragRetirement::testing(),
+        let mut resident_tasks = ResidentTasks::default();
+        let (_owner, mut controller) = Controller::testing(
             None,
             Some(service.clone()),
             snapshots,
@@ -114,7 +116,7 @@ impl Harness {
                     lifetime: Cancellation::default(),
                 },
                 Arc::default(),
-                &mut tasks,
+                &mut resident_tasks,
             )
             .await;
         controller
@@ -131,8 +133,10 @@ impl Harness {
             .await;
         let mut harness = Self {
             controller,
+            _owner,
             events,
             tasks,
+            resident_tasks,
             service,
             root,
         };
@@ -195,6 +199,7 @@ impl Harness {
     async fn close(mut self) {
         self.controller.shutdown();
         while self.tasks.join_next().await.is_some() {}
+        while self.resident_tasks.join_next().await.is_some() {}
     }
 }
 
@@ -334,6 +339,7 @@ async fn cancelled_or_navigated_preview_never_reports_success() {
         }
         h.controller.shutdown();
         while h.tasks.join_next().await.is_some() {}
+        while h.resident_tasks.join_next().await.is_some() {}
         while let Ok(Event::DragDrop(event)) = h.events.try_recv() {
             assert!(!matches!(
                 event,

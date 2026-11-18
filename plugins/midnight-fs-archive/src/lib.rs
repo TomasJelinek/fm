@@ -1,6 +1,8 @@
 //! Read-only archive parsing. This code runs only inside the isolated worker.
 pub mod broker;
 mod formats;
+#[cfg(test)]
+mod reader;
 mod sevenzip;
 pub mod storage;
 mod streams;

@@ -36,11 +36,15 @@ fn restored_split_stays_live_during_refresh_and_saves_only_finished_gestures() {
             true
         }),
     );
-    p.borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            panel_split_basis_points: 6100,
-            ..Default::default()
-        }))));
+    p.borrow_mut().apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                panel_split_basis_points: 6100,
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     refresh(&test.window, &p.borrow());
     test.draw();
     assert!((test.window.get_panel_ratio() - 0.61).abs() < 0.0001);
@@ -84,7 +88,12 @@ fn restored_split_stays_live_during_refresh_and_saves_only_finished_gestures() {
 
     // A fresh presenter restores the committed value, independent of the window size.
     let mut reopened = Presenter::new("left".into(), "right".into());
-    reopened.apply(Event::PreferencesLoaded(Ok(Box::new(writes[0].clone()))));
+    reopened.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: writes[0].clone(),
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     test.window.set_panel_ratio(0.5);
     test.window.set_restored_panel_ratio(0.5);
     test.draw();

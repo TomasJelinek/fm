@@ -1,6 +1,9 @@
 # Viewer protocol reference
 
-The schemas below describe public API 0.1.0, C ABI 1.0. Source definitions are
+The baseline schemas describe public API 0.1.0 with the source-implemented
+optional preparation extension in API/SDK0.2.0; C ABI remains1.0. Full
+Source plugin recovery remains separate from the verified local0.2
+publication and selected host/engine gate. Source definitions are
 [messages.rs](../../api/midnight-plugin-api/src/messages.rs),
 [viewer.rs](../../api/midnight-plugin-api/src/viewer.rs) and
 [document.rs](../../api/midnight-plugin-api/src/document.rs). See
@@ -42,6 +45,7 @@ missing optional values.
 | `REQUEST_CLOSE` (4) | No typed close model | Empty payload is allowed; session/generation are in the envelope |
 | `REQUEST_SERVICE_REPLY` (5) | `ReadReply` | `0: revision u64`, `1: offset u64`, `2: bytes u32`, `3: eof bool`, `4: status u32` |
 | `REQUEST_LOCATE` (6) | `Locate` | Optional source coordinates; `0: source_anchor u64`; may complete without a position |
+| `REQUEST_PREPARE_SOURCE` (7) | `PrepareSource` | Optional0.2: `0: revision u64`, `1: viewport Viewport`, `2: max_scan_bytes u32` |
 | `SERVICE_READ_AT` (1001) | `ReadAt` | `0: reader u64`, `1: revision u64`, `2: offset u64`, `3: length u32` |
 | `SERVICE_CLOSE_READER` (1002) | `CloseReader` | `0: reader u64` |
 
@@ -98,6 +102,7 @@ coordinates for later pages. See the [10 GB qualification](../verification/2026-
 | `EVENT_SEARCH_MATCH` (5) | `SearchMatch` | `0: source SourceRange`, `1: preview String`; source length is nonzero |
 | `EVENT_PROGRESS` (6) | `Progress` | `0: completed u64`, `1: total ?u64`, `2: phase u16`; completed cannot exceed known total |
 | `EVENT_TEXT_POSITION` (7) | `TextPosition` | Optional exact source coordinates; see [source positions](../../api/SOURCE_POSITION.md) |
+| `EVENT_SOURCE_PREPARED` (8) | `SourcePrepared` | Optional0.2: `0: revision u64`, `1: frontier u64`, `2: ready bool` |
 | `EVENT_COMPLETED` (100) | Empty | Successful terminal for this request |
 | `EVENT_CANCELLED` (101) | Empty | Cancelled terminal for this request |
 | `EVENT_FAILED` (102) | `Failure` | `0: code u32`, `1: message String`; failed terminal |
@@ -110,6 +115,46 @@ Only Binary pages carry nonempty raw content. Opened, pages, search matches and
 progress are nonterminal; each accepted request also needs a terminal. Current
 host dispatch ignores unknown event kinds after safely releasing their buffers;
 that does not negotiate support for a new output model.
+
+## Optional Source preparation (0.2 source contract)
+
+The frozen public API/SDK source passed API **10** and SDK **39** targeted tests.
+Immutable local0.2 packages are published beside byte-unchanged0.1. Basic and
+Markdown still resolve their exact0.1 pins, and an independent consumer resolves
+registry API/SDK0.2; this is local release availability, not complete Source
+plugin recovery or a new app. C/Rust ABI1.0 sizes, alignments and offsets match.
+The scoped host/engine gate compiled with453 source hashes/zero drift and passed
+98 selected checks (26 new +72 direct boundary); app f311 remained unchanged.
+The later canonical packager passed9/0/0 and strict Clippy/format0, preserving
+exact old0.1 and reproducing issued0.2 archives. Relocated upload payload resolves
+Basic/Markdown0.1 and Source0.2 in a fresh sparse Cargo cache without app/API
+sources. That is dependency resolution, not plugin execution or new remote CI.
+Source post-review64 closes its two measured P2 cases on that snapshot;
+prior99 is not rerun/additive. Combined integration, final UI/native and app
+qualification remain separate.
+
+Prepare uses the existing request/session/generation identity, zero flags and
+empty raw content after Open in Source mode. It binds the captured revision and
+**full** ordinary Viewport. Its model validates that Viewport and requires
+`max_scan_bytes` from1 through262144 inclusive. The session owner checks revision,
+anchor/frontier against a known captured length, preserving unknown-length semantics.
+
+A successful accepted request emits exactly one SourcePrepared then Completed.
+The result is provisional until matching Completed; failure/cancellation cannot
+authorize refresh even if a result arrived. Missing/duplicate/misidentified results,
+pages or raw content are protocol violations. `ready=true` promises exact
+lexer/decoder state for the matching next ordinary Viewport within its foreground
+bounds; frontier is decoded walk progress, not retained coverage or readiness.
+`PROGRESS_SOURCE_SYNTAX = 2` is advisory and never authorizes refresh.
+
+The accepted host/plugin contract reserves the exact target resume until consumed,
+superseded or closed and keeps preparation separate from bounded foreground reads.
+Typed host tracking/validation and shared admission now have the scoped host
+gate above; Source0.2 bounded recovery now has the separate post-review64 receipt,
+with no unresolved owner failure in that authorized scope.
+Only UNSUPPORTED
+disables optional preparation; QueueFull remains retryable. Older hosts dropping
+unknown events do not negotiate support or qualify the new transaction.
 
 ## Modes and semantic models
 

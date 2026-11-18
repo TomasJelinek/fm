@@ -160,8 +160,7 @@ fn cross_page_search_and_reverse_search_preserve_offsets() {
 }
 
 #[test]
-fn dense_tokens_fall_back_to_plain_when_the_wire_item_budget_is_exhausted() {
-    // 2,730 separate string spans plus 8,191 anchors exceed the CBOR item budget.
+fn dense_tokens_keep_styles_by_shortening_the_page_to_fit_the_wire_budget() {
     let input = "\"\" ".repeat(2730);
     let mut host = Host::new(input.as_bytes(), entry);
     open(&mut host, input.len() as u64);
@@ -179,10 +178,67 @@ fn dense_tokens_fall_back_to_plain_when_the_wire_item_budget_is_exhausted() {
         &events
             .iter()
             .find(|e| e.kind == abi::EVENT_TEXT_PAGE)
-            .expect("bounded plain fallback")
+            .expect("bounded styled page")
             .payload,
     )
     .unwrap();
-    assert_eq!(page.text, input);
-    assert!(page.spans.is_empty());
+    assert!(input.starts_with(&page.text));
+    assert!(!page.text.is_empty());
+    assert!(page.has_after);
+    assert!(page.partial_line);
+    assert_eq!(page.source.offset, 0);
+    assert_eq!(page.source.length, page.text.len() as u64);
+    assert_eq!(page.spans[0].role, STYLE_STRING);
+    assert_eq!(
+        page.spans.last().unwrap().end as usize,
+        page.text.trim_end().len()
+    );
+    page.validate().unwrap();
+}
+
+#[test]
+fn backward_dense_utf16_output_keeps_the_requested_end_and_styles() {
+    for big_endian in [false, true] {
+        let text = "\"\" ".repeat(2730);
+        let mut data = if big_endian {
+            vec![0xfe, 0xff]
+        } else {
+            vec![0xff, 0xfe]
+        };
+        data.extend(text.encode_utf16().flat_map(|u| {
+            if big_endian {
+                u.to_be_bytes()
+            } else {
+                u.to_le_bytes()
+            }
+        }));
+        let mut host = Host::new(&data, entry);
+        open(&mut host, data.len() as u64);
+        let id = host.submit(
+            abi::REQUEST_VIEWPORT,
+            &Viewport {
+                source_anchor: data.len() as u64,
+                backwards: true,
+                max_bytes: 8192,
+                max_lines: 20,
+            },
+        );
+        let events = host.finish();
+        let page: TextPage = codec::decode(
+            &events
+                .iter()
+                .find(|e| e.id == id && e.kind == abi::EVENT_TEXT_PAGE)
+                .expect("styled suffix")
+                .payload,
+        )
+        .unwrap();
+        assert!(!page.spans.is_empty());
+        assert!(text.ends_with(&page.text));
+        assert!(page.has_before);
+        assert!(!page.has_after);
+        assert_eq!(page.source.end().unwrap(), data.len() as u64);
+        assert_eq!(page.anchors[0].source_offset, page.source.offset);
+        assert!(page.anchors.iter().all(|a| a.source_offset % 2 == 0));
+        page.validate().unwrap();
+    }
 }

@@ -1,4 +1,7 @@
 //! Preference acceptance must not depend on a document frame or an open plugin.
+#[path = "../examples/support/resident.rs"]
+mod resident;
+
 use midnight_core::*;
 use midnight_viewer_ui::{ViewerWindow, ViewerWindows};
 use slint::{
@@ -74,15 +77,29 @@ fn escape(window: &ViewerWindow) {
     assert!(!window.window().is_visible());
 }
 
+fn unavailable_capture(message: &'static str) -> midnight_viewer_engine::NativeCapture {
+    Arc::new(move |_, closed| {
+        // These tests supply input before any content. Keep the real receiver
+        // alive until the window's actual close, without reading a user file.
+        while !closed.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Err(message.into())
+    })
+}
+
 #[test]
 fn accepted_settings_survive_immediate_escape_and_reopen_from_two_windows() {
     slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = resident::ResidentRuntime::new(runtime).unwrap();
     // This boundary never reads a real user file, even if plugin discovery succeeds.
     let service = midnight_viewer_engine::Service::with_native_capture(
         runtime.handle().clone(),
-        Arc::new(|_, _| Err("Content is deliberately unavailable in this input test.".into())),
+        runtime.spawner(),
+        unavailable_capture("Content is deliberately unavailable in this input test."),
     );
+    runtime.track_spare(&service);
     let manager = ViewerWindows::new(service.clone());
     let saved = Rc::new(RefCell::new(ViewerPreferences::default()));
     let changes = Rc::new(RefCell::new(Vec::new()));
@@ -149,10 +166,13 @@ fn accepted_settings_survive_immediate_escape_and_reopen_from_two_windows() {
 fn source_and_markdown_controls_save_immediately_and_restore_per_mode() {
     slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = resident::ResidentRuntime::new(runtime).unwrap();
     let service = midnight_viewer_engine::Service::with_native_capture(
         runtime.handle().clone(),
-        Arc::new(|_, _| Err("No content required".into())),
+        runtime.spawner(),
+        unavailable_capture("No content required"),
     );
+    runtime.track_spare(&service);
     let manager = ViewerWindows::new(service.clone());
     let saved = Rc::new(RefCell::new(ViewerPreferences::default()));
     let target = saved.clone();

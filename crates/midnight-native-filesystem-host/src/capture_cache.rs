@@ -1,7 +1,7 @@
 //! Many captured identities (viewer, comparison, thumbnail, command-artwork and
 //! archive captures) share a small backend reader cache instead of pinning one
 //! native reader/mount for every captured file.
-use crate::{Cancel, NativeProvider, client::PendingRelease, discovery::invalid};
+use crate::{Cancel, CaptureFailure, NativeProvider, client::PendingRelease, discovery::invalid};
 use midnight_filesystem_plugin_api::Failure;
 use midnight_plugin_host::{CapturedFile, ContentSource, Error};
 use std::{
@@ -37,7 +37,25 @@ impl CaptureCache {
         path: &Path,
         cancelled: Cancel<'_>,
     ) -> Result<CapturedFile, Failure> {
-        let initial = PendingRelease::new(self.provider.capture_source(path, cancelled)?);
+        self.capture_checked(path, cancelled)
+            .map_err(|failure| failure.error)
+    }
+
+    /// Preserve native cleanup status through the existing installed reader cache.
+    pub fn capture_checked(
+        self: &Arc<Self>,
+        path: &Path,
+        cancelled: Cancel<'_>,
+    ) -> Result<CapturedFile, CaptureFailure> {
+        let mut cleanup_unconfirmed = false;
+        let initial = self
+            .provider
+            .capture_source_status(path, cancelled, &mut cleanup_unconfirmed)
+            .map_err(|error| CaptureFailure {
+                error,
+                cleanup_unconfirmed,
+            })?;
+        let initial = PendingRelease::new(initial);
         let id = match self
             .next
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -45,11 +63,13 @@ impl CaptureCache {
             }) {
             Ok(id) => id,
             Err(_) => {
-                release_source(initial.into_inner()).map_err(invalid)?;
-                return Err(invalid("Native capture identities exhausted"));
+                return Err(release_capture_error(
+                    initial.into_inner(),
+                    invalid("Native capture identities exhausted"),
+                ));
             }
         };
-        let source = Arc::new(Snapshot {
+        let source = PendingRelease::new(Arc::new(Snapshot {
             cache: self.clone(),
             id,
             path: path.into(),
@@ -59,14 +79,13 @@ impl CaptureCache {
             initial: Mutex::new(Some(initial.into_inner())),
             release_failure: Mutex::new(None),
             released: false,
-        });
+        }));
         // The constructor validates through this initial reader, but prefetching a
         // sibling must not displace the active viewer from the bounded reader cache.
         let captured = match CapturedFile::from_source(source.clone()) {
             Ok(captured) => captured,
             Err(error) => {
-                release_source(source).map_err(invalid)?;
-                return Err(invalid(error));
+                return Err(release_capture_error(source.into_inner(), invalid(error)));
             }
         };
         let retired = lock(&source.initial).take();
@@ -76,9 +95,13 @@ impl CaptureCache {
             source.note_release_failure(error.clone());
             // Consume both Snapshot references through their checked bridge.
             let _ = captured.release_on_worker();
-            let _ = release_source(source);
-            return Err(invalid(error));
+            let _ = release_source(source.into_inner());
+            return Err(CaptureFailure {
+                error: invalid(error),
+                cleanup_unconfirmed: true,
+            });
         }
+        drop(source.into_inner());
         Ok(captured)
     }
 
@@ -289,6 +312,20 @@ impl Drop for Snapshot {
         }
         let retired = self.detach_reader();
         drop(retired);
+    }
+}
+
+fn release_capture_error(source: Arc<dyn ContentSource>, original: Failure) -> CaptureFailure {
+    let cleanup_unconfirmed = source.cleanup_unconfirmed();
+    match release_source(source) {
+        Ok(()) => CaptureFailure {
+            error: original,
+            cleanup_unconfirmed,
+        },
+        Err(cleanup) => CaptureFailure {
+            error: invalid(cleanup),
+            cleanup_unconfirmed: true,
+        },
     }
 }
 

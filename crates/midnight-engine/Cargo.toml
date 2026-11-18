@@ -10,7 +10,7 @@ autotests = false
 [dependencies]
 midnight-core.workspace = true
 midnight-platform-common.workspace = true
-midnight-work-budget = { path = "../midnight-work-budget" }
+midnight-work-budget = { path = "../midnight-work-budget", features = ["resident-workers"] }
 midnight-worker-platform = { path = "../midnight-worker-platform" }
 midnight-plugin-host = { path = "../midnight-plugin-host" }
 midnight-image-viewer-host = { path = "../midnight-image-viewer-host" }

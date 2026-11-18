@@ -1,3 +1,4 @@
+use super::image_presentation_tests::present as present_outputs;
 use super::*;
 use slint::platform::{PointerEventButton, WindowEvent};
 use std::sync::Arc;
@@ -210,6 +211,7 @@ fn raster_native_wheel_delivers_fractional_frames_between_notches() {
                     fitted: false,
                     page: 1,
                     page_count: 3,
+                    document_layout: Some(DocumentLayout::Paged),
                 });
             }
         }

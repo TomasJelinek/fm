@@ -1,6 +1,7 @@
 //! Startup-owned commands with Copy admission before successful transport acceptance.
 use crate::{
     copy_operations::{self, Admission, Admitted},
+    desktop_external_compare::{ArmedExternalComparison, ExternalComparisonFrontDoor},
     retirement::{RetirementLease, WorkerOwned},
 };
 use midnight_core::Command;
@@ -16,6 +17,7 @@ use tokio::sync::mpsc;
 pub(crate) enum Message {
     Plain(PlainCommand),
     GuardedCopy(Admitted),
+    GuardedExternalComparison(ArmedExternalComparison),
 }
 pub(crate) struct PlainCommand(Command);
 impl PlainCommand {
@@ -53,12 +55,15 @@ pub type CommandSendError = mpsc::error::TrySendError<Command>;
 pub struct CommandSender {
     sender: mpsc::Sender<Message>,
     admission: Admission,
+    external: Option<ExternalComparisonFrontDoor>,
 }
 
 /// Reserved FIFO capacity; sending a Copy also requires its actual admission.
 pub struct OwnedCommandPermit {
     permit: mpsc::OwnedPermit<Message>,
     admission: Admission,
+    external: Option<ExternalComparisonFrontDoor>,
+    sender: mpsc::Sender<Message>,
 }
 
 /// Borrowed channel credit with the same admitted send path as an owned credit.
@@ -85,9 +90,15 @@ impl CommandSender {
             Self {
                 sender,
                 admission: admission.clone(),
+                external: None,
             },
             CommandReceiver { inbox, admission },
         )
+    }
+
+    pub(crate) fn with_external(mut self, external: ExternalComparisonFrontDoor) -> Self {
+        self.external = Some(external);
+        self
     }
 
     /// Accept a command without waiting. Full/closed returns the intact command.
@@ -109,6 +120,8 @@ impl CommandSender {
         OwnedCommandPermit {
             permit,
             admission: self.admission.clone(),
+            external: self.external.clone(),
+            sender: self.sender.clone(),
         }
         .try_send(command)
     }
@@ -139,6 +152,8 @@ impl CommandSender {
             owned: OwnedCommandPermit {
                 permit,
                 admission: self.admission.clone(),
+                external: self.external.clone(),
+                sender: self.sender.clone(),
             },
             _borrow: std::marker::PhantomData,
         })
@@ -155,6 +170,8 @@ impl CommandSender {
         Ok(OwnedCommandPermit {
             permit,
             admission: self.admission.clone(),
+            external: self.external.clone(),
+            sender: self.sender.clone(),
         })
     }
 
@@ -186,8 +203,24 @@ impl OwnedCommandPermit {
         reason = "Keep refused commands intact for caller reclamation without an additional box."
     )]
     pub fn try_send(self, command: Command) -> Result<(), CommandSendError> {
-        // The same Copy-family list guarded admission uses for its operation ID.
-        if copy_operations::is_copy_command(&command) {
+        if let Command::LaunchExternalComparison(request) = command {
+            // Already armed before any send/reserve future existed. A permit
+            // issued before receiver.close() cannot bypass this final check.
+            let Some(external) = self.external.as_ref().filter(|_| !self.sender.is_closed()) else {
+                return Err(mpsc::error::TrySendError::Closed(
+                    Command::LaunchExternalComparison(request),
+                ));
+            };
+            match external.classify(request) {
+                Ok(armed) => {
+                    self.permit.send(Message::GuardedExternalComparison(armed));
+                    Ok(())
+                }
+                Err(request) => Err(mpsc::error::TrySendError::Closed(
+                    Command::LaunchExternalComparison(request),
+                )),
+            }
+        } else if copy_operations::is_copy_command(&command) {
             self.admission.send_reserved(command, self.permit)
         } else {
             self.permit.send(Message::Plain(PlainCommand(command)));

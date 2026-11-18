@@ -118,6 +118,17 @@ struct Service {
     _owner: NativeOwner,
 }
 impl SettingsService for Service {
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        self.load_preferences()
+    }
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        comparators: midnight_core::ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        assert!(comparators.matches(&preferences.file_comparators));
+        self.save_preferences(preferences)
+    }
     fn load_preferences(&self) -> Result<UserPreferences, FsError> {
         Ok(UserPreferences::default())
     }

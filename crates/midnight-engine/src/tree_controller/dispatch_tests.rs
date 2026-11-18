@@ -30,12 +30,17 @@ fn transfer(view: &Arc<TreeProjection>) -> TreeCommand {
 #[tokio::test]
 async fn a_transfer_for_a_replaced_view_is_refused_as_retryable() {
     let (sender, _events) = tokio::sync::mpsc::channel(4);
+    let (resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("tree-dispatch-test", 2).unwrap();
+    let filesystem = Arc::new(super::lifetime_tests::Idle);
     let controller = Controller::new(
+        &resident,
         Services {
+            scope: TaskLifetime::testing(filesystem.clone()),
             shared_native: None,
             qualified_locale: None,
             rename: crate::tree_rename::Retirement::testing(),
-            filesystem: Arc::new(super::lifetime_tests::Idle),
+            filesystem,
             locale: None,
             reports: crate::ReportArena::testing(),
         },
@@ -68,4 +73,8 @@ async fn a_transfer_for_a_replaced_view_is_refused_as_retryable() {
         "{refusal:?}"
     );
     controller.shutdown().await;
+    resident_owner
+        .shutdown(&tokio::runtime::Handle::current())
+        .await
+        .unwrap();
 }

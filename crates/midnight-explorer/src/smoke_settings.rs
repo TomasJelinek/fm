@@ -1,5 +1,7 @@
 //! Keep automated UI runs independent of the user's persisted preferences.
-use midnight_core::{FsError, PanelViewMode, SettingsService, UserPreferences};
+use midnight_core::{
+    ComparatorValidationProof, FsError, PanelViewMode, SettingsService, UserPreferences,
+};
 use std::{
     io,
     path::Path,
@@ -49,6 +51,29 @@ impl SettingsService for SmokeSettings {
         *self.values()? = preferences;
         Ok(())
     }
+
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        self.load_preferences()
+    }
+
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        proof: ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        if !proof.matches(&preferences.file_comparators) {
+            return Err(FsError::from_io(
+                "smoke preferences",
+                Path::new(""),
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Comparator proof does not match preferences.",
+                ),
+            ));
+        }
+        preferences.validate()?;
+        self.save_preferences(preferences)
+    }
 }
 
 #[cfg(test)]
@@ -69,6 +94,16 @@ mod tests {
 
         fn save_preferences(&self, _: UserPreferences) -> Result<(), FsError> {
             panic!("smoke must not write the user's settings")
+        }
+        fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+            panic!("smoke must not load the user's settings for acceptance")
+        }
+        fn save_preferences_prepared(
+            &self,
+            _: UserPreferences,
+            _: ComparatorValidationProof<'_>,
+        ) -> Result<(), FsError> {
+            panic!("smoke must not write prepared preferences to the user's settings")
         }
     }
 

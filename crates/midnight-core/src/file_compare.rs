@@ -35,4 +35,8 @@ pub struct FileCompareLaunch {
     /// At most two cheap snapshots. Selection expansion belongs to the worker.
     pub sources: Vec<FileCompareSource>,
     pub disabled_plugins: Arc<[String]>,
+    /// Exact accepted raw Arc, never reconstructed from an Options draft.
+    pub comparators: Arc<crate::FileComparatorPreferences>,
+    /// Matched with raw Arc identity when the admitted backend session pins its policy.
+    pub comparator_policy: crate::FileComparatorPolicyId,
 }

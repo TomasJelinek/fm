@@ -1,0 +1,2 @@
+# Historical release inputs must retain exact bytes on every checkout platform.
+0.1.0/* -text

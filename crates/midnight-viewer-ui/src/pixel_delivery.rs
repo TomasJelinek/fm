@@ -24,6 +24,7 @@ pub(super) fn bind(
                 .is_ok()
         }),
         trace,
+        open.palette.clone(),
     )?;
     *open.preparation.borrow_mut() = Some(preparation);
     Ok(())
@@ -38,8 +39,41 @@ pub(super) fn receive(open: &OpenWindow, service: &Service, copy: &dyn Fn(String
     else {
         return;
     };
+    deliver_batch(open, service, copy, batch);
+}
+
+pub(super) fn deliver_batch(
+    open: &OpenWindow,
+    service: &Service,
+    copy: &dyn Fn(String),
+    batch: pixel_preparation::PreparedBatch,
+) {
     if open.closed.get() {
         service.retire(batch);
+        return;
+    }
+    apply_output_controls(open, &batch.outputs);
+    if batch
+        .outputs
+        .iter()
+        .any(|output| matches!(output, ViewerOutput::Frame(frame) if !accepts_frame(open, frame)))
+    {
+        // A newer palette or layout can overtake this prepared frame. Apply all
+        // existing fences before replacing a lease or publishing its copy error.
+        service.retire(batch.pixels);
+        let controls = batch
+            .outputs
+            .into_iter()
+            .filter_map(|output| {
+                if matches!(output, ViewerOutput::Frame(_)) {
+                    service.retire(output);
+                    None
+                } else {
+                    Some(output)
+                }
+            })
+            .collect();
+        present_controlled_outputs(open, service, copy, controls);
         return;
     }
     if let Some(preparation) = open.preparation.borrow().as_ref() {
@@ -73,7 +107,7 @@ pub(super) fn receive(open: &OpenWindow, service: &Service, copy: &dyn Fn(String
             outputs.push(ViewerOutput::Status(message));
         }
     }
-    present_outputs(open, service, copy, outputs);
+    present_controlled_outputs(open, service, copy, outputs);
     if let Some(previous) = previous {
         if open.closed.get() || revision == Some(open.frame.get()) {
             // Hold the last displayed buffer through the native image replacement,
@@ -90,6 +124,9 @@ pub(super) fn pixels(
     open: &OpenWindow,
     frame: &ViewerFrame,
 ) -> Result<pixel_preparation::PreparedPixels, String> {
+    if !open.palette.allows(frame) {
+        return Err("Viewer palette is awaiting its matching frame.".into());
+    }
     if let Some(pixels) = open.prepared_pixels.borrow().as_ref()
         && pixels.frame_revision == frame.revision
     {

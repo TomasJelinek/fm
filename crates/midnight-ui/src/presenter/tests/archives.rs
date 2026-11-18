@@ -662,9 +662,12 @@ fn saved_archive_tabs_restore_lazily_and_keep_addresses_when_provider_is_missing
     let mut p = Presenter::new(test_root(), test_root());
     let sent = RefCell::new(Vec::new());
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            tabs: [saved.clone(), PaneTabPreferences::default()],
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                tabs: [saved.clone(), PaneTabPreferences::default()],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
             sent.borrow_mut().push(command);
@@ -794,7 +797,12 @@ fn custom_compound_suffix_dispatches_the_chosen_decoder_with_the_original_native
     preferences
         .archive_custom_extensions
         .insert("backup.gz".into(), ArchiveFormat::SevenZip);
-    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     let directory = presenter.panes[0].path.to_string_lossy().into_owned();
     let navigation = begin(&mut presenter, PaneId::Left, &directory);
     let source = test_root().join("文档.BACKUP.GZ");

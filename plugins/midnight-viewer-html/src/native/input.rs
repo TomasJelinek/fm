@@ -119,6 +119,7 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
             }
         }
         api::CommandKind::Key(key) => {
+            if navigation::reload(instance, &key) { return; }
             let code = crate::platform::key_code(&key);
             host.send_key_event(Some(&KeyEvent { type_: if key.pressed { KeyEventType::RAWKEYDOWN } else { KeyEventType::KEYUP },
                 modifiers: modifiers(key.modifiers) | if key.repeat { crate::host_keys::REPEAT } else { 0 }, windows_key_code: code,
@@ -157,7 +158,8 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
         }
         api::CommandKind::Zoom(factor) => host.set_zoom_level(zoom_level(factor)),
         api::CommandKind::Copy => {
-            if let Ok(selection) = doc.selection.lock() { doc.emit(selection.copy_event()); }
+            let event = doc.selection.lock().ok().map(|selection| selection.copy_event());
+            if let Some(event) = event { doc.emit(event); }
         }
         api::CommandKind::ResourceReply(reply) => resources::reply(doc, reply),
         api::CommandKind::Policy(_) => doc.emit(api::EventKind::Error { code: api::ErrorCode::Denied, message: "Policy changes require fresh Open with a new document generation and resource capability".into() }),

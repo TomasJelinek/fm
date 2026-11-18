@@ -1,5 +1,6 @@
 //! Bounded report snapshots; native file ownership never leaves backend workers.
 use crate::Outbox;
+use crate::resident_tasks::ResidentTasks;
 use midnight_core::{
     Cancellation, DesktopRequestId, Event, FsError, GeneratedTextSource, SizeWarningReport,
 };
@@ -8,7 +9,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::sync::mpsc;
 
 const WORKERS: usize = 2;
 const PENDING: usize = 8;
@@ -53,30 +54,36 @@ impl Request {
 }
 
 pub(crate) struct Controller {
+    resident: midnight_work_budget::resident::Spawner,
     sender: Option<mpsc::Sender<Request>>,
+    start_attempted: bool,
     stop: Cancellation,
     outbox: Outbox,
 }
 
 impl Controller {
-    pub(crate) fn new(outbox: Outbox) -> Self {
+    pub(crate) fn new(resident: midnight_work_budget::resident::Spawner, outbox: Outbox) -> Self {
         Self {
+            resident,
             sender: None,
+            start_attempted: false,
             stop: Cancellation::default(),
             outbox,
         }
     }
 
-    fn start(&mut self, tasks: &mut JoinSet<()>) -> mpsc::Sender<Request> {
+    fn start(&mut self, tasks: &mut ResidentTasks) {
+        self.start_attempted = true;
         let (sender, receiver) = mpsc::channel::<Request>(PENDING);
         let receiver = Arc::new(Mutex::new(receiver));
+        let mut started = 0;
         for _ in 0..WORKERS {
             let receiver = receiver.clone();
             let stop = self.stop.clone();
             let outbox = self.outbox.clone();
-            // Readers live until shutdown drops the sender: keep them off the
-            // bounded blocking pool that listings and scans need.
-            crate::actor_thread::spawn("midnight-report-reader", tasks, move || {
+            // Readers live until shutdown drops the sender and occupy resident
+            // lanes reserved independently of listing and scan work.
+            let work = Box::new(move || {
                 loop {
                     // The mutex serializes dequeue only, not snapshot I/O.
                     let request = receiver
@@ -118,9 +125,14 @@ impl Controller {
                     // Request and any rejected event are destroyed on this worker.
                 }
             });
+            if let Some(ticket) = crate::spawn_resident(&self.resident, "report reader", work) {
+                tasks.insert(ticket);
+                started += 1;
+            }
         }
-        self.sender = Some(sender.clone());
-        sender
+        // With partial admission the shared inbox is empty until every holder,
+        // including the refused envelope, is retired.
+        self.sender = (started == WORKERS).then_some(sender);
     }
 
     pub(crate) async fn open(
@@ -128,7 +140,7 @@ impl Controller {
         id: DesktopRequestId,
         report: SizeWarningReport,
         cancel: Cancellation,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.enqueue(
             Request {
@@ -146,7 +158,7 @@ impl Controller {
         id: DesktopRequestId,
         content: Arc<dyn GeneratedTextSource>,
         cancel: Cancellation,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.enqueue(
             Request {
@@ -159,13 +171,18 @@ impl Controller {
         .await;
     }
 
-    async fn enqueue(&mut self, request: Request, tasks: &mut JoinSet<()>) {
-        let sender = match &self.sender {
-            Some(sender) => sender.clone(),
-            None => self.start(tasks),
+    async fn enqueue(&mut self, request: Request, tasks: &mut ResidentTasks) {
+        if !self.start_attempted {
+            self.start(tasks);
+        }
+        let refused = match &self.sender {
+            Some(sender) => sender
+                .try_send(request)
+                .err()
+                .map(|refused| refused.into_inner()),
+            None => Some(request),
         };
-        if let Err(refused) = sender.try_send(request) {
-            let refused = refused.into_inner();
+        if let Some(refused) = refused {
             let event = refused.failed(error(
                 io::ErrorKind::WouldBlock,
                 "Report queue is busy; try again",
@@ -179,6 +196,12 @@ impl Controller {
     pub(crate) fn shutdown(&mut self) {
         self.stop.cancel();
         self.sender.take();
+    }
+}
+
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
