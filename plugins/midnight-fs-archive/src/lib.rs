@@ -1,6 +1,7 @@
 //! Read-only archive parsing. This code runs only inside the isolated worker.
 pub mod broker;
 mod formats;
+mod reader;
 mod sevenzip;
 pub mod storage;
 mod streams;
@@ -117,7 +118,7 @@ impl Archive {
         if source_length > limits.max_source {
             return Err(Error::limit());
         }
-        let source = std::io::BufReader::with_capacity(MAX_READ as usize, source);
+        let source = Reader::new(source);
         let mut result = Self {
             nodes: vec![],
             contents: HashMap::new(),
@@ -157,11 +158,7 @@ impl Archive {
                 ) {
                     let reader: Box<dyn storage::ReadSeek> =
                         Box::new(storage::StoredReader::new(result.storage.clone(), content));
-                    result.tar(
-                        std::io::BufReader::with_capacity(MAX_READ as usize, reader),
-                        content.length,
-                        Some(content),
-                    )?;
+                    result.tar(Reader::new(reader), content.length, Some(content))?;
                 } else {
                     result.add(b"content", "content", Kind::File, Some(content), true)?;
                 }

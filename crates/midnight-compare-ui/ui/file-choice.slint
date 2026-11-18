@@ -1,8 +1,13 @@
-import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
+import { ThemedLineEdit } from "../../midnight-ui/ui/content-controls.slint";
+import { Theme } from "../../midnight-ui/ui/theme.slint";
 
 component FileField inherits VerticalLayout {
     in property <string> label;
     in property <color> foreground;
+    in property <length> font-size: Theme.font-size;
+    in property <length> control-height: Theme.control-height;
     in property <bool> busy;
     in property <bool> picker-available;
     in-out property <string> path;
@@ -10,16 +15,18 @@ component FileField inherits VerticalLayout {
     callback submit();
     public function focus-path() { edit.focus(); }
     spacing: 4px;
-    Text { text: root.label; color: root.foreground; }
+    Text { text: root.label; color: root.foreground; font-size: root.font-size; }
     HorizontalLayout {
         spacing: 6px;
-        edit := LineEdit {
+        edit := ThemedLineEdit {
+            font-size: root.font-size; control-height: root.control-height;
             text <=> root.path; enabled: !root.busy;
             horizontal-stretch: 1; min-width: 40px;
             accessible-label: root.label;
-            accepted => { root.submit(); }
+            accepted(value) => { root.submit(); }
         }
-        Button {
+        ActionButton {
+            font-size: root.font-size; control-height: root.control-height;
             text: "Browse…"; enabled: !root.busy && root.picker-available;
             accessible-label: "Browse for " + root.label;
             clicked => { root.browse(); }
@@ -29,6 +36,8 @@ component FileField inherits VerticalLayout {
 
 export component FileChoiceForm inherits Rectangle {
     in property <color> foreground;
+    in property <length> font-size: Theme.font-size;
+    in property <length> control-height: Theme.control-height;
     in property <string> message;
     in property <bool> is-error;
     in property <bool> busy;
@@ -51,9 +60,10 @@ export component FileChoiceForm inherits Rectangle {
             horizontal-stretch: 1; vertical-stretch: 1;
             VerticalLayout {
                 padding: 6px; spacing: 12px;
-                Text { text: "Compare files"; font-weight: 600; color: root.foreground; }
+                Text { text: "Compare files"; font-weight: 600; color: root.foreground; font-size: root.font-size; }
                 a := FileField {
                     label: "File A"; foreground: root.foreground;
+                    font-size: root.font-size; control-height: root.control-height;
                     busy: root.busy; picker-available: root.picker-available;
                     path <=> root.file-a;
                     browse => { root.browse(0); }
@@ -61,6 +71,7 @@ export component FileChoiceForm inherits Rectangle {
                 }
                 b := FileField {
                     label: "File B"; foreground: root.foreground;
+                    font-size: root.font-size; control-height: root.control-height;
                     busy: root.busy; picker-available: root.picker-available;
                     path <=> root.file-b;
                     browse => { root.browse(1); }
@@ -69,10 +80,11 @@ export component FileChoiceForm inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     if root.is-error && root.message != "": Rectangle {
-                        width: 20px; height: 20px; border-radius: 10px; background: #b32832;
-                        Text { text: "!"; color: white; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        width: 20px; height: 20px; border-radius: 10px; background: Theme.error-background;
+                        border-width: 1px; border-color: Theme.error-text;
+                        Text { text: "!"; color: Theme.error-text; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                     }
-                    Text { text: root.message; wrap: word-wrap; color: root.foreground; horizontal-stretch: 1; }
+                    Text { text: root.message; wrap: word-wrap; color: root.foreground; font-size: root.font-size; horizontal-stretch: 1; }
                 }
                 Rectangle { vertical-stretch: 1; }
             }
@@ -80,13 +92,14 @@ export component FileChoiceForm inherits Rectangle {
         HorizontalLayout {
             spacing: 6px;
             Rectangle { horizontal-stretch: 1; }
-            Button {
+            ActionButton {
+                font-size: root.font-size; control-height: root.control-height;
                 text: root.busy ? "Please wait…" : "Compare";
                 primary: true;
                 enabled: !root.busy && root.file-a != "" && root.file-b != "";
                 clicked => { root.submit(); }
             }
-            Button { text: "Cancel"; clicked => { root.cancel(); } }
+            ActionButton { font-size: root.font-size; control-height: root.control-height; text: "Cancel"; clicked => { root.cancel(); } }
         }
     }
 }

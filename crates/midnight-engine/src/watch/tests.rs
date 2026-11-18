@@ -285,10 +285,17 @@ fn controller(
     files: Arc<Files>,
     native: Option<Arc<Native>>,
     poll: Duration,
-) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>) {
+) -> (
+    midnight_work_budget::resident::Owner,
+    Controller,
+    JoinSet<()>,
+    mpsc::Receiver<Event>,
+) {
     let (sender, events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
+    let (owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files,
@@ -300,7 +307,7 @@ fn controller(
         &mut tasks,
         timing(poll),
     );
-    (controller, tasks, events)
+    (owner, controller, tasks, events)
 }
 
 async fn changed(events: &mut mpsc::Receiver<Event>) -> (PaneId, NavigationId) {
@@ -329,7 +336,7 @@ async fn stop(controller: &Controller, tasks: &mut JoinSet<()>) {
 async fn a_native_burst_is_coalesced_and_later_bursts_still_refresh() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 4, "left"));
     native.registrations(1).await;
@@ -360,7 +367,7 @@ async fn a_native_burst_is_coalesced_and_later_bursts_still_refresh() {
 async fn switching_target_ignores_old_callbacks_and_preserves_new_navigation_identity() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 1, "old"));
     native.registrations(1).await;
@@ -382,7 +389,7 @@ async fn switching_target_ignores_old_callbacks_and_preserves_new_navigation_ide
 async fn panes_watching_the_same_path_receive_independent_generation_hints() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 3, "same"));
     controller.set_visible(files.visible(PaneId::Right, 8, "same"));
@@ -401,7 +408,7 @@ async fn panes_watching_the_same_path_receive_independent_generation_hints() {
 async fn unchanged_poll_is_quiet_and_failed_refresh_hints_are_retried_until_acknowledged() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(40));
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     files.wait_probes(2).await;
@@ -436,7 +443,7 @@ async fn recovered_metadata_refreshes_once_and_stable_unknown_metadata_stays_qui
         .unwrap()[0]
         .metadata = EntryMetadata::default();
     let visible = files.visible(PaneId::Left, 1, "left");
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(40));
     controller.set_visible(visible);
     files.wait_probes(2).await;
@@ -476,7 +483,7 @@ async fn assert_polling_observes_compression_only_change(
         .metadata
         .compression = initial;
     let original = files.visible(PaneId::Left, 1, "left");
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));
     controller.set_visible(original.clone());
     files.wait_probes(2).await;
@@ -530,7 +537,7 @@ async fn failed_native_registration_retains_polling_fallback() {
         fail: true,
         ..Native::default()
     });
-    let (controller, mut tasks, mut events) = controller(
+    let (_owner, controller, mut tasks, mut events) = controller(
         files.clone(),
         Some(native.clone()),
         Duration::from_millis(40),
@@ -549,7 +556,7 @@ async fn a_blocked_probe_cannot_starve_the_other_pane() {
         ..Files::default()
     });
     files.put("right", 7);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(30));
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     controller.set_visible(files.visible(PaneId::Right, 9, "right"));
@@ -574,7 +581,9 @@ async fn shutdown_releases_full_output_queue_waiters_and_ignores_late_callbacks(
         .await
         .unwrap();
     let mut tasks = JoinSet::new();
+    let (_owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
@@ -615,7 +624,7 @@ async fn computed_folder_totals_do_not_look_like_filesystem_changes() {
         .insert("left".into(), vec![directory]);
     let mut visible = files.visible(PaneId::Left, 1, "left");
     Arc::make_mut(&mut visible.entries)[0].metadata.size = Some(8_192);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(40));
     controller.set_visible(visible);
     files.wait_probes(2).await;
@@ -636,7 +645,7 @@ async fn computed_folder_totals_do_not_look_like_filesystem_changes() {
 async fn continuous_native_notifications_eventually_emit_without_waiting_for_the_writer() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
@@ -658,7 +667,7 @@ async fn continuous_native_notifications_eventually_emit_without_waiting_for_the
 async fn delayed_stale_visibility_ack_cannot_replace_the_current_target() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), Some(native.clone()), Duration::from_secs(5));
     controller.set_visible(files.visible(PaneId::Left, 9, "new"));
     native.registrations(1).await;

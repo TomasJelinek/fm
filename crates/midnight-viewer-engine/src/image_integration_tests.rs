@@ -59,7 +59,11 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         .enable_all()
         .build()
         .unwrap();
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-native-test", crate::RESIDENT_WORKERS)
+            .unwrap();
     let service = Service {
+        resident: resident.clone(),
         raster_budget: Arc::new(crate::raster_budget::Budget::default()),
         web: Arc::new(Mutex::new(Some(Arc::from([])))),
         handle: executor.handle().clone(),
@@ -69,7 +73,7 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         windows: Arc::new(AtomicUsize::new(0)),
         fonts: Default::default(),
         catalog_preparation: Default::default(),
-        image_startup: crate::image_startup::Startup::new(executor.handle().clone()),
+        image_startup: crate::image_startup::Startup::new(executor.handle().clone(), resident),
         image_policy: Default::default(),
         image_catalog_revision: Arc::new(AtomicU64::new(0)),
     };

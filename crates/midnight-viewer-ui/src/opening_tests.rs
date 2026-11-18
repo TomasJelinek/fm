@@ -15,16 +15,24 @@ impl Platform for TestPlatform {
 pub(super) fn opening(
     ready: OpenReady,
 ) -> (
-    tokio::runtime::Runtime,
+    image_presentation_tests::TestRuntime,
     ViewerWindows,
     Rc<OpenWindow>,
     Service,
 ) {
     slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = image_presentation_tests::TestRuntime::new();
+    let (release, capture) = std::sync::mpsc::channel::<()>();
+    let capture = std::sync::Mutex::new(capture);
     let service = Service::with_native_capture(
         runtime.handle().clone(),
-        Arc::new(|_, _| Err("captured source unavailable".into())),
+        runtime.spawner(),
+        Arc::new(move |_, _| {
+            // Release only after frontend setup. Dropping release on any setup
+            // exit also unblocks this actual capture before Runtime teardown.
+            let _ = capture.lock().unwrap().recv();
+            Err("captured source unavailable".into())
+        }),
     );
     let manager = ViewerWindows::new(service.clone());
     let path = std::env::temp_dir().join("unavailable-generated-viewer.txt");
@@ -59,6 +67,7 @@ pub(super) fn opening(
         )
         .unwrap();
     let open = manager.windows.borrow()[0].clone();
+    drop(release);
     (runtime, manager, open, service)
 }
 

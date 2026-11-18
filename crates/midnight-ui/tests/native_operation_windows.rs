@@ -484,7 +484,12 @@ fn native_operation_controls_remain_reachable_at_320_by_200_across_appearance_pr
                 preferences.tabs[1].paths = vec![h.paths[1].clone()];
                 h.state
                     .borrow_mut()
-                    .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+                    .apply(Event::PreferencesLoaded(Ok(Box::new(
+                        midnight_core::AcceptedPreferences {
+                            preferences,
+                            comparators: midnight_core::FileComparatorSnapshot::default(),
+                        },
+                    ))));
                 refresh(&h.main, &h.state.borrow());
                 let (_, child) = h.operation(PaneId::Left, 0);
                 modeless::draw(

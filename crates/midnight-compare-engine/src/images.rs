@@ -124,6 +124,8 @@ impl Images {
         Ok(Frame {
             fonts: None,
             geometry_revision: 0,
+            comparison_generation: 0,
+            identity: crate::IdentityVerdict::Pending,
             mode: Some(self.mode),
             width: geometry.width,
             height: geometry.height,

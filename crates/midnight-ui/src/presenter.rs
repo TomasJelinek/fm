@@ -6,6 +6,8 @@ pub(crate) mod checksums;
 #[cfg(test)]
 mod checksums_tests;
 mod choices;
+mod comparator_draft;
+mod comparators;
 mod comparison;
 mod copies;
 mod copy_decisions;
@@ -227,6 +229,7 @@ pub struct Presenter {
     pub(crate) thumbnails: crate::thumbnail_presentation::ThumbnailState,
     pub(crate) preferences: preferences::PreferencesState,
     pub(crate) editor: editor::EditorState,
+    pub(crate) comparators: comparators::State,
     pub(crate) settings_picker: settings_picker::State,
     pub(crate) viewer_plugins: viewer_plugins::ViewerPluginsState,
     pub(crate) fonts: fonts::FontsState,
@@ -284,6 +287,7 @@ impl Presenter {
             thumbnails: crate::thumbnail_presentation::ThumbnailState::default(),
             preferences: preferences::PreferencesState::default(),
             editor: editor::EditorState::default(),
+            comparators: comparators::State::default(),
             settings_picker: settings_picker::State::default(),
             viewer_plugins: viewer_plugins::ViewerPluginsState::default(),
             fonts: fonts::FontsState::default(),

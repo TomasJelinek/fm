@@ -1,0 +1,15 @@
+[package]
+name = "midnight-office-preview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+midnight-core = { path = "../midnight-core" }
+quick-xml = { version = "=0.41.0", default-features = false }
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+
+[lints.rust]
+unsafe_code = "forbid"

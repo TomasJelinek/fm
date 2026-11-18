@@ -1,4 +1,9 @@
-import { Button, LineEdit, CheckBox, ComboBox, SpinBox, Palette } from "std-widgets.slint";
+import { Button, Palette } from "std-widgets.slint";
+import { Theme } from "../../midnight-ui/ui/theme.slint";
+import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
+import { WrappingCheckBox } from "../../midnight-ui/ui/wrapping-check-box.slint";
+import { CompactPicker } from "../../midnight-ui/ui/controls.slint";
+import { ThemedLineEdit, ThemedSpinBox } from "../../midnight-ui/ui/content-controls.slint";
 
 import { PositionBar } from "viewer-position-bar.slint";
 export struct ViewerRasterTile { image: image, x: float, y: float, width: float, height: float }
@@ -36,9 +41,9 @@ export component ViewerWindow inherits Window {
     in property <string> position-context;
     in property <bool> position-pending;
     in property <string> accessible-text;
-    in property <color> foreground: #dddddd;
-    in property <color> background-color: #202020;
-    in property <color> accent: #8bb7ef;
+    in-out property <color> foreground: #dddddd;
+    in-out property <color> background-color: #202020;
+    in-out property <color> accent: #8bb7ef;
     in property <float> position;
     in property <float> displayed-position;
     out property <float> displayed-vertical-position: root.displayed-position;
@@ -58,6 +63,7 @@ export component ViewerWindow inherits Window {
     in property <bool> web-mode;
     in property <bool> web-network;
     in property <bool> web-scripts;
+    in property <bool> web-policy-change-allowed: false;
     in property <bool> source-mode;
     in property <bool> markdown-mode;
     in property <bool> font-available: true;
@@ -72,16 +78,20 @@ export component ViewerWindow inherits Window {
     in property <float> zoom-percent: 100;
     in property <int> document-page;
     in property <int> document-pages;
-    in property <length> ui-font-size: 12px;
-    in property <string> ui-font-family;
+    // -1 is an ordinary image; document values come only from published frames.
+    in property <int> document-layout: -1;
+    in-out property <length> ui-font-size: Theme.font-size;
+    in-out property <string> ui-font-family: Theme.effective-font-family;
     default-font-size: compact ? min(ui-font-size, 12px) : ui-font-size;
     default-font-family: root.ui-font-family != "" ? root.ui-font-family : "Segoe UI";
     // Keep compact controls readable at the minimum window size. Normal rows
     // follow the selected UI font and the active native widget metrics.
     private property <length> effective-ui-size: root.compact ? min(root.ui-font-size, 12px) : root.ui-font-size;
-    private property <length> control-height: max(max(28px, root.effective-ui-size + 14px), control-metrics.preferred-height);
+    private property <length> control-height: max(max(Theme.touch ? 40px : 28px, root.effective-ui-size + 14px),
+        max(control-metrics.min-height, control-metrics.preferred-height));
     private property <bool> stacked-image-footer:
-        root.compact && root.image-mode && root.document-page > 0;
+        root.image-mode && root.document-page > 0
+        && (root.compact || root.width < root.effective-ui-size * 32 + 260px);
     private property <length> status-size: max(11px, root.effective-ui-size - 1px);
     control-metrics := Button { visible: false; text: "Aa"; }
     in-out property <bool> search-visible;
@@ -100,6 +110,7 @@ export component ViewerWindow inherits Window {
     callback position-drag-ended(bool);
     callback drag-seek(bool, float);
     callback select-point(float, float, bool);
+    callback find();
     callback search(bool);
     callback change-mode(int);
     callback change-wrap(bool);
@@ -112,14 +123,25 @@ export component ViewerWindow inherits Window {
     callback image-zoom(float, float, float);
     callback image-drag(float, float);
     callback document-turn(int);
+    callback change-document-layout(int);
     callback web-policy(bool, bool);
     callback close-viewer();
     callback deliver-output();
     callback frame-presented();
     public function focus-search() { root.search-visible = true; search-edit.focus(); }
     public function focus-content() { content-focus.focus(); }
-    public function apply-palette(light: bool) { Palette.color-scheme = light ? ColorScheme.light : ColorScheme.dark; }
-    background: background-color;
+    public function apply-palette(light: bool) {
+        Theme.font-family = root.ui-font-family;
+        Palette.color-scheme = light ? ColorScheme.light : ColorScheme.dark;
+    }
+    public function apply-tool-theme(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        Theme.scheme = scheme; Theme.density = density; Theme.font-family = family;
+        Theme.desktop-font-size = desktop; Theme.touch-font-size = touch;
+        root.ui-font-family = Theme.effective-font-family; root.ui-font-size = Theme.font-size;
+        root.foreground = Theme.text; root.background-color = Theme.pane-background; root.accent = Theme.accent;
+        Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
+    }
+    background: Theme.window-background;
     forward-focus: content-focus;
     FocusScope {
         capture-key-pressed(event) => {
@@ -129,68 +151,80 @@ export component ViewerWindow inherits Window {
             reject
         }
         VerticalLayout {
-            padding: 6px; spacing: 4px;
+            padding: root.compact && root.document-layout >= 0 ? 4px : 6px;
+            spacing: root.compact && root.document-layout >= 0 ? 2px : 4px;
             HorizontalLayout {
                 spacing: 4px;
                 visible: root.search-visible && !root.image-mode;
                 height: root.search-visible && !root.image-mode ? max(30px, root.control-height) : 0px;
-                search-edit := LineEdit {
+                search-edit := ThemedLineEdit {
+                    font-size: root.effective-ui-size; control-height: root.control-height;
                     text <=> root.query;
                     placeholder-text: "Find in file";
                     accepted => { root.search(false); }
                 }
-                CheckBox { text: "Aa"; checked <=> root.case-sensitive; accessible-label: "Case sensitive";
+                WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Aa"; checked <=> root.case-sensitive; accessible-name: "Case sensitive";
                     toggled => { root.change-case-sensitive(self.checked); } }
-                Button { text: "Previous"; clicked => { root.search(true); } }
-                Button { text: "Next"; clicked => { root.search(false); } }
+                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "Previous"; clicked => { root.search(true); } }
+                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "Next"; clicked => { root.search(false); } }
             }
             if root.web-mode: HorizontalLayout {
                     spacing: 4px; height: max(32px, root.control-height);
-                    CheckBox { text: "Online"; checked: root.web-network; horizontal-stretch: 0;
-                        accessible-label: "Allow network for this document only";
-                        Tooltip { text: @markdown("Allow network for this document only. This creates a fresh browser context and removes access to local assets. Turning Online off also disables JavaScript."); }
+                    WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Online"; checked: root.web-network; enabled: root.web-policy-change-allowed; horizontal-stretch: 0;
+                        accessible-name: "Allow network for this document only";
+                        Tooltip { text: root.web-policy-change-allowed
+                            ? @markdown("Allow network for this document only. This creates a fresh browser context and removes access to local assets. Turning Online off also disables JavaScript.")
+                            : @markdown("Network and JavaScript cannot be enabled for this preview."); }
                         toggled => { root.web-policy(self.checked, root.web-scripts && self.checked); content-focus.focus(); } }
-                    CheckBox { text: root.compact ? "JS" : "JavaScript"; checked: root.web-scripts; enabled: root.web-network; horizontal-stretch: 0;
-                        accessible-label: "Allow scripts to read and transmit this document";
-                        Tooltip { text: @markdown("Allow JavaScript to read and transmit this document. Requires Online. Local assets remain unavailable."); }
+                    WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: root.compact ? "JS" : "JavaScript"; checked: root.web-scripts; enabled: root.web-policy-change-allowed && root.web-network; horizontal-stretch: 0;
+                        accessible-name: "Allow scripts to read and transmit this document";
+                        Tooltip { text: root.web-policy-change-allowed
+                            ? @markdown("Allow JavaScript to read and transmit this document. Requires Online. Local assets remain unavailable.")
+                            : @markdown("Network and JavaScript cannot be enabled for this preview."); }
                         toggled => { root.web-policy(root.web-network, self.checked); content-focus.focus(); } }
                     Rectangle { horizontal-stretch: 1; }
-                    Button { text: "−"; min-width: 36px; max-width: 36px;
+                    ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "−"; min-width: 36px; max-width: 36px;
                         accessible-label: "Zoom HTML out";
                         clicked => { root.image-command(3); content-focus.focus(); } }
-                    Text { text: "\{round(root.zoom-percent)}%"; color: root.foreground; vertical-alignment: center;
+                    Text { text: "\{round(root.zoom-percent)}%"; color: Theme.text; vertical-alignment: center;
                         horizontal-alignment: center; min-width: 52px; max-width: 52px; }
-                    Button { text: "+"; min-width: 36px; max-width: 36px;
+                    ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "+"; min-width: 36px; max-width: 36px;
                         accessible-label: "Zoom HTML in";
                         clicked => { root.image-command(2); content-focus.focus(); } }
             }
             if !root.image-mode && root.font-available && (root.typography-visible || root.markdown-mode || root.source-mode): HorizontalLayout {
                 spacing: 6px; height: max(32px, root.control-height);
-                if root.source-mode: CheckBox {
+                if root.source-mode: WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height;
                     text: "Lines"; checked <=> root.line-numbers;
-                    accessible-label: "Source line numbers";
+                    accessible-name: "Source line numbers";
                     toggled => { root.change-line-numbers(self.checked); content-focus.focus(); }
                 }
-                if root.markdown-mode: ComboBox {
+                if root.markdown-mode: CompactPicker {
+                    font-size: root.effective-ui-size; control-height: root.control-height;
                     model: ["GitHub", "Compact", "Comfortable"];
                     min-width: root.narrow-typography ? 95px : 140px;
                     max-width: root.narrow-typography ? 95px : 180px;
-                    current-index <=> root.markdown-preset;
-                    accessible-label: "Markdown presentation";
-                    // Keep the native popup's keyboard focus until it closes.
-                    selected(value) => { root.change-markdown-preset(self.current-index); }
+                    current-index: root.markdown-preset;
+                    label: self.model[root.markdown-preset];
+                    accessible-name: "Markdown presentation";
+                    selected(index) => { root.markdown-preset = index; root.change-markdown-preset(index); }
                 }
-                if !root.narrow-typography: Text { text: "Font"; color: root.foreground; vertical-alignment: center; }
-                ComboBox {
+                if !root.narrow-typography: Text { text: "Font"; color: Theme.text; vertical-alignment: center; }
+                CompactPicker {
+                    font-size: root.effective-ui-size; control-height: root.control-height;
                     model: root.font-families;
-                    current-index <=> root.font-family-index;
+                    current-index: root.font-family-index;
+                    label: root.viewer-font-family;
                     min-width: root.narrow-typography ? 90px : 150px; horizontal-stretch: 1;
-                    accessible-label: "Viewer font family";
-                    // Preserve the native popup's focus for keyboard selection.
-                    selected(value) => { root.change-font-family(value); }
+                    accessible-name: "Viewer font family";
+                    selected(index) => {
+                        root.font-family-index = index;
+                        root.change-font-family(root.font-families[index]);
+                    }
                 }
-                if !root.narrow-typography: Text { text: "Size"; color: root.foreground; vertical-alignment: center; horizontal-stretch: 0; }
-                SpinBox { value <=> root.viewer-font-size; minimum: 8; maximum: 48;
+                if !root.narrow-typography: Text { text: "Size"; color: Theme.text; vertical-alignment: center; horizontal-stretch: 0; }
+                ThemedSpinBox { value <=> root.viewer-font-size; minimum: 8; maximum: 48;
+                    font-size: root.effective-ui-size; control-height: root.control-height;
                     min-width: 85px; max-width: 90px;
                     accessible-label: "Viewer font size";
                     edited(value) => { root.change-font-size(value); } }
@@ -295,94 +329,134 @@ export component ViewerWindow inherits Window {
                     drag-ended => { root.position-drag-ended(true); } }
             }
             if root.compact && (root.image-mode || root.source-mode): Text {
-                height: max(18px, root.status-size + 6px); text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: root.foreground;
+                height: max(18px, root.status-size + 6px); text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text;
                 font-size: root.status-size; overflow: elide; vertical-alignment: center;
             }
-            HorizontalLayout {
+            // Keep width-dependent grid placement out of the window's intrinsic sizing.
+            Rectangle {
+                min-width: 0px; preferred-width: 0px; horizontal-stretch: 1;
                 height: root.stacked-image-footer
-                    ? 2 * root.control-height + 3px : root.control-height;
-                Text { visible: !(root.image-mode || root.source-mode) || !root.compact; min-width: 0px; max-width: (root.image-mode || root.source-mode) && root.compact ? 0px : 1000000px; text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: root.foreground; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                if root.image-mode: GridLayout {
-                    spacing: 3px;
-                    // Long PDF page counts must not crowd the zoom actions at
-                    // the minimum width, regardless of native font metrics.
-                    if root.document-page > 0: HorizontalLayout {
-                        row: 0; col: 0;
-                        height: root.control-height;
+                    ? (root.document-layout >= 0 ? 3 * root.control-height + 6px
+                        : 2 * root.control-height + 3px) : root.control-height;
+                HorizontalLayout {
+                    x: 0px; y: 0px; width: parent.width; height: parent.height;
+                    Text { visible: !(root.image-mode || root.source-mode) || !root.compact; min-width: 0px; max-width: (root.image-mode || root.source-mode) && root.compact ? 0px : 1000000px; text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                    if root.image-mode: GridLayout {
                         spacing: 3px;
-                        Button {
-                            min-width: root.compact ? 26px : 0px;
-                            max-width: root.compact ? 26px : 1000000px;
-                            text: "‹";
-                            accessible-label: "Previous document page (Ctrl+PageUp)";
-                            enabled: root.document-page > 1;
-                            clicked => { root.document-turn(-1); content-focus.focus(); }
+                        // Long PDF page counts must not crowd the zoom actions at
+                        // the minimum width, regardless of native font metrics.
+                        if root.document-page > 0: HorizontalLayout {
+                            row: 0; col: 0;
+                            height: root.control-height;
+                            spacing: 3px;
+                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                                min-width: root.compact ? 26px : 0px;
+                                max-width: root.compact ? 26px : 1000000px;
+                                text: "‹";
+                                accessible-label: "Previous document page (Ctrl+PageUp)";
+                                enabled: root.document-page > 1;
+                                clicked => { root.document-turn(-1); content-focus.focus(); }
+                            }
+                            Text {
+                                text: "\{root.document-page} / \{root.document-pages}";
+                                accessible-label: "Document page counter";
+                                accessible-value: self.text;
+                                color: Theme.text;
+                                vertical-alignment: center; horizontal-alignment: center;
+                            }
+                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                                min-width: root.compact ? 26px : 0px;
+                                max-width: root.compact ? 26px : 1000000px;
+                                text: "›";
+                                accessible-label: "Next document page (Ctrl+PageDown)";
+                                enabled: root.document-page < root.document-pages;
+                                clicked => { root.document-turn(1); content-focus.focus(); }
+                            }
                         }
-                        Text {
-                            text: "\{root.document-page} / \{root.document-pages}";
-                            accessible-label: "Document page counter";
-                            accessible-value: self.text;
-                            color: root.foreground;
-                            vertical-alignment: center; horizontal-alignment: center;
+                        if root.document-layout >= 0: HorizontalLayout {
+                            row: root.stacked-image-footer ? 1 : 0;
+                            col: root.stacked-image-footer ? 0 : 1;
+                            height: root.control-height;
+                            spacing: 3px;
+                            // Native auto-toggle would show a layout before the backend
+                            // publishes it. Checked/primary follow the acknowledged frame.
+                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                                text: "Paged";
+                                checked: root.document-layout == 0;
+                                primary: root.document-layout == 0;
+                                accessible-label: "Paged document layout";
+                                accessible-checkable: true;
+                                accessible-checked: root.document-layout == 0;
+                                clicked => { root.change-document-layout(0); content-focus.focus(); }
+                            }
+                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                                text: "Continuous";
+                                checked: root.document-layout == 1;
+                                primary: root.document-layout == 1;
+                                accessible-label: "Continuous document layout";
+                                accessible-checkable: true;
+                                accessible-checked: root.document-layout == 1;
+                                clicked => { root.change-document-layout(1); content-focus.focus(); }
+                            }
                         }
-                        Button {
-                            min-width: root.compact ? 26px : 0px;
-                            max-width: root.compact ? 26px : 1000000px;
-                            text: "›";
-                            accessible-label: "Next document page (Ctrl+PageDown)";
-                            enabled: root.document-page < root.document-pages;
-                            clicked => { root.document-turn(1); content-focus.focus(); }
+                        HorizontalLayout {
+                            row: root.stacked-image-footer ? (root.document-layout >= 0 ? 2 : 1) : 0;
+                            col: root.stacked-image-footer || root.document-page == 0 ? 0
+                                : root.document-layout >= 0 ? 2 : 1;
+                            height: root.control-height;
+                            spacing: 3px;
+                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                                min-width: root.compact ? 34px : 0px;
+                                max-width: root.compact ? 34px : 1000000px;
+                                text: "Fit"; accessible-label: "Fit image to window";
+                                clicked => { root.image-command(0); content-focus.focus(); }
+                            }
+                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                                min-width: root.compact ? 34px : 0px;
+                                max-width: root.compact ? 34px : 1000000px;
+                                text: "1:1"; accessible-label: "Actual image pixels";
+                                clicked => { root.image-command(1); content-focus.focus(); }
+                            }
+                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                                min-width: root.compact ? 26px : 0px;
+                                max-width: root.compact ? 26px : 1000000px;
+                                text: "−"; accessible-label: "Zoom image out";
+                                clicked => { root.image-command(3); content-focus.focus(); }
+                            }
+                            Text {
+                                text: "\{round(root.zoom-percent * 10) / 10}%";
+                                accessible-label: "Image zoom percentage";
+                                accessible-value: self.text;
+                                color: Theme.text;
+                                vertical-alignment: center; horizontal-alignment: center;
+                            }
+                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                                min-width: root.compact ? 26px : 0px;
+                                max-width: root.compact ? 26px : 1000000px;
+                                text: "+"; accessible-label: "Zoom image in";
+                                clicked => { root.image-command(2); content-focus.focus(); }
+                            }
                         }
                     }
-                    HorizontalLayout {
-                        row: root.stacked-image-footer ? 1 : 0;
-                        col: root.stacked-image-footer || root.document-page == 0 ? 0 : 1;
-                        height: root.control-height;
-                        spacing: 3px;
-                        Button {
-                            min-width: root.compact ? 34px : 0px;
-                            max-width: root.compact ? 34px : 1000000px;
-                            text: "Fit"; accessible-label: "Fit image to window";
-                            clicked => { root.image-command(0); content-focus.focus(); }
-                        }
-                        Button {
-                            min-width: root.compact ? 34px : 0px;
-                            max-width: root.compact ? 34px : 1000000px;
-                            text: "1:1"; accessible-label: "Actual image pixels";
-                            clicked => { root.image-command(1); content-focus.focus(); }
-                        }
-                        Button {
-                            min-width: root.compact ? 26px : 0px;
-                            max-width: root.compact ? 26px : 1000000px;
-                            text: "−"; accessible-label: "Zoom image out";
-                            clicked => { root.image-command(3); content-focus.focus(); }
-                        }
-                        Text {
-                            text: "\{round(root.zoom-percent * 10) / 10}%";
-                            accessible-label: "Image zoom percentage";
-                            accessible-value: self.text;
-                            color: root.foreground;
-                            vertical-alignment: center; horizontal-alignment: center;
-                        }
-                        Button {
-                            min-width: root.compact ? 26px : 0px;
-                            max-width: root.compact ? 26px : 1000000px;
-                            text: "+"; accessible-label: "Zoom image in";
-                            clicked => { root.image-command(2); content-focus.focus(); }
-                        }
+                    if !root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                        text: "Find"; horizontal-stretch: 0;
+                        clicked => { root.find(); }
                     }
+                    if !root.image-mode && !root.web-mode: WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Wrap"; checked <=> root.wrap-enabled; enabled: root.wrap-available;
+                        accessible-name: "Word wrap";
+                        toggled => { root.change-wrap(self.checked); content-focus.focus(); } }
+                    if !root.image-mode && root.font-available && !root.source-mode && !root.markdown-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                        text: "Aa"; min-width: 30px; max-width: 38px;
+                        accessible-label: "Font and presentation";
+                        clicked => { root.typography-visible = !root.typography-visible; }
+                    }
+                    if !root.image-mode: CompactPicker { model: root.modes; current-index: root.mode-index;
+                        font-size: root.effective-ui-size; control-height: root.control-height;
+                        label: root.mode-index >= 0 && root.mode-index < root.modes.length
+                            ? root.modes[root.mode-index] : "";
+                        accessible-name: "Viewer mode"; width: 130px; popup-above: true;
+                        selected(index) => { root.change-mode(index); } }
                 }
-                if !root.image-mode && !root.web-mode: CheckBox { text: "Wrap"; checked <=> root.wrap-enabled; enabled: root.wrap-available;
-                    accessible-label: "Word wrap";
-                    toggled => { root.change-wrap(self.checked); content-focus.focus(); } }
-                if !root.image-mode && root.font-available && !root.source-mode && !root.markdown-mode: Button {
-                    text: "Aa"; min-width: 30px; max-width: 38px;
-                    accessible-label: "Font and presentation";
-                    clicked => { root.typography-visible = !root.typography-visible; }
-                }
-                if !root.image-mode: ComboBox { model: root.modes; current-index: root.mode-index;
-                    accessible-label: "Viewer mode"; width: 130px;
-                    selected(value) => { root.change-mode(self.current-index); } }
             }
         }
     }

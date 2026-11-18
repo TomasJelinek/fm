@@ -19,6 +19,8 @@ use std::{
 mod image;
 #[path = "worker_layout.rs"]
 mod layout;
+#[path = "worker_palette.rs"]
+mod palette;
 #[path = "worker_position.rs"]
 mod position;
 #[path = "worker_raster.rs"]
@@ -27,6 +29,8 @@ mod raster;
 mod scroll_map;
 #[path = "scroll_trace.rs"]
 mod scroll_trace;
+#[path = "worker_syntax.rs"]
+mod syntax;
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
@@ -37,8 +41,12 @@ mod web;
 
 struct Worker {
     wake: Arc<dyn Fn() -> bool + Send + Sync>,
+    window_closed: Arc<AtomicBool>,
     preference_state: Arc<crate::preferences::Preferences>,
     preference_revision: u64,
+    palette_state: Arc<crate::palette::State>,
+    palette_revision: u64,
+    palette_ack: Option<(u64, u64, bool)>,
     preferences: Arc<ViewerPreferences>,
     runtime: Arc<Runtime>,
     images: Arc<[midnight_image_viewer_host::Provider]>,
@@ -46,6 +54,7 @@ struct Worker {
     web_providers: Arc<[midnight_web_viewer_host::Provider]>,
     web: Option<web::WebView>,
     closing_web: Option<midnight_web_viewer_host::Session>,
+    web_retirement_error: Option<String>,
     image_ids: Arc<std::sync::atomic::AtomicU64>,
     image: Option<crate::image_view::ImageView>,
     closing_image: Option<crate::image_worker::ImageWorker>,
@@ -104,6 +113,7 @@ pub(crate) struct Services {
     pub capture: crate::NativeCapture,
     pub wake: Arc<dyn Fn() -> bool + Send + Sync>,
     pub preferences: Arc<crate::preferences::Preferences>,
+    pub palette: Arc<crate::palette::State>,
     pub negotiate_layout: bool,
 }
 
@@ -127,6 +137,7 @@ pub(crate) fn run(
         capture,
         wake,
         preferences: preference_state,
+        palette: palette_state,
         negotiate_layout,
     } = services;
     output.put(ViewerOutput::Status("Preparing file identities…".into()));
@@ -149,10 +160,17 @@ pub(crate) fn run(
             .into_iter()
             .filter_map(|(id, count)| (count > 1).then_some(id)),
     );
+    let (palette_revision, colors) = palette_state.snapshot();
+    let mut appearance = appearance;
+    colors.apply(&mut appearance);
     let mut worker = Worker {
         wake,
+        window_closed: closed.clone(),
         preference_state,
         preference_revision,
+        palette_state,
+        palette_revision,
+        palette_ack: None,
         preferences: preferences.clone(),
         runtime,
         images,
@@ -160,6 +178,7 @@ pub(crate) fn run(
         image_startup: Some(image_startup),
         web: None,
         closing_web: None,
+        web_retirement_error: None,
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
@@ -235,6 +254,7 @@ pub(crate) fn run(
             break;
         }
         worker.sync_preferences(output);
+        worker.sync_palette(output);
         for _ in 0..16 {
             if capture_finished {
                 break;
@@ -276,6 +296,7 @@ pub(crate) fn run(
                 }
             }
         }
+        worker.announce_content_palette(output);
         worker.poll_image(output);
         worker.poll_web(output);
         if worker.dirty {
@@ -286,19 +307,18 @@ pub(crate) fn run(
         }
         // Optional indexing starts only after content has been published. It
         // never participates in a viewport or scrollbar acknowledgement.
+        worker.prepare_source(output);
         worker.locate_source();
     }
     if let Some(session) = worker.session.take() {
         session.close();
     }
-    if let Some(web) = worker.web.take() {
-        web.session.close();
-    }
+    let web_cleanup = worker.finish_web();
     output.put(ViewerOutput::Closed);
     let raster_budget = worker.raster_budget.clone();
     drop(worker);
     raster_budget.reap();
-    Ok(())
+    web_cleanup
 }
 
 fn bounded_geometry(mut geometry: ViewerGeometry) -> ViewerGeometry {
@@ -321,6 +341,22 @@ fn bounded_geometry(mut geometry: ViewerGeometry) -> ViewerGeometry {
 
 impl Worker {
     fn position_context(&mut self, output: &Mailbox) {
+        // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN context_before
+        #[cfg(test)]
+        if position::observation::enabled(self) {
+            position::observation::record(
+                self,
+                11,
+                0,
+                self.viewport_request,
+                position::observation::Extra {
+                    reset_done: Some(false),
+                    ..Default::default()
+                },
+            );
+        }
+        // SOURCE_COMPLETION_OBSERVATION_V2_END context_before
+        self.invalidate_source_target();
         self.reset_raster_context();
         self.position_page = None;
         if self.positions.has_pending()
@@ -332,6 +368,21 @@ impl Worker {
         if let Err(error) = self.positions.reset() {
             self.error(error, output);
         }
+        // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN context_after
+        #[cfg(test)]
+        if position::observation::enabled(self) {
+            position::observation::record(
+                self,
+                11,
+                0,
+                self.viewport_request,
+                position::observation::Extra {
+                    reset_done: Some(true),
+                    ..Default::default()
+                },
+            );
+        }
+        // SOURCE_COMPLETION_OBSERVATION_V2_END context_after
         self.dirty = true; // Publish this context even when a search finds no match.
     }
 
@@ -392,6 +443,7 @@ impl Worker {
 
     fn open(&mut self, output: &Mailbox) {
         self.invalidate_layout();
+        self.close_source_target();
         self.cancel_locate();
         self.position_context(output);
         // A pending close/capture must not repaint old-file content under the
@@ -404,20 +456,19 @@ impl Worker {
         self.continuation = None;
         self.queued_scroll = [0.0; 2];
         self.frames.invalidate();
-        if let Some(web) = self.web.take() {
-            web.session.close();
-            self.closing_web = Some(web.session);
+        match self.retire_web() {
+            Ok(true) => {}
+            Ok(false) => {
+                self.pending_open = true;
+                self.status("Closing previous browser…".into(), output);
+                return;
+            }
+            Err(error) => {
+                self.pending_open = false;
+                self.error(error, output);
+                return;
+            }
         }
-        if self
-            .closing_web
-            .as_ref()
-            .is_some_and(|session| !session.finished())
-        {
-            self.pending_open = true;
-            self.status("Closing previous browser…".into(), output);
-            return;
-        }
-        self.closing_web = None;
         if let Some(image) = self.image.take() {
             image.worker.cancel();
             self.closing_image = Some(image.worker);
@@ -489,11 +540,100 @@ impl Worker {
         position: Option<u64>,
         output: &Mailbox,
     ) {
+        self.invalidate_source_target();
         self.cancel_locate();
         self.position_page = None;
         if position.is_none() && self.positions.has_pending() {
             self.position_context(output);
         }
+        let viewport = self.page_viewport(anchor, backwards);
+        // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN admission_viewport
+        #[cfg(test)]
+        let observation_viewport = position::observation::enabled(self).then(|| {
+            (
+                viewport.source_anchor,
+                viewport.backwards,
+                viewport.max_bytes,
+                viewport.max_lines,
+            )
+        });
+        // SOURCE_COMPLETION_OBSERVATION_V2_END admission_viewport
+        self.continuation = None;
+        let Some(session) = &self.session else {
+            // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN admission_no_session
+            #[cfg(test)]
+            if position::observation::enabled(self) {
+                position::observation::record(
+                    self,
+                    2,
+                    9,
+                    None,
+                    position::observation::Extra {
+                        viewport: observation_viewport,
+                        admitted: Some(false),
+                        ..Default::default()
+                    },
+                );
+            }
+            // SOURCE_COMPLETION_OBSERVATION_V2_END admission_no_session
+            return;
+        };
+        if let Some(previous) = self.viewport_request.take() {
+            session.cancel(previous);
+            // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN admission_cancel_previous
+            #[cfg(test)]
+            if position::observation::enabled(self) {
+                position::observation::record(
+                    self,
+                    2,
+                    1,
+                    Some(previous),
+                    position::observation::Extra {
+                        cancelled_request: Some(previous),
+                        viewport: observation_viewport,
+                        ..Default::default()
+                    },
+                );
+            }
+            // SOURCE_COMPLETION_OBSERVATION_V2_END admission_cancel_previous
+        }
+        let _ = scroll_trace::begin("request", anchor);
+        match session.viewport(viewport.clone()) {
+            Ok(id) => {
+                self.viewport_request = Some(id);
+                self.source_requested(id, viewport);
+                if let Some(sequence) = position {
+                    self.positions.requested(id, sequence);
+                }
+                self.land_at_bottom = backwards;
+                self.anchor = anchor;
+            }
+            Err(error) => self.error(error.to_string(), output),
+        }
+        // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN admission_result
+        #[cfg(test)]
+        if position::observation::enabled(self) {
+            position::observation::record(
+                self,
+                2,
+                if self.viewport_request.is_some() {
+                    0
+                } else {
+                    9
+                },
+                self.viewport_request,
+                position::observation::Extra {
+                    viewport: observation_viewport,
+                    admitted: Some(self.viewport_request.is_some()),
+                    admitted_id: self.viewport_request,
+                    ..Default::default()
+                },
+            );
+        }
+        // SOURCE_COMPLETION_OBSERVATION_V2_END admission_result
+    }
+
+    fn page_viewport(&mut self, anchor: u64, backwards: bool) -> messages::Viewport {
         let options = TextOptions {
             family: if self.binary || self.appearance.family.is_empty() {
                 "monospace"
@@ -524,15 +664,7 @@ impl Worker {
             self.length,
             self.mode,
         );
-        self.continuation = None;
-        let Some(session) = &self.session else {
-            return;
-        };
-        if let Some(previous) = self.viewport_request.take() {
-            session.cancel(previous);
-        }
-        let _ = scroll_trace::begin("request", anchor);
-        match session.viewport(messages::Viewport {
+        messages::Viewport {
             source_anchor: anchor,
             backwards,
             max_bytes: if self.binary {
@@ -543,21 +675,12 @@ impl Worker {
                 12 * 1024
             },
             max_lines,
-        }) {
-            Ok(id) => {
-                self.viewport_request = Some(id);
-                if let Some(sequence) = position {
-                    self.positions.requested(id, sequence);
-                }
-                self.land_at_bottom = backwards;
-                self.anchor = anchor;
-            }
-            Err(error) => self.error(error.to_string(), output),
         }
     }
 
     fn input(&mut self, input: ViewerInput, output: &Mailbox) {
         if matches!(input, ViewerInput::Close) {
+            self.close_source_target();
             self.layout.close();
             self.pending_layout = None;
             self.pending_open = false;
@@ -596,11 +719,18 @@ impl Worker {
         }
         match input {
             ViewerInput::RetainedRaster(enabled) => {
+                self.invalidate_source_target();
                 self.raster.enabled = enabled;
+                self.source_viewport_parameters_changed();
                 self.reset_raster_context();
                 self.dirty = true;
             }
-            ViewerInput::Raster { surface, input } => self.raster_input(surface, input, output),
+            ViewerInput::Raster { surface, input } => {
+                if matches!(&input, ViewerRasterInput::PanTo { .. }) {
+                    self.invalidate_source_target();
+                }
+                self.raster_input(surface, input, output);
+            }
             ViewerInput::RasterRebase { transition, origin } => {
                 self.raster_rebase_input(transition, origin, output)
             }
@@ -616,6 +746,7 @@ impl Worker {
                 {
                     return;
                 }
+                self.invalidate_source_target();
                 if horizontal {
                     self.reset_raster_context();
                     self.positions.horizontal(sequence, position);
@@ -660,8 +791,10 @@ impl Worker {
                     self.continuation = Some(continuation);
                 }
                 self.dirty = true;
+                self.source_viewport_parameters_changed();
             }
             ViewerInput::Scroll { x, y } if x.is_finite() && y.is_finite() => {
+                self.invalidate_source_target();
                 self.cancel_raster_rebase();
                 if self.retained_active() {
                     self.reset_raster_context();
@@ -859,9 +992,49 @@ impl Worker {
             }
             _ => {}
         }
+        self.source_stationary_target();
     }
 
     fn event(&mut self, id: u64, event: EventKind, output: &Mailbox) {
+        // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN event_entry
+        #[cfg(test)]
+        if position::observation::enabled(self) {
+            position::observation::record(
+                self,
+                3,
+                0,
+                Some(id),
+                position::observation::Extra::event(&event),
+            );
+        }
+        // SOURCE_COMPLETION_OBSERVATION_V2_END event_entry
+        if self.source_event(id, &event, output) {
+            // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN event_source_handled
+            #[cfg(test)]
+            if position::observation::enabled(self) {
+                position::observation::record(
+                    self,
+                    4,
+                    0,
+                    Some(id),
+                    position::observation::Extra::event(&event),
+                );
+            }
+            // SOURCE_COMPLETION_OBSERVATION_V2_END event_source_handled
+            return;
+        }
+        // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN event_normal_route
+        #[cfg(test)]
+        if position::observation::enabled(self) {
+            position::observation::record(
+                self,
+                5,
+                0,
+                Some(id),
+                position::observation::Extra::event(&event),
+            );
+        }
+        // SOURCE_COMPLETION_OBSERVATION_V2_END event_normal_route
         match event {
             EventKind::TextPosition(position) => self.located(id, &position),
             EventKind::Failed(failure)
@@ -870,10 +1043,19 @@ impl Worker {
                     .locate_request
                     .is_some_and(|(request, _)| request == id) =>
             {
-                self.text.locate_request = None;
+                let start = self.text.locate_request.take().map(|(_, start)| start);
                 // Older plugins reject the optional request. This is not a
                 // document failure and must not overwrite the usable viewport.
-                self.text.unavailable = failure.code != midnight_plugin_host::api::abi::QUEUE_FULL;
+                if failure.code == midnight_plugin_host::api::abi::UNSUPPORTED {
+                    self.text.locate_unsupported = true;
+                    self.text.unavailable = true;
+                } else if failure.code == midnight_plugin_host::api::abi::QUEUE_FULL {
+                    self.retry_locate();
+                } else {
+                    self.text.located_start = start;
+                    self.text.unavailable = true;
+                    self.status(failure.message, output);
+                }
                 self.dirty = true;
             }
             EventKind::Opened(_) => self.request_page(0, false, output),
@@ -898,13 +1080,64 @@ impl Worker {
                     || self.search_request == Some(id)
                     || self.viewport_request == Some(id) =>
             {
+                // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN native_failed
+                #[cfg(test)]
+                if position::observation::enabled(self) {
+                    position::observation::record(
+                        self,
+                        6,
+                        10,
+                        Some(id),
+                        position::observation::Extra {
+                            event_kind: Some(4),
+                            failure_code: Some(failure.code),
+                            ..Default::default()
+                        },
+                    );
+                }
+                // SOURCE_COMPLETION_OBSERVATION_V2_END native_failed
                 if self.viewport_request == Some(id) {
                     self.abort_raster_rebase(&failure.message, output);
                     self.abort_raster_refill(&failure.message, output);
                     self.position_page = None;
+                    // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN native_before_complete
+                    #[cfg(test)]
+                    if position::observation::enabled(self) {
+                        position::observation::record(
+                            self,
+                            9,
+                            10,
+                            Some(id),
+                            position::observation::Extra {
+                                event_kind: Some(4),
+                                failure_code: Some(failure.code),
+                                completion_success: Some(false),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    // SOURCE_COMPLETION_OBSERVATION_V2_END native_before_complete
                     let failed = self.positions.complete(id, false)
                         == crate::position_ack::Completion::Failed;
+                    // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN native_after_complete
+                    #[cfg(test)]
+                    if position::observation::enabled(self) {
+                        position::observation::record(
+                            self,
+                            10,
+                            10,
+                            Some(id),
+                            position::observation::Extra {
+                                event_kind: Some(4),
+                                failure_code: Some(failure.code),
+                                completion: Some(if failed { 2 } else { 0 }),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    // SOURCE_COMPLETION_OBSERVATION_V2_END native_after_complete
                     self.viewport_request = None;
+                    self.source_foreground_finished(id, false);
                     if failed {
                         self.position_context(output);
                         self.dirty = true;
@@ -929,6 +1162,32 @@ impl Worker {
                     self.dirty = true;
                 }
                 if self.viewport_request == Some(id) {
+                    // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN terminal_before_page
+                    #[cfg(test)]
+                    if position::observation::enabled(self) {
+                        position::observation::record(
+                            self,
+                            6,
+                            if matches!(event, EventKind::Cancelled) {
+                                1
+                            } else {
+                                0
+                            },
+                            Some(id),
+                            position::observation::Extra::event(&event),
+                        );
+                    }
+                    // SOURCE_COMPLETION_OBSERVATION_V2_END terminal_before_page
+                    // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN terminal_page_preconditions
+                    #[cfg(test)]
+                    let observation_page = position::observation::enabled(self).then(|| {
+                        (
+                            self.positions.has_pending(),
+                            self.position_page.as_ref().map(|(page_id, _)| *page_id),
+                            matches!(event, EventKind::Completed),
+                        )
+                    });
+                    // SOURCE_COMPLETION_OBSERVATION_V2_END terminal_page_preconditions
                     let mut completed = matches!(event, EventKind::Completed);
                     if self.positions.has_pending() {
                         completed = completed
@@ -936,6 +1195,39 @@ impl Worker {
                                 page_id == id && self.set_page(page, output)
                             });
                     }
+                    // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN terminal_page_decision
+                    #[cfg(test)]
+                    if position::observation::enabled(self) {
+                        if let Some((pending, staged_id, terminal_completed)) = observation_page {
+                            let page_match = staged_id.map(|page_id| page_id == id);
+                            let reason = if !terminal_completed {
+                                1
+                            } else if pending && staged_id.is_none() {
+                                2
+                            } else if pending && page_match == Some(false) {
+                                3
+                            } else if pending && !completed {
+                                4
+                            } else {
+                                0
+                            };
+                            position::observation::record(
+                                self,
+                                7,
+                                reason,
+                                Some(id),
+                                position::observation::Extra {
+                                    page_match,
+                                    page_applied: (terminal_completed
+                                        && pending
+                                        && page_match == Some(true))
+                                    .then_some(completed),
+                                    ..position::observation::Extra::event(&event)
+                                },
+                            );
+                        }
+                    }
+                    // SOURCE_COMPLETION_OBSERVATION_V2_END terminal_page_decision
                     if completed && self.positions.has_pending() {
                         match self.refine_position() {
                             position::LoadedPosition::Ready => {}
@@ -949,15 +1241,72 @@ impl Worker {
                                 if self.viewport_request.is_some() {
                                     return;
                                 }
+                                // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN correction_not_admitted
+                                #[cfg(test)]
+                                if position::observation::enabled(self) {
+                                    position::observation::record(
+                                        self,
+                                        2,
+                                        9,
+                                        Some(id),
+                                        position::observation::Extra {
+                                            correction: Some((anchor, backwards)),
+                                            admitted: Some(false),
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+                                // SOURCE_COMPLETION_OBSERVATION_V2_END correction_not_admitted
                                 completed = false;
                             }
                             position::LoadedPosition::Unavailable => completed = false,
                         }
                     }
+                    // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN terminal_before_complete
+                    #[cfg(test)]
+                    if position::observation::enabled(self) {
+                        position::observation::record(
+                            self,
+                            9,
+                            if self.positions.has_pending() && !self.positions.uncompleted_page() {
+                                11
+                            } else if matches!(event, EventKind::Cancelled) {
+                                1
+                            } else {
+                                0
+                            },
+                            Some(id),
+                            position::observation::Extra {
+                                completion_success: Some(completed),
+                                ..position::observation::Extra::event(&event)
+                            },
+                        );
+                    }
+                    // SOURCE_COMPLETION_OBSERVATION_V2_END terminal_before_complete
                     let acknowledgement = self.positions.complete(id, completed);
+                    // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN terminal_after_complete
+                    #[cfg(test)]
+                    if position::observation::enabled(self) {
+                        position::observation::record(
+                            self,
+                            10,
+                            0,
+                            Some(id),
+                            position::observation::Extra {
+                                completion: Some(match &acknowledgement {
+                                    crate::position_ack::Completion::Unrelated => 0,
+                                    crate::position_ack::Completion::Ready => 1,
+                                    crate::position_ack::Completion::Failed => 2,
+                                }),
+                                ..position::observation::Extra::event(&event)
+                            },
+                        );
+                    }
+                    // SOURCE_COMPLETION_OBSERVATION_V2_END terminal_after_complete
                     let raster_failed = self
                         .abort_raster_refill("The requested text page was not completed.", output);
                     self.viewport_request = None;
+                    self.source_foreground_finished(id, completed);
                     self.finish_raster_rebase(completed, output);
                     match acknowledgement {
                         crate::position_ack::Completion::Ready => self.dirty = true,
@@ -1080,6 +1429,7 @@ impl Worker {
             Err(error) => self.error(format!("Cannot lay out this page: {error:?}"), output),
         }
         self.page = Some(page);
+        self.source_viewport_parameters_changed();
     }
 
     fn set_page(&mut self, page: Page, output: &Mailbox) -> bool {
@@ -1149,6 +1499,9 @@ impl Worker {
                     .filter(|_| self.mode == viewer::MODE_SOURCE);
                 self.text.page(previous, &page);
                 self.page = Some(page);
+                if let Some(id) = self.viewport_request {
+                    self.source_page_loaded(id);
+                }
                 self.raster_loaded_with_handoff(
                     raster_continuing,
                     restored,
@@ -1258,7 +1611,7 @@ impl Worker {
                 self.origin[1],
             )
         });
-        output.put(ViewerOutput::Frame(Box::new(ViewerFrame {
+        let frame = Box::new(ViewerFrame {
             generation: self.positions.generation,
             position_sequence: self.positions.acknowledged,
             revision,
@@ -1289,7 +1642,9 @@ impl Worker {
                 self.length,
                 self.status
             ),
-        })));
+        });
+        self.acknowledge_palette(output, Some(frame.revision));
+        output.put(ViewerOutput::Frame(frame));
         Ok(())
     }
 

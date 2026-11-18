@@ -344,6 +344,7 @@ pub(super) struct DropHarness {
     pub(super) controller: Controller,
     events: mpsc::Receiver<DragDropEvent>,
     tasks: JoinSet<()>,
+    _owner: midnight_work_budget::resident::Owner,
 }
 impl DropHarness {
     pub(super) fn new(admission: copy_operations::Admission, case: &Case) -> Self {
@@ -362,8 +363,7 @@ impl DropHarness {
         ]);
         let (outbox, _unused) = mpsc::channel(4);
         let mut tasks = JoinSet::new();
-        let mut controller = Controller::new(
-            crate::engine_lifetime::DragRetirement::testing(),
+        let (_owner, mut controller) = Controller::testing(
             None,
             None,
             snapshots.clone(),
@@ -417,6 +417,7 @@ impl DropHarness {
         }
         Self {
             controller,
+            _owner,
             events: receiver,
             tasks,
         }

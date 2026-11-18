@@ -1,0 +1,26 @@
+[
+  {
+    "archive": "midnight-plugin-api-0.1.0.crate",
+    "bytes": 16166,
+    "cargo_archive_sha256": "97dee1c956adc7874db9a3fd677fe9d5045b847b5bd359122b3818f9da731ff1",
+    "sha256": "f264a39c3ee43af518926887a7ef9e4a3751c093f21e924ca0e7f1e3d8009711",
+    "vcs": {
+      "git": {
+        "sha1": "a93557d4fc650c6dd8d83ad4ddd66003841a3e5a"
+      },
+      "path_in_vcs": "api/midnight-plugin-api"
+    }
+  },
+  {
+    "archive": "midnight-plugin-sdk-0.1.0.crate",
+    "bytes": 25157,
+    "cargo_archive_sha256": "378fdbc521cd6196046879c5dec84da7b3b4d54faf39266dc53103a77d1049ee",
+    "sha256": "3cbd8b9bd227807c58ee3467a895e93ee0c59eb88064a8fc694f859233c8220a",
+    "vcs": {
+      "git": {
+        "sha1": "a93557d4fc650c6dd8d83ad4ddd66003841a3e5a"
+      },
+      "path_in_vcs": "api/midnight-plugin-sdk"
+    }
+  }
+]

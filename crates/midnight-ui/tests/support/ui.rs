@@ -119,6 +119,7 @@ impl TestUi {
             1 => "Appearance",
             3 => "Keyboard",
             4 => "Editors",
+            10 => "Comparators",
             5 => "Plugins",
             6 => "Previews",
             7 => "Archives",
@@ -130,8 +131,12 @@ impl TestUi {
             click_item(&self.window, button);
         } else {
             let current = self.window.get_options_topic_index();
-            let current_index = if current >= 3 { current - 1 } else { current };
-            let target_index = if topic >= 3 { topic - 1 } else { topic };
+            let order = [0, 1, 3, 4, 10, 5, 6, 7, 8, 9];
+            let current_index = order
+                .iter()
+                .position(|value| *value == current)
+                .unwrap_or(0) as i32;
+            let target_index = order.iter().position(|value| *value == topic).unwrap() as i32;
             click_popup(&self.window, "Options topic", AccessibleRole::Combobox);
             for _ in 0..(target_index - current_index).abs() {
                 key(

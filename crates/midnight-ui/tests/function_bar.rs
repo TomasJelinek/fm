@@ -206,19 +206,24 @@ fn unavailable_network_actions_follow_remapped_slots_and_close_the_gap() {
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            shortcuts: vec![
-                ShortcutBinding {
-                    action: "files.edit".into(),
-                    keys: vec![],
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    shortcuts: vec![
+                        ShortcutBinding {
+                            action: "files.edit".into(),
+                            keys: vec![],
+                        },
+                        ShortcutBinding {
+                            action: "network.connect".into(),
+                            keys: vec!["F4".into()],
+                        },
+                    ],
+                    ..Default::default()
                 },
-                ShortcutBinding {
-                    action: "network.connect".into(),
-                    keys: vec!["F4".into()],
-                },
-            ],
-            ..Default::default()
-        }))));
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     install(&test.window, presenter.clone(), Rc::new(|_| true));
     refresh(&test.window, &presenter.borrow());
     test.window.set_network_available(false);
@@ -461,7 +466,10 @@ fn live_remapping_moves_the_physical_slot_and_respects_filename_search_scope() {
     presenter
         .borrow_mut()
         .apply(Event::PreferencesLoaded(Ok(Box::new(
-            UserPreferences::default(),
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences::default(),
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
         ))));
     install(&test.window, presenter.clone(), Rc::new(|_| true));
     refresh(&test.window, &presenter.borrow());

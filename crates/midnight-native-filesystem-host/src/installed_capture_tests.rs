@@ -20,6 +20,7 @@ struct ContentTransport {
     requests: Mutex<Vec<Request>>,
     cancel_on_validate: bool,
     cancelled: AtomicBool,
+    refuse_close: AtomicBool,
 }
 impl Transport for ContentTransport {
     fn call(&self, request: &Request, _: Cancel<'_>) -> Result<Response, Failure> {
@@ -55,7 +56,14 @@ impl Transport for ContentTransport {
                 Ok(Response::Unit)
             }
             Request::CloseRead { reader: 3 } | Request::CloseMount { mount: 1 } => {
-                Ok(Response::Unit)
+                if self.refuse_close.load(Ordering::Acquire) {
+                    Ok(Response::Failed(Failure::new(
+                        ErrorCode::Io,
+                        "close refused",
+                    )))
+                } else {
+                    Ok(Response::Unit)
+                }
             }
             Request::ReadAt {
                 reader: 3,
@@ -78,6 +86,7 @@ fn fixture(cancel_on_validate: bool) -> (InstalledProvider, Arc<ContentTransport
         requests: Mutex::default(),
         cancel_on_validate,
         cancelled: AtomicBool::new(false),
+        refuse_close: AtomicBool::new(false),
     });
     let installed = InstalledProvider::default();
     installed
@@ -100,6 +109,47 @@ fn matching_capture_returns_provider_bytes_and_current_revision() {
         assert_eq!(file.stable_version(), platform::current());
         assert_eq!(file.read_at(0, 4).unwrap(), b"data");
     }
+}
+
+#[test]
+fn checked_capture_uses_the_same_installed_cache_and_does_not_read_content() {
+    let (installed, calls, path) = fixture(false);
+    let first = installed.capture(&path, &|| false).unwrap();
+    let cache = installed.captures.get().unwrap().clone();
+    let second = installed.capture_checked(&path, &|| false).unwrap();
+    assert!(Arc::ptr_eq(&cache, installed.captures.get().unwrap()));
+    assert_eq!(second.stable_version(), first.stable_version());
+    assert!(
+        !calls
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, Request::ReadAt { .. }))
+    );
+    first.release_on_worker().unwrap();
+    second.release_on_worker().unwrap();
+}
+
+#[test]
+fn checked_installed_capture_forwards_unconfirmed_status_and_preflight_cancellation() {
+    let (installed, calls, path) = fixture(false);
+    let cancelled = installed.capture_checked(&path, &|| true).unwrap_err();
+    assert_eq!(cancelled.error.code, ErrorCode::Cancelled);
+    assert!(!cancelled.cleanup_unconfirmed);
+    assert!(installed.captures.get().is_none());
+    assert!(calls.requests.lock().unwrap().is_empty());
+    calls.refuse_close.store(true, Ordering::Release);
+    assert!(
+        installed
+            .capture_checked(&path, &|| false)
+            .unwrap_err()
+            .cleanup_unconfirmed
+    );
+    assert!(
+        installed.captures.get().is_some(),
+        "installed cache remains the authority"
+    );
 }
 
 #[test]

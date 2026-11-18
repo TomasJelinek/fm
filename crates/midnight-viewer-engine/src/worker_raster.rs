@@ -4,6 +4,10 @@ use super::*;
 #[path = "worker_raster_rebase.rs"]
 mod rebase;
 
+#[cfg(test)]
+#[path = "worker_raster_syntax_tests.rs"]
+mod syntax_tests;
+
 const GUARD: u32 = 256;
 const MAX_PIXELS: u64 = 6 * 1024 * 1024;
 
@@ -66,6 +70,27 @@ impl Retained {
         self.selection_valid = false;
     }
     pub fn invalidate(&mut self) {
+        self.invalid = true;
+    }
+
+    /// Colors invalidate pixels only: camera, gesture, selection and surface stay exact.
+    pub(super) fn palette_changed(&mut self) {
+        self.cache = None;
+        self.invalid = true;
+    }
+
+    /// Restyling keeps the exact world camera and pending gesture. The new
+    /// fragment can have a different source-relative layout origin.
+    pub(super) fn source_refreshed(&mut self, previous: [f32; 2], restored: [f32; 2]) {
+        self.layout = self.layout.checked_add(1).expect("raster layout exhausted");
+        self.first_pixel = self
+            .pixel
+            .checked_add(1)
+            .expect("raster pixel identity exhausted");
+        for axis in 0..2 {
+            self.base[axis] += f64::from(previous[axis]) - f64::from(restored[axis]);
+        }
+        self.cache = None;
         self.invalid = true;
     }
     fn camera(&self, origin: [f32; 2]) -> [f64; 2] {

@@ -27,12 +27,13 @@ no host-source, other-plugin, Slint, filesystem-open or network dependency.
 | Ruby | rb |
 | SQL | sql |
 | YAML | yaml, yml |
+| Lua | lua |
 | XML / XAML / MSBuild projects and resources | xml, xsd, xsl, xslt, xaml, csproj, fsproj, vbproj, vcxproj, props, targets, resx |
 
 Extension recognition is ASCII case insensitive. Extensionless Python, shell
-and Node scripts are recognized from their first shebang line after Open.
+Node and Lua scripts are recognized from their first shebang line after Open.
 Host routing must choose this package before a shebang can be inspected; the
-manifest does not claim every extensionless file. The 19 profiles have fixtures
+manifest does not claim every extensionless file. The 20 profiles have fixtures
 checking their actual lexical styles (JSON has no comments). These are lexical profiles, not compiler grammars: interpolation,
 heredocs, JSX markup, macro expansion and language-specific semantic analysis
 are not promised. Unknown names remain plain text.
@@ -45,20 +46,57 @@ not XML validation: DTDs are inert text, references are never expanded, and no
 external resources are read. Declaration nesting is bounded to 16. XML defaults
 do not claim HTML or SVG. Saved per-plugin extension overrides remain in control.
 
+Lua highlights keywords, numbers, short strings and comments, and matched-level
+long bracket strings/comments. Short-string escaped newlines and `\z` whitespace
+escapes retain their state. YAML highlights mapping keys, scalar strings,
+numbers/booleans/null, flow indicators and comments. Quoted scalars and literal or
+folded block scalars retain state, including indentation/chomp indicators, blank
+lines and dedent. Hashes inside unquoted scalar values such as URLs stay literal.
+Neither profile executes content, resolves tags or validates a whole document.
+
 Multiline strings and C-style block comments retain explicit state. Rust nested
 block comments support depth 16; Python/TOML triple quotes and Rust raw strings
-with up to 16 hashes are recognized. At most 256 complete-line checkpoints are
-retained per session. A viewport can rescan at most 32 KiB before its anchor;
-distant uncached positions or exhausted token/depth limits render plain text.
-Returning near a cached checkpoint restores highlighting. Source text and byte
-anchors remain identical when colouring is omitted.
+with up to 16 hashes are recognized. At most 256 syntax-state records are
+retained per session: distributed complete-line coverage, recent hot points,
+an exact streaming frontier and a reserved target snapshot.
+C++ raw strings retain their custom delimiter (up to 16 characters).
+A viewport can rescan at most 32 KiB before its anchor;
+distant uncached positions initially render plain text. A host supporting the
+optional preparation request recovers the true lexer state in background quanta
+and refreshes the latest stationary view. The first page remains window-bounded.
+Huge files have no preparation size cutoff; a cold distant target can require
+O(prefix) background I/O. Exhausted lexical depth/counter limits fail preparation
+explicitly while the existing readable page remains available.
+
+Dense pages are shortened at exact character/source boundaries when their styles
+and anchors exceed the wire budget. Forward pages retain their beginning and
+backward pages their end; continuation flags permit fetching the remaining text.
+Styles are retained rather than clearing all colouring to fit a larger page.
 
 ## Bounds and protocol
 
-Open, Viewport, Search and Close use only public API/SDK 0.1.0. Open returns
+This independent package uses only the released public API/SDK 0.2.0. Open returns
 Opened; the host then requests its first viewport. All reads use owned SDK
 continuations. Short reads continue until the requested bounded slice or EOF.
 Close discards session state; the host owns closing the content reader lease.
+
+Optional `PrepareSource` (request 7) is separate from ordinary Open/Viewport.
+Each successful quantum emits one `SourcePrepared` (event 8), then Completed;
+readiness is provisional until that terminal event. The full Viewport and source
+revision identify the reservation. Its exact lexer snapshot and any resolved
+token-role hints survive ordinary checkpoint insertion until a matching foreground
+request takes an owned copy before its asynchronous read. Older hosts never send
+this optional request and retain ordinary viewing; C ABI remains 1.0.
+
+Preparation uses at most one 16 KiB positional read at a time, at most 64 service
+replies and 256 KiB delivered bytes per quantum (including short replies), and
+at most 64 KiB decoded text per turn. Its frontier excludes incomplete encoded
+units and unconsumed lexical suffixes. A fixed raw tail handles one-byte replies;
+huge identifiers, raw strings, Lua brackets, YAML keys/blocks and XML names/entities
+use streaming state/counters instead of token or line buffers. Token roles that
+depend on distant terminators are resolved by bounded background lookahead before
+readiness, with at most two small role hints. The complete retained syntax index,
+frontier and target state are bounded to 64 KiB and 256 records per session.
 
 Optional Locate requests never build a whole-file line index. They use the nearest
 exact checkpoint and a cumulative 256 KiB read budget, including boundary lookahead

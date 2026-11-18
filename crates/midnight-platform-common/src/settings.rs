@@ -16,6 +16,7 @@ mod archive_associations;
 mod archive_extensions;
 mod checksums;
 mod editor_rules;
+mod file_comparators;
 mod file_list;
 mod user_commands;
 mod viewer_associations;
@@ -40,12 +41,18 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 32;
+const CURRENT_PREFERENCES_VERSION: u32 = 33;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    file_comparators: Option<file_comparators::StoredFileComparators>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -385,6 +392,17 @@ fn invalid(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::
 }
 
 pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
+    decode_preferences_impl(bytes, true)
+}
+
+/// Decode bounded settings for the serialized acceptance worker. That worker
+/// must compile changed comparator rules before publishing or acknowledging them.
+/// All structural/raw validation and existing unrelated validation still run here.
+pub fn decode_preferences_for_acceptance(bytes: &[u8]) -> io::Result<UserPreferences> {
+    decode_preferences_impl(bytes, false)
+}
+
+fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Result<UserPreferences> {
     if bytes.len() > MAX_PREFERENCES_BYTES {
         return Err(invalid("preferences exceed 4 MiB"));
     }
@@ -393,7 +411,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         return Err(invalid("unsupported preferences version"));
     }
     // Two independently published version-31 schemas added different fields.
-    // Their shapes identify the legacy branch; version 32 requires both.
+    // Their shapes identify the legacy branch; versions 32 and 33 require both.
     let archive_preview_present = stored
         .previews
         .as_ref()
@@ -403,7 +421,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         stored.disk_io_concurrency.is_some(),
         archive_preview_present,
     ) {
-        (1..=30, false, false) | (31, true, false) | (31, false, true) | (32, true, true) => {}
+        (1..=30, false, false) | (31, true, false) | (31, false, true) | (32..=33, true, true) => {}
         _ => {
             return Err(invalid(
                 "missing or unexpected versioned preference extensions",
@@ -757,6 +775,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
             }
             _ => return Err(invalid("missing or unexpected viewer preferences")),
         },
+        file_comparators: file_comparators::decode(stored.version, stored.file_comparators)?,
         editor,
         theme,
         density,
@@ -798,10 +817,32 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     preferences.deduplicate_bookmarks();
     preferences.validate().map_err(invalid)?;
     crate::editor_rules::validate(&preferences.editor).map_err(invalid)?;
+    if compile_comparators {
+        crate::comparator_rules::validate(&preferences.file_comparators).map_err(invalid)?;
+    }
     Ok(preferences)
 }
 
 pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
+    crate::comparator_rules::validate(&preferences.file_comparators).map_err(invalid)?;
+    encode_preferences_impl(preferences)
+}
+
+/// Serialize an exact already-compiled candidate without compiling it again.
+/// The synchronous borrowed proof cannot retain a compiled revision in a queue.
+pub fn encode_preferences_prepared(
+    preferences: UserPreferences,
+    proof: midnight_core::ComparatorValidationProof<'_>,
+) -> io::Result<Vec<u8>> {
+    if !proof.matches(&preferences.file_comparators) {
+        return Err(invalid(
+            "prepared comparator policy does not match preferences",
+        ));
+    }
+    encode_preferences_impl(preferences)
+}
+
+fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     preferences.validate().map_err(invalid)?;
     crate::editor_rules::validate(&preferences.editor).map_err(invalid)?;
     crate::filename_colors::CompiledFilenameColors::new(&preferences.filename_colors)
@@ -820,9 +861,11 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         .any(|bookmark| bookmark.network.is_some());
     let disk_choices = preferences.disk_io_concurrency != DiskIoConcurrency::Automatic;
     let archive_preview_choices = !preferences.thumbnails_archives;
+    let comparator_choices = !preferences.file_comparators.rules.is_empty();
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
+        || comparator_choices
         || !preferences.editor.rules.is_empty()
         || !preferences.panel_filter_history.is_empty();
     let verification_choices =
@@ -878,12 +921,12 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
-        disk_io_concurrency: (disk_choices || archive_preview_choices).then_some(match preferences
-            .disk_io_concurrency
-        {
-            DiskIoConcurrency::Automatic => StoredDiskIoConcurrency::Automatic {},
-            DiskIoConcurrency::Manual(limit) => StoredDiskIoConcurrency::Manual { limit },
-        }),
+        file_comparators: comparator_choices.then(|| preferences.file_comparators.into()),
+        disk_io_concurrency: (disk_choices || archive_preview_choices || comparator_choices)
+            .then_some(match preferences.disk_io_concurrency {
+                DiskIoConcurrency::Automatic => StoredDiskIoConcurrency::Automatic {},
+                DiskIoConcurrency::Manual(limit) => StoredDiskIoConcurrency::Manual { limit },
+            }),
         copy_checksum_verification: verification_choices
             .then_some(preferences.copy_checksum_verification),
         viewer_associations: association_choices
@@ -919,7 +962,9 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if archive_preview_choices {
+        version: if comparator_choices {
+            33
+        } else if archive_preview_choices {
             32
         } else if disk_choices {
             31
@@ -975,7 +1020,8 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         previews: store_previews.then_some(StoredPreviews {
             enabled: preferences.thumbnails_enabled,
             network: preferences.thumbnails_network,
-            archives: archive_preview_choices.then_some(preferences.thumbnails_archives),
+            archives: (archive_preview_choices || comparator_choices)
+                .then_some(preferences.thumbnails_archives),
         }),
         disabled_viewer_plugins: Some(preferences.disabled_viewer_plugins),
         editor: Some(StoredEditor {
@@ -1096,14 +1142,33 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
 }
 
 pub fn read_preferences(file: File) -> io::Result<UserPreferences> {
+    read_preferences_impl(file, true)
+}
+
+/// Bounded secure-file reader for the serialized comparator acceptance path.
+/// Native adapters must supply their existing verified regular-file handle.
+pub fn read_preferences_for_acceptance(file: File) -> io::Result<UserPreferences> {
+    read_preferences_impl(file, false)
+}
+
+fn read_preferences_impl(file: File, compile_comparators: bool) -> io::Result<UserPreferences> {
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(invalid("preferences are not a regular file"));
     }
-    read_sized_preferences(file, metadata.len())
+    read_sized_preferences_impl(file, metadata.len(), compile_comparators)
 }
 
+#[cfg(test)]
 fn read_sized_preferences(reader: impl Read, file_size: u64) -> io::Result<UserPreferences> {
+    read_sized_preferences_impl(reader, file_size, true)
+}
+
+fn read_sized_preferences_impl(
+    reader: impl Read,
+    file_size: u64,
+    compile_comparators: bool,
+) -> io::Result<UserPreferences> {
     if file_size > MAX_PREFERENCES_BYTES as u64 {
         return Err(invalid("preferences exceed 4 MiB"));
     }
@@ -1111,7 +1176,7 @@ fn read_sized_preferences(reader: impl Read, file_size: u64) -> io::Result<UserP
     reader
         .take(MAX_PREFERENCES_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
-    decode_preferences(&bytes)
+    decode_preferences_impl(&bytes, compile_comparators)
 }
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);

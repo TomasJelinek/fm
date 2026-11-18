@@ -1,7 +1,8 @@
 //! Exercise command artwork routing through the actual existing thumbnail pulse.
 use super::*;
 use midnight_core::{
-    Event, UserCommand, UserCommandId, UserCommandInvocation, UserCommandLaunch, UserPreferences,
+    AcceptedPreferences, Event, FileComparatorSnapshot, UserCommand, UserCommandId,
+    UserCommandInvocation, UserCommandLaunch, UserPreferences,
 };
 use slint::{
     Model,
@@ -28,23 +29,28 @@ fn command_artwork_retries_rejected_sends_and_clears_hidden_views_without_decodi
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            thumbnails_enabled: false,
-            user_commands: Arc::new(vec![UserCommand {
-                id: UserCommandId::new("editor").unwrap(),
-                name: "Editor".into(),
-                enabled: true,
-                toolbar_label: None,
-                icon: None,
-                working_directory: "${active.path}".into(),
-                launch: UserCommandLaunch::Single,
-                invocation: UserCommandInvocation::Program {
-                    executable: executable.clone(),
-                    arguments: Vec::new(),
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            AcceptedPreferences {
+                preferences: UserPreferences {
+                    thumbnails_enabled: false,
+                    user_commands: Arc::new(vec![UserCommand {
+                        id: UserCommandId::new("editor").unwrap(),
+                        name: "Editor".into(),
+                        enabled: true,
+                        toolbar_label: None,
+                        icon: None,
+                        working_directory: "${active.path}".into(),
+                        launch: UserCommandLaunch::Single,
+                        invocation: UserCommandInvocation::Program {
+                            executable: executable.clone(),
+                            arguments: Vec::new(),
+                        },
+                    }]),
+                    ..Default::default()
                 },
-            }]),
-            ..Default::default()
-        }))));
+                comparators: FileComparatorSnapshot::default(),
+            },
+        ))));
     midnight_ui::install(&window, presenter.clone(), Rc::new(|_| true));
     native.set_size(slint::PhysicalSize::new(1000, 700));
     window.show().unwrap();

@@ -49,9 +49,13 @@ bugs were reproduced. Startup now reserves a plain cleanup worker and bounded sl
 before taking provider ownership. The synchronous Engine run wrapper owns suspended
 execution and the complete command inbox; Copy/Move/Delete handoffs, shared snapshots
 and drag state retain their cleanup reservations through actual destruction.
-The [engine contract](developer/ENGINE_LIFETIME.md) now describes 324 payload slots,
-seven bounded intake waiters, eight shared terminal/editor/Custom Command process
-slots and sixteen independent opener slots. The
+As of 17 November 2026, the
+[current engine contract](developer/ENGINE_LIFETIME.md#capacity-and-ownership)
+reserves **330 payload slots and eight reusable waiter tokens**. The prior
+324-payload/seven-waiter statement describes an older accounting checkpoint;
+dated verification records retain their original scope. Eight shared
+terminal/editor/Custom Command process slots and sixteen independent opener slots
+are separate process-admission limits, not additional retirement domains. The
 [initial integrated evidence](verification/2026-11-12-engine-lifetime-integration.md)
 remains historical; the [child-task verification](verification/2026-11-12-task-services.md)
 records the additional shared service guard for Find, preferences and fonts,
@@ -90,8 +94,10 @@ the reproduced caller-side cleanup and the focused Linux correction; combined Wi
 qualification passed and is recorded in the
 [combined checkpoint](verification/2026-11-12-config-rename-cmd-checkpoint.md).
 No service-configuration retirement capacity was added.
-Native tree Rename adds four reserved capture slots to the domain, bringing the combined
-ledger to 308; accepted captures retain admission until actual worker-side destruction.
+The earlier native tree Rename checkpoint added four reserved capture slots,
+bringing that dated ledger to308; it is historical accounting, not the current
+330-slot total. Accepted captures retain admission until actual worker-side
+destruction.
 This is not an exhaustive completion audit. The
 [runtime-independent retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md)
 tracks implementation and outstanding cross-actor qualification.

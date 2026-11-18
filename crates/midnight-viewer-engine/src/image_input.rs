@@ -24,6 +24,23 @@ impl ImageFrames {
             .is_some_and(|first| frame >= first && frame <= self.last)
             && (!anchored || frame >= self.coordinate_minimum)
     }
+
+    /// Document coordinates refer to the single published camera snapshot.
+    pub fn accepts_document(&self, frame: u64, anchored: bool) -> bool {
+        self.accepts(frame, anchored) && (!anchored || frame == self.last)
+    }
+
+    pub fn accepts_document_image(&self, frame: u64, input: &ViewerImageInput) -> bool {
+        let anchored = matches!(
+            input,
+            ViewerImageInput::ViewZoom { .. }
+                | ViewerImageInput::Zoom {
+                    anchor: Some(_),
+                    ..
+                }
+        );
+        self.accepts_document(frame, anchored)
+    }
 }
 
 pub(crate) fn apply(
@@ -63,6 +80,29 @@ pub(crate) fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn documents_refuse_old_coordinate_frames_but_keep_relative_gesture_bursts() {
+        let mut frames = ImageFrames::default();
+        frames.painted(7);
+        frames.painted(8);
+        assert!(!frames.accepts_document(7, true));
+        assert!(frames.accepts_document(8, true));
+        let coordinates = ViewerImageInput::ViewZoom {
+            zoom: midnight_core::ViewerZoomPreference::Fit,
+            source_anchor: [100.0, 80.0],
+            viewport_anchor: [50.0, 40.0],
+        };
+        assert!(!frames.accepts_document_image(7, &coordinates));
+        assert!(frames.accepts_document_image(8, &coordinates));
+        assert!(frames.accepts_document_image(7, &ViewerImageInput::Drag { x: 3.0, y: 2.0 }));
+        frames.resized();
+        assert!(!frames.accepts_document_image(8, &coordinates));
+        assert!(frames.accepts_document_image(8, &ViewerImageInput::Fit));
+        frames.painted(9);
+        assert!(frames.accepts_document_image(9, &coordinates));
+        assert!(!frames.accepts_document(8, true));
+    }
 
     #[test]
     fn drag_and_zoom_bursts_keep_every_delta_until_the_image_changes() {

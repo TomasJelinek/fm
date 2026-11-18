@@ -2,7 +2,10 @@
 use midnight_core::{Cancellation, TransferService};
 use std::sync::{Arc, atomic::Ordering};
 
-pub(super) fn service(handle: tokio::runtime::Handle) -> midnight_viewer_engine::Service {
+pub(super) fn service(
+    handle: tokio::runtime::Handle,
+    spawner: midnight_work_budget::resident::Spawner,
+) -> midnight_viewer_engine::Service {
     let filesystem = midnight_native_filesystem_host::InstalledProvider::shared(None);
     let directories = midnight_platform_linux::LinuxFileSystem::new(None);
     let capture: midnight_viewer_engine::NativeCapture = Arc::new(move |path, closed| {
@@ -23,5 +26,5 @@ pub(super) fn service(handle: tokio::runtime::Handle) -> midnight_viewer_engine:
                 .map_err(|error| error.to_string())?;
         Ok(main.with_resources(resources))
     });
-    midnight_viewer_engine::Service::with_native_capture(handle, capture)
+    midnight_viewer_engine::Service::with_native_capture(handle, spawner, capture)
 }

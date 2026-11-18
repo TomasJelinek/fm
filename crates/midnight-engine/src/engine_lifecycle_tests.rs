@@ -88,11 +88,9 @@ fn off_caller(receiver: std::sync::mpsc::Receiver<ThreadId>) {
 fn unpolled_engine_retires_queued_capture_without_tokio() {
     let (notice, retired) = std::sync::mpsc::channel();
     let (events, _receiver) = mpsc::channel(1);
-    let mut engine = Engine::new(
-        Engine::lifetime().expect("engine cleanup worker"),
-        Arc::new(Files(None)),
-        events,
-    );
+    let lifetime = Engine::lifetime().expect("engine cleanup worker");
+    let neutral = lifetime.resources.resident.clone();
+    let mut engine = Engine::new(lifetime, Arc::new(Files(None)), events);
     let (commands, input) = engine.command_channel(2).unwrap();
     commands
         .try_send(Command::PrepareCapturedDelete(PrepareCapturedDelete {
@@ -107,6 +105,10 @@ fn unpolled_engine_retires_queued_capture_without_tokio() {
     let run = engine.run(input);
     drop(run);
     off_caller(retired);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    crate::engine_resident_tests::assert_sealed(&neutral, runtime.handle());
 }
 
 #[test]
@@ -134,6 +136,7 @@ fn pending_dispatch() -> (
     std::pin::Pin<Box<EngineRun>>,
     std::sync::mpsc::Receiver<ThreadId>,
     mpsc::Receiver<Event>,
+    midnight_work_budget::resident::Spawner,
 ) {
     use std::{
         future::Future,
@@ -146,7 +149,9 @@ fn pending_dispatch() -> (
     events
         .try_send(Event::PreferencesLoaded(Ok(Default::default())))
         .unwrap();
-    let mut engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
+    let lifetime = Engine::lifetime().unwrap();
+    let neutral = lifetime.resources.resident.clone();
+    let mut engine = Engine::new(lifetime, Arc::new(Files(None)), events);
     let (commands, input) = engine.command_channel(2).unwrap();
     commands
         .try_send(capture(1, notice.clone(), visited.clone()))
@@ -166,7 +171,7 @@ fn pending_dispatch() -> (
         "one captured command reached dispatch"
     );
     assert!(retired.try_recv().is_err());
-    (run, retired, receiver)
+    (run, retired, receiver, neutral)
 }
 
 fn both_captures_retired(retired: std::sync::mpsc::Receiver<ThreadId>) {
@@ -181,9 +186,10 @@ fn both_captures_retired(retired: std::sync::mpsc::Receiver<ThreadId>) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_dispatch_pending_on_full_outbox_retires_consumed_and_queued_captures() {
-    let (run, retired, _events) = pending_dispatch();
+    let (run, retired, _events, neutral) = pending_dispatch();
     drop(run);
     both_captures_retired(retired);
+    crate::engine_resident_tests::assert_sealed(&neutral, &tokio::runtime::Handle::current());
 }
 
 #[test]
@@ -192,14 +198,16 @@ fn runtime_shutdown_during_pending_dispatch_keeps_both_captures_off_caller() {
         .enable_all()
         .build()
         .unwrap();
-    let (run, retired, _events) = {
+    let (run, retired, _events, neutral) = {
         let _entered = runtime.enter();
         pending_dispatch()
     };
     // Match the application deadline: active native lanes remain owned by the run.
+    let transient = runtime.handle().clone();
     runtime.shutdown_timeout(Duration::from_millis(10));
     drop(run);
     both_captures_retired(retired);
+    crate::engine_resident_tests::assert_sealed(&neutral, &transient);
 }
 
 #[test]
@@ -302,16 +310,13 @@ fn interrupted_tree_shutdown_retires_queued_capture_without_tokio_blocking_capac
         .max_blocking_threads(1)
         .build()
         .unwrap();
-    let (release, gate) = std::sync::mpsc::channel();
-    let (started, entered) = std::sync::mpsc::channel();
-    let blocker = runtime.spawn_blocking(move || {
-        started.send(()).unwrap();
-        let _ = gate.recv();
-    });
-    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let lifetime = Engine::lifetime().unwrap();
+    let neutral = lifetime.resources.resident.clone();
+    let crate::engine_resident_tests::HeldWorkers { releases, exits } =
+        crate::engine_resident_tests::hold_workers(&neutral, runtime.handle(), 13);
     let (notice, retired) = std::sync::mpsc::channel();
     let (events, _receiver) = mpsc::channel(1);
-    let mut engine = Engine::new(Engine::lifetime().unwrap(), Arc::new(Files(None)), events);
+    let mut engine = Engine::new(lifetime, Arc::new(Files(None)), events);
     let (commands, input) = engine.command_channel(2).unwrap();
     commands.try_send(Command::Shutdown).unwrap();
     commands
@@ -326,13 +331,19 @@ fn interrupted_tree_shutdown_retires_queued_capture_without_tokio_blocking_capac
                 .is_pending()
         );
     }
-    // Close precedes tree shutdown. Both tree workers are queued behind the gated
-    // blocking task, so their joins cannot complete and normal command retirement
+    // Close precedes tree shutdown. Both tree workers are queued behind the resident
+    // holders, so their joins cannot complete and normal command retirement
     // has not been reached. Cancelling this exact await must still own the inbox.
     assert!(commands.is_closed());
     assert!(retired.try_recv().is_err());
     drop(run);
     off_caller(retired);
-    release.send(()).unwrap();
-    runtime.block_on(blocker).unwrap();
+    crate::engine_resident_tests::assert_sealed(&neutral, runtime.handle());
+    drop(releases);
+    // Thread-local teardown runs only when the actual worker exits. The
+    // still-live spawner carries no duty to seal or to finish these workers.
+    let exited: std::collections::HashSet<_> = (0..13)
+        .map(|_| exits.recv_timeout(Duration::from_secs(5)).unwrap())
+        .collect();
+    assert_eq!(exited.len(), 13);
 }

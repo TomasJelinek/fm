@@ -9,8 +9,11 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+#[path = "navigation.rs"]
+mod admission;
 mod handlers;
 mod input;
+mod navigation;
 mod resources;
 
 use crate::output::Output;
@@ -31,6 +34,8 @@ pub(super) struct Document {
     selection: Mutex<crate::selection::Selection>,
     mouse_buttons: AtomicU64,
     host_shortcuts: bool,
+    navigation: Mutex<admission::Navigation>,
+    bootstrap: AtomicBool,
 }
 
 impl Document {
@@ -50,36 +55,60 @@ impl Document {
         stream: Arc<Mutex<resources::Stream>>,
         event: impl FnOnce(u64) -> api::EventKind,
     ) -> bool {
-        let id = self.request_sequence.fetch_add(1, Ordering::Relaxed);
+        if !self.active.load(Ordering::Acquire) || self.output.failed.load(Ordering::Acquire) {
+            return false;
+        }
+        let Some(id) = self.next_request_id() else {
+            return false;
+        };
         let Ok(mut pending) = self.pending.lock() else {
             return false;
         };
-        if pending.len() >= 128 || id == u64::MAX {
+        let Ok(navigation) = self.navigation.lock() else {
+            return false;
+        };
+        if pending.len() + navigation.pending_requests() >= 128 {
             return false;
         }
         pending.insert(id, stream);
+        drop(navigation);
         drop(pending);
         self.emit(event(id));
         true
     }
+    fn next_request_id(&self) -> Option<u64> {
+        self.request_sequence
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .ok()
+            .filter(|id| *id != 0)
+    }
     fn retire(&self) {
         self.active.store(false, Ordering::Release);
+        if let Ok(mut navigation) = self.navigation.lock() {
+            navigation.close();
+            if let Some(attempt) = navigation.unclaimed_allowed_attempt() {
+                // Explicit document retirement may discard its still-unclaimed
+                // owned body. Claimed response owners relinquish their own bytes.
+                navigation.response_finished(attempt);
+            }
+        }
         let streams: Vec<_> = self
             .pending
             .lock()
             .map(|mut p| p.drain().map(|(_, s)| s).collect())
             .unwrap_or_default();
         for stream in streams {
-            let callback = if let Ok(mut stream) = stream.lock() {
+            let (callback, response) = if let Ok(mut stream) = stream.lock() {
                 stream.failed = true;
-                stream.callback.take()
+                (stream.callback.take(), stream.admitted.take())
             } else {
-                None
+                (None, None)
             };
             // Cancel can call back into this document; release both locks first.
             if let Some(callback) = callback {
                 callback.cancel();
             }
+            drop(response);
         }
         if let Ok(mut frame) = self.output.frame.lock() {
             *frame = None;
@@ -102,6 +131,11 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
     else {
         return Err("first command must be Open".into());
     };
+    let navigation = admission::Navigation::new(
+        command.header.session,
+        command.header.document,
+        source.clone(),
+    );
     let document = Arc::new(Document {
         header: command.header,
         source,
@@ -128,6 +162,8 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         host_shortcuts: crate::host_keys::enabled(
             std::env::var(api::HOST_SHORTCUTS_ENV).ok().as_deref(),
         ),
+        navigation: Mutex::new(navigation),
+        bootstrap: AtomicBool::new(true),
     });
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(
@@ -364,6 +400,9 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
             }
             Err(mpsc::TryRecvError::Disconnected) => break,
             Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if let Some(current) = instance.as_ref() {
+            navigation::drive(current);
         }
         do_message_loop_work();
         #[cfg(feature = "diagnostic-timing")]

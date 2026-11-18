@@ -10,10 +10,14 @@ pub(super) struct Coordinate {
 
 #[derive(Default)]
 pub(super) struct Presentation {
+    pub syntax: syntax::SourceSyntax,
     pub coordinate: Option<Coordinate>,
     pub locate_request: Option<(u64, u64)>,
     pub located_start: Option<u64>,
     pub unavailable: bool,
+    pub locate_unsupported: bool,
+    pub locate_retry_at: Option<std::time::Instant>,
+    pub locate_retries: u8,
     pub gutter: Option<Vec<(TextPage, f32)>>,
 }
 
@@ -22,6 +26,8 @@ impl Presentation {
         // An optional bounded Locate may decline this page without disabling
         // cheap coordinates on a later nearby page.
         self.unavailable = false;
+        self.locate_retry_at = None;
+        self.locate_retries = 0;
         self.located_start = None;
         self.coordinate = (!page.before)
             .then_some(Coordinate {
@@ -164,18 +170,35 @@ impl Worker {
                 }) || self.text.located_start == Some(page.start)
             })
             || self.text.unavailable
+            || self.text.locate_unsupported
+            || self
+                .text
+                .locate_retry_at
+                .is_some_and(|at| std::time::Instant::now() < at)
             || self.text.locate_request.is_some()
             || self.viewport_request.is_some()
         {
             return;
         }
-        if let (Some(session), Some(page)) = (&self.session, &self.page)
-            && let Ok(id) = session.locate(messages::Locate {
-                source_anchor: page.start,
-            })
-        {
-            self.text.locate_request = Some((id, page.start));
+        if let (Some(session), Some(page)) = (&self.session, &self.page) {
+            let start = page.start;
+            match session.try_locate(messages::Locate {
+                source_anchor: start,
+            }) {
+                Ok(id) => self.text.locate_request = Some((id, start)),
+                Err(midnight_plugin_host::AdmissionError::Capacity) => self.retry_locate(),
+                Err(_) => {
+                    self.text.located_start = Some(start);
+                    self.text.unavailable = true;
+                }
+            }
         }
+    }
+
+    pub(super) fn retry_locate(&mut self) {
+        self.text.locate_retries = self.text.locate_retries.saturating_add(1).min(5);
+        let millis = 20u64 << self.text.locate_retries;
+        self.text.locate_retry_at = Some(std::time::Instant::now() + Duration::from_millis(millis));
     }
 
     pub(super) fn located(&mut self, id: u64, position: &viewer::TextPosition) {

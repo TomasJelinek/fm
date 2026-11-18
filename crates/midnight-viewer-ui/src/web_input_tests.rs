@@ -307,8 +307,25 @@ fn html_surface_keeps_search_zoom_and_policy_in_normal_viewer() {
             status: "Offline".into(),
         }))
     };
-    present_outputs(&open, &service, &|_| {}, vec![frame(2)]);
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![
+            frame(2),
+            ViewerOutput::WebState {
+                generation: 2,
+                policy: viewer_web::Policy {
+                    network: false,
+                    scripts: false,
+                },
+                policy_change_allowed: true,
+                zoom: 1.0,
+            },
+        ],
+    );
     assert!(open.window.get_web_mode());
+    assert!(open.window.get_web_policy_change_allowed());
     assert!(!open.window.get_image_mode());
     assert!(!open.window.get_font_available());
     assert!(!open.window.get_web_network());

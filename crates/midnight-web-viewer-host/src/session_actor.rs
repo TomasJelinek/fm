@@ -1,5 +1,5 @@
 use super::*;
-use crate::resources::Store;
+use crate::resource_jobs::ResourceJobs;
 use std::{
     fs::File,
     time::{Duration, Instant},
@@ -37,23 +37,59 @@ impl Wire {
     }
 }
 
+/// Only a successful matching Denied write can produce the one source-change
+/// correlation pair. The original renderer header is cause metadata, not an ack.
+pub(super) fn send_resource_reply(
+    generation: &Generation,
+    output: &Arc<Mutex<Output>>,
+    wake: &Arc<dyn Fn() -> bool + Send + Sync>,
+    document: u64,
+    reply: api::ResourceReply,
+    send: impl FnOnce(api::ResourceReply) -> Result<(), String>,
+) -> Result<(), String> {
+    let denied = match &reply {
+        api::ResourceReply::Denied { request, .. } => Some(*request),
+        _ => None,
+    };
+    send(reply)?;
+    if let Some(request) = denied
+        && let Some(origin) = generation.take_revocation(document, request)
+    {
+        output
+            .lock()
+            .map_err(|_| "Browser output unavailable")?
+            .put_source_changed(origin)?;
+        wake();
+    }
+    Ok(())
+}
+
+pub(super) fn terminal_exit(requested_close: bool, reason: &str) -> Result<(), String> {
+    if requested_close {
+        Ok(())
+    } else {
+        Err(reason.into())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     provider: Provider,
-    source: CapturedFile,
-    resources: Option<Arc<dyn Resources>>,
+    owner: SourceOwner,
+    ceiling: PolicyCeiling,
     mut viewport: api::Viewport,
     commands: Arc<Mutex<midnight_web_viewer_sdk::CommandQueue>>,
     output: &Arc<Mutex<Output>>,
     closed: &Arc<AtomicBool>,
     requested_document: &Arc<AtomicU64>,
+    generation: &Arc<Generation>,
     wake: &Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<(), String> {
     provider.validate().map_err(|error| error.to_string())?;
     let browser =
         midnight_worker_platform::browser::spawn_with_host_shortcuts(&provider.executable)
             .map_err(|error| format!("Chromium startup: {error}"))?;
-    let mut store = Store::new(source, resources);
+    let mut store = ResourceJobs::new(owner, generation.clone())?;
     let mut wire = Wire {
         input: browser.input,
         header: api::Header {
@@ -66,7 +102,7 @@ pub(super) fn run(
     let stopping = Arc::new(AtomicBool::new(false));
     let ready = Arc::new(AtomicBool::new(false));
     let mut process = browser.process;
-    std::thread::scope(|scope| {
+    let result = std::thread::scope(|scope| {
         let stopping = &stopping;
         let busy = wire.busy.clone();
         let ready = &ready;
@@ -98,7 +134,7 @@ pub(super) fn run(
             }
         });
         let result = (|| {
-            let main = store.reset(false)?;
+            let main = store.reset(1, false)?.main;
             wire.send(api::CommandKind::Open {
                 source: main,
                 viewport,
@@ -113,25 +149,37 @@ pub(super) fn run(
                     (0..64).map_while(|_| commands.pop()).collect()
                 };
                 for command in batch {
+                    validate_frontend_command(ceiling, &command.kind)?;
                     match command.kind {
                         api::CommandKind::Policy(next) => {
-                            if next.scripts && !next.network {
-                                return Err("Scripts require online mode".into());
-                            }
-                            wire.header.document = wire
+                            let document = wire
                                 .header
                                 .document
                                 .checked_add(1)
                                 .ok_or("Browser document IDs exhausted")?;
+                            generation.ensure_at_least(document)?;
+                            let reset = store.reset(document, next.network)?;
+                            // Every accepted request receives a terminal denial under its original
+                            // document before the renderer is told to replace that document.
+                            for reply in reset.denied {
+                                send_resource_reply(
+                                    generation,
+                                    output,
+                                    wake,
+                                    wire.header.document,
+                                    reply,
+                                    |reply| wire.send(api::CommandKind::ResourceReply(reply)),
+                                )?;
+                            }
+                            wire.header.document = document;
                             wire.header.sequence = 0;
                             event_sequence = 0;
                             output
                                 .lock()
                                 .map_err(|_| "Browser output unavailable")?
                                 .frame = None;
-                            let source = store.reset(next.network)?;
                             wire.send(api::CommandKind::Open {
-                                source,
+                                source: reset.main,
                                 viewport,
                                 policy: next,
                             })?;
@@ -147,12 +195,33 @@ pub(super) fn run(
                         other => wire.send(other)?,
                     }
                 }
+                for reply in store.drain()? {
+                    send_resource_reply(
+                        generation,
+                        output,
+                        wake,
+                        wire.header.document,
+                        reply,
+                        |reply| wire.send(api::CommandKind::ResourceReply(reply)),
+                    )?;
+                }
                 let incoming = match incoming.recv_timeout(Duration::from_millis(5)) {
-                    Ok(value) => {
-                        value.map_err(|error| format!("Chromium transport stopped: {error}"))?
-                    }
+                    Ok(value) => match value {
+                        Ok(message) => message,
+                        Err(error) => {
+                            return terminal_exit(
+                                closed.load(Ordering::Acquire),
+                                &format!("Chromium transport stopped: {error}"),
+                            );
+                        }
+                    },
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(_) => return Err("Chromium disconnected".into()),
+                    Err(_) => {
+                        return terminal_exit(
+                            closed.load(Ordering::Acquire),
+                            "Chromium disconnected",
+                        );
+                    }
                 };
                 let api::Message::Event(event) = incoming else {
                     return Err("Unexpected browser command".into());
@@ -174,22 +243,60 @@ pub(super) fn run(
                 if event.header.document < requested_document.load(Ordering::Acquire) {
                     continue;
                 }
-                let reply = match &event.kind {
+                match &event.kind {
                     api::EventKind::ResourceResolve { request, base, url } => {
-                        Some(store.resolve(*request, *base, url))
+                        if let Some(reply) =
+                            store.resolve_with_header(event.header, *request, *base, url)
+                        {
+                            send_resource_reply(
+                                generation,
+                                output,
+                                wake,
+                                wire.header.document,
+                                reply,
+                                |reply| wire.send(api::CommandKind::ResourceReply(reply)),
+                            )?;
+                        }
+                        continue;
                     }
                     api::EventKind::ResourceRead {
                         request,
                         resource,
                         offset,
                         length,
-                    } => Some(store.read(*request, *resource, *offset, *length)),
-                    api::EventKind::ResourceRelease { resource } => Some(store.release(*resource)),
-                    _ => None,
-                };
-                if let Some(reply) = reply {
-                    wire.send(api::CommandKind::ResourceReply(reply))?;
-                    continue;
+                    } => {
+                        if let Some(reply) = store.read_with_header(
+                            event.header,
+                            *request,
+                            *resource,
+                            *offset,
+                            *length,
+                        ) {
+                            send_resource_reply(
+                                generation,
+                                output,
+                                wake,
+                                wire.header.document,
+                                reply,
+                                |reply| wire.send(api::CommandKind::ResourceReply(reply)),
+                            )?;
+                        }
+                        continue;
+                    }
+                    api::EventKind::ResourceRelease { resource } => {
+                        if let Some(reply) = store.release(*resource) {
+                            send_resource_reply(
+                                generation,
+                                output,
+                                wake,
+                                wire.header.document,
+                                reply,
+                                |reply| wire.send(api::CommandKind::ResourceReply(reply)),
+                            )?;
+                        }
+                        continue;
+                    }
+                    _ => {}
                 }
                 match &event.kind {
                     api::EventKind::Frame(frame) => {
@@ -207,7 +314,12 @@ pub(super) fn run(
                         }
                     }
                     api::EventKind::Ready => ready.store(true, Ordering::Release),
-                    api::EventKind::Closed => return Ok(()),
+                    api::EventKind::Closed => {
+                        return terminal_exit(
+                            closed.load(Ordering::Acquire),
+                            "Chromium closed unexpectedly",
+                        );
+                    }
                     _ => {}
                 }
                 output
@@ -218,13 +330,42 @@ pub(super) fn run(
             }
             Ok(())
         })();
+        generation.close();
         // Closing the broker's entire process tree releases blocked pipe reads/writes.
         stopping.store(true, Ordering::Release);
         drop(incoming);
         let _ = supervisor.join();
         let _ = reader.join();
         result
-    })
+    });
+    store.finish().and(result)
+}
+
+/// The actor checks the immutable ceiling even for commands bypassing Session admission.
+pub(super) fn validated_policy(
+    ceiling: PolicyCeiling,
+    next: api::Policy,
+) -> Result<api::Policy, String> {
+    if ceiling == PolicyCeiling::OfflineOnly {
+        return Err("This document has a fixed offline policy".into());
+    }
+    if next.scripts && !next.network {
+        return Err("Scripts require online mode".into());
+    }
+    Ok(next)
+}
+
+pub(super) fn validate_frontend_command(
+    ceiling: PolicyCeiling,
+    command: &api::CommandKind,
+) -> Result<(), String> {
+    match command {
+        api::CommandKind::Policy(policy) => validated_policy(ceiling, *policy).map(|_| ()),
+        api::CommandKind::Open { .. }
+        | api::CommandKind::ResourceReply(_)
+        | api::CommandKind::FrameAck { .. } => Err("Reserved browser command".into()),
+        _ => Ok(()),
+    }
 }
 
 #[test]

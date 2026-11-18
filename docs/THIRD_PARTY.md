@@ -54,7 +54,7 @@ Inventory updated on 12 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64, plus Darwin x86-64/arm64
 captures for the independent native macOS filesystem package only:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **66**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **67**
   package/version records declared by project crates, including build/test tools.
 - [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **646**
   package/version/source records, **528** distinct crate names, including transitives.
@@ -203,6 +203,95 @@ Windows/Linux native 0.2 source is integrated in D merge `5baee471` from C commi
 remains unimplemented; installed-provider/native-runtime qualification is separate. See
 [provider status](ACTIVE_WORK.md#provider-increments-from-the-architect-review).
 
+## Office contents preview host service — 17 November 2026
+
+The new host-owned `midnight-office-preview` crate uses quick-xml **0.41.0**
+(MIT), zip **8.6.0** (MIT), and flate2 **1.1.10** (MIT OR Apache-2.0; MIT selected).
+It depends on host Core, not private independent-plugin implementation crates.
+The tested XLSX backend service and approved six-format design do not establish support
+for all six formats or a qualified app/distribution.
+
+Build's `viewer-refresh-20261117/build/office-lock-integration/ready.json` records
+locked offline metadata success: only local Office plus external zip8.6.0 and
+typed-path0.12.4 were added; all prior versions/checksums stayed unchanged.
+Office disables defaults on all three direct dependencies, requesting only
+`zip/deflate-flate2` and `flate2/rust_backend`. Actual Windows workspace unification
+selects ZIP `_deflate-any,deflate-flate2`, typed-path `default,std`, flate2
+`any_impl,default,miniz_oxide,runtime_detection,rust_backend`, and quick-xml
+`default` (an empty default set). ZIP AES/bzip2/deflate64/LZMA/PPMd/time/xz/zstd
+features are not enabled. flate2's weak optional zlib-rs reference is not proof
+that the lockfile's zlib-rs package is active.
+
+The 14-package feature-audited registry subtree retains MIT alternatives except
+foldhash0.2.0's Zlib license. Exact cached license texts were inspected; selected
+copyright/permission texts are retained in the [host notice record](dependencies/OFFICE_PREVIEW_NOTICES.md),
+with complete upstream files/hash pins staged under the private review artifacts.
+The existing release collector must include the actual host-selected dependency
+closure under `licenses/`; old archive-plugin attribution alone is insufficient.
+No mandatory fee, subscription or royalty is required by these inspected licenses;
+no project-license change or paid alternative is selected.
+
+Security review remains open: RustSec extraction advisories
+[RUSTSEC-2026-0429](https://rustsec.org/advisories/RUSTSEC-2026-0429.html),
+[0369](https://rustsec.org/advisories/RUSTSEC-2026-0369.html),
+[0368](https://rustsec.org/advisories/RUSTSEC-2026-0368.html) and
+[0367](https://rustsec.org/advisories/RUSTSEC-2026-0367.html) list fixes in9.0.0.
+The cached8.6 extraction allocation matches0429; current Office source uses a
+captured ZIP reader without an `extract()` call. That narrow observation is not
+complete reachability clearance. Prior0168 is patched from2.3.0. A complete
+transitive maintenance/advisory review, selected Cargo-tree captures, Linux Office
+feature capture and actual packaged-notice verification remain pending. The
+generated direct/complete/CSV inventories below receive a bounded Office Windows
+delta from Build's locked metadata and an actual locked/offline workspace Cargo
+tree (normal/build/dev), not metadata's optional-feature union. The selected tree
+excludes zlib-rs. Older scope/target captures remain retained; no fresh Linux Office
+or complete forty-six-capture refresh is claimed.
+
+## Private resident-worker dependency handoff — 17 November 2026
+
+This records the private migration proposal, not an integrated dependency graph
+or implementation pass. The current canonical `midnight-work-budget` manifest has
+no Tokio dependency; its private manifest adds optional `tokio = { workspace =
+true, optional = true }`, activated by `resident-workers = ["dep:tokio"]`.
+
+| Private edge / feature | Selected version and scope |
+| --- | --- |
+| `midnight-work-budget` → Tokio | Existing lockfile version **1.54.1**, upstream **MIT**; optional until `resident-workers` is enabled |
+| Engine → work-budget | Enable first-party `resident-workers` feature |
+| Viewer Engine → work-budget | Add/enable first-party dependency with `resident-workers` |
+| Compare Engine → work-budget | Enable first-party `resident-workers` feature |
+
+The optional edge inherits the existing workspace features `rt-multi-thread`,
+`sync`, `time` and `macros`; Tokio's pinned manifest declares `default = []`.
+Thus no default Tokio functionality is enabled by default. The proposal does
+not spell `default-features = false`; it inherits the workspace declaration,
+whose default feature set is empty. Existing consumers can unify additional
+features, so these four are this edge's selection, not a claim about the whole
+application's resolved feature union.
+
+The actual cached 1.54.1 `Cargo.toml` and `LICENSE` were inspected: the license is
+MIT, with Tokio Contributors' copyright and permission notice retained for
+distribution. The existing release collector copies that source license to
+`licenses/tokio-1.54.1/`; this edge requires no changed license/notice bytes.
+It introduces no third-party version, mandatory fee, application-license change
+or public plugin API/SDK dependency. First-party crates remain excluded from
+third-party package counts.
+
+Build owns generation of the `midnight-work-budget` → `tokio` lockfile edge after
+the coordinated source lease. Current generated direct/complete/CSV rows remain
+unchanged for this private proposal. After integration, regenerate them from
+coherent target-filtered captures: Tokio gains `midnight-work-budget` as a direct
+declarer; verify the resolved feature union and package counts rather than
+claiming this private review refreshed the full graph. Preserve existing notices.
+
+Upstream maintenance and the RustSec Tokio package record were reviewed on
+17 November 2026. Version 1.54.1 is within the patched ranges of
+[RUSTSEC-2026-0384](https://rustsec.org/advisories/RUSTSEC-2026-0384.html) and
+[RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html);
+[its upstream release](https://github.com/tokio-rs/tokio/releases/tag/tokio-1.54.1)
+records the timer repair. This is a pinned-package review, not a fresh complete
+workspace advisory scan or implementation/native qualification.
+
 ## Main functional libraries
 
 Optional executable-size diagnostics use `cargo-bloat` **0.12.1** (MIT), installed
@@ -223,13 +312,14 @@ This table is a guide; the linked inventories above contain every selected crate
 | crc32fast 1.5.4 | SFV/CRC32 compatibility calculations; also an existing PNG/compression dependency | MIT OR Apache-2.0; MIT branch selected |
 | notify 8.2.1 | Filesystem event watching | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
-| zip 8.6.0 | Read-only ZIP archive provider | MIT |
+| zip 8.6.0 | Read-only ZIP archive provider and host Office package parsing | MIT |
+| quick-xml 0.41.0 | Host Office XML parsing; existing transitive consumers | MIT |
 | hayro 0.9.0 and its parser/interpreter crates | Isolated PDF rendering | Apache-2.0 OR MIT; pinned notices and embedded font/CMap licenses accompany the PDF plugin |
 | similar 2.7.0 | Bounded text comparison | Apache-2.0 |
 | sevenz-rust2 0.23.0 / lzma-rust2 0.21.0 | Read-only 7z and XZ decoding | Apache-2.0 |
 | bzip2 0.6.1 / libbz2-rs-sys 0.2.6 | Pure Rust BZIP2 stream decoding | MIT OR Apache-2.0 / bzip2-1.0.6 |
 | ruzstd 0.9.1 / twox-hash 2.1.5 | Zstandard decoding and frame checksums | MIT |
-| tar 0.4.46 / flate2 1.1.10 and 1.1.11 | TAR/GZIP archive decoding, SDK packaging and image codec dependencies | MIT OR Apache-2.0 |
+| tar 0.4.46 / flate2 1.1.10 and 1.1.11 | TAR/GZIP archive decoding, host Office DEFLATE, SDK packaging and image codec dependencies | MIT OR Apache-2.0 |
 | blake3 1.8.7 | Thumbnail cache identities and integrity records | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
 | ffmpeg-next 9.0.0 / ffmpeg-sys-next 9.0.1 | Required isolated video thumbnail decoder bindings | WTFPL |
 | bindgen 0.73.2 | Build-time native video bindings | BSD-3-Clause |
@@ -315,7 +405,7 @@ Tree-sitter. Media preview choices and implementation status are in the
 ## Native libraries, runtime and data outside Cargo
 
 Linux settings Browse uses the desktop FileChooser portal through zbus 5.19.0
-(MIT), futures-lite 2.6.1 and Tokio (both MIT OR Apache-2.0). The Tokio-backed
+(MIT), futures-lite 2.6.1 (MIT OR Apache-2.0) and Tokio 1.54.1 (MIT). The Tokio-backed
 portal enables socket2 0.6.5 (MIT OR Apache-2.0) and bytes 1.12.1 (MIT). These
 licenses were checked in the pinned Cargo manifests; no paid service is involved.
 Windows Browse uses the existing Windows Common Item Dialog bindings. Runtime
@@ -477,3 +567,26 @@ immutable public SDK package; its lockfile changes only that package/version and
 checksum. No third-party dependency, feature or license selection changed. This
 note supplements the historical dependency captures above; it is not a new full
 inventory capture.
+
+## Host notice-source staging — 18 November 2026
+
+The current completion-v3 stage resolves the eleven omitted license-source
+packages for the selected359-package normal/build graph. It contains662 staged
+files and61 reviewed override files, with zero missing license inputs. Root
+independently checked the exact pinned crate checksums/VCS commits and27 saved
+official manifest/license responses and copy hashes. Dependencies, the project's
+license and license selections are unchanged; the historical blocked stage and
+its missing-input findings remain preserved.
+
+This is qualified notice-source staging. The later normal validation-input2
+producer now matches package/source/version/checksum identities against the359
+selected tuples and locked graph; the stage's662 files were verified. Explicit
+copy of the662 notices into the new C9297 validation bundle is now complete and
+included in its exact2,487-file freeze; normal-only registration preserved the
+inventory. Root reviewed that complete input separately. This remains validation-
+input assembly/graph qualification, without runtime, final distribution or native
+acceptance. The later test-helper source epoch9c25 does not rebind that C9297 bundle.
+See the [normal validation-input2 graph qualification](../_build/verification/viewer-refresh-20261117/build/normal-host-validation-input-2/qualification.json).
+See the [completed C9297 validation-input review](../_build/verification/viewer-refresh-20261117/root-new-c-validation-bundle-9297-review.json).
+See the [Root source/provenance review](../_build/verification/viewer-refresh-20261117/root-host-notices-staging-review-v1.json)
+and [completion-v3 qualification](../_build/verification/viewer-refresh-20261117/build/host-notices-stage/completion-v3/stage-qualification.json).

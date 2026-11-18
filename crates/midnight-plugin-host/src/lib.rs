@@ -63,7 +63,7 @@ mod events;
 pub use events::{EventKind, HostEvent};
 mod session;
 mod wake;
-pub use session::Session;
+pub use session::{AdmissionError, Session};
 mod callbacks;
 mod dispatch;
 mod loaded;

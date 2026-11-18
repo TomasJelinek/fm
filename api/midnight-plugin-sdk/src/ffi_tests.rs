@@ -137,3 +137,97 @@ fn invalid_host_and_request_metadata_fail_before_plugin_work() {
     assert_eq!(begin_shutdown(instance), abi::OK);
     assert_eq!(destroy(instance), abi::OK);
 }
+
+struct PreparationViewer;
+
+impl Viewer for PreparationViewer {
+    const ID: &'static str = "test.preparation";
+    const VERSION: &'static str = "0.1.0";
+
+    fn create(_: &[u8]) -> Result<Self, abi::Status> {
+        Ok(Self)
+    }
+
+    fn handle(&self, request: Request, context: Context) {
+        assert_eq!(request.kind(), 7);
+        context
+            .send(
+                crate::Output {
+                    kind: 8,
+                    payload: vec![0xa3, 0x00, 0x09, 0x01, 0x17, 0x02, 0xf5].into_boxed_slice(),
+                    content: None,
+                },
+                Box::new(|context| context.complete().unwrap()),
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn source_preparation_request_delivers_a_result_before_completed_through_abi_1_0() {
+    let (host, state, _) = fixture();
+    state.accept_work.store(true, Ordering::Relaxed);
+    let mut instance = 0;
+    assert_eq!(
+        unsafe { create::<PreparationViewer>(&host.api(), empty(), &mut instance) },
+        abi::OK
+    );
+    let mut table = std::mem::MaybeUninit::<abi::PluginApi>::uninit();
+    assert_eq!(
+        unsafe {
+            entry::<PreparationViewer>(table.as_mut_ptr(), size_of::<abi::PluginApi>() as u32)
+        },
+        abi::OK
+    );
+    let table = unsafe { table.assume_init() };
+    assert_eq!(table.header.abi_major, 1);
+    assert_eq!(table.header.abi_minor, 0);
+    assert_eq!(table.header.minimum_host_minor, 0);
+    let payload = [
+        0xa3, 0x00, 0x09, 0x01, 0xa4, 0x00, 0x17, 0x01, 0xf5, 0x02, 0x18, 0x18, 0x03, 0x02, 0x02,
+        0x1a, 0x00, 0x04, 0x00, 0x00,
+    ];
+    let request = abi::Request {
+        id: 18,
+        session: 3,
+        generation: 5,
+        kind: 7,
+        flags: 0,
+        payload: abi::ByteSlice {
+            data: payload.as_ptr(),
+            len: payload.len() as u32,
+            reserved: 0,
+        },
+        content: abi::Buffer {
+            bytes: empty(),
+            id: 0,
+        },
+    };
+    assert_eq!(unsafe { submit(instance, &request) }, abi::OK);
+    assert!(state.run_one());
+    assert!(state.run_one());
+    assert!(!state.run_one());
+    let mut events = std::mem::MaybeUninit::<[abi::Event; 2]>::uninit();
+    let mut count = 0;
+    assert_eq!(
+        unsafe { drain(instance, 2, events.as_mut_ptr().cast(), &mut count) },
+        abi::OK
+    );
+    assert_eq!(count, 2);
+    let [result, completed] = unsafe { events.assume_init() };
+    assert_eq!(result.kind, 8);
+    assert_eq!(completed.kind, abi::EVENT_COMPLETED);
+    for event in [result, completed] {
+        assert_eq!(event.request_id, 18);
+        assert_eq!(event.session, 3);
+        assert_eq!(event.generation, 5);
+        assert_eq!(event.flags, 0);
+        assert_eq!(event.content.id, 0);
+        assert_eq!(event.content.bytes.len, 0);
+    }
+    assert_eq!(begin_shutdown(instance), abi::OK);
+    assert_eq!(release_buffer(instance, completed.payload.id), abi::OK);
+    assert_eq!(destroy(instance), abi::NOT_QUIESCENT);
+    assert_eq!(release_buffer(instance, result.payload.id), abi::OK);
+    assert_eq!(destroy(instance), abi::OK);
+}

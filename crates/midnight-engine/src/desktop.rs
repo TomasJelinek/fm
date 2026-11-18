@@ -32,10 +32,11 @@ mod find;
 const ICON_CAPACITY: usize = 256;
 const MAX_TERMINALS: usize = crate::user_command_runtime::MAX_PROCESSES;
 const MAX_OPEN_HELPERS: usize = crate::user_command_runtime::MAX_OPEN_PROCESSES;
-const MAX_OPEN_LAUNCHES: usize = 4;
+pub(crate) const MAX_OPEN_LAUNCHES: usize = 4;
 pub(crate) const EDITOR_RETIREMENT_CAPACITY: usize = MAX_OPEN_LAUNCHES + 2;
 pub(crate) struct Retirement {
     pub(crate) intake: RetirementWaiter,
+    pub(crate) external: crate::desktop_external_compare::ExternalComparisonFrontDoor,
 }
 pub(crate) struct Processes {
     pub(crate) terminals: ProcessTracker,
@@ -85,6 +86,25 @@ struct OpenAdmission {
 }
 
 impl Desktop {
+    pub(crate) fn compare_external(
+        &self,
+        service: Option<Arc<dyn UserCommandService>>,
+        request: crate::desktop_external_compare::ArmedExternalComparison,
+        tasks: &mut JoinSet<()>,
+    ) {
+        crate::desktop_external_compare::launch(
+            crate::desktop_external_compare::LaunchContext {
+                scope: self.scope.clone(),
+                processes: self.terminal_slots.clone(),
+                tracker: self.processes.terminals.clone(),
+                children: self.children.clone(),
+            },
+            service,
+            request,
+            tasks,
+        );
+    }
+
     pub(crate) fn new(
         scope: TaskLifetime,
         retirement: Retirement,
@@ -137,7 +157,7 @@ impl Desktop {
             launch_budget: Arc::new(Semaphore::new(1)),
             context_requests,
             terminal_slots: Arc::new(Semaphore::new(MAX_TERMINALS)),
-            open_budget: Arc::new(Semaphore::new(MAX_OPEN_LAUNCHES)),
+            open_budget: retirement.external.open_budget(),
             open_slots: Arc::new(Semaphore::new(MAX_OPEN_HELPERS)),
             outbox,
         };
@@ -567,6 +587,9 @@ impl Desktop {
             TaskLifetime::testing((services.clone(), locale.clone())),
             Retirement {
                 intake: domain.new_waiter().unwrap(),
+                external: crate::desktop_external_compare::ExternalComparisonFrontDoor::new(
+                    domain.clone(),
+                ),
             },
             Processes {
                 terminals: ProcessTracker::try_start().unwrap(),
@@ -1567,6 +1590,10 @@ mod tests {
 #[cfg(test)]
 #[path = "desktop_lifetime_tests.rs"]
 mod lifetime_tests;
+
+#[cfg(test)]
+#[path = "desktop_external_compare_ledger_tests.rs"]
+mod external_compare_ledger_tests;
 
 impl Drop for Desktop {
     fn drop(&mut self) {

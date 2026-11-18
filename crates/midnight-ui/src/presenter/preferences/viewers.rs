@@ -69,10 +69,15 @@ mod tests {
     fn viewer_windows_merge_fields_and_preserve_other_application_settings() {
         let root = std::env::temp_dir();
         let mut p = Presenter::new(root.clone(), root);
-        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            theme: PreferenceTheme::Dark,
-            ..Default::default()
-        }))));
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    theme: PreferenceTheme::Dark,
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
         let saves = RefCell::new(Vec::new());
         let send = |command| {
             if let Command::SavePreferences { preferences, .. } = command {
@@ -114,7 +119,12 @@ mod tests {
         loaded.viewer.wrap = true;
         loaded.viewer.source_font.size = 21;
         loaded.viewer.markdown_preset = MarkdownPreset::Compact;
-        p.apply(Event::PreferencesLoaded(Ok(Box::new(loaded))));
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: loaded,
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
         assert!(!p.viewer_preferences().wrap);
         assert_eq!(p.viewer_preferences().source_font.size, 21);
         assert_eq!(
@@ -160,7 +170,12 @@ mod tests {
             loaded.viewer.markdown_font.family = "monospace".into();
             loaded.viewer.markdown_font.size = 35;
             loaded.viewer.source_font.size = 21;
-            p.apply(Event::PreferencesLoaded(Ok(Box::new(loaded))));
+            p.apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences: loaded,
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
             assert_eq!(
                 p.viewer_preferences().markdown_preset,
                 expected.markdown_preset,

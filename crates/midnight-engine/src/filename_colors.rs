@@ -1,6 +1,9 @@
 //! Three bounded coalescing lanes: draft validation and one paint job per pane.
 use crate::Outbox;
-use midnight_core::{Event, FilenameColorsRequest, FilenameColorsResult, FilenameColorsValidation};
+use midnight_core::{
+    Entry, EntryId, Event, FilenameColorsRequest, FilenameColorsResult, FilenameColorsValidation,
+    FilenameStyle,
+};
 use midnight_platform_common::filename_colors::CompiledFilenameColors;
 use std::{collections::HashMap, sync::Arc};
 use tokio::{sync::watch, task::JoinSet};
@@ -66,31 +69,53 @@ fn compute(work: &Work, cancelled: &dyn Fn() -> bool) -> Option<Event> {
             result: CompiledFilenameColors::new(&request.rules).map(|_| ()),
         }),
         Work::Match(request) => {
-            let result = CompiledFilenameColors::new(&request.rules).and_then(|compiled| {
-                let mut styles = HashMap::new();
-                let mut ids = std::collections::HashSet::new();
-                for (index, entry) in request.source.iter().enumerate() {
-                    if index.is_multiple_of(256) && cancelled() {
-                        return Err("Cancelled".into());
-                    }
-                    if !ids.insert(entry.id) {
-                        return Err("Ambiguous filename color identity".into());
-                    }
-                    if let Some(style) = compiled.style(&entry.name, entry.kind) {
-                        styles.insert(entry.id, style);
-                    }
+            let result = (|| {
+                if let Some(tree) = &request.tree
+                    && (request.pane != tree.stamp.pane
+                        || request.pane != tree.root.pane
+                        || tree.root.navigation != tree.stamp.navigation
+                        || !Arc::ptr_eq(&request.source, &tree.root.entries))
+                {
+                    return Err("Filename color tree does not match its root snapshot".into());
                 }
+                let compiled = CompiledFilenameColors::new(&request.rules)?;
+                let styles = if let Some(tree) = &request.tree {
+                    match_entries(tree.rows.iter().map(|row| &row.entry), &compiled, cancelled)?
+                } else {
+                    match_entries(request.source.iter(), &compiled, cancelled)?
+                };
                 Ok(Arc::new(FilenameColorsResult {
                     request: request.clone(),
                     styles,
                 }))
-            });
+            })();
             (!cancelled()).then(|| Event::FilenameColorsReady {
                 request: request.clone(),
                 result,
             })
         }
     }
+}
+
+fn match_entries<'a>(
+    entries: impl Iterator<Item = &'a Entry>,
+    compiled: &CompiledFilenameColors,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<HashMap<EntryId, FilenameStyle>, String> {
+    let mut styles = HashMap::new();
+    let mut ids = std::collections::HashSet::new();
+    for (index, entry) in entries.enumerate() {
+        if index.is_multiple_of(256) && cancelled() {
+            return Err("Cancelled".into());
+        }
+        if !ids.insert(entry.id) {
+            return Err("Ambiguous filename color identity".into());
+        }
+        if let Some(style) = compiled.style(&entry.name, entry.kind) {
+            styles.insert(entry.id, style);
+        }
+    }
+    Ok(styles)
 }
 
 async fn run(outbox: Outbox, mut input: watch::Receiver<Option<Arc<Work>>>) {

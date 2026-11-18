@@ -33,6 +33,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.disk_io_concurrency = from.disk_io_concurrency;
     to.command_history.clone_from(&from.command_history);
     to.editor.clone_from(&from.editor);
+    to.file_comparators.clone_from(&from.file_comparators);
     to.shortcuts.clone_from(&from.shortcuts);
     to.user_commands.clone_from(&from.user_commands);
     to.filename_colors.clone_from(&from.filename_colors);
@@ -69,6 +70,7 @@ impl Presenter {
         self.preferences.options.open = true;
         self.preferences.options.error_topic = None;
         self.capture_options_baseline();
+        self.begin_comparator_options();
         self.discard_options_forms();
     }
 
@@ -83,6 +85,7 @@ impl Presenter {
 
     fn discard_options_forms(&mut self) {
         self.discard_editor_draft();
+        self.discard_comparator_draft();
         self.discard_viewer_association_draft();
         self.cancel_color_draft();
         self.cancel_user_command_setting();
@@ -111,6 +114,7 @@ impl Presenter {
         restore_fields(&mut values, &defaults);
         values.file_list.reset_options();
         self.discard_editor_draft();
+        self.discard_comparator_draft();
         self.discard_viewer_association_draft();
         self.cancel_color_draft();
         self.keyboard.editor.candidate = None;
@@ -185,6 +189,10 @@ impl Presenter {
                 return;
             }
         }
+        if !self.stage_comparator_draft(send) {
+            self.options_error_on(10);
+            return;
+        }
         if self.user_command_settings.dirty {
             let token = self.user_command_settings.token();
             let Some(form) = self.user_command_settings_form() else {
@@ -217,6 +225,7 @@ impl Presenter {
         self.preferences.options.saving = true;
         self.preferences.revision.0 = self.preferences.revision.0.saturating_add(1);
         self.preferences.options.commit_revision = Some(self.preferences.revision);
+        self.comparator_submission(self.preferences.revision);
         self.preferences.unsaved = true;
         if !self.send_preferences_save(send) {
             self.preferences.options.saving = false;
@@ -228,6 +237,7 @@ impl Presenter {
         &mut self,
         revision: PreferencesRevision,
         result: &Result<(), FsError>,
+        comparator: Option<&FileComparatorDiagnostic>,
     ) {
         if !self.preferences.options.saving
             || self
@@ -245,6 +255,11 @@ impl Presenter {
                 self.preferences.options.saving = false;
                 self.preferences.options.commit_revision = None;
                 self.preferences.save_error = crate::error_presentation::describe(error);
+                if comparator.is_some_and(|diagnostic| {
+                    self.comparator_diagnostic(Some(revision), diagnostic)
+                }) {
+                    self.options_error_on(10);
+                }
             }
             return;
         }
@@ -256,5 +271,6 @@ impl Presenter {
         self.preferences.options.error_topic = None;
         self.retired
             .push(Box::new(self.preferences.options.baseline.take()));
+        self.discard_comparator_draft();
     }
 }

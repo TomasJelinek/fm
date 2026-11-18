@@ -2653,6 +2653,7 @@ dependencies = [
  "midnight-compare-engine",
  "midnight-core",
  "midnight-ui-input",
+ "midnight-work-budget",
  "slint",
  "slint-build",
  "tokio",
@@ -2723,6 +2724,7 @@ dependencies = [
  "midnight-ui",
  "midnight-viewer-engine",
  "midnight-viewer-ui",
+ "midnight-work-budget",
  "slint",
  "tokio",
  "tracing",
@@ -2778,6 +2780,16 @@ dependencies = [
  "serde",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "midnight-office-preview"
+version = "0.2.0"
+dependencies = [
+ "flate2",
+ "midnight-core",
+ "quick-xml",
+ "zip",
 ]
 
 [[package]]
@@ -2847,7 +2859,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-plugin-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "minicbor",
 ]
@@ -2932,9 +2944,11 @@ dependencies = [
  "midnight-core",
  "midnight-image-viewer-host",
  "midnight-native-filesystem-host",
+ "midnight-office-preview",
  "midnight-plugin-host",
  "midnight-viewer-render",
  "midnight-web-viewer-host",
+ "midnight-work-budget",
  "tempfile",
  "tokio",
 ]
@@ -2960,6 +2974,7 @@ dependencies = [
  "midnight-plugin-host",
  "midnight-ui-input",
  "midnight-viewer-engine",
+ "midnight-work-budget",
  "png",
  "slint",
  "slint-build",
@@ -2993,6 +3008,9 @@ dependencies = [
 [[package]]
 name = "midnight-work-budget"
 version = "0.2.0"
+dependencies = [
+ "tokio",
+]
 
 [[package]]
 name = "midnight-worker-platform"
@@ -5110,6 +5128,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-path"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6403,6 +6427,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "zip"
+version = "8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
 ]
 
 [[package]]

@@ -19,6 +19,11 @@ struct Calls {
     refuse_read: AtomicBool,
     malformed_read: AtomicBool,
     invalid_open_revision: AtomicBool,
+    refuse_validate: AtomicBool,
+    malformed_validate: AtomicBool,
+    panic_close: AtomicBool,
+    cancel_after_open: AtomicBool,
+    cancelled: AtomicBool,
     read_barrier: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     cache: Mutex<Weak<CaptureCache>>,
 }
@@ -73,6 +78,9 @@ impl Transport for Calls {
                 ))
             }
             Request::OpenRead { .. } => {
+                if self.cancel_after_open.load(Ordering::SeqCst) {
+                    self.cancelled.store(true, Ordering::SeqCst);
+                }
                 state.next_reader += 1;
                 Response::Opened {
                     reader: state.next_reader,
@@ -82,6 +90,19 @@ impl Transport for Calls {
                     } else {
                         vec![1]
                     },
+                }
+            }
+            Request::ValidateRead { .. } if self.refuse_validate.load(Ordering::SeqCst) => {
+                Response::Failed(Failure::new(
+                    ErrorCode::SourceChanged,
+                    "teardown unconfirmed",
+                ))
+            }
+            Request::ValidateRead { .. } if self.malformed_validate.load(Ordering::SeqCst) => {
+                Response::Opened {
+                    reader: 900,
+                    length: 1,
+                    revision: vec![1],
                 }
             }
             Request::ValidateRead { .. } => Response::Unit,
@@ -99,6 +120,9 @@ impl Transport for Calls {
                 bytes: vec![7],
                 eof: true,
             },
+            Request::CloseRead { .. } if self.panic_close.load(Ordering::SeqCst) => {
+                panic!("injected reader close panic")
+            }
             Request::CloseRead { .. } if self.fail_close.load(Ordering::SeqCst) => {
                 Response::Failed(Failure::new(ErrorCode::Io, "reader close unconfirmed"))
             }
@@ -122,6 +146,250 @@ fn fixture() -> (Arc<CaptureCache>, Arc<Calls>, PathBuf) {
         calls,
         std::env::temp_dir().join("capture-retirement/source.bin"),
     )
+}
+
+fn checked_capture(
+    cache: &Arc<CaptureCache>,
+    path: &Path,
+    cached: bool,
+) -> Result<CapturedFile, crate::CaptureFailure> {
+    if cached {
+        cache.capture_checked(path, &|| false)
+    } else {
+        cache.provider.capture_checked(path, &|| false)
+    }
+}
+
+fn assert_no_reads(calls: &Calls) {
+    assert!(
+        !lock(&calls.state)
+            .requests
+            .iter()
+            .any(|request| matches!(request, Request::ReadAt { .. }))
+    );
+}
+
+#[test]
+fn checked_initial_capture_error_preserves_the_native_cleanup_receipt() {
+    for cached in [false, true] {
+        for failed_cleanup in [false, true] {
+            let (cache, calls, path) = fixture();
+            calls.invalid_open_revision.store(true, Ordering::SeqCst);
+            calls.fail_close.store(failed_cleanup, Ordering::SeqCst);
+            let failure = checked_capture(&cache, &path, cached).unwrap_err();
+            assert_eq!(failure.cleanup_unconfirmed, failed_cleanup);
+            let state = lock(&calls.state);
+            assert_eq!(
+                state
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, Request::CloseRead { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                state
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, Request::CloseMount { .. }))
+                    .count(),
+                usize::from(!failed_cleanup)
+            );
+            drop(state);
+            assert_no_reads(&calls);
+            assert!(lock(&cache.readers).is_empty());
+        }
+    }
+}
+
+#[test]
+fn checked_constructor_rejection_releases_all_owners_and_does_not_parse_messages() {
+    for cached in [false, true] {
+        for failed_cleanup in [false, true] {
+            let (cache, calls, path) = fixture();
+            calls.refuse_validate.store(true, Ordering::SeqCst);
+            calls.fail_close.store(failed_cleanup, Ordering::SeqCst);
+            let failure = checked_capture(&cache, &path, cached).unwrap_err();
+            assert_eq!(
+                failure.cleanup_unconfirmed, failed_cleanup,
+                "the ordinary validation error's text must not manufacture cleanup taint"
+            );
+            let state = lock(&calls.state);
+            assert_eq!(
+                state
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, Request::CloseRead { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                state
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, Request::CloseMount { .. }))
+                    .count(),
+                usize::from(!failed_cleanup)
+            );
+            drop(state);
+            assert_no_reads(&calls);
+            assert!(lock(&cache.readers).is_empty());
+            if !failed_cleanup {
+                assert_eq!(Arc::strong_count(&calls), 2, "no leaked construction owner");
+            }
+        }
+    }
+}
+
+#[test]
+fn checked_tainted_constructor_failure_never_reports_confirmed_cleanup() {
+    for cached in [false, true] {
+        let (cache, calls, path) = fixture();
+        calls.malformed_validate.store(true, Ordering::SeqCst);
+        calls.fail_close.store(true, Ordering::SeqCst);
+        assert!(
+            checked_capture(&cache, &path, cached)
+                .unwrap_err()
+                .cleanup_unconfirmed
+        );
+        assert_eq!(
+            lock(&calls.state)
+                .requests
+                .iter()
+                .filter(|request| matches!(request, Request::CloseRead { reader: 900 }))
+                .count(),
+            1
+        );
+        assert!(!lock(&calls.state).requests.iter().any(|request| matches!(
+            request,
+            Request::CloseRead { reader: 1 } | Request::CloseMount { .. }
+        )));
+        assert_no_reads(&calls);
+        assert!(
+            Arc::strong_count(&calls) > 2,
+            "uncertain native ownership must remain retained"
+        );
+    }
+}
+
+#[test]
+fn checked_identity_exhaustion_closes_initial_source_and_reports_failed_close() {
+    for failed_cleanup in [false, true] {
+        let (cache, calls, path) = fixture();
+        cache.next.store(u64::MAX, Ordering::SeqCst);
+        calls.fail_close.store(failed_cleanup, Ordering::SeqCst);
+        let failure = cache.capture_checked(&path, &|| false).unwrap_err();
+        assert_eq!(failure.cleanup_unconfirmed, failed_cleanup);
+        assert!(
+            !lock(&calls.state)
+                .requests
+                .iter()
+                .any(|request| matches!(request, Request::ValidateRead { .. }))
+        );
+        assert_eq!(
+            lock(&calls.state)
+                .requests
+                .iter()
+                .filter(|request| matches!(request, Request::CloseRead { .. }))
+                .count(),
+            1
+        );
+        if !failed_cleanup {
+            assert_eq!(Arc::strong_count(&calls), 2);
+        }
+        assert_no_reads(&calls);
+    }
+}
+
+#[test]
+fn checked_initial_reader_retirement_failure_or_panic_is_typed_and_never_retried() {
+    for mode in 0..3 {
+        let (cache, calls, path) = fixture();
+        calls.fail_close.store(mode == 0, Ordering::SeqCst);
+        calls.fail_mount.store(mode == 1, Ordering::SeqCst);
+        calls.panic_close.store(mode == 2, Ordering::SeqCst);
+        assert!(
+            cache
+                .capture_checked(&path, &|| false)
+                .unwrap_err()
+                .cleanup_unconfirmed
+        );
+        assert_eq!(
+            lock(&calls.state)
+                .requests
+                .iter()
+                .filter(|request| matches!(request, Request::CloseRead { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            lock(&calls.state)
+                .requests
+                .iter()
+                .filter(|request| matches!(request, Request::CloseMount { .. }))
+                .count(),
+            usize::from(mode == 1)
+        );
+        assert!(Arc::strong_count(&calls) > 2);
+        assert_no_reads(&calls);
+    }
+}
+
+#[test]
+fn checked_cancel_before_capture_has_no_unconfirmed_native_ownership() {
+    let (cache, calls, path) = fixture();
+    for cached in [false, true] {
+        let failure = if cached {
+            cache.capture_checked(&path, &|| true)
+        } else {
+            cache.provider.capture_checked(&path, &|| true)
+        }
+        .unwrap_err();
+        assert_eq!(failure.error.code, ErrorCode::Cancelled);
+        assert!(!failure.cleanup_unconfirmed);
+    }
+    assert!(lock(&calls.state).requests.is_empty());
+}
+
+#[test]
+fn checked_cancellation_after_reader_return_preserves_release_error_status() {
+    for cached in [false, true] {
+        for failed_cleanup in [false, true] {
+            let (cache, calls, path) = fixture();
+            calls.cancel_after_open.store(true, Ordering::SeqCst);
+            calls.fail_close.store(failed_cleanup, Ordering::SeqCst);
+            let cancelled = || calls.cancelled.load(Ordering::SeqCst);
+            let failure = if cached {
+                cache.capture_checked(&path, &cancelled)
+            } else {
+                cache.provider.capture_checked(&path, &cancelled)
+            }
+            .unwrap_err();
+            assert_eq!(failure.cleanup_unconfirmed, failed_cleanup);
+            if !failed_cleanup {
+                assert_eq!(failure.error.code, ErrorCode::Cancelled);
+            }
+            let state = lock(&calls.state);
+            assert_eq!(
+                state
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, Request::CloseRead { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                state
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, Request::CloseMount { .. }))
+                    .count(),
+                usize::from(!failed_cleanup)
+            );
+            drop(state);
+            assert_no_reads(&calls);
+        }
+    }
 }
 #[test]
 fn last_snapshot_removes_only_its_reader_and_closes_outside_cache_mutex() {

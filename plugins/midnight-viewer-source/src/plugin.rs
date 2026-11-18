@@ -1,6 +1,6 @@
 use crate::{
     decode::{self, Encoding},
-    paging, positions, search,
+    paging, positions, preparation, search,
 };
 use midnight_plugin_sdk::{
     Context, Output, Request, Viewer,
@@ -31,6 +31,7 @@ pub struct Session {
     pub metadata: Mutex<Metadata>,
     pub hints: Mutex<paging::Hints>,
     pub(crate) positions: Mutex<positions::Index>,
+    pub(crate) preparation: Mutex<preparation::Index>,
 }
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
@@ -64,8 +65,11 @@ impl Viewer for Plugin {
         if self
             .work
             .try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
-                // Locate never takes the last slot needed for viewport work.
-                (n < if request.kind() == abi::REQUEST_LOCATE {
+                // Background Locate/preparation leaves one slot for viewport work.
+                (n < if matches!(
+                    request.kind(),
+                    abi::REQUEST_LOCATE | abi::REQUEST_PREPARE_SOURCE
+                ) {
                     3
                 } else {
                     4
@@ -108,6 +112,7 @@ impl Viewer for Plugin {
                 }),
                 hints: Mutex::new(paging::Hints::new(&open.display_name, open.mode)),
                 positions: Mutex::new(positions::Index::default()),
+                preparation: Mutex::new(preparation::Index::default()),
             });
             {
                 let mut sessions = lock(&self.sessions);
@@ -160,6 +165,16 @@ impl Viewer for Plugin {
             return;
         }
         match request.kind() {
+            abi::REQUEST_PREPARE_SOURCE => {
+                let prepare: messages::PrepareSource = match request.decode() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        let _ = context.fail(abi::INVALID, "Invalid PrepareSource");
+                        return;
+                    }
+                };
+                preparation::start(context, session, prepare, Box::new(move || drop(permit)));
+            }
             abi::REQUEST_LOCATE => {
                 let locate: messages::Locate = match request.decode() {
                     Ok(value) => value,
@@ -178,16 +193,16 @@ impl Viewer for Plugin {
                         return;
                     }
                 };
-                let (offset, count, anchor) = paging::plan(&session, &viewport);
+                let plan = paging::plan(&session, &viewport);
                 let next = session.clone();
                 read(
                     context,
                     session,
-                    offset,
-                    count,
+                    plan.offset,
+                    plan.count,
                     Box::new(move |context, data, eof| {
                         let _permit = permit;
-                        paging::viewport(context, next, data, offset, anchor, viewport, eof);
+                        paging::viewport(context, next, data, plan, viewport, eof);
                     }),
                 );
             }

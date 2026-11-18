@@ -16,6 +16,8 @@ mod document_tests;
 pub(crate) struct Page {
     pub text: String,
     pub spans: Vec<ColorSpan>,
+    /// One bounded semantic role record per concrete color span.
+    pub roles: Vec<RoleSpan>,
     pub styles: Vec<StyleSpan>,
     pub tables: Vec<TableRow>,
     pub document_blocks: Vec<DocumentBlock>,
@@ -26,6 +28,12 @@ pub(crate) struct Page {
     pub end: u64,
     pub before: bool,
     pub after: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RoleSpan {
+    pub range: std::ops::Range<usize>,
+    pub role: u16,
 }
 
 fn role_color(role: u16, appearance: &ViewerAppearance) -> [u8; 4] {
@@ -72,6 +80,18 @@ impl Palette {
 }
 
 impl Page {
+    pub fn recolor(&mut self, appearance: &ViewerAppearance) {
+        let palette = Palette::new(appearance);
+        self.spans = self
+            .roles
+            .iter()
+            .map(|span| ColorSpan {
+                range: span.range.clone(),
+                color: palette.color(span.role),
+            })
+            .collect();
+    }
+
     pub fn text(page: viewer::TextPage, appearance: &ViewerAppearance) -> Self {
         let palette = Palette::new(appearance);
         Self {
@@ -91,6 +111,14 @@ impl Page {
                     underline: span.flags & 4 != 0,
                     strikethrough: false,
                     monospace: false,
+                })
+                .collect(),
+            roles: page
+                .spans
+                .iter()
+                .map(|span| RoleSpan {
+                    range: span.start as usize..span.end as usize,
+                    role: span.role,
                 })
                 .collect(),
             spans: page
@@ -148,6 +176,7 @@ impl Page {
             tables: Vec::new(),
             document_blocks: Vec::new(),
             spans: vec![],
+            roles: vec![],
             styles: vec![],
             style_size: 14.0,
             anchors,
@@ -161,7 +190,7 @@ impl Page {
     pub fn document(page: document::DocumentPage, appearance: &ViewerAppearance) -> Self {
         let palette = Palette::new(appearance);
         let mut text = String::new();
-        let mut spans = Vec::new();
+        let mut roles = Vec::new();
         let mut styles = Vec::new();
         let mut anchors = Vec::new();
         let mut tables = Vec::new();
@@ -215,21 +244,28 @@ impl Page {
                 source_offset: anchor.source_offset,
             }));
             if block.kind == document::BLOCK_HEADING && start < text.len() {
-                spans.push(ColorSpan {
+                roles.push(RoleSpan {
                     range: start..text.len(),
-                    color: palette.color(viewer::STYLE_HEADING),
+                    role: viewer::STYLE_HEADING,
                 });
             } else {
-                spans.extend(block.text.spans.iter().map(|span| ColorSpan {
+                roles.extend(block.text.spans.iter().map(|span| RoleSpan {
                     range: start + span.start as usize..start + span.end as usize,
-                    color: palette.color(span.role),
+                    role: span.role,
                 }));
             }
             append_document_styles(&block, start, appearance.font_size, &mut styles);
         }
         Self {
             text,
-            spans,
+            spans: roles
+                .iter()
+                .map(|span| ColorSpan {
+                    range: span.range.clone(),
+                    color: palette.color(span.role),
+                })
+                .collect(),
+            roles,
             styles,
             tables,
             document_blocks,

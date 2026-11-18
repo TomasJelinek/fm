@@ -48,6 +48,8 @@ import { OptionsBody } from "options-dialog.slint";
 import { ColorPickerDialog } from "color-picker.slint";
 import { EditorOptionsView, EditorOptionsDraft } from "editor-options.slint";
 export { EditorOptionsView, EditorOptionsDraft }
+import { ComparatorOptionsView, ComparatorOptionsDraft } from "comparator-options.slint";
+export { ComparatorOptionsView, ComparatorOptionsDraft }
 import { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm } from "user-command-options.slint";
 export { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm }
 import { KeyboardEditorView, ShortcutCommandRow, ShortcutReplacementDialog } from "keyboard-editor.slint";
@@ -171,6 +173,7 @@ export component MainWindow inherits Window {
     callback refresh-file-list-window();
     callback close-file-list-window();
     callback refresh-file-list-viewer();
+    callback refresh-content-appearance();
     callback refresh-checksum-windows();
     callback close-checksum-windows();
     callback edit-file(int);

@@ -1,4 +1,4 @@
-use midnight_core::{Command, PaneId, ViewerAppearance, ViewerLaunch};
+use midnight_core::{Command, PaneId, ViewerLaunch};
 use midnight_ui::{MainWindow, Presenter, Theme};
 use midnight_viewer_ui::{ViewerWindows, WindowPlacement};
 use slint::ComponentHandle;
@@ -33,13 +33,14 @@ pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<dyn Fn(Command) -> bool>,
-    runtime: &tokio::runtime::Handle,
+    execution: &crate::ContentExecution,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
     resources: std::sync::Arc<dyn midnight_core::TransferService>,
     retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
 ) -> (Rc<ViewerWindows>, slint::Timer) {
     let service = midnight_viewer_engine::Service::with_native_capture(
-        runtime.clone(),
+        execution.transient.clone(),
+        execution.resident.clone(),
         crate::native_content::factory_with_resources(filesystem, resources),
     );
     // The outer run owns this ticket on every later Result/early-return path.
@@ -205,14 +206,22 @@ mod preparation_lifetime_tests {
             .enable_all()
             .build()
             .unwrap();
+        let (owner, spawner) = midnight_work_budget::resident::Owner::start(
+            "viewer-preparation-test",
+            midnight_viewer_engine::RESIDENT_WORKERS,
+        )
+        .unwrap();
         let released = Arc::new(AtomicBool::new(false));
         let lifetime = CaptureLifetime(released.clone());
         let capture: midnight_viewer_engine::NativeCapture = Arc::new(move |_, _| {
             let _lifetime = &lifetime;
             Err("Lifetime-only capture must not be invoked".into())
         });
-        let service =
-            midnight_viewer_engine::Service::with_native_capture(runtime.handle().clone(), capture);
+        let service = midnight_viewer_engine::Service::with_native_capture(
+            runtime.handle().clone(),
+            spawner,
+            capture,
+        );
         let timer =
             prepare_images_after_settings(slint::Weak::default(), std::rc::Weak::new(), service);
         assert!(!released.load(Ordering::Acquire));
@@ -226,6 +235,7 @@ mod preparation_lifetime_tests {
             released.load(Ordering::Acquire),
             "Shutdown must drop the owned timer"
         );
+        runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
     }
 }
 
@@ -238,18 +248,10 @@ fn open(
     ready: Option<midnight_viewer_ui::OpenReady>,
 ) -> Result<(), String> {
     let theme = window.global::<Theme>();
-    let rgba = |color: slint::Color| {
-        let color = color.to_argb_u8();
-        [color.red, color.green, color.blue, color.alpha]
-    };
-    let appearance = ViewerAppearance {
-        family: theme.get_font_family().to_string(),
-        font_size: theme.get_font_size().max(11.0),
-        foreground: rgba(theme.get_text()),
-        background: rgba(theme.get_pane_background()),
-        selection: rgba(theme.get_selection_background()),
-        accent: rgba(theme.get_accent()),
-    };
+    let mut appearance = crate::content_appearance::capture(window);
+    // Preserve the opening document snapshot; only the UI cache uses the resolved UI family.
+    appearance.family = theme.get_font_family().to_string();
+    appearance.font_size = appearance.font_size.max(11.0);
     let key_state = presenter.clone();
     let keys = Rc::new(move |chord: &_, search| key_state.borrow().viewer_key(chord, search));
     let copy_state = presenter.clone();
@@ -270,11 +272,13 @@ fn open(
 #[cfg(test)]
 fn service(
     runtime: &tokio::runtime::Handle,
+    viewer_spawner: midnight_work_budget::resident::Spawner,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> midnight_viewer_engine::Service {
     let capture = crate::native_content::factory(filesystem);
     midnight_viewer_engine::Service::with_native_capture(
         runtime.clone(),
+        viewer_spawner,
         std::sync::Arc::new(move |path, closed| capture(path, closed)),
     )
 }

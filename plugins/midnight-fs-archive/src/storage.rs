@@ -9,7 +9,7 @@ use std::{
 
 pub trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
-pub type Reader = std::io::BufReader<Box<dyn ReadSeek>>;
+pub use crate::reader::Reader;
 
 pub trait Storage {
     fn begin(&self, purpose: StagePurpose, expected: Option<u64>, maximum: u64) -> io::Result<u64>;

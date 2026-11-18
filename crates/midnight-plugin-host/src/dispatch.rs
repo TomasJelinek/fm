@@ -98,7 +98,7 @@ pub(crate) fn run(
         let cancelled: Vec<_> = lock(&shared.state)
             .requests
             .iter()
-            .filter(|(_, cancelled)| **cancelled)
+            .filter(|(_, request)| request.cancelled)
             .map(|(id, _)| *id)
             .collect();
         for id in cancelled {
@@ -134,23 +134,9 @@ pub(crate) fn run(
                 // SAFETY: request data are borrowed only until submit returns.
                 let status = unsafe { loaded.api.submit.unwrap()(instance, &request) };
                 if status != abi::OK {
-                    if command.kind == abi::REQUEST_LOCATE {
-                        shared.push(
-                            HostEvent {
-                                request_id: command.id,
-                                generation: shared.generation,
-                                kind: EventKind::Failed(messages::Failure {
-                                    code: status,
-                                    message: format!(
-                                        "Plugin rejected optional location request ({status})"
-                                    ),
-                                }),
-                            },
-                            8192,
-                        );
-                    } else {
-                        shared.failure(command.id, format!("Plugin rejected request ({status})"));
-                    }
+                    rejected(&shared, command.id, status);
+                } else if let Some(request) = lock(&shared.state).requests.get_mut(&command.id) {
+                    request.accepted = true;
                 }
             }
         }
@@ -308,10 +294,40 @@ fn receive_event(loaded: &Loaded, instance: u64, shared: &Shared, event: abi::Ev
             loaded.api.release_buffer.unwrap()(instance, event.content.id);
         }
     }
+    process_event(shared, event, result);
+}
+
+fn rejected(shared: &Shared, id: u64, status: u32) {
+    shared.push(
+        HostEvent {
+            request_id: id,
+            generation: shared.generation,
+            kind: EventKind::Failed(messages::Failure {
+                code: status,
+                message: format!("Plugin rejected request ({status})"),
+            }),
+        },
+        8192,
+    );
+}
+
+fn process_event(
+    shared: &Shared,
+    event: abi::Event,
+    result: Result<Option<(EventKind, usize)>, crate::Error>,
+) {
     if event.session != 1 || event.generation != shared.generation {
         return;
     }
     if !lock(&shared.state).requests.contains_key(&event.request_id) {
+        if event.kind == abi::EVENT_SOURCE_PREPARED
+            || matches!(&result, Ok(Some((EventKind::SourcePrepared(_), _))))
+        {
+            shared.fatal(
+                event.request_id,
+                "Unsolicited source preparation result".into(),
+            );
+        }
         return;
     }
     match result {
@@ -334,6 +350,16 @@ fn receive_event(loaded: &Loaded, instance: u64, shared: &Shared, event: abi::Ev
             if shared.cancelled(event.request_id) && matches!(kind, EventKind::Completed) {
                 kind = EventKind::Cancelled;
             }
+            if !valid_preparation_event(shared, event.request_id, &kind) {
+                shared.fatal(
+                    event.request_id,
+                    "Invalid source preparation lifecycle".into(),
+                );
+                return;
+            }
+            if matches!(kind, EventKind::Opened(_)) {
+                lock(&shared.state).opened = true;
+            }
             shared.push(
                 HostEvent {
                     request_id: event.request_id,
@@ -347,6 +373,34 @@ fn receive_event(loaded: &Loaded, instance: u64, shared: &Shared, event: abi::Ev
         Err(_) => {
             shared.fatal(event.request_id, "Malformed plugin output".into());
         }
+    }
+}
+
+fn valid_preparation_event(shared: &Shared, id: u64, kind: &EventKind) -> bool {
+    let mut state = lock(&shared.state);
+    let Some(request) = state.requests.get_mut(&id) else {
+        return false;
+    };
+    if request.kind != abi::REQUEST_PREPARE_SOURCE {
+        return !matches!(kind, EventKind::SourcePrepared(_));
+    }
+    let Some(preparation) = &mut request.preparation else {
+        return false;
+    };
+    match kind {
+        EventKind::SourcePrepared(result) => {
+            if !request.accepted
+                || preparation.result_seen
+                || result.revision != preparation.request.revision
+            {
+                return false;
+            }
+            preparation.result_seen = true;
+            true
+        }
+        EventKind::Completed => request.accepted && preparation.result_seen,
+        EventKind::Progress(_) | EventKind::Cancelled | EventKind::Failed(_) => true,
+        _ => false,
     }
 }
 
@@ -385,6 +439,9 @@ fn decode_event(event: abi::Event) -> Result<Option<(EventKind, usize)>, crate::
         abi::EVENT_SEARCH_MATCH => EventKind::SearchMatch(codec::decode(payload).map_err(invalid)?),
         abi::EVENT_TEXT_POSITION => {
             EventKind::TextPosition(codec::decode(payload).map_err(invalid)?)
+        }
+        abi::EVENT_SOURCE_PREPARED => {
+            EventKind::SourcePrepared(codec::decode(payload).map_err(invalid)?)
         }
         abi::EVENT_PROGRESS => EventKind::Progress(codec::decode(payload).map_err(invalid)?),
         abi::EVENT_FAILED => EventKind::Failed(codec::decode(payload).map_err(invalid)?),
@@ -431,9 +488,18 @@ fn valid_revision(kind: &EventKind, shared: &Shared) -> bool {
                 && position.revision == shared.revision
                 && position.source_offset <= shared.length
         }
+        EventKind::SourcePrepared(result) => {
+            shared.mode == viewer::MODE_SOURCE
+                && result.revision == shared.revision
+                && result.frontier <= shared.length
+        }
         _ => true,
     }
 }
+
+#[cfg(test)]
+#[path = "source_preparation_tests.rs"]
+mod source_preparation;
 
 #[cfg(test)]
 mod tests {

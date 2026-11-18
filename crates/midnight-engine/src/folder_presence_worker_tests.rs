@@ -49,8 +49,11 @@ async fn blocked_presence_keeps_only_latest_viewport_and_cancels_obsolete_receip
         release: Mutex::new(released),
     });
     let (sender, mut events) = tokio::sync::mpsc::channel(8);
-    let mut tasks = JoinSet::new();
+    let mut tasks = ResidentTasks::default();
+    let (_owner, resident) =
+        midnight_work_budget::resident::Owner::start("presence-test", 2).unwrap();
     let controller = Controller::new(
+        &resident,
         TaskLifetime::testing(filesystem.clone()),
         crate::ReportArena::testing(),
         filesystem,

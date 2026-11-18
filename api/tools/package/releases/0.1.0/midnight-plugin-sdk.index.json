@@ -1,0 +1,1 @@
+{"cksum":"3cbd8b9bd227807c58ee3467a895e93ee0c59eb88064a8fc694f859233c8220a","deps":[{"default_features":true,"features":[],"kind":"normal","name":"midnight-plugin-api","optional":false,"package":null,"registry":null,"req":"=0.1.0","target":null}],"features":{},"links":null,"name":"midnight-plugin-sdk","rust_version":"1.99","vers":"0.1.0","yanked":false}

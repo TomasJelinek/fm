@@ -1,6 +1,11 @@
 <#
 Copy a verified Windows build to a new private runtime installation. This does not
 build, run, replace an installation, or change checkout/ancestor permissions.
+ValidationPayloadReceipt opts into the Build-qualified Explorer libtest payload
+described in deployment-validation-payload.ps1. It requires complete modules and
+PowerShell 7, validates the full runtime before/after copying, and records a root
+validation-payload.json before returning. The caller still owns final assembly
+inventory/freeze. Only normal me.exe is registered when RegisterRuntime is set.
 #>
 param(
     [string]$SourceDirectory,
@@ -9,10 +14,18 @@ param(
     [switch]$IncludeThumbnailers,
     [switch]$CreateDesktopShortcut,
     [switch]$RegisterRuntime,
-    [string]$RegistrationDirectory
+    [string]$RegistrationDirectory,
+    [ValidateNotNullOrEmpty()][string]$ValidationPayloadReceipt,
+    [string]$ValidationPython = 'python'
 )
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This deployment helper requires Windows' }
+if ($ValidationPayloadReceipt -and (-not $IncludeFilesystems -or -not $IncludeThumbnailers)) {
+    throw 'Validation payload requires IncludeFilesystems and IncludeThumbnailers'
+}
+if (-not $ValidationPayloadReceipt -and $PSBoundParameters.ContainsKey('ValidationPython')) {
+    throw 'ValidationPython requires ValidationPayloadReceipt'
+}
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $SourceDirectory) { $SourceDirectory = Join-Path $projectRoot '_build/debug' }
 if (-not $Destination) {
@@ -446,7 +459,13 @@ while ($pending.Count -gt 0) {
 Assert-PlainPath $executable
 $launchStamp = $null
 $launchLease = $null
+$validationLease = $null
 try {
+    if ($ValidationPayloadReceipt) {
+        . (Join-Path $PSScriptRoot 'deployment-validation-payload.ps1')
+        $validationLease = Open-DeploymentValidationPayload $ValidationPayloadReceipt $projectRoot $SourceDirectory
+        Assert-DeploymentValidationRuntime $projectRoot $SourceDirectory $ValidationPython
+    }
     if ($RegisterRuntime) {
         Assert-PlainPath $originalSourceDirectory
         Initialize-LaunchRegistrationType
@@ -521,6 +540,14 @@ try {
             Assert-PrivatePath $path $true
         }
     }
+    if ($validationLease) {
+        $payloadRecord = Copy-DeploymentValidationPayload $validationLease $Destination
+        Assert-PrivatePath (Join-Path $Destination $payloadRecord.path) $true
+        Assert-DeploymentValidationRuntime $projectRoot $Destination $ValidationPython
+        $payloadRecord['full_runtime_validation'] = 'passed before external assembly freeze'
+        Write-DeploymentValidationInventory $payloadRecord $Destination
+        Assert-PrivatePath (Join-Path $Destination 'validation-payload.json') $true
+    }
     if ($RegisterRuntime) {
         Register-PrivateRuntime $RegistrationDirectory (Join-Path $Destination 'me.exe') $launchLease $privateAcl
     }
@@ -537,5 +564,9 @@ try {
     }
 
 } finally {
+    if ($null -ne $validationLease) {
+        $validationLease.Stream.Dispose()
+        $validationLease.ApplicationStream.Dispose()
+    }
     if ($null -ne $launchLease) { $launchLease.Dispose() }
 }

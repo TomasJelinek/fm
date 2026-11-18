@@ -69,7 +69,12 @@ fn exercise(command: bool) {
     );
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences,
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     refresh(&test.window, &presenter.borrow());
     test.window.invoke_show_options();
     test.window

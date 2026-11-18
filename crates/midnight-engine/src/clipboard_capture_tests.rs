@@ -81,7 +81,7 @@ async fn publish(
     let copies = Arc::new(Mutex::new(Vec::new()));
     let dropped = source.dropped.clone();
     let (sender, mut events) = mpsc::channel(1);
-    let mut controller = Controller::testing(
+    let (_owner, mut controller) = Controller::testing(
         Some(Arc::new(Native {
             live: Arc::downgrade(&source),
             cancel_on_open: on_open,
@@ -92,7 +92,7 @@ async fn publish(
             wakeup: Arc::new(|| {}),
         },
     );
-    let mut tasks = JoinSet::new();
+    let mut tasks = ResidentTasks::default();
     controller
         .copy_captured(DesktopRequestId(31), source, cancel, &mut tasks)
         .await;
@@ -168,7 +168,7 @@ async fn clipboard_queue_refusal_retires_provider_and_generated_sources_off_disp
                 .is_ok()
         );
         let (sender, mut events) = mpsc::channel(1);
-        let mut controller = Controller::testing(
+        let (_owner, mut controller) = Controller::testing(
             None,
             Outbox {
                 sender,
@@ -178,7 +178,7 @@ async fn clipboard_queue_refusal_retires_provider_and_generated_sources_off_disp
         controller.sender = Some(native);
         let source = source(FileClipboardIntent::Copy);
         let observed = source.dropped.clone();
-        let mut tasks = JoinSet::new();
+        let mut tasks = ResidentTasks::default();
         if generated {
             controller
                 .copy_generated(

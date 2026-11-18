@@ -23,12 +23,32 @@ impl TextPosition {
     pub fn context_available(&self) -> bool {
         self.generation.is_some()
     }
-    /// Axes are vertical, horizontal. Present completed progress without moving pending thumbs.
-    pub fn frame(&mut self, generation: u64, acknowledged: [u64; 2], positions: [f64; 2]) -> bool {
+    /// Read the same context/sequence fence before asynchronous pixel-error delivery.
+    pub fn accepts_frame(
+        &self,
+        generation: u64,
+        acknowledged: [u64; 2],
+        positions: [f64; 2],
+    ) -> bool {
         if self.blocked_generation.is_some_and(|old| generation <= old)
             || self.generation.is_some_and(|current| generation < current)
             || positions.iter().any(|value| !value.is_finite())
         {
+            return false;
+        }
+        // A new generation cancels the old pending targets and resets both
+        // acknowledged axes before accepting its first finite position.
+        if self.generation != Some(generation) {
+            return true;
+        }
+        let pending = self.desired.iter().any(Option::is_some);
+        let progress = (0..2).any(|axis| acknowledged[axis] > self.acknowledged[axis]);
+        !(0..2).any(|axis| acknowledged[axis] < self.acknowledged[axis]) && (!pending || progress)
+    }
+
+    /// Axes are vertical, horizontal. Present completed progress without moving pending thumbs.
+    pub fn frame(&mut self, generation: u64, acknowledged: [u64; 2], positions: [f64; 2]) -> bool {
+        if !self.accepts_frame(generation, acknowledged, positions) {
             return false;
         }
         if self.generation != Some(generation) {
@@ -36,12 +56,6 @@ impl TextPosition {
             self.generation = Some(generation);
             self.blocked_generation = None;
             self.acknowledged = [0; 2];
-        }
-        let pending = self.desired.iter().any(Option::is_some);
-        let progress = (0..2).any(|axis| acknowledged[axis] > self.acknowledged[axis]);
-        if (0..2).any(|axis| acknowledged[axis] < self.acknowledged[axis]) || (pending && !progress)
-        {
-            return false;
         }
         self.authoritative = positions.map(|value| value.clamp(0.0, 1.0));
         self.acknowledged = acknowledged;

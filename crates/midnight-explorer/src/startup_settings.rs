@@ -1,6 +1,6 @@
 //! Admit native preference writes only after the first window is successfully shown.
 use crate::startup_gate::{Gate, WaitError};
-use midnight_core::{FsError, SettingsService, UserPreferences};
+use midnight_core::{ComparatorValidationProof, FsError, SettingsService, UserPreferences};
 use std::{io, path::Path, sync::Arc, time::Duration};
 
 pub(crate) fn for_startup(
@@ -15,16 +15,8 @@ struct StartupSettings {
     gate: Arc<Gate>,
 }
 
-impl SettingsService for StartupSettings {
-    fn font_families(&self) -> Result<Vec<String>, FsError> {
-        self.native.font_families()
-    }
-
-    fn load_preferences(&self) -> Result<UserPreferences, FsError> {
-        self.native.load_preferences()
-    }
-
-    fn save_preferences(&self, preferences: UserPreferences) -> Result<(), FsError> {
+impl StartupSettings {
+    fn wait_for_window(&self) -> Result<(), FsError> {
         self.gate.wait(Duration::from_secs(30)).map_err(|error| {
             let (kind, message) = match error {
                 WaitError::Aborted => (
@@ -41,8 +33,35 @@ impl SettingsService for StartupSettings {
                 Path::new(""),
                 io::Error::new(kind, message),
             )
-        })?;
+        })
+    }
+}
+
+impl SettingsService for StartupSettings {
+    fn font_families(&self) -> Result<Vec<String>, FsError> {
+        self.native.font_families()
+    }
+
+    fn load_preferences(&self) -> Result<UserPreferences, FsError> {
+        self.native.load_preferences()
+    }
+
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        self.native.load_preferences_for_acceptance()
+    }
+
+    fn save_preferences(&self, preferences: UserPreferences) -> Result<(), FsError> {
+        self.wait_for_window()?;
         self.native.save_preferences(preferences)
+    }
+
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        proof: ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        self.wait_for_window()?;
+        self.native.save_preferences_prepared(preferences, proof)
     }
 }
 
@@ -62,6 +81,7 @@ mod tests {
     struct RecordingSettings {
         reads: AtomicUsize,
         writes: AtomicUsize,
+        prepared_writes: AtomicUsize,
     }
     impl SettingsService for RecordingSettings {
         fn font_families(&self) -> Result<Vec<String>, FsError> {
@@ -74,6 +94,18 @@ mod tests {
         fn save_preferences(&self, _: UserPreferences) -> Result<(), FsError> {
             self.writes.fetch_add(1, Ordering::SeqCst);
             Ok(())
+        }
+        fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+            self.load_preferences()
+        }
+        fn save_preferences_prepared(
+            &self,
+            preferences: UserPreferences,
+            proof: ComparatorValidationProof<'_>,
+        ) -> Result<(), FsError> {
+            assert!(proof.matches(&preferences.file_comparators));
+            self.prepared_writes.fetch_add(1, Ordering::SeqCst);
+            self.save_preferences(preferences)
         }
     }
 
@@ -121,5 +153,63 @@ mod tests {
         );
         worker.join().unwrap();
         assert_eq!(native.writes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn startup_prepared_save_waits_for_reveal_and_forwards_the_proof_once() {
+        let owner = Owner::new();
+        let native = Arc::new(RecordingSettings::default());
+        let settings = for_startup(native.clone(), owner.gate());
+        let (started, entered) = mpsc::channel();
+        let (done, received) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let preferences = UserPreferences::default();
+            let store = midnight_core::FileComparatorPolicyStore::default();
+            let accepted = store.reuse_for_save(&preferences.file_comparators).unwrap();
+            started.send(()).unwrap();
+            done.send(settings.save_preferences_prepared(preferences, accepted.validation_proof()))
+                .unwrap();
+        });
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(received.recv_timeout(Duration::from_millis(40)).is_err());
+        assert_eq!(native.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(native.prepared_writes.load(Ordering::SeqCst), 0);
+        owner.gate().reveal();
+        received
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(native.writes.load(Ordering::SeqCst), 1);
+        assert_eq!(native.prepared_writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn startup_prepared_save_refuses_forwarding_when_first_reveal_fails() {
+        let owner = Owner::new();
+        let native = Arc::new(RecordingSettings::default());
+        let settings = for_startup(native.clone(), owner.gate());
+        let (started, entered) = mpsc::channel();
+        let (done, received) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let preferences = UserPreferences::default();
+            let store = midnight_core::FileComparatorPolicyStore::default();
+            let accepted = store.reuse_for_save(&preferences.file_comparators).unwrap();
+            started.send(()).unwrap();
+            done.send(settings.save_preferences_prepared(preferences, accepted.validation_proof()))
+                .unwrap();
+        });
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(received.recv_timeout(Duration::from_millis(40)).is_err());
+        assert_eq!(native.prepared_writes.load(Ordering::SeqCst), 0);
+        drop(owner);
+        let error = received
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind, io::ErrorKind::Interrupted);
+        worker.join().unwrap();
+        assert_eq!(native.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(native.prepared_writes.load(Ordering::SeqCst), 0);
     }
 }

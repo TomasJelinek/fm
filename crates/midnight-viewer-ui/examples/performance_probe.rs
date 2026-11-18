@@ -1,4 +1,7 @@
 //! Native synthetic viewer latency/read probe; no preferences, clipboard or application launch.
+#[path = "support/resident.rs"]
+mod resident;
+
 #[path = "performance_probe/cases.rs"]
 mod cases;
 #[path = "performance_probe/gpu_proof.rs"]
@@ -310,6 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_threads(2)
         .enable_all()
         .build()?;
+    let runtime = resident::ResidentRuntime::new(runtime)?;
     let paths = if let Some(path) = selected_file {
         if !std::fs::metadata(path)?.is_file() {
             return Err("--file must name an existing regular file".into());
@@ -359,8 +363,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .map_err(|e| e.to_string())
     });
-    let service =
-        midnight_viewer_engine::Service::with_native_capture(runtime.handle().clone(), capture);
+    let service = midnight_viewer_engine::Service::with_native_capture(
+        runtime.handle().clone(),
+        runtime.spawner(),
+        capture,
+    );
+    runtime.track_spare(&service);
     let manager = Rc::new(ViewerWindows::new(service));
     manager.set_preferences_listener(Rc::new(|change| {
         eprintln!("probe accepted preference: {change:?}");

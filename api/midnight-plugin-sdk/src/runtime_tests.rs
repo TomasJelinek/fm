@@ -200,6 +200,58 @@ fn output_backpressure_suspends_producers_and_resumes_after_drain_without_lost_w
 }
 
 #[test]
+fn source_preparation_waits_for_result_queue_admission_before_completing() {
+    let (host, state, _) = fixture();
+    let runtime = Runtime::new(host, Arc::new(AtomicU64::new(1)));
+    state.accept_work.store(true, Ordering::Relaxed);
+    for id in 1..=32 {
+        assert_eq!(
+            runtime.submit(
+                origin(id),
+                Box::new(|ctx| {
+                    ctx.send(progress(), Box::new(|ctx| ctx.complete().unwrap()))
+                        .unwrap();
+                })
+            ),
+            abi::OK
+        );
+        while state.run_one() {}
+    }
+    assert_eq!(
+        runtime.submit(
+            origin(33),
+            Box::new(|ctx| {
+                ctx.send(
+                    Output {
+                        kind: 8,
+                        payload: vec![0xa3, 0x00, 0x09, 0x01, 0x17, 0x02, 0xf5].into_boxed_slice(),
+                        content: None,
+                    },
+                    Box::new(|ctx| ctx.complete().unwrap()),
+                )
+                .unwrap();
+                assert_eq!(ctx.complete(), Err(abi::INVALID));
+            })
+        ),
+        abi::OK
+    );
+    assert!(state.run_one());
+    assert!(!state.run_one());
+
+    let mut preparation_events = Vec::new();
+    while let Some(event) = runtime.drain().unwrap() {
+        if event.request_id == 33 {
+            preparation_events.push(event.kind);
+        }
+        runtime.release(event.payload.id).unwrap();
+        while state.run_one() {}
+    }
+    assert_eq!(preparation_events, [8, abi::EVENT_COMPLETED]);
+    runtime.shutdown();
+    assert!(runtime.quiescent());
+}
+
+#[test]
 fn cancelled_pending_read_consumes_late_reply_without_running_continuation() {
     let (host, state, _) = fixture();
     let runtime = Runtime::new(host, Arc::new(AtomicU64::new(1)));

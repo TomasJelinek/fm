@@ -321,14 +321,19 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
     });
     state
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            checksum_algorithms: ChecksumAlgorithms::new(&[
-                ChecksumAlgorithm::Md5,
-                ChecksumAlgorithm::Sha256,
-            ])
-            .unwrap(),
-            ..Default::default()
-        }))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    checksum_algorithms: ChecksumAlgorithms::new(&[
+                        ChecksumAlgorithm::Md5,
+                        ChecksumAlgorithm::Sha256,
+                    ])
+                    .unwrap(),
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     main.show().unwrap();
     midnight_ui::refresh(&main, &state.borrow());
     draw(&windows.borrow()[0], 1000, 700, "checksum-main");

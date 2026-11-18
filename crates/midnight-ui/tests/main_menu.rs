@@ -180,7 +180,12 @@ fn shortcut_menu(bindings: &[(&str, &[&str])]) -> ui::TestUi {
     preferences.validate().unwrap();
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences,
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     midnight_ui::install(&test.window, presenter.clone(), Rc::new(|_| true));
     midnight_ui::refresh(&test.window, &presenter.borrow());
     test.window.set_left_can_target_cursor(true);

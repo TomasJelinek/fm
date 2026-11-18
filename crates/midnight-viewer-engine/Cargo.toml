@@ -7,11 +7,13 @@ publish.workspace = true
 
 [dependencies]
 midnight-core.workspace = true
+midnight-office-preview = { path = "../midnight-office-preview" }
 midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
 midnight-web-viewer-host = { path = "../midnight-web-viewer-host" }
 midnight-plugin-host = { path = "../midnight-plugin-host" }
 midnight-image-viewer-host = { path = "../midnight-image-viewer-host" }
 midnight-viewer-render = { path = "../midnight-viewer-render" }
+midnight-work-budget = { path = "../midnight-work-budget", features = ["resident-workers"] }
 tokio.workspace = true
 
 [dev-dependencies]

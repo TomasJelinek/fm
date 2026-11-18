@@ -299,3 +299,56 @@ fn all_themes_are_selectable_and_keep_text_readable() {
     }
     test.window.hide().unwrap();
 }
+
+#[test]
+fn marked_rows_keep_each_theme_hue_and_distinct_cursor_outline() {
+    // Accepted palette fills before the November 12 shared warm-fill change.
+    let selected_rgb = [
+        0x375775, 0x4b4b4b, 0xc8c8c8, 0x4d425e, 0x3d5660, 0x435038, 0x414767, 0xccd9ba, 0x3d4824,
+        0x393451, 0x434354, 0x3b344c, 0x003e75, 0x49402e, 0xe2ebcc, 0xe6dcf4, 0xedded8, 0xd4e1f0,
+        0xe9dbc1, 0x243b49, 0x3a313b, 0x181818, 0xeeeeee, 0x293946, 0x283d38, 0x352f42,
+    ];
+    let mut test = ui::TestUi::new();
+    test.resize(900, 600);
+    test.window.set_active_pane(0);
+    test.window.set_left_rows(
+        Rc::new(VecModel::from(vec![
+            FileRow {
+                identity: "marked-cursor".into(),
+                name: "README.md".into(),
+                selected: true,
+                cursor: true,
+                ..Default::default()
+            },
+            FileRow {
+                identity: "marked".into(),
+                name: "Selected without focus.txt".into(),
+                selected: true,
+                ..Default::default()
+            },
+        ]))
+        .into(),
+    );
+    for density in [0, 1] {
+        for (scheme, expected) in selected_rgb.into_iter().enumerate() {
+            test.window.invoke_apply_preferences(scheme as i32, density);
+            test.draw();
+            let theme = test.window.global::<Theme>();
+            let actual = theme.get_selected_background();
+            let actual = (u32::from(actual.red()) << 16)
+                | (u32::from(actual.green()) << 8)
+                | u32::from(actual.blue());
+            assert_eq!(actual, expected, "theme {scheme}, density {density}");
+            assert_ne!(
+                theme.get_selected_background(),
+                theme.get_cursor_background(),
+                "theme {scheme}: selection and cursor must remain distinguishable"
+            );
+            if scheme >= 23 {
+                assert_eq!(theme.get_selected_edge(), theme.get_accent());
+            }
+            readable(&theme, &format!("theme {scheme}, density {density}"));
+            high_contrast_selection_marks(&test);
+        }
+    }
+}

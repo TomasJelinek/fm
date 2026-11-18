@@ -13,17 +13,61 @@ use std::{
     },
 };
 
+/// A failed host capture and its explicit native cleanup receipt.
+/// This is a host-only Rust contract; no plugin ABI or wire format changes.
+#[derive(Debug)]
+pub struct CaptureFailure {
+    pub error: Failure,
+    /// True means an unconfirmed native tail remains retained. The caller must
+    /// retain its admission/accounting; false is not evidence that capture succeeded.
+    pub cleanup_unconfirmed: bool,
+}
+
 impl NativeProvider {
     /// Capture a regular file through the plugin. No native opener fallback is used.
     pub fn capture(&self, path: &Path, cancelled: Cancel<'_>) -> Result<CapturedFile, Failure> {
-        let source = self.capture_source(path, cancelled)?;
+        self.capture_checked(path, cancelled)
+            .map_err(|failure| failure.error)
+    }
+
+    /// Capture with typed cleanup status for callers that retain admission on
+    /// uncertain failure. Uses the same provider authority as ordinary capture.
+    pub fn capture_checked(
+        &self,
+        path: &Path,
+        cancelled: Cancel<'_>,
+    ) -> Result<CapturedFile, CaptureFailure> {
+        let mut cleanup_unconfirmed = false;
+        let source = self
+            .capture_source_status(path, cancelled, &mut cleanup_unconfirmed)
+            .map_err(|error| CaptureFailure {
+                error,
+                cleanup_unconfirmed,
+            })?;
+        // Retain the original source if the wrapper constructor unwinds; the
+        // enclosing guarded caller treats that unwind as unconfirmed cleanup.
+        let source = PendingRelease::new(source);
         match CapturedFile::from_source(source.clone()) {
-            Ok(captured) => Ok(captured),
-            Err(error) => Err(release_error(source, invalid(error), &mut false)),
+            Ok(captured) => {
+                drop(source.into_inner());
+                Ok(captured)
+            }
+            Err(error) => {
+                let error = release_error(
+                    source.into_inner(),
+                    invalid(error),
+                    &mut cleanup_unconfirmed,
+                );
+                Err(CaptureFailure {
+                    error,
+                    cleanup_unconfirmed,
+                })
+            }
         }
     }
 
     /// Retain the native lease without adding another public read-validation wrapper.
+    #[cfg(test)]
     pub(crate) fn capture_source(
         &self,
         path: &Path,

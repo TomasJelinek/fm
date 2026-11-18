@@ -1,18 +1,23 @@
 //! Startup-reserved cleanup resources; no provider values enter fallible admission.
 use crate::{retirement::*, worker_retirement::ActorRetirement};
+use midnight_work_budget::resident;
 use std::io;
 
-/// Reserved engine cleanup capacity, established before accepting provider ownership.
+/// Reserved engine cleanup and resident workers, established before accepting providers.
 ///
 /// Create with [`crate::Engine::lifetime`]. Plain cleanup and process-tracking workers
 /// remain alive while admitted owners exist, independently of Tokio. Drop never joins.
 pub struct EngineLifetime {
     pub(crate) run: RetirementLease,
+    pub(crate) comparator_policies: RetirementLease,
+    pub(crate) comparator_policy_pins: RetirementDomain,
     pub(crate) services: RetirementLease,
     pub(crate) commands: RetirementLease,
     pub(crate) resources: Resources,
 }
 pub(crate) struct Resources {
+    pub(crate) resident_owner: resident::Owner,
+    pub(crate) resident: resident::Spawner,
     pub(crate) operations: ActorRetirement,
     pub(crate) copies: ActorRetirement,
     pub(crate) drag: DragRetirement,
@@ -48,12 +53,21 @@ impl EngineLifetime {
     }
 
     pub(crate) fn new() -> io::Result<Self> {
+        // Model, presence, archive and watch lanes (2 each), drag (2),
+        // clipboard (1), and report readers (2).
+        let (resident_owner, resident) = resident::Owner::start("midnight-engine", 13)?;
         // Copy and mutation each retain 32 jobs, one intake and one service context.
         // Drag retains state, pending drops and one serial backlog drain.
         // The run, shared services, command receiver and snapshots each retain one slot.
+        // One additional GENERAL slot protects the shared comparator policy store,
+        // including settings workers that outlive EngineRun. Two dynamic GENERAL
+        // slots protect the existing two comparison session pins through cleanup.
+        // Desktop's ledger and comparison session admission are unchanged.
         let capacity = crate::operations::MAX_JOBS
             + crate::copy_operations::MAX_JOBS
             + 11
+            + 1 // shared comparator policy store; not desktop capture capacity
+            + 2 // existing two comparison sessions, including pending pin cleanup
             + crate::checksum_actor::RETIREMENT_CAPACITY
             + crate::user_commands::MAX_JOBS
             + 1
@@ -81,9 +95,13 @@ impl EngineLifetime {
         };
         Ok(Self {
             run: domain.try_reserve().map_err(io::Error::other)?,
+            comparator_policies: domain.try_reserve().map_err(io::Error::other)?,
+            comparator_policy_pins: domain.clone(),
             services: domain.try_reserve().map_err(io::Error::other)?,
             commands: domain.try_reserve().map_err(io::Error::other)?,
             resources: Resources {
+                resident_owner,
+                resident,
                 operations: actor()?,
                 copies: actor()?,
                 drag: DragRetirement {
@@ -143,6 +161,9 @@ impl EngineLifetime {
                 },
                 desktop: crate::desktop::Retirement {
                     intake: domain.new_waiter().map_err(io::Error::other)?,
+                    external: crate::desktop_external_compare::ExternalComparisonFrontDoor::new(
+                        domain.clone(),
+                    ),
                 },
             },
         })

@@ -70,8 +70,9 @@ preset: the original five-rule list, the eleven-category slate/amber list, that
 list after archives became yellow, or the eleven-rule palette with bright
 document/text colors. Documents and plain text now start noticeably
 brighter on dark themes; light themes adapt the same base color for contrast.
-Any customization preserves the whole list, including its order, disabled
-rules, matching options, background choices and explicit removal of all rules.
+Customizations retain their order, disabled state, matching options, backgrounds
+and explicit removal of all rules, except for the narrow legacy-document split
+described below. Unrelated customized rules remain unchanged.
 New and legacy documents without a stored color list receive the new defaults.
 No preference schema or plugin API changes are needed.
 `README` and `README.*` match the plain-text preset; earlier source rules retain
@@ -82,7 +83,17 @@ category and preservation of customized preferences through encode/decode. The U
 filename-color tests inspect actual rendered glyph pixels and contrast across
 every theme, alternating rows and all active/inactive focus/selection combinations.
 
-PDF uses its own rule before other documents. The unchanged eleven-rule preset
-with light document/text colors also migrates to the twelve-rule palette; edited
-rule lists are retained exactly. The coral base follows the requested PDF icon
-color, with the same per-theme contrast correction as every other category.
+PDF uses its own rule before other documents. Complete unchanged legacy presets
+still migrate to the twelve-rule palette. In an otherwise customized list, only
+the exact legacy `*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub` mask rule (Files,
+case-insensitive, no background, foreground `#64748B` or `#C4CFE0`) splits into
+a preceding PDF `#EF5A5A` rule and the remaining document rule. Position and
+enabled state are preserved; unrelated rules are not reset. Standalone gray PDF
+rules or changed match/target/style options remain intentional customizations.
+At the full32-rule limit no split/truncation occurs. No schema change is needed.
+
+The fresh full filename_colors suite passed20/0/0 with strict Clippy/format0.
+An earlier12/8 run used the old library because Copy-Item retained its timestamp;
+that attempt is not behavior-regression evidence. Fresh compilation of both
+library and harness established the result. Descendant-style transport and new
+app/native rendering qualification remain separate.

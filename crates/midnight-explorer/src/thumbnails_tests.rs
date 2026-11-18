@@ -1,8 +1,9 @@
 //! Exercise the real timer, presenter-backed models and Slint redraw together.
 use super::*;
 use midnight_core::{
-    Command, DirectoryIndex, Entry, EntryId, EntryKind, Event, PaneId, PanelViewMode, UserCommand,
-    UserCommandId, UserCommandInvocation, UserCommandLaunch, UserPreferences,
+    AcceptedPreferences, Command, DirectoryIndex, Entry, EntryId, EntryKind, Event,
+    FileComparatorSnapshot, PaneId, PanelViewMode, UserCommand, UserCommandId,
+    UserCommandInvocation, UserCommandLaunch, UserPreferences,
 };
 use slint::Model;
 use slint::platform::{
@@ -64,7 +65,12 @@ impl ThumbnailUi {
         }
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                AcceptedPreferences {
+                    preferences,
+                    comparators: FileComparatorSnapshot::default(),
+                },
+            ))));
         let pending = Rc::new(RefCell::new(Vec::new()));
         let recorded = pending.clone();
         midnight_ui::install(

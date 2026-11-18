@@ -1,7 +1,12 @@
+mod checkpoints;
 pub mod decode;
+mod page_budget;
 mod paging;
 mod plugin;
 mod positions;
+mod preparation;
+mod resume;
 mod search;
+mod styles;
 pub mod syntax;
 midnight_plugin_sdk::export_viewer!(plugin::Plugin);

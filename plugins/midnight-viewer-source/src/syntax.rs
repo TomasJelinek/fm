@@ -1,10 +1,19 @@
 //! Bounded lexical syntax catalogue. No grammar or regex comes from file content.
+use crate::styles::Styles;
 use midnight_plugin_sdk::api::viewer::*;
 use regex::{Regex, RegexBuilder};
 use std::sync::OnceLock;
 
+#[path = "syntax_stream.rs"]
+mod common;
+#[path = "syntax_cpp.rs"]
+mod cpp;
+#[path = "syntax_lua.rs"]
+mod lua;
 #[path = "syntax_xml.rs"]
 mod xml;
+#[path = "syntax_yaml.rs"]
+mod yaml;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
@@ -27,6 +36,7 @@ pub enum Language {
     Sql,
     Yaml,
     Xml,
+    Lua,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -40,12 +50,37 @@ enum Mode {
         escaped: bool,
     },
     Raw(u8),
+    Identifier,
+    Number(common::Number),
+    LineComment,
+    CppRaw(cpp::Raw),
+    Xml(xml::State),
+    Lua(lua::State),
+    Yaml(yaml::State),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct State {
     mode: Mode,
-    xml: xml::State,
+    command_start: bool,
+}
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Normal,
+            command_start: true,
+        }
+    }
+}
+impl State {
+    pub(crate) fn pending_span(&self) -> Option<(u64, u64)> {
+        match self.mode {
+            Mode::Lua(state) if state.pending_style() => state.pending_span(),
+            Mode::Xml(state) if state.pending_style() => state.pending_span(),
+            Mode::Yaml(state) if state.pending_style() => state.pending_span(),
+            _ => None,
+        }
+    }
 }
 
 pub fn detect(name: &str, prefix: &str) -> Option<Language> {
@@ -70,6 +105,7 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "rb" => Some(Ruby),
         "sql" => Some(Sql),
         "yaml" | "yml" => Some(Yaml),
+        "lua" => Some(Lua),
         "xml" | "xsd" | "xsl" | "xslt" | "xaml" | "csproj" | "fsproj" | "vbproj" | "vcxproj"
         | "props" | "targets" | "resx" => Some(Xml),
         _ => None,
@@ -95,6 +131,7 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "python" | "python3" | "python2" => Some(Python),
         "sh" | "bash" | "zsh" | "dash" => Some(Shell),
         "node" | "nodejs" => Some(JavaScript),
+        "lua" | "lua5.1" | "lua5.2" | "lua5.3" | "lua5.4" | "luajit" => Some(Lua),
         _ => None,
     }
 }
@@ -112,215 +149,104 @@ pub fn highlight(
     state: &mut State,
     cancelled: impl Fn() -> bool,
 ) -> Option<Vec<Span>> {
-    if text.len() > 64 * 1024 || cancelled() {
-        return None;
-    }
-    if language == Language::Xml {
-        return xml::highlight(text, &mut state.xml, cancelled);
-    }
     let mut current = *state;
-    let mut spans = Vec::<Span>::new();
-    let bytes = text.as_bytes();
-    let mut at = 0;
-    while at < bytes.len() {
-        if cancelled() || spans.len() >= MAX_SPANS {
-            return None;
-        }
-        let start = at;
-        let role = match current.mode {
-            Mode::Block(mut depth) => {
-                while at < bytes.len() {
-                    if at % 128 == 0 && cancelled() {
-                        return None;
-                    }
-                    if bytes[at..].starts_with(b"*/") {
-                        at += 2;
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                    } else if language == Language::Rust && bytes[at..].starts_with(b"/*") {
-                        if depth == 16 {
-                            return None;
-                        }
-                        depth += 1;
-                        at += 2;
-                    } else {
-                        at += text[at..].chars().next().unwrap().len_utf8();
-                    }
-                }
-                current.mode = if depth == 0 {
-                    Mode::Normal
-                } else {
-                    Mode::Block(depth)
-                };
-                STYLE_COMMENT
-            }
-            Mode::Quote {
-                quote,
-                count,
-                mut escaped,
-            } => {
-                let mut closed = false;
-                while at < bytes.len() {
-                    if at % 128 == 0 && cancelled() {
-                        return None;
-                    }
-                    if escaped {
-                        escaped = false;
-                        at += text[at..].chars().next().unwrap().len_utf8();
-                    } else if bytes[at] == b'\\' && language != Language::Batch {
-                        escaped = true;
-                        at += 1;
-                    } else if bytes[at..].starts_with(&[quote; 3][..count as usize]) {
-                        at += count as usize;
-                        closed = true;
-                        break;
-                    } else {
-                        at += text[at..].chars().next().unwrap().len_utf8();
-                    }
-                }
-                current.mode = if closed {
-                    Mode::Normal
-                } else {
-                    Mode::Quote {
-                        quote,
-                        count,
-                        escaped,
-                    }
-                };
-                STYLE_STRING
-            }
-            Mode::Raw(hashes) => {
-                let mut closed = false;
-                while at < bytes.len() {
-                    if at % 128 == 0 && cancelled() {
-                        return None;
-                    }
-                    if bytes[at] == b'"'
-                        && bytes[at + 1..].starts_with(&[b'#'; 16][..hashes as usize])
-                    {
-                        at += 1 + hashes as usize;
-                        closed = true;
-                        break;
-                    }
-                    at += text[at..].chars().next().unwrap().len_utf8();
-                }
-                if closed {
-                    current.mode = Mode::Normal;
-                }
-                STYLE_STRING
-            }
-            Mode::Normal => {
-                let c_style = matches!(
-                    language,
-                    Language::Rust
-                        | Language::C
-                        | Language::Cpp
-                        | Language::JavaScript
-                        | Language::TypeScript
-                        | Language::Java
-                        | Language::CSharp
-                        | Language::Go
-                        | Language::Swift
-                        | Language::Kotlin
-                );
-                let hash_style = matches!(
-                    language,
-                    Language::Python
-                        | Language::Shell
-                        | Language::Toml
-                        | Language::Ruby
-                        | Language::Yaml
-                );
-                let batch_comment = language == Language::Batch
-                    && (bytes[at..].starts_with(b"::")
-                        || (bytes
-                            .get(at..at + 3)
-                            .is_some_and(|word| word.eq_ignore_ascii_case(b"rem"))
-                            && bytes.get(at + 3).is_none_or(u8::is_ascii_whitespace)))
-                    && batch_command_start(&text[..at]);
-                if batch_comment
-                    || (c_style && bytes[at..].starts_with(b"//"))
-                    || (hash_style && bytes[at] == b'#')
-                    || (language == Language::Sql && bytes[at..].starts_with(b"--"))
-                {
-                    at += text[at..].find('\n').unwrap_or(bytes.len() - at);
-                    STYLE_COMMENT
-                } else if (c_style || language == Language::Sql) && bytes[at..].starts_with(b"/*") {
-                    at += 2;
-                    current.mode = Mode::Block(1);
-                    STYLE_COMMENT
-                } else if language == Language::Rust
-                    && bytes[at] == b'r'
-                    && raw_start(&bytes[at..]).is_some()
-                {
-                    let hashes = raw_start(&bytes[at..]).unwrap();
-                    at += 2 + hashes as usize;
-                    current.mode = Mode::Raw(hashes);
-                    STYLE_STRING
-                } else if bytes[at] == b'"'
-                    || (language != Language::Batch && bytes[at] == b'\'')
-                    || (matches!(language, Language::JavaScript | Language::TypeScript)
-                        && bytes[at] == b'`')
-                {
-                    let quote = bytes[at];
-                    let count = if matches!(language, Language::Python | Language::Toml)
-                        && bytes[at..].starts_with(&[quote; 3])
-                    {
-                        3
-                    } else {
-                        1
-                    };
-                    at += count as usize;
-                    current.mode = Mode::Quote {
-                        quote,
-                        count,
-                        escaped: false,
-                    };
-                    STYLE_STRING
-                } else if let Some(token) = tokens().find(&text[at..]) {
-                    let token = token.as_str();
-                    at += token.len();
-                    if token.as_bytes()[0].is_ascii_digit() {
-                        STYLE_NUMBER
-                    } else if keyword(language, token) {
-                        STYLE_KEYWORD
-                    } else {
-                        STYLE_PLAIN
-                    }
-                } else {
-                    at += text[at..].chars().next().unwrap().len_utf8();
-                    STYLE_PLAIN
-                }
-            }
-        };
-        if role != STYLE_PLAIN {
-            if let Some(last) = spans
-                .last_mut()
-                .filter(|s| s.end as usize == start && s.role == role)
-            {
-                last.end = at as u32;
-            } else {
-                spans.push(Span {
-                    start: start as u32,
-                    end: at as u32,
-                    role,
-                    flags: 0,
-                });
-            }
-        }
+    let mut styles = Styles::new(0..text.len(), false);
+    scan(text, language, &mut current, &mut styles, cancelled)?;
+    let (spans, _, clipped) = styles.finish();
+    if clipped {
+        return None;
     }
     *state = current;
     Some(spans)
 }
 
-fn batch_command_start(prefix: &str) -> bool {
-    prefix
-        .rsplit(['\n', '&', '|', '(', ')'])
-        .next()
-        .is_some_and(|part| part.trim().trim_start_matches('@').is_empty())
+pub(crate) fn scan(
+    text: &str,
+    language: Language,
+    state: &mut State,
+    styles: &mut Styles,
+    cancelled: impl Fn() -> bool,
+) -> Option<()> {
+    (stream(text, language, state, styles, true, cancelled)? == text.len()).then_some(())
 }
+
+/// Incremental decoded input. Incomplete lexical suffixes belong to the caller.
+pub(crate) fn stream(
+    text: &str,
+    language: Language,
+    state: &mut State,
+    styles: &mut Styles,
+    final_chunk: bool,
+    cancelled: impl Fn() -> bool,
+) -> Option<usize> {
+    if text.len() > 65536 || cancelled() {
+        return None;
+    }
+    match language {
+        Language::Lua => {
+            let mut current = if let Mode::Lua(current) = state.mode {
+                current
+            } else {
+                lua::State::default()
+            };
+            let consumed = if final_chunk {
+                lua::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                lua::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == lua::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Lua(current)
+            };
+            Some(consumed)
+        }
+        Language::Xml => {
+            let mut current = if let Mode::Xml(current) = state.mode {
+                current
+            } else {
+                xml::State::default()
+            };
+            let consumed = if final_chunk {
+                xml::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                xml::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == xml::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Xml(current)
+            };
+            Some(consumed)
+        }
+        Language::Yaml => {
+            let mut current = if let Mode::Yaml(current) = state.mode {
+                current
+            } else {
+                yaml::State::default()
+            };
+            let consumed = if final_chunk {
+                yaml::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                yaml::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == yaml::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Yaml(current)
+            };
+            Some(consumed)
+        }
+        _ => common::stream(text, language, state, styles, final_chunk, cancelled),
+    }
+}
+
+#[cfg(test)]
+#[path = "syntax_stream_tests.rs"]
+mod stream_tests;
 
 fn raw_start(bytes: &[u8]) -> Option<u8> {
     let mut hashes = 0;
@@ -383,7 +309,7 @@ fn keyword(language: Language, token: &str) -> bool {
             "SELECT FROM WHERE AS JOIN LEFT RIGHT INNER OUTER ON GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE DROP ALTER INDEX VIEW DISTINCT UNION ALL NULL TRUE FALSE AND OR NOT IS LIKE IN EXISTS CASE WHEN THEN ELSE END BEGIN COMMIT ROLLBACK"
         }
         Language::Yaml => "true false null True False Null TRUE FALSE NULL yes no on off",
-        Language::Xml => "",
+        Language::Xml | Language::Lua => "",
     };
     words.split_ascii_whitespace().any(|word| {
         if matches!(language, Language::Sql | Language::Batch) {

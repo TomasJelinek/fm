@@ -325,6 +325,7 @@ mod tests {
                 .collect(),
             text,
             spans: vec![],
+            roles: vec![],
             styles: vec![],
             tables: vec![],
             document_blocks: Vec::new(),

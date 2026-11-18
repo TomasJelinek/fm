@@ -89,9 +89,12 @@ fn shortcut_cache_survives_unrelated_preferences_and_early_edits_survive_initial
         "theme changes must not recompile keys"
     );
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            shortcuts: vec![binding("files.copy", &["Ctrl+Alt+K"])],
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                shortcuts: vec![binding("files.copy", &["Ctrl+Alt+K"])],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &send,
     );

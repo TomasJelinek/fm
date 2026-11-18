@@ -49,6 +49,24 @@ fn styled(page: &TextPage, text: &str, role: u16) {
 }
 
 #[test]
+fn sparse_checkpoints_preserve_styling_when_revisiting_a_distant_middle() {
+    let input = format!("/*\n{}*/ return 42;\n", "still comment\n".repeat(10_000));
+    let mut host = Host::new(input.as_bytes(), entry);
+    open(&mut host, input.len(), 3);
+    for anchor in (0..input.len()).step_by(4096) {
+        let id = host.submit(
+            abi::REQUEST_VIEWPORT,
+            &request(anchor as u64, false, 8192, 512),
+        );
+        page(&host.finish(), id);
+    }
+    let id = host.submit(abi::REQUEST_VIEWPORT, &request(50_000, false, 512, 4));
+    let middle = page(&host.finish(), id);
+    styled(&middle, "still comment", STYLE_COMMENT);
+    assert!(host.reads().iter().all(|r| r.length <= 65536));
+}
+
+#[test]
 fn dense_eviction_revisits_keep_bom_and_multiline_comment_state() {
     let input = format!("/*\n{}inside */ return 7;\r\n", "\n".repeat(32765));
     let mut host = Host::new(input.as_bytes(), entry);
@@ -73,13 +91,25 @@ fn dense_eviction_revisits_keep_bom_and_multiline_comment_state() {
     let before = host.reads().len();
     let id = host.submit(abi::REQUEST_VIEWPORT, &request(100, false, 1, 1));
     let revisit = page(&host.finish(), id);
-    assert_eq!(
-        host.reads()[before].offset,
-        0,
-        "evicted early lines reuse BOM state"
+    assert!(
+        host.reads()[before].offset <= 100,
+        "revisit uses a true preceding checkpoint with the exact comment state"
     );
     assert_eq!(revisit.text, "\n");
     styled(&revisit, "\n", STYLE_COMMENT);
+
+    let before = host.reads().len();
+    let id = host.submit(abi::REQUEST_VIEWPORT, &request(0, false, 64, 1));
+    let origin = page(&host.finish(), id);
+    assert_eq!(
+        host.reads()[before].offset,
+        0,
+        "BOM origin remains exact after dense eviction"
+    );
+    assert_eq!(origin.source.offset, 0);
+    assert_eq!(origin.text, "/*\n");
+    assert!(!origin.has_before);
+    styled(&origin, "/*\n", STYLE_COMMENT);
     assert!(host.reads().iter().all(|read| read.length <= 65536));
 }
 

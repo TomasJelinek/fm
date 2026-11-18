@@ -1,5 +1,5 @@
-//! Retain the latest accepted zoom for the current source, page and viewport.
-use midnight_core::{ViewerImageInfo, ViewerZoomPreference};
+//! Retain the latest accepted zoom for the current source, page, layout and viewport.
+use midnight_core::{DocumentLayout, ViewerImageInfo, ViewerZoomPreference};
 
 #[derive(Default)]
 pub(crate) struct Intent(Option<Pending>);
@@ -7,6 +7,7 @@ pub(crate) struct Intent(Option<Pending>);
 struct Pending {
     generation: u64,
     page: u32,
+    document_layout: Option<DocumentLayout>,
     viewport: [f32; 2],
     zoom: ViewerZoomPreference,
 }
@@ -20,6 +21,7 @@ impl Intent {
         let Some(pending) = self.0.as_ref().filter(|pending| {
             pending.generation == generation
                 && pending.page == info.page
+                && pending.document_layout == info.document_layout
                 && pending.viewport == viewport
         }) else {
             return info.zoom;
@@ -41,6 +43,7 @@ impl Intent {
         self.0 = Some(Pending {
             generation,
             page: info.page,
+            document_layout: info.document_layout,
             viewport,
             zoom,
         });
@@ -56,7 +59,10 @@ impl Intent {
         // Numeric scale equality is not a command acknowledgment: an older pan
         // frame can happen to match a later zoom-back request. Keep the intent
         // until its context changes or the presenter explicitly cancels it.
-        if pending.generation != generation || pending.page != info.page {
+        if pending.generation != generation
+            || pending.page != info.page
+            || pending.document_layout != info.document_layout
+        {
             self.clear();
         }
     }

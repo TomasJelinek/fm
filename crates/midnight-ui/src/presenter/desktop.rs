@@ -112,15 +112,18 @@ impl Presenter {
         match event {
             Event::VolumeInformationLoaded(loaded) => self.volume_information_loaded(*loaded),
             Event::ViewerPluginsListed(result) => self.viewer_plugins_listed(result),
+            Event::ComparatorCapabilitiesListed(snapshot) => {
+                self.comparator_capabilities_listed(snapshot)
+            }
             Event::FilesystemPluginsListed(result) => self.filesystem_plugins_listed(result),
             Event::ThumbnailerPluginsListed(result) => self.thumbnailer_plugins_listed(result),
             Event::EditorDefaultResolved(result) => self.editor_default_resolved(result),
             Event::FontFamiliesLoaded(result) => self.apply_font_families(result),
             Event::PreferencesLoaded(result) => {
-                self.preferences_loaded(result.map(|values| *values))
+                self.accepted_preferences_loaded(result.map(|values| *values))
             }
             Event::PreferencesSaved { revision, result } => {
-                self.preferences_saved(revision, result)
+                self.accepted_preferences_saved(revision, result)
             }
             // The app coordinates watch hints through refresh_if_changed so
             // they cannot trigger nested sends while apply owns this state.

@@ -49,6 +49,7 @@ pub(super) struct EditedFields {
     pub(super) disabled_viewer_plugins: bool,
     pub(super) viewer_associations: bool,
     pub(super) editor: bool,
+    pub(super) file_comparators: bool,
     pub(super) theme: bool,
     pub(super) density: bool,
     pub(super) windows_shell: bool,
@@ -220,6 +221,24 @@ impl Presenter {
         !self.preferences.loaded && self.preferences.unsaved
     }
 
+    pub(super) fn accepted_preferences_loaded(
+        &mut self,
+        result: Result<AcceptedPreferences, PreferencesApplyError>,
+    ) {
+        let first_load = !self.preferences.loaded;
+        let result = result
+            .map(|accepted| {
+                if first_load {
+                    self.comparator_preferences_accepted(accepted.comparators, None);
+                } else {
+                    self.retired.push(Box::new(accepted.comparators));
+                }
+                accepted.preferences
+            })
+            .map_err(|failure| failure.error);
+        self.preferences_loaded(result);
+    }
+
     pub(super) fn preferences_loaded(&mut self, result: Result<UserPreferences, FsError>) {
         if self.preferences.loaded {
             self.retired.push(Box::new(result));
@@ -265,6 +284,9 @@ impl Presenter {
                 }
                 if edited.editor {
                     loaded.editor = local.editor.clone();
+                }
+                if edited.file_comparators {
+                    loaded.file_comparators = local.file_comparators.clone();
                 }
                 if edited.theme {
                     loaded.theme = local.theme;
@@ -429,16 +451,44 @@ impl Presenter {
         if !self.preferences.loaded {
             return;
         }
+        self.request_comparator_capabilities(false, send);
         self.flush_tab_sessions(send);
         if mem::take(&mut self.preferences.flush_after_load) {
             self.send_preferences_save(send);
         }
     }
 
+    #[cfg(test)]
     pub(super) fn preferences_saved(
         &mut self,
         revision: PreferencesRevision,
         result: Result<(), FsError>,
+    ) {
+        self.apply_preferences_saved(revision, result, None);
+    }
+
+    pub(super) fn accepted_preferences_saved(
+        &mut self,
+        revision: PreferencesRevision,
+        result: Result<FileComparatorSnapshot, PreferencesApplyError>,
+    ) {
+        match result {
+            Ok(snapshot) => {
+                // Commit authority is independent of a newer local draft/revision.
+                self.comparator_preferences_accepted(snapshot, Some(revision));
+                self.apply_preferences_saved(revision, Ok(()), None);
+            }
+            Err(failure) => {
+                self.apply_preferences_saved(revision, Err(failure.error), failure.comparator);
+            }
+        }
+    }
+
+    fn apply_preferences_saved(
+        &mut self,
+        revision: PreferencesRevision,
+        result: Result<(), FsError>,
+        comparator: Option<FileComparatorDiagnostic>,
     ) {
         if self
             .preferences
@@ -448,7 +498,7 @@ impl Presenter {
             self.preferences.pending_save_revision = None;
         }
         self.preferences.saving = self.preferences.pending_save_revision.is_some();
-        self.options_save_result(revision, &result);
+        self.options_save_result(revision, &result, comparator.as_ref());
         if revision != self.preferences.revision {
             return;
         }
@@ -687,6 +737,11 @@ impl Presenter {
         edited.viewer_associations |=
             preferences.viewer_associations != previous.viewer_associations;
         edited.editor |= preferences.editor != previous.editor;
+        let comparators_changed = preferences.file_comparators != previous.file_comparators;
+        edited.file_comparators |= comparators_changed;
+        if comparators_changed {
+            self.comparators.revision = self.comparators.revision.saturating_add(1);
+        }
         edited.theme |= preferences.theme != previous.theme;
         edited.density |= preferences.density != previous.density;
         edited.windows_shell |= preferences.windows_shell != previous.windows_shell;
@@ -959,11 +1014,16 @@ mod tests {
     fn unchanged_provisional_defaults_do_not_mask_saved_values() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.change_preferences(0, 0, -1, &|_| true);
-        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            theme: PreferenceTheme::Light,
-            density: UiDensity::Touch,
-            ..Default::default()
-        }))));
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    theme: PreferenceTheme::Light,
+                    density: UiDensity::Touch,
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
         assert_eq!(p.preferences.values.theme, PreferenceTheme::Light);
         assert_eq!(p.preferences.values.density, UiDensity::Touch);
         assert_eq!(p.preferences.revision, PreferencesRevision(1));
@@ -999,12 +1059,12 @@ mod tests {
         };
         p.apply(Event::PreferencesSaved {
             revision: PreferencesRevision(1),
-            result: Err(error()),
+            result: Err(error().into()),
         });
         assert!(p.desktop.notice.is_none());
         p.apply(Event::PreferencesSaved {
             revision: PreferencesRevision(2),
-            result: Err(error()),
+            result: Err(error().into()),
         });
         assert!(p.desktop.notice.is_some());
         assert_eq!(
@@ -1053,7 +1113,7 @@ mod tests {
         ));
         p.apply(Event::PreferencesSaved {
             revision: PreferencesRevision(2),
-            result: Ok(()),
+            result: Ok(midnight_core::FileComparatorSnapshot::default()),
         });
         p.change_preferences(2, 1, -1, &|_| {
             panic!("confirmed unchanged choices must not save again")

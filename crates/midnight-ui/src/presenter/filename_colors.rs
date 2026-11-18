@@ -23,20 +23,12 @@ impl Presenter {
     pub(crate) fn filename_style(&self, pane: PaneId, entry: &Entry) -> Option<FilenameStyle> {
         let panel = &self.panes[pane.index()];
         let result = self.colors.results[pane.index()].as_ref()?;
-        if panel.showing_stream() || !Arc::ptr_eq(&panel.entries, &result.request.source) {
+        if panel.showing_stream()
+            || !panel_snapshot(&result.request, pane, panel, &self.colors.rules)
+        {
             return None;
         }
-        let id = if let Some(view) = panel.tree_view() {
-            view.index
-                .directory
-                .by_id
-                .get(&entry.id)
-                .and_then(|position| view.rows.get(*position))?
-                .original_root_entry?
-        } else {
-            entry.id
-        };
-        result.styles.get(&id).copied()
+        result.styles.get(&entry.id).copied()
     }
 
     pub(crate) fn validate_colors(
@@ -89,6 +81,7 @@ impl Presenter {
                 || panel.entries.is_empty()
                 || panel.showing_stream()
                 || self.colors.rules.is_empty()
+                || !tree_current(pane, panel)
             {
                 if self.colors.inputs[pane.index()].is_some() {
                     let Some(id) = self.colors.next.checked_add(1) else {
@@ -106,10 +99,7 @@ impl Presenter {
             }
             if self.colors.inputs[pane.index()]
                 .as_ref()
-                .is_some_and(|request| {
-                    Arc::ptr_eq(&request.source, &panel.entries)
-                        && Arc::ptr_eq(&request.rules, &self.colors.rules)
-                })
+                .is_some_and(|request| panel_snapshot(request, pane, panel, &self.colors.rules))
             {
                 continue;
             }
@@ -121,6 +111,7 @@ impl Presenter {
                 pane,
                 source: panel.entries.clone(),
                 rules: self.colors.rules.clone(),
+                tree: panel.tree_view().cloned(),
             };
             if send(Command::MatchFilenameColors(request.clone())) {
                 self.colors.next = id;
@@ -148,14 +139,23 @@ impl Presenter {
                 let slot = request.pane.index();
                 let current = self.colors.inputs[slot].as_ref().is_some_and(|current| {
                     current.id == request.id
-                        && Arc::ptr_eq(&current.source, &request.source)
-                        && Arc::ptr_eq(&self.panes[slot].entries, &request.source)
-                        && Arc::ptr_eq(&current.rules, &self.colors.rules)
+                        && same_snapshot(current, &request)
+                        && panel_snapshot(
+                            current,
+                            request.pane,
+                            &self.panes[slot],
+                            &self.colors.rules,
+                        )
                 });
                 match result {
-                    Ok(result) if current => self
-                        .retired
-                        .push(Box::new(self.colors.results[slot].replace(result))),
+                    Ok(result)
+                        if current
+                            && result.request.id == request.id
+                            && same_snapshot(&result.request, &request) =>
+                    {
+                        self.retired
+                            .push(Box::new(self.colors.results[slot].replace(result)))
+                    }
                     Ok(result) => self.retired.push(Box::new(result)),
                     Err(error) if current => self.desktop.report("Filename colors", error),
                     Err(_) => {}
@@ -166,4 +166,42 @@ impl Presenter {
             other => Some(other),
         }
     }
+}
+
+fn same_tree(left: Option<&Arc<TreeProjection>>, right: Option<&Arc<TreeProjection>>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => Arc::ptr_eq(left, right) && left.stamp == right.stamp,
+        _ => false,
+    }
+}
+
+fn same_snapshot(left: &FilenameColorsRequest, right: &FilenameColorsRequest) -> bool {
+    left.pane == right.pane
+        && Arc::ptr_eq(&left.source, &right.source)
+        && Arc::ptr_eq(&left.rules, &right.rules)
+        && same_tree(left.tree.as_ref(), right.tree.as_ref())
+}
+
+fn tree_current(pane: PaneId, panel: &Pane) -> bool {
+    panel.tree_view().is_none_or(|tree| {
+        tree.stamp.pane == pane
+            && tree.root.pane == pane
+            && tree.stamp.navigation.0 == panel.generation
+            && tree.root.navigation == tree.stamp.navigation
+            && Arc::ptr_eq(&tree.root.entries, &panel.entries)
+    })
+}
+
+fn panel_snapshot(
+    request: &FilenameColorsRequest,
+    pane: PaneId,
+    panel: &Pane,
+    rules: &Arc<[FilenameColorRule]>,
+) -> bool {
+    request.pane == pane
+        && Arc::ptr_eq(&request.source, &panel.entries)
+        && Arc::ptr_eq(&request.rules, rules)
+        && same_tree(request.tree.as_ref(), panel.tree_view())
+        && tree_current(pane, panel)
 }

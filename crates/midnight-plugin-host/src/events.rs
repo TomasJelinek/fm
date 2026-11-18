@@ -18,6 +18,7 @@ pub enum EventKind {
     DocumentPage(document::DocumentPage),
     SearchMatch(messages::SearchMatch),
     TextPosition(viewer::TextPosition),
+    SourcePrepared(messages::SourcePrepared),
     Progress(messages::Progress),
     Completed,
     Cancelled,

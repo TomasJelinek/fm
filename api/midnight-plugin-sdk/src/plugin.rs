@@ -56,6 +56,7 @@ impl Request {
                 | abi::REQUEST_SEARCH
                 | abi::REQUEST_CLOSE
                 | abi::REQUEST_LOCATE
+                | abi::REQUEST_PREPARE_SOURCE
         ) {
             return Err(abi::UNSUPPORTED);
         }

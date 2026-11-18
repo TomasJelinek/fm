@@ -1,5 +1,9 @@
 //! Process-wide fair I/O admission. Transfer jobs may retain one shared slot through teardown;
 //! other consumers retain their existing call-scoped admission policy.
+
+#[cfg(feature = "resident-workers")]
+pub mod resident;
+
 use std::{
     collections::VecDeque,
     sync::{Arc, Condvar, Mutex, OnceLock},

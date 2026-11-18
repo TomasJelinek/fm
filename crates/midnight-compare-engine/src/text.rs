@@ -1,4 +1,4 @@
-use crate::{FontChoices, Frame, check_cancel};
+use crate::{FontChoices, Frame, Palette, check_cancel, identity::DecodedText};
 use midnight_core::{ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
 use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
@@ -8,6 +8,30 @@ use std::{sync::atomic::AtomicBool, time::Duration};
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_LINES: usize = 100_000;
 const MAX_LINE_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextEncoding {
+    Utf8,
+    Utf8Bom,
+    Utf16LittleBom,
+    Utf16BigBom,
+}
+
+impl TextEncoding {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Utf8 => "UTF-8 without BOM",
+            Self::Utf8Bom => "UTF-8 with BOM",
+            Self::Utf16LittleBom => "UTF-16 little-endian with BOM",
+            Self::Utf16BigBom => "UTF-16 big-endian with BOM",
+        }
+    }
+}
+
+pub(crate) struct TextInput {
+    pub text: String,
+    pub encoding: TextEncoding,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct Row {
@@ -25,9 +49,11 @@ pub(crate) struct TextComparison {
     pub top: usize,
     pub horizontal: f32,
     vertical_remainder: f32,
+    decoded_identity: DecodedText,
+    pub encodings: Option<[TextEncoding; 2]>,
 }
 
-pub(crate) fn read(file: &CapturedFile, cancel: &AtomicBool) -> Result<String, String> {
+pub(crate) fn read(file: &CapturedFile, cancel: &AtomicBool) -> Result<TextInput, String> {
     if file.length() > MAX_BYTES {
         return Err("Text comparison supports at most 4 MiB per file.".into());
     }
@@ -50,7 +76,19 @@ pub(crate) fn read(file: &CapturedFile, cancel: &AtomicBool) -> Result<String, S
         bytes.extend(block);
     }
     file.revalidate().map_err(|error| error.to_string())?;
-    decode(&bytes)
+    let encoding = if bytes.starts_with(&[0xff, 0xfe]) {
+        TextEncoding::Utf16LittleBom
+    } else if bytes.starts_with(&[0xfe, 0xff]) {
+        TextEncoding::Utf16BigBom
+    } else if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        TextEncoding::Utf8Bom
+    } else {
+        TextEncoding::Utf8
+    };
+    Ok(TextInput {
+        text: decode(&bytes)?,
+        encoding,
+    })
 }
 
 fn decode(bytes: &[u8]) -> Result<String, String> {
@@ -139,7 +177,13 @@ impl TextComparison {
             top: 0,
             horizontal: 0.0,
             vertical_remainder: 0.0,
+            decoded_identity: DecodedText::default(),
+            encodings: None,
         })
+    }
+
+    pub fn identity_turn(&mut self) -> Option<bool> {
+        self.decoded_identity.step(&self.lines)
     }
 
     pub fn scroll(&mut self, rows: i64) {
@@ -193,6 +237,7 @@ impl TextComparison {
         &mut self,
         geometry: ViewerGeometry,
         appearance: &ViewerAppearance,
+        palette: Palette,
         cancel: &AtomicBool,
     ) -> Result<Frame, String> {
         #[cfg(test)]
@@ -223,9 +268,7 @@ impl TextComparison {
             .map(|fonts| fonts.selected.as_str())
             .unwrap_or("monospace");
         let (width, height) = (geometry.width, geometry.height);
-        let mut pixels = appearance
-            .background
-            .repeat(width as usize * height as usize);
+        let mut pixels = palette.background.repeat(width as usize * height as usize);
         let row_height = (appearance.font_size * geometry.scale * 1.6)
             .ceil()
             .max(12.0) as u32;
@@ -275,20 +318,20 @@ impl TextComparison {
                         if channel == 3 {
                             255
                         } else {
-                            ((u16::from(appearance.background[channel]) * 3
+                            ((u16::from(palette.background[channel]) * 3
                                 + u16::from(tint[channel]))
                                 / 4) as u8
                         }
                     })
                 } else {
-                    appearance.background
+                    palette.background
                 };
                 let options = TextOptions {
                     family,
                     literal_family: family != "monospace",
                     size: appearance.font_size,
                     scale: geometry.scale,
-                    foreground: appearance.foreground,
+                    foreground: palette.foreground,
                     ..TextOptions::default()
                 };
                 let page = self
@@ -304,7 +347,7 @@ impl TextComparison {
                             height: row_height.min(height),
                             origin: [self.horizontal, 0.0],
                             background,
-                            selection_color: appearance.selection,
+                            selection_color: palette.selection,
                         },
                         None,
                     )
@@ -318,16 +361,12 @@ impl TextComparison {
                 }
             }
         }
-        let status = if self.differences.is_empty() {
-            "Text is identical (encoding and BOM may differ).".into()
-        } else {
-            format!(
-                "{} difference groups · row {} of {} · UTF-8 / UTF-16 · live-validated read",
-                self.differences.len(),
-                self.top + 1,
-                self.rows.len()
-            )
-        };
+        let status = format!(
+            "{} difference groups · row {} of {} · live-validated read",
+            self.differences.len(),
+            self.top + 1,
+            self.rows.len()
+        );
         #[cfg(test)]
         if first_paint {
             crate::trace_first_frame("text-paint-complete", paint_started);
@@ -335,6 +374,8 @@ impl TextComparison {
         Ok(Frame {
             fonts: self.fonts.clone(),
             geometry_revision: 0,
+            comparison_generation: 0,
+            identity: crate::IdentityVerdict::Pending,
             mode: None,
             width,
             height,

@@ -3,6 +3,7 @@ use super::*;
 fn loaded() -> Presenter {
     let mut presenter = Presenter::new("left".into(), "right".into());
     presenter.viewer_plugins.startup_disabled = Some(Arc::from([]));
+    presenter.comparators.accepted = Some(FileComparatorSnapshot::default());
     for pane in &mut presenter.panes {
         pane.entries = vec![
             Entry::new(EntryId(0), pane.path.join("one"), EntryKind::File),

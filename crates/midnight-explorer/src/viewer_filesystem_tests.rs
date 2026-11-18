@@ -1,4 +1,5 @@
 //! Installed app composition, using actual independent native and viewer packages.
+use crate::resident_test_runtime::TestRuntime;
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, ViewerAppearance, ViewerFrame, ViewerGeometry,
     ViewerImageInput, ViewerInput, ViewerLaunch, ViewerOutput,
@@ -155,13 +156,18 @@ fn tree_viewer_uses_native_provider_and_cycles_only_visible_root_files() {
         view: projection,
         focused: TreeRowId(13),
     });
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
+    let mut runtime = TestRuntime::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap(),
+        "viewer-native-fixture",
+        midnight_viewer_engine::RESIDENT_WORKERS,
+    );
     let native = Arc::new(InstalledProvider::from_installation(installation(), None));
-    let service = super::service(runtime.handle(), native);
+    let service = super::service(runtime.handle(), runtime.spawner(), native);
+    runtime.track_spare(service.image_spare_retirement());
     let session = open(&service, launch);
     wait_text(&session, "First native provider content");
     assert!(session.send(ViewerInput::NextFile));
@@ -176,13 +182,18 @@ fn tree_viewer_uses_native_provider_and_cycles_only_visible_root_files() {
 fn native_plugin_feeds_actual_f3_and_next_file_without_fallback() {
     let root = PathBuf::from(std::env::var_os("MIDNIGHT_APP_NATIVE_TEST_FILES").unwrap());
     let launch = || launch(&root, &["first 文档.txt", "second.txt"], true);
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
+    let mut runtime = TestRuntime::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap(),
+        "viewer-native-fixture",
+        midnight_viewer_engine::RESIDENT_WORKERS,
+    );
     let native = Arc::new(InstalledProvider::from_installation(installation(), None));
-    let service = super::service(runtime.handle(), native);
+    let service = super::service(runtime.handle(), runtime.spawner(), native);
+    runtime.track_spare(service.image_spare_retirement());
     let session = open(&service, launch());
     wait_text(&session, "First native provider content");
     assert!(session.send(ViewerInput::NextFile));
@@ -198,7 +209,8 @@ fn native_plugin_feeds_actual_f3_and_next_file_without_fallback() {
         .unwrap_err()
         .to_string();
     eprintln!("Unavailable native provider cause: {provider_error}");
-    let service = super::service(runtime.handle(), unavailable);
+    let service = super::service(runtime.handle(), runtime.spawner(), unavailable);
+    runtime.track_spare(service.image_spare_retirement());
     let session = open(&service, launch());
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut messages = Vec::new();
@@ -406,14 +418,19 @@ fn assert_pdf_page(frame: &ViewerFrame, page: u32) {
 #[test]
 #[ignore = "requires protected runtime with native filesystem plus basic, Source, Markdown, image and PDF packages; Linux basic-only fixture is insufficient"]
 fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
+    let mut runtime = TestRuntime::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap(),
+        "viewer-native-fixture",
+        midnight_viewer_engine::RESIDENT_WORKERS,
+    );
     let native = Arc::new(InstalledProvider::from_installation(installation(), None));
     let root = fixtures(&native);
-    let service = super::service(runtime.handle(), native);
+    let service = super::service(runtime.handle(), runtime.spawner(), native);
+    runtime.track_spare(service.image_spare_retirement());
     let session = open(
         &service,
         launch(
@@ -562,13 +579,18 @@ fn find_viewer_reads_exact_native_result_and_rejects_replacement() {
     request.view = Arc::new(DirectoryIndex::from_entries(&[]));
     request.focused = root.join("unrelated.txt");
     request.find = Some(capture.clone());
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
+    let mut runtime = TestRuntime::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap(),
+        "viewer-native-fixture",
+        midnight_viewer_engine::RESIDENT_WORKERS,
+    );
     let native = Arc::new(InstalledProvider::from_installation(installation(), None));
-    let service = super::service(runtime.handle(), native);
+    let service = super::service(runtime.handle(), runtime.spawner(), native);
+    runtime.track_spare(service.image_spare_retirement());
     let session = open(&service, request.clone());
     wait_text(&session, "Exact native Find content");
     session.close();

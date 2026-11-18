@@ -69,7 +69,7 @@ async fn same_navigation_success_then_exact_commit_quiets_watch() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(70));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
@@ -98,7 +98,7 @@ async fn file_only_poll_between_sweep_and_commit_survives() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(70));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
@@ -124,7 +124,7 @@ async fn late_flat_ack_cannot_replace_adopted_scope() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(60));
     controller.handle().set_tree_scope(scope);
     controller.set_visible(files.visible(PaneId::Left, 4, &path));
@@ -193,7 +193,9 @@ async fn callback_between_admission_and_commit_survives_ack_and_unchanged_commit
     let native = Arc::new(Batches::default());
     let (sender, mut events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
+    let (_owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files,
@@ -242,7 +244,8 @@ async fn failed_scope_preserves_commit_identity_without_acknowledging_ticket() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events) = controller(files, None, Duration::from_millis(60));
+    let (_owner, controller, mut tasks, mut events) =
+        controller(files, None, Duration::from_millis(60));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
     let stamp = tree_changed(&mut events).await;
@@ -316,7 +319,9 @@ async fn stable_slots_cap_one_batch_and_poll_all_remaining() {
     let native = Arc::new(Batches::default());
     let (sender, mut events) = mpsc::channel(16);
     let mut tasks = JoinSet::new();
+    let (_owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
@@ -354,7 +359,7 @@ async fn folder_only_accepted_branch_with_files_is_quiet_after_success() {
     let branch = scope.targets[1].path.clone();
     files.put(branch.to_str().unwrap(), 12);
     let before = files.probes.load(Ordering::SeqCst);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(60));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());
@@ -389,7 +394,7 @@ async fn blocked_probe_is_logically_cancelled_but_keeps_provider_scope_until_ret
     let stamp = scope.stamp;
     let retained = Arc::downgrade(&scope.targets[0]);
     drop(session);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(50));
     let handle = controller.handle();
     handle.set_tree_scope(scope);
@@ -424,7 +429,8 @@ async fn failed_sweep_and_ignored_hint_retry_at_poll_cadence() {
         .to_owned();
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
-    let (controller, mut tasks, mut events) = controller(files, None, Duration::from_millis(120));
+    let (_owner, controller, mut tasks, mut events) =
+        controller(files, None, Duration::from_millis(120));
     let handle = controller.handle();
     handle.set_tree_scope(scope);
     let stamp = tree_changed(&mut events).await;
@@ -460,7 +466,9 @@ async fn fatal_session_retirement_suppresses_callbacks_and_delayed_flat_ack() {
     let native = Arc::new(Batches::default());
     let (sender, mut events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
+    let (_owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::with_timing(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
@@ -506,7 +514,7 @@ async fn failed_probe_retries_after_a_successful_listing_ack_without_losing_hist
     files.put(&path, 7);
     let (_session, scope) = scope(&files, &path);
     files.metadata_failed.store(true, Ordering::SeqCst);
-    let (controller, mut tasks, mut events) =
+    let (_owner, controller, mut tasks, mut events) =
         controller(files.clone(), None, Duration::from_millis(80));
     let handle = controller.handle();
     handle.set_tree_scope(scope.clone());

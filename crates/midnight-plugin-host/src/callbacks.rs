@@ -327,7 +327,9 @@ mod tests {
                 drop: AtomicUsize::new(0),
             };
             let shared = shared();
-            lock(&shared.state).requests.insert(1, false);
+            lock(&shared.state)
+                .requests
+                .insert(1, crate::session::RequestState::new(abi::REQUEST_VIEWPORT));
             let (bridge, receivers) = Bridge::new(shared.clone());
             let (_registration, api) = bridge.register().unwrap();
             let work = abi::Work {
@@ -375,7 +377,9 @@ mod tests {
     #[test]
     fn work_queue_rejection_preserves_ownership_and_shutdown_has_reserved_capacity() {
         let shared = shared();
-        lock(&shared.state).requests.insert(1, false);
+        lock(&shared.state)
+            .requests
+            .insert(1, crate::session::RequestState::new(abi::REQUEST_VIEWPORT));
         let (bridge, receivers) = Bridge::new(shared.clone());
         let (_registration, api) = bridge.register().unwrap();
         let work = abi::Work {

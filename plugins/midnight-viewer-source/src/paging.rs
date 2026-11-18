@@ -1,57 +1,22 @@
 use crate::{
+    checkpoints::{Batch as CheckpointBatch, Checkpoints},
     decode::{self, Decoded},
     plugin::{Session, lock, send},
+    preparation,
+    resume::Snapshot,
     syntax::{self, Language, State},
 };
 use midnight_plugin_sdk::{
     Context, Output,
     api::{messages::Viewport, viewer::*},
 };
-use std::{collections::BTreeMap, sync::Arc};
-
-// Keep the BOM plus the latest complete-line states, including during insertion.
-const MAX_CHECKPOINTS: usize = 256;
-
-// Only the latest 255 staged states can survive the live cache's retention rule.
-// Inline ring storage has no geometric allocation growth on newline-dense input.
-struct CheckpointBatch {
-    entries: [(u64, State); MAX_CHECKPOINTS - 1],
-    len: usize,
-    next: usize,
-}
-
-const _: () = assert!(size_of::<CheckpointBatch>() <= 8192);
-
-impl CheckpointBatch {
-    fn new() -> Self {
-        Self {
-            entries: [(0, State::default()); MAX_CHECKPOINTS - 1],
-            len: 0,
-            next: 0,
-        }
-    }
-
-    fn push(&mut self, checkpoint: (u64, State)) {
-        self.entries[self.next] = checkpoint;
-        self.next = (self.next + 1) % self.entries.len();
-        self.len = (self.len + 1).min(self.entries.len());
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (u64, State)> + '_ {
-        let first = if self.len == self.entries.len() {
-            self.next
-        } else {
-            0
-        };
-        (0..self.len).map(move |at| self.entries[(first + at) % self.entries.len()])
-    }
-}
+use std::sync::Arc;
 
 pub struct Hints {
     name: String,
     language: Option<Language>,
     plain: bool,
-    checkpoints: BTreeMap<u64, State>,
+    checkpoints: Checkpoints,
 }
 impl Hints {
     pub fn new(name: &str, mode: u16) -> Self {
@@ -59,7 +24,7 @@ impl Hints {
             name: name.into(),
             language: None,
             plain: mode == MODE_TEXT,
-            checkpoints: BTreeMap::new(),
+            checkpoints: Checkpoints::new(),
         }
     }
     pub fn initialize(&mut self, prefix: &str, bom: u64) {
@@ -68,26 +33,55 @@ impl Hints {
     }
 
     fn insert_checkpoint(&mut self, offset: u64, state: State) {
-        if let Some(previous) = self.checkpoints.get_mut(&offset) {
-            *previous = state;
-            return;
-        }
-        if self.checkpoints.len() >= MAX_CHECKPOINTS {
-            let Some(first) = self.checkpoints.keys().nth(1).copied() else {
-                return;
-            };
-            if offset < first {
-                return;
-            }
-            // Evict before inserting, keeping the BOM and latest 255 offsets.
-            self.checkpoints.remove(&first);
-        }
         self.checkpoints.insert(offset, state);
     }
 }
 
-pub fn plan(session: &Session, viewport: &Viewport) -> (u64, u32, u64) {
+pub(crate) struct ReadPlan {
+    pub(crate) offset: u64,
+    pub(crate) count: u32,
+    pub(crate) anchor: u64,
+    pub(crate) snapshot: Option<Snapshot>,
+}
+
+pub(crate) fn preparation_origin(session: &Session, lower: u64) -> Option<(Language, Snapshot)> {
+    let hints = lock(&session.hints);
+    if hints.plain {
+        return None;
+    }
+    let language = hints.language?;
+    let (offset, state) = hints.checkpoints.nearest(lower)?;
+    Some((language, Snapshot::new(offset, state, true)))
+}
+
+pub(crate) fn commit_checkpoints(session: &Session, checkpoints: &CheckpointBatch) {
+    let mut hints = lock(&session.hints);
+    for (offset, state) in checkpoints.iter() {
+        hints.insert_checkpoint(offset, state);
+    }
+}
+
+pub fn plan(session: &Session, viewport: &Viewport) -> ReadPlan {
     let metadata = lock(&session.metadata);
+    if let Some(snapshot) = lock(&session.preparation).take_ready(session.revision, viewport)
+        && snapshot.offset < u64::MAX
+    {
+        let end = preparation::end(viewport, session.length, metadata.bom);
+        let count = end
+            .saturating_sub(snapshot.offset)
+            .min(65536)
+            .min(u64::MAX - snapshot.offset) as u32;
+        return ReadPlan {
+            offset: snapshot.offset,
+            count: count.max(1),
+            anchor: if viewport.backwards {
+                preparation::lower(viewport, metadata.bom)
+            } else {
+                viewport.source_anchor.max(metadata.bom)
+            },
+            snapshot: Some(snapshot),
+        };
+    }
     let limit = viewport.max_bytes.min(8192) as u64;
     let upper = viewport.source_anchor.max(metadata.bom);
     let anchor = if viewport.backwards {
@@ -95,33 +89,43 @@ pub fn plan(session: &Session, viewport: &Viewport) -> (u64, u32, u64) {
     } else {
         upper
     };
-    let checkpoint = lock(&session.hints)
-        .checkpoints
-        .range(..=anchor)
-        .next_back()
-        .map(|(&at, _)| at);
+    let checkpoint = lock(&session.hints).checkpoints.nearest(anchor);
     let target = if viewport.backwards { upper } else { anchor };
-    let offset = checkpoint
-        .filter(|&at| anchor - at <= 32768 && target - at <= 65528)
-        .unwrap_or_else(|| decode::lookbehind(anchor, metadata.bom, metadata.encoding));
+    let snapshot = checkpoint
+        .filter(|&(at, _)| anchor - at <= 32768 && target - at <= 65528)
+        .map(|(at, state)| Snapshot::new(at, state, true));
+    let offset = snapshot.map_or_else(
+        || decode::lookbehind(anchor, metadata.bom, metadata.encoding),
+        |snapshot| snapshot.offset,
+    );
     let end = if viewport.backwards {
         upper.saturating_add(8)
     } else {
         anchor.saturating_add(limit * 4 + 8)
     };
     let count = end.saturating_sub(offset).min(65536).min(u64::MAX - offset) as u32;
-    (offset, count.max(1), anchor)
+    ReadPlan {
+        offset,
+        count: count.max(1),
+        anchor,
+        snapshot,
+    }
 }
 
 pub fn viewport(
     context: Context,
     session: Arc<Session>,
     data: Vec<u8>,
-    offset: u64,
-    anchor: u64,
+    plan: ReadPlan,
     request: Viewport,
     eof: bool,
 ) {
+    let ReadPlan {
+        offset,
+        anchor,
+        mut snapshot,
+        ..
+    } = plan;
     let (encoding, bom) = {
         let metadata = lock(&session.metadata);
         (metadata.encoding, metadata.bom)
@@ -137,7 +141,7 @@ pub fn viewport(
         );
         return;
     }
-    let known = lock(&session.hints).checkpoints.contains_key(&offset);
+    let known = snapshot.is_some();
     let Some(mut decoded) = decode::fragment(&data, (offset, encoding, known), eof, 65536, || {
         context.is_cancelled()
     }) else {
@@ -173,6 +177,7 @@ pub fn viewport(
             return;
         };
         decoded = fallback;
+        snapshot = None;
     }
     let begin = decoded
         .anchors
@@ -217,76 +222,88 @@ pub fn viewport(
     let selected = subset(&decoded, start, end);
     let mut page = selected.page(session.revision, page_eof);
     page.has_before = page.source.offset > bom;
-    let (language, state, plain) = {
-        let hints = lock(&session.hints);
-        (
-            hints.language,
-            hints
-                .checkpoints
-                .get(&decoded.anchors[0].source_offset)
-                .copied(),
-            hints.plain,
-        )
+    page.partial_line |= if start == 0 {
+        snapshot.is_some_and(|snapshot| !snapshot.line_start)
+    } else {
+        !decoded.text[..start].ends_with('\n')
     };
-    if !plain && let (Some(language), Some(mut state)) = (language, state) {
-        // A checkpoint is stored only immediately after a complete newline.
-        // This prevents tokens or comment/string delimiters being split.
-        let mut spans = Vec::new();
+    let (language, plain) = {
+        let hints = lock(&session.hints);
+        (hints.language, hints.plain)
+    };
+    if !plain && let (Some(language), Some(snapshot)) = (language, snapshot) {
+        let mut state = snapshot.state;
+        let mut styles = crate::styles::Styles::new(start..end, request.backwards);
         let mut cursor = 0;
         let mut checkpoints = CheckpointBatch::new();
         let mut valid = true;
-        for line in decoded.text[..end].split_inclusive('\n') {
-            let Some(part) =
-                syntax::highlight(line, language, &mut state, || context.is_cancelled())
-            else {
+        let mut lookahead = end;
+        for ch in decoded.text[end..].chars() {
+            if lookahead - end + ch.len_utf8() > 128 {
+                break;
+            }
+            lookahead += ch.len_utf8();
+        }
+        for line in decoded.text[..lookahead].split_inclusive('\n') {
+            styles.origin(cursor);
+            let final_chunk = eof
+                && cursor + line.len() == decoded.text.len()
+                && decoded
+                    .anchors
+                    .last()
+                    .is_some_and(|a| a.source_offset == offset + data.len() as u64);
+            let scanned =
+                syntax::stream(line, language, &mut state, &mut styles, final_chunk, || {
+                    context.is_cancelled()
+                        || session.closed.load(std::sync::atomic::Ordering::Acquire)
+                });
+            let Some(consumed) = scanned else {
                 valid = false;
                 break;
             };
-            for span in part {
-                let left = cursor + span.start as usize;
-                let right = cursor + span.end as usize;
-                if right > start && left < end {
-                    spans.push(Span {
-                        start: left.max(start).saturating_sub(start) as u32,
-                        end: (right.min(end) - start) as u32,
-                        role: span.role,
-                        flags: span.flags,
-                    });
-                    if spans.len() > MAX_SPANS {
-                        valid = false;
-                        break;
-                    }
-                }
-            }
-            cursor += line.len();
-            if line.ends_with('\n') {
+            cursor += consumed;
+            if consumed == line.len() && line.ends_with('\n') {
                 checkpoints.push((decoded.source_at(cursor).unwrap(), state));
             }
-            if !valid {
+            if consumed < line.len() {
                 break;
             }
         }
         if valid {
-            page.spans = spans;
-            let mut hints = lock(&session.hints);
-            for (offset, state) in checkpoints.iter() {
-                hints.insert_checkpoint(offset, state);
+            let (mut spans, window, clipped) = styles.finish_with_hints(snapshot.hints);
+            if clipped
+                && crate::page_budget::crop(&mut page, window.start - start, window.end - start)
+                    .is_err()
+            {
+                let _ = context.fail(
+                    midnight_plugin_sdk::api::abi::INVALID,
+                    "Invalid style fragment boundary",
+                );
+                return;
             }
+            for span in &mut spans {
+                span.start -= window.start as u32;
+                span.end -= window.start as u32;
+            }
+            page.spans = spans;
+            if !context.is_cancelled() && !session.closed.load(std::sync::atomic::Ordering::Acquire)
+            {
+                commit_checkpoints(&session, &checkpoints);
+            }
+        } else if !context.is_cancelled()
+            && !session.closed.load(std::sync::atomic::Ordering::Acquire)
+        {
+            let _ = context.fail(
+                midnight_plugin_sdk::api::abi::INVALID,
+                "Syntax continuation exceeded its state budget",
+            );
+            return;
         }
     }
-    if context.is_cancelled() {
+    if context.is_cancelled() || session.closed.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
-    let output = match Output::text(&page) {
-        Err(midnight_plugin_sdk::api::wire::WireError::Limit) => {
-            // Source anchors and styles share the CBOR item budget. Keep exact
-            // selection boundaries and discard optional colouring first.
-            page.spans.clear();
-            Output::text(&page)
-        }
-        output => output,
-    };
-    send(context, output);
+    send(context, crate::page_budget::output(page, request.backwards));
 }
 
 fn subset(decoded: &Decoded, start: usize, end: usize) -> Decoded {

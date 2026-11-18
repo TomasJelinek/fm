@@ -125,12 +125,20 @@ pub(crate) struct Acquired {
 }
 
 impl Startup {
-    pub fn new(handle: tokio::runtime::Handle) -> Self {
+    pub fn new(
+        handle: tokio::runtime::Handle,
+        resident: midnight_work_budget::resident::Spawner,
+    ) -> Self {
         Self {
             manager: Manager::new(Native, move |run| {
                 // This owner retains Shared, not the external Control whose Drop requests shutdown.
                 // No UI-held last Arc can consequently destroy a ready process synchronously.
-                handle.spawn_blocking(run);
+                if let Err(rejected) = resident.spawn(&handle, run) {
+                    // Application shutdown retains this transient runtime until
+                    // resident/refusal disposal completes; no new runtime is made.
+                    let work = rejected.into_work();
+                    handle.spawn_blocking(move || drop(work));
+                }
             }),
         }
     }
@@ -314,6 +322,38 @@ impl Completion {
     }
 }
 
+/// A sealed executor may skip the manager before its first invocation.
+/// Such worker-side envelope destruction must still settle the external waiter.
+struct OwnerCompletion<B: Backend> {
+    shared: Arc<Shared<B>>,
+    started: bool,
+    finished: bool,
+}
+
+impl<B: Backend> OwnerCompletion<B> {
+    fn finish(mut self, result: Result<(), RetirementError>) {
+        self.finished = true;
+        self.shared.completion.finish(result);
+    }
+}
+
+impl<B: Backend> Drop for OwnerCompletion<B> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let result = if self.started {
+                Err(RetirementError::OwnerFailed)
+            } else {
+                // The body was never invoked, so it could not create a native
+                // spare. Seal speculative intent without poisoning cold opens.
+                self.shared.lock().stop_spare();
+                self.shared.changed.notify_all();
+                Ok(())
+            };
+            self.shared.completion.finish(result);
+        }
+    }
+}
+
 struct Shared<B: Backend> {
     backend: B,
     state: Mutex<State<B>>,
@@ -463,8 +503,13 @@ impl<B: Backend> Manager<B> {
             completion: Arc::default(),
         });
         let owner = shared.clone();
-        let completion = shared.completion.clone();
+        let mut completion = OwnerCompletion {
+            shared: shared.clone(),
+            started: false,
+            finished: false,
+        };
         schedule(Box::new(move || {
+            completion.started = true;
             let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 owner.clone().run()
             })) {

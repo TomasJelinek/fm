@@ -1,6 +1,8 @@
 use super::*;
 use crate::startup::Startup;
-use midnight_core::{Command, Event, FsError, PreferenceTheme, UserPreferences, WindowGeometry};
+use midnight_core::{
+    AcceptedPreferences, Command, Event, FsError, PreferenceTheme, UserPreferences, WindowGeometry,
+};
 use slint::winit_030::winit::platform::windows::EventLoopBuilderExtWindows;
 use std::{cell::Cell, time::Duration};
 
@@ -139,7 +141,8 @@ fn first_frame(load: Load) {
                 "load",
                 std::path::Path::new("settings"),
                 std::io::ErrorKind::PermissionDenied.into(),
-            ))
+            )
+            .into())
         } else {
             let (displays, decoration) = crate::window_state::displays(&window);
             let display = displays
@@ -167,11 +170,14 @@ fn first_frame(load: Load) {
             *expected.borrow_mut() = Some(crate::window_state::policy::restore(
                 &saved, &displays, decoration,
             ));
-            Ok(Box::new(UserPreferences {
-                theme: PreferenceTheme::Nord,
-                window_geometry: Some(saved),
-                panel_split_basis_points: 6100,
-                ..Default::default()
+            Ok(Box::new(AcceptedPreferences {
+                preferences: UserPreferences {
+                    theme: PreferenceTheme::Nord,
+                    window_geometry: Some(saved),
+                    panel_split_basis_points: 6100,
+                    ..Default::default()
+                },
+                comparators: Default::default(),
             }))
         };
         loaded

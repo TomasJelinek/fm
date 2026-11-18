@@ -14,6 +14,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "identity_lifecycle_tests.rs"]
+mod identity_lifecycle;
+
+#[path = "image_identity_tests.rs"]
+mod image_identity;
+
 #[derive(Debug)]
 struct Memory {
     bytes: &'static [u8],
@@ -59,7 +65,7 @@ fn fixture() -> tempfile::TempDir {
         .unwrap()
         .parent()
         .unwrap()
-        .join("_build/compare-capture-tests");
+        .join("_build/verification/viewer-refresh-20261117/viewer/compare-identity/captured");
     std::fs::create_dir_all(&root).unwrap();
     tempfile::tempdir_in(root).unwrap()
 }
@@ -72,6 +78,7 @@ fn paths(root: &Path) -> [PathBuf; 2] {
 }
 
 fn launch(paths: &[PathBuf; 2]) -> FileCompareLaunch {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     FileCompareLaunch {
         sources: paths
             .iter()
@@ -79,17 +86,22 @@ fn launch(paths: &[PathBuf; 2]) -> FileCompareLaunch {
             .map(FileCompareSource::Focused)
             .collect(),
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     }
 }
 
 fn unresolved() -> FileCompareLaunch {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     FileCompareLaunch {
         sources: Vec::new(),
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     }
 }
 
-fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, String> {
+fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, crate::OpenError> {
     service.open(
         launch,
         ViewerAppearance {
@@ -133,6 +145,9 @@ fn frame(session: &Session) -> Frame {
     wait_for(|last_status| match session.mailbox.take() {
         Some(Output::Frame { frame, .. }) => Some(frame),
         Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
         Some(Output::Status(status)) => {
             *last_status = Some(status);
             None
@@ -149,6 +164,9 @@ fn choice(session: &Session) -> FileChoice {
     );
     wait_for(|last_status| match session.mailbox.take() {
         Some(Output::ChooseFiles(choice)) => Some(choice),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
         Some(Output::Frame { .. }) => panic!("Capture failure must not produce a frame"),
         Some(Output::Status(status)) => {
             *last_status = Some(status);
@@ -156,6 +174,113 @@ fn choice(session: &Session) -> FileChoice {
         }
         None => None,
     })
+}
+
+#[test]
+fn whole_decoded_text_identity_is_typed_and_does_not_claim_different_bom_bytes_identical() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let expected = paths.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if path == expected[0] {
+            memory(b"same text\n", &reads)
+        } else if path == expected[1] {
+            memory(b"\xef\xbb\xbfsame text\n", &reads)
+        } else {
+            Err("Unexpected provider identity".into())
+        }
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
+    let session = open(&service, launch(&paths)).unwrap();
+    let result = wait_for(|last_status| match session.mailbox.take() {
+        Some(Output::Frame { frame, .. }) if frame.identity != crate::IdentityVerdict::Pending => {
+            Some(frame)
+        }
+        Some(Output::Status(status)) => {
+            *last_status = Some(status);
+            None
+        }
+        Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
+        _ => None,
+    });
+    assert_eq!(result.identity, crate::IdentityVerdict::IdenticalText);
+    assert!(result.comparison_generation > 0);
+    assert!(result.status.contains("UTF-8 without BOM"));
+    assert!(result.status.contains("UTF-8 with BOM"));
+    session.close();
+}
+
+#[test]
+fn complete_utf16_text_identity_reports_each_actual_byte_order_and_bom() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let expected = paths.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if path == expected[0] {
+            memory(&[0xff, 0xfe, 0xe9, 0, 0x0a, 0], &reads)
+        } else {
+            memory(&[0xfe, 0xff, 0, 0xe9, 0, 0x0a], &reads)
+        }
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
+    let session = open(&service, launch(&paths)).unwrap();
+    let result = wait_for(|_| match session.mailbox.take() {
+        Some(Output::Frame { frame, .. }) if frame.identity != crate::IdentityVerdict::Pending => {
+            Some(frame)
+        }
+        Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
+        _ => None,
+    });
+    assert_eq!(result.identity, crate::IdentityVerdict::IdenticalText);
+    assert!(result.accessible_text.contains('é'));
+    assert!(
+        result
+            .status
+            .contains("File A UTF-16 little-endian with BOM")
+    );
+    assert!(result.status.contains("File B UTF-16 big-endian with BOM"));
+    session.close();
+}
+
+#[test]
+fn differences_outside_the_visible_text_page_still_produce_typed_different() {
+    let root = fixture();
+    let paths = paths(root.path());
+    for path in &paths {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    }
+    std::fs::write(&paths[0], format!("{}left tail\n", "same\n".repeat(500))).unwrap();
+    std::fs::write(&paths[1], format!("{}right tail\n", "same\n".repeat(500))).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::new(runtime.handle().clone(), spawner);
+    let session = open(&service, launch(&paths)).unwrap();
+    let result = wait_for(|_| match session.mailbox.take() {
+        Some(Output::Frame { frame, .. }) if frame.identity != crate::IdentityVerdict::Pending => {
+            Some(frame)
+        }
+        Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
+        Some(Output::ExternalStarted { .. }) => {
+            panic!("Built-in fixture launched an external program")
+        }
+        _ => None,
+    });
+    assert_eq!(result.identity, crate::IdentityVerdict::Different);
+    assert!(!result.accessible_text.contains("left tail"));
+    assert!(!result.accessible_text.contains("right tail"));
+    session.close();
 }
 
 #[test]
@@ -184,7 +309,8 @@ fn injected_capture_compares_both_panel_sources_without_opening_native_paths() {
         }
     });
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture);
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
     let entries: Arc<[Entry]> =
         vec![Entry::new(EntryId(7), paths[1].clone(), EntryKind::File)].into();
     let mut launch = launch(&paths);
@@ -226,7 +352,8 @@ fn explicit_compare_submission_uses_the_injected_capture_for_both_choices() {
         }
     });
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::with_native_capture(runtime.handle().clone(), capture);
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
     let session = open(&service, unresolved()).unwrap();
     assert!(!choice(&session).is_error);
     assert!(session.send(Input::Compare(paths)));
@@ -255,7 +382,8 @@ fn injected_rejection_on_either_side_never_falls_back_to_readable_native_files()
                 memory(b"provider bytes\n", &reads)
             }
         });
-        let service = Service::with_native_capture(runtime.handle().clone(), capture);
+        let (_owner, spawner) = crate::resident_test_support::workers();
+        let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
         let session = open(&service, launch(&paths)).unwrap();
         let choice = choice(&session);
         assert!(choice.is_error);
@@ -299,7 +427,8 @@ fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_lat
             }
             memory(b"late provider content\n", &observed_reads)
         });
-        let service = Service::with_native_capture(runtime.handle().clone(), capture);
+        let (_owner, spawner) = crate::resident_test_support::workers();
+        let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
         let session = open(&service, launch(&paths)).unwrap();
         assert_eq!(
             entry.recv_timeout(Duration::from_secs(5)).unwrap(),

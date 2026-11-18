@@ -278,17 +278,20 @@ fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
     );
     let local = p.bookmarks()[0].clone();
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            theme: PreferenceTheme::Light,
-            bookmarks: vec![Bookmark {
-                network: None,
-                archive: None,
-                id: BookmarkId(40),
-                name: "Stored".into(),
-                path,
-                slot: Some(5),
-            }],
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                theme: PreferenceTheme::Light,
+                bookmarks: vec![Bookmark {
+                    network: None,
+                    archive: None,
+                    id: BookmarkId(40),
+                    name: "Stored".into(),
+                    path,
+                    slot: Some(5),
+                }],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
             let Command::SavePreferences { preferences, .. } = command else {
@@ -340,17 +343,22 @@ fn invalid_bookmarks_and_unknown_slots_do_not_dispatch() {
 #[test]
 fn removed_loaded_identity_is_never_reused_by_a_later_bookmark() {
     let mut p = Presenter::new(test_root(), test_root());
-    p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-        bookmarks: vec![Bookmark {
-            network: None,
-            archive: None,
-            id: BookmarkId(500),
-            name: "Loaded".into(),
-            path: test_root(),
-            slot: None,
-        }],
-        ..Default::default()
-    }))));
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                bookmarks: vec![Bookmark {
+                    network: None,
+                    archive: None,
+                    id: BookmarkId(500),
+                    name: "Loaded".into(),
+                    path: test_root(),
+                    slot: None,
+                }],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     assert!(p.remove_bookmark(BookmarkId(500), &|_| true));
     assert!(p.add_bookmark(PaneId::Left, "New".into(), None, &|_| true));
     assert_eq!(p.bookmarks()[0].id, BookmarkId(501));

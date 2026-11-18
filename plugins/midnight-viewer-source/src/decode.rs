@@ -60,10 +60,11 @@ pub fn decode(
             break;
         };
         if ch == '\r' {
-            if at + size == bytes.len() && !eof {
+            let next = scalar(&bytes[at + size..], encoding, eof);
+            if next.is_none() && !eof {
                 break;
             }
-            if let Some(('\n', next)) = scalar(&bytes[at + size..], encoding, eof) {
+            if let Some(('\n', next)) = next {
                 size += next;
             }
             ch = '\n';

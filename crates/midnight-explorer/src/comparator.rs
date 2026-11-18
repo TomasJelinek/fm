@@ -1,6 +1,6 @@
 use midnight_compare_ui::{ComparatorWindows, WindowPlacement};
-use midnight_core::{Command, PaneId, ViewerAppearance};
-use midnight_ui::{MainWindow, Presenter, Theme};
+use midnight_core::{Command, PaneId};
+use midnight_ui::{MainWindow, Presenter};
 use slint::ComponentHandle;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -8,13 +8,22 @@ pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<dyn Fn(Command) -> bool>,
-    runtime: &tokio::runtime::Handle,
+    execution: &crate::ContentExecution,
     picker: Arc<dyn midnight_core::PathPickerService>,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
+    backend: crate::comparator_external::Backend,
 ) -> Rc<ComparatorWindows> {
     let windows = Rc::new(
-        ComparatorWindows::new(service(runtime, filesystem).with_path_picker(picker))
-            .with_picker_owner(midnight_ui::native_path_picker_owner),
+        ComparatorWindows::new(
+            backend
+                .configure(service(
+                    &execution.transient,
+                    execution.resident.clone(),
+                    filesystem,
+                ))
+                .with_path_picker(picker),
+        )
+        .with_picker_owner(midnight_ui::native_path_picker_owner),
     );
     let settings = presenter.clone();
     windows.set_font_listener(Rc::new(move |family| {
@@ -35,23 +44,14 @@ pub(crate) fn install(
             } else {
                 PaneId::Right
             })?;
-            let theme = window.global::<Theme>();
-            let rgba = |color: slint::Color| {
-                let color = color.to_argb_u8();
-                [color.red, color.green, color.blue, color.alpha]
-            };
-            let appearance = ViewerAppearance {
-                family: presenter
-                    .borrow()
-                    .viewer_preferences()
-                    .comparison_font
-                    .clone(),
-                font_size: theme.get_font_size().max(11.0),
-                foreground: rgba(theme.get_text()),
-                background: rgba(theme.get_pane_background()),
-                selection: rgba(theme.get_selection_background()),
-                accent: rgba(theme.get_accent()),
-            };
+            let mut appearance = crate::content_appearance::capture(&window);
+            // Document typography stays independent of the manager's primed UI font.
+            appearance.family = presenter
+                .borrow()
+                .viewer_preferences()
+                .comparison_font
+                .clone();
+            appearance.font_size = appearance.font_size.max(11.0);
             let placement = WindowPlacement::capture(window.window());
             let state = presenter.clone();
             let keys =
@@ -70,10 +70,12 @@ pub(crate) fn install(
 
 pub(crate) fn service(
     runtime: &tokio::runtime::Handle,
+    compare_spawner: midnight_work_budget::resident::Spawner,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> midnight_compare_engine::Service {
     midnight_compare_engine::Service::with_native_capture(
         runtime.clone(),
+        compare_spawner,
         crate::native_content::factory(filesystem),
     )
 }

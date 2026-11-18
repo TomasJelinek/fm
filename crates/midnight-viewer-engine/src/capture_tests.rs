@@ -178,7 +178,10 @@ fn viewer_service_dispatches_injected_capture_on_a_backend_thread() {
         .enable_all()
         .build()
         .unwrap();
-    let service = crate::Service::with_native_capture(runtime.handle().clone(), source);
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = crate::Service::with_native_capture(runtime.handle().clone(), resident, source);
     *service.runtime.lock().unwrap() = Some(Arc::new(
         midnight_plugin_host::Runtime::discover(root.path()).unwrap(),
     ));

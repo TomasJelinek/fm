@@ -178,7 +178,10 @@ fn retain_send_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midnight_core::{Bookmark, BookmarkId, FsError, PaneId, UserPreferences};
+    use midnight_core::{
+        AcceptedPreferences, Bookmark, BookmarkId, FileComparatorSnapshot, FsError, PaneId,
+        UserPreferences,
+    };
     use std::{io, path::PathBuf, sync::Arc, time::Duration};
 
     // Raw channels model only reservation/event backpressure in the shared logic.
@@ -265,7 +268,7 @@ mod tests {
         sender
             .send(Event::PreferencesSaved {
                 revision: midnight_core::PreferencesRevision(0),
-                result: Ok(()),
+                result: Ok(FileComparatorSnapshot::default()),
             })
             .await
             .unwrap();
@@ -316,7 +319,12 @@ mod tests {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
             sender
-                .send(Event::PreferencesLoaded(Ok(saved.into())))
+                .send(Event::PreferencesLoaded(Ok(Box::new(
+                    AcceptedPreferences {
+                        preferences: saved,
+                        comparators: FileComparatorSnapshot::default(),
+                    },
+                ))))
                 .await
                 .unwrap();
         });
@@ -354,7 +362,8 @@ mod tests {
                 "load preferences",
                 &PathBuf::new(),
                 io::Error::from(io::ErrorKind::PermissionDenied),
-            ))))
+            )
+            .into())))
             .await
             .unwrap();
         let mut retired = Vec::new();

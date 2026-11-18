@@ -11,7 +11,10 @@ fn source_search_reports_global_scalar_position_and_preserves_copy_after_prefere
         .enable_all()
         .build()
         .unwrap();
-    let service = Service::new(executor.handle().clone());
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = Service::new(executor.handle().clone(), resident);
     *service.runtime.lock().unwrap() = Some(Arc::new(Runtime::discover(&installation).unwrap()));
     *service.images.lock().unwrap() = Some(Arc::from([]));
     let files = tempfile::tempdir().unwrap();

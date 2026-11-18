@@ -3,9 +3,13 @@ use crate::{
     Outbox, Snapshots, copy_operations,
     engine_lifetime::DragRetirement,
     file_targets,
+    resident_tasks::ResidentTasks,
     retirement::{RetirementWaiter, WorkerOwned},
+    spawn_resident,
+    task_lifetime::TaskLifetime,
 };
 use midnight_core::*;
+use midnight_work_budget::resident::Spawner;
 use std::{
     collections::HashMap,
     io,
@@ -378,7 +382,14 @@ impl State {
     }
 }
 
+pub(crate) struct Services {
+    pub(crate) scope: TaskLifetime,
+    pub(crate) native: Option<Arc<dyn FileDragDropService>>,
+    pub(crate) transfers: Option<Arc<dyn TransferService>>,
+}
+
 pub(crate) struct Controller {
+    resident: Spawner,
     state: SharedState,
     backlog: tokio::sync::Mutex<RetirementWaiter>,
     snapshots: Snapshots,
@@ -389,9 +400,11 @@ pub(crate) struct Controller {
     cancel: Cancellation,
     service: Option<Arc<dyn FileDragDropService>>,
     transfers: Option<Arc<dyn TransferService>>,
+    outbox: Outbox,
     events: mpsc::Sender<DragDropEvent>,
     native: Option<mpsc::Sender<Start>>,
     prepare: Option<std::sync::mpsc::SyncSender<()>>,
+    scope: TaskLifetime,
 }
 
 impl Controller {
@@ -406,9 +419,9 @@ impl Controller {
             .await;
     }
     pub(crate) fn new(
+        resident: Spawner,
         retirement: DragRetirement,
-        service: Option<Arc<dyn FileDragDropService>>,
-        transfers: Option<Arc<dyn TransferService>>,
+        services: Services,
         snapshots: Snapshots,
         capacity: copy_operations::Admission,
         outbox: Outbox,
@@ -417,8 +430,14 @@ impl Controller {
         let (events, receiver) = mpsc::channel(64);
         let cancel = Cancellation::default();
         let hover = Hover::default();
-        tasks.spawn(forward(receiver, outbox, hover.clone(), cancel.clone()));
+        tasks.spawn(forward(
+            receiver,
+            outbox.clone(),
+            hover.clone(),
+            cancel.clone(),
+        ));
         Self {
+            resident,
             state: Arc::new(retirement.state.own(Mutex::new(State::default()))),
             backlog: tokio::sync::Mutex::new(retirement.backlog),
             snapshots,
@@ -427,63 +446,133 @@ impl Controller {
             next: Arc::new(AtomicU64::new(0)),
             hover,
             cancel,
-            service,
-            transfers,
+            service: services.native,
+            transfers: services.transfers,
+            outbox,
             events,
             native: None,
             prepare: None,
+            scope: services.scope,
         }
+    }
+
+    #[cfg(test)]
+    fn testing(
+        native: Option<Arc<dyn FileDragDropService>>,
+        transfers: Option<Arc<dyn TransferService>>,
+        snapshots: Snapshots,
+        capacity: copy_operations::Admission,
+        outbox: Outbox,
+        tasks: &mut JoinSet<()>,
+    ) -> (midnight_work_budget::resident::Owner, Self) {
+        let (owner, resident) =
+            midnight_work_budget::resident::Owner::start("drag-test", 2).unwrap();
+        let scope = TaskLifetime::testing((native.clone(), transfers.clone()));
+        let controller = Self::new(
+            resident,
+            DragRetirement::testing(),
+            Services {
+                scope,
+                native,
+                transfers,
+            },
+            snapshots,
+            capacity,
+            outbox,
+            tasks,
+        );
+        (owner, controller)
     }
 
     pub(crate) async fn attach(
         &mut self,
         host: DragHost,
         targets: SharedDropTargets,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if host.generation == 0 || host.generation <= state.highest_host {
                 return;
             }
-            if let Some(old) = state.host.take() {
-                old.host.lifetime.cancel();
-            }
-            state.clear_source();
             state.highest_host = host.generation;
-            state.host = Some(Host {
-                host: host.clone(),
-                targets: targets.clone(),
-                sink: Arc::new(Sink {
-                    host,
-                    targets,
-                    snapshots: self.snapshots.clone(),
-                    pending: self.pending.clone(),
-                    capacity: self.capacity.clone(),
-                    events: self.events.clone(),
-                    next: self.next.clone(),
-                    hover: self.hover.clone(),
-                    cancel: self.cancel.clone(),
-                }),
-            });
+        }
+        if self.cancel.is_cancelled() {
+            self.attachment_failed(&host).await;
+            return;
         }
         if self.native.is_none() {
-            let (sender, receiver) = mpsc::channel(1);
-            self.native = Some(sender);
+            let (native, receiver) = mpsc::channel(1);
             let state = self.state.clone();
             let events = self.events.clone();
             let cancel = self.cancel.clone();
             let service = self.service.clone();
-            tasks.spawn_blocking(move || actor::run(state, service, receiver, events, cancel));
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            self.prepare = Some(sender);
+            let work = self
+                .scope
+                .blocking(move || actor::run(state, service, receiver, events, cancel));
+            let Some(ticket) = spawn_resident(&self.resident, "native drag", Box::new(work)) else {
+                self.attachment_failed(&host).await;
+                return;
+            };
+            tasks.insert(ticket);
+            self.native = Some(native);
+
+            let (prepare, receiver) = std::sync::mpsc::sync_channel(1);
             let state = self.state.clone();
             let events = self.events.clone();
             let snapshots = self.snapshots.clone();
             let cancel = self.cancel.clone();
-            tasks
-                .spawn_blocking(move || prepare_worker(state, snapshots, receiver, events, cancel));
+            let work = Box::new(move || prepare_worker(state, snapshots, receiver, events, cancel));
+            let Some(ticket) = spawn_resident(&self.resident, "drag preparation", work) else {
+                self.attachment_failed(&host).await;
+                return;
+            };
+            tasks.insert(ticket);
+            self.prepare = Some(prepare);
         }
+        // Publish the host only after both owners exist. A partial start cannot
+        // register with the native host or announce a supported attachment.
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = state.host.take() {
+            old.host.lifetime.cancel();
+        }
+        state.clear_source();
+        state.host = Some(Host {
+            host: host.clone(),
+            targets: targets.clone(),
+            sink: Arc::new(Sink {
+                host,
+                targets,
+                snapshots: self.snapshots.clone(),
+                pending: self.pending.clone(),
+                capacity: self.capacity.clone(),
+                events: self.events.clone(),
+                next: self.next.clone(),
+                hover: self.hover.clone(),
+                cancel: self.cancel.clone(),
+            }),
+        });
+    }
+
+    async fn attachment_failed(&self, host: &DragHost) {
+        host.lifetime.cancel();
+        self.shutdown();
+        // The ordinary forwarding task stops with the attachment.
+        self.outbox
+            .send(Event::DragDrop(DragDropEvent::Failed {
+                id: None,
+                error: error(
+                    io::ErrorKind::WouldBlock,
+                    "File drag worker is unavailable.",
+                ),
+            }))
+            .await;
+        self.outbox
+            .send(Event::DragDrop(DragDropEvent::Ready {
+                host_generation: host.generation,
+                supported: false,
+            }))
+            .await;
     }
 
     pub(crate) fn detach(&self, generation: u64) {

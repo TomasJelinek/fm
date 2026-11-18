@@ -1,4 +1,5 @@
 //! One bounded backend worker retains native ownership and pumps requests while idle.
+use crate::resident_tasks::ResidentTasks;
 use crate::{
     Outbox, file_targets,
     retirement::{RetirementLease, RetirementWaiter},
@@ -14,7 +15,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::sync::mpsc;
 
 enum Action {
     Text(String),
@@ -69,6 +70,7 @@ struct Rejected {
     _scope: TaskLifetime,
 }
 pub(crate) struct Controller {
+    resident: midnight_work_budget::resident::Spawner,
     sender: Option<mpsc::Sender<Request>>,
     service: Option<Arc<dyn ClipboardService>>,
     cancel: Cancellation,
@@ -83,7 +85,7 @@ impl Controller {
         id: DesktopRequestId,
         source: Arc<dyn midnight_core::CapturedClipboardFiles>,
         cancel: Cancellation,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
@@ -99,7 +101,7 @@ impl Controller {
         id: DesktopRequestId,
         source: Arc<dyn midnight_core::CapturedClipboardFiles>,
         cancel: Cancellation,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
@@ -115,7 +117,7 @@ impl Controller {
         id: DesktopRequestId,
         content: Arc<dyn midnight_core::GeneratedTextSource>,
         cancel: Cancellation,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
@@ -127,12 +129,14 @@ impl Controller {
         .await;
     }
     pub(crate) fn new(
+        resident: midnight_work_budget::resident::Spawner,
         retirement: Retirement,
         scope: TaskLifetime,
         service: Option<Arc<dyn ClipboardService>>,
         outbox: Outbox,
     ) -> Self {
         Self {
+            resident,
             sender: None,
             service,
             cancel: Cancellation::default(),
@@ -143,7 +147,12 @@ impl Controller {
         }
     }
     #[cfg(test)]
-    fn testing(service: Option<Arc<dyn ClipboardService>>, outbox: Outbox) -> Self {
+    fn testing(
+        service: Option<Arc<dyn ClipboardService>>,
+        outbox: Outbox,
+    ) -> (midnight_work_budget::resident::Owner, Self) {
+        let (owner, resident) =
+            midnight_work_budget::resident::Owner::start("clipboard-test", 1).unwrap();
         let domain =
             crate::retirement::RetirementDomain::try_start(RETIREMENT_CAPACITY, 1).unwrap();
         let retirement = Retirement {
@@ -151,22 +160,22 @@ impl Controller {
             rejected: domain.new_waiter().unwrap(),
         };
         let scope = TaskLifetime::testing(service.clone());
-        Self::new(retirement, scope, service, outbox)
+        (
+            owner,
+            Self::new(resident, retirement, scope, service, outbox),
+        )
     }
-    fn start_worker(&mut self, tasks: &mut JoinSet<()>) -> mpsc::Sender<Request> {
+    fn start_worker(&mut self, tasks: &mut ResidentTasks) -> Option<mpsc::Sender<Request>> {
+        let lease = self.worker.take()?;
         let (sender, receiver) = mpsc::channel::<Request>(16);
-        let mut worker = self
-            .worker
-            .take()
-            .expect("clipboard worker starts once")
-            .own(NativeWorker {
-                receiver,
-                service: self.service.take(),
-                _scope: self.scope.clone(),
-            });
+        let mut worker = lease.own(NativeWorker {
+            receiver,
+            service: self.service.take(),
+            _scope: self.scope.clone(),
+        });
         let cancel = self.cancel.clone();
         let outbox = self.outbox.clone();
-        tasks.spawn_blocking(self.scope.blocking(move || {
+        let work = self.scope.blocking(move || {
             let mut session: Option<Box<dyn ClipboardSession>> = None;
             while !cancel.is_cancelled() {
                 // X11 owners and Windows clipboard windows must serve native messages
@@ -223,15 +232,23 @@ impl Controller {
             }
             // Session never enters the transferable guard: create, pump and Drop stay here.
             // The guarded inbox also covers cancellation before this closure ever starts.
-        }));
-        sender
+        });
+        let ticket = crate::spawn_resident(&self.resident, "clipboard", Box::new(work))?;
+        tasks.insert(ticket);
+        Some(sender)
     }
-    async fn submit(&mut self, request: Request, tasks: &mut JoinSet<()>) {
+    async fn submit(&mut self, request: Request, tasks: &mut ResidentTasks) {
         if self.sender.is_none() {
-            self.sender = Some(self.start_worker(tasks));
+            self.sender = self.start_worker(tasks);
         }
-        if let Err(failed) = self.sender.as_ref().unwrap().try_send(request) {
-            let request = failed.into_inner();
+        let refused = match &self.sender {
+            Some(sender) => sender
+                .try_send(request)
+                .err()
+                .map(|failed| failed.into_inner()),
+            None => Some(request),
+        };
+        if let Some(request) = refused {
             let id = request.id;
             let busy = error(
                 io::ErrorKind::WouldBlock,
@@ -262,7 +279,7 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         text: String,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
@@ -273,7 +290,7 @@ impl Controller {
         )
         .await;
     }
-    pub(crate) async fn read_text(&mut self, id: DesktopRequestId, tasks: &mut JoinSet<()>) {
+    pub(crate) async fn read_text(&mut self, id: DesktopRequestId, tasks: &mut ResidentTasks) {
         self.submit(
             Request {
                 id,
@@ -287,7 +304,7 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         files: SelectedFiles,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
@@ -302,7 +319,7 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         destination: PathBuf,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
@@ -317,7 +334,7 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         files: SelectedFiles,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut ResidentTasks,
     ) {
         self.submit(
             Request {
@@ -334,7 +351,7 @@ impl Controller {
 }
 impl Drop for Controller {
     fn drop(&mut self) {
-        // A started blocking pump cannot be aborted by dropping its JoinSet.
+        // A claimed pump exits through its stop flag, independently of its ticket.
         self.cancel.cancel();
     }
 }
@@ -692,7 +709,7 @@ mod tests {
         sender
             .try_send(Event::LocaleLoaded(Ok(Default::default())))
             .unwrap();
-        let mut controller = Controller::testing(
+        let (_owner, mut controller) = Controller::testing(
             None,
             Outbox {
                 sender,
@@ -700,7 +717,7 @@ mod tests {
             },
         );
         controller.sender = Some(native);
-        let mut tasks = JoinSet::new();
+        let mut tasks = ResidentTasks::default();
         controller
             .copy(DesktopRequestId(1), "first".into(), &mut tasks)
             .await;

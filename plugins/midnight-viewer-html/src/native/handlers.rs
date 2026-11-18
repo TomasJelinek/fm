@@ -9,26 +9,28 @@ fn bounded_text(value: Option<&CefString>, limit: usize) -> String {
 }
 
 fn emit_layers(doc: &Document) {
-    let Ok(surface) = doc.surface.lock() else {
-        return;
-    };
-    let rgba = doc.layers.lock().ok().and_then(|layers| layers.frame());
-    if let Some(rgba) = rgba {
-        #[cfg(feature = "diagnostic-timing")]
-        crate::trace::record(
-            crate::trace::Event::LayersCopied,
-            surface.width.into(),
-            surface.height.into(),
-        );
-        doc.emit(api::EventKind::Frame(api::Frame {
+    let frame = {
+        let Ok(surface) = doc.surface.lock() else {
+            return;
+        };
+        let rgba = doc.layers.lock().ok().and_then(|layers| layers.frame());
+        rgba.map(|rgba| api::Frame {
             viewport_revision: surface.revision,
-            // CEF accepts inputs asynchronously; OnPaint does not supply their renderer
-            // acknowledgment. Zero avoids claiming unproven pixel/input causality.
+            // OnPaint provides no renderer input acknowledgment.
             acknowledged_input: 0,
             width: surface.width,
             height: surface.height,
             rgba,
-        }));
+        })
+    };
+    if let Some(frame) = frame {
+        #[cfg(feature = "diagnostic-timing")]
+        crate::trace::record(
+            crate::trace::Event::LayersCopied,
+            frame.width.into(),
+            frame.height.into(),
+        );
+        doc.emit(api::EventKind::Frame(frame));
     }
 }
 
@@ -137,15 +139,16 @@ wrap_render_handler! {
 wrap_request_handler! {
     struct Requests { doc: Arc<Document> }
     impl RequestHandler {
-        fn on_before_browse(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _user_gesture: i32, _is_redirect: i32) -> i32 {
-            i32::from(!self.doc.active.load(Ordering::Acquire) || request.is_none_or(|r| self.doc.policy.access(&CefString::from(&r.url()).to_string()) == Access::Deny))
+        fn on_before_browse(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>, _user_gesture: i32, is_redirect: i32) -> i32 {
+            navigation::before_browse(&self.doc, browser, frame, request, is_redirect)
         }
         fn on_open_urlfrom_tab(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _target_url: Option<&CefString>, _target_disposition: WindowOpenDisposition, _user_gesture: i32) -> i32 { 1 }
-        fn resource_request_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _is_navigation: i32, is_download: i32, _request_initiator: Option<&CefString>, disable_default_handling: Option<&mut i32>) -> Option<ResourceRequestHandler> {
+        fn resource_request_handler(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>, is_navigation: i32, is_download: i32, _request_initiator: Option<&CefString>, disable_default_handling: Option<&mut i32>) -> Option<ResourceRequestHandler> {
+            let admission = navigation::for_request(&self.doc, browser.as_deref(), frame.as_deref(), request.as_deref(), is_navigation, is_download);
             if let Some(disable) = disable_default_handling {
-                *disable = i32::from(is_download != 0 || request.is_none_or(|r| self.doc.policy.access(&CefString::from(&r.url()).to_string()) != Access::Network));
+                *disable = i32::from(!admission.ordinary() || is_download != 0 || request.is_none_or(|r| self.doc.policy.access(&CefString::from(&r.url()).to_string()) != Access::Network));
             }
-            Some(resources::RequestPolicy::new(self.doc.clone()))
+            Some(resources::RequestPolicy::new(self.doc.clone(), admission))
         }
         fn on_render_process_terminated(&self, _browser: Option<&mut Browser>, _status: TerminationStatus, _error_code: i32, _error_string: Option<&CefString>) {
             self.doc.error("Chromium renderer terminated; reopen the document");

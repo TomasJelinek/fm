@@ -103,6 +103,7 @@ struct Harness {
     events: tokio::sync::mpsc::Receiver<Event>,
     tasks: JoinSet<()>,
     generation: u64,
+    _resident_owner: midnight_work_budget::resident::Owner,
 }
 impl Harness {
     fn new() -> Self {
@@ -117,6 +118,8 @@ impl Harness {
             0,
         )
         .unwrap();
+        let (_resident_owner, resident) =
+            midnight_work_budget::resident::Owner::start("archive-size-test", 2).unwrap();
         Self {
             navigation: Controller::testing(
                 outbox.clone(),
@@ -124,6 +127,7 @@ impl Harness {
                 Arc::new(Semaphore::new(2)),
             ),
             sizes: crate::archive_sizes::Controller::new(
+                &resident,
                 crate::archive_sizes::Retirement {
                     panes: std::array::from_fn(|_| size_domain.try_reserve().unwrap()),
                 },
@@ -135,6 +139,7 @@ impl Harness {
             events,
             tasks: JoinSet::new(),
             generation: 1,
+            _resident_owner,
         }
     }
     async fn event(&mut self) -> Event {

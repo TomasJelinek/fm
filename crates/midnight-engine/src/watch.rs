@@ -3,12 +3,14 @@
 use crate::{
     Outbox,
     retirement::{RetirementLease, WorkerOwned},
+    spawn_resident,
     task_lifetime::TaskLifetime,
 };
 use midnight_core::{
     Cancellation, CompressionStatus, Entry, EntryKind, Event, FileSystem, NavigationId, PaneId,
     VisibleDirectory, WatchService, WatchSubscription,
 };
+use midnight_work_budget::resident::Spawner;
 use std::{
     ffi::OsString,
     path::{Component, Path},
@@ -80,6 +82,14 @@ struct Shared {
 }
 
 impl Shared {
+    fn stop(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.stopped = true;
+        state.cancel.cancel();
+        drop(state);
+        self.wake();
+    }
+
     fn wake(&self) {
         if let Some(worker) = self.worker.get() {
             // Unpark retains its wake permit if a callback races with parking.
@@ -100,6 +110,7 @@ impl Controller {
         }
     }
     pub(crate) fn new(
+        resident: &Spawner,
         retirement: Retirement,
         scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
@@ -108,6 +119,7 @@ impl Controller {
         tasks: &mut JoinSet<()>,
     ) -> Self {
         Self::with_timing(
+            resident,
             retirement,
             scope,
             filesystem,
@@ -122,7 +134,12 @@ impl Controller {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "watch timing is explicit for tests"
+    )]
     fn with_timing(
+        resident: &Spawner,
         retirement: Retirement,
         scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
@@ -152,11 +169,18 @@ impl Controller {
             let native = native.clone();
             let outbox = outbox.clone();
             let native_scope = scope.clone();
+            let resident = resident.clone();
             tasks.spawn(scope.future(async move {
-                let _ = tokio::task::spawn_blocking(native_scope.blocking(move || {
+                let rejected = Arc::downgrade(&shared);
+                let work = native_scope.blocking(move || {
                     run(shared, filesystem, native, outbox, timing);
-                }))
-                .await;
+                });
+                if let Some(ticket) = spawn_resident(&resident, "watch", Box::new(work)) {
+                    // Aborting this waiter after submission detaches the inner job.
+                    let _ = ticket.await;
+                } else if let Some(shared) = rejected.upgrade() {
+                    shared.stop();
+                }
             }));
         }
         Self { panes }
@@ -201,14 +225,7 @@ impl Controller {
 impl Handle {
     pub(crate) fn shutdown(&self) {
         for shared in &self.panes {
-            let mut state = shared
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            state.stopped = true;
-            state.cancel.cancel();
-            drop(state);
-            shared.wake();
+            shared.stop();
         }
     }
 }

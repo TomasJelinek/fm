@@ -1,7 +1,12 @@
 //! Bounded, serialized persistence of user preferences on backend workers.
 
-use crate::{Outbox, task_lifetime::TaskLifetime};
-use midnight_core::{Event, FsError, PreferencesRevision, SettingsService, UserPreferences};
+use crate::{Outbox, comparator_policy_lifetime::ComparatorPolicies, task_lifetime::TaskLifetime};
+use midnight_core::{
+    AcceptedFileComparatorPolicy, AcceptedPreferences, ComparatorValidationProof, Event,
+    FileComparatorPolicyStore, FileComparatorPreferences, FileComparatorSnapshot, FsError,
+    PreferencesApplyError, PreferencesRevision, PreparedFileComparatorPolicy, SettingsService,
+    UserPreferences,
+};
 use std::{
     io,
     path::Path,
@@ -21,6 +26,7 @@ pub(crate) struct Controller {
 struct Shared {
     state: Mutex<State>,
     disk_io: Arc<midnight_work_budget::Gate>,
+    comparators: ComparatorPolicies,
     work: Notify,
     stopping: Notify,
     complete: watch::Sender<bool>,
@@ -48,12 +54,20 @@ enum Work {
     Stop,
 }
 
+// Keep worker/candidate error transport compact; public events retain the typed DTO.
+type ApplyResult<T> = Result<T, Box<PreferencesApplyError>>;
+
+fn boxed_apply_error(error: impl Into<PreferencesApplyError>) -> Box<PreferencesApplyError> {
+    Box::new(error.into())
+}
+
 impl Controller {
     pub(crate) fn new(
         scope: TaskLifetime,
         service: Arc<dyn SettingsService>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
+        comparators: ComparatorPolicies,
     ) -> Self {
         Self::with_io(
             scope,
@@ -61,6 +75,7 @@ impl Controller {
             outbox,
             tasks,
             midnight_work_budget::shared_io(),
+            comparators,
         )
     }
 
@@ -70,11 +85,13 @@ impl Controller {
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
         disk_io: Arc<midnight_work_budget::Gate>,
+        comparators: ComparatorPolicies,
     ) -> Self {
         let (complete, completion) = watch::channel(false);
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             disk_io,
+            comparators,
             work: Notify::new(),
             stopping: Notify::new(),
             complete,
@@ -206,43 +223,80 @@ async fn run(
             Work::Load => {
                 let service = service.clone();
                 let disk_io = shared.disk_io.clone();
-                let result = tokio::task::spawn_blocking(scope.blocking(move || {
-                    let preferences = service.load_preferences()?;
-                    preferences.validate()?;
-                    let limit = preferences
-                        .disk_io_concurrency
-                        .effective_limit()
-                        .map_err(disk_policy_error)?;
-                    disk_io.set_limit(limit).map_err(disk_policy_error)?;
-                    Ok(preferences)
-                }))
+                let comparators = shared.comparators.clone();
+                let result = tokio::task::spawn_blocking(scope.blocking(
+                    move || -> ApplyResult<AcceptedPreferences> {
+                        let preferences = service
+                            .load_preferences_for_acceptance()
+                            .map_err(boxed_apply_error)?;
+                        preferences
+                            .file_comparators
+                            .validate()
+                            .map_err(boxed_apply_error)?;
+                        preferences.validate().map_err(boxed_apply_error)?;
+                        let limit = preferences
+                            .disk_io_concurrency
+                            .effective_limit()
+                            .map_err(disk_policy_error)
+                            .map_err(boxed_apply_error)?;
+                        let candidate = ComparatorCandidate::prepare(
+                            &comparators,
+                            &preferences.file_comparators,
+                        )?;
+                        apply_validated_disk_limit(&disk_io, limit);
+                        Ok(AcceptedPreferences {
+                            preferences,
+                            comparators: candidate.publish(&comparators),
+                        })
+                    },
+                ))
                 .await
-                .unwrap_or_else(|_| Err(worker_error("load preferences")));
+                .unwrap_or_else(|_| Err(boxed_apply_error(worker_error("load preferences"))));
                 shared
                     .state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .loading = false;
-                Event::PreferencesLoaded(result.map(Box::new))
+                Event::PreferencesLoaded(result.map(Box::new).map_err(|error| *error))
             }
             Work::Save(save) => {
                 let save = *save;
                 let revision = save.revision;
                 let service = service.clone();
                 let disk_io = shared.disk_io.clone();
-                let result = tokio::task::spawn_blocking(scope.blocking(move || {
-                    save.preferences.validate()?;
-                    let limit = save
-                        .preferences
-                        .disk_io_concurrency
-                        .effective_limit()
-                        .map_err(disk_policy_error)?;
-                    service.save_preferences(save.preferences)?;
-                    disk_io.set_limit(limit).map_err(disk_policy_error)
-                }))
+                let comparators = shared.comparators.clone();
+                let result = tokio::task::spawn_blocking(scope.blocking(
+                    move || -> ApplyResult<FileComparatorSnapshot> {
+                        save.preferences
+                            .file_comparators
+                            .validate()
+                            .map_err(boxed_apply_error)?;
+                        save.preferences.validate().map_err(boxed_apply_error)?;
+                        let limit = save
+                            .preferences
+                            .disk_io_concurrency
+                            .effective_limit()
+                            .map_err(disk_policy_error)
+                            .map_err(boxed_apply_error)?;
+                        let candidate = ComparatorCandidate::prepare(
+                            &comparators,
+                            &save.preferences.file_comparators,
+                        )?;
+                        service
+                            .save_preferences_prepared(save.preferences, candidate.proof())
+                            .map_err(boxed_apply_error)?;
+                        // All fallible validation/compilation/ID work precedes the atomic write.
+                        // This setter accepts the exact already-validated 1..=32 value.
+                        apply_validated_disk_limit(&disk_io, limit);
+                        Ok(candidate.publish(&comparators))
+                    },
+                ))
                 .await
-                .unwrap_or_else(|_| Err(worker_error("save preferences")));
-                Event::PreferencesSaved { revision, result }
+                .unwrap_or_else(|_| Err(boxed_apply_error(worker_error("save preferences"))));
+                Event::PreferencesSaved {
+                    revision,
+                    result: result.map_err(|error| *error),
+                }
             }
             Work::Wait => {
                 shared.work.notified().await;
@@ -255,6 +309,51 @@ async fn run(
         }
     }
     shared.complete.send_replace(true);
+}
+
+/// At most one replacement is held by this serialized worker. Unchanged saves
+/// borrow the current set's proof and preserve its exact raw Arc and identifier.
+enum ComparatorCandidate {
+    Reused(AcceptedFileComparatorPolicy),
+    Replacement(PreparedFileComparatorPolicy),
+}
+
+impl ComparatorCandidate {
+    fn prepare(
+        store: &FileComparatorPolicyStore,
+        preferences: &FileComparatorPreferences,
+    ) -> ApplyResult<Self> {
+        if let Some(current) = store.reuse_for_save(preferences) {
+            return Ok(Self::Reused(current));
+        }
+        let compiled =
+            midnight_platform_common::comparator_rules::compile(Arc::new(preferences.clone()))
+                .map_err(boxed_apply_error)?;
+        let candidate = PreparedFileComparatorPolicy::new(compiled)
+            .with_id(store.prepare_id().map_err(boxed_apply_error)?);
+        Ok(Self::Replacement(candidate))
+    }
+
+    fn proof(&self) -> ComparatorValidationProof<'_> {
+        match self {
+            Self::Reused(current) => current.validation_proof(),
+            Self::Replacement(candidate) => candidate.validation_proof(),
+        }
+    }
+
+    fn publish(self, store: &FileComparatorPolicyStore) -> FileComparatorSnapshot {
+        match self {
+            Self::Reused(current) => current.snapshot(),
+            Self::Replacement(candidate) => store.publish(candidate),
+        }
+    }
+}
+
+fn apply_validated_disk_limit(gate: &midnight_work_budget::Gate, limit: u8) {
+    // effective_limit() rejects invalid settings before save; set_limit has no
+    // other error path. Failure here would be an internal contract violation.
+    gate.set_limit(limit)
+        .expect("preflight disk limit must remain valid");
 }
 
 async fn deliver(shared: &Shared, outbox: &Outbox, event: Event) -> bool {

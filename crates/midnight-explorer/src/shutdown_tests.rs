@@ -1,4 +1,5 @@
 use super::*;
+use crate::resident_test_runtime::TestRuntime;
 use std::{
     cell::{Cell, RefCell},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -9,7 +10,7 @@ use std::{
 /// A failing regression must still stop its actual blocking owner and consume
 /// Tokio through bounded shutdown, rather than hanging the whole test process.
 struct EmergencyCleanup<'a> {
-    runtime: &'a RefCell<Option<tokio::runtime::Runtime>>,
+    runtime: &'a RefCell<Option<TestRuntime>>,
     retirement: &'a midnight_viewer_engine::ImageSpareRetirement,
 }
 
@@ -27,16 +28,19 @@ impl Drop for EmergencyCleanup<'_> {
 
 #[test]
 fn caught_panic_retires_actual_idle_image_owner_before_shutdown_with_a_live_service_clone() {
-    let runtime = RefCell::new(Some(
+    let runtime = RefCell::new(Some(TestRuntime::new(
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .max_blocking_threads(1)
             .enable_all()
             .build()
             .unwrap(),
-    ));
+        "viewer-shutdown-fixture",
+        midnight_viewer_engine::RESIDENT_WORKERS,
+    )));
     let service = midnight_viewer_engine::Service::with_native_capture(
         runtime.borrow().as_ref().unwrap().handle().clone(),
+        runtime.borrow().as_ref().unwrap().spawner(),
         Arc::new(|_, _| Err("The idle shutdown fixture must not capture any source.".into())),
     );
     let retirement = service.image_spare_retirement();

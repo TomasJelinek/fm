@@ -12,6 +12,9 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 
+#[path = "comparator_tests.rs"]
+mod comparators;
+
 #[derive(Default)]
 struct Gate {
     entered: Notify,
@@ -49,6 +52,8 @@ struct Settings {
     persisted: Mutex<UserPreferences>,
     writes: Mutex<Vec<UserPreferences>>,
     reads: AtomicUsize,
+    acceptance_loads: AtomicUsize,
+    prepared_saves: AtomicUsize,
     calls: Mutex<Vec<ThreadId>>,
     load_gate: Option<Arc<Gate>>,
     save_gate: Option<Arc<Gate>>,
@@ -58,6 +63,21 @@ struct Settings {
 }
 
 impl SettingsService for Settings {
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        self.acceptance_loads.fetch_add(1, Ordering::SeqCst);
+        self.load_preferences()
+    }
+
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        comparators: ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        assert!(comparators.matches(&preferences.file_comparators));
+        self.prepared_saves.fetch_add(1, Ordering::SeqCst);
+        self.save_preferences(preferences)
+    }
+
     fn load_preferences(&self) -> Result<UserPreferences, FsError> {
         self.calls.lock().unwrap().push(std::thread::current().id());
         self.reads.fetch_add(1, Ordering::SeqCst);
@@ -120,6 +140,7 @@ fn controller_with_io(
         },
         &mut tasks,
         disk_io,
+        ComparatorPolicies::testing(Arc::new(FileComparatorPolicyStore::default())),
     );
     (controller, tasks, events)
 }
@@ -195,14 +216,14 @@ async fn a_save_burst_retains_only_the_inflight_write_and_latest_pending_revisio
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(1),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert!(matches!(
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(1_001),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert_eq!(*service.writes.lock().unwrap(), vec![first, latest.clone()]);
@@ -231,7 +252,7 @@ async fn duplicate_revision_is_idempotent_and_conflicting_or_stale_values_cannot
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(5),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert_eq!(*service.writes.lock().unwrap(), vec![accepted.clone()]);
@@ -262,7 +283,7 @@ async fn saving_is_serialized_after_a_slow_load_and_preserves_the_latest_request
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(2),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert_eq!(
@@ -284,9 +305,12 @@ async fn a_failed_save_is_reported_and_a_newer_revision_can_still_persist() {
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(1),
-            result: Err(FsError {
-                kind: io::ErrorKind::PermissionDenied,
-                ..
+            result: Err(PreferencesApplyError {
+                error: FsError {
+                    kind: io::ErrorKind::PermissionDenied,
+                    ..
+                },
+                comparator: None
             })
         }
     ));
@@ -300,7 +324,7 @@ async fn a_failed_save_is_reported_and_a_newer_revision_can_still_persist() {
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(2),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert_eq!(*service.persisted.lock().unwrap(), accepted);
@@ -318,9 +342,12 @@ async fn native_panics_become_error_events_and_do_not_kill_the_settings_worker()
     controller.load();
     assert!(matches!(
         next(&mut events).await,
-        Event::PreferencesLoaded(Err(FsError {
-            kind: io::ErrorKind::Other,
-            ..
+        Event::PreferencesLoaded(Err(PreferencesApplyError {
+            error: FsError {
+                kind: io::ErrorKind::Other,
+                ..
+            },
+            comparator: None
         }))
     ));
     controller.save(PreferencesRevision(1), preferences(PreferenceTheme::Light));
@@ -328,9 +355,12 @@ async fn native_panics_become_error_events_and_do_not_kill_the_settings_worker()
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(1),
-            result: Err(FsError {
-                kind: io::ErrorKind::Other,
-                ..
+            result: Err(PreferencesApplyError {
+                error: FsError {
+                    kind: io::ErrorKind::Other,
+                    ..
+                },
+                comparator: None
             })
         }
     ));
@@ -339,7 +369,7 @@ async fn native_panics_become_error_events_and_do_not_kill_the_settings_worker()
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(2),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     stop(&controller, &mut tasks).await;
@@ -363,6 +393,7 @@ async fn shutdown_does_not_wait_for_a_full_output_queue_or_accept_more_requests(
         },
         &mut tasks,
         Arc::new(midnight_work_budget::Gate::new(4)),
+        ComparatorPolicies::testing(Arc::new(FileComparatorPolicyStore::default())),
     );
     controller.load();
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -444,7 +475,7 @@ async fn initial_load_applies_the_persisted_limit_before_publishing_preferences(
         panic!("successful load must publish its settings");
     };
     assert_eq!(
-        loaded.disk_io_concurrency,
+        loaded.preferences.disk_io_concurrency,
         midnight_core::DiskIoConcurrency::Manual(7)
     );
     assert_eq!(disk_io.effective_limit(), 7);
@@ -473,7 +504,7 @@ async fn a_limit_changes_only_after_the_actual_settings_write_succeeds() {
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(1),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert_eq!(disk_io.effective_limit(), 9);
@@ -512,9 +543,12 @@ async fn invalid_loaded_or_saved_limits_and_failed_loads_preserve_the_active_pol
     assert!(controller.load());
     assert!(matches!(
         next(&mut events).await,
-        Event::PreferencesLoaded(Err(FsError {
-            kind: io::ErrorKind::InvalidInput,
-            ..
+        Event::PreferencesLoaded(Err(PreferencesApplyError {
+            error: FsError {
+                kind: io::ErrorKind::InvalidInput,
+                ..
+            },
+            comparator: None
         }))
     ));
     assert_eq!(disk_io.effective_limit(), 6);
@@ -523,9 +557,12 @@ async fn invalid_loaded_or_saved_limits_and_failed_loads_preserve_the_active_pol
         assert!(matches!(
             next(&mut events).await,
             Event::PreferencesSaved {
-                result: Err(FsError {
-                    kind: io::ErrorKind::InvalidInput,
-                    ..
+                result: Err(PreferencesApplyError {
+                    error: FsError {
+                        kind: io::ErrorKind::InvalidInput,
+                        ..
+                    },
+                    comparator: None
                 }),
                 ..
             }
@@ -548,7 +585,7 @@ async fn stale_saves_cannot_retarget_the_limit_and_an_accepted_reset_restores_au
     assert!(controller.save(PreferencesRevision(9), accepted.clone()));
     assert!(matches!(
         next(&mut events).await,
-        Event::PreferencesSaved { result: Ok(()), .. }
+        Event::PreferencesSaved { result: Ok(_), .. }
     ));
     assert_eq!(disk_io.effective_limit(), 11);
     assert!(!controller.save(PreferencesRevision(8), disk_preferences(2)));
@@ -563,13 +600,13 @@ async fn stale_saves_cannot_retarget_the_limit_and_an_accepted_reset_restores_au
     assert!(controller.save(PreferencesRevision(10), unrelated));
     assert!(matches!(
         next(&mut events).await,
-        Event::PreferencesSaved { result: Ok(()), .. }
+        Event::PreferencesSaved { result: Ok(_), .. }
     ));
     assert_eq!(disk_io.effective_limit(), 11);
     assert!(controller.save(PreferencesRevision(11), UserPreferences::default()));
     assert!(matches!(
         next(&mut events).await,
-        Event::PreferencesSaved { result: Ok(()), .. }
+        Event::PreferencesSaved { result: Ok(_), .. }
     ));
     assert_eq!(disk_io.effective_limit(), 4);
     stop(&controller, &mut tasks).await;
@@ -599,7 +636,7 @@ async fn a_save_queued_during_initial_load_finishes_with_the_saved_policy() {
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(1),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert_eq!(disk_io.effective_limit(), 12);
@@ -625,6 +662,7 @@ async fn successful_persistence_applies_the_limit_while_its_ack_waits_for_output
         },
         &mut tasks,
         disk_io.clone(),
+        ComparatorPolicies::testing(Arc::new(FileComparatorPolicyStore::default())),
     );
     assert!(controller.save(PreferencesRevision(1), disk_preferences(10)));
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -642,7 +680,7 @@ async fn successful_persistence_applies_the_limit_while_its_ack_waits_for_output
         next(&mut events).await,
         Event::PreferencesSaved {
             revision: PreferencesRevision(1),
-            result: Ok(())
+            result: Ok(_)
         }
     ));
     assert_eq!(disk_io.effective_limit(), 10);

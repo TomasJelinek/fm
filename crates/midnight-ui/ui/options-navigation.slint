@@ -4,9 +4,15 @@ import { ScrollView } from "std-widgets.slint";
 // Keep topic identities stable for asynchronous pickers and validation results.
 // The removed Command topic (2) now belongs to General, rather than shifting IDs.
 export global OptionsTopics {
-    out property <[string]> titles: ["General", "Appearance", "Keyboard", "Editors", "Plugins", "Previews", "Archives", "Colors", "Custom Commands"];
-    public pure function topic(index: int) -> int { return index >= 2 ? index + 1 : index; }
-    public pure function index(topic: int) -> int { return topic >= 3 ? topic - 1 : topic == 2 ? 0 : topic; }
+    out property <[string]> titles: ["General", "Appearance", "Keyboard", "Editors", "Comparators", "Plugins", "Previews", "Archives", "Colors", "Custom Commands"];
+    public pure function topic(index: int) -> int {
+        return index == 4 ? 10 : index >= 5 && index <= 9 ? index
+            : index >= 2 && index <= 3 ? index + 1 : index == 1 ? 1 : 0;
+    }
+    public pure function index(topic: int) -> int {
+        return topic == 10 ? 4 : topic >= 5 && topic <= 9 ? topic
+            : topic >= 3 && topic <= 4 ? topic - 1 : topic == 1 ? 1 : 0;
+    }
 }
 
 export component OptionsNavigation inherits Rectangle {

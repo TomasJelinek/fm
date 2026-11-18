@@ -16,6 +16,17 @@ struct Settings {
     fail: AtomicBool,
 }
 impl SettingsService for Settings {
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        self.load_preferences()
+    }
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        comparators: midnight_core::ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        assert!(comparators.matches(&preferences.file_comparators));
+        self.save_preferences(preferences)
+    }
     fn font_families(&self) -> Result<Vec<String>, FsError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.entered.notify_one();
@@ -183,6 +194,9 @@ async fn a_blocked_font_scan_does_not_delay_preferences_saves() {
             wakeup: Arc::new(|| {}),
         },
         &mut tasks,
+        crate::comparator_policy_lifetime::ComparatorPolicies::testing(Arc::new(
+            midnight_core::FileComparatorPolicyStore::default(),
+        )),
     );
     fonts.list();
     entered(&service).await;
@@ -195,7 +209,7 @@ async fn a_blocked_font_scan_does_not_delay_preferences_saves() {
     ));
     assert!(matches!(
         next(&mut saved).await,
-        Event::PreferencesSaved { result: Ok(()), .. }
+        Event::PreferencesSaved { result: Ok(_), .. }
     ));
     assert!(events.try_recv().is_err());
     preferences.shutdown();

@@ -23,15 +23,19 @@ fn editor_rows_save_literals_once_retain_draft_across_pages_and_consume_f4() {
             true
         }),
     );
-    p.borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            editor: EditorPreferences {
-                rules: Vec::new(),
-                executable: Some(std::env::current_exe().unwrap()),
-                arguments: vec!["{file}".into(), "--original".into()],
+    p.borrow_mut().apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                editor: EditorPreferences {
+                    rules: Vec::new(),
+                    executable: Some(std::env::current_exe().unwrap()),
+                    arguments: vec!["{file}".into(), "--original".into()],
+                },
+                ..Default::default()
             },
-            ..Default::default()
-        }))));
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     refresh(&h.window, &p.borrow());
     assert!(
         !h.window
@@ -95,7 +99,7 @@ fn editor_rows_save_literals_once_retain_draft_across_pages_and_consume_f4() {
     drop(commands);
     p.borrow_mut().apply(Event::PreferencesSaved {
         revision,
-        result: Ok(()),
+        result: Ok(midnight_core::FileComparatorSnapshot::default()),
     });
     refresh(&h.window, &p.borrow());
     h.window.invoke_show_options();
@@ -129,14 +133,18 @@ fn ordered_rule_form_retains_fallback_and_cancel_restores_all_associations() {
         }),
     );
     let fallback = std::env::current_exe().unwrap();
-    p.borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            editor: EditorPreferences {
-                executable: Some(fallback.clone()),
+    p.borrow_mut().apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                editor: EditorPreferences {
+                    executable: Some(fallback.clone()),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        }))));
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     refresh(&h.window, &p.borrow());
     h.window.invoke_show_options();
     h.window.set_options_topic_index(4);
@@ -188,7 +196,7 @@ fn ordered_rule_form_retains_fallback_and_cancel_restores_all_associations() {
     assert_eq!(saved.editor.rules[1].working_directory, Some(root));
     p.borrow_mut().apply(Event::PreferencesSaved {
         revision,
-        result: Ok(()),
+        result: Ok(midnight_core::FileComparatorSnapshot::default()),
     });
     refresh(&h.window, &p.borrow());
     h.window.invoke_show_options();
@@ -231,11 +239,15 @@ fn plus_opens_custom_editor_fields_and_keeps_incomplete_rule_out_of_preferences(
         rules: vec![EditorRule::default(), EditorRule::default()],
         ..Default::default()
     };
-    p.borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            editor: original.clone(),
-            ..Default::default()
-        }))));
+    p.borrow_mut().apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                editor: original.clone(),
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     refresh(&h.window, &p.borrow());
     h.window.invoke_show_options();
     h.window.set_options_topic_index(4);

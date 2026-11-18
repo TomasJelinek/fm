@@ -22,9 +22,12 @@ fn saved_tabs_restore_order_active_positions_and_requery_only_active_locations()
     ];
     let sent = RefCell::new(Vec::new());
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            tabs: saved.clone(),
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                tabs: saved.clone(),
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
             sent.borrow_mut().push(command);
@@ -62,13 +65,16 @@ fn local_tab_edits_win_over_late_load_while_untouched_panel_restores() {
     assert!(p.new_tab(PaneId::Left, &|_| true));
     let local = p.tabs(PaneId::Left);
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            tabs: [
-                saved_tabs(&["saved-left"], 0),
-                saved_tabs(&["right-a", "right-b"], 1),
-            ],
-            theme: PreferenceTheme::Dark,
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                tabs: [
+                    saved_tabs(&["saved-left"], 0),
+                    saved_tabs(&["right-a", "right-b"], 1),
+                ],
+                theme: PreferenceTheme::Dark,
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|_| true,
     );
@@ -84,12 +90,15 @@ fn startup_path_override_affects_only_its_panel_and_early_navigation_wins() {
     let mut p = Presenter::new(test_root().join("explicit"), test_root());
     p.set_tab_restore_overrides([true, false]);
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            tabs: [
-                saved_tabs(&["saved-left"], 0),
-                saved_tabs(&["saved-right"], 0),
-            ],
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                tabs: [
+                    saved_tabs(&["saved-left"], 0),
+                    saved_tabs(&["saved-right"], 0),
+                ],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|_| true,
     );
@@ -106,12 +115,15 @@ fn startup_path_override_affects_only_its_panel_and_early_navigation_wins() {
         &|_| true
     ));
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            tabs: [
-                saved_tabs(&["saved-left"], 0),
-                saved_tabs(&["saved-right"], 0),
-            ],
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                tabs: [
+                    saved_tabs(&["saved-left"], 0),
+                    saved_tabs(&["saved-right"], 0),
+                ],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|_| true,
     );
@@ -144,7 +156,13 @@ fn closed_tabs_and_the_active_index_are_saved_and_survive_restart() {
         .expect("tab changes must enqueue a preference save");
     assert_eq!(preferences.tabs[0], saved_tabs(&["one", "three"], 0));
     let mut restarted = Presenter::new(test_root(), test_root());
-    restarted.apply_with_sender(Event::PreferencesLoaded(Ok(preferences)), &|_| true);
+    restarted.apply_with_sender(
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: *preferences,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        }))),
+        &|_| true,
+    );
     let tabs = restarted.tabs(PaneId::Left);
     assert_eq!(
         tabs.iter().map(|tab| tab.path.clone()).collect::<Vec<_>>(),
@@ -158,9 +176,12 @@ fn rejected_restore_retries_without_discarding_saved_tabs_or_current_view() {
     let mut p = Presenter::new(test_root().join("initial"), test_root());
     let original = p.tabs(PaneId::Left);
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            tabs: [saved_tabs(&["restored"], 0), PaneTabPreferences::default()],
-            ..Default::default()
+        Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                tabs: [saved_tabs(&["restored"], 0), PaneTabPreferences::default()],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|_| false,
     );

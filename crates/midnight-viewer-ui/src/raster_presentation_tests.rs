@@ -1,3 +1,4 @@
+use super::image_presentation_tests::present as present_outputs;
 use super::*;
 use std::sync::Arc;
 

@@ -393,13 +393,18 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                density,
-                desktop_font_size: font,
-                touch_font_size: font,
-                theme: scheme,
-                ..Default::default()
-            }))));
+            .apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences: UserPreferences {
+                        density,
+                        desktop_font_size: font,
+                        touch_font_size: font,
+                        theme: scheme,
+                        ..Default::default()
+                    },
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
         presenter.borrow_mut().apply(Event::DesktopContext {
             system_locations: Vec::new(),
             network_position: 0,

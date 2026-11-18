@@ -244,7 +244,12 @@ pub(super) struct Preparation {
 }
 
 impl Preparation {
-    pub fn new(mailbox: Arc<Mailbox>, notify: Notify, trace: OpeningTrace) -> Result<Self, String> {
+    pub fn new(
+        mailbox: Arc<Mailbox>,
+        notify: Notify,
+        trace: OpeningTrace,
+        palette: crate::appearance::PaletteGate,
+    ) -> Result<Self, String> {
         let source = mailbox.clone();
         let mut cache = Cache::default();
         let drained = trace.clone();
@@ -256,7 +261,7 @@ impl Preparation {
                 outputs
             },
             move |outputs| {
-                let batch = batch(outputs, &mut cache);
+                let batch = palette_batch(outputs, &mut cache, &palette);
                 prepared.outputs(20, &batch.outputs);
                 batch
             },
@@ -481,6 +486,106 @@ fn batch(outputs: Vec<ViewerOutput>, cache: &mut Cache) -> PreparedBatch {
         })
         .unwrap_or(Ok(None));
     PreparedBatch { outputs, pixels }
+}
+
+fn palette_batch(
+    mut outputs: Vec<ViewerOutput>,
+    cache: &mut Cache,
+    palette: &crate::appearance::PaletteGate,
+) -> PreparedBatch {
+    // A reserved control may arrive in an earlier drain than its frame. Keep its
+    // scalar fence independently of the one prepared batch and pixel cache.
+    palette.observe(&outputs);
+    outputs
+        .retain(|output| !matches!(output, ViewerOutput::Frame(frame) if !palette.allows(frame)));
+    let mut prepared = batch(outputs, cache);
+    // Acceptance can race a large copy. Reclaim both rejected source and copied
+    // buffers here on the preparation worker; the UI repeats this check at delivery.
+    prepared
+        .outputs
+        .retain(|output| !matches!(output, ViewerOutput::Frame(frame) if !palette.allows(frame)));
+    if !prepared
+        .outputs
+        .iter()
+        .any(|output| matches!(output, ViewerOutput::Frame(_)))
+    {
+        prepared.pixels = Ok(None);
+    }
+    prepared
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    #[test]
+    fn preparation_saves_split_palette_fence_and_retires_pending_pixels_without_losing_controls() {
+        let palette = crate::appearance::PaletteGate::default();
+        let mut appearance = midnight_core::ViewerAppearance {
+            family: "monospace".into(),
+            font_size: 14.0,
+            foreground: [255; 4],
+            background: [0; 4],
+            selection: [55; 4],
+            accent: [150; 4],
+        };
+        palette.accepted(&appearance, 0);
+        let mut stale = crate::text_presentation_tests::frame(11, 0, 0.2);
+        if let ViewerOutput::Frame(frame) = &mut stale {
+            frame.pixels = Arc::from([]); // Must be rejected before pixel validation.
+        }
+        let source = Arc::new(Mutex::new(std::collections::VecDeque::from([
+            vec![ViewerOutput::PaletteApplied {
+                revision: 0,
+                generation: 7,
+                minimum_frame_revision: Some(10),
+            }],
+            vec![crate::text_presentation_tests::frame(10, 0, 0.2)],
+            vec![
+                stale,
+                ViewerOutput::CopyText("keep control".into()),
+                ViewerOutput::Closed,
+            ],
+        ])));
+        let drain = source.clone();
+        let preparing = palette.clone();
+        let mut cache = Cache::default();
+        let (notify, notified) = std::sync::mpsc::channel();
+        let preparation = Preparation::start(
+            move || lock(&drain).pop_front().unwrap_or_default(),
+            move |outputs| palette_batch(outputs, &mut cache, &preparing),
+            Arc::new(move || notify.send(()).is_ok()),
+        )
+        .unwrap();
+        notified.recv_timeout(Duration::from_secs(2)).unwrap();
+        let control = preparation.take().unwrap();
+        assert!(matches!(
+            control.outputs.as_slice(),
+            [ViewerOutput::PaletteApplied { .. }]
+        ));
+        assert!(matches!(control.pixels, Ok(None)));
+        assert!(preparation.shared.signal());
+        notified.recv_timeout(Duration::from_secs(2)).unwrap();
+        let pixels = preparation.take().unwrap();
+        assert!(
+            matches!(pixels.outputs.as_slice(), [ViewerOutput::Frame(frame)] if frame.revision == 10)
+        );
+        assert_eq!(pixels.pixels.unwrap().unwrap().body.as_bytes(), &[255; 16]);
+        appearance.background = [32; 4];
+        palette.accepted(&appearance, 1);
+        assert!(preparation.shared.signal());
+        notified.recv_timeout(Duration::from_secs(2)).unwrap();
+        let terminal = preparation.take().unwrap();
+        assert!(
+            matches!(terminal.outputs.as_slice(), [ViewerOutput::CopyText(text), ViewerOutput::Closed] if text == "keep control")
+        );
+        assert!(
+            matches!(terminal.pixels, Ok(None)),
+            "stale malformed pixels cannot become an error"
+        );
+        assert!(lock(&source).is_empty());
+        preparation.stop();
+    }
 }
 
 /// Shared validation/conversion for isolated presentation fixtures. Production

@@ -9,6 +9,10 @@ mod checksum;
 mod checksum_actor;
 mod clipboard;
 mod clipboard_text;
+mod comparator_policy_lifetime;
+pub use comparator_policy_lifetime::{
+    ComparisonPolicy, ComparisonPolicyPinError, ComparisonPolicySource,
+};
 mod comparison;
 mod copy_fence;
 mod copy_finished;
@@ -17,12 +21,18 @@ mod copy_nested_retirement;
 mod copy_operations;
 mod copy_services;
 mod desktop;
+mod desktop_external_compare;
+pub use desktop_external_compare::{
+    ExternalCompareCaptureError, ExternalCompareNativeCapture, ExternalComparisonFrontDoor,
+};
 mod diagnostic_text;
 mod drag_drop;
 mod elevation;
 #[cfg(test)]
 mod engine_command_admission_fixture;
 mod engine_commands;
+#[cfg(test)]
+mod engine_comparator_policy_tests;
 pub use engine_commands::{
     CommandChannelError, CommandPermit, CommandReceiver, CommandSendError, CommandSender,
     OwnedCommandPermit,
@@ -35,12 +45,15 @@ pub use engine_configuration::{
 mod engine_run;
 mod report_arena;
 pub use report_arena::ReportArena;
+mod resident_tasks;
 mod retirement;
 mod task_lifetime;
 pub use engine_lifetime::EngineLifetime;
 pub use engine_run::EngineRun;
 #[cfg(test)]
 mod engine_lifecycle_tests;
+#[cfg(test)]
+mod engine_resident_tests;
 mod entry_sizes;
 mod file_list_actor;
 mod file_list_output;
@@ -127,12 +140,34 @@ use midnight_core::{
     FolderSizeScanId, IconKey, NavigationId, PaneId, SettingsService, SortSpec, WatchService,
     sort_entries,
 };
+use midnight_work_budget::resident;
+use resident_tasks::ResidentTasks;
 use tokio::{
+    runtime::Handle,
     sync::{Semaphore, mpsc},
     task::{AbortHandle, JoinSet},
 };
 
 const BATCH_SIZE: usize = 128;
+
+fn spawn_resident(
+    spawner: &resident::Spawner,
+    actor: &str,
+    work: resident::Work,
+) -> Option<resident::Ticket> {
+    let transient = Handle::current();
+    match spawner.spawn(&transient, work) {
+        Ok(ticket) => Some(ticket),
+        Err(refused) => {
+            eprintln!("Engine {actor} worker refused: {:?}", refused.reason());
+            // Keep preexisting guarded captures intact if the runtime drops the
+            // finite retirement task before it can run.
+            let work = refused.into_work();
+            transient.spawn_blocking(move || drop(work));
+            None
+        }
+    }
+}
 
 #[derive(Clone)]
 struct Outbox {
@@ -194,6 +229,8 @@ pub struct Engine {
     run: retirement::RetirementLease,
     commands: Option<retirement::RetirementLease>,
     copy_admission: copy_operations::Admission,
+    comparator_policies: comparator_policy_lifetime::ComparatorPolicies,
+    comparator_policy_pins: retirement::RetirementDomain,
     resources: engine_lifetime::Resources,
 }
 
@@ -297,9 +334,9 @@ impl Drop for SizeRequest {
 }
 
 impl Engine {
-    /// Start and reserve runtime-independent cleanup before constructing providers.
+    /// Start resident workers and reserve cleanup before constructing providers.
     ///
-    /// Returns an I/O error if the cleanup worker cannot start. No provider state
+    /// Returns an I/O error if a startup worker cannot start. No provider state
     /// has been accepted, and no Tokio runtime is required.
     pub fn lifetime() -> std::io::Result<EngineLifetime> {
         EngineLifetime::new()
@@ -356,6 +393,11 @@ impl Engine {
             run: lifetime.run,
             commands: Some(lifetime.commands),
             copy_admission,
+            comparator_policies: comparator_policy_lifetime::ComparatorPolicies::new(
+                lifetime.comparator_policies,
+                Arc::new(midnight_core::FileComparatorPolicyStore::default()),
+            ),
+            comparator_policy_pins: lifetime.comparator_policy_pins,
             resources: lifetime.resources,
         }
     }
@@ -386,22 +428,47 @@ impl Engine {
             .commands
             .take()
             .ok_or(CommandChannelError::AlreadyConfigured)?;
-        Ok(CommandSender::channel(
-            capacity,
-            self.copy_admission.clone(),
-            lease,
-        ))
+        let (sender, receiver) =
+            CommandSender::channel(capacity, self.copy_admission.clone(), lease);
+        Ok((sender.with_external(self.external_comparisons()), receiver))
+    }
+
+    /// Synchronous metadata capture admission for the comparator worker.
+    pub fn external_comparisons(&self) -> ExternalComparisonFrontDoor {
+        self.resources.desktop.external.clone()
+    }
+
+    /// Accepted comparator policies shared with admitted comparison sessions.
+    /// Kept outside EngineServices so child process lifetimes retain no policy.
+    /// Backend composition only: the returned Arc must honor Core's backend
+    /// final-drop contract if it outlives Engine/preferences ownership.
+    pub fn comparator_policies(&self) -> Arc<midnight_core::FileComparatorPolicyStore> {
+        self.comparator_policies.for_composition()
+    }
+
+    /// Guarded comparison policy composition for services that may outlive Engine.
+    /// Both dormant source and admitted session pins retire independently of Tokio.
+    pub fn comparator_policy_source(&self) -> ComparisonPolicySource {
+        ComparisonPolicySource::new(
+            self.comparator_policies.clone(),
+            self.comparator_policy_pins.clone(),
+        )
     }
 
     /// Run commands admitted by this Engine's typed channel. A foreign receiver
     /// is retired without executing commands; it cannot borrow another budget.
+    /// Completion follows the run retirement contract. Resident workers still
+    /// in native code after the shutdown grace retain their ownership.
     pub fn run(self, commands: CommandReceiver) -> EngineRun {
+        let comparator_policies = self.comparator_policies;
+        let run = self.run;
         let active = (*self.services).clone();
         let scope = task_lifetime::TaskLifetime::new(Arc::new(self.services));
         if !self.copy_admission.same(&commands.admission) {
             return EngineRun::new(
-                self.run,
+                run,
                 async move {
+                    let _comparator_policies = comparator_policies;
                     let _resources = self.resources;
                     let _commands = commands;
                     eprintln!("Engine rejected a command receiver from another Engine.");
@@ -410,12 +477,13 @@ impl Engine {
             );
         }
         EngineRun::new(
-            self.run,
+            run,
             active.run_inner(
                 commands.inbox,
                 self.resources,
                 scope.clone(),
                 self.copy_admission,
+                comparator_policies,
             ),
             scope,
         )
@@ -429,7 +497,12 @@ impl EngineServices {
         resources: engine_lifetime::Resources,
         scope: task_lifetime::TaskLifetime,
         copy_admission: copy_operations::Admission,
+        comparator_policies: comparator_policy_lifetime::ComparatorPolicies,
     ) {
+        // Keep the unique owner outside the services/task graph. On cancellation,
+        // later-declared controller stop controls drop before the owner seals.
+        let resident_owner = resources.resident_owner;
+        let resident = resources.resident;
         // Reserve capacity for each pane even when the other pane accumulates
         // uncancellable OS reads on unavailable media.
         let listing_budgets = [Arc::new(Semaphore::new(2)), Arc::new(Semaphore::new(2))];
@@ -440,6 +513,8 @@ impl EngineServices {
         let denied_navigations = elevation::DeniedNavigations::default();
         let mut navigation_high_water: [Option<NavigationId>; 2] = [None, None];
         let mut tasks = JoinSet::new();
+        let mut resident_tasks = ResidentTasks::default();
+        let external_comparator_service = self.user_commands.clone();
         let mut find = find::Controller::new(
             scope.clone(),
             resources.find,
@@ -461,10 +536,17 @@ impl EngineServices {
         );
         let viewer_plugins = viewer_plugins::Controller::new(self.outbox.clone(), &mut tasks);
         let settings = self.settings.map(|service| {
-            preferences::Controller::new(scope.clone(), service, self.outbox.clone(), &mut tasks)
+            preferences::Controller::new(
+                scope.clone(),
+                service,
+                self.outbox.clone(),
+                &mut tasks,
+                comparator_policies,
+            )
         });
         let watcher = self.watch.map(|native| {
             watch::Controller::new(
+                &resident,
                 resources.watch,
                 scope.clone(),
                 self.filesystem.clone(),
@@ -489,12 +571,14 @@ impl EngineServices {
             &mut tasks,
         );
         let mut clipboard = clipboard::Controller::new(
+            resident.clone(),
             resources.clipboard,
             scope.clone(),
             self.clipboard,
             self.outbox.clone(),
         );
-        let mut size_warning_requests = size_warning_requests::Controller::new(self.outbox.clone());
+        let mut size_warning_requests =
+            size_warning_requests::Controller::new(resident.clone(), self.outbox.clone());
         let shell_menu = shell_menu::Controller::new(
             scope.clone(),
             resources.shell_menu,
@@ -507,7 +591,9 @@ impl EngineServices {
             Arc::new(resources.snapshots.own(Mutex::new(Default::default())));
         let mutation_gate = transfer_leases::namespace_gate();
         let trees = tree_controller::Controller::new(
+            &resident,
             tree_controller::Services {
+                scope: scope.clone(),
                 shared_native: self.shared_native.clone(),
                 qualified_locale: self.qualified_locale.clone(),
                 filesystem: self.filesystem.clone(),
@@ -522,13 +608,14 @@ impl EngineServices {
             watcher.as_ref().map(watch::Controller::handle),
         );
         let folder_presence = folder_presence::Controller::new(
+            &resident,
             scope.clone(),
             resources.reports.clone(),
             self.filesystem.clone(),
             snapshots.clone(),
             listing_budgets.clone(),
             self.outbox.clone(),
-            &mut tasks,
+            &mut resident_tasks,
         );
         let mut neighborhood = network_neighborhood::Controller::new(
             resources.network,
@@ -600,9 +687,13 @@ impl EngineServices {
             &mut tasks,
         );
         let mut drag_drop = drag_drop::Controller::new(
+            resident.clone(),
             resources.drag,
-            self.drag_drop,
-            self.transfers,
+            drag_drop::Services {
+                scope: scope.clone(),
+                native: self.drag_drop,
+                transfers: self.transfers,
+            },
             snapshots.clone(),
             copies.admission(),
             self.outbox.clone(),
@@ -614,6 +705,7 @@ impl EngineServices {
         let selected_sizes =
             selection_sizes::Controller::new(self.outbox.clone(), snapshots.clone(), &mut tasks);
         let archive_sizes = archive_sizes::Controller::new(
+            &resident,
             resources.archive_sizes,
             resources.reports.clone(),
             snapshots.clone(),
@@ -663,6 +755,10 @@ impl EngineServices {
                     let command = match command {
                         Some(engine_commands::Message::GuardedCopy(admitted)) => {
                             copies.enqueue_admitted(admitted);
+                            continue;
+                        }
+                        Some(engine_commands::Message::GuardedExternalComparison(request)) => {
+                            desktop.compare_external(external_comparator_service.clone(), request, &mut tasks);
                             continue;
                         }
                         Some(engine_commands::Message::Plain(command)) => Some(command.into_command()),
@@ -723,9 +819,9 @@ impl EngineServices {
                             }
                         }
                         Some(Command::CancelFileList{id,generation})=>file_lists.cancel(id,generation),
-                        Some(Command::CopyGeneratedText{request,content,cancel})=>clipboard.copy_generated(request,content,cancel,&mut tasks).await,
-                        Some(Command::ReadDiagnosticText { request, content, cancel }) => size_warning_requests.preview(request, content, cancel, &mut tasks).await,
-                        Some(Command::OpenSizeWarnings { request, report, cancel }) => size_warning_requests.open(request, report, cancel, &mut tasks).await,
+                        Some(Command::CopyGeneratedText{request,content,cancel})=>clipboard.copy_generated(request,content,cancel,&mut resident_tasks).await,
+                        Some(Command::ReadDiagnosticText { request, content, cancel }) => size_warning_requests.preview(request, content, cancel, &mut resident_tasks).await,
+                        Some(Command::OpenSizeWarnings { request, report, cancel }) => size_warning_requests.open(request, report, cancel, &mut resident_tasks).await,
                         Some(Command::PreviewUserCommand(request)) => {
                             let (request_id, command) = (request.id, request.command.clone());
                             if let Err(error) = user_commands.start(*request, true) {
@@ -905,7 +1001,7 @@ impl EngineServices {
                         Some(Command::CancelCopy(id)) => copies.cancel(id),
                         Some(Command::SetCopyPaused { id, paused }) => copies.set_paused(id, paused).await,
                         Some(Command::SetOperationPaused { id, paused }) => operations.set_paused(id, paused).await,
-                        Some(Command::AttachDragDrop { host, targets }) => drag_drop.attach(host, targets, &mut tasks).await,
+                        Some(Command::AttachDragDrop { host, targets }) => drag_drop.attach(host, targets, &mut resident_tasks).await,
                         Some(Command::DetachDragDrop { host_generation }) => drag_drop.detach(host_generation),
                         Some(Command::PrepareDrag { id, pane, navigation, files }) => drag_drop.prepare(id, pane, navigation, files).await,
                         Some(Command::PrepareCapturedDrag { id, pane, navigation, source }) => drag_drop.prepare_captured(id, pane, navigation, source).await,
@@ -930,6 +1026,9 @@ impl EngineServices {
                         Some(Command::Search(request)) => search.query(request),
                         Some(Command::CancelSearch { pane, revision }) => search.cancel(pane, revision),
                         None | Some(Command::Shutdown) => break,
+                        // The common sender boundary never places this command
+                        // in Plain. Defensive refusal keeps its safe owner armed.
+                        Some(Command::LaunchExternalComparison(request)) => drop(request),
                         Some(Command::Tree(command)) => {
                             if let Some(event) = trees.submit(*command).await {
                                 self.outbox.send(Event::Tree(Box::new(event))).await;
@@ -942,6 +1041,9 @@ impl EngineServices {
                         Some(Command::OpenSystemLocation { request, location }) => desktop.open_system_location(request, location, &mut tasks).await,
                         Some(Command::SetCommandIconView { generation, targets }) => desktop.command_icons(generation, targets),
                         Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
+                        Some(Command::ListComparatorCapabilities { disabled_plugins }) => {
+                            viewer_plugins.comparator_capabilities(disabled_plugins);
+                        }
                         Some(Command::ResolveDefaultEditor) => desktop.resolve_editor(self.editor.clone(), &mut tasks).await,
                         Some(Command::EditFile { request, path, editor }) => desktop.edit_file(self.editor.clone(), request, path, editor, &mut tasks).await,
                         Some(Command::EditCapturedFile { request, source, editor, cancel }) => desktop.edit_captured_file(self.editor.clone(), request, source, editor, cancel, &mut tasks).await,
@@ -957,7 +1059,7 @@ impl EngineServices {
                         Some(Command::SavePreferences { revision, preferences }) => {
                             if let Some(settings) = &settings { settings.save(revision, *preferences); }
                             else {
-                                self.outbox.send(Event::PreferencesSaved { revision, result: Err(midnight_core::FsError::from_io("save preferences", std::path::Path::new(""), std::io::Error::from(std::io::ErrorKind::Unsupported))) }).await;
+                                self.outbox.send(Event::PreferencesSaved { revision, result: Err(midnight_core::FsError::from_io("save preferences", std::path::Path::new(""), std::io::Error::from(std::io::ErrorKind::Unsupported)).into()) }).await;
                             }
                         }
                         Some(Command::PaneCommitted(visible)) => {
@@ -973,14 +1075,14 @@ impl EngineServices {
                             if let Some(watcher) = &watcher { watcher.set_visible(watch_target); }
                         }
                         Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks).await,
-                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks).await,
-                        Some(Command::ReadPathClipboardText { request }) => clipboard.read_text(request, &mut tasks).await,
+                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut resident_tasks).await,
+                        Some(Command::ReadPathClipboardText { request }) => clipboard.read_text(request, &mut resident_tasks).await,
                         Some(Command::PickPath { request, input }) => path_picker.show(request, input, &mut tasks).await,
                         Some(Command::CancelPathPicker { request }) => path_picker.cancel(request),
-                        Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut tasks).await,
-                        Some(Command::CopyCapturedFiles { request, source, cancel }) => clipboard.copy_captured(request, source, cancel, &mut tasks).await,
-                        Some(Command::CutFiles { request, files }) => clipboard.cut_files(request, files, &mut tasks).await,
-                        Some(Command::ReadFileClipboard { request, destination }) => clipboard.read_files(request, destination, &mut tasks).await,
+                        Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut resident_tasks).await,
+                        Some(Command::CopyCapturedFiles { request, source, cancel }) => clipboard.copy_captured(request, source, cancel, &mut resident_tasks).await,
+                        Some(Command::CutFiles { request, files }) => clipboard.cut_files(request, files, &mut resident_tasks).await,
+                        Some(Command::ReadFileClipboard { request, destination }) => clipboard.read_files(request, destination, &mut resident_tasks).await,
                         Some(Command::ShowShellMenu { request, files, owner, position, modifiers, target }) => {
                             shell_menu.show(shell_menu::Input { request, files, owner, position, modifiers, target }, &mut tasks).await;
                         }
@@ -994,7 +1096,7 @@ impl EngineServices {
                             desktop.open_captured_entry(request, (pane, navigation), source, cancel, row, &mut tasks).await;
                         }
                         Some(Command::ReadCapturedFileClipboard { request, source, cancel }) => {
-                            clipboard.read_captured_files(request, source, cancel, &mut tasks).await;
+                            clipboard.read_captured_files(request, source, cancel, &mut resident_tasks).await;
                         }
                         Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks).await,
                         Some(Command::ShowSelectionProperties { request, selection, view, fallback }) => {
@@ -1200,6 +1302,7 @@ impl EngineServices {
                     }
                 }
                 _ = tasks.join_next(), if !tasks.is_empty() => {}
+                _ = resident_tasks.join_next(), if !resident_tasks.is_empty() => {}
             }
         }
 
@@ -1246,8 +1349,25 @@ impl EngineServices {
         checksums.shutdown().await;
         user_commands.shutdown().await;
         tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
+        resident_tasks.abort_all();
+        while !tasks.is_empty() || !resident_tasks.is_empty() {
+            tokio::select! {
+                _ = tasks.join_next(), if !tasks.is_empty() => {}
+                _ = resident_tasks.join_next(), if !resident_tasks.is_empty() => {}
+            }
+        }
         tree_roots::shutdown(snapshots).await;
+        let transient = Handle::current();
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            resident_owner.shutdown(&transient),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("Engine resident worker shutdown failed: {error}"),
+            Err(_) => eprintln!("Engine resident worker shutdown remains unconfirmed"),
+        }
     }
 }
 

@@ -250,6 +250,8 @@ pub struct UserPreferences {
     pub viewer_associations: Arc<crate::ViewerAssociations>,
     pub viewer: crate::ViewerPreferences,
     pub editor: crate::EditorPreferences,
+    /// Accepted filename routing; Options drafts are isolated until successful persistence.
+    pub file_comparators: crate::FileComparatorPreferences,
     pub theme: PreferenceTheme,
     pub density: UiDensity,
     pub windows_shell: WindowsShell,
@@ -310,6 +312,7 @@ impl Default for UserPreferences {
             viewer_associations: Arc::default(),
             viewer: crate::ViewerPreferences::default(),
             editor: crate::EditorPreferences::default(),
+            file_comparators: crate::FileComparatorPreferences::default(),
             theme: PreferenceTheme::default(),
             density: UiDensity::default(),
             windows_shell: WindowsShell::default(),
@@ -372,6 +375,7 @@ impl UserPreferences {
     }
 
     pub fn validate(&self) -> Result<(), FsError> {
+        self.file_comparators.validate().map_err(FsError::from)?;
         ShortcutMap::with_user_commands(&self.shortcuts, &self.user_commands).map_err(
             |message| {
                 FsError::from_io(
@@ -513,4 +517,14 @@ pub trait SettingsService: Send + Sync + 'static {
     fn load_preferences(&self) -> Result<UserPreferences, FsError>;
     /// Publish settings atomically; no truncation of the existing file on failure.
     fn save_preferences(&self, preferences: UserPreferences) -> Result<(), FsError>;
+    /// Load structurally valid raw settings for the serialized backend acceptance worker.
+    /// Comparator pattern semantics are not accepted until that worker compiles changed rules.
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError>;
+    /// Persist with borrowed comparator validation evidence; reject mismatched raw values
+    /// before writing. Production adapters must not recompile unchanged comparator patterns.
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        comparators: crate::ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError>;
 }

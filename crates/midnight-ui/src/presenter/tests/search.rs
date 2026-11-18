@@ -278,10 +278,15 @@ fn checkbox_and_late_saved_filter_apply_to_already_matched_queries() {
         let request = query(&mut p, "al");
         accept(&mut p, &request, result(&request, &[0, 2], 2));
         if load_saved {
-            p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                quick_search_filter: true,
-                ..Default::default()
-            }))));
+            p.apply(Event::PreferencesLoaded(Ok(Box::new(
+                midnight_core::AcceptedPreferences {
+                    preferences: UserPreferences {
+                        quick_search_filter: true,
+                        ..Default::default()
+                    },
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                },
+            ))));
         } else {
             p.change_search_filter(true, &|_| true);
         }

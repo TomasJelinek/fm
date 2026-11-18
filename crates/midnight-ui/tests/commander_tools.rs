@@ -75,21 +75,25 @@ fn alt_history_wraps_without_changing_terminal_or_executing() {
         shell: ShellFlavor::PowerShell,
         locations: vec![],
     });
-    p.borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            windows_shell: WindowsShell::Cmd,
-            command_history: vec![
-                CommandHistoryEntry {
-                    command: "new 文档".into(),
-                    shell: ShellFlavor::PowerShell,
-                },
-                CommandHistoryEntry {
-                    command: "old 👩🏽‍💻".into(),
-                    shell: ShellFlavor::Cmd,
-                },
-            ],
-            ..Default::default()
-        }))));
+    p.borrow_mut().apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences: UserPreferences {
+                windows_shell: WindowsShell::Cmd,
+                command_history: vec![
+                    CommandHistoryEntry {
+                        command: "new 文档".into(),
+                        shell: ShellFlavor::PowerShell,
+                    },
+                    CommandHistoryEntry {
+                        command: "old 👩🏽‍💻".into(),
+                        shell: ShellFlavor::Cmd,
+                    },
+                ],
+                ..Default::default()
+            },
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     refresh(&test.window, &p.borrow());
     test.window.invoke_set_command("draft".into(), 5);
     sent.borrow_mut().clear();

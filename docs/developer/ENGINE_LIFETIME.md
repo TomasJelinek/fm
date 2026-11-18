@@ -40,7 +40,8 @@ comparator builders are separate APIs and are unchanged by this migration.
 
 ## Capacity and ownership
 
-One engine reserves a domain with 324 payload slots and seven reusable waiter tokens:
+As of 17 November 2026, one engine reserves one shared retirement domain with
+330 payload slots and eight reusable waiter tokens:
 
 | Owners | Slots |
 | --- | ---: |
@@ -50,11 +51,14 @@ One engine reserves a domain with 324 payload slots and seven reusable waiter to
 | Copy and mutation service contexts | 2 |
 | Drag state, accepted drop registry and one serial backlog drain | 3 |
 | Engine run, command receiver, shared panel snapshots and shared services | 4 |
+| Shared comparator policy store, guarded from startup | 1 |
+| Accepted comparator policy pins, acquired dynamically under the two comparison credits | 2 |
 | Checksum accepted work | 32 |
 | Checksum manifest saves | 2 |
 | Checksum serialized intake and service context | 2 |
 | Custom Command accepted work and service context | 33 |
-| Desktop editor launches and one serialized intake/rejection | 5 |
+| Captured desktop Open/Edit/external-comparison launches, Properties, and one serialized intake/rejection | 6 |
+| Captured shell menu worker and one serialized intake/rejection | 2 |
 | Watch shared control, one per pane | 2 |
 | Clipboard inbox and one serialized rejection | 2 |
 | File List retained jobs and generated outputs | 12 |
@@ -64,6 +68,21 @@ One engine reserves a domain with 324 payload slots and seven reusable waiter to
 | Shared diagnostic report arena | 1 |
 | Native tree Rename/Metadata captures, sharing the four tree-action permits | 4 |
 | Retained Find View/Edit/Open captures | 16 |
+
+The eight waiter tokens serve Copy, mutations, drag backlog, archive navigation,
+clipboard rejection, checksums, shell-menu intake and desktop intake. They are
+reusable reservation metadata; their payload reservations are included in the
+table. Cloning the shared `RetirementDomain`, including `comparator_policy_pins`,
+creates neither another domain nor another payload slot.
+
+Comparison admission is separately limited to two counter-only session credits.
+Each accepted policy pin reserves one of the two dynamically budgeted payload
+slots in the same retirement domain and retains that same credit through actual
+policy destruction. Cloning a credit does not admit another comparison. These
+two credits are not two additional payload slots. External comparison shares the
+existing four desktop Open/Edit launch permits; its captured pair uses one
+guarded payload owner, not one slot per file. The two policy-pin slots are
+separate from the six desktop capture slots.
 
 Native drag admission uses Copy's existing 32 permits. It does not add another queue.
 A reservation is acquired before accepting owned payloads and remains occupied until
@@ -113,17 +132,22 @@ Checksum jobs retain the same lease from captured input through preparation, que
 and native execution. Their service context follows both actors and native children.
 Custom Commands protect prepared native pins through process admission and launch.
 Startup creates two bounded process trackers: eight shared terminal/editor/Custom
-Command slots and sixteen independent opener slots. Each reserves before native
-launch and adopts its returned child before querying even its ID. They outlive
+Command/external-comparison process slots and sixteen independent opener slots.
+These are child-process admission/tracking limits, separate from the 330 retirement
+payload slots, the six desktop capture slots and the two comparison credits.
+Each tracker reserves before native launch and adopts its returned child before
+querying even its ID. They outlive
 Tokio, retain the existing process permit through observed exit and cleanup, and
 do not kill the child or poll on the shared retirement thread. Waiting failures
 retain the existing slot rather than admitting replacement processes. Failed
 tracking sends and unconsumed native outputs keep the same guarded child.
 
-Captured editor requests use one owner from intake through native execution or
-rejection. The four existing launch permits remain attached through native target
-destruction; a serial refusal can occupy one further retirement slot. Retirement
-failure stays visible instead of being silently treated as a normal refusal.
+Captured desktop requests have a six-slot payload budget: four shared
+Open/Edit/external-comparison launch owners, one Properties owner and one
+serialized intake/rejection owner. Native captures retain their associated
+permits and payload leases through actual destruction. A serial refusal retains
+its existing owner until cleanup is acknowledged. Retirement failure stays
+visible instead of being silently treated as a normal refusal.
 
 Each watch pane shares a guarded control state, including captured mounts retained
 by inline-tree scopes. Native subscriptions remain local to their watch worker;
@@ -261,3 +285,62 @@ covers File List, dynamic network discovery and subsequent service hooks, with
 records the next ownership boundaries.
 [LIFE-01](../IMPLEMENTATION_BACKLOG.md#lifecycle-follow-up-found-on-12-november) remains open.
 The plugin ABI, operation authority, confirmation and checksum policy are unchanged.
+
+## Accepted private resident-worker follow-up
+
+The accepted private resident-worker design is **13 Engine /5 Viewer /2 Compare**
+resident threads, keeping2 async/16 transient blocking. These are planned domains,
+not implemented threads, process measurements or new payload/waiter capacities.
+Preserve worker affinity, distinct external ownership, checked retirement and current
+window/session credits. The later old-scheduler run `production-pool-7e458befac` is genuine production RED.
+With the original2 async/16 blocking threads,13-resident readiness and four windows,
+the prepared-save callback had not entered and the second Compare was incomplete
+at the original20,000ms pressure boundary. Closing two Viewers recovered the same
+prepared save (exactly one callback, coherent raw publication) and the same Compare.
+Strict cleanup and exclusive capture-reader reopen checks completed before the
+intended progress-failure assertion; no owned processes/monitor errors remained.
+All3,941 guarded identities were unchanged; the unconsumed4917→F5 test-fixture
+exception is separately recorded. Raw test time was23.02s. This establishes the
+old-source failure and same-work recovery, not migration GREEN, an unrecoverable
+deadlock or a performance result. The earlier missing-plugin setup failure remains
+historical and distinct. The old-source production-pool attempt `production-pool-27587e6553` reached real
+watch/report and13-nonwindow readiness, then failed Viewer setup because no compatible
+Basic Viewer plugin was installed beside the test executable. The raw test ended in
+0.23s before four-window pressure, the20-second pressure deadline, pre-rescue counters
+or recovery. Cleanup/exclusive-open checks preceded the failed outcome assertion;
+remainingOwned[] and source/harness identities were unchanged. This is a setup
+failure, not a production-starvation reproduction or a progress pass. Production
+implementation promotion stays held.
+The catalog-only host constructor is canonical; the old scheduler and dependency
+pins are unchanged. Its six selected catalog/startup checks actually recorded
+**5 passes /1 fixture-precondition failure**: constructing a dot alias had already
+normalized the path, so the test failed before the product validator. The exact
+raw-OsString test-only repair is canonical `f5d09b3b…`; replay is pending. Root's
+44,433-byte `eb391200…` consumer remains canonical with unchanged registration
+parent `e3a869…`. The later genuine pressure RED exercised qualified catalogs through this constructor;
+the exact F5 alias test replay and migrated-consumer acceptance remain open. The
+prior missing-plugin setup failure is a separate historical attempt.
+
+Archived private common-worker round-two QA passed **13 default-feature-off tests**
+and **24 resident-feature-on tests**. The latter follows exactly three unit-channel
+type annotations (18 test-only bytes); production `resident.rs` remains
+`60908d11119f…`. Retain the original feature-on test-build E0282 failure separately.
+These are isolated immutable round-two snapshots, not final round-four, migrated
+consumer, native, performance or production qualification. In particular, the
+known repeated-panic-retention finding is not closed by these passes.
+The faithful native fixture4/0 is separate and cannot qualify this production repair.
+
+The newer immutable resident common round-four checkpoint `6c04f591…` passed
+**29 tests /0 failures**, with13 default tests filtered out rather than rerun.
+Production source is `31178fbd…`, tests `fb306359…`; raw runtime was0.20s and
+compilation completed in4.05s with no warnings. This is separate from archived
+round-two13/24 evidence. It does not qualify Engine/Viewer/Compare integration,
+native cleanup, performance or the full resident migration.
+
+The Architect accepted the Engine's additional200ms pool-exit observation only
+after existing stop/abort controls and actual resident-ticket drain, followed by
+tree-root shutdown. It stays inside Explorer's original shared absolute2,500ms
+deadline and cannot reset/extend it or shorten actor observation. Expiry means
+unconfirmed retirement and detaches the checked waiter; it grants no cleanup or
+resource credit. The original supplied transient runtime stays time-enabled and
+driven. This is an accepted private contract, not integration/runtime evidence.

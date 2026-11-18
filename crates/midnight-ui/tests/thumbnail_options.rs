@@ -49,10 +49,15 @@ fn archive_checkbox_defaults_on_hides_resident_pixels_and_supports_cancel_ok_and
     );
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            panel_view_modes: [PanelViewMode::Thumbnails; 2],
-            ..Default::default()
-        }))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    panel_view_modes: [PanelViewMode::Thumbnails; 2],
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     let navigation = sent
         .borrow()
         .iter()
@@ -234,7 +239,7 @@ fn archive_checkbox_defaults_on_hides_resident_pixels_and_supports_cancel_ok_and
     assert!(!saves[0].1.thumbnails_network);
     presenter.borrow_mut().apply(Event::PreferencesSaved {
         revision: saves[0].0,
-        result: Ok(()),
+        result: Ok(midnight_core::FileComparatorSnapshot::default()),
     });
     refresh(&ui.window, &presenter.borrow());
     ui.draw();
@@ -285,11 +290,16 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
     );
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            panel_view_modes: [PanelViewMode::Thumbnails; 2],
-            thumbnails_network: true,
-            ..Default::default()
-        }))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    panel_view_modes: [PanelViewMode::Thumbnails; 2],
+                    thumbnails_network: true,
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     let navigation = sent
         .borrow()
         .iter()
@@ -412,7 +422,7 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
     assert_eq!(saved[0].1, 256);
     presenter.borrow_mut().apply(Event::PreferencesSaved {
         revision: saved[0].0,
-        result: Ok(()),
+        result: Ok(midnight_core::FileComparatorSnapshot::default()),
     });
     refresh(&ui.window, &presenter.borrow());
     ui.draw();

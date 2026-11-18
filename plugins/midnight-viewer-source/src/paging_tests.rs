@@ -1,4 +1,5 @@
 use super::*;
+use crate::checkpoints::{BATCH_HOT, MAX_RECORDS};
 use crate::{decode::Encoding, plugin::Metadata, positions};
 use std::sync::{Mutex, atomic::AtomicBool};
 
@@ -14,18 +15,26 @@ fn staging_keeps_the_latest_states_in_a_fixed_memory_budget() {
     let state = comment_state();
     for offset in 1..=32769 {
         batch.push((offset, state));
-        assert!(batch.len < MAX_CHECKPOINTS);
+        assert!(batch.retained_len() < MAX_RECORDS);
     }
-    assert_eq!(
-        batch.iter().collect::<Vec<_>>(),
-        (32515..=32769).map(|at| (at, state)).collect::<Vec<_>>()
+    let retained = batch.iter().collect::<Vec<_>>();
+    assert!(
+        retained.ends_with(
+            &(32770 - BATCH_HOT as u64..=32769)
+                .map(|at| (at, state))
+                .collect::<Vec<_>>()
+        )
+    );
+    assert!(
+        retained.iter().any(|(at, _)| *at <= 4096),
+        "keep distributed early coverage too"
     );
     assert!(size_of::<CheckpointBatch>() <= 8192);
     println!(
         "checkpoint_state_bytes={} staging_bytes={} staging_slots={}",
         size_of::<State>(),
         size_of::<CheckpointBatch>(),
-        MAX_CHECKPOINTS - 1
+        batch.retained_len()
     );
 }
 
@@ -35,28 +44,28 @@ fn live_cache_is_bounded_before_insertion_and_keeps_the_bom() {
     hints.initialize("", 3);
     for offset in 4..=32769 {
         hints.insert_checkpoint(offset, State::default());
-        assert!(hints.checkpoints.len() <= MAX_CHECKPOINTS);
+        assert!(hints.checkpoints.retained_len() <= MAX_RECORDS);
     }
-    let expected: Vec<_> = std::iter::once(3).chain(32515..=32769).collect();
-    assert_eq!(
-        hints.checkpoints.keys().copied().collect::<Vec<_>>(),
-        expected
-    );
+    assert_eq!(hints.checkpoints.get(&3), Some(&State::default()));
+    assert_eq!(hints.checkpoints.nearest(16390).unwrap().0, 16387);
+    assert_eq!(hints.checkpoints.nearest(32769).unwrap().0, 32769);
 
-    // Revisited older lines cannot displace the retained latest coverage.
+    // Revisited older lines retain their exact state without losing the newest point.
     hints.insert_checkpoint(4, comment_state());
-    assert_eq!(
-        hints.checkpoints.keys().copied().collect::<Vec<_>>(),
-        expected
-    );
+    assert_eq!(hints.checkpoints.get(&4), Some(&comment_state()));
+    assert!(hints.checkpoints.get(&32769).is_some());
+    assert!(hints.checkpoints.retained_len() <= MAX_RECORDS);
     // Updating an existing state must not evict an unrelated checkpoint.
     hints.insert_checkpoint(32769, comment_state());
-    assert_eq!(hints.checkpoints[&32769], comment_state());
+    let records = hints.checkpoints.retained_len();
+    assert_eq!(hints.checkpoints.get(&32769), Some(&comment_state()));
+    hints.insert_checkpoint(32769, comment_state());
     assert_eq!(
-        hints.checkpoints.keys().copied().collect::<Vec<_>>(),
-        expected
+        hints.checkpoints.retained_len(),
+        records,
+        "updating must not allocate/evict"
     );
-    assert_eq!(hints.checkpoints[&3], State::default());
+    assert_eq!(hints.checkpoints.get(&3), Some(&State::default()));
 }
 
 #[test]
@@ -66,7 +75,51 @@ fn eviction_does_not_expand_the_replay_horizon_or_overflow_u64() {
     for offset in 4..=70000 {
         hints.insert_checkpoint(offset, State::default());
     }
-    let session = Session {
+    let session = session(hints);
+    for (anchor, expected) in [
+        (3, 3),
+        (32771, 32771),
+        (32772, 32771),
+        (70000, 70000),
+        (u64::MAX, u64::MAX - 4),
+    ] {
+        let request = Viewport {
+            source_anchor: anchor,
+            backwards: false,
+            max_bytes: 1,
+            max_lines: 1,
+        };
+        let ReadPlan {
+            offset,
+            count,
+            anchor: selected,
+            ..
+        } = plan(&session, &request);
+        assert_eq!(offset, expected, "anchor {anchor}");
+        assert_eq!(selected, anchor);
+        assert!(count <= 65536);
+        assert!(offset.checked_add(u64::from(count)).is_some());
+    }
+}
+
+#[test]
+fn uncached_prefix_replay_still_stops_at_the_exact_32k_horizon() {
+    let mut hints = Hints::new("dense.cpp", MODE_SOURCE);
+    hints.initialize("", 3);
+    let session = session(hints);
+    for (anchor, expected) in [(32771, 3), (32772, 32768)] {
+        let request = Viewport {
+            source_anchor: anchor,
+            backwards: false,
+            max_bytes: 1,
+            max_lines: 1,
+        };
+        assert_eq!(plan(&session, &request).offset, expected);
+    }
+}
+
+fn session(hints: Hints) -> Session {
+    Session {
         reader: 1,
         revision: 3,
         length: None,
@@ -78,24 +131,6 @@ fn eviction_does_not_expand_the_replay_horizon_or_overflow_u64() {
         }),
         hints: Mutex::new(hints),
         positions: Mutex::new(positions::Index::default()),
-    };
-    for (anchor, expected) in [
-        (3, 3),
-        (32771, 3),
-        (32772, 32768),
-        (70000, 70000),
-        (u64::MAX, u64::MAX - 4),
-    ] {
-        let request = Viewport {
-            source_anchor: anchor,
-            backwards: false,
-            max_bytes: 1,
-            max_lines: 1,
-        };
-        let (offset, count, selected) = plan(&session, &request);
-        assert_eq!(offset, expected, "anchor {anchor}");
-        assert_eq!(selected, anchor);
-        assert!(count <= 65536);
-        assert!(offset.checked_add(u64::from(count)).is_some());
+        preparation: Mutex::new(preparation::Index::default()),
     }
 }

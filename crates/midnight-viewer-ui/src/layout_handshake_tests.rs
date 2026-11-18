@@ -1,3 +1,4 @@
+use super::image_presentation_tests::present as present_outputs;
 use super::*;
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ struct Fixture {
     inputs: Rc<RefCell<Vec<ViewerInput>>>,
     accepting: Rc<Cell<bool>>,
     results: Rc<RefCell<Vec<Result<(), String>>>>,
-    _runtime: tokio::runtime::Runtime,
+    _runtime: image_presentation_tests::TestRuntime,
 }
 
 impl Fixture {
@@ -372,11 +373,13 @@ fn layout_metadata_cannot_grant_web_permissions_or_accept_content_input_before_a
             network: true,
             scripts: true,
         },
+        policy_change_allowed: true,
         zoom: 1.0,
     };
 
     fixture.deliver(vec![policy()]);
     assert_eq!(fixture.open.frame.get(), 0);
+    assert!(!fixture.open.window.get_web_policy_change_allowed());
     assert!(!fixture.open.window.get_web_network());
     assert!(!fixture.open.window.get_web_scripts());
     fixture.assert_no_opening_success();
@@ -394,6 +397,7 @@ fn layout_metadata_cannot_grant_web_permissions_or_accept_content_input_before_a
 
     fixture.deliver(vec![frame(8, 1, VIEWER_MODE_HTML), policy()]);
     assert_eq!(fixture.open.frame.get(), 1);
+    assert!(fixture.open.window.get_web_policy_change_allowed());
     assert!(fixture.open.window.get_web_network());
     assert!(fixture.open.window.get_web_scripts());
     assert!(fixture.open.enqueue(ViewerInput::Web {
@@ -407,6 +411,130 @@ fn layout_metadata_cannot_grant_web_permissions_or_accept_content_input_before_a
         }] if text == "ready"),
         "the matching frame releases the content gate"
     );
+}
+
+fn web_state(generation: u64, policy_change_allowed: bool) -> ViewerOutput {
+    ViewerOutput::WebState {
+        generation,
+        policy: viewer_web::Policy {
+            network: false,
+            scripts: false,
+        },
+        policy_change_allowed,
+        zoom: 1.25,
+    }
+}
+
+#[test]
+fn user_choice_web_state_admits_policy_callback_and_keeps_context_fence() {
+    let fixture = Fixture::new();
+    assert!(!fixture.open.window.get_web_policy_change_allowed());
+    fixture.select(41, VIEWER_MODE_HTML, 9);
+    fixture.take_ack(41);
+    fixture.deliver(vec![frame(9, 1, VIEWER_MODE_HTML), web_state(9, true)]);
+    assert!(fixture.open.window.get_web_policy_change_allowed());
+    assert!(!fixture.open.window.get_web_network());
+    assert!(!fixture.open.window.get_web_scripts());
+    assert_eq!(fixture.open.window.get_zoom_percent(), 125.0);
+    assert_eq!(fixture.open.window.get_surface().size().width, 2);
+
+    fixture.open.window.invoke_web_policy(true, true);
+    assert!(matches!(
+        fixture.take_inputs().as_slice(),
+        [ViewerInput::Web {
+            frame: 1,
+            input: viewer_web::CommandKind::Policy(viewer_web::Policy {
+                network: true,
+                scripts: true,
+            }),
+        }]
+    ));
+    assert!(fixture.open.window.get_web_network());
+    assert!(fixture.open.window.get_web_scripts());
+    assert_eq!(fixture.open.window.get_surface().size().width, 0);
+    assert!(!fixture.open.text_position.borrow().context_available());
+
+    fixture.deliver(vec![web_state(9, false)]);
+    assert!(fixture.open.window.get_web_policy_change_allowed());
+    assert!(fixture.open.window.get_web_network());
+    assert!(fixture.open.window.get_web_scripts());
+    assert!(fixture.take_inputs().is_empty());
+}
+
+#[test]
+fn offline_web_state_refuses_policy_callbacks_without_mutating_content() {
+    let fixture = Fixture::new();
+    fixture.select(42, VIEWER_MODE_HTML, 10);
+    fixture.take_ack(42);
+    fixture.deliver(vec![frame(10, 1, VIEWER_MODE_HTML), web_state(10, false)]);
+    assert!(!fixture.open.window.get_web_policy_change_allowed());
+    assert_eq!(fixture.open.window.get_zoom_percent(), 125.0);
+    let surface = fixture.open.window.get_surface().size();
+    assert_eq!(surface.width, 2);
+    let context = fixture.open.window.get_position_context();
+    let status = fixture.open.window.get_status();
+
+    for (network, scripts) in [(true, true), (false, false), (false, true)] {
+        fixture.open.window.invoke_web_policy(network, scripts);
+        assert!(!fixture.open.window.get_web_network());
+        assert!(!fixture.open.window.get_web_scripts());
+        assert_eq!(fixture.open.window.get_surface().size(), surface);
+        assert_eq!(fixture.open.window.get_position_context(), context);
+        assert_eq!(fixture.open.window.get_status(), status);
+        assert!(fixture.open.text_position.borrow().context_available());
+        assert!(fixture.take_inputs().is_empty());
+    }
+    assert!(!fixture.open.enqueue(ViewerInput::Web {
+        frame: 1,
+        input: viewer_web::CommandKind::Policy(viewer_web::Policy {
+            network: false,
+            scripts: false,
+        }),
+    }));
+    assert!(fixture.take_inputs().is_empty());
+
+    fixture.open.window.invoke_image_command(2);
+    assert!(matches!(
+        fixture.take_inputs().as_slice(),
+        [ViewerInput::Web {
+            frame: 1,
+            input: viewer_web::CommandKind::Zoom(zoom),
+        }] if *zoom == 1.5625
+    ));
+    assert_eq!(fixture.open.window.get_zoom_percent(), 156.25);
+    assert_eq!(fixture.open.window.get_surface().size(), surface);
+    assert!(fixture.open.text_position.borrow().context_available());
+}
+
+#[test]
+fn web_policy_permission_resets_for_layout_and_rejects_stale_or_awaiting_state() {
+    let fixture = Fixture::new();
+    fixture.select(43, VIEWER_MODE_HTML, 10);
+    fixture.take_ack(43);
+    fixture.deliver(vec![frame(10, 1, VIEWER_MODE_HTML), web_state(10, true)]);
+    assert!(fixture.open.window.get_web_policy_change_allowed());
+
+    fixture.select(44, VIEWER_MODE_HTML, 11);
+    fixture.take_ack(44);
+    assert!(!fixture.open.window.get_web_policy_change_allowed());
+    assert!(fixture.open.text_position.borrow().context_available());
+    assert!(fixture.open.layout.borrow().awaiting_frame);
+    fixture.deliver(vec![web_state(11, true)]);
+    assert!(!fixture.open.window.get_web_policy_change_allowed());
+    fixture.open.window.invoke_web_policy(true, true);
+    assert!(fixture.take_inputs().is_empty());
+    assert_eq!(fixture.open.window.get_surface().size().width, 2);
+
+    fixture.deliver(vec![frame(11, 2, VIEWER_MODE_HTML)]);
+    assert!(!fixture.open.layout.borrow().awaiting_frame);
+    assert!(!fixture.open.window.get_web_policy_change_allowed());
+    fixture.deliver(vec![web_state(10, true)]);
+    assert!(!fixture.open.window.get_web_policy_change_allowed());
+    fixture.deliver(vec![web_state(11, true)]);
+    assert!(fixture.open.window.get_web_policy_change_allowed());
+    fixture.deliver(vec![web_state(10, false)]);
+    assert!(fixture.open.window.get_web_policy_change_allowed());
+    assert!(fixture.take_inputs().is_empty());
 }
 
 #[test]
@@ -424,6 +552,7 @@ fn image_failure_below_selected_layout_generation_keeps_current_route_state() {
         fitted: false,
         page: 0,
         page_count: 1,
+        document_layout: None,
     };
     let ViewerOutput::Frame(mut previous) = frame(1, 1, VIEWER_MODE_IMAGE) else {
         unreachable!()
@@ -641,6 +770,7 @@ fn tiled_image_frame(generation: u64, revision: u64, surface: u64) -> ViewerOutp
         fitted: false,
         page: 0,
         page_count: 1,
+        document_layout: None,
     });
     value.pixels = Arc::from([]);
     value.tiles = Some(

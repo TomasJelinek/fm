@@ -25,6 +25,8 @@ pub const REQUEST_CLOSE: u32 = 4;
 pub const REQUEST_SERVICE_REPLY: u32 = 5;
 /// Optional text/source coordinate lookup. Older plugins may return UNSUPPORTED.
 pub const REQUEST_LOCATE: u32 = 6;
+/// Optional bounded source syntax preparation. Older plugins may return UNSUPPORTED.
+pub const REQUEST_PREPARE_SOURCE: u32 = 7;
 pub const EVENT_OPENED: u32 = 1;
 pub const EVENT_TEXT_PAGE: u32 = 2;
 pub const EVENT_BINARY_PAGE: u32 = 3;
@@ -33,10 +35,14 @@ pub const EVENT_SEARCH_MATCH: u32 = 5;
 pub const EVENT_PROGRESS: u32 = 6;
 /// Sent only in response to an accepted REQUEST_LOCATE.
 pub const EVENT_TEXT_POSITION: u32 = 7;
+/// Provisional result of an accepted REQUEST_PREPARE_SOURCE until Completed.
+pub const EVENT_SOURCE_PREPARED: u32 = 8;
 pub const EVENT_COMPLETED: u32 = 100;
 pub const EVENT_CANCELLED: u32 = 101;
 pub const EVENT_FAILED: u32 = 102;
 pub const EVENT_QUIESCENT: u32 = 103;
+/// Advisory source syntax progress; readiness requires SourcePrepared and Completed.
+pub const PROGRESS_SOURCE_SYNTAX: u16 = 2;
 pub const SERVICE_READ_AT: u32 = 1001;
 pub const SERVICE_CLOSE_READER: u32 = 1002;
 pub const WORK_CPU: u32 = 1;

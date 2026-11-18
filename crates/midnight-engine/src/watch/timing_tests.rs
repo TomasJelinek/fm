@@ -4,7 +4,9 @@ async fn production_timing() -> Timing {
     let files = Arc::new(Files::default());
     let (sender, _events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
+    let (_owner, resident) = midnight_work_budget::resident::Owner::start("watch-test", 2).unwrap();
     let controller = Controller::new(
+        &resident,
         Retirement::testing(),
         TaskLifetime::testing(files.clone()),
         files,

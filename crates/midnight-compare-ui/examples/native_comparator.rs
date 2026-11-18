@@ -14,15 +14,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "../tests/support/resident.rs"]
+mod resident;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let paths: Vec<_> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     if paths.len() != 3 {
         return Err("usage: native_comparator left right output-directory".into());
     }
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = resident::TestRuntime::new(tokio::runtime::Runtime::new()?);
     let manager = Rc::new(ComparatorWindows::new(
-        midnight_compare_engine::Service::new(runtime.handle().clone()),
+        midnight_compare_engine::Service::new(runtime.handle().clone(), runtime.spawner()),
     ));
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     let window = manager.open(
         FileCompareLaunch {
             sources: paths[..2]
@@ -31,6 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(FileCompareSource::Focused)
                 .collect(),
             disabled_plugins: Arc::from([]),
+            comparators: comparator_snapshot.preferences.clone(),
+            comparator_policy: comparator_snapshot.id,
         },
         ViewerAppearance {
             family: "Consolas".into(),
@@ -176,9 +182,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
     );
-    slint::run_event_loop()?;
+    let event_loop_result = slint::run_event_loop();
     timer.stop();
     manager.close_all();
+    event_loop_result?;
     for write in writes.borrow_mut().drain(..) {
         runtime.block_on(write)??;
     }

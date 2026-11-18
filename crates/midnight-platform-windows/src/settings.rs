@@ -1,6 +1,9 @@
 use crate::WindowsFileSystem;
-use midnight_core::{FsError, SettingsService, UserPreferences};
-use midnight_platform_common::settings::{encode_preferences, publish_atomic, read_preferences};
+use midnight_core::{ComparatorValidationProof, FsError, SettingsService, UserPreferences};
+use midnight_platform_common::settings::{
+    encode_preferences, encode_preferences_prepared, publish_atomic, read_preferences,
+    read_preferences_for_acceptance,
+};
 use std::{
     fs::{self, File, OpenOptions},
     io,
@@ -68,6 +71,13 @@ fn inspect_existing(path: &Path) -> io::Result<Option<fs::Metadata>> {
 }
 
 fn load_from(path: &Path) -> io::Result<UserPreferences> {
+    load_from_with(path, read_preferences)
+}
+
+fn load_from_with(
+    path: &Path,
+    decode: fn(File) -> io::Result<UserPreferences>,
+) -> io::Result<UserPreferences> {
     if inspect_existing(path)?.is_none() {
         return Ok(UserPreferences::default());
     }
@@ -90,7 +100,7 @@ fn load_from(path: &Path) -> io::Result<UserPreferences> {
             "preferences cannot be a device or pipe",
         ));
     }
-    read_preferences(file)
+    decode(file)
 }
 
 fn load_path(path: &Path) -> io::Result<PathBuf> {
@@ -134,6 +144,10 @@ fn create_exclusive(path: &Path) -> io::Result<File> {
 }
 
 fn save_to(path: &Path, preferences: UserPreferences) -> io::Result<()> {
+    save_encoded(path, &encode_preferences(preferences)?)
+}
+
+fn save_encoded(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -141,8 +155,7 @@ fn save_to(path: &Path, preferences: UserPreferences) -> io::Result<()> {
         )
     })?;
     fs::create_dir_all(parent)?;
-    let bytes = encode_preferences(preferences)?;
-    publish_atomic(path, &bytes, create_exclusive, |path| {
+    publish_atomic(path, bytes, create_exclusive, |path| {
         inspect_existing(path).map(|_| ())
     })
 }
@@ -158,10 +171,30 @@ impl SettingsService for WindowsFileSystem {
             .map_err(|error| FsError::from_io("resolve preferences", &path, error))?;
         load_from(&path).map_err(|error| FsError::from_io("load preferences", &path, error))
     }
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        let path = native_preferences_path()
+            .map_err(|error| FsError::from_io("resolve preferences", Path::new(""), error))?;
+        let path = load_path(&path)
+            .map_err(|error| FsError::from_io("resolve preferences", &path, error))?;
+        load_from_with(&path, read_preferences_for_acceptance)
+            .map_err(|error| FsError::from_io("load preferences", &path, error))
+    }
     fn save_preferences(&self, preferences: UserPreferences) -> Result<(), FsError> {
         let path = native_preferences_path()
             .map_err(|error| FsError::from_io("resolve preferences", Path::new(""), error))?;
         save_to(&path, preferences)
+            .map_err(|error| FsError::from_io("save preferences", &path, error))
+    }
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        proof: ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        let path = native_preferences_path()
+            .map_err(|error| FsError::from_io("resolve preferences", Path::new(""), error))?;
+        let bytes = encode_preferences_prepared(preferences, proof)
+            .map_err(|error| FsError::from_io("save preferences", &path, error))?;
+        save_encoded(&path, &bytes)
             .map_err(|error| FsError::from_io("save preferences", &path, error))
     }
 }

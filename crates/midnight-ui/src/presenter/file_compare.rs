@@ -12,6 +12,15 @@ impl Presenter {
             .startup_disabled
             .clone()
             .ok_or("Viewer preferences are still loading.")?;
+        let comparators = self
+            .comparators
+            .accepted
+            .as_ref()
+            .ok_or(if self.preferences.loaded {
+                "Comparator settings are unavailable."
+            } else {
+                "Comparator settings are still loading."
+            })?;
         let active_pane = &self.panes[active.index()];
         let panes: &[PaneId] = if compare_selection_len(active_pane) == 2 {
             std::slice::from_ref(&active)
@@ -65,6 +74,8 @@ impl Presenter {
         Ok(FileCompareLaunch {
             sources,
             disabled_plugins,
+            comparators: comparators.preferences.clone(),
+            comparator_policy: comparators.id,
         })
     }
 }

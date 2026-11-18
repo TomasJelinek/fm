@@ -144,7 +144,10 @@ impl Harness {
         }
         preferences.validate().unwrap();
         presenter.borrow_mut().apply_with_sender(
-            Event::PreferencesLoaded(Ok(Box::new(preferences))),
+            Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+                preferences,
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            }))),
             send.as_ref(),
         );
         presenter.borrow_mut().apply(Event::DesktopContext {

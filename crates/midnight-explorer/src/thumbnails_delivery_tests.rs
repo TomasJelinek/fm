@@ -1,8 +1,8 @@
 //! Exercise the bridge's retry trigger against the real retained-pixel budget.
 use super::*;
 use midnight_core::{
-    Command, DirectoryIndex, Entry, EntryId, EntryKind, Event, PaneId, PanelViewMode,
-    UserPreferences,
+    AcceptedPreferences, Command, DirectoryIndex, Entry, EntryId, EntryKind, Event,
+    FileComparatorSnapshot, PaneId, PanelViewMode, UserPreferences,
 };
 use std::sync::Arc;
 
@@ -16,13 +16,18 @@ fn rejected_upgrade_waits_for_changed_view_then_retries_with_its_retained_covera
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            thumbnails_enabled: true,
-            thumbnails_network: true,
-            panel_view_modes: [PanelViewMode::Thumbnails; 2],
-            thumbnail_size: 256,
-            ..UserPreferences::default()
-        }))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            AcceptedPreferences {
+                preferences: UserPreferences {
+                    thumbnails_enabled: true,
+                    thumbnails_network: true,
+                    panel_view_modes: [PanelViewMode::Thumbnails; 2],
+                    thumbnail_size: 256,
+                    ..UserPreferences::default()
+                },
+                comparators: FileComparatorSnapshot::default(),
+            },
+        ))));
     let navigation = Rc::new(Cell::new(None));
     let captured = navigation.clone();
     midnight_ui::install(

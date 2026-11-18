@@ -486,7 +486,12 @@ fn presenter(test: &ui::TestUi, values: UserPreferences) -> Rc<RefCell<Presenter
     });
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(values.into())));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: values,
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     refresh(&test.window, &presenter.borrow());
     presenter
 }

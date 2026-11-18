@@ -7,9 +7,12 @@ use std::{
 };
 
 fn launch(sources: Vec<FileCompareSource>) -> FileCompareLaunch {
+    let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     FileCompareLaunch {
         sources,
         disabled_plugins: Arc::from([]),
+        comparators: comparator_snapshot.preferences.clone(),
+        comparator_policy: comparator_snapshot.id,
     }
 }
 
@@ -120,7 +123,8 @@ fn manual_choice_retries_invalid_paths_and_compares_real_unicode_files_without_m
         std::fs::write(&paths[side], bytes[side]).unwrap();
     }
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::new(runtime.handle().clone());
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service = Service::new(runtime.handle().clone(), spawner);
     let session = open(
         &service,
         launch(vec![
@@ -149,11 +153,29 @@ fn manual_choice_retries_invalid_paths_and_compares_real_unicode_files_without_m
         },
         42
     )));
+    let appearance_revision = session
+        .restore_palette(&crate::appearance_tests::changed())
+        .unwrap();
     assert!(session.send(Input::Compare(paths.clone())));
     let (frame, names) = match next_result(&session) {
-        Output::Frame { frame, names } => (frame, names),
+        Output::Frame {
+            frame,
+            names,
+            appearance_revision: painted_revision,
+        } => {
+            assert_eq!(painted_revision, appearance_revision);
+            assert!(
+                frame
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .contains(&[12, 82, 162, 255])
+            );
+            (frame, names)
+        }
         Output::ChooseFiles(choice) => panic!("Expected text comparison: {choice:?}"),
         Output::Status(status) => panic!("Expected text comparison: {status}"),
+        Output::ExternalStarted { .. } => panic!("Built-in fixture launched an external program"),
     };
     assert!(frame.accessible_text.contains("old 🐈") && frame.accessible_text.contains("new 🐈"));
     assert_eq!(
@@ -168,6 +190,48 @@ fn manual_choice_retries_invalid_paths_and_compares_real_unicode_files_without_m
     for side in 0..2 {
         assert_eq!(std::fs::read(&paths[side]).unwrap(), bytes[side].as_bytes());
     }
+}
+
+#[test]
+fn palette_update_in_the_chooser_replays_neither_browse_nor_chooser_output() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (calls, called) = mpsc::channel();
+    let (done, _finished) = mpsc::channel();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service =
+        Service::new(runtime.handle().clone(), spawner).with_path_picker(Arc::new(FakePicker {
+            calls,
+            done,
+            result: None,
+            wait_for_cancel: false,
+        }));
+    let session = open(&service, launch(Vec::new()));
+    let draft = choice(&session).paths;
+    assert!(session.send(Input::Browse {
+        side: 0,
+        paths: draft.clone(),
+        owner: PathPickerOwner::None,
+    }));
+    assert_eq!(choice(&session).paths, draft);
+    let (_, picker_thread) = called.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    assert_eq!(
+        session
+            .restore_palette(&crate::appearance_tests::changed())
+            .unwrap(),
+        1
+    );
+    let (entered, reached) = mpsc::sync_channel(1);
+    assert!(session.send(Input::ChooserBarrier(entered)));
+    assert_eq!(
+        reached.recv_timeout(Duration::from_secs(5)).unwrap(),
+        picker_thread
+    );
+    assert!(
+        session.mailbox.take().is_none(),
+        "palette update replayed the chooser"
+    );
+    assert!(matches!(called.try_recv(), Err(mpsc::TryRecvError::Empty)));
 }
 
 struct FakePicker {
@@ -212,13 +276,15 @@ fn browse_is_off_thread_preserves_other_side_and_cancelled_browse_keeps_fields()
             let (calls, called) = mpsc::channel();
             let (done, finished) = mpsc::channel();
             let runtime = tokio::runtime::Runtime::new().unwrap();
-            let service =
-                Service::new(runtime.handle().clone()).with_path_picker(Arc::new(FakePicker {
+            let (_owner, spawner) = crate::resident_test_support::workers();
+            let service = Service::new(runtime.handle().clone(), spawner).with_path_picker(
+                Arc::new(FakePicker {
                     calls,
                     done,
                     result: result.clone(),
                     wait_for_cancel: false,
-                }));
+                }),
+            );
             let session = open(&service, launch(Vec::new()));
             choice(&session);
             let owner = PathPickerOwner::X11(123);
@@ -250,12 +316,14 @@ fn closing_comparator_cancels_a_running_native_picker() {
     let (calls, called) = mpsc::channel();
     let (done, finished) = mpsc::channel();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let service = Service::new(runtime.handle().clone()).with_path_picker(Arc::new(FakePicker {
-        calls,
-        done,
-        result: None,
-        wait_for_cancel: true,
-    }));
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let service =
+        Service::new(runtime.handle().clone(), spawner).with_path_picker(Arc::new(FakePicker {
+            calls,
+            done,
+            result: None,
+            wait_for_cancel: true,
+        }));
     let session = open(&service, launch(Vec::new()));
     choice(&session);
     assert!(session.send(Input::Browse {

@@ -22,6 +22,10 @@ use std::{
 type Payload = Box<dyn Send + 'static>;
 type Worker = Box<dyn FnOnce() + Send + 'static>;
 
+#[path = "retirement_checked.rs"]
+mod checked;
+pub(crate) use checked::{CheckedFinish, CheckedPayload, CheckedRelease, CheckedWorkerOwned};
+
 /// Creating/reserving this domain takes no provider-bearing payload.
 #[derive(Clone)]
 pub(crate) struct RetirementDomain {
@@ -50,9 +54,12 @@ struct WaiterCell {
     waker: Mutex<Option<Waker>>,
     notified: AtomicBool,
 }
-struct Job {
-    payload: Payload,
-    completion: Option<Arc<Completion>>,
+enum Job {
+    Ordinary {
+        payload: Payload,
+        completion: Option<Arc<Completion>>,
+    },
+    Checked(Box<dyn checked::CheckedJob>),
 }
 
 /// An already-reserved slot. Dropping an unused lease returns just its slot.
@@ -306,7 +313,7 @@ impl RetirementLease {
     fn submit(mut self, payload: Payload, completion: Option<Arc<Completion>>) {
         let slot = self.slot.take().expect("lease is consumed once");
         let shared = &self.control.shared;
-        let job = Job {
+        let job = Job::Ordinary {
             payload,
             completion,
         };
@@ -439,9 +446,19 @@ fn run(shared: Arc<Shared>) {
 }
 
 fn destroy(shared: &Shared, slot: usize, job: Job) {
-    let outcome = catch_unwind(AssertUnwindSafe(|| drop(job.payload))).map_err(|_| RetirementPanic);
+    let Job::Ordinary {
+        payload,
+        completion,
+    } = job
+    else {
+        if let Job::Checked(job) = job {
+            checked::destroy(shared, slot, job);
+        }
+        return;
+    };
+    let outcome = catch_unwind(AssertUnwindSafe(|| drop(payload))).map_err(|_| RetirementPanic);
     release(shared, slot);
-    if let Some(completion) = job.completion {
+    if let Some(completion) = completion {
         completion.finish(outcome);
     }
 }
@@ -475,3 +492,7 @@ mod tests;
 #[cfg(test)]
 #[path = "retirement_nowait_tests.rs"]
 mod nowait_tests;
+
+#[cfg(test)]
+#[path = "retirement_checked_tests.rs"]
+mod checked_tests;

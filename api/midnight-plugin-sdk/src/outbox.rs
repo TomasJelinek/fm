@@ -133,7 +133,7 @@ impl Outbox {
         if self.ordinary >= MAX_ORDINARY {
             return Err((QueueError::Full, output));
         }
-        if !(abi::EVENT_OPENED..=abi::EVENT_TEXT_POSITION).contains(&output.kind)
+        if !(abi::EVENT_OPENED..=abi::EVENT_SOURCE_PREPARED).contains(&output.kind)
             || output.payload.len() > wire::MAX_MESSAGE_BYTES
             || output
                 .content
@@ -357,6 +357,83 @@ mod tests {
         })
         .unwrap();
         assert!(outbox.emit(ticket, output).is_ok());
+    }
+
+    fn source_prepared() -> Output {
+        Output {
+            kind: 8,
+            payload: vec![0xa3, 0x00, 0x09, 0x01, 0x17, 0x02, 0xf5].into_boxed_slice(),
+            content: None,
+        }
+    }
+
+    #[test]
+    fn source_preparation_result_precedes_terminal_and_keeps_its_buffer_owned() {
+        let mut outbox = outbox();
+        let ticket = outbox.begin(origin(8)).unwrap();
+        outbox.emit(ticket, source_prepared()).unwrap();
+        outbox
+            .finish(ticket, abi::EVENT_COMPLETED, Box::new([]))
+            .unwrap();
+        assert_eq!(
+            outbox.emit(ticket, source_prepared()).unwrap_err().0,
+            QueueError::Invalid
+        );
+        let result = outbox.drain_one().unwrap().unwrap();
+        assert_eq!(result.kind, 8);
+        assert_eq!(result.request_id, 8);
+        assert_eq!(result.session, 7);
+        assert_eq!(result.generation, 1);
+        assert_eq!(result.flags, 0);
+        assert_eq!(result.content.id, 0);
+        assert_eq!(result.content.bytes.len, 0);
+        let completed = outbox.drain_one().unwrap().unwrap();
+        assert_eq!(completed.kind, abi::EVENT_COMPLETED);
+        outbox.release(completed.payload.id).unwrap();
+        assert!(!outbox.is_drained());
+        outbox.release(result.payload.id).unwrap();
+        assert!(outbox.is_drained());
+        assert_eq!(
+            outbox.emit(ticket, source_prepared()).unwrap_err().0,
+            QueueError::Unknown
+        );
+    }
+
+    #[test]
+    fn cancellation_discards_an_undrained_source_preparation_result() {
+        let mut outbox = outbox();
+        let ticket = outbox.begin(origin(8)).unwrap();
+        outbox.emit(ticket, source_prepared()).unwrap();
+        outbox
+            .finish(ticket, abi::EVENT_CANCELLED, Box::new([]))
+            .unwrap();
+        let cancelled = outbox.drain_one().unwrap().unwrap();
+        assert_eq!(cancelled.kind, abi::EVENT_CANCELLED);
+        outbox.release(cancelled.payload.id).unwrap();
+        assert!(outbox.drain_one().unwrap().is_none());
+        assert!(outbox.is_drained());
+    }
+
+    #[test]
+    fn cancellation_after_draining_a_source_preparation_result_preserves_the_result_lease() {
+        let mut outbox = outbox();
+        let ticket = outbox.begin(origin(8)).unwrap();
+        outbox.emit(ticket, source_prepared()).unwrap();
+        let result = outbox.drain_one().unwrap().unwrap();
+        assert_eq!(result.kind, 8);
+        outbox
+            .finish(ticket, abi::EVENT_CANCELLED, Box::new([]))
+            .unwrap();
+        assert_eq!(
+            outbox.emit(ticket, source_prepared()).unwrap_err().0,
+            QueueError::Invalid
+        );
+        let cancelled = outbox.drain_one().unwrap().unwrap();
+        assert_eq!(cancelled.kind, abi::EVENT_CANCELLED);
+        outbox.release(cancelled.payload.id).unwrap();
+        assert!(!outbox.is_drained());
+        outbox.release(result.payload.id).unwrap();
+        assert!(outbox.is_drained());
     }
 
     #[test]

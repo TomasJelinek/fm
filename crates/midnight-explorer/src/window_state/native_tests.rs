@@ -1,5 +1,5 @@
 use super::*;
-use midnight_core::{Event, UserPreferences};
+use midnight_core::{AcceptedPreferences, Event, UserPreferences};
 use slint::winit_030::winit::platform::windows::EventLoopBuilderExtWindows;
 
 #[test]
@@ -42,9 +42,12 @@ fn native_maximized_restore_keeps_normal_bounds_and_repeated_capture_has_no_drif
         };
         let mut presenter = Presenter::new("left".into(), "right".into());
         presenter.apply_with_sender(
-            Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-                window_geometry: Some(saved),
-                ..Default::default()
+            Event::PreferencesLoaded(Ok(Box::new(AcceptedPreferences {
+                preferences: UserPreferences {
+                    window_geometry: Some(saved),
+                    ..Default::default()
+                },
+                comparators: Default::default(),
             }))),
             &|_| true,
         );

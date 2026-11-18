@@ -1,10 +1,14 @@
-import { Button, ComboBox, Palette, Slider } from "std-widgets.slint";
+import { Button as NativeButton, Palette } from "std-widgets.slint";
+import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
+import { CompactPicker } from "../../midnight-ui/ui/controls.slint";
+import { ThemedSlider } from "../../midnight-ui/ui/content-controls.slint";
+import { Theme } from "../../midnight-ui/ui/theme.slint";
 import { FileChoiceForm } from "file-choice.slint";
 import { PathText } from "../../midnight-ui/ui/path-text.slint";
 import { ImageComparison } from "image-comparison.slint";
 
-component FontChoice inherits ComboBox {
-    accessible-label: "Text comparison font";
+component FontChoice inherits CompactPicker {
+    accessible-name: "Text comparison font";
     min-width: 96px;
     max-width: 220px;
     horizontal-stretch: 1;
@@ -15,7 +19,7 @@ component AmountBar inherits Rectangle {
     in property <color> accent;
     in property <bool> vertical;
     callback changed(float);
-    background: #80808050;
+    background: Theme.secondary-surface;
     Rectangle {
         background: root.accent;
         width: root.vertical ? parent.width : 8px;
@@ -35,14 +39,14 @@ export component ComparatorWindow inherits Window {
     preferred-width: 1100px; preferred-height: 740px;
     min-width: 320px; min-height: 200px;
     in property <bool> compact;
-    in property <length> ui-font-size: 12px;
-    in property <string> ui-font-family;
+    in-out property <length> ui-font-size: 12px;
+    in-out property <string> ui-font-family;
     // Match the viewer's minimum-size controls without changing document fonts.
     default-font-size: root.compact ? min(root.ui-font-size, 12px) : root.ui-font-size;
     default-font-family: root.ui-font-family != "" ? root.ui-font-family : "Segoe UI";
     private property <length> effective-ui-size: root.compact ? min(root.ui-font-size, 12px) : root.ui-font-size;
-    private property <length> control-height: max(max(30px, root.effective-ui-size + 14px), control-metrics.preferred-height);
-    control-metrics := Button { visible: false; text: "Aa"; }
+    private property <length> control-height: max(max(Theme.touch ? 40px : 30px, root.effective-ui-size + 14px), max(control-metrics.min-height, control-metrics.preferred-height));
+    control-metrics := NativeButton { visible: false; text: "Aa"; }
     in property <bool> choosing-files;
     in property <bool> choice-busy;
     in property <bool> picker-available;
@@ -57,14 +61,32 @@ export component ComparatorWindow inherits Window {
     in property <string> left-name;
     in property <string> right-name;
     in property <string> status: "Preparing comparison…";
+    // UI-only mapping from the typed engine verdict; -1 has no accepted verdict.
+    in property <int> identity-state: -1;
+    private property <bool> result-light;
+    private property <bool> positive-identity: root.identity-state == 1 || root.identity-state == 2;
+    private property <string> identity-summary: root.identity-state == 1
+        ? (root.compact ? "Identical files; all bytes verified" : "Identical files; whole-file bytes verified")
+        : root.identity-state == 2
+        ? (root.compact ? "Same text; bytes differ (encoding/BOM)" : "Identical text; file bytes differ (encoding/BOM)")
+        : root.identity-state == 0 ? "File identity not verified"
+        : root.identity-state == 3 ? "Files differ" : "";
+    private property <string> identity-description: root.identity-state == 1
+        ? "Identical files; complete file bytes verified."
+        : root.identity-state == 2
+        ? "Identical decoded text; file bytes differ because encoding or BOM bytes differ."
+        : root.identity-summary;
+    private property <string> result-value: root.identity-description != ""
+        ? root.identity-description + (root.status != "" ? " · " + root.status : "")
+        : root.status;
     in property <string> accessible-text;
     in property <image> surface;
     in property <image> left-surface;
     in property <image> right-surface;
     in property <float> split-position: 0.5;
-    in property <color> foreground: #ddd;
-    in property <color> background-color: #202020;
-    in property <color> accent: #8bb7ef;
+    in-out property <color> foreground: Theme.text;
+    in-out property <color> background-color: Theme.pane-background;
+    in-out property <color> accent: Theme.accent;
     in property <bool> image-mode;
     in property <[string]> font-families: ["Loading fonts…"];
     in property <bool> fonts-ready;
@@ -89,8 +111,20 @@ export component ComparatorWindow inherits Window {
     callback fit();
     callback close-comparator();
     public function focus-content() { content.focus(); }
-    public function apply-palette(light: bool) { Palette.color-scheme = light ? ColorScheme.light : ColorScheme.dark; }
-    background: root.background-color;
+    public function apply-tool-theme(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        Theme.scheme = scheme; Theme.density = density; Theme.font-family = family;
+        Theme.desktop-font-size = desktop; Theme.touch-font-size = touch;
+        Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
+        root.ui-font-family = Theme.effective-font-family; root.ui-font-size = Theme.font-size;
+        root.foreground = Theme.text; root.background-color = Theme.pane-background;
+        root.accent = Theme.accent; root.result-light = Theme.light;
+    }
+    public function apply-palette(light: bool) {
+        Theme.font-family = root.ui-font-family;
+        Palette.color-scheme = light ? ColorScheme.light : ColorScheme.dark;
+        root.result-light = light;
+    }
+    background: Theme.window-background;
     forward-focus: content;
     FocusScope {
         capture-key-pressed(event) => { if root.input-key(event) { return accept; } reject }
@@ -100,6 +134,7 @@ export component ComparatorWindow inherits Window {
             x: (parent.width - self.width) / 2;
             y: max(0px, (parent.height - self.height) / 3);
             foreground: root.foreground; message: root.choice-message;
+            font-size: root.effective-ui-size; control-height: root.control-height;
             is-error: root.choice-error;
             busy: root.choice-busy; picker-available: root.picker-available;
             file-a <=> root.file-a; file-b <=> root.file-b;
@@ -117,28 +152,34 @@ export component ComparatorWindow inherits Window {
             }
             HorizontalLayout {
                 height: root.control-height; spacing: 5px;
-                if root.image-mode: ComboBox {
-                    min-width: root.compact ? 96px : 0px; max-width: root.compact ? 96px : 1000000px; model: ["Side-by-Side", "Swipe", "Onion Skin"]; current-index <=> root.mode;
-                    accessible-label: "Image comparison mode";
-                    selected(value) => { root.change-mode(self.current-index); content.focus(); }
+                if root.image-mode: HorizontalLayout {
+                    horizontal-stretch: 0; spacing: 5px;
+                    for label[index] in ["Side by side", "Swipe", "Onion skin"]: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                        horizontal-stretch: 0; text: label;
+                        primary: root.mode == index;
+                        accessible-checkable: true; accessible-checked: root.mode == index;
+                        clicked => { root.mode = index; root.change-mode(index); content.focus(); }
+                    }
                 }
-                if !root.image-mode: Button { horizontal-stretch: 0; text: root.compact ? "‹ Difference" : "Previous difference"; clicked => { root.difference(true); content.focus(); } }
-                if !root.image-mode: Button { horizontal-stretch: 0; text: root.compact ? "Difference ›" : "Next difference"; clicked => { root.difference(false); content.focus(); } }
+                if !root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; text: root.compact ? "‹ Difference" : "Previous difference"; clicked => { root.difference(true); content.focus(); } }
+                if !root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; text: root.compact ? "Difference ›" : "Next difference"; clicked => { root.difference(false); content.focus(); } }
                 if !root.image-mode && !root.compact: FontChoice {
+                    font-size: root.effective-ui-size; control-height: root.control-height;
                     model: root.font-families; current-index: root.font-index;
                     enabled: root.fonts-ready;
-                    selected(value) => { root.change-font(self.current-index); content.focus(); }
+                    selected(index) => { root.change-font(index); content.focus(); }
                 }
-                if root.image-mode: Button { horizontal-stretch: 0; min-width: root.compact ? 34px : 0px; max-width: root.compact ? 34px : 1000000px; text: "Fit"; clicked => { root.fit(); content.focus(); } }
-                if root.image-mode: Button { horizontal-stretch: 0; min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "−"; accessible-label: "Zoom out"; clicked => { root.zoom(0.8); content.focus(); } }
-                if root.image-mode: Button { horizontal-stretch: 0; min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "+"; accessible-label: "Zoom in"; clicked => { root.zoom(1.25); content.focus(); } }
                 Rectangle { horizontal-stretch: 1; }
-                Button { horizontal-stretch: 0; min-width: root.compact ? 45px : 0px; max-width: root.compact ? 45px : 1000000px; text: "Close"; clicked => { root.close-comparator(); } }
+                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; min-width: root.compact ? 45px : 0px; max-width: root.compact ? 45px : 1000000px; text: "Close"; clicked => { root.close-comparator(); } }
             }
             if root.image-mode: HorizontalLayout {
-                height: max(26px, root.effective-ui-size + 8px); spacing: 6px;
+                height: root.control-height; spacing: 6px;
+                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; min-width: root.compact ? 34px : 0px; max-width: root.compact ? 34px : 1000000px; text: "Fit"; clicked => { root.fit(); content.focus(); } }
+                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "−"; accessible-label: "Zoom out"; clicked => { root.zoom(0.8); content.focus(); } }
+                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "+"; accessible-label: "Zoom in"; clicked => { root.zoom(1.25); content.focus(); } }
                 Text { text: root.mode == 0 ? "Drag to pan" : root.mode == 1 ? "Divider" : "Right opacity"; color: root.foreground; vertical-alignment: center; }
-                Slider {
+                ThemedSlider {
+                    control-height: root.control-height;
                     visible: root.mode != 0; enabled: root.mode != 0;
                     horizontal-stretch: 1; minimum: 0; maximum: 100; step: 1;
                     value: root.amount * 100;
@@ -150,9 +191,10 @@ export component ComparatorWindow inherits Window {
             if !root.image-mode && root.compact: HorizontalLayout {
                 height: root.control-height;
                 FontChoice {
+                    font-size: root.effective-ui-size; control-height: root.control-height;
                     model: root.font-families; current-index: root.font-index;
                     enabled: root.fonts-ready;
-                    selected(value) => { root.change-font(self.current-index); content.focus(); }
+                    selected(index) => { root.change-font(index); content.focus(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
@@ -160,6 +202,7 @@ export component ComparatorWindow inherits Window {
                 spacing: 4px;
                 canvas := Rectangle {
                     horizontal-stretch: 1; vertical-stretch: 1; clip: true;
+                    background: root.background-color;
                     accessible-role: text; accessible-label: "Compared file contents"; accessible-value: root.accessible-text;
                     Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; visible: !root.image-mode; }
                     if root.image-mode: ImageComparison {
@@ -192,7 +235,22 @@ export component ComparatorWindow inherits Window {
                 }
                 if !root.image-mode: AmountBar { vertical: true; width: 14px; amount: root.position; accent: root.accent; changed(value) => { root.seek(value); } }
             }
-            Text { height: max(24px, root.effective-ui-size + 8px); text: root.status; color: root.foreground; overflow: elide; vertical-alignment: center; }
+            Rectangle {
+                height: max(24px, root.effective-ui-size + 8px);
+                background: root.positive-identity ? (root.result-light ? #d5f5df : #166534) : transparent;
+                border-radius: 3px; clip: true;
+                accessible-role: text; accessible-label: "Comparison result"; accessible-value: root.result-value;
+                Text {
+                    x: 8px; width: max(0px, parent.width - 16px); height: parent.height;
+                    text: root.identity-summary != ""
+                        ? root.identity-summary + (!root.compact && root.status != "" ? " · " + root.status : "")
+                        : root.status;
+                    color: root.positive-identity ? (root.result-light ? #14532d : #f0fdf4) : root.foreground;
+                    font-weight: root.positive-identity ? 600 : 400;
+                    overflow: elide; vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
         }
     }
 }

@@ -1,3 +1,6 @@
+#[path = "../examples/support/resident.rs"]
+mod resident;
+
 use super::*;
 use slint::platform::{Platform, PlatformError, WindowAdapter};
 use std::{
@@ -81,6 +84,9 @@ impl Platform for BrokenPlatform {
 fn native_window_failure_retires_source_on_backend() {
     slint::platform::set_platform(Box::new(BrokenPlatform)).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let manager = ViewerWindows::new(Service::new(runtime.handle().clone()));
+    let runtime = resident::ResidentRuntime::new(runtime).unwrap();
+    let service = Service::new(runtime.handle().clone(), runtime.spawner());
+    runtime.track_spare(&service);
+    let manager = ViewerWindows::new(service);
     reject(&manager);
 }

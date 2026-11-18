@@ -3,6 +3,7 @@ use super::*;
 mod fixture;
 use crate::retirement::RetirementDomain;
 use fixture::*;
+use midnight_work_budget::resident::Owner;
 use std::sync::mpsc as sync_mpsc;
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -12,6 +13,7 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 fn start(
+    resident: &Spawner,
     files: Arc<dyn FileSystem>,
     native: Option<Arc<dyn WatchService>>,
 ) -> (
@@ -28,6 +30,7 @@ fn start(
     };
     let scope = TaskLifetime::testing((files.clone(), native.clone()));
     let controller = Controller::with_timing(
+        resident,
         retirement,
         scope,
         files,
@@ -59,7 +62,9 @@ fn retained_scope() -> (tree::TreeScope, sync_mpsc::Receiver<ThreadId>, Release)
 fn watch_lifetime_scope_before_first_poll_retires_off_caller() {
     let runtime = runtime();
     let entered = runtime.enter();
-    let (controller, tasks, _events, domain) = start(Arc::new(LifetimeFiles::default()), None);
+    let (_owner, resident) = Owner::start("watch-test", 2).unwrap();
+    let (controller, tasks, _events, domain) =
+        start(&resident, Arc::new(LifetimeFiles::default()), None);
     let handle = controller.handle();
     let right = controller.panes[1].clone();
     let (scope, dropped, _release) = retained_scope();
@@ -89,7 +94,9 @@ fn watch_lifetime_scope_after_native_unwind_retires_off_caller() {
     let runtime = runtime();
     let entered = runtime.enter();
     let (subscription, subscription_drop) = sync_mpsc::channel();
+    let (_owner, resident) = Owner::start("watch-test", 2).unwrap();
     let (controller, mut tasks, _events, domain) = start(
+        &resident,
         Arc::new(LifetimeFiles {
             panic_on_read: true,
             ..Default::default()
@@ -153,7 +160,8 @@ fn watch_lifetime_unpolled_task_retires_service_off_caller() {
         }),
         ..Default::default()
     });
-    let (controller, tasks, _events, _domain) = start(files, None);
+    let (_owner, resident) = Owner::start("watch-test", 2).unwrap();
+    let (controller, tasks, _events, _domain) = start(&resident, files, None);
     drop(controller);
     drop(tasks);
     drop(entered);
@@ -162,4 +170,42 @@ fn watch_lifetime_unpolled_task_retires_service_off_caller() {
         dropped.recv_timeout(Duration::from_secs(5)).unwrap(),
         thread::current().id()
     );
+}
+
+#[tokio::test]
+async fn watch_controller_drop_stops_idle_workers_with_shared_handles_alive() {
+    let (owner, resident) = Owner::start("watch-test", 2).unwrap();
+    let (controller, mut tasks, _events, _domain) =
+        start(&resident, Arc::new(LifetimeFiles::default()), None);
+    let keepalive = controller.handle();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while keepalive
+            .panes
+            .iter()
+            .any(|pane| pane.worker.get().is_none())
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both watch lanes must have entered");
+    drop(controller);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .expect("the last controller must stop the watch lanes before pool seal");
+    assert!(
+        keepalive
+            .panes
+            .iter()
+            .all(|pane| pane.state.lock().unwrap().stopped)
+    );
+    owner
+        .shutdown(&tokio::runtime::Handle::current())
+        .await
+        .unwrap();
+    drop(keepalive);
 }

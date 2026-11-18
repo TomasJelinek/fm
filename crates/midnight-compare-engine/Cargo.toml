@@ -10,7 +10,7 @@ midnight-core.workspace = true
 midnight-plugin-host = { path = "../midnight-plugin-host" }
 midnight-image-viewer-host = { path = "../midnight-image-viewer-host" }
 midnight-viewer-render = { path = "../midnight-viewer-render" }
-midnight-work-budget = { path = "../midnight-work-budget" }
+midnight-work-budget = { path = "../midnight-work-budget", features = ["resident-workers"] }
 similar = { version = "=2.7.0", default-features = false, features = ["text"] }
 tokio.workspace = true
 

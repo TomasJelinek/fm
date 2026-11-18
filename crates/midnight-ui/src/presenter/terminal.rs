@@ -370,10 +370,15 @@ mod tests {
             locations: vec![],
         });
         p.track_draft(true);
-        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            windows_shell: WindowsShell::Cmd,
-            ..Default::default()
-        }))));
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    windows_shell: WindowsShell::Cmd,
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
         assert_eq!(p.preferences.values.windows_shell, WindowsShell::Cmd);
         assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
         p.change_terminal(1, true, &|_| {
@@ -398,10 +403,15 @@ mod tests {
             locations: vec![],
         });
         assert_eq!(p.desktop.draft_shell, Some(ShellFlavor::PowerShell));
-        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            windows_shell: WindowsShell::Cmd,
-            ..Default::default()
-        }))));
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    windows_shell: WindowsShell::Cmd,
+                    ..Default::default()
+                },
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
         assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
     }
 

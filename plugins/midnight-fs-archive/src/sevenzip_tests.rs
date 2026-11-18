@@ -55,7 +55,7 @@ fn short_decode_is_rejected_even_when_no_checksum_is_present() {
         file.has_crc = false;
     }
     content.metadata.blocks[0].has_crc = false;
-    content.source = std::io::BufReader::new(Box::new(Cursor::new(Vec::<u8>::new())));
+    content.source = Reader::new(Box::new(Cursor::new(Vec::<u8>::new())));
     assert_eq!(archive.read(2, 0, 1).unwrap_err().code, ErrorCode::Corrupt);
     assert!(archive.contents.is_empty());
 }
@@ -66,7 +66,7 @@ fn only_selected_member_is_retained_after_solid_block_verification() {
     assert_eq!(archive.read(2, 0, 1).unwrap().0, b"f");
     // Only the selected member is retained; a sibling requires another block pass.
     archive.sevenzip_content.as_mut().unwrap().source =
-        std::io::BufReader::new(Box::new(Cursor::new(Vec::<u8>::new())));
+        Reader::new(Box::new(Cursor::new(Vec::<u8>::new())));
     assert_eq!(archive.read(2, 0, 5).unwrap().0, b"first");
     assert!(archive.read(3, 0, 5).is_err());
 }

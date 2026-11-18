@@ -1,9 +1,31 @@
 //! Presentation and short input callbacks only. The comparator service owns file work.
 #![deny(unsafe_code)]
+mod admission;
+#[cfg(test)]
+mod admission_tests;
+mod appearance;
+#[cfg(test)]
+mod external_outcome_tests;
+#[cfg(test)]
+mod external_retry_tests;
 mod file_choice;
 mod fonts;
+#[cfg(test)]
+mod identity_tests;
 mod images;
-use midnight_compare_engine::{ImageMode, Input, Output, Service, Session};
+mod presentation;
+#[cfg(all(test, unix))]
+#[path = "external_outcome_unix_tests.rs"]
+mod raw_paths;
+#[cfg(all(test, windows))]
+#[path = "external_outcome_windows_tests.rs"]
+mod raw_paths;
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod support;
+use midnight_compare_engine::{
+    ExternalCompareChoiceOutcome, ImageMode, Input, Output, Service, Session,
+};
 use midnight_core::{FileCompareLaunch, ShortcutChord, ViewerAppearance, ViewerGeometry};
 use slint::{
     ComponentHandle, Timer, TimerMode,
@@ -30,6 +52,7 @@ pub struct ComparatorWindows {
     windows: RefCell<Vec<Rc<OpenWindow>>>,
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
+    appearance: RefCell<Option<appearance::Presentation>>,
 }
 struct OpenWindow {
     window: ComparatorWindow,
@@ -38,14 +61,36 @@ struct OpenWindow {
     closed: Cell<bool>,
     geometry: Cell<(u32, u32, u32)>,
     geometry_revision: Cell<u64>,
+    comparison_generation: Cell<u64>,
+    comparison_requested: Cell<bool>,
+    external_outcome: Cell<Option<ExternalCompareChoiceOutcome>>,
     pending: RefCell<Vec<Input>>,
     choice_paths: RefCell<[std::path::PathBuf; 2]>,
     fonts: RefCell<Option<midnight_compare_engine::FontChoices>>,
     requested_font: RefCell<Option<String>>,
     surfaces: RefCell<images::Surfaces>,
+    appearance: appearance::PaletteState,
 }
 impl OpenWindow {
-    fn send(&self, input: Input) {
+    fn send(&self, input: Input) -> bool {
+        if self.closed.get() {
+            return false;
+        }
+        let compare = matches!(&input, Input::Compare(_));
+        let choosing = compare || matches!(&input, Input::Browse { .. });
+        if choosing {
+            // Explicit choices use Session admission and are never retained for replay.
+            if !self.session.send(input) {
+                return false;
+            }
+            self.external_outcome.set(None);
+            if compare {
+                self.comparison_requested.set(true);
+                self.window.set_identity_state(-1);
+                self.window.set_status("Preparing comparison…".into());
+            }
+            return true;
+        }
         let mut pending = self.pending.borrow_mut();
         if let Some(old) = pending.last_mut().filter(|old| {
             !matches!(
@@ -63,10 +108,44 @@ impl OpenWindow {
             }
         } else if pending.len() < 64 {
             pending.push(input);
+        } else {
+            return false;
+        }
+        drop(pending);
+        true
+    }
+    fn sync_geometry(&self) {
+        let window = &self.window;
+        let scale = window.window().scale_factor();
+        window.set_compact(window.window().size().to_logical(scale).width < 500.0);
+        let geometry = (
+            (window.get_content_width() * scale).max(2.0) as u32,
+            (window.get_content_height() * scale).max(1.0) as u32,
+            scale.to_bits(),
+        );
+        if self.geometry.get() != geometry {
+            let revision = self.geometry_revision.get().saturating_add(1);
+            if self.send(Input::Resize(
+                ViewerGeometry {
+                    width: geometry.0,
+                    height: geometry.1,
+                    scale,
+                },
+                revision,
+            )) {
+                // A refused local admission remains observable to the next timer turn.
+                self.geometry.set(geometry);
+                self.geometry_revision.set(revision);
+                window.set_geometry_revision(revision as i32);
+            }
         }
     }
     fn close(&self) {
         if !self.closed.replace(true) {
+            self.external_outcome.set(None);
+            self.comparison_requested.set(false);
+            self.window.set_identity_state(-1);
+            self.window.set_status("".into());
             self.session.close();
             self.timer.stop();
             self.window.set_surface(slint::Image::default());
@@ -86,6 +165,7 @@ impl ComparatorWindows {
             windows: RefCell::new(Vec::new()),
             picker_owner: |_| midnight_core::PathPickerOwner::None,
             font_listener: Rc::new(RefCell::new(None)),
+            appearance: RefCell::new(None),
         }
     }
     /// Persist an explicitly chosen family through the application's preferences backend.
@@ -107,6 +187,16 @@ impl ComparatorWindows {
         placement: impl Into<WindowPlacement>,
         keys: KeyResolver,
     ) -> Result<slint::Weak<ComparatorWindow>, String> {
+        self.open_with_observer(launch, appearance, placement, keys, |_| {})
+    }
+    fn open_with_observer(
+        &self,
+        launch: FileCompareLaunch,
+        mut appearance: ViewerAppearance,
+        placement: impl Into<WindowPlacement>,
+        keys: KeyResolver,
+        before_palette_read: impl FnOnce(&Session),
+    ) -> Result<slint::Weak<ComparatorWindow>, String> {
         self.windows.borrow_mut().retain(|open| !open.closed.get());
         if self.windows.borrow().len() >= 2 {
             return Err("Close a comparator before opening another (maximum two).".into());
@@ -116,28 +206,28 @@ impl ComparatorWindows {
         let size = placement.logical_size();
         window.set_compact(size.width < 500.0);
         placement.apply(window.window());
-        window.set_foreground(color(appearance.foreground));
-        window.set_background_color(color(appearance.background));
-        window.set_accent(color(appearance.accent));
-        window.set_ui_font_size(appearance.font_size);
-        window.set_ui_font_family(appearance.family.as_str().into());
+        let presentation = self
+            .appearance
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| appearance::Presentation::legacy(&appearance));
+        presentation.apply_window(&window);
+        presentation.opening_palette(&mut appearance);
         window.set_picker_available(self.service.has_path_picker());
-        window.invoke_apply_palette(
-            appearance.background[..3]
-                .iter()
-                .map(|channel| u16::from(*channel))
-                .sum::<u16>()
-                > 384,
-        );
-        let session = self.service.open(
+        let session = admission::open(
+            &self.service,
             launch,
-            appearance,
+            appearance.clone(),
             ViewerGeometry {
                 width: size.width.max(2.0) as u32,
                 height: (size.height - 100.0).max(1.0) as u32,
                 scale: window.window().scale_factor(),
             },
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
+        before_palette_read(&session);
+        // Sample accepted opening state before publishing any later palette writer.
+        let appearance_revision = session.palette_revision();
         let open = Rc::new(OpenWindow {
             window,
             session,
@@ -145,11 +235,15 @@ impl ComparatorWindows {
             closed: Cell::new(false),
             geometry: Cell::new((0, 0, 0)),
             geometry_revision: Cell::new(0),
+            comparison_generation: Cell::new(0),
+            comparison_requested: Cell::new(false),
+            external_outcome: Cell::new(None),
             pending: RefCell::new(Vec::new()),
             choice_paths: RefCell::new(Default::default()),
             fonts: RefCell::new(None),
             requested_font: RefCell::new(None),
             surfaces: RefCell::new(images::Surfaces::default()),
+            appearance: appearance::PaletteState::new(&appearance, appearance_revision),
         });
         bind(&open, keys);
         fonts::bind(&open, self.font_listener.clone());
@@ -164,27 +258,7 @@ impl ComparatorWindows {
                 if open.closed.get() {
                     return;
                 }
-                let window = &open.window;
-                let scale = window.window().scale_factor();
-                window.set_compact(window.window().size().to_logical(scale).width < 500.0);
-                let geometry = (
-                    (window.get_content_width() * scale).max(2.0) as u32,
-                    (window.get_content_height() * scale).max(1.0) as u32,
-                    scale.to_bits(),
-                );
-                if open.geometry.replace(geometry) != geometry {
-                    let revision = open.geometry_revision.get().saturating_add(1);
-                    open.geometry_revision.set(revision);
-                    window.set_geometry_revision(revision as i32);
-                    open.send(Input::Resize(
-                        ViewerGeometry {
-                            width: geometry.0,
-                            height: geometry.1,
-                            scale,
-                        },
-                        revision,
-                    ));
-                }
+                open.sync_geometry();
                 let mut pending = open.pending.borrow_mut();
                 let sent = pending
                     .iter()
@@ -193,46 +267,7 @@ impl ComparatorWindows {
                 pending.drain(..sent);
                 drop(pending);
                 if let Some(output) = open.session.mailbox.take() {
-                    match &output {
-                        Output::Frame { frame, names } => {
-                            fonts::present(&open, frame.fonts.as_ref());
-                            if window.get_choosing_files() {
-                                window.set_choosing_files(false);
-                                window.set_choice_busy(false);
-                                window.invoke_focus_content();
-                            }
-                            window.set_frame_revision(frame.geometry_revision as i32);
-                            window.set_rendered_mode(match frame.mode {
-                                Some(ImageMode::SideBySide) => 0,
-                                Some(ImageMode::Swipe) => 1,
-                                Some(ImageMode::OnionSkin) => 2,
-                                None => -1,
-                            });
-                            window.set_left_name(names[0].as_str().into());
-                            window.set_right_name(names[1].as_str().into());
-                            window.set_image_mode(frame.image);
-                            window.set_position(frame.position as f32);
-                            window.set_status(frame.status.as_str().into());
-                            window.set_accessible_text(frame.accessible_text.as_str().into());
-                            if let Some(layers) = &frame.layers {
-                                open.surfaces.borrow_mut().present(
-                                    window,
-                                    layers,
-                                    frame.mode == Some(ImageMode::SideBySide),
-                                );
-                            } else {
-                                let pixels =
-                                    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                        &frame.pixels,
-                                        frame.width,
-                                        frame.height,
-                                    );
-                                window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
-                            }
-                        }
-                        Output::Status(message) => window.set_status(message.as_str().into()),
-                        Output::ChooseFiles(choice) => open.show_file_choice(choice),
-                    }
+                    open.present_output(&output);
                     service.retire(output);
                 }
             });

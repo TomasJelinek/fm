@@ -381,23 +381,28 @@ fn all_function_slots_keep_captions_in_both_layers_after_remapping() {
     install(&test.window, presenter.clone(), Rc::new(|_| true));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            shortcuts: vec![
-                ShortcutBinding {
-                    action: "files.attributes".into(),
-                    keys: vec![],
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            midnight_core::AcceptedPreferences {
+                preferences: UserPreferences {
+                    shortcuts: vec![
+                        ShortcutBinding {
+                            action: "files.attributes".into(),
+                            keys: vec![],
+                        },
+                        ShortcutBinding {
+                            action: "files.rename".into(),
+                            keys: vec!["Ctrl+F2".into()],
+                        },
+                        ShortcutBinding {
+                            action: "panel.zoom".into(),
+                            keys: vec![],
+                        },
+                    ],
+                    ..Default::default()
                 },
-                ShortcutBinding {
-                    action: "files.rename".into(),
-                    keys: vec!["Ctrl+F2".into()],
-                },
-                ShortcutBinding {
-                    action: "panel.zoom".into(),
-                    keys: vec![],
-                },
-            ],
-            ..Default::default()
-        }))));
+                comparators: midnight_core::FileComparatorSnapshot::default(),
+            },
+        ))));
     refresh(&test.window, &presenter.borrow());
     test.window.set_left_can_target_cursor(true);
     test.window.set_left_can_target_selection(true);

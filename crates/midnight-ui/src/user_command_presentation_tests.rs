@@ -158,7 +158,12 @@ fn hidden_artwork_is_evicted_and_cache_clear_invalidates_toolbar_images() {
 fn shortcut_edits_refresh_cached_toolbar_hints_without_rebinding_command_identity() {
     let mut p = configured(1);
     let preferences = p.preferences.values.clone();
-    p.apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(
+        midnight_core::AcceptedPreferences {
+            preferences,
+            comparators: midnight_core::FileComparatorSnapshot::default(),
+        },
+    ))));
     let state = Rc::new(RefCell::new(p));
     let rows = Rows {
         state: Rc::downgrade(&state),

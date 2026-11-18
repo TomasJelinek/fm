@@ -9,6 +9,7 @@ mod checksum_windows;
 mod color_options;
 mod command_line;
 mod commander_presentation;
+mod comparator_options_presentation;
 mod copy_draft_windows;
 mod copy_presentation;
 mod detail_attributes;
@@ -19,6 +20,12 @@ mod dialog_presentation;
 #[cfg(test)]
 #[path = "../tests/support/owned_commands.rs"]
 mod owned_command_test_support;
+#[cfg(all(test, unix))]
+#[path = "../tests/support/unix_raw_paths.rs"]
+mod raw_picker_paths;
+#[cfg(all(test, windows))]
+#[path = "../tests/support/windows_raw_paths.rs"]
+mod raw_picker_paths;
 mod window_position;
 pub use dialog_native::configure_dialog_window_attributes;
 pub use window_position::restore_window_position;
@@ -383,12 +390,14 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         presenter.preferences.theme_index(),
         presenter.preferences.density_index(),
     );
+    window.invoke_refresh_content_appearance();
     window.set_left_native_filesystem(presenter.panes[0].native_capabilities());
     window.set_right_native_filesystem(presenter.panes[1].native_capabilities());
     window.set_left_can_measure_folders(presenter.panes[0].can_measure_folders());
     window.set_right_can_measure_folders(presenter.panes[1].can_measure_folders());
     user_command_settings_presentation::refresh(window, presenter);
     editor_options_presentation::refresh(window, presenter);
+    comparator_options_presentation::refresh(window, presenter);
     window.invoke_refresh_find_windows();
     window.invoke_refresh_checksum_windows();
     window.invoke_refresh_file_list_window();
@@ -929,6 +938,7 @@ pub fn install_with_owned(
     user_command_presentation::install(window, presenter.clone(), send.clone());
     user_command_settings_presentation::install(window, presenter.clone(), send.clone());
     editor_options_presentation::install(window, presenter.clone(), send.clone());
+    comparator_options_presentation::install(window, presenter.clone(), send.clone());
     job_presentation::install(window);
     plugin_options::install(window, presenter.clone(), send.clone());
     archive_options::install(window, presenter.clone(), send.clone());
