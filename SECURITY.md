@@ -578,9 +578,10 @@ original-name winner is never clobbered. Earlier completed moves stay completed 
 published destinations are never rolled back. Drop never finalizes retained data.
 Success retains no source copy or empty temporary stage. Failed restoration or
 empty-stage cleanup preserves all remaining data and reports exact exceptional
-paths. A capture refused only after it created its owner-only `.midnight-move-*`
-directory keeps that empty directory for the automatic repeat of the capture,
-which reuses it; otherwise the job's cleanup removes it or reports its path (see
+paths. A capture that cannot remove the empty owner-only `.midnight-move-*`
+directory it created (for example because another program created an entry in it)
+keeps it; a repeated capture reuses it, and otherwise the job's cleanup removes it
+or reports its path (see
 [bounded ordinary Move](docs/developer/TRANSFERS.md#bounded-ordinary-move)).
 Cleanup never recursively deletes unexpected entries. Structured outcomes
 distinguish removal from residuals and durability uncertainty. Linux uses no-replace

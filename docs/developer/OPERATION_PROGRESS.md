@@ -128,14 +128,16 @@ finalizer and rehashes both files first). On both platforms the reservation made
 a change creates its private directory (a Move stage or a recovery directory) also
 covers the later renames into and out of that directory and its removal in that
 change, so peers can refuse a Move capture, a native Move or a replacement only
-before its first namespace change (see
+before its first namespace change, except at the Linux replacement's witness
+reservation described next (see
 [Windows namespace pins](TRANSFERS.md#windows-namespace-pins)). A Linux replacement
 still reserves the witness of its staged file inside the recovery directory it has
 just created; a refusal there removes that still-empty directory without another
-reservation, so the refused change leaves nothing behind. A capture whose empty
-directory cannot be removed keeps it for a repeated capture, which announces it again,
-or for the job's cleanup, which removes it or reports its path (see
-[bounded ordinary Move](TRANSFERS.md#bounded-ordinary-move)).
+reservation, so the refused change leaves nothing behind and is repeated. If that
+removal fails, the publication ends as `RecoveryRequired` and reports the directory.
+A capture whose empty directory cannot be removed keeps it for a repeated capture,
+which announces it again, or for the job's cleanup, which removes it or reports its
+path (see [bounded ordinary Move](TRANSFERS.md#bounded-ordinary-move)).
 A refusal by a quarantined peer never clears and fails the entry with the
 non-retryable restart error, and a quarantined claim makes later jobs fail at once
 and ask for an application restart instead of waiting.
