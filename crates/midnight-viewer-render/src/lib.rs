@@ -11,7 +11,7 @@ mod document;
 mod fonts;
 pub use document::{DocumentBlock, DocumentKind, DocumentStyle};
 mod glyph_cache;
-pub use fonts::{installed_families, is_generic_family, monospace_families};
+pub use fonts::{fixed_pitch_family, installed_families, is_generic_family, monospace_families};
 mod glyphs;
 mod options;
 mod raster;

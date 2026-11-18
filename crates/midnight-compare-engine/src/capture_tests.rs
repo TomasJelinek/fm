@@ -1,4 +1,4 @@
-use crate::{FileChoice, Frame, Input, NativeCapture, Output, Refused, Service, Session};
+use crate::{FileChoice, Frame, Inbox, Input, NativeCapture, Output, Refused, Service, Session};
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, FileCompareLaunch, FileCompareSource,
     ViewerAppearance, ViewerGeometry,
@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -18,6 +18,15 @@ use std::{
 struct Memory {
     bytes: &'static [u8],
     reads: Arc<AtomicUsize>,
+    gate: Option<Arc<Gate>>,
+}
+
+/// Holds the next validation of the sources sharing it, once armed, until released.
+#[derive(Debug)]
+struct Gate {
+    armed: AtomicBool,
+    entered: mpsc::SyncSender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
 }
 
 impl ContentSource for Memory {
@@ -34,6 +43,17 @@ impl ContentSource for Memory {
     }
 
     fn validate(&self) -> Result<(), Error> {
+        if let Some(gate) = &self.gate
+            && gate.armed.swap(false, Ordering::AcqRel)
+        {
+            gate.entered.send(()).unwrap();
+            // Longer than any wait for output, so a wait that this hold blocks fails first.
+            let _ = gate
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(30));
+        }
         Ok(())
     }
 
@@ -46,9 +66,18 @@ impl ContentSource for Memory {
 }
 
 fn memory(bytes: &'static [u8], reads: &Arc<AtomicUsize>) -> Result<CapturedFile, String> {
+    source(bytes, reads, None)
+}
+
+fn source(
+    bytes: &'static [u8],
+    reads: &Arc<AtomicUsize>,
+    gate: Option<&Arc<Gate>>,
+) -> Result<CapturedFile, String> {
     CapturedFile::from_source(Arc::new(Memory {
         bytes,
         reads: reads.clone(),
+        gate: gate.cloned(),
     }))
     .map_err(|error| error.to_string())
 }
@@ -503,6 +532,473 @@ fn the_first_frame_is_painted_while_the_font_scan_runs_and_repainted_with_its_ca
     let repainted = frame(&session);
     let fonts = repainted.fonts.expect("the completed catalog is painted");
     assert_eq!(fonts.selected, "Wide Mono");
+    session.close();
+}
+
+/// A scan that runs until the returned sender sends or is dropped, counting its runs.
+fn held_scan(service: Service, scans: &Arc<AtomicUsize>) -> (Service, mpsc::Sender<Arc<[String]>>) {
+    let (deliver, catalog) = mpsc::channel::<Arc<[String]>>();
+    let catalog = Mutex::new(catalog);
+    let scanned = scans.clone();
+    let service = service.with_font_scan(move |_| {
+        scanned.fetch_add(1, Ordering::SeqCst);
+        catalog.lock().unwrap().recv().ok()
+    });
+    (service, deliver)
+}
+
+#[test]
+fn the_first_comparison_paints_in_the_preferred_family_while_the_scan_runs() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let checks = Arc::new(Mutex::new(Vec::new()));
+    let checked = checks.clone();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (service, deliver) = held_scan(text_service(&runtime), &Arc::default());
+    let service = service.with_font_check(move |candidates, _| {
+        checked.lock().unwrap().push(
+            candidates
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>(),
+        );
+        candidates
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case("cascadia mono"))
+            .map(|_| "Cascadia Mono".to_owned())
+    });
+    let session = open_in_family(&service, launch(&paths), "cascadia mono").unwrap();
+    let first = frame(&session);
+    assert!(first.fonts.is_none(), "the chooser waits for the catalog");
+    assert_eq!(first.text_family.as_deref(), Some("Cascadia Mono"));
+    assert_eq!(
+        *checks.lock().unwrap(),
+        [["cascadia mono", "Consolas"].map(str::to_owned)],
+        "one check of at most two families precedes the first frame"
+    );
+    deliver
+        .send(Arc::from([
+            "Cascadia Mono".to_owned(),
+            "Consolas".to_owned(),
+        ]))
+        .unwrap();
+    let repainted = frame(&session);
+    let fonts = repainted
+        .fonts
+        .expect("the catalog publishes the chooser list");
+    assert_eq!(fonts.selected, "Cascadia Mono");
+    assert_eq!(repainted.text_family.as_deref(), Some("Cascadia Mono"));
+    assert_eq!(checks.lock().unwrap().len(), 1);
+    session.close();
+}
+
+#[test]
+fn a_missing_preferred_family_falls_back_to_consolas_then_monospace_before_the_catalog() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for (installed, painted) in [(Some("Consolas"), "Consolas"), (None, "monospace")] {
+        let (service, release) = held_scan(text_service(&runtime), &Arc::default());
+        let service = service.with_font_check(move |candidates, _| {
+            installed
+                .filter(|family| candidates.contains(family))
+                .map(str::to_owned)
+        });
+        let session = open_in_family(&service, launch(&paths), "Missing Mono").unwrap();
+        let first = frame(&session);
+        assert!(first.fonts.is_none());
+        assert_eq!(first.text_family.as_deref(), Some(painted));
+        session.close();
+        drop(release);
+    }
+}
+
+/// The worker blocks while the catalog loads; only the scan's reply wakes it. The window
+/// below observes the absence of turns; nothing waits on it.
+#[test]
+fn no_worker_turn_while_the_catalog_is_pending() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let turns = Arc::new(AtomicUsize::new(0));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (service, deliver) = held_scan(text_service(&runtime), &Arc::default());
+    let service = service
+        .with_font_check(|_, _| None)
+        .with_turn_counter(turns.clone());
+    let session = open(&service, launch(&paths)).unwrap();
+    assert!(frame(&session).fonts.is_none());
+    assert_eq!(
+        turns.load(Ordering::SeqCst),
+        1,
+        "one turn painted the first frame"
+    );
+    // A polling worker would turn about every 20 ms in this window.
+    std::thread::sleep(Duration::from_millis(60));
+    assert_eq!(
+        turns.load(Ordering::SeqCst),
+        1,
+        "no worker turn while the catalog loads"
+    );
+    deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
+    assert!(frame(&session).fonts.is_some());
+    assert_eq!(
+        turns.load(Ordering::SeqCst),
+        2,
+        "the reply alone woke the worker"
+    );
+    session.close();
+}
+
+#[test]
+fn a_comparison_after_a_failed_one_gets_the_catalog_of_the_same_scan() {
+    let root = fixture();
+    let text = paths(root.path());
+    let binary = [
+        root.path().join("left").join("binary.txt"),
+        root.path().join("right").join("binary.txt"),
+    ];
+    let reads = Arc::new(AtomicUsize::new(0));
+    let failing = binary.clone();
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if failing.iter().any(|side| side == path) {
+            memory(b"control \x01 byte\n", &reads)
+        } else {
+            memory(b"same\nline\n", &reads)
+        }
+    });
+    let scans = Arc::new(AtomicUsize::new(0));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (service, deliver) = held_scan(
+        Service::with_native_capture(runtime.handle().clone(), capture)
+            .with_image_viewer_discovery(|| Ok(Vec::new())),
+        &scans,
+    );
+    let service = service.with_font_check(|_, _| None);
+    let session = open_in_family(&service, launch(&binary), "Wide Mono").unwrap();
+    // The failed comparison requested the catalog before it failed.
+    assert!(choice(&session).is_error);
+    session.send(Input::Compare(text)).unwrap();
+    assert!(frame(&session).fonts.is_none());
+    deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
+    let fonts = frame(&session)
+        .fonts
+        .expect("the waiting comparison gets the catalog");
+    assert_eq!(fonts.selected, "Wide Mono");
+    assert_eq!(
+        scans.load(Ordering::SeqCst),
+        1,
+        "one scan serves both requests"
+    );
+    session.close();
+}
+
+#[test]
+fn a_scan_without_a_thread_answers_at_once_even_while_the_input_queue_is_full() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let (entered, entry) = mpsc::sync_channel(1);
+    let (release, held) = mpsc::sync_channel::<()>(1);
+    let held = Mutex::new(held);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let first = paths[0].clone();
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if path == first {
+            entered.send(()).unwrap();
+            // The worker takes no input while it is held here.
+            let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(15));
+        }
+        memory(b"same\nline\n", &reads)
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+        .with_image_viewer_discovery(|| Ok(Vec::new()))
+        .without_font_thread();
+    let session = open(&service, launch(&paths)).unwrap();
+    entry.recv_timeout(Duration::from_secs(15)).unwrap();
+    for _ in 0..crate::INPUT_QUEUE {
+        session.send(Input::Fit).unwrap();
+    }
+    release.send(()).unwrap();
+    let fonts = frame(&session)
+        .fonts
+        .expect("an empty catalog is answered at once");
+    assert!(fonts.families.is_empty());
+    assert_eq!(fonts.selected, "monospace");
+    session.close();
+}
+
+#[test]
+fn a_panicking_scan_answers_its_waiters_and_the_next_comparison_scans_again() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let turns = Arc::new(AtomicUsize::new(0));
+    let scans = Arc::new(AtomicUsize::new(0));
+    let scanned = scans.clone();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = text_service(&runtime)
+        .with_font_scan(move |_| {
+            if scanned.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("deliberate font scan fault");
+            }
+            Some(Arc::from(["Wide Mono".to_owned()]))
+        })
+        .with_font_check(|_, _| None)
+        .with_turn_counter(turns.clone());
+    let first = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
+    assert!(frame(&first).fonts.is_none());
+    // The panicking scan's reply (`None`) gives the worker its second turn.
+    wait_for(|_| (turns.load(Ordering::SeqCst) >= 2).then_some(()));
+    let second = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
+    let fonts = loop {
+        if let Some(fonts) = frame(&second).fonts {
+            break fonts;
+        }
+    };
+    assert_eq!(fonts.selected, "Wide Mono");
+    assert_eq!(scans.load(Ordering::SeqCst), 2);
+    first.close();
+    second.close();
+}
+
+/// A comparison that fails after its font request leaves that request's scan running. Here
+/// that scan panics while the next comparison opens its files; its reply (no catalog) must
+/// not end the wait of the next comparison, which scans again and publishes that catalog.
+#[test]
+fn a_failed_scan_of_an_earlier_comparison_does_not_answer_the_next_one() {
+    let root = fixture();
+    let text = paths(root.path());
+    let binary = [
+        root.path().join("left").join("binary.txt"),
+        root.path().join("right").join("binary.txt"),
+    ];
+    let (entered, entry) = mpsc::sync_channel(1);
+    let (release, held) = mpsc::sync_channel::<()>(1);
+    let held = Mutex::new(held);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let failing = binary.clone();
+    let opened = text[0].clone();
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if failing.iter().any(|side| side == path) {
+            return memory(b"control \x01 byte\n", &reads);
+        }
+        if path == opened {
+            entered.send(()).unwrap();
+            let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(15));
+        }
+        memory(b"same\nline\n", &reads)
+    });
+    let scans = Arc::new(AtomicUsize::new(0));
+    let scanned = scans.clone();
+    let (fail, failure) = mpsc::sync_channel::<()>(1);
+    let (finish, finished) = mpsc::sync_channel::<()>(1);
+    let (failure, finished) = (Mutex::new(failure), Mutex::new(finished));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = Service::with_native_capture(runtime.handle().clone(), capture)
+        .with_image_viewer_discovery(|| Ok(Vec::new()))
+        .with_font_scan(move |_| {
+            if scanned.fetch_add(1, Ordering::SeqCst) == 0 {
+                let _ = failure
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(15));
+                panic!("deliberate font scan fault");
+            }
+            let _ = finished
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(15));
+            Some(Arc::from(["Wide Mono".to_owned()]))
+        })
+        .with_font_check(|_, _| None);
+    let session = open_in_family(&service, launch(&binary), "Wide Mono").unwrap();
+    // The first comparison requested the catalog, then failed on the binary content.
+    assert!(choice(&session).is_error);
+    session.send(Input::Compare(text)).unwrap();
+    entry.recv_timeout(Duration::from_secs(15)).unwrap();
+    fail.send(()).unwrap();
+    // The failed scan's reply to the first request waits while the files are opened.
+    wait_for(|_| (session.inbox.answered() == Some(1)).then_some(()));
+    release.send(()).unwrap();
+    assert!(
+        frame(&session).fonts.is_none(),
+        "the first scan's reply is not the second comparison's"
+    );
+    finish.send(()).unwrap();
+    let fonts = loop {
+        if let Some(fonts) = frame(&session).fonts {
+            break fonts;
+        }
+    };
+    assert_eq!(fonts.selected, "Wide Mono");
+    assert_eq!(
+        scans.load(Ordering::SeqCst),
+        2,
+        "the second comparison scans again"
+    );
+    session.close();
+}
+
+/// One scan answers both comparison windows. The worker of the first is busy and its
+/// queue full; that must neither delay the second window's reply nor lose its own: the
+/// full queue refuses its wake, and it reads the reply once it has taken its inputs.
+#[test]
+fn a_window_with_a_full_queue_neither_delays_nor_loses_a_catalog_reply() {
+    let root = fixture();
+    let busy = paths(root.path());
+    let idle = [
+        root.path().join("left").join("idle.txt"),
+        root.path().join("right").join("idle.txt"),
+    ];
+    let (entered, entry) = mpsc::sync_channel(1);
+    let (release, held) = mpsc::sync_channel(1);
+    let gate = Arc::new(Gate {
+        armed: AtomicBool::new(false),
+        entered,
+        release: Mutex::new(held),
+    });
+    let reads = Arc::new(AtomicUsize::new(0));
+    let gated = gate.clone();
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        let gate = busy.iter().any(|side| side == path).then_some(&gated);
+        source(b"same\nline\n", &reads, gate)
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (service, deliver) = held_scan(
+        Service::with_native_capture(runtime.handle().clone(), capture)
+            .with_image_viewer_discovery(|| Ok(Vec::new())),
+        &Arc::default(),
+    );
+    let service = service.with_font_check(|_, _| None);
+    let first = open_in_family(&service, launch(&paths(root.path())), "Wide Mono").unwrap();
+    assert!(frame(&first).fonts.is_none());
+    let second = open_in_family(&service, launch(&idle), "Wide Mono").unwrap();
+    assert!(frame(&second).fonts.is_none());
+    // The first worker repaints and is held in revalidating its source.
+    gate.armed.store(true, Ordering::Release);
+    first
+        .send(Input::Resize(
+            ViewerGeometry {
+                width: 600,
+                height: 200,
+                scale: 1.0,
+            },
+            1,
+        ))
+        .unwrap();
+    entry.recv_timeout(Duration::from_secs(15)).unwrap();
+    for _ in 0..crate::INPUT_QUEUE {
+        first.send(Input::Fit).unwrap();
+    }
+    assert_eq!(first.send(Input::Fit), Err(Refused::Full));
+    deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
+    let fonts = loop {
+        if let Some(fonts) = frame(&second).fonts {
+            break fonts;
+        }
+    };
+    assert_eq!(fonts.selected, "Wide Mono");
+    release.send(()).unwrap();
+    let fonts = loop {
+        if let Some(fonts) = frame(&first).fonts {
+            break fonts;
+        }
+    };
+    assert_eq!(fonts.selected, "Wide Mono");
+    first.close();
+    second.close();
+}
+
+/// Neither `Session::close` nor a font catalog reply needs a free queue slot: the worker
+/// reads both from the inbox before it blocks. A late reply to an earlier request neither
+/// replaces the newer reply nor answers the newer request.
+#[test]
+fn the_inbox_keeps_a_close_and_the_current_reply_that_a_full_queue_refused() {
+    let (sender, receiver) = mpsc::sync_channel(crate::INPUT_QUEUE);
+    let inbox = Inbox::new(sender);
+    for _ in 0..crate::INPUT_QUEUE {
+        inbox.send(Input::Fit).unwrap();
+    }
+    assert_eq!(inbox.send(Input::Fit), Err(Refused::Full));
+    let earlier = inbox.font_request();
+    let current = inbox.font_request();
+    let catalog: Arc<[String]> = Arc::from(["Wide Mono".to_owned()]);
+    inbox.answer(current, Some(catalog.clone()));
+    inbox.answer(earlier, None);
+    assert_eq!(inbox.answered(), Some(current));
+    assert_eq!(inbox.check(Some(current)), Ok(Some(Some(catalog))));
+    inbox.answer(earlier, None);
+    assert_eq!(
+        inbox.check(Some(current)),
+        Ok(None),
+        "a reply to an earlier request is dropped"
+    );
+    assert_eq!(inbox.answered(), None);
+    inbox.close();
+    assert!(
+        inbox.check(None).is_err(),
+        "the refused Close still ends the worker"
+    );
+    assert_eq!(
+        receiver.try_iter().count(),
+        crate::INPUT_QUEUE,
+        "the full queue refused every wake and Close"
+    );
+}
+
+/// Opt-in timing of a process's first text comparison with the installed font scan and
+/// check: its first frame (and that frame's family) and the frame that publishes the
+/// catalog. Run optimized, in a fresh process each time:
+/// `cargo test --release -p midnight-compare-engine --lib first_comparison_font_timing -- --ignored --nocapture`
+#[test]
+#[ignore = "timing harness; run optimized with --ignored --nocapture"]
+fn first_comparison_font_timing() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = text_service(&runtime);
+    let (woken, wakes) = mpsc::sync_channel(1);
+    let started = Instant::now();
+    let session = service
+        .open_with_wake(
+            launch(&paths),
+            ViewerAppearance {
+                family: "Consolas".into(),
+                font_size: 14.0,
+                foreground: [255; 4],
+                background: [30, 30, 30, 255],
+                selection: [50, 80, 120, 255],
+                accent: [90, 150, 220, 255],
+            },
+            ViewerGeometry {
+                width: 640,
+                height: 200,
+                scale: 1.0,
+            },
+            Arc::new(move || {
+                let _ = woken.try_send(());
+                true
+            }),
+        )
+        .unwrap();
+    let mut first = None;
+    let catalog = loop {
+        wakes
+            .recv_timeout(Duration::from_secs(60))
+            .expect("an output within a minute");
+        if let Some(Output::Frame { frame, .. }) = session.mailbox.take() {
+            let at = started.elapsed();
+            first.get_or_insert((at, frame.text_family.clone()));
+            if frame.fonts.is_some() {
+                break at;
+            }
+        }
+    };
+    let (first, family) = first.unwrap();
+    println!(
+        "compare_font_timing first_frame_ms={:.1} first_family={family:?} catalog_frame_ms={:.1}",
+        first.as_secs_f64() * 1000.0,
+        catalog.as_secs_f64() * 1000.0
+    );
     session.close();
 }
 

@@ -145,6 +145,8 @@ impl Images {
         );
         Ok(Frame {
             fonts: None,
+            #[cfg(test)]
+            text_family: None,
             geometry_revision: 0,
             mode: Some(self.mode),
             width: geometry.width,

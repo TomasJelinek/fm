@@ -4,6 +4,7 @@ use midnight_viewer_render::{
     CellAlignment, ColorSpan, DocumentBlock, DocumentKind, DocumentStyle, StyleSpan, TableCell,
     TableRow, TextOptions, TextPage, TextRenderer,
 };
+use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "page_color_tests.rs"]
@@ -14,7 +15,9 @@ mod document_tests;
 
 #[derive(Clone)]
 pub(crate) struct Page {
-    pub text: String,
+    /// Converted once per received page. Every frame's accessible text shares it by
+    /// reference count instead of copying up to a whole page per paint.
+    pub text: Arc<str>,
     pub spans: Vec<ColorSpan>,
     pub styles: Vec<StyleSpan>,
     pub tables: Vec<TableRow>,
@@ -101,7 +104,7 @@ impl Page {
                     color: palette.color(span.role),
                 })
                 .collect(),
-            text: page.text,
+            text: page.text.into(),
             start: page.source.offset,
             end: page.source.offset.saturating_add(page.source.length),
             before: page.has_before,
@@ -144,7 +147,7 @@ impl Page {
             text.push('\n');
         }
         Self {
-            text,
+            text: text.into(),
             tables: Vec::new(),
             document_blocks: Vec::new(),
             spans: vec![],
@@ -228,7 +231,7 @@ impl Page {
             append_document_styles(&block, start, appearance.font_size, &mut styles);
         }
         Self {
-            text,
+            text: text.into(),
             spans,
             styles,
             tables,
@@ -403,8 +406,14 @@ mod github_layout_tests {
         assert_eq!(legacy.caret_geometry(9).unwrap().x0, 0.0);
         assert_eq!(github.caret_geometry(9).unwrap().x0, 16.0);
         assert_eq!(large.caret_geometry(9).unwrap().x0, 24.0);
-        assert_eq!(github.selected_text(0..page.text.len()).unwrap(), page.text);
-        assert_eq!(legacy.selected_text(0..page.text.len()).unwrap(), page.text);
+        assert_eq!(
+            github.selected_text(0..page.text.len()).unwrap(),
+            &*page.text
+        );
+        assert_eq!(
+            legacy.selected_text(0..page.text.len()).unwrap(),
+            &*page.text
+        );
         assert_eq!(
             (page.anchors[1].text_offset, page.anchors[1].source_offset),
             (9, 8)

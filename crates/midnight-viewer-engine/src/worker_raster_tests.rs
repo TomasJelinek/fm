@@ -1738,7 +1738,9 @@ fn retained_rebase_failed_layout_keeps_correction_authority_until_terminal_failu
     );
     worker.viewport_request = Some(94);
     let mut invalid = worker.page.as_ref().unwrap().clone();
-    invalid.text = "x".repeat(midnight_viewer_render::MAX_TEXT_BYTES + 1);
+    invalid.text = "x"
+        .repeat(midnight_viewer_render::MAX_TEXT_BYTES + 1)
+        .into();
     assert!(!worker.set_page(invalid, &output));
     worker.paint(&output).unwrap();
     assert!(

@@ -72,8 +72,21 @@ pub fn installed_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>>
 }
 
 fn discover_installed(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
-    let mut fonts = FontContext::default();
-    let mut names: Vec<_> = fonts
+    let mut names = catalog_names(&mut FontContext::default());
+    if cancelled() {
+        return None;
+    }
+    sort_catalog(&mut names);
+    if cancelled() {
+        return None;
+    }
+    Some(names.into())
+}
+
+/// The installed family names a catalog considers: the collection's first 16,384,
+/// without blank, overlong or control-character names.
+fn catalog_names(fonts: &mut FontContext) -> Vec<String> {
+    fonts
         .collection
         .family_names()
         .take(16_384)
@@ -81,16 +94,13 @@ fn discover_installed(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
             !name.trim().is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
         })
         .map(str::to_owned)
-        .collect();
-    if cancelled() {
-        return None;
-    }
+        .collect()
+}
+
+/// Case-insensitive order; of names that differ only in ASCII case, the first is kept.
+fn sort_catalog(names: &mut Vec<String>) {
     names.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
     names.dedup_by(|right, left| left.eq_ignore_ascii_case(right));
-    if cancelled() {
-        return None;
-    }
-    Some(names.into())
 }
 
 /// Code fonts with fixed-pitch metrics and glyphs for every printable ASCII character.
@@ -101,46 +111,82 @@ pub fn monospace_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>>
 
 fn discover_monospace(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
     let mut fonts = FontContext::default();
-    let candidates: Vec<_> = fonts
-        .collection
-        .family_names()
-        .take(16_384)
-        .filter(|name| {
-            !name.trim().is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
-        })
-        .map(str::to_owned)
-        .collect();
     let mut names = Vec::new();
-    for name in candidates {
+    for name in catalog_names(&mut fonts) {
         if cancelled() {
             return None;
         }
-        let Some(family) = fonts.collection.family_by_name(&name) else {
-            continue;
-        };
-        let Some(face) = family.fonts().first() else {
-            continue;
-        };
-        let Some(data) = face.load(Some(&mut fonts.source_cache)) else {
-            continue;
-        };
-        if swash::FontRef::from_index(data.as_ref(), face.index() as usize).is_some_and(|font| {
-            if !font.metrics(&[]).is_monospace {
-                return false;
-            }
-            // Symbol/emoji faces may report fixed pitch but trigger proportional fallback.
-            let charmap = font.charmap();
-            (' '..='~').all(|character| charmap.map(character) != 0)
-        }) {
+        if fixed_pitch(&mut fonts, &name, &mut || {}) {
             names.push(name);
         }
     }
     if cancelled() {
         return None;
     }
-    names.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
-    names.dedup_by(|right, left| left.eq_ignore_ascii_case(right));
+    sort_catalog(&mut names);
     Some(names.into())
+}
+
+/// The catalog's predicate: the family's first face has fixed-pitch metrics and glyphs
+/// for every printable ASCII character. `loaded` is called before its face is loaded.
+fn fixed_pitch(fonts: &mut FontContext, name: &str, loaded: &mut impl FnMut()) -> bool {
+    let Some(family) = fonts.collection.family_by_name(name) else {
+        return false;
+    };
+    let Some(face) = family.fonts().first() else {
+        return false;
+    };
+    loaded();
+    let Some(data) = face.load(Some(&mut fonts.source_cache)) else {
+        return false;
+    };
+    swash::FontRef::from_index(data.as_ref(), face.index() as usize).is_some_and(|font| {
+        if !font.metrics(&[]).is_monospace {
+            return false;
+        }
+        // Symbol/emoji faces may report fixed pitch but trigger proportional fallback.
+        let charmap = font.charmap();
+        (' '..='~').all(|character| charmap.map(character) != 0)
+    })
+}
+
+/// The name [`monospace_families`] lists for the first of `candidates` it would contain,
+/// matched ASCII case-insensitively as a chooser resolves a saved family, without
+/// scanning the other installed families: it applies the catalog's name filters and
+/// predicate and loads one face per installed candidate. Lets a caller paint its
+/// preferred code font while the catalog is still being scanned. `None` when no
+/// candidate qualifies or when cancelled. Backend workers only.
+pub fn fixed_pitch_family(candidates: &[&str], cancelled: impl Fn() -> bool) -> Option<String> {
+    first_fixed_pitch(candidates, cancelled, &mut || {})
+}
+
+fn first_fixed_pitch(
+    candidates: &[&str],
+    cancelled: impl Fn() -> bool,
+    loaded: &mut impl FnMut(),
+) -> Option<String> {
+    if candidates.is_empty() || cancelled() {
+        return None;
+    }
+    let mut fonts = FontContext::default();
+    let names = catalog_names(&mut fonts);
+    for candidate in candidates {
+        // The catalog keeps the first qualifying name of each case-insensitive group.
+        let mut group: Vec<_> = names
+            .iter()
+            .filter(|name| name.eq_ignore_ascii_case(candidate))
+            .collect();
+        group.sort_by_cached_key(|name| (name.to_lowercase(), (*name).clone()));
+        for name in group {
+            if cancelled() {
+                return None;
+            }
+            if fixed_pitch(&mut fonts, name, loaded) {
+                return Some(name.clone());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

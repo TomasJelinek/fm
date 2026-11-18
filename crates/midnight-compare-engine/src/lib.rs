@@ -19,7 +19,7 @@ use midnight_core::{
 };
 use std::path::PathBuf;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, SyncSender, TrySendError},
 };
@@ -80,6 +80,9 @@ pub enum Input {
 
 pub struct Frame {
     pub fonts: Option<FontChoices>,
+    /// Tests only: the family a text frame was painted in.
+    #[cfg(test)]
+    pub(crate) text_family: Option<String>,
     pub geometry_revision: u64,
     pub mode: Option<ImageMode>,
     pub width: u32,
@@ -123,6 +126,113 @@ pub struct FileChoice {
 /// Inputs a session queues for its worker; `Session::send` refuses more (`Refused::Full`)
 /// until the worker takes some.
 pub const INPUT_QUEUE: usize = 32;
+
+/// A message for the comparison worker: an input, or a wake for a font catalog reply that
+/// the scan left in the session's `Inbox`. The worker always blocks in `recv` instead of
+/// polling for the scan.
+pub(crate) enum Message {
+    Input(Input),
+    Fonts,
+}
+
+/// A font catalog, or `None` when the scan was cancelled, failed or panicked.
+pub(crate) type FontReply = Option<Arc<[String]>>;
+
+/// The comparison worker's queue, and what the worker reads before every blocking receive:
+/// whether the session was closed, and the reply to the font catalog request its text
+/// comparison waits for. Writers change that state under the lock and then try to queue a
+/// message, which a full queue may refuse without losing anything. If the worker's last
+/// read came after the change, it saw the change. Otherwise every message the worker took
+/// before that read was taken before the refused send, so the full queue held messages it
+/// had not taken: its next receive returns at once, and it reads again after that batch.
+/// Neither a close nor a reply therefore waits for room, and a window with a full queue
+/// cannot delay the reply to another.
+pub(crate) struct Inbox {
+    queue: SyncSender<Message>,
+    state: Mutex<Signals>,
+}
+
+#[derive(Default)]
+struct Signals {
+    closed: bool,
+    /// The number of the session's latest font catalog request.
+    requests: u64,
+    /// A font catalog reply and the number of the request it answers.
+    fonts: Option<(u64, FontReply)>,
+}
+
+impl Inbox {
+    fn new(queue: SyncSender<Message>) -> Self {
+        Self {
+            queue,
+            state: Mutex::default(),
+        }
+    }
+
+    fn state(&self) -> MutexGuard<'_, Signals> {
+        self.state.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn send(&self, input: Input) -> Result<(), Refused> {
+        self.queue
+            .try_send(Message::Input(input))
+            .map_err(|error| match error {
+                TrySendError::Full(_) => Refused::Full,
+                TrySendError::Disconnected(_) => Refused::Stopped,
+            })
+    }
+
+    /// Ends the worker before its next blocking receive, also when every queue slot is
+    /// taken; the queued Close only ends a waiting worker sooner.
+    fn close(&self) {
+        self.state().closed = true;
+        let _ = self.queue.try_send(Message::Input(Input::Close));
+    }
+
+    /// Numbers a font catalog request of the worker's current comparison.
+    pub(crate) fn font_request(&self) -> u64 {
+        let mut state = self.state();
+        state.requests += 1;
+        state.requests
+    }
+
+    /// The scan's reply to request `request`. It runs on the scan thread and never waits
+    /// for room in the queue.
+    pub(crate) fn answer(&self, request: u64, reply: FontReply) {
+        {
+            let mut state = self.state();
+            // A late reply to an earlier request must not replace the newer one.
+            if state
+                .fonts
+                .as_ref()
+                .is_none_or(|(answered, _)| *answered <= request)
+            {
+                state.fonts = Some((request, reply));
+            }
+        }
+        let _ = self.queue.try_send(Message::Fonts);
+    }
+
+    /// Read before every blocking receive: `Err` once the session was closed, otherwise
+    /// the reply to request `awaiting` if it arrived. A reply to an earlier request, from
+    /// a comparison that failed before its reply, is dropped.
+    pub(crate) fn check(&self, awaiting: Option<u64>) -> Result<Option<FontReply>, String> {
+        let mut state = self.state();
+        if state.closed {
+            return Err("Comparison cancelled.".into());
+        }
+        Ok(match state.fonts.take() {
+            Some((request, reply)) if Some(request) == awaiting => Some(reply),
+            _ => None,
+        })
+    }
+
+    /// Tests only: the request whose reply waits to be read.
+    #[cfg(test)]
+    pub(crate) fn answered(&self) -> Option<u64> {
+        self.state().fonts.as_ref().map(|(request, _)| *request)
+    }
+}
 
 /// Why `Session::send` refused an input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,10 +300,13 @@ pub struct Service {
     fonts: Arc<discovery::FixedPitchFonts>,
     active: Arc<AtomicUsize>,
     picker: Option<Arc<dyn PathPickerService>>,
+    /// Tests only: counts the turns of comparison workers' input loops.
+    #[cfg(test)]
+    turns: Option<Arc<AtomicUsize>>,
 }
 
 pub struct Session {
-    sender: SyncSender<Input>,
+    inbox: Arc<Inbox>,
     cancelled: Arc<AtomicBool>,
     picker_cancel: Cancellation,
     pub mailbox: Arc<Mailbox>,
@@ -203,15 +316,14 @@ pub struct Session {
 impl Session {
     /// Queues an input for the worker without blocking.
     pub fn send(&self, input: Input) -> Result<(), Refused> {
-        self.sender.try_send(input).map_err(|error| match error {
-            TrySendError::Full(_) => Refused::Full,
-            TrySendError::Disconnected(_) => Refused::Stopped,
-        })
+        self.inbox.send(input)
     }
+    /// Running reads and decodes stop at their next cancellation check; a worker that
+    /// waits for input stops through its inbox, which needs no free queue slot.
     pub fn close(&self) {
         self.picker_cancel.cancel();
         self.cancelled.store(true, Ordering::Release);
-        let _ = self.sender.try_send(Input::Close);
+        self.inbox.close();
     }
 }
 impl Drop for Session {
@@ -251,6 +363,8 @@ impl Service {
             fonts: Arc::new(discovery::FixedPitchFonts::installed()),
             active: Arc::new(AtomicUsize::new(0)),
             picker: None,
+            #[cfg(test)]
+            turns: None,
         }
     }
     #[cfg(test)]
@@ -267,9 +381,33 @@ impl Service {
     #[cfg(test)]
     fn with_font_scan(
         mut self,
-        scan: impl Fn(&AtomicBool) -> Option<Arc<[String]>> + Send + Sync + 'static,
+        scan: impl Fn(&dyn Fn() -> bool) -> Option<Arc<[String]>> + Send + Sync + 'static,
     ) -> Self {
         self.fonts = Arc::new(discovery::FixedPitchFonts::with_scan(scan));
+        self
+    }
+    /// Replaces the check of the preferred family that runs before a catalog is kept.
+    #[cfg(test)]
+    fn with_font_check(
+        mut self,
+        check: impl Fn(&[&str], &dyn Fn() -> bool) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.fonts_mut().set_check(check);
+        self
+    }
+    /// The font scan cannot get a thread, as when the system refuses one.
+    #[cfg(test)]
+    fn without_font_thread(mut self) -> Self {
+        self.fonts_mut().unspawnable = true;
+        self
+    }
+    #[cfg(test)]
+    fn fonts_mut(&mut self) -> &mut discovery::FixedPitchFonts {
+        Arc::get_mut(&mut self.fonts).expect("configure fonts before opening a session")
+    }
+    #[cfg(test)]
+    fn with_turn_counter(mut self, turns: Arc<AtomicUsize>) -> Self {
+        self.turns = Some(turns);
         self
     }
     pub fn with_path_picker(mut self, picker: Arc<dyn PathPickerService>) -> Self {
@@ -318,6 +456,12 @@ impl Service {
             .map_err(|_| "Close a comparator before opening another (maximum two).")?;
         let permit = Permit(self.active.clone());
         let (sender, receiver) = mpsc::sync_channel(INPUT_QUEUE);
+        // The worker shares the inbox with the session and its font catalog requests, so
+        // its queue never disconnects while it runs: the inbox's `closed` ends it.
+        let inbox = Arc::new(Inbox::new(sender));
+        let worker_inbox = inbox.clone();
+        #[cfg(test)]
+        let turns = self.turns.clone();
         let mailbox = Arc::new(Mailbox::with_wake(wake));
         let cancelled = Arc::new(AtomicBool::new(false));
         let output = mailbox.clone();
@@ -345,7 +489,10 @@ impl Service {
                         storage: storage.as_ref(),
                         viewers: &viewers,
                         fonts: &fonts,
+                        inbox: &worker_inbox,
                         cancel: &stop,
+                        #[cfg(test)]
+                        turns: turns.as_deref(),
                     },
                     picker,
                 )
@@ -358,7 +505,7 @@ impl Service {
             }
         });
         Ok(Session {
-            sender,
+            inbox,
             cancelled,
             picker_cancel,
             mailbox,

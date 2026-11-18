@@ -24,7 +24,11 @@ pub(crate) struct TextComparison {
     rows: Vec<Row>,
     differences: Vec<usize>,
     renderer: TextRenderer,
+    /// The chooser's catalog and selection; `None` until the catalog arrives, which keeps
+    /// the chooser disabled.
     fonts: Option<FontChoices>,
+    /// The family painted while `fonts` is `None`.
+    family: String,
     pub top: usize,
     pub horizontal: f32,
     vertical_remainder: f32,
@@ -139,6 +143,7 @@ impl TextComparison {
             differences,
             renderer: TextRenderer::default(),
             fonts: None,
+            family: "monospace".into(),
             top: 0,
             horizontal: 0.0,
             vertical_remainder: 0.0,
@@ -147,12 +152,19 @@ impl TextComparison {
         })
     }
 
-    /// Install the fixed-pitch catalog scanned by the worker's font thread and resolve the
-    /// preferred family against it. Until then frames use the generic monospace family
-    /// and carry no font choices, so the first frame never waits for the font scan.
+    /// Install the fixed-pitch catalog scanned by the service's font thread and resolve the
+    /// preferred family against it. Until then frames carry no font choices and paint in
+    /// the family of `set_family`, so the first frame never waits for the font scan.
     pub fn set_font_catalog(&mut self, families: Arc<[String]>, preferred: &str) {
         let selected = resolve_family(&families, preferred);
+        self.family.clone_from(&selected);
         self.fonts = Some(FontChoices { families, selected });
+    }
+
+    /// The family to paint before the catalog arrives, resolved by a check of at most two
+    /// families (`FixedPitchFonts::resolve`).
+    pub fn set_family(&mut self, family: String) {
+        self.family = family;
     }
 
     pub fn scroll(&mut self, rows: i64) {
@@ -218,8 +230,7 @@ impl TextComparison {
         let family = self
             .fonts
             .as_ref()
-            .map(|fonts| fonts.selected.as_str())
-            .unwrap_or("monospace");
+            .map_or(self.family.as_str(), |fonts| fonts.selected.as_str());
         let (width, height) = (geometry.width, geometry.height);
         let mut pixels = appearance
             .background
@@ -330,6 +341,8 @@ impl TextComparison {
         };
         Ok(Frame {
             fonts: self.fonts.clone(),
+            #[cfg(test)]
+            text_family: Some(family.to_owned()),
             geometry_revision: 0,
             mode: None,
             width,
@@ -364,23 +377,38 @@ fn text_control(c: char) -> bool {
 }
 
 /// Show the accepted invisible controls as Unicode control pictures (tabs keep their
-/// layout), so a difference in them is visible and not rendered as tofu.
+/// layout), so a difference in them is visible and not rendered as tofu. The explicit
+/// bidirectional embedding, override and isolate controls are shown as `\uNNNN` escapes,
+/// so neither file can reorder its displayed lines ("Trojan Source"). Display only: the
+/// diff compares the raw lines.
 fn visible_controls(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains(['\u{0b}', '\u{0c}', '\u{1b}']) {
+    if !text.contains(|c| matches!(c, '\u{0b}' | '\u{0c}' | '\u{1b}') || bidi_control(c)) {
         return text.into();
     }
-    text.chars()
-        .map(|c| match c {
-            '\u{0b}' | '\u{0c}' | '\u{1b}' => {
-                char::from_u32(0x2400 + u32::from(c)).unwrap_or(char::REPLACEMENT_CHARACTER)
+    let mut shown = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        match c {
+            '\u{0b}' | '\u{0c}' | '\u{1b}' => shown
+                .push(char::from_u32(0x2400 + u32::from(c)).unwrap_or(char::REPLACEMENT_CHARACTER)),
+            c if bidi_control(c) => {
+                use std::fmt::Write;
+                let _ = write!(shown, "\\u{:04X}", u32::from(c));
             }
-            other => other,
-        })
-        .collect::<String>()
-        .into()
+            other => shown.push(other),
+        }
+    }
+    shown.into()
 }
 
-fn resolve_family(families: &[String], preferred: &str) -> String {
+/// The explicit bidirectional embedding, override and isolate controls (U+202A-U+202E,
+/// U+2066-U+2069). Implicit direction marks (LRM, RLM, ALM) stay ordinary text.
+fn bidi_control(c: char) -> bool {
+    matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// The catalog's name for the preferred family (ASCII case-insensitive), else Consolas,
+/// else generic monospace.
+pub(crate) fn resolve_family(families: &[String], preferred: &str) -> String {
     if preferred == "monospace" {
         return preferred.into();
     }
@@ -481,6 +509,42 @@ mod tests {
             .unwrap();
         assert!(frame.accessible_text.contains("page 1␌"));
         assert!(frame.accessible_text.contains("␛[31mred␛[0m␋x"));
+    }
+
+    #[test]
+    fn bidi_controls_are_shown_as_escapes() {
+        assert_eq!(
+            visible_controls("a\u{202e}b\u{2066}c\u{200f}d\u{1b}"),
+            "a\\u202Eb\\u2066c\u{200f}d␛"
+        );
+        for control in ('\u{202a}'..='\u{202e}').chain('\u{2066}'..='\u{2069}') {
+            let line = format!("x{control}y");
+            assert_eq!(
+                visible_controls(&line),
+                format!("x\\u{:04X}y", u32::from(control))
+            );
+        }
+        assert!(matches!(
+            visible_controls("RTL \u{200e}\u{200f}\u{61c} marks"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn lines_that_differ_only_in_a_bidi_control_show_both_escapes_in_one_changed_row() {
+        let cancel = AtomicBool::new(false);
+        let mut diff = TextComparison::new("x\u{202e}y\n", "x\u{202c}y\n", &cancel).unwrap();
+        assert_eq!(diff.rows.len(), 1);
+        assert!(diff.rows[0].changed);
+        let geometry = ViewerGeometry {
+            width: 400,
+            height: 100,
+            scale: 1.0,
+        };
+        let frame = diff.paint(geometry, &appearance(12.0), &cancel).unwrap();
+        assert!(frame.accessible_text.contains("x\\u202Ey"));
+        assert!(frame.accessible_text.contains("x\\u202Cy"));
+        assert!(!frame.accessible_text.contains(bidi_control));
     }
 
     fn appearance(font_size: f32) -> ViewerAppearance {

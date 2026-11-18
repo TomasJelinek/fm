@@ -1,22 +1,12 @@
-use crate::discovery::{FixedPitchFonts, FontCatalog, ImageViewers};
+use crate::discovery::{Deliver, FixedPitchFonts, ImageViewers};
 use crate::file_choice::{self, Picker, resolve};
 use crate::{
-    FileChoice, Input, Mailbox, NativeCapture, Output, StorageHint, check_cancel, images::Images,
-    text::TextComparison,
+    FileChoice, Inbox, Input, Mailbox, Message, NativeCapture, Output, StorageHint, check_cancel,
+    images::Images, text::TextComparison,
 };
 use midnight_core::{FileCompareLaunch, ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
-use std::{
-    sync::{
-        Arc,
-        atomic::AtomicBool,
-        mpsc::{Receiver, RecvTimeoutError},
-    },
-    time::Duration,
-};
-
-/// While the font catalog is pending, inputs are awaited at most this long between checks.
-const FONT_POLL: Duration = Duration::from_millis(20);
+use std::sync::{Arc, atomic::AtomicBool, mpsc::Receiver};
 
 enum Content {
     Text(Box<TextComparison>),
@@ -33,10 +23,27 @@ pub(crate) struct Capture<'a> {
     pub storage: Option<&'a StorageHint>,
     pub viewers: &'a ImageViewers,
     pub fonts: &'a Arc<FixedPitchFonts>,
+    /// The session's inbox, which also receives font catalog replies.
+    pub inbox: &'a Arc<Inbox>,
     pub cancel: &'a Arc<AtomicBool>,
+    #[cfg(test)]
+    pub turns: Option<&'a std::sync::atomic::AtomicUsize>,
 }
 
 impl Capture<'_> {
+    /// Leaves the reply to font catalog request `request` in this session's inbox and
+    /// wakes the worker. It runs on the scan thread and never waits for room in the queue.
+    fn font_delivery(&self, request: u64) -> Deliver {
+        let inbox = Arc::clone(self.inbox);
+        Box::new(move |families| inbox.answer(request, families))
+    }
+
+    #[cfg(test)]
+    fn turn(&self) {
+        if let Some(turns) = self.turns {
+            turns.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
     fn open(&self, path: &std::path::Path) -> Result<CapturedFile, String> {
         check_cancel(self.cancel)?;
         let result = (self.factory)(path, self.cancel);
@@ -78,7 +85,7 @@ pub(crate) fn run(
     launch: FileCompareLaunch,
     appearance: ViewerAppearance,
     geometry: ViewerGeometry,
-    receiver: Receiver<Input>,
+    receiver: Receiver<Message>,
     output: &Mailbox,
     capture: Capture<'_>,
     picker: Picker,
@@ -117,17 +124,27 @@ pub(crate) fn run(
             }
             Err(choice) => {
                 output.put(Output::ChooseFiles(choice));
-                // Session::close sets the cancellation flag before it queues Close, so a
-                // blocking receive needs no polling interval.
+                // The inbox read before each blocking receive ends the worker once the
+                // session closed, also when its full queue refused Close, so the receive
+                // needs no polling interval. It drops a late font catalog reply of a
+                // failed comparison.
                 loop {
                     check_cancel(cancel)?;
-                    match receiver.recv() {
-                        Ok(Input::Close) | Err(_) => return Ok(()),
-                        Ok(Input::Compare(paths)) => break Ok(paths),
-                        Ok(Input::Browse { side, paths, owner }) => {
+                    capture.inbox.check(None)?;
+                    // The worker's inbox holds a sender: the queue does not disconnect.
+                    let Ok(message) = receiver.recv() else {
+                        return Ok(());
+                    };
+                    let Message::Input(input) = message else {
+                        continue;
+                    };
+                    match input {
+                        Input::Close => return Ok(()),
+                        Input::Compare(paths) => break Ok(paths),
+                        Input::Browse { side, paths, owner } => {
                             break Err(picker.browse(side, paths, owner));
                         }
-                        Ok(Input::Resize(value, revision)) => {
+                        Input::Resize(value, revision) => {
                             viewport.geometry = value;
                             viewport.revision = revision;
                         }
@@ -144,7 +161,7 @@ fn compare(
     disabled_plugins: &[String],
     appearance: &ViewerAppearance,
     viewport: &mut Viewport,
-    receiver: &Receiver<Input>,
+    receiver: &Receiver<Message>,
     output: &Mailbox,
     capture: &Capture<'_>,
 ) -> Result<(), String> {
@@ -186,7 +203,8 @@ fn compare(
                 .into(),
         );
     }
-    let mut fonts: Option<FontCatalog> = None;
+    // The font catalog request whose reply this text comparison waits for.
+    let mut awaiting_fonts = None;
     let mut content = (|| -> Result<Content, String> {
         Ok(match selected {
             [Some(left), Some(right)] => {
@@ -202,12 +220,24 @@ fn compare(
             }
             [None, None] => {
                 // The catalog scan overlaps the reads and the diff. A catalog the service
-                // already holds is ready at once, so the first frame uses the preferred family.
-                fonts = Some(capture.fonts.request(cancel));
+                // already holds is ready at once.
+                let request = capture.inbox.font_request();
+                let catalog = capture
+                    .fonts
+                    .request(cancel, capture.font_delivery(request));
                 output.put(Output::Status("Reading and comparing text…".into()));
                 let left = crate::text::read(&sources[0], ssd[0], cancel)?;
                 let right = crate::text::read(&sources[1], ssd[1], cancel)?;
-                let text = TextComparison::new(&left, &right, cancel)?;
+                let mut text = TextComparison::new(&left, &right, cancel)?;
+                match catalog {
+                    Some(families) => text.set_font_catalog(families, &appearance.family),
+                    None => {
+                        // The first frame paints in the preferred family, checked without
+                        // waiting for the scan; the catalog then publishes the chooser list.
+                        text.set_family(capture.fonts.resolve(&appearance.family, cancel));
+                        awaiting_fonts = Some(request);
+                    }
+                }
                 Content::Text(Box::new(text))
             }
             _ => return Err("Select two supported images or two text files.".to_owned()),
@@ -222,16 +252,19 @@ fn compare(
     let mut dirty = true;
     loop {
         check_cancel(cancel)?;
-        if let Some(reply) = fonts.as_ref().and_then(FontCatalog::reply) {
-            fonts = None;
-            // A cancelled scan ends the comparison at the next check; a failed scan keeps
-            // the generic family without a chooser list.
+        // Read the inbox before painting and blocking: a closed session ends the
+        // comparison, and the awaited reply publishes the chooser list. A failed scan
+        // keeps the resolved family without a chooser list.
+        if let Some(reply) = capture.inbox.check(awaiting_fonts)? {
+            awaiting_fonts = None;
             if let (Some(families), Content::Text(text)) = (reply, &mut content) {
-                // Paint in the resolved family and publish the chooser list.
+                // Publish the chooser list, resolved against the catalog.
                 text.set_font_catalog(families, &appearance.family);
                 dirty = true;
             }
         }
+        #[cfg(test)]
+        capture.turn();
         if dirty {
             for source in &sources {
                 source
@@ -256,40 +289,29 @@ fn compare(
             });
             dirty = false;
         }
-        // Idle comparisons block until input, Close or the session's disconnection; only a
-        // pending font catalog bounds the wait.
-        let input = if fonts.is_some() {
-            match receiver.recv_timeout(FONT_POLL) {
-                Err(RecvTimeoutError::Timeout) => continue,
-                result => result.map_err(|_| ()),
-            }
-        } else {
-            receiver.recv().map_err(|_| ())
+        // Idle comparisons block until an input, Close or a font catalog wake arrives;
+        // nothing is polled while the scan runs. The worker's inbox holds a sender, so
+        // the queue does not disconnect.
+        let Ok(first) = receiver.recv() else {
+            return Ok(());
         };
-        match input {
-            Ok(Input::Close) | Err(()) => break,
-            Ok(input) => {
-                dirty |= apply(
-                    input,
-                    &mut content,
-                    &mut viewport.geometry,
-                    &mut viewport.revision,
-                )
+        let batch = receiver.try_iter().take(crate::INPUT_QUEUE - 1);
+        for message in std::iter::once(first).chain(batch) {
+            match message {
+                Message::Input(Input::Close) => return Ok(()),
+                Message::Input(input) => {
+                    dirty |= apply(
+                        input,
+                        &mut content,
+                        &mut viewport.geometry,
+                        &mut viewport.revision,
+                    );
+                }
+                // The next turn reads the reply from the inbox.
+                Message::Fonts => {}
             }
-        }
-        for input in receiver.try_iter().take(crate::INPUT_QUEUE - 1) {
-            if matches!(input, Input::Close) {
-                return Ok(());
-            }
-            dirty |= apply(
-                input,
-                &mut content,
-                &mut viewport.geometry,
-                &mut viewport.revision,
-            );
         }
     }
-    Ok(())
 }
 
 fn apply(

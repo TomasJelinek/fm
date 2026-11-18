@@ -272,17 +272,26 @@ pub(crate) fn run(
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => break,
             },
-            // The worker's own wake handle keeps a sender alive; Close ends the session.
+            // The worker's own wake handle keeps a sender alive. Closing the window sets
+            // `closed` and wakes it through the reserved slot (`Wakes::close`).
             None => match receiver.recv() {
                 Ok(message) => Some(message),
                 Err(_) => break,
             },
         };
-        // A bounded batch combines wheel/resize events into a single raster frame.
+        // A bounded batch combines wheel/resize events into a single raster frame. It can
+        // take every admitted input and the wake, so a full channel drains in one turn.
         let batch: Vec<_> = first
             .into_iter()
-            .chain(receiver.try_iter().take(63))
+            .chain(receiver.try_iter().take(crate::input_queue::INPUTS))
             .collect();
+        // Taken inputs free their admission slots; the wake slot stays reserved.
+        wakes.taken(
+            batch
+                .iter()
+                .filter(|message| !matches!(message, Message::Ready))
+                .count(),
+        );
         worker.input_batch(batch, closed, &wakes, output);
         if closed.load(Ordering::Acquire) || worker.layout.closed() {
             break;
@@ -1301,7 +1310,8 @@ impl Worker {
             height,
             pixels,
             tiles: None,
-            accessible_text: page.text.clone().into(),
+            // A reference-count increment: every frame of a page shares its text.
+            accessible_text: page.text.clone(),
             position,
             vertical_extent,
             horizontal_position: f64::from(
