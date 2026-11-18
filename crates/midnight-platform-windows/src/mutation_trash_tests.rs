@@ -11,12 +11,52 @@ use windows::{
             CoUninitialize,
         },
         UI::Shell::{
-            FOF_NOERRORUI, FOF_SILENT, FOFX_EARLYFAILURE, FileOperation, IFileOperation,
-            SHCreateItemFromParsingName,
+            COPYENGINE_E_ACCESS_DENIED_DEST, FOF_NOERRORUI, FOF_SILENT, FOFX_EARLYFAILURE,
+            FileOperation, IFileOperation, SHCreateItemFromParsingName,
         },
     },
     core::PCWSTR,
 };
+
+#[test]
+fn in_use_recycle_refusals_are_readable_retryable_and_keep_the_path() {
+    let path = Path::new("D:\\work\\文档 🦀\\in use e\u{301}");
+    // The Shell also reports other refused access with 0x80270021, which its message names.
+    for (code, hex, names_denied_access) in [
+        (COPYENGINE_E_ACCESS_DENIED_SRC, "0x80270021", true),
+        (COPYENGINE_E_SHARING_VIOLATION_SRC, "0x80270027", false),
+    ] {
+        let error = recycle_error(path, windows::core::Error::from_hresult(code));
+        assert_eq!(error.kind, io::ErrorKind::ResourceBusy, "{error}");
+        assert_eq!((error.operation, error.path.as_path()), ("recycle", path));
+        let message = &error.message;
+        assert!(
+            message.contains("the item or something inside it is in use by another program"),
+            "{error}"
+        );
+        assert!(
+            message.contains("retry when it is no longer in use"),
+            "{error}"
+        );
+        assert!(message.contains("not permanently deleted"), "{error}");
+        assert!(message.contains(hex), "{error}");
+        assert_eq!(
+            message.contains("access to it is denied"),
+            names_denied_access,
+            "{error}"
+        );
+        let shown = error.to_string();
+        assert!(shown.ends_with(&format!("({})", path.display())), "{shown}");
+    }
+    // Any other code, such as a refusal by the Recycle Bin destination, keeps its own code.
+    let error = recycle_error(
+        path,
+        windows::core::Error::from_hresult(COPYENGINE_E_ACCESS_DENIED_DEST),
+    );
+    assert_eq!(error.kind, io::ErrorKind::Other, "{error}");
+    assert!(error.message.contains("0x80270022"), "{error}");
+    assert_eq!(error.path, path);
+}
 
 #[test]
 #[ignore = "requires Shell access outside the sandbox; recycles and restores only a fresh fixture"]

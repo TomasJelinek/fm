@@ -8,8 +8,9 @@ use midnight_core::{Cancellation, FsError};
 use std::{io, os::windows::ffi::OsStrExt, path::Path};
 use windows::{
     Win32::UI::Shell::{
-        BHID_Transfer, COPYENGINE_E_RECYCLE_BIN_NOT_FOUND, COPYENGINE_E_RECYCLE_FORCE_NUKE,
-        COPYENGINE_E_RECYCLE_PATH_TOO_LONG, COPYENGINE_E_RECYCLE_SIZE_TOO_BIG,
+        BHID_Transfer, COPYENGINE_E_ACCESS_DENIED_SRC, COPYENGINE_E_RECYCLE_BIN_NOT_FOUND,
+        COPYENGINE_E_RECYCLE_FORCE_NUKE, COPYENGINE_E_RECYCLE_PATH_TOO_LONG,
+        COPYENGINE_E_RECYCLE_SIZE_TOO_BIG, COPYENGINE_E_SHARING_VIOLATION_SRC,
         FOLDERID_RecycleBinFolder, IShellItem, ITransferSource, KF_FLAG_DEFAULT,
         SHCreateItemFromParsingName, SHGetKnownFolderItem,
     },
@@ -78,24 +79,44 @@ fn recycle_shell(
 }
 
 fn recycle_error(path: &Path, error: windows::core::Error) -> FsError {
+    let unsupported = io::ErrorKind::Unsupported;
     let reason = match error.code() {
-        COPYENGINE_E_RECYCLE_PATH_TOO_LONG => {
-            Some("Windows Recycle Bin does not support this path length")
-        }
-        COPYENGINE_E_RECYCLE_SIZE_TOO_BIG => {
-            Some("Windows Recycle Bin cannot accept an item of this size")
-        }
-        COPYENGINE_E_RECYCLE_FORCE_NUKE => {
-            Some("Windows Recycle Bin is disabled for this location")
-        }
-        COPYENGINE_E_RECYCLE_BIN_NOT_FOUND => {
-            Some("Windows Recycle Bin is unavailable for this location")
-        }
+        COPYENGINE_E_RECYCLE_PATH_TOO_LONG => Some((
+            unsupported,
+            "Windows Recycle Bin does not support this path length",
+        )),
+        COPYENGINE_E_RECYCLE_SIZE_TOO_BIG => Some((
+            unsupported,
+            "Windows Recycle Bin cannot accept an item of this size",
+        )),
+        COPYENGINE_E_RECYCLE_FORCE_NUKE => Some((
+            unsupported,
+            "Windows Recycle Bin is disabled for this location",
+        )),
+        COPYENGINE_E_RECYCLE_BIN_NOT_FOUND => Some((
+            unsupported,
+            "Windows Recycle Bin is unavailable for this location",
+        )),
+        // Windows refuses to move an item that another program keeps open, and a folder
+        // while an entry below it is open (antivirus scanners open new files for a moment).
+        // The Shell reports either with one of these codes until that program closes it.
+        COPYENGINE_E_SHARING_VIOLATION_SRC => Some((
+            io::ErrorKind::ResourceBusy,
+            "the item or something inside it is in use by another program; \
+             retry when it is no longer in use",
+        )),
+        // The Shell reports other refused access (a restricted token's, for example) with
+        // this code too, so the message names that cause as well.
+        COPYENGINE_E_ACCESS_DENIED_SRC => Some((
+            io::ErrorKind::ResourceBusy,
+            "the item or something inside it is in use by another program, or access to it \
+             is denied; retry when it is no longer in use",
+        )),
         _ => None,
     };
     let error = match reason {
-        Some(reason) => io::Error::new(
-            io::ErrorKind::Unsupported,
+        Some((kind, reason)) => io::Error::new(
+            kind,
             format!(
                 "{reason}; the item was not permanently deleted ({})",
                 error.code()

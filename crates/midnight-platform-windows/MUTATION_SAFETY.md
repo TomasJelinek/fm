@@ -161,10 +161,14 @@ recycling, forced permanent-delete configuration, excessive item size, or an
 unsupported recycle path length are surfaced to the user.
 
 Windows also refuses to recycle a folder while an entry below it is open: the Shell
-then fails with `COPYENGINE_E_ACCESS_DENIED_SRC` (0x80270021), which is reported with
-that code only. Unlike Rename, recycling does not wait such a refusal out, so moving a
-folder to the Recycle Bin right after its files were written, while a virus scanner
-may still be reading them, can fail; the folder then stays in place.
+then fails with `COPYENGINE_E_ACCESS_DENIED_SRC` (0x80270021) or
+`COPYENGINE_E_SHARING_VIOLATION_SRC` (0x80270027), and either is reported as
+`ResourceBusy` with its code and the path, saying that the item or something inside it
+is in use by another program and can be retried (the message for 0x80270021, which the
+Shell also returns when access is denied, names that cause too). Unlike Rename,
+recycling does not wait such a refusal out, so moving a folder to the Recycle Bin right
+after its files were written, while a virus scanner may still be reading them, can
+fail; the folder then stays in place.
 
 The tested Windows Shell rejects a source path longer than its recycle limit
 with `COPYENGINE_E_RECYCLE_PATH_TOO_LONG`. The provider returns `Unsupported` and
