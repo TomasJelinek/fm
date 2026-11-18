@@ -183,6 +183,11 @@ Bracket shortcuts use the physical US `[` / `]` key positions, including on
 keyboard layouts with different labels. They work from the file list and command
 editor; AltGr remains available for typing. Options → Keyboard can reassign or
 disable these actions, and their command-editor hints follow the saved mapping.
+Outside the number row and these bracket keys, letter shortcuts such as Ctrl+C in
+the checksum results and Ctrl+V in the path editor follow the character the keyboard
+layout produces, as in other text fields, so on layouts without Latin letters (for
+example Russian or Greek) paste a path with Shift+Insert or the context menu and copy
+a checksum with Shift+F10 or the context menu.
 
 Inserted paths/names are raw text: no generated quotes, escaping or separator
 spaces. Directory insertions append a native path separator only when one is
