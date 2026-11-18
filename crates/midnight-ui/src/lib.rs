@@ -1036,20 +1036,6 @@ pub fn install_with_owned(
             );
         }
     });
-    callback!(on_cancel_operation, |w, p, s, token| {
-        if let Some(token) = token.strip_prefix("metadata-job:") {
-            p.cancel_operation(token, s);
-            return;
-        }
-        if token.starts_with("copy-job:") {
-            p.cancel_copy(token.as_str(), s);
-        } else {
-            p.cancel_operation(token.as_str(), s);
-            if p.operations.preview.is_none() {
-                w.invoke_focus_files();
-            }
-        }
-    });
     callback!(on_cancel_job, |_w, p, s, token| {
         if token.starts_with("command-job:") {
             p.cancel_user_command(token.as_str(), s);
@@ -1077,10 +1063,6 @@ pub fn install_with_owned(
         {
             p.copy_viewer_text(row.detail.to_string(), s);
         }
-    });
-    callback!(on_decide_copy, |w, p, s, token, choice, name| {
-        p.decide_copy(token.as_str(), choice, name.to_string(), s);
-        let _ = w;
     });
     {
         let weak = window.as_weak();

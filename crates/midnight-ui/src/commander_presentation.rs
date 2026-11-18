@@ -61,9 +61,6 @@ pub(super) fn bind(
             p.open_panel_filter(pane);
         }
     });
-    callback!(on_cancel_panel_filter, |p, _s| {
-        p.cancel_panel_filter();
-    });
     callback!(on_clear_panel_filter, |p, s, id| {
         if let Some(pane) = match id {
             0 => Some(PaneId::Left),
@@ -73,36 +70,6 @@ pub(super) fn bind(
             p.clear_panel_filter(pane, s);
         }
     });
-    callback!(
-        on_apply_panel_filter,
-        |p, s, id, enabled, mode, expression, case_sensitive| {
-            if let Some(pane) = match id {
-                0 => Some(PaneId::Left),
-                1 => Some(PaneId::Right),
-                _ => None,
-            } {
-                let mode = match mode {
-                    0 => FilterMode::Masks,
-                    1 => FilterMode::Regex,
-                    2 => FilterMode::Expression,
-                    _ => {
-                        p.filter_dialog.error = "Choose Masks, Regex or Expression.".into();
-                        return;
-                    }
-                };
-                p.submit_panel_filter(
-                    pane,
-                    PanelFilter {
-                        enabled,
-                        mode,
-                        expression: expression.to_string(),
-                        case_sensitive,
-                    },
-                    s,
-                );
-            }
-        }
-    );
 }
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {

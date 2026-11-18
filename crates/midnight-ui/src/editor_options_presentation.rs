@@ -141,7 +141,7 @@ pub(crate) fn install(
     });
     let weak = window.as_weak();
     let p = state.clone();
-    let sender = send.clone();
+    let sender = send;
     window
         .global::<EditorOptionsView>()
         .on_browse_directory(move || {
@@ -156,17 +156,10 @@ pub(crate) fn install(
                 crate::settings_picker_presentation::wake(&w, &p, sender.clone());
             }
         });
+    // Options OK saves the draft (`accept_options`); no separate save callback.
     let weak = window.as_weak();
-    let discarded = state.clone();
     window.global::<EditorOptionsView>().on_discard(move || {
-        discarded.borrow_mut().discard_editor_draft();
-        if let Some(w) = weak.upgrade() {
-            crate::refresh(&w, &discarded.borrow());
-        }
-    });
-    let weak = window.as_weak();
-    window.global::<EditorOptionsView>().on_save(move || {
-        state.borrow_mut().save_editor_draft(send.as_ref());
+        state.borrow_mut().discard_editor_draft();
         if let Some(w) = weak.upgrade() {
             crate::refresh(&w, &state.borrow());
         }
