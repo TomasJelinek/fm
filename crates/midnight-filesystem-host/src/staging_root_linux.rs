@@ -2,7 +2,7 @@
 //! another account; the private-root check then correctly refuses it, which would
 //! deny every staged archive read. Every candidate is scoped to this user or this
 //! process, so a directory another account pre-creates only disables that candidate.
-use midnight_worker_platform::spool::{SpoolRoot, resolve_base};
+use midnight_worker_platform::spool::{SpoolRoot, effective_uid, resolve_base};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -13,7 +13,7 @@ pub(super) fn candidates() -> Vec<SpoolRoot> {
         |name| std::env::var_os(name),
         |path| std::fs::canonicalize(path).ok(),
         std::env::temp_dir(),
-        effective_user(),
+        effective_uid(),
         std::process::id(),
     )
 }
@@ -31,7 +31,7 @@ fn candidates_from(
     variable: impl Fn(&str) -> Option<OsString>,
     canonical: impl Fn(&Path) -> Option<PathBuf>,
     temporary: PathBuf,
-    user: Option<u32>,
+    user: u32,
     process: u32,
 ) -> Vec<SpoolRoot> {
     let absolute = |name: &str| {
@@ -50,13 +50,11 @@ fn candidates_from(
     };
     [
         root(&cache, "midnight-explorer/archive-spool".into(), false),
-        user.and_then(|user| {
-            root(
-                &temporary,
-                format!("midnight-explorer-{user}-archive-spool"),
-                false,
-            )
-        }),
+        root(
+            &temporary,
+            format!("midnight-explorer-{user}-archive-spool"),
+            false,
+        ),
         root(
             &temporary,
             format!("midnight-explorer-archive-spool-{process}"),
@@ -73,30 +71,12 @@ fn candidates_from(
     .collect()
 }
 
-/// The effective user ID from procfs, which the host already requires on Linux to
-/// locate its own executable. None only omits the temporary-directory candidate.
-fn effective_user() -> Option<u32> {
-    effective_user_from(&std::fs::read_to_string("/proc/self/status").ok()?)
-}
-
-/// `Uid:` lists the real, effective, saved and filesystem user IDs.
-fn effective_user_from(status: &str) -> Option<u32> {
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("Uid:"))?
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::staging::{Staging, ample_volume};
-    use std::os::unix::fs::MetadataExt;
 
-    fn roots(variables: &[(&str, &str)], user: Option<u32>) -> Vec<SpoolRoot> {
+    fn roots(variables: &[(&str, &str)], user: u32) -> Vec<SpoolRoot> {
         candidates_from(
             |name| {
                 variables
@@ -142,7 +122,7 @@ mod tests {
                     ("HOME", "/home/u"),
                     ("XDG_RUNTIME_DIR", "/run/user/1000"),
                 ],
-                Some(1000)
+                1000
             ),
             [
                 kept("/mnt/disk/cache/midnight-explorer/archive-spool"),
@@ -153,18 +133,18 @@ mod tests {
         );
         // A relative `XDG_CACHE_HOME` is ignored for `~/.cache` below a linked home.
         assert_eq!(
-            roots(&[("XDG_CACHE_HOME", "relative"), ("HOME", "/home/u")], None),
+            roots(&[("XDG_CACHE_HOME", "relative"), ("HOME", "/home/u")], 1000),
             [
                 kept("/var/home/u/.cache/midnight-explorer/archive-spool"),
+                kept("/tmp/midnight-explorer-1000-archive-spool"),
                 process(),
             ]
         );
         // Without any usable variable only the temporary directory's names remain.
         assert_eq!(
-            roots(&[("HOME", "relative"), ("XDG_RUNTIME_DIR", "run")], Some(0)),
+            roots(&[("HOME", "relative"), ("XDG_RUNTIME_DIR", "run")], 0),
             [kept("/tmp/midnight-explorer-0-archive-spool"), process()]
         );
-        assert_eq!(roots(&[], None), [process()]);
     }
 
     #[test]
@@ -177,20 +157,6 @@ mod tests {
         assert!(own.is_dir());
         drop(staging);
         assert!(!own.exists(), "the last spool removes the per-process root");
-    }
-
-    #[test]
-    fn effective_user_is_read_from_the_status_uid_line() {
-        let status = "Name:\thost\nUmask:\t0022\nUid:\t1000\t1001\t1000\t1000\nGid:\t5\t6\t5\t5\n";
-        assert_eq!(effective_user_from(status), Some(1001));
-        assert_eq!(effective_user_from("Name:\thost\n"), None);
-        assert_eq!(effective_user_from("Uid:\t1000\n"), None);
-        // New files belong to the effective user, which the private-root check requires.
-        let file = tempfile::NamedTempFile::new().unwrap();
-        assert_eq!(
-            effective_user(),
-            Some(file.as_file().metadata().unwrap().uid())
-        );
     }
 
     #[test]
@@ -207,7 +173,7 @@ mod tests {
             |name| (name == "XDG_CACHE_HOME").then(|| link.clone().into_os_string()),
             |path| std::fs::canonicalize(path).ok(),
             PathBuf::from("relative"),
-            None,
+            effective_uid(),
             7,
         );
         let real = real.canonicalize().unwrap();

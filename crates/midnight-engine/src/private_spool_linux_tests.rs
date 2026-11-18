@@ -22,7 +22,7 @@ fn variable<'a>(variables: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsStri
 fn linked_session(
     variables: &[(&str, &str)],
     links: &[(&str, &str)],
-    uid: Option<u32>,
+    uid: u32,
     content: SpoolContent,
 ) -> Session {
     from_environment(
@@ -42,7 +42,7 @@ fn linked_session(
 /// The roots of `name` for `content`, in a session looked up for that content.
 fn roots(
     variables: &[(&str, &str)],
-    uid: Option<u32>,
+    uid: u32,
     process: u32,
     name: &str,
     content: SpoolContent,
@@ -73,7 +73,7 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
         ("XDG_RUNTIME_DIR", "/run/user/1000"),
     ];
     assert_eq!(
-        roots(&desktop, Some(1000), 42, "file-list", SpoolContent::Large),
+        roots(&desktop, 1000, 42, "file-list", SpoolContent::Large),
         [
             kept("/home/u/cache/midnight-explorer/file-list"),
             kept("/run/user/1000/midnight-explorer/file-list"),
@@ -83,7 +83,7 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
     );
     // Small reports skip the disk-backed cache.
     assert_eq!(
-        roots(&desktop, Some(1000), 42, "reports", SpoolContent::Reports),
+        roots(&desktop, 1000, 42, "reports", SpoolContent::Reports),
         [
             kept("/run/user/1000/midnight-explorer/reports"),
             kept("/tmp/midnight-explorer-1000-reports"),
@@ -98,7 +98,7 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
                 ("HOME", "/home/u"),
                 ("XDG_RUNTIME_DIR", "run"),
             ],
-            Some(1000),
+            1000,
             7,
             "file-list",
             SpoolContent::Large,
@@ -109,17 +109,20 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
             per_process("/tmp/midnight-explorer-file-list-7"),
         ]
     );
-    // su/sudo/ssh/container sessions without a home, XDG directories or
-    // procfs still keep the per-process temporary root.
+    // su/sudo/ssh/container sessions without a home or XDG directories keep
+    // the temporary directory's roots.
     assert_eq!(
         roots(
             &[("HOME", "relative")],
-            None,
+            1000,
             7,
             "file-list",
             SpoolContent::Large
         ),
-        [per_process("/tmp/midnight-explorer-file-list-7")]
+        [
+            kept("/tmp/midnight-explorer-1000-file-list"),
+            per_process("/tmp/midnight-explorer-file-list-7"),
+        ]
     );
 }
 
@@ -140,7 +143,7 @@ fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() 
                     ("XDG_RUNTIME_DIR", "/run/user/1000"),
                 ],
                 &links,
-                Some(1000),
+                1000,
                 SpoolContent::Large,
             ),
             42,
@@ -178,7 +181,7 @@ fn reports_never_resolve_the_cache_base() {
                 resolved.borrow_mut().push(path.to_owned());
                 None
             },
-            Some(1000),
+            1000,
             PathBuf::from("/tmp"),
             content,
         )
@@ -221,7 +224,7 @@ fn a_linked_cache_base_is_usable_while_links_below_it_stay_refused() {
         let session = from_environment(
             |name| (name == "XDG_CACHE_HOME").then(|| cache.as_os_str().to_owned()),
             |path| std::fs::canonicalize(path).ok(),
-            None,
+            effective_uid(),
             // Not absolute: no temporary candidates.
             PathBuf::from("relative"),
             SpoolContent::Large,
@@ -269,12 +272,6 @@ fn a_linked_cache_base_is_usable_while_links_below_it_stay_refused() {
     assert_eq!(open_files_below(&private), 0);
 }
 
-#[test]
-fn effective_uid_is_the_owner_of_files_this_process_creates() {
-    let file = tempfile::tempfile().unwrap();
-    assert_eq!(effective_uid(), Some(file.metadata().unwrap().uid()));
-}
-
 /// Regular files that this process holds open below `directory`. An anonymous
 /// spool has no directory entry, but its `/proc/self/fd` link still names the
 /// directory that it was created in, with any link on the way resolved.
@@ -296,7 +293,7 @@ fn open_files_below(directory: &Path) -> usize {
 /// opened, so `/` stands in: root owns it, but its group and other permissions
 /// are refused as well, and the owner check is not isolated.
 fn foreign_directory(parent: &Path) -> PathBuf {
-    if effective_uid() != Some(0) {
+    if effective_uid() != 0 {
         return PathBuf::from("/");
     }
     let foreign = parent.join("foreign");
@@ -325,8 +322,8 @@ fn linked_foreign_and_shared_roots_are_refused_for_the_last_candidate() {
     std::os::unix::fs::symlink(&target, &linked).unwrap();
     let foreign = foreign_directory(temporary.path());
     let owner = std::fs::metadata(&foreign).unwrap();
-    assert_ne!(Some(owner.uid()), effective_uid(), "{foreign:?}");
-    if effective_uid() == Some(0) {
+    assert_ne!(owner.uid(), effective_uid(), "{foreign:?}");
+    if effective_uid() == 0 {
         assert_eq!(owner.mode() & 0o077, 0, "only its owner can refuse it");
     }
     // This process can open the foreign directory: the private-root check

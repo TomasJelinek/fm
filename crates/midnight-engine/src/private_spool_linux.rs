@@ -1,7 +1,7 @@
 //! Linux spool bases: the XDG base directories, then the temporary directory
 //! (usually the shared `/tmp`) under this account's effective user ID.
 use super::{Session, SpoolContent};
-use midnight_worker_platform::spool::resolve_base;
+use midnight_worker_platform::spool::{effective_uid, resolve_base};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -35,7 +35,7 @@ pub(super) fn current(content: SpoolContent) -> Session {
 fn from_environment(
     variable: impl Fn(&str) -> Option<OsString>,
     canonical: impl Fn(&Path) -> Option<PathBuf>,
-    uid: Option<u32>,
+    uid: u32,
     temporary: PathBuf,
     content: SpoolContent,
 ) -> Session {
@@ -54,20 +54,7 @@ fn from_environment(
         runtime: absolute("XDG_RUNTIME_DIR").map(|base| resolve_base(&base, &canonical)),
         // The private-root check compares the owner with the effective user ID,
         // which `USER` need not name (`su` keeps it), so that ID is the label.
-        account: uid.map(|uid| uid.to_string()),
+        account: Some(uid.to_string()),
         temporary,
     }
-}
-
-/// The effective user ID: `Uid:` lists the real, effective, saved and
-/// filesystem user IDs. None only omits the per-user temporary name.
-fn effective_uid() -> Option<u32> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("Uid:"))?
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()
 }

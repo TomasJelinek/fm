@@ -1,5 +1,16 @@
 use super::*;
-use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+use std::{
+    ffi::OsStr,
+    os::unix::{ffi::OsStrExt, fs::MetadataExt},
+};
+
+/// New files belong to the effective user, whom the private-root check requires as
+/// the owner of every spool root.
+#[test]
+fn the_effective_uid_owns_the_files_this_process_creates() {
+    let file = tempfile::tempfile().unwrap();
+    assert_eq!(effective_uid(), file.metadata().unwrap().uid());
+}
 
 /// Resolves only the listed links (link, target), as if nothing else existed.
 fn linked<'a>(links: &'a [(&str, &str)]) -> impl Fn(&Path) -> Option<PathBuf> + 'a {
