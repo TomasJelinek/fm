@@ -71,6 +71,33 @@ fn tabs_and_the_path_bar_show_escapes_and_enter_reopens_the_raw_folder() {
     );
 }
 
+#[test]
+fn a_path_typed_below_the_shown_folder_opens_below_the_raw_folder() {
+    let location = folder().join(SPOOF);
+    let h = Harness::with_location(UserPreferences::default(), location.clone());
+    let shown = h.window.get_left_path();
+    let navigate = |text: String| {
+        h.sent.borrow_mut().clear();
+        h.window.invoke_navigate(0, text.into());
+        h.sent
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::Navigate { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .expect("the typed path is opened")
+    };
+    let separator = std::path::MAIN_SEPARATOR;
+    assert_eq!(
+        navigate(format!("{shown}{separator}sub")),
+        location.join("sub")
+    );
+    // An edit of the escaped name itself is taken as typed: it names another folder.
+    let edited = navigate(format!("{shown}x"));
+    assert!(!edited.starts_with(&location), "{}", edited.display());
+}
+
 fn preview(id: u64, kind: MutationKind) -> Arc<OperationPreview> {
     Arc::new(OperationPreview {
         id: OperationId(id),

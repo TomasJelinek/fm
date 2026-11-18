@@ -310,7 +310,9 @@ inspected as possibly holding the item; neither is described as unneeded.
   U+2066-U+2069 as `\u202E`-style escapes, so a name cannot reorder its shown
   extension; viewer and comparator status lines do not escape them yet. Operations,
   search, comparisons, copy actions for paths, details and errors, and the name and
-  destination fields keep the raw name.
+  destination fields keep the raw name, while text selected and copied from a shown
+  field, such as the path editor, keeps its escapes (see
+  [dialog ergonomics](docs/developer/DIALOG_ERGONOMICS.md)).
 - Volume labels and tooltip content are plain Unicode text, never Markdown,
   links, shell commands or navigation identities. Label/capacity lookup runs on
   separately bounded backend workers; hover reads cached data. Slow/offline

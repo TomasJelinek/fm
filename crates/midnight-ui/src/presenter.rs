@@ -1516,12 +1516,24 @@ impl Presenter {
     ) -> bool {
         let p = &self.panes[pane.index()];
         // The editor starts from the shown location, whose explicit bidirectional controls
-        // are escaped (`shown_text`): that unchanged text names the location itself.
+        // are escaped (`shown_text`). That unchanged text names the location itself, and
+        // that text followed by a separator and more path names a path below it. Any other
+        // edit is taken as typed.
         let location = p.display_location_text();
-        let text = if text != location && visible_name(&location) == text {
-            location.as_str()
-        } else {
-            text
+        let below;
+        let text = match visible_name(&location) {
+            std::borrow::Cow::Owned(shown) => match text.strip_prefix(shown.as_str()) {
+                Some("") => location.as_str(),
+                Some(rest)
+                    if rest.starts_with(std::path::is_separator)
+                        || shown.ends_with(std::path::is_separator) =>
+                {
+                    below = format!("{location}{rest}");
+                    below.as_str()
+                }
+                _ => text,
+            },
+            std::borrow::Cow::Borrowed(_) => text,
         };
         if p.pending_network_text() == Some(text)
             && let Some(action) = p.network_pending.clone()
