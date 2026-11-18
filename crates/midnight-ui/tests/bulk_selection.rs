@@ -1,13 +1,6 @@
 //! Bulk selection shortcuts follow actual file-list focus and preserve editors.
 use i_slint_core::items::AccessibleRole;
-use midnight_ui::MainWindow;
-use slint::{
-    ComponentHandle, SharedString,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
-};
+use slint::{ComponentHandle, platform::Key};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -15,40 +8,13 @@ use std::{
 
 #[path = "support/ui.rs"]
 mod ui;
-use ui::platform_keys;
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
-
-fn key(window: &MainWindow, text: impl Into<SharedString>) {
-    platform_keys::key(window, text.into());
-}
-
-fn chord(window: &MainWindow, modifiers: &[Key], text: impl Into<SharedString>) {
-    for modifier in modifiers {
-        window.window().dispatch_event(WindowEvent::KeyPressed {
-            text: (*modifier).into(),
-        });
-    }
-    key(window, text);
-    for modifier in modifiers.iter().rev() {
-        window.window().dispatch_event(WindowEvent::KeyReleased {
-            text: (*modifier).into(),
-        });
-    }
-}
+use ui::{chord, key};
 
 #[test]
 fn bulk_selection_keys_target_only_the_focused_file_pane() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.set_preferences_ready(true);
-    midnight_ui::install_file_keys(&window);
+    let test = ui::TestUi::new();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     window.set_left_path("left 文档".into());
     window.set_right_path("right 🧪".into());
     let requested = Rc::new(RefCell::new(Vec::new()));
@@ -65,15 +31,8 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
     let opened = Rc::new(Cell::new(0));
     let captured = opened.clone();
     window.on_open(move |_, _| captured.set(captured.get() + 1));
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // Partial repaints build on the shared host's last full frame.
+    let mut pixels = test.pixels.clone();
     let draw = |pixels: &mut [slint::Rgb8Pixel]| {
         native.draw_if_needed(|renderer| {
             renderer.render(pixels, 1340);

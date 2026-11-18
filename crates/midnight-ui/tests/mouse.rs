@@ -3,13 +3,12 @@ use midnight_core::*;
 mod owned_commands;
 #[path = "support/selection.rs"]
 mod selection;
+#[path = "support/ui.rs"]
+mod ui;
 use midnight_ui::{BeginOwned, MainWindow, Presenter, refresh};
 use slint::{
     ComponentHandle, Model,
-    platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, PointerEventButton, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -18,16 +17,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-
-struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-    fn duration_since_start(&self) -> Duration {
-        self.1.get()
-    }
-}
 
 struct Harness {
     native: Rc<MinimalSoftwareWindow>,
@@ -196,18 +185,10 @@ impl Harness {
 
 #[test]
 fn actual_mouse_selection_and_activation_preserve_entry_identity() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     let time = Rc::new(Cell::new(Duration::ZERO));
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
+    let test = ui::TestUi::bare_with_clock(time.clone());
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     let base = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("文档 ' & $() 👩🏽‍💻");
     let file = base.join("Café & $(literal).txt");
     let folder = base.join("文件夹");
@@ -243,7 +224,8 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
     );
     let h = Harness {
         native,
-        pixels: RefCell::new(vec![slint::Rgb8Pixel::default(); 1340 * 820]),
+        // Partial repaints build on the shared host's last full frame.
+        pixels: RefCell::new(test.pixels.clone()),
         time,
         window,
         presenter,

@@ -3,22 +3,9 @@
 mod ui;
 
 use i_slint_core::items::AccessibleRole;
-use midnight_ui::MainWindow;
-use slint::{
-    ComponentHandle, Model, ModelRc, ModelTracker, SharedString,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
-};
+use slint::{ComponentHandle, Model, ModelRc, ModelTracker, SharedString, platform::Key};
 use std::{cell::Cell, rc::Rc};
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
 struct Catalog(Rc<Cell<usize>>);
 impl Model for Catalog {
     type Data = SharedString;
@@ -38,13 +25,11 @@ impl Model for Catalog {
 use ui::key;
 #[test]
 fn installed_fonts_virtualize_and_keep_the_host_selection_authoritative() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    midnight_ui::install_file_keys(&window);
-    // This standalone host represents loaded preferences; Options otherwise
+    // The shared host represents loaded preferences; Options otherwise
     // intentionally blocks edits until the asynchronous initial load completes.
-    window.set_preferences_ready(true);
+    let test = ui::TestUi::new();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     let reads = Rc::new(Cell::new(0));
     window.set_font_choices(ModelRc::new(Catalog(reads.clone())));
     window.set_font_list_ready(true);
@@ -52,15 +37,8 @@ fn installed_fonts_virtualize_and_keep_the_host_selection_authoritative() {
     let selected = Rc::new(Cell::new(-1));
     let captured = selected.clone();
     window.on_font_options_changed(move |index, _, _, _| captured.set(index));
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // Partial repaints build on the shared host's last full frame.
+    let mut pixels = test.pixels.clone();
     let draw = |pixels: &mut [slint::Rgb8Pixel]| {
         native.draw_if_needed(|renderer| {
             renderer.render(pixels, 1340);

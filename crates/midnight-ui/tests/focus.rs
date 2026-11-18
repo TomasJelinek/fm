@@ -6,15 +6,16 @@ use i_slint_core::{
 use midnight_core::*;
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
 #[path = "support/selection.rs"]
 mod selection;
+#[path = "support/ui.rs"]
+mod ui;
 use midnight_ui::{MainWindow, Presenter, Theme};
 use slint::{
     ComponentHandle, Model,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, WindowEvent},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -23,36 +24,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-
-struct TestPlatform(
-    Rc<MinimalSoftwareWindow>,
-    Rc<Cell<Duration>>,
-    Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
-);
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        let child = if self.2.borrow().is_empty() {
-            self.0.clone()
-        } else {
-            MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer)
-        };
-        self.2.borrow_mut().push(child.clone());
-        Ok(child)
-    }
-    fn duration_since_start(&self) -> Duration {
-        self.1.get()
-    }
-}
-
-fn key(window: &MainWindow, text: impl Into<slint::SharedString>) {
-    platform_keys::key(window, text.into());
-}
+use ui::key;
 fn hold(window: &MainWindow, key: Key, pressed: bool) {
     window.window().dispatch_event(if pressed {
         WindowEvent::KeyPressed { text: key.into() }
@@ -135,20 +107,11 @@ fn complete(
 
 #[test]
 fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     let time = Rc::new(Cell::new(Duration::ZERO));
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(TestPlatform(
-        native.clone(),
-        time.clone(),
-        windows.clone(),
-    )))
-    .unwrap();
-    let window = MainWindow::new().unwrap();
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    // Help gets its own adapter; the test installs the production initializer.
+    let (test, windows) = owned_windows::bare_with_clock(time.clone());
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     let left = PathBuf::from("left 文档'Cafe\u{301} 👩🏽‍💻");
     let right = PathBuf::from("right 文件");
     let separator = std::path::MAIN_SEPARATOR;
@@ -169,7 +132,8 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(1340.0, 820.0),
     });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // Partial repaints build on the shared host's last full frame.
+    let mut pixels = test.pixels.clone();
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 1340);
     });

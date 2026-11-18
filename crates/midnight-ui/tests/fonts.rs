@@ -6,33 +6,22 @@ use i_slint_core::items::AccessibleRole;
 use midnight_ui::{MainWindow, Theme};
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
-    platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-    },
+    platform::{Key, WindowEvent},
 };
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
 // The shared helpers send keys the way the platform does (on Windows, with the
 // Winit-shaped key metadata).
 use ui::{click, key};
 
 #[test]
 fn font_options_keep_family_and_density_bases_independent() {
-    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
-    let window = MainWindow::new().unwrap();
-    window.set_preferences_ready(true);
-    midnight_ui::install_file_keys(&window);
+    let test = ui::TestUi::new();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
     let theme = window.global::<Theme>();
     window.invoke_apply_fonts("".into(), 11, 15);
     assert_eq!(theme.get_font_family().as_str(), "");
@@ -75,15 +64,8 @@ fn font_options_keep_family_and_density_bases_independent() {
         captured.set(captured.get() + 1);
         false
     });
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    native.set_size(slint::PhysicalSize::new(1340, 820));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1340.0, 820.0),
-    });
-    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    // Partial repaints build on the shared host's last full frame.
+    let mut pixels = test.pixels.clone();
     let draw = |pixels: &mut [slint::Rgb8Pixel]| {
         native.draw_if_needed(|renderer| {
             renderer.render(pixels, 1340);

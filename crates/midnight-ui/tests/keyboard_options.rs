@@ -3,6 +3,8 @@
 mod modeless;
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -13,9 +15,13 @@ use i_slint_core::{
 };
 use midnight_core::*;
 use midnight_ui::{KeyboardEditorView, Presenter, refresh};
+use owned_windows::Windows as NativeWindows;
 use slint::{
     ComponentHandle, Model,
-    platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
+    platform::{
+        Key, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+    },
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -25,27 +31,9 @@ struct Harness {
     commands: Rc<RefCell<Vec<Command>>>,
 }
 
-type NativeWindows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
-
+/// Main on a platform that gives Help its own native adapter.
 fn native_help_harness(bindings: &[(&str, &[&str])]) -> (Harness, NativeWindows) {
-    let windows = Rc::new(RefCell::new(Vec::new()));
-    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
-    let window = midnight_ui::MainWindow::new().unwrap();
-    window.set_preferences_ready(true);
-    midnight_ui::install_file_keys(&window);
-    window.show().unwrap();
-    window
-        .window()
-        .dispatch_event(WindowEvent::WindowActiveChanged(true));
-    let native = windows.borrow()[0].clone();
-    let mut test = ui::TestUi {
-        window,
-        native,
-        pixels: Vec::new(),
-        width: 1340,
-        height: 820,
-    };
-    test.resize(1340, 820);
+    let (test, windows) = owned_windows::with_buffer(RepaintBufferType::NewBuffer);
     (Harness::with_ui(bindings, Vec::new(), test), windows)
 }
 

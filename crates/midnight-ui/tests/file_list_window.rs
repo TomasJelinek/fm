@@ -6,6 +6,10 @@ mod input;
 mod installed;
 #[path = "support/modeless.rs"]
 mod modeless;
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_ui::FileListPresentation;
