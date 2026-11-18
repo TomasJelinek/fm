@@ -214,6 +214,31 @@ fn incomplete_and_panicking_initializers_leave_the_catalog_retryable() {
 }
 
 #[test]
+fn the_preferred_family_check_loads_one_face_per_installed_candidate() {
+    let catalog = super::monospace_families(|| false).unwrap();
+    let first = catalog
+        .first()
+        .expect("the test host needs a code font")
+        .as_str();
+    let mut loads = 0;
+    let found = super::first_fixed_pitch(&["No Such Family 7f1c", first], || false, &mut || {
+        loads += 1
+    });
+    assert_eq!(found.as_deref(), Some(first));
+    assert_eq!(loads, 1, "a missing candidate loads no face");
+    // A saved family is matched ignoring ASCII case and reported by its catalog name.
+    let mut loads = 0;
+    let upper = first.to_ascii_uppercase();
+    let found = super::first_fixed_pitch(&[upper.as_str()], || false, &mut || loads += 1);
+    assert_eq!(found.as_deref(), Some(first));
+    assert_eq!(loads, 1);
+    assert!(
+        super::first_fixed_pitch(&[first], || true, &mut || panic!("a face was loaded")).is_none(),
+        "a cancelled check loads no face"
+    );
+}
+
+#[test]
 fn cancellation_is_checked_even_for_a_cached_catalog() {
     let catalog = Catalog::new();
     catalog.get(|| false, || Some(names("Consolas"))).unwrap();
