@@ -698,7 +698,7 @@ fn sorted_times<'a>(times: impl IntoIterator<Item = &'a SystemTime>) -> Vec<Syst
 }
 
 #[test]
-fn the_engine_locale_formats_each_result_and_duplicate_candidate_once_and_no_other_node() {
+fn the_engine_locale_formats_each_published_result_once_and_no_other_node() {
     let root = std::env::current_dir().unwrap();
     // The three matches are folder-N/file-7.txt; the first one holds one byte.
     let one_byte = root.join("folder-0").join("file-7.txt");
@@ -734,16 +734,39 @@ fn the_engine_locale_formats_each_result_and_duplicate_candidate_once_and_no_oth
     assert_eq!(results.len(), 3);
     let matches = modified_times(&results);
     assert_eq!(formatted, matches);
-    // A duplicate search formats each candidate once when it collects it, because a
-    // group publishes copies of its candidates. The one-byte candidate is alone in its
-    // size bucket: it is never read and joins no group, yet it was formatted too.
+    // A duplicate search formats only the members of the groups it publishes. The
+    // one-byte candidate is alone in its size bucket: it is never read, joins no
+    // group and is never formatted.
     query.duplicates = true;
     let (summary, results, formatted) = search(&query);
     assert_eq!(summary.progress.duplicate_candidates, 3);
     assert_eq!(summary.progress.duplicate_groups, 1);
     assert_eq!(results.len(), 2);
     assert!(results.iter().all(|result| result.entry.path != one_byte));
-    assert_eq!(formatted, matches);
+    assert_eq!(formatted, modified_times(&results));
+    // A group that the result limit omits is not formatted either.
+    let mut limited = query.clone();
+    limited.limits.max_results = 1;
+    let locale = RecordingLocale::default();
+    let mut published = 0;
+    let summary = find_worker::search_with_location(
+        &tree,
+        Some(&locale),
+        &limited,
+        &Cancellation::default(),
+        &mut |update| {
+            if let FindUpdate::Batch(batch) = update {
+                published += batch.len();
+            }
+            true
+        },
+        &find_worker::CurrentDirectory::default(),
+        SystemTime::now(),
+    );
+    assert_eq!(summary.reached_budgets, vec![FindBudget::Results]);
+    assert_eq!(summary.progress.duplicate_candidates, 3);
+    assert_eq!(published, 0);
+    assert!(locale.formatted.lock().unwrap().is_empty());
     // A time the provider formatted is kept, and without a locale results keep the
     // provider's absent value (the UI shows its labelled UTC fallback).
     query.duplicates = false;

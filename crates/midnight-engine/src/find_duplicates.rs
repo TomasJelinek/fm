@@ -248,24 +248,29 @@ fn publish_group(bucket: &[Candidate], members: &[usize], work: &mut Work<'_>) -
         work.budget(FindBudget::Results);
         return remaining >= 2;
     }
-    let bytes = members.iter().try_fold(0usize, |cost, &index| {
-        cost.checked_add(entry_cost(&bucket[index].entry))
-            .and_then(|cost| {
-                cost.checked_add(size_of::<FindResult>() + 4 * size_of::<Arc<FindResult>>())
-            })
+    // Candidates stay unformatted: only the members of a group that fits the
+    // result limit are copied and formatted, and their strings are charged here.
+    let entries: Vec<FindEntry> = members
+        .iter()
+        .map(|&member| work.localized(&bucket[member].entry))
+        .collect();
+    let bytes = entries.iter().try_fold(0usize, |cost, entry| {
+        cost.checked_add(entry_cost(entry)).and_then(|cost| {
+            cost.checked_add(size_of::<FindResult>() + 4 * size_of::<Arc<FindResult>>())
+        })
     });
     if bytes.is_none_or(|bytes| !work.reserve(bytes)) {
         work.budget(FindBudget::RetainedBytes);
         return false;
     }
     let group = work.progress.duplicate_groups + 1;
-    let batch: Arc<[_]> = members
-        .iter()
+    let batch: Arc<[_]> = entries
+        .into_iter()
         .enumerate()
-        .map(|(index, &member)| {
+        .map(|(index, entry)| {
             Arc::new(FindResult {
                 id: FindResultId(work.progress.results + index as u64 + 1),
-                entry: bucket[member].entry.clone(),
+                entry,
                 duplicate_group: Some(group),
                 duplicate_group_size: members.len(),
             })

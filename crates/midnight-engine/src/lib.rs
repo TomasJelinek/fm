@@ -135,6 +135,10 @@ use tokio::{
     task::{AbortHandle, JoinSet},
 };
 
+// The one fill-when-absent rule for localized modification times. The Find worker
+// hosts it because tests compile that worker standalone.
+use find_worker::localize_metadata;
+
 const BATCH_SIZE: usize = 128;
 /// Upper bound for copy/mutation actors to finish their own retirement at shutdown.
 const ACTOR_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
@@ -1510,17 +1514,6 @@ fn list_directory(task: ListingTask) {
             sizes: continued_sizes.unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
         },
     );
-}
-
-fn localize_metadata(
-    metadata: &mut midnight_core::EntryMetadata,
-    locale: Option<&dyn midnight_core::LocaleService>,
-) {
-    if metadata.localized_modified.is_none()
-        && let (Some(locale), Some(modified)) = (locale, metadata.modified)
-    {
-        metadata.localized_modified = locale.format_datetime(modified);
-    }
 }
 
 fn publish_listing(

@@ -104,8 +104,8 @@ searches from reviving after Stop, completion, restart or Close.
 
 Result modification times use the native date and time format of panel
 listings. The search worker fills a missing localized time through the engine
-locale once when it retains an ordinary result or collects a duplicate
-candidate, so a candidate that joins no group is formatted too; Go to file
+locale once when it retains an ordinary result or publishes a duplicate group,
+so a duplicate candidate that joins no group is not formatted; Go to file
 formats the validated entry it reports the same way. A time the provider
 already formatted is kept: the Windows provider formats no time, so examined
 nodes that never match cost no locale call, while the Linux provider currently
