@@ -2,16 +2,40 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn loaded() -> Presenter {
+    loaded_with_marks(2)
+}
+
+/// The tree fixture (row 7 "folder", its child row 11) with these selection bits.
+fn loaded_with_marks(bits: u64) -> Presenter {
     let (mut p, root) = super::tree::fixture();
-    let mut publication = super::tree::publication(root, 1, true, false);
-    publication.selection =
-        Arc::new(TreeSelectionSnapshot::from_bits(publication.view.clone(), vec![2]).unwrap());
     p.apply_with_sender(
-        Event::Tree(Box::new(TreeEvent::Published(publication))),
+        Event::Tree(Box::new(TreeEvent::Published(marked(root, 1, true, bits)))),
         &|_| true,
     );
     p
 }
+
+fn marked(root: TreeRootSnapshot, revision: u64, child: bool, bits: u64) -> TreePublication {
+    let mut publication = super::tree::publication(root, revision, child, false);
+    publication.selection =
+        Arc::new(TreeSelectionSnapshot::from_bits(publication.view.clone(), vec![bits]).unwrap());
+    publication
+}
+
+fn sent_transfer(sent: &RefCell<Vec<Command>>) -> Option<TreeTransferRequest> {
+    sent.borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Tree(command) => match command.as_ref() {
+                TreeCommand::Transfer(request) => Some(request.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
+const STALE: &str = "Tree view or navigation changed before the command was accepted.";
 
 fn request(p: &mut Presenter) -> TreeTransferRequest {
     request_intent(p, TransferIntent::Copy)
@@ -251,17 +275,23 @@ fn tree_copy_prepared_result_survives_a_new_projection_of_the_same_session() {
     );
 }
 
+fn refused(request: &TreeTransferRequest, message: &str) -> Event {
+    Event::Tree(Box::new(TreeEvent::Transfer {
+        stamp: request.view.stamp,
+        request: request.request,
+        result: Err(TreeDiagnostic::new(message)),
+    }))
+}
+
 #[test]
 fn tree_copy_recaptures_a_view_replaced_before_the_backend_accepted_it() {
     let mut p = loaded();
     let first = request(&mut p);
     // A watch refresh publishes revision 2 of the same session with the same
     // selection, and the backend then refuses the revision 1 capture as stale.
-    let mut publication = super::tree::publication(first.view.root.clone(), 2, true, false);
-    publication.selection =
-        Arc::new(TreeSelectionSnapshot::from_bits(publication.view.clone(), vec![2]).unwrap());
+    let root = first.view.root.clone();
     p.apply_with_sender(
-        Event::Tree(Box::new(TreeEvent::Published(publication))),
+        Event::Tree(Box::new(TreeEvent::Published(marked(root, 2, true, 2)))),
         &|_| true,
     );
     let sent = RefCell::new(Vec::new());
@@ -269,46 +299,156 @@ fn tree_copy_recaptures_a_view_replaced_before_the_backend_accepted_it() {
         sent.borrow_mut().push(command);
         true
     };
-    let refused = |request: &TreeTransferRequest, message: &str| {
-        Event::Tree(Box::new(TreeEvent::Transfer {
-            stamp: request.view.stamp,
-            request: request.request,
-            result: Err(TreeDiagnostic::new(message)),
-        }))
-    };
-    p.apply_with_sender(
-        refused(
-            &first,
-            "Tree view or navigation changed before the command was accepted.",
-        ),
-        &send,
-    );
-    p.flush_selection(&send);
+    p.apply_with_sender(refused(&first, STALE), &send);
     assert!(
         p.desktop.notice.is_none(),
         "a refresh is no transfer failure: {:?}",
         p.desktop.notice
     );
-    let retried = sent
-        .borrow()
-        .iter()
-        .find_map(|command| match command {
-            Command::Tree(command) => match command.as_ref() {
-                TreeCommand::Transfer(request) => Some(request.clone()),
-                _ => None,
-            },
-            _ => None,
-        })
-        .expect("the current view is captured again");
+    let retried = sent_transfer(&sent).expect("the current view is captured again");
     assert_eq!(retried.view.stamp.revision, TreeRevision(2));
     assert_eq!(retried.intent, TransferIntent::Copy);
     assert_ne!(retried.request, first.request);
+    assert_eq!(retried.fallback, first.fallback);
     // A refusal of the current view is reported as before.
     p.apply_with_sender(refused(&retried, "Provider refused."), &send);
     assert_eq!(
         p.desktop.notice.as_ref().map(|(title, _)| title.as_str()),
         Some("Copy unavailable")
     );
+}
+
+/// F5 on the child row, Up, then the stale refusal: the retry keeps the row F5
+/// named instead of the cursor's. Without marks that row must survive the refresh;
+/// with marks the retry needs only the marked rows.
+#[test]
+fn tree_copy_retry_keeps_the_requested_row_after_the_cursor_moves() {
+    // Marks, whether revision 2 keeps the child row, and the expected retry:
+    // its target row and the Copy dialog's summary.
+    for (marks, kept, expected) in [
+        (0, true, Some((Some(TreeRowId(11)), "child"))),
+        (0, false, None),
+        (1, false, Some((None, "folder"))),
+    ] {
+        let mut p = loaded_with_marks(marks);
+        p.panes[0].cursor = Some(EntryId(11));
+        p.panes[0].parent_cursor = false;
+        let first = request(&mut p);
+        assert_eq!(first.fallback, Some(TreeRowId(11)));
+        p.move_cursor(PaneId::Left, 2, &|_| true);
+        assert_eq!(p.panes[0].cursor, Some(EntryId(7)), "Up reaches the folder");
+        let root = first.view.root.clone();
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(marked(root, 2, kept, marks)))),
+            &|_| true,
+        );
+        let sent = RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            true
+        };
+        p.apply_with_sender(refused(&first, STALE), &send);
+        let retried = sent_transfer(&sent);
+        let Some((target, summary)) = expected else {
+            assert!(retried.is_none(), "the requested row is gone: {retried:?}");
+            assert!(p.copies.tree_pending.is_none());
+            assert!(
+                p.panes[0].error.contains("changed before Copy could start"),
+                "{}",
+                p.panes[0].error
+            );
+            continue;
+        };
+        let retried = retried.expect("the capture is sent again");
+        assert_eq!(retried.view.stamp.revision, TreeRevision(2));
+        assert_eq!(
+            retried.fallback, target,
+            "the cursor move must not retarget the transfer (marks {marks})"
+        );
+        captured(&mut p, retried, Arc::default());
+        assert_eq!(p.copies.draft.as_ref().unwrap().summary, summary);
+    }
+}
+
+/// With a retryable refusal that overtakes the newer publication, nothing is sent
+/// until that publication is shown; the retry then uses it.
+#[test]
+fn tree_copy_retryable_refusal_waits_for_the_newer_publication() {
+    let mut p = loaded();
+    let first = request(&mut p);
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.tree_transfer_captured(
+        first.view.stamp,
+        first.request,
+        true,
+        Err(TreeDiagnostic::new(STALE)),
+    );
+    // The refusal's own event processing ends with this flush.
+    p.flush_selection(&send);
+    assert!(
+        sent_transfer(&sent).is_none(),
+        "the view is not resent at once"
+    );
+    assert!(p.desktop.notice.is_none());
+    let root = first.view.root.clone();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(marked(root, 2, true, 2)))),
+        &send,
+    );
+    let retried = sent_transfer(&sent).expect("the newer publication is captured");
+    assert_eq!(retried.view.stamp.revision, TreeRevision(2));
+    assert_eq!(retried.fallback, first.fallback);
+    assert_ne!(retried.request, first.request);
+    assert!(p.desktop.notice.is_none() && p.panes[0].error.is_empty());
+    captured(&mut p, retried, Arc::default());
+    assert!(p.copies.draft.is_some());
+}
+
+/// A retryable refusal with no newer publication (a full backend queue) sends the
+/// same view again on the next flush; a terminal refusal is reported at once, even
+/// when a newer publication already replaced the view.
+#[test]
+fn tree_copy_retryable_refusal_resends_and_terminal_refusal_reports() {
+    let mut p = loaded();
+    let first = request(&mut p);
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.tree_transfer_captured(
+        first.view.stamp,
+        first.request,
+        true,
+        Err(TreeDiagnostic::new("Tree command queue is full.")),
+    );
+    p.flush_selection(&send);
+    assert!(sent_transfer(&sent).is_none());
+    p.flush_selection(&send);
+    let resent = sent_transfer(&sent).expect("the same view is sent again");
+    assert!(Arc::ptr_eq(&resent.view, &first.view));
+    assert_ne!(resent.request, first.request);
+    assert_eq!(resent.fallback, first.fallback);
+    let root = first.view.root.clone();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(marked(root, 2, true, 2)))),
+        &send,
+    );
+    p.tree_transfer_captured(
+        resent.view.stamp,
+        resent.request,
+        false,
+        Err(TreeDiagnostic::new("Provider refused.")),
+    );
+    assert_eq!(
+        p.desktop.notice.as_ref().map(|(title, _)| title.as_str()),
+        Some("Copy unavailable")
+    );
+    assert!(p.copies.tree_pending.is_none());
 }
 
 #[test]
