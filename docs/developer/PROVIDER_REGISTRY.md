@@ -63,8 +63,9 @@ path storage and 100,000 cached tokens. Neither table evicts during a mount's
 lifetime: every node issued by a complete listing or `parent` counts until the
 mount closes. Folder-only listings and presence probes let the native adapter skip
 regular files before metadata, name encoding and token binding, so those files never
-count. These are admission/cache budgets, not an OS path limit or an exact process
-RSS promise. A failure returns an explicit error.
+count; only `list_folders_observed` (below) reads the metadata of a skipped file
+whose enumeration lacks it. These are admission/cache budgets, not an OS path limit
+or an exact process RSS promise. A failure returns an explicit error.
 Native stored addresses are admitted before codec allocation, using the cache
 budget and that codec's worst-case expansion; native encoding checks its raw
 charge first. The production cutover must also align caches across mounts with
@@ -81,10 +82,14 @@ resource-limited instead of growing the probe's duplicate set. Entries a provide
 emits after the stop cannot change the answer. `list_folders_observed` returns the
 same rows plus the provider's full watch observation of the directory from that
 enumeration: the native adapter adds every entry, files included, with the
-metadata a watch probe reads (one metadata read per skipped file where enumeration
-lacks it), still without encoding or binding files; other providers return none.
-See [inline provider branches](INLINE_TREES.md) for the backend tree model,
-ownership, limits and pending production projection.
+metadata a watch probe reads, still without encoding or binding files; other
+providers return none. A skipped file costs one metadata read where enumeration
+lacks it (the Linux platform filesystem; the installed provider's plugins return
+every entry's metadata with the enumeration). After 4,096 such reads the adapter
+stops observing and returns the rows without an observation, so a branch with
+more such files keeps the previous behavior: its first watch probe requests one
+maintenance pass. See [inline provider branches](INLINE_TREES.md) for the backend
+tree model, ownership, limits and pending production projection.
 
 Listings reject duplicate/self-referencing tokens, contradictory known kinds,
 oversized output and cancellation. A failed registry listing issues no partial

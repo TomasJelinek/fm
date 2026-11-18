@@ -132,7 +132,8 @@ pub trait MountedFilesystem: Send + Sync + 'static {
     /// directory from the same enumeration: the `watch::signature` multiset of
     /// every entry, files and hidden entries included, with the metadata a watch
     /// probe reads. `None` when the provider has no such observation, as by
-    /// default.
+    /// default, or would read too much metadata for it (the native adapter's
+    /// bounded reads for skipped files).
     fn list_folders_observed(
         &self,
         directory: &NodeToken,

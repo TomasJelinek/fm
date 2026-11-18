@@ -326,6 +326,8 @@ impl MountedFilesystem for NativeMount {
     /// Every enumerated entry also joins the watch observation, a skipped file
     /// with the listing metadata a watch probe reads (one metadata read where
     /// enumeration lacks it), still without locale formatting, encoding or a token.
+    /// A directory with more skipped files to read than `OBSERVED_METADATA_READS`
+    /// returns its rows without an observation.
     fn list_folders_observed(
         &self,
         directory: &NodeToken,
@@ -372,9 +374,18 @@ impl MountedFilesystem for NativeMount {
     }
 }
 
+/// Most metadata reads an observed folder listing makes for the files it skips. Only
+/// files whose enumeration lacks the watch metadata need one, as through the Linux
+/// platform filesystem; the installed native provider returns every entry's metadata
+/// with its enumeration. Past this budget the listing stops observing and reads no
+/// more, so one expansion costs at most this many extra reads; the branch's first
+/// watch probe then requests one maintenance pass, as without an observation.
+pub(super) const OBSERVED_METADATA_READS: usize = 4_096;
+
 impl NativeMount {
-    /// Returns whether every entry was enumerated, so the consumer never stopped.
-    /// `observed` collects the watch signature of every entry when requested.
+    /// Returns whether every entry was enumerated (the consumer never stopped) and,
+    /// when `observed` was given, joined that watch signature: past
+    /// `OBSERVED_METADATA_READS` the listing continues without it.
     fn enumerate(
         &self,
         directory: &NodeToken,
@@ -392,6 +403,8 @@ impl NativeMount {
         if !matches!(node.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
             return Err(ProviderError::Unsupported);
         }
+        let observing = observed.is_some();
+        let mut reads = 0;
         let mut failure = None;
         let mut stopped = false;
         let result = self
@@ -416,6 +429,14 @@ impl NativeMount {
                     if folders_only
                         && !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
                     {
+                        if observed.is_some() && !self.filesystem.listing_metadata_complete(&entry)
+                        {
+                            if reads == OBSERVED_METADATA_READS {
+                                observed = None;
+                            } else {
+                                reads += 1;
+                            }
+                        }
                         if let Some(observed) = observed.as_deref_mut() {
                             crate::watch::signature::listing_metadata(
                                 self.filesystem.as_ref(),
@@ -478,7 +499,7 @@ impl NativeMount {
             ))
         })?;
         check_cancel(cancel)?;
-        Ok(!stopped)
+        Ok(!stopped && observed.is_some() == observing)
     }
 }
 
