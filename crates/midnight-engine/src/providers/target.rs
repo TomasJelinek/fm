@@ -273,6 +273,28 @@ impl ArchiveMount for LeasedArchive {
         self.check(&cancel)?;
         result
     }
+
+    // Archive previews classify the container's storage by this locator and key
+    // their persistent caches by the member identity; the trait defaults would hide
+    // both. A revoked target vouches for neither.
+    fn native_container_locator(&self) -> Option<&std::path::Path> {
+        self.context().validate_registration().ok()?;
+        self.source().native_container_locator()
+    }
+
+    fn persistent_member_identity(
+        &self,
+        entry: u64,
+        expected_source_version: &[u8],
+    ) -> Result<Option<Vec<u8>>, FsError> {
+        let cancel = Cancellation::default();
+        self.check(&cancel)?;
+        let identity = self
+            .source()
+            .persistent_member_identity(entry, expected_source_version);
+        self.check(&cancel)?;
+        identity
+    }
 }
 
 #[cfg(test)]

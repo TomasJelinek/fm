@@ -669,8 +669,6 @@ async fn an_archive_entered_from_the_tree_reads_members_cooperatively_from_its_s
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "fails until LeasedArchive in providers/target.rs forwards native_container_locator \
-            and persistent_member_identity (deferred to the providers owner)"]
 async fn an_archive_entered_from_the_tree_keeps_its_storage_and_member_identities() {
     let source = Arc::new(IdentifiedArchive::new());
     let (commands, _events, engine, listing) = enter_archive_from_tree(source.clone()).await;

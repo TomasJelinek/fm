@@ -165,11 +165,15 @@ Resolution requires issued references. `MountedTarget` then validates the
 registration lifetime and mount identity of the target and of every enclosing tree
 context, not current issuance: a resolved target, such as a queued copy source or
 a watch target, keeps its value after its lister releases the node references.
-Cloning an archive location or mount retains the same leases: list, read and
-validate reject revocation before and after provider calls. Resources are
-destroyed before their registrations. Cancellation and revocation propagate into
-running listings, which the archive host ends between pages without stopping the
-shared worker. Member reads of a shared archive mount go through `read_cooperative`.
+Cloning an archive location or mount retains the same leases: list, read, validate
+and persistent member identities reject revocation before and after provider
+calls, and the container's native locator is withheld once revoked. The leased
+mount forwards cooperative reads, the locator and member identities to its source,
+so archive previews entered from a tree keep their storage classification and
+persistent cache keys. Resources are destroyed before their registrations.
+Cancellation and revocation propagate into running listings, which the archive
+host ends between pages without stopping the shared worker. Member reads of a
+shared archive mount go through `read_cooperative`.
 Cancelling a listing or member read never ends the worker that other tabs, viewers
 and jobs use: protocol 3 cancels cooperatively, and protocol-1/2 reads finish their
 exchange while the host discards the result. A late successful reply cannot publish

@@ -660,3 +660,93 @@ fn leased_archive_reads_survive_reference_release() {
     drop((resolved, mounted, registry));
     std::thread::spawn(move || drop(escaped)).join().unwrap();
 }
+
+/// A source with storage and persistent cache identities, as host sessions have.
+#[derive(Debug)]
+struct Identified {
+    id: u64,
+    container: PathBuf,
+    identities: AtomicUsize,
+}
+
+impl ArchiveMount for Identified {
+    fn id(&self) -> u64 {
+        self.id
+    }
+    fn list(&self, directory: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        Ok(if directory == 1 {
+            vec![node(self.id, 2, 1, EntryKind::File)]
+        } else {
+            Vec::new()
+        })
+    }
+    fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+        Ok(b"hello".to_vec())
+    }
+    fn validate(&self) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn native_container_locator(&self) -> Option<&Path> {
+        Some(&self.container)
+    }
+    fn persistent_member_identity(
+        &self,
+        entry: u64,
+        expected_source_version: &[u8],
+    ) -> Result<Option<Vec<u8>>, FsError> {
+        self.identities.fetch_add(1, Ordering::AcqRel);
+        Ok(Some(
+            [&entry.to_le_bytes()[..], expected_source_version].concat(),
+        ))
+    }
+}
+
+#[test]
+fn leased_archive_forwards_container_locator_and_member_identity_until_revoked() {
+    let (mut location, _) = fixture(43, 1);
+    let source = Arc::new(Identified {
+        id: 43,
+        container: location.address.container.clone(),
+        identities: AtomicUsize::new(0),
+    });
+    location.mount = Some(source.clone());
+    let (registry, address, instance, mounted) = leased(location, "archive.target.identity");
+    let cancel = Cancellation::default();
+    let rows = mounted.list(mounted.root(), &cancel).unwrap();
+    let resolved = mounted.resolve_target(&rows[0].node, &cancel).unwrap();
+    let escaped = escaped_mount(&resolved);
+    let version = [9, 8, 7];
+    let identity = [&2_u64.to_le_bytes()[..], &version].concat();
+    assert_eq!(
+        escaped.native_container_locator(),
+        Some(source.container.as_path())
+    );
+    assert_eq!(
+        escaped.persistent_member_identity(2, &version).unwrap(),
+        Some(identity.clone())
+    );
+    // A released node reference does not withdraw the resolved target's identities.
+    mounted.retain_issued(&HashSet::new(), &cancel).unwrap();
+    assert_eq!(
+        escaped.native_container_locator(),
+        Some(source.container.as_path())
+    );
+    assert_eq!(
+        escaped.persistent_member_identity(2, &version).unwrap(),
+        Some(identity)
+    );
+    assert!(registry.unregister(address.provider(), instance).unwrap());
+    assert_eq!(
+        escaped.native_container_locator(),
+        None,
+        "a revoked target vouches for no storage locator"
+    );
+    assert!(escaped.persistent_member_identity(2, &version).is_err());
+    assert_eq!(
+        source.identities.load(Ordering::Acquire),
+        2,
+        "a revoked target never asks its source for an identity"
+    );
+    drop((resolved, mounted, registry));
+    std::thread::spawn(move || drop(escaped)).join().unwrap();
+}
