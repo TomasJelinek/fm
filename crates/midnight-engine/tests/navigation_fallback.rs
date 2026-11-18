@@ -51,7 +51,10 @@ async fn until_entered(entered: &Notify, events: &mut mpsc::Receiver<Event>) {
 
 fn still_held(event: Option<Event>) {
     let event = event.expect("engine output must remain connected");
-    if matches!(event, Event::ListingFallback { .. } | Event::ListingFailed { .. }) {
+    if matches!(
+        event,
+        Event::ListingFallback { .. } | Event::ListingFailed { .. }
+    ) {
         panic!("a held listing ended before it was released: {event:?}");
     }
 }
