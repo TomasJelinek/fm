@@ -42,12 +42,22 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-        let root = parent.join(format!(
-            "tree-move-{}-{suffix}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).unwrap();
+        // Each test module that includes this file has its own counter, and two
+        // threads can read the same clock tick: take the next number on a collision.
+        let root = (0..64)
+            .find_map(|_| {
+                let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+                let root = parent.join(format!(
+                    "tree-move-{}-{suffix}-{sequence}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&root) {
+                    Ok(()) => Some(root),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => panic!("cannot create {}: {error}", root.display()),
+                }
+            })
+            .expect("a unique native fixture name");
         let fixture = Self { root, parent };
         platform::secure(&fixture.root);
         for name in ["large", "small", "empty"] {

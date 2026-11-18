@@ -252,6 +252,66 @@ fn tree_copy_prepared_result_survives_a_new_projection_of_the_same_session() {
 }
 
 #[test]
+fn tree_copy_recaptures_a_view_replaced_before_the_backend_accepted_it() {
+    let mut p = loaded();
+    let first = request(&mut p);
+    // A watch refresh publishes revision 2 of the same session with the same
+    // selection, and the backend then refuses the revision 1 capture as stale.
+    let mut publication = super::tree::publication(first.view.root.clone(), 2, true, false);
+    publication.selection =
+        Arc::new(TreeSelectionSnapshot::from_bits(publication.view.clone(), vec![2]).unwrap());
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication))),
+        &|_| true,
+    );
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let refused = |request: &TreeTransferRequest, message: &str| {
+        Event::Tree(Box::new(TreeEvent::Transfer {
+            stamp: request.view.stamp,
+            request: request.request,
+            result: Err(TreeDiagnostic::new(message)),
+        }))
+    };
+    p.apply_with_sender(
+        refused(
+            &first,
+            "Tree view or navigation changed before the command was accepted.",
+        ),
+        &send,
+    );
+    p.flush_selection(&send);
+    assert!(
+        p.desktop.notice.is_none(),
+        "a refresh is no transfer failure: {:?}",
+        p.desktop.notice
+    );
+    let retried = sent
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Tree(command) => match command.as_ref() {
+                TreeCommand::Transfer(request) => Some(request.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("the current view is captured again");
+    assert_eq!(retried.view.stamp.revision, TreeRevision(2));
+    assert_eq!(retried.intent, TransferIntent::Copy);
+    assert_ne!(retried.request, first.request);
+    // A refusal of the current view is reported as before.
+    p.apply_with_sender(refused(&retried, "Provider refused."), &send);
+    assert_eq!(
+        p.desktop.notice.as_ref().map(|(title, _)| title.as_str()),
+        Some("Copy unavailable")
+    );
+}
+
+#[test]
 fn tree_copy_closing_before_result_discards_capture_without_opening_dialog() {
     let mut p = loaded();
     let request = request(&mut p);

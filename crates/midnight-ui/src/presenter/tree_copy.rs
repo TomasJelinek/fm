@@ -166,7 +166,7 @@ impl Presenter {
             self.retired.push(Box::new(result));
             return;
         }
-        let pending = self
+        let mut pending = self
             .copies
             .tree_pending
             .take()
@@ -201,16 +201,46 @@ impl Presenter {
                         retire_requested: false,
                     });
                 }
-                Err(error) => self.desktop.report(
-                    if pending.intent == TransferIntent::Move {
-                        "Move unavailable"
-                    } else {
-                        "Copy unavailable"
-                    },
-                    error.as_str().into(),
-                ),
+                Err(error) => match self.recapture_replaced_transfer(&pending) {
+                    Some(capture) => {
+                        // A newer publication of this tree (a watch refresh, for example)
+                        // replaced the captured view before the backend accepted it, so
+                        // the backend refused it as stale. The selection is unchanged:
+                        // capture the current view instead of reporting a failure.
+                        self.retired.push(Box::new(error));
+                        let replaced = std::mem::replace(&mut pending.capture, capture);
+                        self.retired.push(Box::new(replaced));
+                        self.copies.tree_pending = Some(pending);
+                        return;
+                    }
+                    None => self.desktop.report(
+                        if pending.intent == TransferIntent::Move {
+                            "Move unavailable"
+                        } else {
+                            "Copy unavailable"
+                        },
+                        error.as_str().into(),
+                    ),
+                },
             }
         }
         self.retired.push(Box::new(pending));
+    }
+
+    /// A fresh capture of the current view when a newer publication of the same
+    /// tree replaced the captured one and the user's selection did not change.
+    /// Each retry needs a newer publication, so retries cannot repeat endlessly.
+    fn recapture_replaced_transfer(&self, pending: &Pending) -> Option<tree_capture::Capture> {
+        let captured = &pending.capture.view;
+        let p = &self.panes[captured.stamp.pane.index()];
+        let replaced = p.tree_view().is_some_and(|view| {
+            view.stamp.navigation == captured.stamp.navigation
+                && view.stamp.session == captured.stamp.session
+                && view.stamp.revision.0 > captured.stamp.revision.0
+        });
+        if !replaced || !pending.capture.selection_current(p) {
+            return None;
+        }
+        tree_capture::Capture::new(p)
     }
 }

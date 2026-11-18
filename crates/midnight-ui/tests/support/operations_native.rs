@@ -92,8 +92,20 @@ impl Harness {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = parent.join(format!("native-ui-{}-{stamp}", std::process::id()));
-        fs::create_dir(&root).unwrap();
+        // Parallel tests can read the same clock tick: number the collisions.
+        let root = (0..64)
+            .find_map(|attempt| {
+                let root = parent.join(format!(
+                    "native-ui-{}-{stamp}-{attempt}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&root) {
+                    Ok(()) => Some(root),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => panic!("cannot create {}: {error}", root.display()),
+                }
+            })
+            .expect("a unique native fixture name");
         assert_eq!(root.parent(), Some(parent.as_path()));
         let left = root.join("source");
         let right = root.join("destination");

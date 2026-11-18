@@ -59,6 +59,11 @@ impl Capture {
         })
     }
 
+    /// The pane's selection is still the one this capture saw.
+    pub fn selection_current(&self, pane: &Pane) -> bool {
+        pane.tree.preview.is_empty() && pane.tree.applied == self.revision
+    }
+
     /// Menu receipts keep their original target even after the capture request finished.
     pub fn matches_current(&self, pane: &Pane) -> bool {
         !pane.loading
