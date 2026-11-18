@@ -140,7 +140,8 @@ use tokio::{
 use find_worker::localize_metadata;
 
 const BATCH_SIZE: usize = 128;
-/// Upper bound for copy/mutation actors to finish their own retirement at shutdown.
+/// Upper bound for copy/mutation actors and the clipboard worker to finish their own
+/// retirement at shutdown.
 const ACTOR_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
@@ -449,7 +450,8 @@ impl EngineServices {
         let denied_navigations = elevation::DeniedNavigations::default();
         let mut navigation_high_water: [Option<NavigationId>; 2] = [None, None];
         let mut tasks = JoinSet::new();
-        // Actors that retire native ownership themselves; drained before `tasks` abort.
+        // Actors that retire native ownership themselves (Copy/Move, mutation and the
+        // clipboard worker thread); drained, at most ACTOR_SHUTDOWN, before `tasks` abort.
         let mut actors = JoinSet::new();
         let mut find = find::Controller::new(
             scope.clone(),
@@ -744,7 +746,7 @@ impl EngineServices {
                             }
                         }
                         Some(Command::CancelFileList{id,generation})=>file_lists.cancel(id,generation),
-                        Some(Command::CopyGeneratedText{request,content,cancel})=>clipboard.copy_generated(request,content,cancel,&mut tasks).await,
+                        Some(Command::CopyGeneratedText{request,content,cancel})=>clipboard.copy_generated(request,content,cancel,&mut actors).await,
                         Some(Command::ReadDiagnosticText { request, content, cancel }) => size_warning_requests.preview(request, content, cancel, &mut tasks).await,
                         Some(Command::OpenSizeWarnings { request, report, cancel }) => size_warning_requests.open(request, report, cancel, &mut tasks).await,
                         Some(Command::PreviewUserCommand(request)) => {
@@ -994,14 +996,14 @@ impl EngineServices {
                             if let Some(watcher) = &watcher { watcher.set_visible(watch_target); }
                         }
                         Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks).await,
-                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks).await,
-                        Some(Command::ReadPathClipboardText { request }) => clipboard.read_text(request, &mut tasks).await,
+                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut actors).await,
+                        Some(Command::ReadPathClipboardText { request }) => clipboard.read_text(request, &mut actors).await,
                         Some(Command::PickPath { request, input }) => path_picker.show(request, input, &mut tasks).await,
                         Some(Command::CancelPathPicker { request }) => path_picker.cancel(request),
-                        Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut tasks).await,
-                        Some(Command::CopyCapturedFiles { request, source, cancel }) => clipboard.copy_captured(request, source, cancel, &mut tasks).await,
-                        Some(Command::CutFiles { request, files }) => clipboard.cut_files(request, files, &mut tasks).await,
-                        Some(Command::ReadFileClipboard { request, destination }) => clipboard.read_files(request, destination, &mut tasks).await,
+                        Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut actors).await,
+                        Some(Command::CopyCapturedFiles { request, source, cancel }) => clipboard.copy_captured(request, source, cancel, &mut actors).await,
+                        Some(Command::CutFiles { request, files }) => clipboard.cut_files(request, files, &mut actors).await,
+                        Some(Command::ReadFileClipboard { request, destination }) => clipboard.read_files(request, destination, &mut actors).await,
                         Some(Command::ShowShellMenu { request, files, owner, position, modifiers, target }) => {
                             shell_menu.show(shell_menu::Input { request, files, owner, position, modifiers, target }, &mut tasks).await;
                         }
@@ -1015,7 +1017,7 @@ impl EngineServices {
                             desktop.open_captured_entry(request, (pane, navigation), source, cancel, row, &mut tasks).await;
                         }
                         Some(Command::ReadCapturedFileClipboard { request, source, cancel }) => {
-                            clipboard.read_captured_files(request, source, cancel, &mut tasks).await;
+                            clipboard.read_captured_files(request, source, cancel, &mut actors).await;
                         }
                         Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks).await,
                         Some(Command::ShowSelectionProperties { request, selection, view, fallback }) => {
@@ -1273,7 +1275,10 @@ impl EngineServices {
         // Copy and mutation actors exit by themselves after `shutdown`, once each job
         // has released its native and captured owners through its checked retirement.
         // Aborting them would drop those jobs outside that path; wait (bounded, in case
-        // the event consumer stopped draining) before aborting what remains.
+        // the event consumer stopped draining) before aborting what remains. The same
+        // wait covers the clipboard worker thread, which closes its native session
+        // (still able to serve or hand over copied content) after `clipboard.shutdown`;
+        // aborting only its waiter would let the process exit during that close.
         let drained = tokio::time::timeout(ACTOR_SHUTDOWN, async {
             while actors.join_next().await.is_some() {}
         })

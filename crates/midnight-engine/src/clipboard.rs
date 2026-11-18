@@ -153,14 +153,14 @@ impl Controller {
         id: DesktopRequestId,
         source: Arc<dyn midnight_core::CapturedClipboardFiles>,
         cancel: Cancellation,
-        tasks: &mut JoinSet<()>,
+        actors: &mut JoinSet<()>,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Captured(source, cancel),
             },
-            tasks,
+            actors,
         )
         .await;
     }
@@ -169,14 +169,14 @@ impl Controller {
         id: DesktopRequestId,
         source: Arc<dyn midnight_core::CapturedClipboardFiles>,
         cancel: Cancellation,
-        tasks: &mut JoinSet<()>,
+        actors: &mut JoinSet<()>,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::ReadCaptured(source, cancel),
             },
-            tasks,
+            actors,
         )
         .await;
     }
@@ -185,14 +185,14 @@ impl Controller {
         id: DesktopRequestId,
         content: Arc<dyn midnight_core::GeneratedTextSource>,
         cancel: Cancellation,
-        tasks: &mut JoinSet<()>,
+        actors: &mut JoinSet<()>,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Generated(content, cancel),
             },
-            tasks,
+            actors,
         )
         .await;
     }
@@ -224,7 +224,13 @@ impl Controller {
         let scope = TaskLifetime::testing(service.clone());
         Self::new(retirement, scope, service, outbox)
     }
-    fn start_worker(&mut self, tasks: &mut JoinSet<()>) -> mpsc::Sender<Request> {
+    /// Starts the native worker on its own thread. Its completion waiter joins
+    /// `actors`, the engine's set of actors that retire native ownership themselves:
+    /// a normal `Engine::run` shutdown waits for them, at most five seconds, before it
+    /// aborts its other tasks, so it returns only after this thread has closed the
+    /// native session (which may still hand copied text over to a Linux clipboard
+    /// manager or finish an X11 transfer).
+    fn start_worker(&mut self, actors: &mut JoinSet<()>) -> mpsc::Sender<Request> {
         let (sender, receiver) = mpsc::channel::<Request>(16);
         let mut worker = self
             .worker
@@ -238,7 +244,10 @@ impl Controller {
         let cancel = self.cancel.clone();
         let outbox = self.outbox.clone();
         let wake = self.wake.clone();
-        tasks.spawn_blocking(self.scope.blocking(move || {
+        // The worker lives for the rest of the session: keep it off the bounded
+        // blocking pool that listings and scans need. Controller drop ends it through
+        // cancellation, the closed inbox and the session waker.
+        let run = self.scope.blocking(move || {
             let mut native = Native::new(wake);
             while let Some(request) = next_request(&mut worker.receiver, &mut native, &cancel) {
                 let event = match prepare(&request.action, &cancel) {
@@ -280,13 +289,15 @@ impl Controller {
                 }
             }
             // Session never enters the transferable guard: create, pump and Drop stay here.
-            // The guarded inbox also covers cancellation before this closure ever starts.
-        }));
+            // The guarded inbox also covers cancellation before this closure ever starts
+            // (only possible when the OS refuses the thread and the pool runs it instead).
+        });
+        crate::actor_thread::spawn("midnight-clipboard", actors, run);
         sender
     }
-    async fn submit(&mut self, request: Request, tasks: &mut JoinSet<()>) {
+    async fn submit(&mut self, request: Request, actors: &mut JoinSet<()>) {
         if self.sender.is_none() {
-            self.sender = Some(self.start_worker(tasks));
+            self.sender = Some(self.start_worker(actors));
         }
         let queued = self.sender.as_ref().unwrap().try_send(request);
         if queued.is_ok() {
@@ -333,24 +344,24 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         text: String,
-        tasks: &mut JoinSet<()>,
+        actors: &mut JoinSet<()>,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Text(text),
             },
-            tasks,
+            actors,
         )
         .await;
     }
-    pub(crate) async fn read_text(&mut self, id: DesktopRequestId, tasks: &mut JoinSet<()>) {
+    pub(crate) async fn read_text(&mut self, id: DesktopRequestId, actors: &mut JoinSet<()>) {
         self.submit(
             Request {
                 id,
                 action: Action::ReadText,
             },
-            tasks,
+            actors,
         )
         .await;
     }
@@ -358,14 +369,14 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         files: SelectedFiles,
-        tasks: &mut JoinSet<()>,
+        actors: &mut JoinSet<()>,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Files(files, FileClipboardIntent::Copy),
             },
-            tasks,
+            actors,
         )
         .await;
     }
@@ -373,14 +384,14 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         destination: PathBuf,
-        tasks: &mut JoinSet<()>,
+        actors: &mut JoinSet<()>,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Read(destination),
             },
-            tasks,
+            actors,
         )
         .await;
     }
@@ -388,24 +399,26 @@ impl Controller {
         &mut self,
         id: DesktopRequestId,
         files: SelectedFiles,
-        tasks: &mut JoinSet<()>,
+        actors: &mut JoinSet<()>,
     ) {
         self.submit(
             Request {
                 id,
                 action: Action::Files(files, FileClipboardIntent::Move),
             },
-            tasks,
+            actors,
         )
         .await;
     }
+    /// Stops the worker without waiting: it closes its native session on its own
+    /// thread, and the engine's actor drain waits for that thread (`start_worker`).
     pub(crate) fn shutdown(self) {
         drop(self);
     }
 }
 impl Drop for Controller {
     fn drop(&mut self) {
-        // A started blocking worker cannot be aborted by dropping its JoinSet: cancel it,
+        // A started worker thread cannot be aborted through its waiter: cancel it,
         // close its inbox, then end an idle native wait so that it observes both.
         self.cancel.cancel();
         self.sender = None;
