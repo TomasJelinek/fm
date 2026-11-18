@@ -121,7 +121,7 @@ impl ExternalComparisonFrontDoor {
         let lease = self
             .admission
             .retirement
-            .try_reserve_nowait()
+            .try_reserve()
             .map_err(|_| failure("File cleanup capacity is occupied."))?;
         // No captures exist before this allocation/arming step. The callback's
         // successful return is assigned before any cancellation or second capture.

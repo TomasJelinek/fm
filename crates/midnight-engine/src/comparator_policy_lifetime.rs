@@ -75,7 +75,7 @@ impl ComparisonPolicySource {
     ) -> Result<ComparisonPolicy, ComparisonPolicyPinError> {
         let lease = self
             .retirement
-            .try_reserve_nowait()
+            .try_reserve()
             .map_err(|_| ComparisonPolicyPinError::RetirementBusy)?;
         let mut payload = lease.own(AcceptedPolicyPayload {
             policy: None,
