@@ -25,7 +25,7 @@ impl OpenWindow {
             .set_file_b(choice.paths[1].to_string_lossy().as_ref().into());
         *self.choice_paths.borrow_mut() = choice.paths.clone();
         self.window
-            .set_choice_message(choice.message.as_str().into());
+            .set_choice_message(midnight_core::visible_name(&choice.message).as_ref().into());
         self.window.set_choice_error(choice.is_error);
         self.window.set_choice_busy(false);
         self.window.set_choosing_files(true);

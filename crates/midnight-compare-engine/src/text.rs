@@ -382,7 +382,9 @@ fn text_control(c: char) -> bool {
 /// so neither file can reorder its displayed lines ("Trojan Source"). Display only: the
 /// diff compares the raw lines.
 fn visible_controls(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains(|c| matches!(c, '\u{0b}' | '\u{0c}' | '\u{1b}') || bidi_control(c)) {
+    if !text.contains(|c| {
+        matches!(c, '\u{0b}' | '\u{0c}' | '\u{1b}') || midnight_core::is_explicit_bidi_control(c)
+    }) {
         return text.into();
     }
     let mut shown = String::with_capacity(text.len() + 8);
@@ -390,7 +392,7 @@ fn visible_controls(text: &str) -> std::borrow::Cow<'_, str> {
         match c {
             '\u{0b}' | '\u{0c}' | '\u{1b}' => shown
                 .push(char::from_u32(0x2400 + u32::from(c)).unwrap_or(char::REPLACEMENT_CHARACTER)),
-            c if bidi_control(c) => {
+            c if midnight_core::is_explicit_bidi_control(c) => {
                 use std::fmt::Write;
                 let _ = write!(shown, "\\u{:04X}", u32::from(c));
             }
@@ -398,12 +400,6 @@ fn visible_controls(text: &str) -> std::borrow::Cow<'_, str> {
         }
     }
     shown.into()
-}
-
-/// The explicit bidirectional embedding, override and isolate controls (U+202A-U+202E,
-/// U+2066-U+2069). Implicit direction marks (LRM, RLM, ALM) stay ordinary text.
-fn bidi_control(c: char) -> bool {
-    matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// The catalog's name for the preferred family (ASCII case-insensitive), else Consolas,
@@ -544,7 +540,11 @@ mod tests {
         let frame = diff.paint(geometry, &appearance(12.0), &cancel).unwrap();
         assert!(frame.accessible_text.contains("x\\u202Ey"));
         assert!(frame.accessible_text.contains("x\\u202Cy"));
-        assert!(!frame.accessible_text.contains(bidi_control));
+        assert!(
+            !frame
+                .accessible_text
+                .contains(midnight_core::is_explicit_bidi_control)
+        );
     }
 
     fn appearance(font_size: f32) -> ViewerAppearance {

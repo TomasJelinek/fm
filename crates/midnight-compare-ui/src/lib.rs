@@ -178,7 +178,7 @@ impl OpenWindow {
                 show_names(window, names);
                 window.set_image_mode(frame.image);
                 window.set_position(frame.position as f32);
-                window.set_status(frame.status.as_str().into());
+                window.set_status(midnight_core::visible_name(&frame.status).as_ref().into());
                 window.set_accessible_text(frame.accessible_text.as_str().into());
                 if let Some(layers) = &frame.layers {
                     self.surfaces.borrow_mut().present(
@@ -195,7 +195,9 @@ impl OpenWindow {
                     window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
                 }
             }
-            Output::Status(message) => window.set_status(message.as_str().into()),
+            Output::Status(message) => {
+                window.set_status(midnight_core::visible_name(message).as_ref().into())
+            }
             Output::ChooseFiles(choice) => self.show_file_choice(choice),
         }
         service.retire(output);

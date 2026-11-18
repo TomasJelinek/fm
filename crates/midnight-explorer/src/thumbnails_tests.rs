@@ -347,7 +347,9 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
     // An empty executable identity is invalid on every platform. Discovery fails
     // before cache creation and delivers its normal asynchronous error notice.
     let service = Rc::new(Service::start(PathBuf::new(), PathBuf::new()));
-    let controller = install_service(
+    // This platform offers no event loop: its ready notifications run below instead.
+    let event_loop = super::pulse_tests::TestEventLoop::default();
+    let controller = install_service_with(
         &window,
         presenter,
         service.clone(),
@@ -356,6 +358,7 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
             storage: std::sync::Arc::new(|_| panic!("no storage is queried during discovery")),
         },
         Rc::new(|_| true),
+        event_loop.post(),
     );
     // Startup waits hidden for preferences. A timer pulse in that interval must
     // not permanently stop thumbnail workers before the first visible frame.
@@ -374,8 +377,10 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
             Instant::now() < deadline,
             "the discovery failure notice was not presented"
         );
-        // The backend fails discovery on its own thread; each pulse polls its notice.
+        // The backend fails discovery on its own thread; its ready notifier posts the
+        // pass that wakes the pulse, which then takes the notice.
         std::thread::yield_now();
+        event_loop.run();
         pulse();
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1000);

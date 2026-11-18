@@ -89,10 +89,10 @@ separately; this document is not a claim that every item is already released.
   cancellation does not overwrite the draft. Native paths stay lossless through
   the backend and late results cannot overwrite a newer form or another item.
 - Rows, tabs, the path bar, dialog bodies and errors, status text and viewer and
-  comparator captions show file and folder names and paths through `shown_text`
-  (`midnight_core::visible_name`), which displays the explicit bidirectional
-  controls as `\u202E`-style escapes; viewer and comparator status lines still show
-  them raw. Name and destination fields, operations and copy actions (Copy details,
+comparator captions and status lines show file and folder names and paths through
+`shown_text` (`midnight_core::visible_name`), which displays the explicit
+bidirectional controls as `\u202E`-style escapes. Name and destination fields,
+operations and copy actions (Copy details,
   error copies, right-clicking a breadcrumb) keep the raw text. The path editor
   starts from the escaped location and copies what it shows. Enter on that text
   opens the raw location, and that text followed by a separator and more path

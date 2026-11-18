@@ -226,7 +226,8 @@ impl ViewerWindows {
                 || previous.markdown_font != preferences.markdown_font
                 || previous.markdown_preset != preferences.markdown_preset;
             if let Err(message) = open.session.restore_preferences(preferences.clone()) {
-                open.window.set_status(message.into());
+                open.window
+                    .set_status(midnight_core::visible_name(&message).as_ref().into());
             } else {
                 if layout_changed {
                     raster_rebase::cancel_context(open);
@@ -576,7 +577,8 @@ fn accept_preference(open: &OpenWindow, change: ViewerPreferenceChange) -> bool 
             true
         }
         Err(message) => {
-            open.window.set_status(message.into());
+            open.window
+                .set_status(midnight_core::visible_name(&message).as_ref().into());
             false
         }
     }
@@ -806,7 +808,8 @@ fn present_outputs(
                     pixel_delivery::trace_frame(open, 41, frame);
                     let Ok(model) = model else {
                         if let Err(message) = model {
-                            window.set_status(message.into());
+                            window
+                                .set_status(midnight_core::visible_name(&message).as_ref().into());
                         }
                         service.retire(output);
                         continue;
@@ -891,7 +894,7 @@ fn present_outputs(
                             window.set_surface(slint::Image::from_rgba8_premultiplied(pixels.body))
                         }
                         Err(error) => {
-                            window.set_status(error.into());
+                            window.set_status(midnight_core::visible_name(&error).as_ref().into());
                             service.retire(output);
                             continue;
                         }
@@ -911,7 +914,7 @@ fn present_outputs(
                 // A file name cannot reorder the window title: explicit bidirectional
                 // controls show as escapes, as in the Basic viewer's text.
                 window.set_caption(midnight_core::visible_name(&frame.caption).as_ref().into());
-                window.set_status(frame.status.as_str().into());
+                window.set_status(midnight_core::visible_name(&frame.status).as_ref().into());
                 if image_mode {
                     window.set_position_context(
                         format!(
@@ -960,10 +963,12 @@ fn present_outputs(
                     // Keep the displayed pixels and settle at the actual camera.
                     // The failed frontier must not replay indefinitely.
                     raster_motion::cancel(open);
-                    window.set_status(message.as_str().into());
+                    window.set_status(midnight_core::visible_name(message).as_ref().into());
                 }
             }
-            ViewerOutput::Status(message) => window.set_status(message.as_str().into()),
+            ViewerOutput::Status(message) => {
+                window.set_status(midnight_core::visible_name(message).as_ref().into())
+            }
             ViewerOutput::ImageUnavailable {
                 generation,
                 surface,
@@ -984,7 +989,7 @@ fn present_outputs(
                     open.image_camera.borrow_mut().suspend();
                     open.image_redraw.stop();
                     raster_motion::cancel(open);
-                    window.set_status(message.as_str().into());
+                    window.set_status(midnight_core::visible_name(message).as_ref().into());
                 }
             }
             ViewerOutput::CopyText(text) => copy(text.clone()),
