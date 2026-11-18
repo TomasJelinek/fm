@@ -85,11 +85,12 @@ fn watch_lifetime_scope_before_first_poll_retires_off_caller() {
 }
 
 #[test]
-fn watch_lifetime_scope_after_native_unwind_retires_off_caller() {
+fn watch_lifetime_unwinds_keep_subscriptions_and_scope_off_caller() {
     let runtime = runtime();
     let entered = runtime.enter();
     let (subscription, subscription_drop) = sync_mpsc::channel();
-    let (controller, mut tasks, _events, domain) = start(
+    // Every probe panics; the restart interval outlasts the test.
+    let (controller, tasks, mut events, domain) = start(
         Arc::new(LifetimeFiles {
             panic_on_read: true,
             ..Default::default()
@@ -98,34 +99,47 @@ fn watch_lifetime_scope_after_native_unwind_retires_off_caller() {
     );
     let handle = controller.handle();
     let right = controller.panes[1].clone();
-    let (scope, dropped, _release) = retained_scope();
+    let (scope, dropped, release) = retained_scope();
+    let stamp = scope.stamp;
     handle.set_tree_scope(scope);
-    runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(5), tasks.join_next())
+    // The first restart is immediate; after the second panic the worker waits.
+    let waiting = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), events.recv())
             .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        controller.shutdown();
-        stop(&controller, &mut tasks).await;
+            .expect("the worker must report its rate-limited restart")
+            .expect("watch output")
     });
-    let (created, destroyed) = subscription_drop
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap();
-    assert_eq!(
-        created, destroyed,
-        "native subscription must unwind on its creating worker"
-    );
-    assert_ne!(destroyed, thread::current().id());
     assert!(
-        handle.panes[0].state.lock().unwrap().tree.is_some(),
-        "panic must bypass final drain"
+        matches!(
+            waiting,
+            Event::WatchStatus {
+                view: WatchedView::Tree(view),
+                status: WatchStatus::Restarting,
+            } if view == stamp
+        ),
+        "{waiting:?}"
     );
+    for _ in 0..2 {
+        let (created, destroyed) = subscription_drop
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            created, destroyed,
+            "native subscription must unwind on its creating worker"
+        );
+        assert_ne!(destroyed, thread::current().id());
+    }
+    assert!(
+        dropped.try_recv().is_err(),
+        "the scope survives the unwinds"
+    );
+    // Stopped while it waits, the worker drains the scope on its own thread,
+    // where the gated mount blocks.
+    controller.shutdown();
     drop(controller);
     drop(tasks);
     drop(entered);
     drop(runtime);
-    assert!(dropped.try_recv().is_err());
     drop(handle);
     assert_ne!(
         dropped.recv_timeout(Duration::from_secs(5)).unwrap(),
@@ -135,6 +149,7 @@ fn watch_lifetime_scope_after_native_unwind_retires_off_caller() {
         domain.try_reserve().is_err(),
         "the gated mount must retain its pane slot"
     );
+    drop(release);
     drop(right);
 }
 

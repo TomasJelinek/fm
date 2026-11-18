@@ -4,23 +4,12 @@ use midnight_core::TreeSessionId;
 fn handle() -> Handle {
     Handle {
         panes: Retirement::testing().panes.map(|lease| {
-            Arc::new(lease.own(Shared {
-                state: Mutex::new(Control {
-                    visible: None,
-                    revision: 0,
-                    cancel: Cancellation::default(),
-                    stopped: false,
-                    navigation: NavigationId(0),
-                    tree_navigation: None,
-                    tree: None,
-                }),
-                worker: OnceLock::new(),
-                timing: Timing {
-                    quiet: Duration::from_secs(1),
-                    maximum: Duration::from_secs(3),
-                    poll: Duration::from_secs(15),
-                },
-            }))
+            Arc::new(lease.own(Shared::new(Timing {
+                quiet: Duration::from_secs(1),
+                maximum: Duration::from_secs(3),
+                poll: Duration::from_secs(15),
+                restart: Duration::from_secs(60),
+            })))
         }),
     }
 }

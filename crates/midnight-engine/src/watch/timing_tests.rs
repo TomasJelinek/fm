@@ -21,13 +21,15 @@ async fn controller_new_applies_the_production_timing() {
     // has no visible target, so obtaining its policy performs no I/O.
     stop(&controller, &mut tasks).await;
     assert_eq!(
-        (timing.quiet, timing.maximum, timing.poll),
+        (timing.quiet, timing.maximum, timing.poll, timing.restart),
         (
             PRODUCTION_TIMING.quiet,
             PRODUCTION_TIMING.maximum,
-            PRODUCTION_TIMING.poll
+            PRODUCTION_TIMING.poll,
+            PRODUCTION_TIMING.restart
         )
     );
+    assert_eq!(timing.restart, Duration::from_secs(60));
 }
 
 #[test]

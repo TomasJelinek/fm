@@ -86,6 +86,15 @@ fn debouncer_resets_after_a_delivered_burst() {
 
 type ChangeCallback = Arc<dyn Fn() + Send + Sync>;
 
+/// One step of a `Native` fake's subscription history, in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Watched {
+    Registered(PathBuf),
+    Dropped(PathBuf),
+    /// A test step, such as the UI's acceptance of a listing.
+    Mark(&'static str),
+}
+
 #[derive(Default)]
 struct Native {
     callbacks: Mutex<Vec<(PathBuf, ChangeCallback)>>,
@@ -93,21 +102,30 @@ struct Native {
     drops: Arc<AtomicUsize>,
     dropped: Arc<Notify>,
     drop_threads: Arc<Mutex<Vec<(ThreadId, ThreadId)>>>,
+    history: Arc<Mutex<Vec<Watched>>>,
     fail: bool,
     /// Fires the newest subscription when the next one is registered: a
     /// notification that arrives while the worker subscribes again.
     fire_on_watch: AtomicBool,
+    /// So many of the next registrations panic after recording their callback.
+    panics: AtomicUsize,
 }
 
 struct Guard {
+    path: PathBuf,
     drops: Arc<AtomicUsize>,
     dropped: Arc<Notify>,
     drop_threads: Arc<Mutex<Vec<(ThreadId, ThreadId)>>>,
+    history: Arc<Mutex<Vec<Watched>>>,
     registered_on: ThreadId,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
+        self.history
+            .lock()
+            .unwrap()
+            .push(Watched::Dropped(std::mem::take(&mut self.path)));
         self.drops.fetch_add(1, Ordering::SeqCst);
         self.drop_threads
             .lock()
@@ -137,6 +155,15 @@ impl WatchService for Native {
         }
         self.callbacks.lock().unwrap().push((path.into(), changed));
         self.registered.notify_one();
+        if self
+            .panics
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            panic!("watch test registration panic");
+        }
         if self.fail {
             return Err(FsError::from_io(
                 "test watch",
@@ -144,18 +171,32 @@ impl WatchService for Native {
                 io::ErrorKind::Unsupported.into(),
             ));
         }
+        self.history
+            .lock()
+            .unwrap()
+            .push(Watched::Registered(path.into()));
         Ok(Box::new(Guard {
+            path: path.into(),
             drops: self.drops.clone(),
             dropped: self.dropped.clone(),
             drop_threads: self.drop_threads.clone(),
+            history: self.history.clone(),
             registered_on: std::thread::current().id(),
         }))
     }
 }
 
 impl Native {
+    fn mark(&self, step: &'static str) {
+        self.history.lock().unwrap().push(Watched::Mark(step));
+    }
+
+    fn history(&self) -> Vec<Watched> {
+        self.history.lock().unwrap().clone()
+    }
+
     async fn registrations(&self, count: usize) {
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if self.callbacks.lock().unwrap().len() >= count {
                     return;
@@ -173,7 +214,7 @@ impl Native {
     }
 
     async fn released(&self, count: usize) {
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             while self.drops.load(Ordering::SeqCst) < count {
                 self.dropped.notified().await;
             }
@@ -198,6 +239,8 @@ struct Files {
     /// Enumeration reports complete listing metadata, as Windows and the plugin do.
     complete: bool,
     metadata_reads: AtomicUsize,
+    /// So many of the next directory reads panic.
+    panic_probes: AtomicUsize,
 }
 
 /// Lets the fake's blocked probe return when dropped. Hold one for as long as a test
@@ -246,7 +289,7 @@ impl Files {
     }
 
     async fn wait_probes(&self, count: usize) {
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if self.probes.load(Ordering::SeqCst) >= count {
                     return;
@@ -266,6 +309,15 @@ impl DirectoryService for Files {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
+        if self
+            .panic_probes
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            panic!("watch test probe panic");
+        }
         if self.blocked_path.as_deref() == Some(path) {
             self.blocked.notify_one();
             while (self.ignore_cancel || !cancel.is_cancelled())
@@ -339,6 +391,7 @@ fn timing(poll: Duration) -> Timing {
         quiet: Duration::from_millis(20),
         maximum: Duration::from_millis(70),
         poll,
+        restart: Duration::from_secs(60),
     }
 }
 
@@ -347,7 +400,16 @@ fn controller(
     native: Option<Arc<Native>>,
     poll: Duration,
 ) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>) {
-    let (sender, events) = mpsc::channel(8);
+    controller_with(files, native, timing(poll), 8)
+}
+
+fn controller_with(
+    files: Arc<Files>,
+    native: Option<Arc<Native>>,
+    timing: Timing,
+    capacity: usize,
+) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>) {
+    let (sender, events) = mpsc::channel(capacity);
     let mut tasks = JoinSet::new();
     let controller = Controller::with_timing(
         Retirement::testing(),
@@ -359,25 +421,52 @@ fn controller(
             wakeup: Arc::new(|| {}),
         },
         &mut tasks,
-        timing(poll),
+        timing,
     );
     (controller, tasks, events)
 }
 
-async fn changed(events: &mut mpsc::Receiver<Event>) -> (PaneId, NavigationId) {
-    match tokio::time::timeout(Duration::from_secs(3), events.recv())
+async fn next_event(events: &mut mpsc::Receiver<Event>) -> Event {
+    tokio::time::timeout(Duration::from_secs(10), events.recv())
         .await
-        .expect("Watch must emit a refresh hint")
+        .expect("Watch must emit an event")
         .expect("Watch output closed")
-    {
+}
+
+async fn changed(events: &mut mpsc::Receiver<Event>) -> (PaneId, NavigationId) {
+    match next_event(events).await {
         Event::DirectoryChanged { pane, navigation } => (pane, navigation),
         other => panic!("Unexpected watch event: {other:?}"),
     }
 }
 
+/// The kind of a reported status, for comparisons.
+fn kind(status: &WatchStatus) -> &'static str {
+    match status {
+        WatchStatus::Native => "Native",
+        WatchStatus::PollingOnly(_) => "PollingOnly",
+        WatchStatus::Restarting => "Restarting",
+    }
+}
+
+/// The next event, which must be a watch status.
+async fn status(events: &mut mpsc::Receiver<Event>) -> (WatchedView, WatchStatus) {
+    match next_event(events).await {
+        Event::WatchStatus { view, status } => (view, status),
+        other => panic!("Expected a watch status: {other:?}"),
+    }
+}
+
+fn flat(pane: PaneId, navigation: u64) -> WatchedView {
+    WatchedView::Flat {
+        pane,
+        navigation: NavigationId(navigation),
+    }
+}
+
 async fn stop(controller: &Controller, tasks: &mut JoinSet<()>) {
     controller.shutdown();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(result) = tasks.join_next().await {
             result.unwrap();
         }
@@ -630,7 +719,7 @@ async fn polling_refreshes_recovered_compression_without_length_or_mtime_changes
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_native_registration_retains_polling_fallback() {
+async fn failed_native_registration_reports_polling_only_once_and_keeps_polling() {
     let files = Arc::new(Files::default());
     files.put("left", 7);
     let native = Arc::new(Native {
@@ -643,7 +732,214 @@ async fn failed_native_registration_retains_polling_fallback() {
         Duration::from_millis(40),
     );
     controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    let (view, reported) = status(&mut events).await;
+    assert_eq!(view, flat(PaneId::Left, 1));
+    let WatchStatus::PollingOnly(error) = reported else {
+        panic!("expected polling only: {reported:?}");
+    };
+    assert_eq!(error.kind, io::ErrorKind::Unsupported);
+    // Only the periodic check finds the change; the status is not repeated.
+    files.put("left", 8);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    // A refresh of the same folder is a new view: its failure is reported once.
+    controller.listing_started(PaneId::Left, NavigationId(2), Path::new("left"));
+    controller
+        .handle()
+        .clear_scope(PaneId::Left, NavigationId(2));
+    controller.set_visible(files.visible(PaneId::Left, 2, "left"));
+    let mut statuses = Vec::new();
+    while statuses.is_empty() {
+        match next_event(&mut events).await {
+            Event::WatchStatus { view, status } => statuses.push((view, kind(&status))),
+            // A hint for the replaced rows may still be queued.
+            Event::DirectoryChanged {
+                navigation: NavigationId(1),
+                ..
+            } => {}
+            other => panic!("Unexpected watch event: {other:?}"),
+        }
+    }
+    assert_eq!(statuses, [(flat(PaneId::Left, 2), "PollingOnly")]);
+    stop(&controller, &mut tasks).await;
+    assert!(
+        events.try_recv().is_err(),
+        "each view's status is sent once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_status_waiting_for_capacity_is_sent_while_a_failed_navigation_shows_its_rows() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let native = Arc::new(Native {
+        fail: true,
+        ..Native::default()
+    });
+    // A full queue keeps the status of navigation 1 unsent.
+    let (sender, mut events) = mpsc::channel(1);
+    sender
+        .send(Event::DirectoryChanged {
+            pane: PaneId::Right,
+            navigation: NavigationId(999),
+        })
+        .await
+        .unwrap();
+    let mut tasks = JoinSet::new();
+    let controller = Controller::with_timing(
+        Retirement::testing(),
+        TaskLifetime::testing((files.clone(), native.clone())),
+        files.clone(),
+        Some(native.clone()),
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        &mut tasks,
+        timing(Duration::from_secs(30)),
+    );
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
     native.registrations(1).await;
+    // The pane lists another folder, which fails: it still shows navigation 1.
+    controller.listing_started(PaneId::Left, NavigationId(2), Path::new("right"));
+    controller
+        .handle()
+        .clear_scope(PaneId::Left, NavigationId(2));
+    controller
+        .reporter()
+        .listing_failed(PaneId::Left, NavigationId(2));
+    assert!(matches!(
+        next_event(&mut events).await,
+        Event::DirectoryChanged {
+            navigation: NavigationId(999),
+            ..
+        }
+    ));
+    let (view, reported) = status(&mut events).await;
+    assert_eq!(
+        (view, kind(&reported)),
+        (flat(PaneId::Left, 1), "PollingOnly")
+    );
+    stop(&controller, &mut tasks).await;
+}
+
+fn restarts(controller: &Controller, pane: PaneId) -> Vec<Instant> {
+    controller.panes[pane.index()]
+        .restarts
+        .lock()
+        .unwrap()
+        .clone()
+}
+
+/// Statuses of `view` until (and including) one of `last` kind.
+async fn statuses_until(
+    events: &mut mpsc::Receiver<Event>,
+    view: WatchedView,
+    last: &str,
+) -> Vec<&'static str> {
+    let mut reported = Vec::new();
+    while reported.last().is_none_or(|kind| *kind != last) {
+        let (reported_view, status) = status(events).await;
+        assert_eq!(reported_view, view);
+        reported.push(kind(&status));
+    }
+    reported
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panicking_probe_restarts_the_worker_at_once_then_at_most_once_per_interval() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    files.panic_probes.store(2, Ordering::SeqCst);
+    let native = Arc::new(Native::default());
+    let restart = Duration::from_millis(300);
+    let (controller, mut tasks, mut events) = controller_with(
+        files.clone(),
+        Some(native.clone()),
+        Timing {
+            restart,
+            ..timing(Duration::from_millis(30))
+        },
+        8,
+    );
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    // The first restart is immediate and reports nothing. The second waits for
+    // the interval, and the outcome of its registration is reported once its
+    // first probe completed.
+    assert_eq!(
+        statuses_until(&mut events, flat(PaneId::Left, 1), "Native").await,
+        ["Restarting", "Native"]
+    );
+    let restarted = restarts(&controller, PaneId::Left);
+    assert_eq!(restarted.len(), 2);
+    assert!(restarted[1] - restarted[0] >= restart, "{restarted:?}");
+    assert_eq!(native.callbacks.lock().unwrap().len(), 3);
+    assert_eq!(
+        native.drops.load(Ordering::SeqCst),
+        2,
+        "unwound subscriptions"
+    );
+    // Polling continues after the restarts.
+    files.put("left", 8);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    stop(&controller, &mut tasks).await;
+    assert_eq!(native.drops.load(Ordering::SeqCst), 3);
+    assert!(
+        native
+            .drop_threads
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(start, end)| start == end),
+        "every subscription is released on the worker that registered it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panicking_registration_restarts_at_once_without_a_status() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let native = Arc::new(Native {
+        panics: AtomicUsize::new(1),
+        ..Native::default()
+    });
+    let (controller, mut tasks, mut events) =
+        controller(files.clone(), Some(native.clone()), Duration::from_secs(30));
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    native.registrations(2).await;
+    native.fire(1);
+    // `changed` fails on any status.
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    assert_eq!(restarts(&controller, PaneId::Left).len(), 1);
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_registration_that_keeps_panicking_is_only_polled() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let native = Arc::new(Native {
+        panics: AtomicUsize::new(usize::MAX),
+        ..Native::default()
+    });
+    let (controller, mut tasks, mut events) = controller_with(
+        files.clone(),
+        Some(native.clone()),
+        Timing {
+            restart: Duration::from_millis(50),
+            ..timing(Duration::from_millis(40))
+        },
+        8,
+    );
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    assert_eq!(
+        statuses_until(&mut events, flat(PaneId::Left, 1), "PollingOnly").await,
+        ["Restarting", "PollingOnly"]
+    );
+    assert_eq!(
+        native.callbacks.lock().unwrap().len(),
+        2,
+        "the registration panicked twice and was then skipped"
+    );
     files.put("left", 8);
     assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
     stop(&controller, &mut tasks).await;

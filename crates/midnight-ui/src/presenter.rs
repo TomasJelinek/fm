@@ -87,6 +87,7 @@ mod user_commands;
 mod viewer_associations;
 mod viewer_plugins;
 mod volumes;
+mod watch_status;
 pub(crate) use file_actions::MenuAnchor;
 use std::{
     collections::{HashMap, HashSet},
@@ -222,6 +223,8 @@ pub(crate) struct Pane {
     pending: Option<Request>,
     /// A current watch hint that waits for a gesture, a comparison or queue capacity.
     refresh_hint: bool,
+    /// The newest watch status the backend reported for a view of this pane.
+    watch_status: Option<(WatchedView, WatchStatus)>,
     pub(crate) generation: u64,
     successful_generation: Option<NavigationId>,
     committed_sort: SortSpec,
@@ -935,6 +938,10 @@ impl Presenter {
         }
         if let Event::FolderPresence(result) = event {
             self.apply_folder_presence(result);
+            return;
+        }
+        if let Event::WatchStatus { view, status } = event {
+            self.apply_watch_status(view, status);
             return;
         }
         if let Event::RectangleSummary {
@@ -1843,6 +1850,7 @@ impl Pane {
             metadata: HashMap::new(),
             pending: None,
             refresh_hint: false,
+            watch_status: None,
             generation: 0,
             successful_generation: None,
             index: Arc::new(DirectoryIndex::from_entries(&[])),

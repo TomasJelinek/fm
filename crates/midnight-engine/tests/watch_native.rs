@@ -2,6 +2,7 @@ use midnight_core::*;
 use midnight_engine::{CommandSender, Engine};
 use midnight_platform::LocalFileSystem;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
@@ -11,10 +12,58 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 
+/// The real native watcher (ReadDirectoryChangesW on Windows, inotify on Linux)
+/// with counted registrations. A test can make selected registrations panic or
+/// fail, as a provider fault or an exhausted watch limit would.
 struct TrackedWatch {
     filesystem: Arc<LocalFileSystem>,
+    calls: AtomicUsize,
+    called: Notify,
     registered: AtomicUsize,
     ready: Notify,
+    /// The first so many calls panic.
+    panic_first: usize,
+    /// The next so many calls fail.
+    fail_first: usize,
+    /// Every call fails while this is set.
+    failing: AtomicBool,
+}
+
+impl TrackedWatch {
+    fn new(filesystem: &Arc<LocalFileSystem>) -> Self {
+        Self {
+            filesystem: filesystem.clone(),
+            calls: AtomicUsize::new(0),
+            called: Notify::new(),
+            registered: AtomicUsize::new(0),
+            ready: Notify::new(),
+            panic_first: 0,
+            fail_first: 0,
+            failing: AtomicBool::new(false),
+        }
+    }
+
+    /// Waits until `count` registrations were attempted.
+    async fn calls(&self, count: usize) {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while self.calls.load(Ordering::SeqCst) < count {
+                self.called.notified().await;
+            }
+        })
+        .await
+        .expect("the folder must be registered");
+    }
+
+    /// Waits until `count` registrations returned a live native watcher.
+    async fn registrations(&self, count: usize) {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while self.registered.load(Ordering::Acquire) < count {
+                self.ready.notified().await;
+            }
+        })
+        .await
+        .expect("the native watcher must register");
+    }
 }
 
 impl WatchService for TrackedWatch {
@@ -23,10 +72,94 @@ impl WatchService for TrackedWatch {
         path: &Path,
         changed: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.called.notify_one();
+        if call < self.panic_first {
+            panic!("watch test registration panic");
+        }
+        if call < self.panic_first + self.fail_first || self.failing.load(Ordering::SeqCst) {
+            return Err(FsError::from_io(
+                "watch directory",
+                path,
+                std::io::Error::other("OS file watch limit reached"),
+            ));
+        }
         let guard = self.filesystem.watch_directory(path, changed)?;
         self.registered.fetch_add(1, Ordering::Release);
         self.ready.notify_one();
         Ok(guard)
+    }
+}
+
+/// An engine over a temporary directory whose `left` folder holds one file.
+struct RealEngine {
+    _temporary: tempfile::TempDir,
+    left: PathBuf,
+    watch: Arc<TrackedWatch>,
+    commands: CommandSender,
+    events: mpsc::Receiver<Event>,
+    engine: tokio::task::JoinHandle<()>,
+}
+
+/// Starts a `RealEngine` watching through a `TrackedWatch` that `configure`
+/// sets up.
+fn real_engine(configure: impl FnOnce(&mut TrackedWatch)) -> RealEngine {
+    let temporary = tempfile::tempdir().unwrap();
+    let left = temporary.path().join("left-監視");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::write(left.join("既存-📄.txt"), b"old").unwrap();
+    let filesystem = Arc::new(LocalFileSystem::new(Some(temporary.path().into())));
+    let mut watch = TrackedWatch::new(&filesystem);
+    configure(&mut watch);
+    let watch = Arc::new(watch);
+    let (sender, events) = mpsc::channel(32);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        filesystem,
+        sender,
+    );
+    let (commands, receiver) = engine.command_channel(16).unwrap();
+    engine.configure_watch().unwrap().install(watch.clone());
+    let engine = tokio::spawn(engine.run(receiver));
+    RealEngine {
+        _temporary: temporary,
+        left,
+        watch,
+        commands,
+        events,
+        engine,
+    }
+}
+
+fn navigate(navigation: u64, path: &Path) -> Command {
+    Command::Navigate {
+        pane: PaneId::Left,
+        navigation: NavigationId(navigation),
+        path: path.into(),
+        sort: SortSpec::default(),
+    }
+}
+
+/// Waits for a hint for `navigation`; any watch status fails.
+async fn hinted_without_status(events: &mut mpsc::Receiver<Event>, navigation: NavigationId) {
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(8), events.recv())
+            .await
+            .expect("the watcher must hint the change")
+            .expect("engine output");
+        match event {
+            Event::DirectoryChanged {
+                pane,
+                navigation: hinted,
+            } => {
+                assert_eq!((pane, hinted), (PaneId::Left, navigation));
+                return;
+            }
+            Event::WatchStatus { view, status } => {
+                panic!("unexpected watch status for {view:?}: {status:?}")
+            }
+            _ => {}
+        }
     }
 }
 
@@ -38,11 +171,7 @@ async fn accepted_panes_receive_real_native_change_hints_and_can_reload() {
     std::fs::create_dir(&left).unwrap();
     std::fs::create_dir(&right).unwrap();
     let filesystem = Arc::new(LocalFileSystem::new(Some(temporary.path().into())));
-    let watcher = Arc::new(TrackedWatch {
-        filesystem: filesystem.clone(),
-        registered: AtomicUsize::new(0),
-        ready: Notify::new(),
-    });
+    let watcher = Arc::new(TrackedWatch::new(&filesystem));
 
     let (sender, mut events) = mpsc::channel(32);
     let mut engine = Engine::new(
@@ -94,13 +223,7 @@ async fn accepted_panes_receive_real_native_change_hints_and_can_reload() {
             accepted += 1;
         }
     }
-    tokio::time::timeout(Duration::from_secs(8), async {
-        while watcher.registered.load(Ordering::Acquire) < 2 {
-            watcher.ready.notified().await;
-        }
-    })
-    .await
-    .expect("Both native watchers must register");
+    watcher.registrations(2).await;
     std::fs::write(left.join("Žluťoučký-文档-👩🏽‍💻.txt"), b"new data").unwrap();
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -147,14 +270,17 @@ async fn accepted_panes_receive_real_native_change_hints_and_can_reload() {
     engine.await.unwrap();
 }
 
-/// One directory holding one file whose length a test changes. Counts how often
-/// the directory is read, and can fail the next read or hold one listing after
-/// it read the directory.
+/// Directories that each hold one file whose length a test changes. Counts how
+/// often each directory is read, and can find the next listing empty, fail the
+/// next read of `path`, fail every read of an unreadable directory, or hold one
+/// listing after it read its directory.
 struct TestDirectory {
     path: PathBuf,
     length: AtomicU64,
-    reads: AtomicUsize,
+    reads: Mutex<HashMap<PathBuf, usize>>,
+    empty_next: AtomicBool,
     fail_next: AtomicBool,
+    unreadable: Mutex<Option<PathBuf>>,
     hold_next: AtomicBool,
     held: Notify,
     resumed: Mutex<bool>,
@@ -166,8 +292,10 @@ impl TestDirectory {
         Self {
             path: path.into(),
             length: AtomicU64::new(7),
-            reads: AtomicUsize::new(0),
+            reads: Mutex::default(),
+            empty_next: AtomicBool::new(false),
             fail_next: AtomicBool::new(false),
+            unreadable: Mutex::default(),
             hold_next: AtomicBool::new(false),
             held: Notify::new(),
             resumed: Mutex::new(false),
@@ -175,8 +303,13 @@ impl TestDirectory {
         }
     }
 
+    /// Reads of the directory the pane starts in.
     fn reads(&self) -> usize {
-        self.reads.load(Ordering::SeqCst)
+        self.reads_of(&self.path)
+    }
+
+    fn reads_of(&self, path: &Path) -> usize {
+        self.reads.lock().unwrap().get(path).copied().unwrap_or(0)
     }
 }
 
@@ -201,15 +334,18 @@ impl DirectoryService for TestDirectory {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        if path == self.path {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            if self.fail_next.swap(false, Ordering::SeqCst) {
-                return Err(FsError::from_io(
-                    "read directory",
-                    path,
-                    std::io::ErrorKind::PermissionDenied.into(),
-                ));
-            }
+        *self.reads.lock().unwrap().entry(path.into()).or_default() += 1;
+        if (path == self.path && self.fail_next.swap(false, Ordering::SeqCst))
+            || self.unreadable.lock().unwrap().as_deref() == Some(path)
+        {
+            return Err(FsError::from_io(
+                "read directory",
+                path,
+                std::io::ErrorKind::PermissionDenied.into(),
+            ));
+        }
+        if self.empty_next.swap(false, Ordering::SeqCst) {
+            return Ok(());
         }
         let mut entry = Entry::new(EntryId(1), path.join("Žluťoučký-文档.txt"), EntryKind::File);
         entry.metadata.size = Some(self.length.load(Ordering::SeqCst));
@@ -257,10 +393,12 @@ impl StorageService for TestDirectory {
     }
 }
 
+type Callback = Arc<dyn Fn() + Send + Sync>;
+
 /// Notifies only when the test fires a recorded subscription.
 #[derive(Default)]
 struct ManualWatch {
-    callbacks: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
+    callbacks: Mutex<Vec<(PathBuf, Callback)>>,
     registered: Notify,
     /// Fires the newest subscription when the next one is registered: a
     /// notification that arrives while the watcher subscribes again.
@@ -273,35 +411,46 @@ impl WatchSubscription for ManualSubscription {}
 impl WatchService for ManualWatch {
     fn watch_directory(
         &self,
-        _path: &Path,
-        changed: Arc<dyn Fn() + Send + Sync>,
+        path: &Path,
+        changed: Callback,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
         if self.fire_on_watch.swap(false, Ordering::SeqCst) {
-            let newest = self.callbacks.lock().unwrap().last().cloned();
+            let newest = self
+                .callbacks
+                .lock()
+                .unwrap()
+                .last()
+                .map(|(_, callback)| callback.clone());
             if let Some(callback) = newest {
                 callback();
             }
         }
-        self.callbacks.lock().unwrap().push(changed);
+        self.callbacks.lock().unwrap().push((path.into(), changed));
         self.registered.notify_one();
         Ok(Box::new(ManualSubscription))
     }
 }
 
 impl ManualWatch {
-    /// Waits until subscription `index` exists and returns its callback.
-    async fn subscription(&self, index: usize) -> Arc<dyn Fn() + Send + Sync> {
+    /// Waits until subscription `index` exists and returns its directory and
+    /// callback.
+    async fn watched(&self, index: usize) -> (PathBuf, Callback) {
         tokio::time::timeout(Duration::from_secs(8), async {
             loop {
-                let callback = self.callbacks.lock().unwrap().get(index).cloned();
-                if let Some(callback) = callback {
-                    return callback;
+                let subscription = self.callbacks.lock().unwrap().get(index).cloned();
+                if let Some(subscription) = subscription {
+                    return subscription;
                 }
                 self.registered.notified().await;
             }
         })
         .await
-        .expect("the accepted directory must be watched")
+        .expect("the directory must be watched")
+    }
+
+    /// Waits until subscription `index` exists and returns its callback.
+    async fn subscription(&self, index: usize) -> Callback {
+        self.watched(index).await.1
     }
 
     async fn fire(&self, index: usize) {
@@ -311,6 +460,10 @@ impl ManualWatch {
 }
 
 /// Starts an engine over `directory` whose left pane shows it as navigation 1.
+/// That first listing finds the directory empty, so it is not subscribed while
+/// it is listed: subscription 0 is registered when the rows are accepted, and
+/// firing it is hinted. (A notification while a folder's first listing is
+/// read is checked when the rows are accepted instead.)
 async fn start(
     directory: &Arc<TestDirectory>,
     watch: &Arc<ManualWatch>,
@@ -328,6 +481,7 @@ async fn start(
     let (commands, receiver) = engine.command_channel(16).unwrap();
     engine.configure_watch().unwrap().install(watch.clone());
     let engine = tokio::spawn(engine.run(receiver));
+    directory.empty_next.store(true, Ordering::SeqCst);
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -389,6 +543,13 @@ async fn commit(
     navigation: NavigationId,
     path: &Path,
 ) -> Arc<[Entry]> {
+    let entries = listed(events, navigation).await;
+    accept(commands, navigation, path, entries.clone()).await;
+    entries
+}
+
+/// Waits for the rows of the left pane's listing of `navigation`.
+async fn listed(events: &mut mpsc::Receiver<Event>, navigation: NavigationId) -> Arc<[Entry]> {
     loop {
         let event = tokio::time::timeout(Duration::from_secs(8), events.recv())
             .await
@@ -402,18 +563,27 @@ async fn commit(
         } = event
             && finished == navigation
         {
-            commands
-                .send(Command::PaneCommitted(VisibleDirectory {
-                    pane: PaneId::Left,
-                    navigation,
-                    path: path.into(),
-                    entries: entries.clone(),
-                }))
-                .await
-                .unwrap();
             return entries;
         }
     }
+}
+
+/// The UI accepts the left pane's rows of `navigation`.
+async fn accept(
+    commands: &CommandSender,
+    navigation: NavigationId,
+    path: &Path,
+    entries: Arc<[Entry]>,
+) {
+    commands
+        .send(Command::PaneCommitted(VisibleDirectory {
+            pane: PaneId::Left,
+            navigation,
+            path: path.into(),
+            entries,
+        }))
+        .await
+        .unwrap();
 }
 
 /// Waits for the first engine event that `wanted` accepts.
@@ -573,5 +743,206 @@ async fn a_change_during_a_refresh_listing_is_hinted_for_the_new_view() {
     // The directory stayed subscribed, so the accepted rows are checked at once.
     hinted(&mut events, NavigationId(2)).await;
     assert_eq!(directory.reads(), 3, "two listings and one check");
+    shut_down(commands, events, engine).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_navigation_to_another_directory_keeps_the_shown_directory_watched() {
+    let directory = Arc::new(TestDirectory::new(Path::new("監視-📁")));
+    let unreadable = PathBuf::from("無権限-🔒");
+    *directory.unreadable.lock().unwrap() = Some(unreadable.clone());
+    let watch = Arc::new(ManualWatch::default());
+    let (commands, mut events, engine) = start(&directory, &watch).await;
+    let watched = watch.subscription(0).await;
+    commands.send(navigate(2, &unreadable)).await.unwrap();
+    next(&mut events, "the navigation must fail", |event| {
+        matches!(
+            event,
+            Event::ListingFailed {
+                pane: PaneId::Left,
+                navigation: NavigationId(2),
+                ..
+            }
+        )
+    })
+    .await;
+    // The pane still shows navigation 1, and its directory is still watched.
+    watched();
+    hinted(&mut events, NavigationId(1)).await;
+    assert_eq!(watch.callbacks.lock().unwrap().len(), 1);
+    assert_eq!(
+        directory.reads(),
+        1,
+        "one listing, which is not checked again"
+    );
+    assert_eq!(directory.reads_of(&unreadable), 1, "one failed listing");
+    shut_down(commands, events, engine).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_navigation_keeps_real_native_hints_for_the_shown_directory() {
+    let RealEngine {
+        _temporary,
+        left,
+        watch,
+        commands,
+        mut events,
+        engine,
+    } = real_engine(|_| {});
+    commands.send(navigate(1, &left)).await.unwrap();
+    commit(&commands, &mut events, NavigationId(1), &left).await;
+    watch.registrations(1).await;
+    // The test engine has no navigation fallback, so the missing folder fails.
+    commands
+        .send(navigate(2, &left.join("missing-文档")))
+        .await
+        .unwrap();
+    next(&mut events, "the navigation must fail", |event| {
+        matches!(
+            event,
+            Event::ListingFailed {
+                pane: PaneId::Left,
+                navigation: NavigationId(2),
+                ..
+            }
+        )
+    })
+    .await;
+    // Only native evidence can hint within the wait: the check runs every 15 s.
+    std::fs::write(left.join("新-👩🏽‍💻.txt"), b"new data").unwrap();
+    hinted_without_status(&mut events, NavigationId(1)).await;
+    shut_down(commands, events, engine).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_while_a_new_directory_is_listed_is_hinted_once_it_is_shown() {
+    let directory = Arc::new(TestDirectory::new(Path::new("監視-📁")));
+    let resume = ResumeOnDrop(directory.clone());
+    let watch = Arc::new(ManualWatch::default());
+    let (commands, mut events, engine) = start(&directory, &watch).await;
+    watch.subscription(0).await;
+    let second = PathBuf::from("第二-📂");
+    // The listing reads the second folder's first entry and is held there.
+    directory.hold_next.store(true, Ordering::SeqCst);
+    commands.send(navigate(2, &second)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(8), directory.held.notified())
+        .await
+        .expect("the navigation must list the folder");
+    // The folder is subscribed while it is listed.
+    let (path, notify) = watch.watched(1).await;
+    assert_eq!(path, second);
+    // A write lands after the listing read the folder and is notified while
+    // the UI is still loading.
+    directory.length.store(8, Ordering::SeqCst);
+    notify();
+    drop(resume);
+    commit(&commands, &mut events, NavigationId(2), &second).await;
+    hinted(&mut events, NavigationId(2)).await;
+    assert_eq!(directory.reads_of(&second), 2, "one listing and one check");
+    assert_eq!(
+        directory.reads(),
+        1,
+        "the folder shown before is not checked"
+    );
+    shut_down(commands, events, engine).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_preparation_is_registered_again_when_the_folder_is_shown() {
+    let RealEngine {
+        _temporary,
+        left,
+        watch,
+        commands,
+        mut events,
+        engine,
+    } = real_engine(|watch| watch.fail_first = 1);
+    commands.send(navigate(1, &left)).await.unwrap();
+    let rows = listed(&mut events, NavigationId(1)).await;
+    // The listing read an entry, so the folder was subscribed while it was
+    // listed, before the UI accepts the rows; that registration failed.
+    watch.calls(1).await;
+    accept(&commands, NavigationId(1), &left, rows).await;
+    // It is registered once more when the rows are shown, without a status.
+    watch.registrations(1).await;
+    std::fs::write(left.join("新-👩🏽‍💻.txt"), b"new data").unwrap();
+    hinted_without_status(&mut events, NavigationId(1)).await;
+    assert_eq!(watch.calls.load(Ordering::SeqCst), 2);
+    shut_down(commands, events, engine).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_registration_reports_polling_only_until_a_refresh_registers() {
+    let RealEngine {
+        _temporary,
+        left,
+        watch,
+        commands,
+        mut events,
+        engine,
+    } = real_engine(|watch| watch.failing = AtomicBool::new(true));
+    commands.send(navigate(1, &left)).await.unwrap();
+    commit(&commands, &mut events, NavigationId(1), &left).await;
+    // Every registration of the folder fails (its preparation, then the one
+    // when it is shown); the status is reported once.
+    let status = loop {
+        let event = tokio::time::timeout(Duration::from_secs(8), events.recv())
+            .await
+            .expect("the polling-only status must be reported")
+            .expect("engine output");
+        if let Event::WatchStatus { view, status } = event {
+            break (view, status);
+        }
+    };
+    assert_eq!(
+        status.0,
+        WatchedView::Flat {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+        }
+    );
+    assert!(
+        matches!(&status.1, WatchStatus::PollingOnly(error) if error.path == left),
+        "{status:?}"
+    );
+    // A refresh of the folder registers it again, as a new view that starts
+    // natively watched: no status is sent for it.
+    watch.failing.store(false, Ordering::SeqCst);
+    commands
+        .send(Command::Refresh {
+            pane: PaneId::Left,
+            navigation: NavigationId(2),
+            path: left.clone(),
+            sort: SortSpec::default(),
+            scan: None,
+        })
+        .await
+        .unwrap();
+    commit(&commands, &mut events, NavigationId(2), &left).await;
+    watch.registrations(1).await;
+    std::fs::write(left.join("新-👩🏽‍💻.txt"), b"new data").unwrap();
+    hinted_without_status(&mut events, NavigationId(2)).await;
+    shut_down(commands, events, engine).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panicking_watch_registration_restarts_the_pane_watcher() {
+    let RealEngine {
+        _temporary,
+        left,
+        watch,
+        commands,
+        mut events,
+        engine,
+    } = real_engine(|watch| watch.panic_first = 1);
+    commands.send(navigate(1, &left)).await.unwrap();
+    commit(&commands, &mut events, NavigationId(1), &left).await;
+    // The worker restarts at once and registers the folder again. (If the
+    // write is notified before the rows are accepted, the folder is also
+    // subscribed again at acceptance.)
+    watch.registrations(1).await;
+    std::fs::write(left.join("新-👩🏽‍💻.txt"), b"new data").unwrap();
+    hinted_without_status(&mut events, NavigationId(1)).await;
+    assert!(watch.calls.load(Ordering::SeqCst) >= 2);
     shut_down(commands, events, engine).await;
 }

@@ -534,6 +534,16 @@ pub enum Event {
         pane: PaneId,
         navigation: NavigationId,
     },
+    /// How a pane's accepted flat view or tree session is watched. Non-fatal:
+    /// rows, actions and manual Refresh stay usable, and it is never a panel
+    /// error. It is sent only when the status of `view` changes; present it only
+    /// while `view` is the pane's current view (tree views by pane, navigation
+    /// and session). `TreeEvent::WatchFailed` keeps reporting scope enrollment
+    /// failures and epoch exhaustion.
+    WatchStatus {
+        view: crate::WatchedView,
+        status: crate::WatchStatus,
+    },
     FolderSizeUpdated {
         pane: PaneId,
         navigation: NavigationId,

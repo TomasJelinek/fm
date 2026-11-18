@@ -45,17 +45,25 @@ fn scope_from_visible(
 }
 
 async fn tree_changed(events: &mut mpsc::Receiver<Event>) -> midnight_core::TreeViewStamp {
-    match tokio::time::timeout(Duration::from_secs(3), events.recv())
-        .await
-        .unwrap()
-        .unwrap()
-    {
+    match next_event(events).await {
         Event::Tree(event) => match *event {
             TreeEvent::Changed { stamp } => stamp,
             other => panic!("unexpected tree event {other:?}"),
         },
         other => panic!("unexpected watch event {other:?}"),
     }
+}
+
+/// Fails with the session's fence and hint log when an accepted scope is not
+/// quiet, so that an unexpected hint explains itself.
+fn assert_quiet(handle: &Handle, events: &mut mpsc::Receiver<Event>, accepted: &tree::TreeFence) {
+    let unexpected = events.try_recv().ok();
+    let now = handle.tree_fence(PaneId::Left);
+    assert!(
+        unexpected.is_none() && now.as_ref() == Some(accepted),
+        "an accepted scope must stay quiet: unexpected {unexpected:?}; \
+         accepted {accepted:?}; now {now:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -80,13 +88,67 @@ async fn same_navigation_success_then_exact_commit_quiets_watch() {
     let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
     handle.finish_refresh(ticket, true, stamp.revision);
     handle.set_tree_scope(scope);
+    // The exact Commit acknowledged the refreshed epoch synchronously.
+    let accepted = handle.tree_fence(PaneId::Left).unwrap();
+    assert_eq!(
+        (accepted.acknowledged, accepted.fence),
+        (accepted.epoch, None),
+        "{accepted:?}"
+    );
     // Acceptance cannot retract hints already queued before its fence.
     while events.try_recv().is_ok() {}
-    assert!(
-        tokio::time::timeout(Duration::from_millis(240), events.recv())
-            .await
-            .is_err()
+    // Worker progress is the barrier: three probes span more than one poll of
+    // worker time, so every debounce or retry deadline armed before the
+    // acknowledgement has been evaluated.
+    let probes = files.probes.load(Ordering::SeqCst);
+    files.wait_probes(probes + 3).await;
+    assert_quiet(&handle, &mut events, &accepted);
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_batch_reports_polling_only_until_a_batch_registers() {
+    let files = Arc::new(Files::default());
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-failed-batch")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    files.put(&path, 7);
+    let (_session, scope) = scope(&files, &path);
+    let (controller, mut tasks, mut events, native) =
+        batch_controller(files.clone(), Duration::from_millis(60));
+    native.fail.store(true, Ordering::SeqCst);
+    let handle = controller.handle();
+    handle.set_tree_scope(scope.clone());
+    let (view, reported) = status(&mut events).await;
+    assert_eq!(
+        (view, kind(&reported)),
+        (WatchedView::Tree(scope.stamp), "PollingOnly")
     );
+    // Only the periodic check finds a change; the status is not repeated.
+    files.put(&path, 8);
+    let stamp = tree_changed(&mut events).await;
+    let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
+    handle.finish_refresh(ticket, true, stamp.revision);
+    // The refresh's exact Commit registers the batch again: the failed one is
+    // retried with a scope update once a poll interval has passed, which the
+    // periodic check that found the change took.
+    native.fail.store(false, Ordering::SeqCst);
+    handle.set_tree_scope(scope.clone());
+    let native_status = loop {
+        match next_event(&mut events).await {
+            Event::WatchStatus { view, status } => break (view, kind(&status)),
+            // The hint may be retried before the acknowledgement.
+            Event::Tree(event) if matches!(*event, TreeEvent::Changed { .. }) => {}
+            other => panic!("unexpected watch event {other:?}"),
+        }
+    };
+    assert_eq!(native_status, (WatchedView::Tree(scope.stamp), "Native"));
+    assert_eq!(native.callbacks.lock().unwrap().len(), 1);
+    native.fire();
+    assert_eq!(tree_changed(&mut events).await.session, stamp.session);
     stop(&controller, &mut tasks).await;
 }
 
@@ -182,6 +244,8 @@ struct Batches {
     ready: Notify,
     /// Fire the previous batch's callback while the next batch registers.
     fire_previous_on_register: AtomicBool,
+    /// Registration fails, as when the system's watch limit is reached.
+    fail: AtomicBool,
 }
 struct BatchGuard;
 impl WatchSubscription for BatchGuard {}
@@ -198,6 +262,13 @@ impl WatchService for Batches {
         paths: &[PathBuf],
         changed: BatchCallback,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(FsError::from_io(
+                "watch directories",
+                &paths[0],
+                io::Error::other("OS file watch limit reached"),
+            ));
+        }
         if self.fire_previous_on_register.load(Ordering::SeqCst) {
             let previous = self.callbacks.lock().unwrap().last().cloned();
             if let Some((_, previous)) = previous {
@@ -214,7 +285,7 @@ impl WatchService for Batches {
 }
 impl Batches {
     async fn registered(&self) {
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if !self.callbacks.lock().unwrap().is_empty() {
                     break;
@@ -427,13 +498,15 @@ async fn folder_only_accepted_branch_with_files_is_quiet_after_success() {
     let stamp = tree_changed(&mut events).await;
     let ticket = handle.begin_refresh(stamp, TreeRequestId(2)).unwrap();
     handle.finish_refresh(ticket, true, stamp.revision);
+    let targets = scope.targets.len();
     handle.set_tree_scope(scope);
+    let accepted = handle.tree_fence(PaneId::Left).unwrap();
     while events.try_recv().is_ok() {}
-    assert!(
-        tokio::time::timeout(Duration::from_millis(240), events.recv())
-            .await
-            .is_err()
-    );
+    // Worker progress is the barrier: these probes span more than one poll of
+    // every target.
+    let probes = files.probes.load(Ordering::SeqCst);
+    files.wait_probes(probes + 2 * targets + 1).await;
+    assert_quiet(&handle, &mut events, &accepted);
     files.put(branch.to_str().unwrap(), 13);
     assert_eq!(tree_changed(&mut events).await.session, stamp.session);
     stop(&controller, &mut tasks).await;
@@ -492,24 +565,98 @@ async fn failed_sweep_and_ignored_hint_retry_at_poll_cadence() {
     let (_session, scope) = scope(&files, &path);
     // Changed after the accepted listing, so the first probe dirties the scope.
     files.put(&path, 8);
-    let (controller, mut tasks, mut events) = controller(files, None, Duration::from_millis(120));
+    let poll = Duration::from_millis(120);
+    let (controller, mut tasks, mut events) = controller(files, None, poll);
     let handle = controller.handle();
     handle.set_tree_scope(scope);
     let stamp = tree_changed(&mut events).await;
     let ticket = handle.begin_refresh(stamp, TreeRequestId(1)).unwrap();
+    let failed_at = Instant::now();
     handle.finish_refresh(ticket, false, stamp.revision);
+    // The worker records when it sent each hint, so load can only make these
+    // times later, never earlier.
+    let retries = loop {
+        assert_eq!(tree_changed(&mut events).await.session, stamp.session);
+        let retries = handle
+            .tree_fence(PaneId::Left)
+            .unwrap()
+            .hints
+            .into_iter()
+            .filter(|sent| *sent >= failed_at)
+            .collect::<Vec<_>>();
+        if retries.len() >= 2 {
+            break retries;
+        }
+    };
+    assert!(retries[0] >= failed_at + poll, "{failed_at:?}: {retries:?}");
+    for pair in retries.windows(2) {
+        assert!(pair[1] - pair[0] >= poll, "{retries:?}");
+    }
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_driven_hint_is_not_repeated_by_its_debounce() {
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-retry-debounce");
+    let files = Arc::new(Files {
+        blocked_path: Some(path.clone()),
+        ..Files::default()
+    });
+    let _release = ReleaseOnDrop(files.clone());
+    files.put(path.to_str().unwrap(), 7);
+    let (_session, scope) = scope(&files, path.to_str().unwrap());
+    // Changed after the accepted listing, so the first probe dirties the scope.
+    files.put(path.to_str().unwrap(), 8);
+    let poll = Duration::from_millis(200);
+    let (controller, mut tasks, mut events) = controller(files.clone(), None, poll);
+    let handle = controller.handle();
+    handle.set_tree_scope(scope);
+    let installed = Instant::now();
+    tokio::time::timeout(Duration::from_secs(10), files.blocked.notified())
+        .await
+        .expect("the first probe must run");
+    // A lower bound only: the probe dirties the scope after its first retry
+    // time passed, so the change is due for a retry when it is found.
+    tokio::time::sleep_until((installed + poll + Duration::from_millis(10)).into()).await;
+    files.release.store(true, Ordering::SeqCst);
+    // Neither hint is answered by a refresh.
+    tree_changed(&mut events).await;
+    tree_changed(&mut events).await;
+    let hints = handle.tree_fence(PaneId::Left).unwrap().hints;
+    assert!(hints[1] - hints[0] >= poll, "a duplicate hint: {hints:?}");
+    stop(&controller, &mut tasks).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_after_a_quiet_poll_interval_waits_for_its_debounce() {
+    let files = Arc::new(Files::default());
+    let path = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-quiet-debounce")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    files.put(&path, 7);
+    let (_session, scope) = scope(&files, &path);
+    let poll = Duration::from_millis(100);
+    let (controller, mut tasks, mut events, native) = batch_controller(files.clone(), poll);
+    let handle = controller.handle();
+    handle.set_tree_scope(scope);
+    let installed = Instant::now();
+    native.registered().await;
+    // A lower bound only: the scope's first retry time has passed quietly.
+    tokio::time::sleep_until((installed + poll + Duration::from_millis(10)).into()).await;
+    let notified = Instant::now();
+    native.fire();
+    tree_changed(&mut events).await;
+    let hints = handle.tree_fence(PaneId::Left).unwrap().hints;
+    let quiet = timing(poll).quiet;
     assert!(
-        tokio::time::timeout(Duration::from_millis(60), events.recv())
-            .await
-            .is_err()
+        hints[0] >= notified + quiet,
+        "hinted before its quiet interval: {notified:?}, {hints:?}"
     );
-    assert_eq!(tree_changed(&mut events).await.session, stamp.session);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(60), events.recv())
-            .await
-            .is_err()
-    );
-    assert_eq!(tree_changed(&mut events).await.session, stamp.session);
     stop(&controller, &mut tasks).await;
 }
 
@@ -584,14 +731,14 @@ async fn failed_probe_retries_after_a_successful_listing_ack_without_losing_hist
     let ticket = handle.begin_refresh(stamp, TreeRequestId(2)).unwrap();
     handle.finish_refresh(ticket, true, stamp.revision);
     handle.set_tree_scope(scope);
+    let accepted = handle.tree_fence(PaneId::Left).unwrap();
     // A slow test/event consumer may already have multiple paced hints queued.
     // Observe only future output when asserting that accepted state stays quiet.
     while events.try_recv().is_ok() {}
-    assert!(
-        tokio::time::timeout(Duration::from_millis(240), events.recv())
-            .await
-            .is_err()
-    );
+    // Worker progress is the barrier: three probes span more than one poll.
+    let probes = files.probes.load(Ordering::SeqCst);
+    files.wait_probes(probes + 3).await;
+    assert_quiet(&handle, &mut events, &accepted);
     stop(&controller, &mut tasks).await;
 }
 
@@ -765,6 +912,7 @@ fn link_watch_timing() -> Timing {
         quiet: Duration::ZERO,
         maximum: Duration::ZERO,
         poll: Duration::ZERO,
+        restart: Duration::ZERO,
     }
 }
 
@@ -774,6 +922,7 @@ struct LinkWatchRuntime {
     handle: Handle,
     runtime: tree::Runtime,
     native: Arc<Batches>,
+    supervision: Supervision,
     outbox: Outbox,
     events: mpsc::Receiver<Event>,
     timing: Timing,
@@ -786,33 +935,29 @@ impl LinkWatchRuntime {
 
     fn with_timing(scope: &tree::TreeScope, timing: Timing) -> Self {
         let handle = Handle {
-            panes: Retirement::testing().panes.map(|lease| {
-                Arc::new(lease.own(Shared {
-                    state: Mutex::new(Control {
-                        visible: None,
-                        revision: 0,
-                        cancel: Cancellation::default(),
-                        stopped: false,
-                        navigation: NavigationId(0),
-                        tree_navigation: None,
-                        tree: None,
-                    }),
-                    worker: std::sync::OnceLock::new(),
-                    timing,
-                }))
-            }),
+            panes: Retirement::testing()
+                .panes
+                .map(|lease| Arc::new(lease.own(Shared::new(timing)))),
         };
         handle.set_tree_scope(scope.clone());
         let shared = &handle.panes[scope.stamp.pane.index()];
         let cancel = shared.state.lock().unwrap().cancel.clone();
         let native = Arc::new(Batches::default());
+        let mut supervision = Supervision::new(true);
         let mut runtime = tree::Runtime::new(Arc::new(scope.clone()), cancel);
-        runtime.update(Arc::new(scope.clone()), shared, Some(native.as_ref()));
+        runtime.update(
+            Arc::new(scope.clone()),
+            shared,
+            Some(native.as_ref()),
+            &mut supervision,
+            timing,
+        );
         let (sender, events) = mpsc::channel(128);
         Self {
             handle,
             runtime,
             native,
+            supervision,
             outbox: Outbox {
                 sender,
                 wakeup: Arc::new(|| {}),
@@ -854,12 +999,7 @@ impl LinkWatchRuntime {
             .unwrap();
         self.handle
             .finish_refresh(ticket, true, scope.stamp.revision);
-        self.handle.set_tree_scope(scope.clone());
-        self.runtime.update(
-            Arc::new(scope.clone()),
-            &self.handle.panes[scope.stamp.pane.index()],
-            Some(self.native.as_ref()),
-        );
+        self.adopt(scope);
     }
 
     fn settle(
@@ -895,9 +1035,8 @@ fn callback_before_refresh_admission_is_covered_without_a_fresh_hint() {
     let mut runtime = LinkWatchRuntime::with_timing(
         &scope,
         Timing {
-            quiet: Duration::ZERO,
-            maximum: Duration::ZERO,
             poll: Duration::from_secs(3600),
+            ..link_watch_timing()
         },
     );
     runtime.settle(files.as_ref(), &scope, 100);
@@ -1239,9 +1378,8 @@ fn settled_then_collapsed(
     let mut runtime = LinkWatchRuntime::with_timing(
         &scope,
         Timing {
-            quiet: Duration::ZERO,
-            maximum: Duration::ZERO,
             poll: Duration::from_secs(3600),
+            ..link_watch_timing()
         },
     );
     runtime.settle(files.as_ref(), &scope, 100);
@@ -1258,6 +1396,8 @@ impl LinkWatchRuntime {
             Arc::new(scope.clone()),
             &self.handle.panes[scope.stamp.pane.index()],
             Some(self.native.as_ref()),
+            &mut self.supervision,
+            self.timing,
         );
     }
 }

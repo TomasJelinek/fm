@@ -668,11 +668,16 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
                 format_size(space.total, &presenter.number_locale)
             ));
         }
-        let error = presenter.panel_error_text(if index == 0 {
+        let pane_id = if index == 0 {
             PaneId::Left
         } else {
             PaneId::Right
-        });
+        };
+        if let Some(watch) = presenter.watch_status_text(pane_id) {
+            status.push_str("  ·  ");
+            status.push_str(watch);
+        }
+        let error = presenter.panel_error_text(pane_id);
         if index == 0 {
             window.set_left_path(location.into());
             window.set_left_volume(volume);
