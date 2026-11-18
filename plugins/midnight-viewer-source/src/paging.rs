@@ -376,10 +376,6 @@ fn subset(decoded: &Decoded, start: usize, end: usize) -> Decoded {
     }
 }
 
-pub fn search_text(decoded: &Decoded, revision: u64, eof: bool) -> TextPage {
-    decoded.clone().page(revision, eof)
-}
-
 #[cfg(test)]
 #[path = "paging_tests.rs"]
 mod tests;
