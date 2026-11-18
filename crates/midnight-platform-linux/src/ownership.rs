@@ -179,6 +179,8 @@ pub(crate) fn remove_refused_directory(
     name: &OsStr,
     pinned: Option<(u64, u64)>,
 ) -> io::Result<()> {
+    #[cfg(test)]
+    simulation::before_refused_removal(name);
     let current = statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
     if FileType::from_raw_mode(current.st_mode) != FileType::Directory
         || pinned.is_some_and(|identity| identity != (current.st_dev, current.st_ino))
@@ -392,16 +394,42 @@ fn number(field: &[u8]) -> Option<u32> {
 /// Test-only simulation of filesystems that cannot represent POSIX modes, that
 /// report a foreign owner or that place a new directory on another filesystem,
 /// on the calling thread only. Each alters the status reported for a new private
-/// directory, so the real checks decide.
+/// directory, so the real checks decide. Also interference with the removal of a
+/// refused directory.
 #[cfg(test)]
 pub(crate) mod simulation {
     use rustix::fs::Stat;
-    use std::{cell::Cell, thread::LocalKey};
+    use std::{
+        cell::{Cell, RefCell},
+        ffi::OsStr,
+        thread::LocalKey,
+    };
+
+    type Interference = Box<dyn FnOnce(&OsStr)>;
 
     thread_local! {
         static MOUNT_MODE: Cell<Option<u32>> = const { Cell::new(None) };
         static FOREIGN_OWNER: Cell<bool> = const { Cell::new(false) };
         static FOREIGN_DEVICE: Cell<bool> = const { Cell::new(false) };
+        static BEFORE_REFUSED_REMOVAL: RefCell<Option<Interference>> = const { RefCell::new(None) };
+    }
+
+    /// Calls `interfere` with the name of the refused directory just before the
+    /// first removal of a refused directory that `run` performs.
+    pub(crate) fn with_interference_before_refused_removal<T>(
+        interfere: impl FnOnce(&OsStr) + 'static,
+        run: impl FnOnce() -> T,
+    ) -> T {
+        BEFORE_REFUSED_REMOVAL.with(|hook| *hook.borrow_mut() = Some(Box::new(interfere)));
+        let result = run();
+        BEFORE_REFUSED_REMOVAL.with(|hook| hook.borrow_mut().take());
+        result
+    }
+
+    pub(super) fn before_refused_removal(name: &OsStr) {
+        if let Some(interfere) = BEFORE_REFUSED_REMOVAL.with(|hook| hook.borrow_mut().take()) {
+            interfere(name);
+        }
     }
 
     /// The status of a new private directory as the simulated filesystem reports it.

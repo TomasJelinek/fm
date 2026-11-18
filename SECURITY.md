@@ -170,9 +170,12 @@ item as failed (see [operation progress](docs/developer/OPERATION_PROGRESS.md)).
 directory is said to remain there only while it still has the identity it was created
 with, and its contents are never removed. A change that did not complete and leaves its
 staging directory behind names it in an error that is never treated as a name conflict
-or cancellation; after a capture request that returned an error, a directory that holds
-the staged name, or cannot be inspected, is reported as possibly holding the item,
-never as unneeded.
+or cancellation. After a capture request that returned an error, the selected item
+found at the staged name is restored to its name without replacing anything (if another
+entry has taken that name, the item stays in the staging directory, whose location the
+error gives); a staging directory whose staged name holds another entry is reported as
+holding an entry that is not the selected item, and one whose staged name cannot be
+inspected as possibly holding the item; neither is described as unneeded.
 
 - Ordinary browsing does not copy, rename, delete, execute files, invoke a shell,
   request elevation or interpret filenames as code. A failed explicit native folder
