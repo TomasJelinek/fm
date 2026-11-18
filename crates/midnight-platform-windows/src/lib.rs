@@ -48,6 +48,8 @@ mod sort_keys;
 mod storage_kind;
 mod terminal_process;
 #[cfg(test)]
+mod test_child;
+#[cfg(test)]
 mod test_fixtures;
 mod transfer;
 mod volume_details;

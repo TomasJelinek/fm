@@ -26,9 +26,8 @@ replacement; the consumed source stream is not replayed.
 All methods run on backend workers. UI receives bounded immutable progress and
 versioned conflict metadata, and sends a choice with the exact job/version.
 
-Transfer entries carry raw modification times. The Windows adapter formats none
-of them; the Linux adapter still formats every entry it reports until its
-follow-up. The engine formats only displayed entries, on a backend worker and only
+Transfer entries carry raw modification times, which neither native adapter
+formats. The engine formats only displayed entries, on a backend worker and only
 when the adapter supplied no text: both sides of a Copy/Move or Rename conflict
 prompt, and the existing output of a Make File List save confirmation. Copy/Move
 formats through the audited locale (`Engine::configure_audited_locale`), because
@@ -398,11 +397,13 @@ successful move retains no source copy and removes its empty temporary directory
 This is internal staging, not a selectable recovery mode, journal or catalogue.
 If a new source-name winner blocks restoration, both objects are preserved and
 the exact exceptional temporary location is reported. Failed empty-directory
-cleanup is also reported; cleanup never removes an unexpected child. One known
-gap: on Windows, when granted peers refuse a capture's rename into the private
-directory that the same capture has just created, that refused turn cannot remove
-the empty directory, and the automatic repeat of the capture uses a new one, so an
-empty owner-only `.midnight-move-*` directory remains beside the source unreported.
+cleanup is also reported; cleanup never removes an unexpected child. A capture
+that fails before moving its source removes its empty private directory in the
+same namespace turn. When that turn cannot (on Windows, granted peers refused the
+capture's rename into the directory, and the refused turn permits no further
+change; on Linux, they refused the removal itself), the capture keeps the
+directory: the automatic repeat of the capture reuses it, and otherwise the job's
+cleanup removes it or reports its path.
 Progress reports actual file removals, source disposition/durability facts, exceptional
 residual counts, first16 raw residual mappings and at most64 source parents for
 refresh, prioritizing selected-root parents. File-removal counts exclude directories;

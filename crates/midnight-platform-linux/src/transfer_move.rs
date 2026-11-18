@@ -142,6 +142,11 @@ fn prepare_native_child(
 struct State {
     outcome: Option<TransferMoveCaptureOutcome>,
     retained: Option<destination::Directory>,
+    /// The empty private stage of a failed capture whose own turn could not remove it
+    /// (see `Capture::keep_or_remove_stage_in`). The next capture reuses it; without
+    /// one, `take_stage_cleanup` hands it to the engine's cleanup. A capture that moves
+    /// the source consumes it, so it is never set together with `retained`.
+    unused: Option<destination::Directory>,
 }
 struct Capture {
     namespace: Arc<namespace::Bindings>,
@@ -222,17 +227,12 @@ impl TransferMoveCapture for Capture {
         )
     }
     fn take_stage_cleanup(&self) -> Option<Box<dyn midnight_core::TransferMoveStageCleanup>> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retained
-            .take()
-            .map(|stage| {
-                Box::new(StageCleanup {
-                    parent: self.parent.clone(),
-                    stage,
-                }) as Box<dyn midnight_core::TransferMoveStageCleanup>
-            })
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let stage = state.retained.take().or_else(|| state.unused.take())?;
+        Some(Box::new(StageCleanup {
+            parent: self.parent.clone(),
+            stage,
+        }))
     }
 }
 struct StageCleanup {
@@ -304,6 +304,10 @@ mod tests;
 #[cfg(test)]
 #[path = "transfer_move_cleanup_tests.rs"]
 mod cleanup_tests;
+
+#[cfg(test)]
+#[path = "transfer_move_refusal_tests.rs"]
+mod peer_refusal_tests;
 
 #[cfg(test)]
 #[path = "transfer_finalize_tests.rs"]
@@ -446,7 +450,18 @@ impl Capture {
             change,
             cancel,
         )?;
-        let recovery = self.parent.source_stage_in(cancel, change)?;
+        let recovery = match state.unused.take() {
+            // Kept by an earlier attempt: announce it in this turn, as its creation
+            // did, before the source is renamed into it. Nothing follows a refusal.
+            Some(stage) => match self.parent.reuse_stage_in(&stage, cancel, change) {
+                Ok(()) => stage,
+                Err(failure) => {
+                    state.unused = Some(stage);
+                    return Err(failure);
+                }
+            },
+            None => self.parent.source_stage_in(cancel, change)?,
+        };
         let captured = (|| {
             self.revalidate(cancel)?;
             before_capture();
@@ -461,11 +476,7 @@ impl Capture {
             .map_err(|e| error(&self.entry.item.path, e.into()))
         })();
         if let Err(mut failure) = captured {
-            if let Err(cleanup) = self.parent.remove_empty_stage_in(recovery, change) {
-                failure
-                    .message
-                    .push_str(&format!("; temporary directory cleanup failed: {cleanup}"));
-            }
+            self.keep_or_remove_stage_in(&mut state, recovery, &mut failure, change);
             return Err(failure);
         }
         self.namespace
@@ -563,5 +574,34 @@ impl Capture {
         state.retained = Some(recovery);
         state.outcome = Some(outcome.clone());
         Ok(outcome)
+    }
+
+    /// Removes, within the capture's own turn, the empty private stage of a capture
+    /// that moved nothing. Granted peers can refuse that removal like any other
+    /// change; the refusal is then the turn's last reservation, so the engine repeats
+    /// the capture without a prompt once a refusing peer changes, and drops `failure`.
+    /// The capture therefore keeps the stage instead of dropping it unreported: its
+    /// next attempt reuses the stage, and otherwise `take_stage_cleanup` returns it for
+    /// the engine to remove or report. Any other failed removal keeps the stage the
+    /// same way.
+    fn keep_or_remove_stage_in(
+        &self,
+        state: &mut State,
+        stage: destination::Directory,
+        failure: &mut FsError,
+        change: &mut namespace::Change<'_>,
+    ) {
+        match self.parent.remove_empty_stage_checked(stage, change) {
+            Ok(()) => {}
+            Err(destination::recovery::StageRemovalError::Retained(_, stage)) => {
+                state.unused = Some(*stage);
+            }
+            Err(destination::recovery::StageRemovalError::Unsynced(sync)) => {
+                failure.message.push_str(&format!(
+                    "; the empty temporary directory was removed, but that removal may \
+                     not be durable: {sync}"
+                ));
+            }
+        }
     }
 }

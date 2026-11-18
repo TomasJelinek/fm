@@ -1127,3 +1127,6 @@ fn late_named_stream_after_capture_blocks_removal_even_with_unchanged_main_bytes
     assert_eq!(fs::read(named).unwrap(), b"unverified bytes");
     assert_eq!(fs::read(recovery.path).unwrap(), b"verified unnamed data");
 }
+
+#[path = "transfer_move_refusal_tests.rs"]
+mod peer_refusal;

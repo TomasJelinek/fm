@@ -179,10 +179,11 @@ fn entry(file: &File, path: &Path) -> Result<TransferEntry, FsError> {
         item: MutationItem {
             path: path.to_owned(),
             kind,
+            // Raw time only: locale formatting is presentation, and the engine formats
+            // just the entries a prompt displays, never every enumerated entry.
             metadata: EntryMetadata {
                 size: metadata.is_file().then_some(metadata.len()),
                 modified: metadata.modified().ok(),
-                localized_modified: metadata.modified().ok().and_then(crate::locale::modified),
                 unix_mode: Some(metadata.mode()),
                 ..EntryMetadata::default()
             },

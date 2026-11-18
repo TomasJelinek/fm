@@ -342,9 +342,8 @@ async fn queued_file_save_holds_no_worker_and_publishes_once_the_gate_opens() {
     assert_eq!(gate.available_permits(), NAMESPACE_WEIGHT as usize);
 }
 
-/// The Windows adapter reports raw times; the save confirmation formats only the
-/// one existing output it displays (the Linux adapter still formats it itself).
-#[cfg(windows)]
+/// The native adapters report raw times; the save confirmation formats only the
+/// one existing output it displays.
 #[tokio::test]
 async fn file_list_save_conflict_formats_only_the_displayed_existing_file() {
     use crate::transfer_composition::tests::CountingLocale;

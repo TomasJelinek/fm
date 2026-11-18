@@ -13,8 +13,14 @@ use x11rb::{
     protocol::xproto::{AtomEnum, CreateWindowAux, PropMode, WindowClass},
 };
 
+/// Accepted requests, a saturated queue switch, the hover state and refusal reports.
 #[derive(Default)]
-struct Sink(Mutex<Vec<FileDropRequest>>, AtomicBool, AtomicBool);
+struct Sink(
+    Mutex<Vec<FileDropRequest>>,
+    AtomicBool,
+    AtomicBool,
+    Mutex<Vec<String>>,
+);
 impl FileDropSink for Sink {
     fn try_accept(&self, request: FileDropRequest) -> Result<(), FsError> {
         if self.1.load(Ordering::Acquire) {
@@ -26,7 +32,13 @@ impl FileDropSink for Sink {
     fn hover(&self, pane: Option<PaneId>) {
         self.2.store(pane.is_some(), Ordering::Release);
     }
+    fn reject(&self, error: FsError) {
+        self.3.lock().unwrap().push(error.message);
+    }
 }
+
+/// The one fixed report for a dropped list that cannot be decoded.
+const REFUSED_LIST: &str = "The dropped file list is empty, malformed, names non-local files, or is longer than 4096 items.";
 
 use x11rb::{
     protocol::{
@@ -277,6 +289,8 @@ fn x11_drop_rejects_move_queue_saturation_and_malformed_or_oversized_payloads() 
     assert_eq!(f.offer("XdndActionMove")[1] & 1, 0);
     f.send("XdndDrop", [f.source, 0, 0, 0, 0]);
     assert_eq!(f.message("XdndFinished")[1] & 1, 0);
+    // The Move-only offer never showed a Copy status: nothing to explain.
+    assert!(f.sink.3.lock().unwrap().is_empty());
     f.sink.1.store(true, Ordering::Release);
     assert_eq!(f.offer("XdndActionCopy")[1] & 1, 1);
     assert_eq!(f.payload(b"file:///tmp/good\r\n")[1] & 1, 0);
@@ -290,6 +304,11 @@ fn x11_drop_rejects_move_queue_saturation_and_malformed_or_oversized_payloads() 
         assert_eq!(f.payload(bytes)[1] & 1, 0);
     }
     assert!(f.sink.0.lock().unwrap().is_empty());
+    // One report per refused Copy drop: the admission refusal, then the fixed list text.
+    assert_eq!(
+        *f.sink.3.lock().unwrap(),
+        ["queue full", REFUSED_LIST, REFUSED_LIST, REFUSED_LIST]
+    );
 }
 
 #[test]
@@ -632,6 +651,45 @@ fn xdnd_position_preserves_negative_monitor_coordinates() {
     assert_eq!(unpack_position(0xffff_fffe), (-1, -2));
     assert_eq!(unpack_position(0x8000_7fff), (-32768, 32767));
     assert_eq!(unpack_position(0x0023_002d), (35, 45));
+}
+
+#[test]
+fn refused_drop_lists_are_reported_in_one_fixed_text_without_source_bytes() {
+    let candidate = Candidate {
+        revision: 9,
+        target: FileDropTarget {
+            pane: PaneId::Right,
+            navigation: NavigationId(11),
+            directory: Arc::new("/tmp/destination 文档".into()),
+            rect: DropRect {
+                x: 30,
+                y: 40,
+                width: 100,
+                height: 80,
+            },
+        },
+    };
+    let request = selection::drop_request(b"# list\r\nfile:///tmp/a%20b\r\n", &candidate).unwrap();
+    assert_eq!(request.files.paths, [std::path::PathBuf::from("/tmp/a b")]);
+    assert_eq!(request.targets_revision, 9);
+    let mut too_many = Vec::new();
+    for index in 0..=MAX_FILE_CLIPBOARD_PATHS {
+        too_many.extend_from_slice(format!("file:///tmp/{index}\n").as_bytes());
+    }
+    for bytes in [
+        b"".as_slice(),
+        b"# comments only\n",
+        b"https://secret.example/payload\n",
+        b"file://secret-host/share\n",
+        b"file:///tmp/%ZZ-secret\n",
+        b"file:///tmp/%00-secret\n",
+        b"file:///tmp/unescaped secret\n",
+        too_many.as_slice(),
+    ] {
+        let refusal = selection::drop_request(bytes, &candidate).unwrap_err();
+        assert_eq!(refusal.message, REFUSED_LIST);
+        assert!(!refusal.to_string().contains("secret"), "{refusal}");
+    }
 }
 
 #[test]

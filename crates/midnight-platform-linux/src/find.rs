@@ -65,7 +65,7 @@ impl FindService for crate::LinuxFileSystem {
             return Err(changed(path));
         }
         Ok(Box::new(Source {
-            entry: localized(entry),
+            entry,
             file,
             children: None,
             reader: None,
@@ -117,7 +117,7 @@ impl Source {
             return Err(changed(&path));
         }
         Ok(FindChild::Entry(Box::new(Source {
-            entry: localized(entry),
+            entry,
             file,
             children: None,
             reader: None,
@@ -225,10 +225,8 @@ fn ordinary(entry: &FindEntry) -> Result<(), FsError> {
         ))
     }
 }
-fn localized(mut entry: FindEntry) -> FindEntry {
-    entry.metadata.localized_modified = entry.metadata.modified.and_then(crate::locale::modified);
-    entry
-}
+/// Captures a node's facts. Its localized modification time is left to the engine, which
+/// formats only the matches it keeps: most examined nodes never match.
 fn snapshot(file: &File, path: &Path) -> Result<FindEntry, FsError> {
     let metadata = file
         .metadata()

@@ -293,9 +293,10 @@ impl Directory {
 }
 
 /// Why an empty stage was not cleanly removed.
-enum StageRemovalError {
-    /// The stage was not removed and may remain.
-    Retained(FsError),
+pub(in crate::transfer) enum StageRemovalError {
+    /// The stage was not removed and may remain. Its handle comes back, so that its
+    /// owner can still use it, or remove or report it later, instead of dropping it.
+    Retained(FsError, Box<Directory>),
     /// The stage was removed; only syncing its parent failed, so the removal may
     /// not survive a crash.
     Unsynced(FsError),
@@ -309,45 +310,31 @@ impl Directory {
     ) -> Result<(), FsError> {
         self.remove_empty_stage_checked(stage, change)
             .map_err(|failure| match failure {
-                StageRemovalError::Retained(error) | StageRemovalError::Unsynced(error) => error,
+                StageRemovalError::Retained(error, _) | StageRemovalError::Unsynced(error) => error,
             })
     }
 
-    /// `remove_empty_stage_in`, telling a stage that may remain apart from one
-    /// that was removed before syncing its parent failed.
-    fn remove_empty_stage_checked(
+    /// `remove_empty_stage_in`, telling a stage that may remain (handed back) apart
+    /// from one that was removed before syncing its parent failed.
+    pub(in crate::transfer) fn remove_empty_stage_checked(
         &self,
         stage: Self,
         change: &mut namespace::Change<'_>,
     ) -> Result<(), StageRemovalError> {
-        let remains = StageRemovalError::Retained;
         let cleanup = Cancellation::default();
-        self.check_recovery_parent(&cleanup).map_err(remains)?;
-        stage.revalidate(&cleanup).map_err(remains)?;
-        let name = stage
-            .path
-            .file_name()
-            .ok_or_else(|| remains(invalid(&stage.path, "temporary directory needs a basename")))?
-            .to_owned();
-        if stage.path.parent() != Some(self.path.as_path())
-            || self
-                .inspect(&name, &cleanup)
-                .map_err(remains)?
-                .map(|entry| entry.identity)
-                != Some(stage.identity)
-        {
-            return Err(remains(invalid(
-                &stage.path,
-                "temporary directory identity changed",
-            )));
-        }
-        // The parent is held and protected; the private random name is checked
-        // without following links. Linux rmdir refuses nonempty directories.
-        // As with creation, same-UID/privileged namespace mutation is not isolated.
-        self.namespace_announce(&name, change, &cleanup)
-            .map_err(remains)?;
-        rustix::fs::unlinkat(&*self.file, &name, AtFlags::REMOVEDIR)
-            .map_err(|e| remains(error(&stage.path, e.into())))?;
+        let removed = self.stage_name(&stage, &cleanup).and_then(|name| {
+            // The parent is held and protected; the private random name is checked
+            // without following links. Linux rmdir refuses nonempty directories.
+            // As with creation, same-UID/privileged namespace mutation is not isolated.
+            self.namespace_announce(&name, change, &cleanup)?;
+            rustix::fs::unlinkat(&*self.file, &name, AtFlags::REMOVEDIR)
+                .map_err(|e| error(&stage.path, e.into()))?;
+            Ok(name)
+        });
+        let name = match removed {
+            Ok(name) => name,
+            Err(failure) => return Err(StageRemovalError::Retained(failure, Box::new(stage))),
+        };
         let synced = self
             .file
             .sync_all()
@@ -366,6 +353,38 @@ impl Directory {
         self.namespace_changed(&name);
         self.namespace.retired(&name, closed);
         synced
+    }
+
+    /// Announces again, in this turn, an empty stage that its owner kept from an
+    /// earlier turn (a `StageRemovalError::Retained` stage), before anything is renamed
+    /// into it. As for its removal, the stage must still be this protected directory's
+    /// child under its private name.
+    pub(in crate::transfer) fn reuse_stage_in(
+        &self,
+        stage: &Self,
+        cancel: &Cancellation,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<(), FsError> {
+        let name = self.stage_name(stage, cancel)?;
+        self.namespace_announce(&name, change, cancel)
+    }
+
+    /// The private name of `stage`, while this directory is still a protected recovery
+    /// parent and `stage` is still its child under that name.
+    fn stage_name(&self, stage: &Self, cancel: &Cancellation) -> Result<OsString, FsError> {
+        self.check_recovery_parent(cancel)?;
+        stage.revalidate(cancel)?;
+        let name = stage
+            .path
+            .file_name()
+            .ok_or_else(|| invalid(&stage.path, "temporary directory needs a basename"))?
+            .to_owned();
+        if stage.path.parent() != Some(self.path.as_path())
+            || self.inspect(&name, cancel)?.map(|entry| entry.identity) != Some(stage.identity)
+        {
+            return Err(invalid(&stage.path, "temporary directory identity changed"));
+        }
+        Ok(name)
     }
 }
 
@@ -462,7 +481,7 @@ impl Stage {
                         ));
                         Err(failure)
                     }
-                    Err(StageRemovalError::Retained(cleanup)) => {
+                    Err(StageRemovalError::Retained(cleanup, _)) => {
                         failure
                             .message
                             .push_str(&format!("; empty recovery directory cleanup: {cleanup}"));

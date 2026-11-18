@@ -133,6 +133,11 @@ impl Capture {
 struct State {
     outcome: Option<TransferMoveCaptureOutcome>,
     retained: Option<destination::Directory>,
+    /// The empty private stage of a failed capture whose own turn could not remove it
+    /// (see `keep_or_remove_stage_in`). The next capture reuses it; without one,
+    /// `take_stage_cleanup` hands it to the engine's cleanup. A capture that moves the
+    /// source consumes it, so it is never set together with `retained`.
+    unused: Option<destination::Directory>,
     native_outcome: Option<midnight_core::TransferNativeMoveOutcome>,
 }
 struct Capture {
@@ -251,11 +256,11 @@ impl TransferMoveCapture for Capture {
         )
     }
     fn take_stage_cleanup(&self) -> Option<Box<dyn midnight_core::TransferMoveStageCleanup>> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
             .retained
             .take()
+            .or_else(|| state.unused.take())
             .map(|directory| {
                 Box::new(StageCleanup(directory))
                     as Box<dyn midnight_core::TransferMoveStageCleanup>
@@ -297,24 +302,19 @@ impl Capture {
         self.revalidate(cancel)?;
         self.parent.check_recovery_parent(cancel)?;
         mutation.prepare_file(&self.file, cancel)?;
-        let recovery = destination::recovery::source_stage_in(&self.parent, cancel, mutation)?;
-        if let Err(mut failure) = self.revalidate(cancel) {
-            if let Err(cleanup) = recovery.remove_empty_stage_in(mutation) {
-                failure
-                    .message
-                    .push_str(&format!("; temporary directory cleanup failed: {cleanup}"));
-            }
+        let recovery = match state.unused.take() {
+            Some(stage) => stage,
+            None => destination::recovery::source_stage_in(&self.parent, cancel, mutation)?,
+        };
+        if let Err(failure) = self.revalidate(cancel) {
+            keep_or_remove_stage_in(state, recovery, mutation);
             return Err(failure);
         }
         before_capture();
         let path = match recovery.capture_handle_in(&self.file, &self.name, cancel, mutation) {
             Ok(path) => path,
-            Err(mut failure) => {
-                if let Err(cleanup) = recovery.remove_empty_stage_in(mutation) {
-                    failure
-                        .message
-                        .push_str(&format!("; temporary directory cleanup failed: {cleanup}"));
-                }
+            Err(failure) => {
+                keep_or_remove_stage_in(state, recovery, mutation);
                 return Err(failure);
             }
         };
@@ -367,6 +367,25 @@ impl Capture {
         state.retained = Some(recovery);
         state.outcome = Some(outcome.clone());
         Ok(outcome)
+    }
+}
+
+/// Removes, within the capture's own turn, the empty private stage of a capture that
+/// moved nothing. Granted peers can still refuse the rename into a stage this turn has
+/// just created (the rename announces that stage again); the refused turn then refuses
+/// every later change, and a new turn would replace the refusal that the engine waits
+/// for and retries on with its own reservation. So the capture keeps the empty stage
+/// instead of dropping it unreported: its next attempt reuses the stage, and otherwise
+/// `take_stage_cleanup` returns it for the engine to remove or report. Any other failed
+/// removal keeps the stage the same way.
+fn keep_or_remove_stage_in(
+    state: &mut State,
+    stage: destination::Directory,
+    mutation: &mut super::namespace::Mutation<'_>,
+) {
+    // The removal consumes a clone, so a failure leaves this handle and binding intact.
+    if stage.clone().remove_empty_stage_in(mutation).is_err() {
+        state.unused = Some(stage);
     }
 }
 

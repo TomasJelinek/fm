@@ -545,3 +545,48 @@ fn replaced_merge_directory_identity_cannot_be_reused_by_old_consent() {
     );
     assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
 }
+
+/// Review P1-T1-2: every reported entry carries its raw modified time only. The
+/// engine formats the few entries a prompt displays from that raw time.
+#[test]
+fn transfer_entries_report_raw_modified_times_for_lazy_display_formatting() {
+    use midnight_core::LocaleService;
+    let temp = fixture();
+    let directory = temp.path().join("listing");
+    fs::create_dir(&directory).unwrap();
+    for name in ["a.txt", "b.txt"] {
+        fs::write(directory.join(name), name).unwrap();
+    }
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let mut source = provider
+        .prepare_transfer_source(&directory, &cancel)
+        .unwrap();
+    let mut entries = vec![source.entry().clone()];
+    while let Some(child) = source.next_child(&cancel).unwrap() {
+        entries.push(child.entry().clone());
+    }
+    let destination = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    entries.push(
+        destination
+            .inspect(OsStr::new("listing"), &cancel)
+            .unwrap()
+            .unwrap(),
+    );
+    entries.push(
+        destination
+            .prepare_target(OsStr::new("listing"), &cancel)
+            .unwrap()
+            .unwrap()
+            .entry()
+            .clone(),
+    );
+    assert_eq!(entries.len(), 5);
+    for entry in &entries {
+        let modified = entry.item.metadata.modified.expect("raw modified time");
+        assert_eq!(entry.item.metadata.localized_modified, None, "{entry:?}");
+        assert!(provider.format_datetime(modified).is_some(), "{entry:?}");
+    }
+}

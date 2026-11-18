@@ -782,7 +782,11 @@ Report texts are fixed: a drag source's own error description is never shown, on
 its HRESULT code. The callback never waits for delivery: the backend keeps only the
 latest undelivered refusal, outside the bounded event queue, and reports it once the
 UI accepts events again, unless the drop window has closed by then. Linux X11 drops
-are still refused without a report.
+report an undecodable or over-4,096-item file list (one fixed text), a failed
+validation and a failed admission, once per drop that saw a Copy status; a
+destination or selection-owner change at XdndDrop or during the read, a closed
+window, an oversized (over 4 MiB) or wrongly typed transfer, and a read timeout
+still end without a report.
 
 Pending drop admissions retain their ordering relative to later clipboard copies.
 Cancelling one before backend enqueue rejects its token rather than sending a

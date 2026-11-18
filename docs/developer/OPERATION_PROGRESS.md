@@ -122,9 +122,11 @@ second for external changes the registry cannot see. This covers stage creation,
 publication, directory creation, and a Move's source capture (repeated from the
 capture step; the After proof still rehashes both files before removal), its
 empty-directory removal and its verified source removal (whose retry rebuilds the
-finalizer and rehashes both files first). A Windows capture refused only at its
-rename into the private directory it has just created leaves that empty directory
-behind unreported (see [bounded ordinary Move](TRANSFERS.md#bounded-ordinary-move)).
+finalizer and rehashes both files first). A capture refused only after creating its
+private directory (on Windows at its rename into that directory, on Linux at the
+removal that follows another failure) keeps that empty directory: the automatic
+repeat of the capture reuses it, and otherwise the job's cleanup removes it or
+reports its path (see [bounded ordinary Move](TRANSFERS.md#bounded-ordinary-move)).
 A refusal by a quarantined peer never clears and fails the entry with the
 non-retryable restart error, and a quarantined claim makes later jobs fail at once
 and ask for an application restart instead of waiting.

@@ -107,10 +107,9 @@ listings. The search worker fills a missing localized time through the engine
 locale once when it retains an ordinary result or collects a duplicate
 candidate, so a candidate that joins no group is formatted too; Go to file
 formats the validated entry it reports the same way. A time the provider
-already formatted is kept: the Windows provider formats no time, so examined
-nodes that never match cost no locale call, while the Linux provider currently
-formats every node it opens. Without an engine locale, an unformatted time
-shows the labelled UTC fallback.
+already formatted is kept; the native Windows and Linux providers format none,
+so examined nodes that never match cost no locale call. Without an engine
+locale, an unformatted time shows the labelled UTC fallback.
 
 Name, Extension, Path, Size and Modified headers toggle ascending/descending
 sorting. Text keys use the same captured engine locale as panels; numeric sizes
