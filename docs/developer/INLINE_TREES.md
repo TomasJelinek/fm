@@ -153,6 +153,15 @@ provider tables therefore hold the live references plus at most one threshold
 and the listings since the last settled completion (one listing, or one
 unpublished recursive batch of at most 128 listings), regardless of uptime.
 
+A pass runs on the pane's model worker before that completion's publication.
+In an optimized test build (release opt-level without fat LTO) on the
+development machine, applying a root completion that triggered a pass took
+1.4-2.0 ms longer with 1,103 live rows (6.6-8.9 ms without a pass) and
+8.6-10.6 ms longer with 6,603 live rows (54-65 ms without), 7-22% in these runs.
+One isolated pass over both tables took 6-10 ms from 25,000 records to 10,001
+and 27-63 ms from 99,000 records, near the caps. The ignored
+`tree_reference_churn_harness` and `reclamation_cost_harness` tests measure this.
+
 Without reclamation a long-lived churning mount would reach the 100,000-reference
 caps. A listing that then meets a new name fails as resource-limited. The root is
 refreshed first and a failed branch drops its subtree from the sweep, so with a

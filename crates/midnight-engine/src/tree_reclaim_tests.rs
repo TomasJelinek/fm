@@ -187,6 +187,20 @@ fn assert_bounded(session: &Session) -> usize {
 /// One watch-requested maintenance sweep of the loaded branches. Returns its
 /// event and the number of completions that published a projection.
 fn sweep(session: &mut Session, bounded: bool) -> (TreeEvent, usize) {
+    sweep_observed(session, &mut |session, _, _| {
+        if bounded {
+            assert_bounded(session);
+        }
+    })
+}
+
+/// `sweep`, passing after each completion the session, whether it listed the
+/// root, and the time `Session::apply` took (projection and any reclamation,
+/// before the worker builds the publication).
+fn sweep_observed(
+    session: &mut Session,
+    applied: &mut dyn FnMut(&Session, bool, std::time::Duration),
+) -> (TreeEvent, usize) {
     let view = session.projection().clone();
     assert!(session.commit(&view));
     let request = TreeRefreshRequest {
@@ -199,10 +213,11 @@ fn sweep(session: &mut Session, bounded: bool) -> (TreeEvent, usize) {
     let mut published = 0;
     for _ in 0..16 {
         if let Some(job) = session.take_work().unwrap() {
-            published += usize::from(session.apply(job.run(), &Cancellation::default()).unwrap());
-            if bounded {
-                assert_bounded(session);
-            }
+            let root = job.pending.branch == session.tree.root();
+            let completion = job.run();
+            let started = std::time::Instant::now();
+            published += usize::from(session.apply(completion, &Cancellation::default()).unwrap());
+            applied(session, root, started.elapsed());
         }
         if let Some(event) = session.finish_refresh() {
             return (event, published);
@@ -446,24 +461,51 @@ fn reclamation_waits_for_an_unpublished_recursive_batch_and_rollback_restores_va
 }
 
 /// Table sizes over 105 watch sweeps of 1,000 fresh files and 100 fresh folders
-/// (115,500 names, past the 100,000-reference caps).
+/// (115,500 names, past the 100,000-reference caps; 1,103 live rows), then over
+/// 3,000/300 (3,303 live) and 6,000/600 (6,603 live; a root of 8,000 files
+/// exceeds the display projection budget here), and how long applying a root or
+/// `keep/` completion took with and without a reclamation pass.
 /// Run: cargo test -p midnight-engine --lib tree_reference_churn_harness -- --ignored --nocapture
 #[test]
 #[ignore = "measurement harness"]
 fn tree_reference_churn_harness() {
-    let churn = Churn::new(1_000, 100);
+    churn_harness(1_000, 100, 105);
+    churn_harness(3_000, 300, 20);
+    churn_harness(6_000, 600, 12);
+}
+
+fn churn_harness(files: u64, folders: u64, sweeps: u64) {
+    use std::time::Duration;
+    println!("{files} fresh files and {folders} fresh folders per sweep:");
+    let churn = Churn::new(files, folders);
     let mut session = native_session(&churn);
     expand(&mut session, "keep");
     let started = std::time::Instant::now();
     let (mut peak, mut failures) = (0, 0);
-    for generation in 1..=105 {
+    // [keep, root][without, with reclamation]: completions, total and longest
+    // apply time.
+    let mut applied = [[(0_u32, Duration::ZERO, Duration::ZERO); 2]; 2];
+    let (issued, native, _) = references(&session);
+    let mut held = issued.max(native);
+    for generation in 1..=sweeps {
         churn.generation.store(generation, Ordering::SeqCst);
-        let (event, _) = sweep(&mut session, false);
+        let (event, _) = sweep_observed(&mut session, &mut |session, root, elapsed| {
+            let (issued, native, _) = references(session);
+            let after = issued.max(native);
+            let slot = &mut applied[usize::from(root)][usize::from(after < held)];
+            slot.0 += 1;
+            slot.1 += elapsed;
+            slot.2 = slot.2.max(elapsed);
+            held = after;
+        });
         let failed = !matches!(event, TreeEvent::Refreshed { result: Ok(()), .. });
         failures += usize::from(failed);
+        if failed && failures == 1 {
+            println!("first failed sweep: {event:?}");
+        }
         let (issued, native, live) = references(&session);
         peak = peak.max(issued.max(native));
-        if generation % 15 == 0 || (failed && failures == 1) {
+        if generation % 15 == 0 || generation == sweeps || (failed && failures == 1) {
             println!(
                 "sweep {generation}: issued {issued}, native {native}, live {live}, \
                  failed sweeps {failures}, {:?}",
@@ -475,4 +517,13 @@ fn tree_reference_churn_harness() {
         "peak {peak} references, {failures} failed sweeps, {:?}",
         started.elapsed()
     );
+    for (slots, branch) in applied.into_iter().zip(["keep/", "root"]) {
+        for ((count, total, longest), label) in slots.into_iter().zip(["without", "with"]) {
+            println!(
+                "{branch} completions {label} reclamation: {count}, mean apply {:?}, \
+                 longest {longest:?}",
+                total.checked_div(count).unwrap_or_default()
+            );
+        }
+    }
 }
