@@ -35,7 +35,7 @@ pub struct Scheduler {
 impl Scheduler {
     /// Supply exactly the visible items; never an unbounded directory.
     pub fn set_view(&mut self, generation: u64, items: Vec<Item>) -> bool {
-        if items.len() > 256
+        if items.len() > midnight_core::MAX_THUMBNAIL_VIEW_TARGETS
             || items
                 .iter()
                 .any(|item| item.edge == 0 || item.edge > midnight_thumbnail_api::MAX_EDGE)

@@ -8,9 +8,8 @@ use std::path::PathBuf;
 #[path = "thumbnail_image_cache.rs"]
 mod cache;
 
-/// Targets per thumbnail request. The thumbnail host (midnight-thumbnail-host
-/// `service.rs`) rejects larger requests; keep both limits equal.
-pub(crate) const MAX_THUMBNAIL_TARGETS: usize = 256;
+/// Targets per thumbnail request; the thumbnail host refuses larger views.
+pub(crate) const MAX_THUMBNAIL_TARGETS: usize = midnight_core::MAX_THUMBNAIL_VIEW_TARGETS;
 
 /// Split the request budget between the panes' visible candidates. Each pane is
 /// guaranteed half; a pane that needs less leaves the rest to the other, so a

@@ -3,10 +3,10 @@ use super::*;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
 
-/// Must be at least the backend's per-session icon bound (`ICON_CAPACITY` in
-/// midnight-engine `desktop.rs`): the backend loads each key once and never
-/// resends it, so an evicted icon falls back to its generic kind icon.
-const IMAGE_CACHE_CAPACITY: usize = 256;
+/// The backend loads each icon key once and does not resend a key among its
+/// `DESKTOP_ICON_CAPACITY` most recent ones, so this cache holds that many; an
+/// evicted icon falls back to its generic kind icon.
+const IMAGE_CACHE_CAPACITY: usize = midnight_core::DESKTOP_ICON_CAPACITY;
 
 #[derive(Default)]
 pub(crate) struct DesktopState {
