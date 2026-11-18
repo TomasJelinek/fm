@@ -30,7 +30,7 @@ use midnight_platform::{LocalFileSystem, home_directory};
 use midnight_ui::{MainWindow, Presenter};
 use slint::ComponentHandle;
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     path::PathBuf,
     rc::Rc,
     sync::Arc,
@@ -510,6 +510,9 @@ fn run_window(
     )?);
     startup.arm(startup::DEADLINE, engine_stop)?;
     let startup_ready = startup.clone();
+    // Bound after the viewers are installed; the event loop has not run before then.
+    let settings_loaded: Rc<OnceCell<viewers::SettingsLoaded>> = Rc::default();
+    let loaded_settings = settings_loaded.clone();
     window.on_backend_ready(move || {
         let Some(window) = weak.upgrade() else {
             return;
@@ -572,6 +575,9 @@ fn run_window(
             sync_visible(&state, &ui_begin_owned, &ui_visible_sync);
         }
         if preferences_applied {
+            if let Some(loaded) = loaded_settings.get() {
+                loaded.applied(&state);
+            }
             // Both successful and failed reads must complete startup, after
             // their appearance/error presentation has reached the hidden UI.
             startup_ready.preferences_applied();
@@ -667,6 +673,7 @@ fn run_window(
         local.clone(),
         &mut *image_spare_retirement,
     );
+    let _ = settings_loaded.set(viewers::SettingsLoaded::new(&image_preparation));
     let thumbnail_timer = thumbnails::install(
         &window,
         presenter.clone(),
@@ -690,12 +697,16 @@ fn run_window(
     let sync_window = window.as_weak();
     let sync_viewers = viewers.clone();
     let sync_comparators = comparators.clone();
+    let sync_preparation = Rc::downgrade(&image_preparation);
     visible_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
         move || {
             {
                 let mut state = sync_state.borrow_mut();
+                if let Some(preparation) = sync_preparation.upgrade() {
+                    preparation.exit_requested(&state);
+                }
                 if state.continue_operation_shutdown(&*sync_controls)
                     && let Some(window) = sync_window.upgrade()
                 {
@@ -756,7 +767,6 @@ fn run_window(
         .shutdown_drag_drop(&|command| commands.try_send(command).is_ok());
     let result = result.and(window.hide().map_err(|error| error.to_string()));
     window.invoke_close_information_windows();
-    image_preparation.stop();
     drop(image_preparation);
     if let Some(retirement) = image_spare_retirement.as_ref() {
         retirement.stop_spare();

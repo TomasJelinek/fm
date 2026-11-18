@@ -1,10 +1,11 @@
-use midnight_core::{Command, PaneId, ViewerAppearance, ViewerLaunch};
+use midnight_core::{Command, PaneId, ViewerAppearance, ViewerAssociations, ViewerLaunch};
 use midnight_ui::{MainWindow, Presenter, Theme};
 use midnight_viewer_ui::{ViewerWindows, WindowPlacement};
 use slint::ComponentHandle;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    sync::Arc,
     time::Duration,
 };
 
@@ -137,17 +138,16 @@ pub(crate) fn install(
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
     resources: std::sync::Arc<dyn midnight_core::TransferService>,
     retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
-) -> (Rc<ViewerWindows>, slint::Timer) {
+) -> (Rc<ViewerWindows>, Rc<ImagePreparation>) {
     let service = midnight_viewer_engine::Service::with_native_capture(
         runtime.clone(),
         crate::native_content::factory_with_resources(filesystem, resources, runtime),
     );
     // The outer run owns this ticket on every later Result/early-return path.
-    // Register before timers or ViewerWindows can start catalog preparation.
+    // Register before the settings response or ViewerWindows can start catalog preparation.
     debug_assert!(retirement.is_none());
     *retirement = Some(service.image_spare_retirement());
-    let image_preparation =
-        prepare_images_after_settings(window.as_weak(), Rc::downgrade(&presenter), service.clone());
+    let image_preparation = Rc::new(ImagePreparation::new(service.clone()));
     let viewers = Rc::new(ViewerWindows::new(service));
     let settings = presenter.clone();
     let settings_commands = commands.clone();
@@ -240,54 +240,90 @@ pub(crate) fn install(
     (viewers, image_preparation)
 }
 
-fn prepare_images_after_settings(
-    window: slint::Weak<MainWindow>,
-    presenter: std::rc::Weak<RefCell<Presenter>>,
-    service: midnight_viewer_engine::Service,
-) -> slint::Timer {
-    // Wait only by scheduling: panel startup, preference loading and UI input keep running.
-    // The service suppresses unchanged memory-only policy; discovery and native work are backend.
-    let timer = slint::Timer::default();
-    timer.start(
-        slint::TimerMode::Repeated,
-        Duration::from_millis(200),
-        move || {
-            let (Some(_window), Some(state)) = (window.upgrade(), presenter.upgrade()) else {
-                return;
-            };
-            let policy = state.borrow().viewer_startup_policy();
-            if let Some((disabled, associations)) = policy {
-                service.prepare_image_workers(Some(disabled), associations);
-            } else {
-                service.prepare_image_workers(None, Default::default());
-            }
-        },
-    );
-    timer
+type Prepare = Box<dyn Fn(Option<Arc<[String]>>, Arc<ViewerAssociations>)>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Preparation {
+    Waiting,
+    Prepared,
+    Unprepared,
+    Revoked,
+}
+
+/// The spare image worker is prepared once, when the initial settings response is
+/// applied; discovery and native work run on the backend. A failed preparation is not
+/// retried: the first image view then starts its worker on demand. An exit request that
+/// waits for live jobs revokes the prepared spare once.
+pub(crate) struct ImagePreparation {
+    prepare: Prepare,
+    state: Cell<Preparation>,
+}
+
+impl ImagePreparation {
+    fn new(service: midnight_viewer_engine::Service) -> Self {
+        Self::with(move |disabled, associations| {
+            service.prepare_image_workers(disabled, associations);
+        })
+    }
+
+    fn with(prepare: impl Fn(Option<Arc<[String]>>, Arc<ViewerAssociations>) + 'static) -> Self {
+        Self {
+            prepare: Box::new(prepare),
+            state: Cell::new(Preparation::Waiting),
+        }
+    }
+
+    /// The initial settings response, successful or failed, reached the presenter.
+    /// A failed or blocked read leaves image viewers without a spare for the session.
+    pub(crate) fn settings_applied(&self, presenter: &Presenter) {
+        if self.state.get() != Preparation::Waiting {
+            return;
+        }
+        if let Some((disabled, associations)) = presenter.viewer_startup_policy() {
+            self.state.set(Preparation::Prepared);
+            (self.prepare)(Some(disabled), associations);
+        } else {
+            self.state.set(Preparation::Unprepared);
+        }
+    }
+
+    /// Release a prepared spare once shutdown was requested, instead of holding it
+    /// while live jobs drain until final retirement.
+    pub(crate) fn exit_requested(&self, presenter: &Presenter) {
+        if self.state.get() == Preparation::Prepared && presenter.viewer_startup_policy().is_none()
+        {
+            self.state.set(Preparation::Revoked);
+            (self.prepare)(None, Arc::default());
+        }
+    }
+}
+
+/// Work that waits for the initial settings response. The backend-ready handler is
+/// installed before the viewers, so it reaches them through this late-bound handle.
+pub(crate) struct SettingsLoaded {
+    preparation: std::rc::Weak<ImagePreparation>,
+}
+
+impl SettingsLoaded {
+    pub(crate) fn new(preparation: &Rc<ImagePreparation>) -> Self {
+        Self {
+            preparation: Rc::downgrade(preparation),
+        }
+    }
+
+    /// Call once the initial settings response, successful or failed, was applied.
+    pub(crate) fn applied(&self, presenter: &RefCell<Presenter>) {
+        if let Some(preparation) = self.preparation.upgrade() {
+            preparation.settings_applied(&presenter.borrow());
+        }
+    }
 }
 
 #[cfg(test)]
-mod preparation_lifetime_tests {
+mod preparation_tests {
     use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    struct ClockOnly;
-
-    impl slint::platform::Platform for ClockOnly {
-        fn create_window_adapter(
-            &self,
-        ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::platform::PlatformError>
-        {
-            panic!("Preparation lifetime test must not create a native window");
-        }
-
-        fn duration_since_start(&self) -> Duration {
-            Duration::ZERO
-        }
-    }
+    use midnight_core::{Event, FsError, UserPreferences};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct CaptureLifetime(Arc<AtomicBool>);
 
@@ -298,8 +334,7 @@ mod preparation_lifetime_tests {
     }
 
     #[test]
-    fn dropping_preparation_timer_releases_service_without_an_event_loop_callback() {
-        slint::platform::set_platform(Box::new(ClockOnly)).unwrap();
+    fn dropping_the_preparation_releases_the_service_without_an_event_loop_callback() {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -313,19 +348,70 @@ mod preparation_lifetime_tests {
         });
         let service =
             midnight_viewer_engine::Service::with_native_capture(runtime.handle().clone(), capture);
-        let timer =
-            prepare_images_after_settings(slint::Weak::default(), std::rc::Weak::new(), service);
+        let preparation = Rc::new(ImagePreparation::new(service));
+        let loaded = SettingsLoaded::new(&preparation);
         assert!(!released.load(Ordering::Acquire));
-        timer.stop();
-        assert!(
-            !released.load(Ordering::Acquire),
-            "Stopping retains its callback"
-        );
-        drop(timer);
+        drop(preparation);
         assert!(
             released.load(Ordering::Acquire),
-            "Shutdown must drop the owned timer"
+            "Shutdown must drop the service with its handle"
         );
+        // A late response after shutdown reaches nothing.
+        let root = std::env::current_dir().unwrap();
+        loaded.applied(&RefCell::new(Presenter::new(root.clone(), root)));
+    }
+
+    type Calls = Rc<RefCell<Vec<Option<Arc<[String]>>>>>;
+
+    fn recording() -> (ImagePreparation, Calls) {
+        let calls = Calls::default();
+        let recorded = calls.clone();
+        let preparation =
+            ImagePreparation::with(move |disabled, _| recorded.borrow_mut().push(disabled));
+        (preparation, calls)
+    }
+
+    fn presenter(read: Result<UserPreferences, FsError>) -> Presenter {
+        let root = std::env::current_dir().unwrap();
+        let mut presenter = Presenter::new(root.clone(), root);
+        presenter.apply(Event::PreferencesLoaded(read.map(Box::new)));
+        presenter
+    }
+
+    #[test]
+    fn loaded_settings_prepare_the_spare_once_and_an_exit_request_revokes_it_once() {
+        let (preparation, calls) = recording();
+        let mut presenter = presenter(Ok(UserPreferences {
+            disabled_viewer_plugins: vec!["example.viewer.disabled".into()],
+            ..Default::default()
+        }));
+        preparation.settings_applied(&presenter);
+        preparation.settings_applied(&presenter);
+        let disabled: Arc<[String]> = Arc::from(["example.viewer.disabled".to_owned()]);
+        assert_eq!(*calls.borrow(), [Some(disabled)]);
+        preparation.exit_requested(&presenter);
+        assert_eq!(calls.borrow().len(), 1, "no exit was requested");
+        presenter.request_operation_shutdown(&|_| true);
+        preparation.exit_requested(&presenter);
+        preparation.exit_requested(&presenter);
+        assert_eq!(calls.borrow().len(), 2);
+        assert_eq!(calls.borrow()[1], None, "the spare is revoked once");
+        preparation.settings_applied(&presenter);
+        assert_eq!(calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_failed_settings_read_prepares_and_revokes_nothing() {
+        let (preparation, calls) = recording();
+        let mut presenter = presenter(Err(FsError::from_io(
+            "preferences",
+            std::path::Path::new("preferences.json"),
+            std::io::Error::other("unreadable"),
+        )));
+        preparation.settings_applied(&presenter);
+        presenter.request_operation_shutdown(&|_| true);
+        preparation.exit_requested(&presenter);
+        assert!(calls.borrow().is_empty());
     }
 }
 
