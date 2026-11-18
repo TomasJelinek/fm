@@ -81,6 +81,7 @@ fn without_max_widths_preview_validates_shown_rows_and_output_validates_every_ro
     assert_eq!((items, truncated, text.lines().count()), (20, true, 12));
     for destination in [
         FileListDestination::Clipboard,
+        FileListDestination::Viewer,
         FileListDestination::File {
             path: "list.txt".into(),
             append: false,
@@ -90,7 +91,7 @@ fn without_max_widths_preview_validates_shown_rows_and_output_validates_every_ro
         request.destination = destination;
         let error = generate(&request, &Cancellation::default())
             .err()
-            .expect("saved and copied output validate every row");
+            .expect("clipboard, viewer and file output validate every row");
         assert!(error.message.contains("NUL"), "{error:?}");
     }
     // `:max` measures every row first, so even its preview reports the row.
@@ -101,6 +102,38 @@ fn without_max_widths_preview_validates_shown_rows_and_output_validates_every_ro
         )
         .is_err()
     );
+}
+
+#[test]
+fn spooled_rows_are_exact_across_buffered_chunk_boundaries() {
+    // Rows of varying length split at chunk boundaries, and one row spans several
+    // chunks with multi-byte characters cut between them.
+    let mut names = (0..3_000)
+        .map(|index| format!("{index:04}-{}.txt", "x".repeat(index % 300)))
+        .collect::<Vec<_>>();
+    names.insert(1_234, "文".repeat(MAX_IO));
+    let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let expected: String = names.iter().map(|name| format!("{name}\n")).collect();
+    assert!(expected.len() > 4 * MAX_IO);
+    let mut request = request(&names, "$(FileName)$(LF)");
+    request.destination = FileListDestination::Viewer;
+    let Generated::Content { source, items } =
+        generate(&request, &Cancellation::default()).unwrap()
+    else {
+        panic!("spooled output")
+    };
+    assert_eq!(items, names.len() as u64);
+    assert_eq!(source.length(), expected.len() as u64);
+    let mut output = vec![0; expected.len()];
+    let mut offset = 0;
+    while offset < output.len() {
+        let count = source
+            .read_at(offset as u64, &mut output[offset..])
+            .unwrap();
+        assert_ne!(count, 0, "the spool ended at {offset}");
+        offset += count;
+    }
+    assert!(output == expected.as_bytes(), "spooled rows differ");
 }
 
 #[test]
