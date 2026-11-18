@@ -403,7 +403,8 @@ fn wake_bridge(gate: &Arc<WakeGate>, post: &Post) {
         wake_pulse();
     }));
     if !scheduled {
-        // No event loop: a later pulse still delivers every frame.
+        // No event loop: frames, the cache location and notices stay stored for the next
+        // pulse pass, which a quiet pulse runs only when something else wakes it.
         gate.release();
     }
 }
