@@ -32,6 +32,11 @@ still refused first. Other platforms retain the actual executable's location.
 The cached result does not authorize any package or bypass the checks below. See
 the [runtime discovery contract](../../docs/developer/RUNTIME_DISCOVERY.md).
 
+The thumbnail and image-viewer hosts pass their application executable path through
+`installation_path` before they derive and validate their package root. It returns
+an absolute spelling without resolving links; on Windows it uses extended `\\?\`
+syntax, keeps the raw UTF-16 and refuses device namespaces.
+
 Discovery publishes each package's modes and extensions; it routes no file. The
 viewer engine chooses a viewer from them
 ([`routing.rs`](../midnight-viewer-engine/src/routing.rs)). No parser or plugin ID
