@@ -346,6 +346,12 @@ impl Directory {
             Ok(name) => name,
             Err(failure) => return Err(StageRemovalError::Retained(failure, Box::new(stage))),
         };
+        // An observer reserved inside the stage (the witness of a replacement's recovery
+        // item) can outlive it in the host. Nothing can be bound in the removed stage
+        // again, so the observer certifies its removal instead of failing its refresh on
+        // the missing parent, and it releases its handle of the stage first: that handle
+        // would keep the stage's own retirement below from certifying its close.
+        stage.namespace.parent_removed();
         let synced = self
             .file
             .sync_all()
@@ -444,9 +450,11 @@ impl Stage {
         // A pre-exchange failure can leave the new object only in recovery/item.
         // Its file identity needs an independent observer, not just path coverage
         // by the enclosing private recovery directory. That reservation follows the
-        // directory's creation, so a refusal of it (or a cancellation) removes the
-        // still-empty directory without another reservation: the refusal stays this
-        // change's last one, and the engine repeats the publication.
+        // directory's creation, so a refusal of it or of its announcement (or a
+        // cancellation) removes the still-empty directory without another reservation,
+        // which also certifies the removal of an observer the host already accepted:
+        // the refusal stays this change's last one, and the engine repeats the
+        // publication.
         if let Err(failure) = recovery
             .namespace_reserve_file(OsStr::new("item"), change, cancel)
             .and_then(|()| recovery.namespace_announce(OsStr::new("item"), change, cancel))

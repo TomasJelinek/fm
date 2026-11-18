@@ -308,6 +308,9 @@ struct State {
     failure: Option<FsError>,
     removed: bool,
     closed: bool,
+    /// The pooled parent handle; a private binding retired by `Bindings::parent_removed`
+    /// releases it, as it never refreshes its parent again.
+    parent: Option<Arc<Parent>>,
 }
 
 #[derive(Default)]
@@ -438,7 +441,6 @@ struct PinOptions {
 
 pub(super) struct Pin {
     _bindings: Arc<Bindings>,
-    parent: Option<Arc<Parent>>,
     parent_path: Arc<PathBuf>,
     parent_identity: TransferIdentity,
     name: OsString,
@@ -520,7 +522,6 @@ impl Pin {
         let parent_identity = identity(parent, &parent_path)?;
         Ok(Arc::new(Self {
             _bindings: bindings,
-            parent: pooled,
             parent_path,
             parent_identity,
             name: name.to_owned(),
@@ -537,6 +538,7 @@ impl Pin {
                 failure: None,
                 removed: false,
                 closed: false,
+                parent: pooled,
             }),
         }))
     }
@@ -545,9 +547,9 @@ impl Pin {
 impl TransferNamespacePin for Pin {
     fn refresh(&self, cancel: &Cancellation) -> Result<TransferNamespaceProbe, FsError> {
         checked(cancel, &self.parent_path)?;
-        let retirement = {
+        let (retirement, parent) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.removed, state.closed)
+            ((state.removed, state.closed), state.parent.clone())
         };
         if self.private && retirement.0 {
             return Ok(if retirement.1 {
@@ -556,7 +558,7 @@ impl TransferNamespacePin for Pin {
                 TransferNamespaceProbe::Unknown
             });
         }
-        let Some(parent) = &self.parent else {
+        let Some(parent) = &parent else {
             return Ok(TransferNamespaceProbe::Unknown);
         };
         let visible = File::from(
@@ -1027,6 +1029,38 @@ impl Bindings {
                 state.closed = closed;
             }
         }
+    }
+
+    /// The private directory these bindings belong to was removed while empty, so
+    /// nothing can be bound in it again. Each private binding still recorded as vacant
+    /// (such as a replacement's recovery witness that nothing was linked to) becomes a
+    /// removal certificate and releases its handle of the removed directory, so that the
+    /// directory's own retirement can still tell whether its last handle was closed.
+    /// Any other binding keeps its handle and reports the change when refreshed.
+    pub(super) fn parent_removed(&self) {
+        let pins: Vec<_> = self
+            .pins
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .flatten()
+            .filter_map(Weak::upgrade)
+            .collect();
+        let mut released = Vec::new();
+        for pin in &pins {
+            if !pin.private {
+                continue;
+            }
+            let mut state = pin.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.expected.is_none() && state.failure.is_none() {
+                state.removed = true;
+                state.closed = true;
+                released.extend(state.parent.take());
+            }
+        }
+        // Native parent handles close only after every pin lock was released.
+        drop(released);
+        drop(pins);
     }
 }
 

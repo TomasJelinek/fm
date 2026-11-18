@@ -19,6 +19,11 @@ struct AnnouncementEvents {
     root_refreshes: AtomicUsize,
     alias_refreshes: AtomicUsize,
     reject_item: std::sync::atomic::AtomicBool,
+    /// Accepts the recovery item's observer, then refuses its announcement, as a peer
+    /// latched since the observer's reservation would.
+    refuse_item_announcement: std::sync::atomic::AtomicBool,
+    /// Accepts the recovery item's observer, then cancels the job.
+    cancel_after_item: std::sync::atomic::AtomicBool,
     unknown: AtomicUsize,
 }
 impl AnnouncementEvents {
@@ -79,24 +84,32 @@ impl TransferNamespaceChange for AnnouncementTurn {
         } else {
             let probe = pin.refresh(cancel)?;
             self.events.alias_refreshes.fetch_add(1, Ordering::SeqCst);
-            if self.events.reject_item.load(Ordering::SeqCst)
-                && matches!(&probe, TransferNamespaceProbe::Known(scopes) if scopes.iter().any(|scope|
-                    scope.extent == TransferNamespaceExtent::Entry && scope.lookup_key.as_ref() == b"item"))
-            {
+            let item = matches!(&probe, TransferNamespaceProbe::Known(scopes) if scopes.iter().any(|scope|
+                scope.extent == TransferNamespaceExtent::Entry && scope.lookup_key.as_ref() == b"item"));
+            if item && self.events.reject_item.load(Ordering::SeqCst) {
                 return Err(invalid(
                     Path::new("item"),
                     "fixture refuses recovery item before link",
                 ));
             }
             let identity = Arc::as_ptr(&pin) as *const () as usize;
-            self.events
-                .aliases
-                .lock()
-                .unwrap()
-                .entry(identity)
-                .or_insert(pin);
+            let mut aliases = self.events.aliases.lock().unwrap();
+            if item
+                && aliases.contains_key(&identity)
+                && self
+                    .events
+                    .refuse_item_announcement
+                    .swap(false, Ordering::SeqCst)
+            {
+                return Ok(false);
+            }
+            aliases.entry(identity).or_insert(pin);
+            drop(aliases);
             if !self.aliases.contains(&identity) {
                 self.aliases.push(identity);
+            }
+            if item && self.events.cancel_after_item.swap(false, Ordering::SeqCst) {
+                cancel.cancel();
             }
         }
         Ok(true)
@@ -188,22 +201,104 @@ fn refused_recovery_item_observer_removes_the_new_directory_without_publishing_f
             "{error:?}"
         );
         assert!(!error.message.contains("cleanup"), "{error:?}");
-        let names: Vec<_> = std::fs::read_dir(temp.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert!(
-            !names
-                .iter()
-                .any(|name| name.to_string_lossy().starts_with(".midnight-recovery-")),
-            "{names:?}"
-        );
+        assert!(!error.message.contains("namespace refresh"), "{error:?}");
+        assert!(recovery_directories(temp.path()).is_empty());
         assert_eq!(
             std::fs::read(temp.path().join("target")).unwrap(),
             b"old bytes"
         );
         stage.cleanup().unwrap();
     });
+}
+
+fn recovery_directories(parent: &Path) -> Vec<OsString> {
+    std::fs::read_dir(parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with(".midnight-recovery-"))
+        .collect()
+}
+
+/// The host accepted the recovery item's observer, then the change failed before
+/// anything was linked: a peer refused the observer's announcement, or the job was
+/// cancelled. The still-empty recovery directory is removed, and the turn's refresh
+/// finds both the observer inside it and the directory's own pin certified removed,
+/// instead of failing on the missing parent or keeping an unknown pin.
+fn recovery_item_failing_after_its_observer(cancelled: bool) {
+    use std::io::Write;
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("target"), b"old bytes").unwrap();
+    let events = Arc::new(AnnouncementEvents::default());
+    let context: Arc<dyn TransferNamespaceChanges> = Arc::new(AnnouncementContext(events.clone()));
+    with_transfer_namespace_changes(context, || {
+        let parent = directory(temp.path());
+        let cancel = Cancellation::default();
+        events.register(
+            parent
+                .native_child_namespace_scope(OsStr::new("sentinel"), EntryKind::File, &cancel)
+                .unwrap()
+                .unwrap(),
+        );
+        let target = parent
+            .prepare_target(OsStr::new("target"), &cancel)
+            .unwrap()
+            .unwrap();
+        let mut stage = parent
+            .stage_file_for_target(
+                OsStr::new("target"),
+                target,
+                midnight_core::TransferReplacementPolicy::RecoverableCurrentEntry,
+                &cancel,
+            )
+            .unwrap();
+        stage.write_all(b"unpublished replacement").unwrap();
+        if cancelled {
+            events.cancel_after_item.store(true, Ordering::SeqCst);
+        } else {
+            events
+                .refuse_item_announcement
+                .store(true, Ordering::SeqCst);
+        }
+        let error = stage
+            .publish_replace(OsStr::new("target"), &cancel)
+            .unwrap_err();
+        let expected = if cancelled {
+            io::ErrorKind::Interrupted
+        } else {
+            io::ErrorKind::WouldBlock
+        };
+        assert_eq!(error.kind, expected, "{error:?}");
+        assert!(
+            !events.cancel_after_item.load(Ordering::SeqCst)
+                && !events.refuse_item_announcement.load(Ordering::SeqCst),
+            "the observer was accepted before the change failed"
+        );
+        assert!(!error.message.contains("namespace refresh"), "{error:?}");
+        assert!(!error.message.contains("cleanup"), "{error:?}");
+        assert!(recovery_directories(temp.path()).is_empty());
+        // Only the replaced target's observer remains; the certified pins were retired.
+        let aliases: Vec<_> = events.aliases.lock().unwrap().values().cloned().collect();
+        assert_eq!(aliases.len(), 1);
+        assert!(aliases.iter().all(|pin| matches!(
+            pin.refresh(&Cancellation::default()),
+            Ok(TransferNamespaceProbe::Known(scopes)) if !scopes.is_empty()
+        )));
+        assert_eq!(
+            std::fs::read(temp.path().join("target")).unwrap(),
+            b"old bytes"
+        );
+        stage.cleanup().unwrap();
+    });
+}
+
+#[test]
+fn a_refused_recovery_item_announcement_certifies_the_removed_directory_and_observer() {
+    recovery_item_failing_after_its_observer(false);
+}
+
+#[test]
+fn a_cancellation_after_the_recovery_item_observer_certifies_both_removals() {
+    recovery_item_failing_after_its_observer(true);
 }
 
 #[test]
