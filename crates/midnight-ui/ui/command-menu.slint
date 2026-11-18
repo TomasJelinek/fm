@@ -17,6 +17,11 @@ export component CommandMenuBody inherits Rectangle {
     in property <string> title;
     in property <[CommandMenuRow]> rows;
     in property <int> item-count: 5;
+    // The height that shows the title and every row at its minimum without
+    // scrolling. Below 240px the padding and spacing are compact.
+    private property <length> regular-height: 2 * 12px + heading.preferred-height + 8px + items.min-height;
+    out property <length> natural-height: root.regular-height >= 240px ? root.regular-height
+        : root.regular-height - 2 * 6px - 4px;
     callback selected(int);
     callback dismissed();
     forward-focus: focus;
@@ -33,10 +38,10 @@ export component CommandMenuBody inherits Rectangle {
         VerticalLayout {
             padding: root.height < 240px ? 6px : 12px;
             spacing: root.height < 240px ? 4px : 8px;
-            Text { text: root.title; color: Theme.strong-text; font-size: Theme.font-size * 1.4; }
+            heading := Text { text: root.title; color: Theme.strong-text; font-size: Theme.font-size * 1.4; }
             ScrollView {
                 min-width: 0px; min-height: 0px; vertical-stretch: 1;
-                VerticalLayout {
+                items := VerticalLayout {
                     spacing: 8px; alignment: start;
                     for index in root.item-count : HintedActionButton {
                         native-icon: root.rows[index].native-icon;

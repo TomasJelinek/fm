@@ -241,8 +241,8 @@ fn font_options_keep_family_and_density_bases_independent() {
 }
 
 /// The User menu is sized for its title and all of its rows at every font size and
-/// density: Close, the last row, is visible without scrolling, and less than a row
-/// of the list stays blank below it.
+/// density: Close, the last row, is visible without scrolling and ends the list
+/// with no blank band below it.
 #[test]
 fn user_menu_fits_its_rows_at_every_font_size() {
     let mut test = ui::TestUi::new();
@@ -256,8 +256,8 @@ fn user_menu_fits_its_rows_at_every_font_size() {
         ui::settle_layout(window.window());
         let close = unscrolled(&window, "Close", 1040.0, 820.0);
         assert!(
-            close.below < close.height,
-            "the User menu leaves a blank row below Close at {font}px, density {density}: {}px below a {}px row",
+            close.below <= 0.5,
+            "the User menu leaves a blank band below Close at {font}px, density {density}: {}px below a {}px row",
             close.below,
             close.height
         );
