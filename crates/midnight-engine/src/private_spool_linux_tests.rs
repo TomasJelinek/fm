@@ -288,9 +288,9 @@ fn a_linked_cache_base_is_usable_while_links_below_it_stay_refused() {
 
 /// `$TMPDIR` below a linked home (`/home` -> `/var/home`) in a session without a
 /// cache or runtime base: the temporary base resolves like the other bases, so
-/// its roots are usable, while a link at a root name in it stays refused.
+/// its roots are usable, while links at its root names stay refused.
 #[test]
-fn a_temporary_base_below_a_linked_home_is_usable_while_a_linked_root_name_stays_refused() {
+fn a_temporary_base_below_a_linked_home_is_usable_while_linked_root_names_stay_refused() {
     let temporary = tempfile::tempdir().unwrap();
     let directory = temporary.path().canonicalize().unwrap();
     let real = directory.join("var-home");
@@ -298,22 +298,27 @@ fn a_temporary_base_below_a_linked_home_is_usable_while_a_linked_root_name_stays
     let home = directory.join("home");
     std::os::unix::fs::symlink(&real, &home).unwrap();
     let entered = home.join("u/tmp");
-    let session = from_environment(
-        |_| None,
-        |path| std::fs::canonicalize(path).ok(),
-        effective_uid(),
-        entered.clone(),
-        SpoolContent::Reports,
-    );
-    let candidates = spool_roots(&session, 7, "reports", SpoolContent::Reports);
     let resolved = real.join("u/tmp");
     let per_user = resolved.join(format!("midnight-explorer-{}-reports", effective_uid()));
     let last = resolved.join("midnight-explorer-reports-7");
-    assert_eq!(candidates, [kept(&per_user), per_process(&last)]);
+    // Every phase lists the roots again: the base is resolved, but a link that
+    // a later phase puts at a root name is not.
+    let roots = || {
+        let session = from_environment(
+            |_| None,
+            |path| std::fs::canonicalize(path).ok(),
+            effective_uid(),
+            entered.clone(),
+            SpoolContent::Reports,
+        );
+        let listed = spool_roots(&session, 7, "reports", SpoolContent::Reports);
+        assert_eq!(listed, [kept(&per_user), per_process(&last)]);
+        listed
+    };
     // The private-root walk follows no link, so the entered spelling is unusable.
     let name = per_user.file_name().unwrap();
     assert!(PrivateSpoolDirectory::open(&entered.join(name)).is_err());
-    let spool = create_private_spool(&candidates, PrivateSpoolDirectory::create).unwrap();
+    let spool = create_private_spool(&roots(), PrivateSpoolDirectory::create).unwrap();
     assert_eq!(open_files_below(&per_user), 1);
     drop(spool);
     // A link at a root name is never resolved, even one to this user's own
@@ -324,7 +329,7 @@ fn a_temporary_base_below_a_linked_home_is_usable_while_a_linked_root_name_stays
     std::fs::create_dir(&private).unwrap();
     std::fs::set_permissions(&private, Permissions::from_mode(0o700)).unwrap();
     std::os::unix::fs::symlink(&private, &per_user).unwrap();
-    let spool = create_private_spool(&candidates, PrivateSpoolDirectory::create).unwrap();
+    let spool = create_private_spool(&roots(), PrivateSpoolDirectory::create).unwrap();
     assert_eq!(open_files_below(&last), 1);
     assert_eq!(open_files_below(&private), 0);
     drop(spool);
@@ -332,7 +337,16 @@ fn a_temporary_base_below_a_linked_home_is_usable_while_a_linked_root_name_stays
         !last.exists(),
         "the last spool removes its per-process root"
     );
-    assert!(std::fs::symlink_metadata(&per_user).unwrap().is_symlink());
+    // With a link at the per-process name as well, no root is usable.
+    std::os::unix::fs::symlink(&private, &last).unwrap();
+    assert!(create_private_spool(&roots(), PrivateSpoolDirectory::create).is_err());
+    assert_eq!(open_files_below(&private), 0);
+    for link in [&per_user, &last] {
+        assert!(
+            std::fs::symlink_metadata(link).unwrap().is_symlink(),
+            "{link:?}"
+        );
+    }
 }
 
 /// Regular files that this process holds open below `directory`. An anonymous
