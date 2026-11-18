@@ -70,10 +70,12 @@ verified success. Later ready jobs may bypass waiters and unfilled handoffs.
 
 `EarlierTransfers` means an outstanding explicit dependency; `Resources` means
 actual I/O, namespace or scope admission is blocked. Selecting a policy alone is
-not a current wait. Display Queued/waiting or Waiting for available capacity;
-Discovering/Calculating requires actual discovery activity. Clear wait reasons on
-acquisition, cancel-request and terminal publication. Cancellation, pause and
-decision state take precedence over ordinary wait/discovery presentation.
+not a current wait. While waiting, a Copy/Move shows Queued, Queued — waiting for
+earlier transfers or Waiting for available capacity. It shows Discovering only while
+its discovery is actually scanning and never shows Calculating (see ETA under
+[Verification and charts](#verification-and-charts); Delete differs there). Clear
+wait reasons on acquisition, cancel-request and terminal publication. Cancellation,
+pause and decision state take precedence over ordinary wait/discovery presentation.
 
 Each job retains one whole-job namespace share and its complete native scopes
 through actual provider destruction, plus one retained slot identity of the
@@ -203,15 +205,21 @@ Logical committed bytes are separate from actual I/O counters. Retries and
 verification reads cannot inflate completion. Cross-volume Move keeps files in
 Items remaining until their source removal is confirmed, even when destination
 publication has already succeeded. ETA is an explicitly approximate
-presentation of remaining logical work and backend-measured rates. It remains
-Calculating when discovery/rates are unavailable and does not advance while paused.
+presentation of remaining logical work and backend-measured rates. Copy/Move
+without an estimate show their current activity instead (for example Copying...,
+Saving... or Verifying current file...). Delete has no activity label: whenever it
+has no estimate (for example while Queued, before its discovery completes or a rate
+is measured, or after a failed item) it shows Time remaining: Calculating..., and
+its headline reads Discovering: N items until its discovery finishes, already
+showing 0 items while it is Queued and discovery has not started. While paused,
+both show Paused instead of an estimate.
 The backend budgets writes and selected-policy readback for each discovered file:
 full length for SHA-256, or up to 192 KiB of disjoint samples. Cross-volume Move
 also includes source and destination proof reads both before and after source
 capture. Current retained copy/proof state reduces this budget; retry I/O does not
 become logical completion, and a repeated removal proof becomes outstanding again.
 Native rename and Delete use item rates. Metadata, sync and namespace work have no
-byte estimate, so ETA may return to Calculating while those steps remain. ETA is
+byte estimate, so the estimate may disappear again while those steps remain. ETA is
 not a guarantee against future stalls or conflicts. See the
 [work-accounting evidence](../verification/2026-11-12-transfer-eta.md).
 

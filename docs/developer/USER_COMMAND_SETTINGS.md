@@ -127,7 +127,11 @@ nor saves settings. Once accepted, the originating command form displays the
 captured preparation result inline while Options remains open with its draft.
 It does not open the Jobs window. The
 read-only result shows the program, working directory, separate argv elements and
-per-item expansion, or the literal terminal script and captured environment.
+per-item expansion, or the literal terminal script and captured environment. Its
+display is bounded: at most four processes and sixteen arguments per program, each
+value shortened to 256 bytes, with argument and environment values Debug-escaped;
+omitted processes and arguments are stated. Jobs details show a captured preview
+with the same bounded display.
 Preview never runs the command or saves the draft. Disabled commands can be previewed;
 execution remains disabled. Availability and native-shell errors are backend
 results. See [the backend contract](USER_COMMANDS.md) for provider and shell limits.

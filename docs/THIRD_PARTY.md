@@ -37,9 +37,12 @@ mandatory fee, subscription or royalty is introduced.
 The directory authorization helper adds a project-owned crate and reuses the pinned
 `getrandom` 0.3.4 (MIT OR Apache-2.0), `windows-sys` 0.61.2 (MIT OR Apache-2.0),
 and `libc` 0.2 (MIT OR Apache-2.0) dependencies already present in the inventory.
-Its Windows API feature selection adds no new package/version and enables only
-native filesystem, process, named-pipe, security, COM initialization and shell
-declarations (`Win32_System_Com` is already selected by other application crates).
+Its twelve Windows API namespace features cover foundation types, filesystem, I/O,
+threading and process, named-pipe, memory, registry, security and security
+authorization, COM initialization, shell and window-message declarations. They add
+no package, version or feature to the application: other application crates select
+each of them too (for example `midnight-platform-windows` the COM, registry and
+window-message features, and `midnight-worker-platform` the named-pipe feature).
 The helper contains no plugin discovery or loading entry point. Existing notices apply.
 
 Make File List adds no third-party library or enabled feature. Its engine reuses
@@ -53,22 +56,25 @@ already selected `fs` feature (Windows adapters query capacity natively). This
 removes `fs2` and `winapi` 0.3.9, which only `fs2` used, together with the
 platform-excluded `winapi-*-pc-windows-gnu` 0.4.0 shims, from the application
 lockfile. The generated tables were refreshed by targeted row comparison
-(**644 records / 526 names / 65 direct records**; `rustix` gains this declaring
-crate), not by a full recapture or generator `--check`.
+(for this removal alone, **644 records / 526 names / 65 direct records**; `rustix`
+gains this declaring crate), not by a full recapture or generator `--check`; the
+combined result with the `notify` removal is recorded below.
 
 The additional color themes add no Cargo library or feature. Modern palette
 references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppuccin), with
 [pinned provenance, adaptation notes and retained license texts](THEME_PROVENANCE.md).
 Release packages carry that record and `licenses/themes/` alongside library notices.
 
-Inventory updated on 12 November 2026 from the checked-in lockfiles and actual
+Inventory captured on 12 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64, plus Darwin x86-64/arm64
-captures for the independent native macOS filesystem package only:
+captures for the independent native macOS filesystem package only. The targeted
+17 November removals described in this file (`fs2`/`winapi`, Windows `notify`)
+and the 18 November recheck below give the current tables:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **66**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **65**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **645**
-  package/version/source records, **527** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **643**
+  package/version/source records, **525** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
@@ -220,16 +226,60 @@ notify 8.2.1, notify-types 2.2.0, walkdir 2.5.0, same-file 1.0.6 or winapi-util
 changed (notify keeps only `midnight-platform-linux` as its declarer), giving
 **645 records / 527 names / 66 direct records**; re-rendering the edited rows with
 the generator reproduces all three tables byte for byte. The crate's two added
-windows-sys features (`Win32_Foundation`, `Win32_System_WindowsProgramming`) were
-already in the application's windows-sys 0.61.2 feature union (through
-`midnight-elevation`, `midnight-worker-platform`, mio and socket2), so no package,
-feature union or license selection changed. This is a targeted refresh, not a full
+windows-sys features (`Win32_Foundation`, `Win32_System_WindowsProgramming`) leave
+the application's windows-sys 0.61.2 feature union unchanged: notify had enabled
+both, together with `Win32_System_Threading`, `Win32_Storage_FileSystem`,
+`Win32_Security` and `Win32_System_IO`, which the crate already enables.
+`Win32_Foundation` is also enabled by `midnight-elevation`, `midnight-worker-platform`
+and other crates; `midnight-platform-windows` is now the only enabler of
+`Win32_System_WindowsProgramming` (mio and socket2 are not in the Windows
+application graph). No package, feature union or license selection changed. This
+is a targeted refresh, not a full
 46-pair recapture or generator `--check`; no Linux capture was taken, because the
 removed edge was `cfg(windows)` only. Together with the `fs2`/`winapi` removal above,
 the tables hold **643 records / 525 names / 65 direct records**: `cargo tree -i` on the
 merged lockfile reaches neither `winapi` (gone from the lockfile) nor `winapi-util`
 (still locked only as walkdir's Windows-only dependency, while walkdir itself is now
 Linux-only) for the Windows or Linux target.
+
+On 18 November 2026 the dependency changes since commit `48ec78d` were rechecked
+(`git diff 48ec78d..HEAD` of `Cargo.lock` and every `Cargo.toml`). Besides the two
+removals above, they change only:
+
+- project-owned path edges: `midnight-platform-windows` and `midnight-explorer` now
+  depend on `midnight-worker-platform`, and `midnight-explorer` uses
+  `midnight-plugin-host` as a normal instead of a development dependency;
+- windows-sys 0.61.2 features already in each union: `Win32_System_Com` for
+  `midnight-elevation`, and `Win32_System_IO`, `Win32_System_Ioctl` and
+  `Win32_System_SystemServices` for the native Windows plugin's tests, which its
+  normal declaration already selects (its 19 normal and 20 test/compiled features
+  are unchanged);
+- the `rustix` 1.1.6 `fs` declaration in `midnight-platform-common` described above;
+- the archive plugin's own version (0.2.0), a project-owned package.
+
+The Linux clipboard's eventfd wait and the Linux access-ACL reads use the `event`
+and `fs` features that `midnight-platform-linux` already declared (and the native
+Linux plugin's existing libc `std`), so no feature changed. Fresh `--locked --offline`
+captures selected with the generator's own code reproduce the inventory for these
+scopes: all 320 `app`/Windows records are listed for `app` and Windows (the five
+other rows listing both come from the Linux application and other workspaces'
+Windows graphs), every application crate's direct declarations match the
+direct-dependant column, and the native Windows plugin's two records match. A
+Windows-host capture for the Linux target, which is not equivalent to a native
+Linux capture for host-dependent build dependencies, found no `app`/Linux record
+missing from the inventory. No row changed. A full regeneration or `--check` still
+needs all forty-six native captures; no native Linux or Darwin capture was taken.
+
+That recheck covers Cargo package, version and feature selections. The vendored,
+patched sources also changed since `48ec78d`, with unchanged versions and licenses:
+the image-rs 0.25.10 AVIF patch now also ends the decoder's wait when an AV1 item
+produces no displayable frame ([patch provenance](../vendor/image/MIDNIGHT_PATCH.md)),
+and the FemtoVG 0.27.0 WGPU patch hardened its binding cache and upload staging
+([vendor notes](../vendor/README.md)). Those two records describe the current
+patches. The copy that the image viewer and the image thumbnailer distribute,
+`plugins/image-decoder/notices/image-0.25.10/MIDNIGHT_PATCH.md`, still describes only
+the constructor change, as does the image viewer's `THIRD-PARTY.md`; updating both
+from the vendored record is pending.
 
 Windows/Linux native 0.2 source is integrated in D merge `5baee471` from C commit
 `42d45def` (25 matching paths). The plugins are not deployed and engine/UI cutover

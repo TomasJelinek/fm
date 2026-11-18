@@ -71,8 +71,9 @@ Options is open saves independently without persisting other previewed settings;
 Options Cancel preserves that accepted history.
 
 The system Save picker only chooses a path. It does not create a file or authorize
-overwriting. The owner-modal native dialog owns editable fields and presentation
-only, with no separate taskbar item. Cancel begins closing immediately; if the
+overwriting. The dialog is a modal popup embedded in the main window; it owns
+editable fields and presentation only, with no separate taskbar item. Cancel
+begins closing immediately; if the
 backend queue is full, the retained draft retries cancellation and cannot admit a
 later Replace/Append confirmation.
 Input capture is immutable, and successful output clears selection only when the

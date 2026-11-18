@@ -71,9 +71,12 @@ keeps the pending decision available from Jobs. Copy, Move and Delete share one
 progress-window component, with a separate modeless window for each operation.
 The speed chart also shows overall completion; current-file writes have their own
 meter. Discovery precedes known totals, and Pause/Resume waits for safe backend
-checkpoints. ETA remains Calculating when its work estimate is unavailable.
-X, Escape and Cancel operation request cancellation of that exact job, including
-cleanup of unpublished temporary files; they never mean silent background work.
+checkpoints. While no time estimate is available, Copy/Move show their current
+activity instead (for example Copying... or Saving...) and Delete shows Calculating.
+X, Escape and Cancel operation first ask whether to cancel that exact job, with
+Continue as the default. Confirming requests cancellation, including cleanup of
+unpublished temporary files; Continue leaves the job and its progress window as they
+were, so closing never turns into silent background work.
 Successful automatically opened progress closes. Manually reopened progress and
 manually opened Jobs stay open. All job receipts remain for the session until
 explicitly cleared; Jobs is the ledger and opens individual progress windows.
@@ -214,11 +217,15 @@ permissions only administrators can change, such as a folder below `C:\Program F
 on Linux, a root-owned directory such as `/opt/midnight-explorer` (see
 [the system-wide installation](#linux-desktop-launcher)). Build output, the per-user
 Windows private runtime, anything inside a user profile and other user-writable
-locations refuse authorization with an explanation; browsing is otherwise unaffected.
+locations refuse authorization; browsing is otherwise unaffected.
 So does a folder created directly under a drive root such as `C:\`, even by an
 administrator, because it inherits Modify permission for all authenticated users from
-the root. On Windows, install a release build from a PowerShell started with
-**Run as administrator** in the checkout, then start Midnight Explorer from that folder:
+the root. **Retry with authorization** is still offered in those installations, and
+the refusal explains the requirement: the Cannot open folder message states it when no
+helper is installed beside `me` (as in private runtimes), and **Copy details**
+contains it when a helper copy sits in a refused location. On Windows, install a
+release build from a PowerShell started with **Run as administrator** in the
+checkout, then start Midnight Explorer from that folder:
 
 ```powershell
 $target = Join-Path $env:ProgramFiles 'Midnight Explorer'
@@ -271,10 +278,11 @@ This lets `_build\release\me.exe` use protected plugins even when its checkout
 is on a shared drive. Plugin code is never loaded from an unsafe shared directory.
 Each `build.bat` run then removes the earlier installations it deployed for the
 same build output, keeping any that is still running or selected by another
-registration; installations made directly with `scripts/deploy-private.ps1` are
-never removed. Concurrent `build.bat` runs for the same build output in one logon
-session deploy one at a time (the second waits). After a raw Cargo build, or after adding/removing plugin packages,
-deploy and register explicitly:
+registration; installations made directly with `scripts/deploy-private.ps1`
+(without `-ReplaceBuildDeployment`) and `build.bat` deployments made before this
+retirement existed are never removed. Concurrent `build.bat` runs for the same
+build output in one logon session deploy one at a time (the second waits). After a
+raw Cargo build, or after adding/removing plugin packages, deploy and register explicitly:
 
 ```powershell
 powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release -IncludeFilesystems -IncludeThumbnailers -RegisterRuntime -CreateDesktopShortcut
@@ -282,16 +290,36 @@ powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/r
 
 Use the original build EXE, the **Midnight Explorer** desktop shortcut, or the
 private installation path printed by that command. Restart after deployment.
-Private installations omit `midnight-elevated-listing.exe` and so cannot offer
-**Retry with authorization**, which needs an installation that only administrators
-can change (see the authorization helper above); the deployment says so.
+Private installations omit `midnight-elevated-listing.exe`. **Retry with
+authorization** is still offered for a denied folder, but there it is refused with a
+message that names the requirement: an installation that only administrators can
+change (see the authorization helper above). The deployment output also names this
+requirement.
 `-IncludeFilesystems` includes the filesystem packages. Keep `-IncludeThumbnailers`
 to deploy the image/video workers; normal build deployment includes both flags
 and rejects incomplete module installations. To point the desktop shortcut at an
 existing persistent installation without redeploying, run
 `scripts/update-desktop-shortcut.ps1 -InstallationDirectory <installation> -ExpectedExecutableSha256 <sha256>`;
 it refuses `build.bat` deployments because later builds remove them.
-The helper does not launch the app or change saved settings. Direct launches:
+The helper does not launch the app or change saved settings.
+
+Earlier versions left `midnight-elevated-listing.exe` in folders that you can change,
+and their `me.exe` accepted it there without the protected-location check: private
+runtimes created by earlier versions of these scripts, earlier release ZIPs
+extracted into such a folder (for example in your user profile, as their README
+suggested), and earlier build output. A program running under your account could
+replace that helper, which the older `me.exe` would then run as Administrator once
+you approve the UAC prompt. Current builds refuse such a copy, so deleting it loses
+nothing. Rebuild and redeploy (repeat `-CreateDesktopShortcut` if you use the
+shortcut), then delete every older runtime that contains
+`midnight-elevated-listing.exe`, by default a `%USERPROFILE%\MidnightExplorer-*`
+folder. Replace an earlier extracted release with a current one, or at least delete
+its `midnight-elevated-listing.exe`. Runtimes deployed directly with
+`scripts/deploy-private.ps1` (without `-ReplaceBuildDeployment`) and those that
+`build.bat` deployed before it began retiring its own deployments are never removed
+automatically.
+
+Direct launches:
 
 ```powershell
 .\_build\debug\me.exe
@@ -523,10 +551,20 @@ cp -R _build/debug/thumbnailers/. "$HOME/.local/bin/thumbnailers/"
 python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/me"
 ```
 
-A per-user installation cannot offer **Retry with authorization**: the root helper
-would come from a directory its user can change. For authorized listings, install
-system-wide into a directory that only root can change (root-owned, not group- or
-world-writable, on a filesystem not mounted `nosuid`):
+In a per-user installation, **Retry with authorization** is still offered but is
+refused with an explanation: the root helper would come from a directory its user
+can change. Earlier versions left `midnight-elevated-listing` in directories that
+you can change, and their `me` accepted it there: these instructions installed
+`$HOME/.local/bin/midnight-elevated-listing`, release archives contain it beside `me`
+(so an archive extracted into a folder you own and run as `./me` has it there), and
+build output holds it beside `me`. Any program running as you could replace that
+helper, which the older `me` would then run as root through polkit. Current builds
+refuse such a copy, so deleting it loses nothing: delete
+`$HOME/.local/bin/midnight-elevated-listing`, rebuild, and replace an earlier
+extracted release with a current one or at least delete its
+`midnight-elevated-listing`. For authorized listings, install system-wide into a
+directory that only root can change (root-owned, not group- or world-writable, on a
+filesystem not mounted `nosuid`):
 
 ```sh
 sudo install -d -m 755 /opt/midnight-explorer
@@ -856,7 +894,11 @@ The [pixel-scrolling contract](docs/developer/SCROLLING.md) and
 input, renderer optimizations and remaining measured performance limits.
 The [interaction and layout verification](docs/verification/panel-interaction-and-layout.md)
 records Ctrl/Shift selection, splitter/tab/terminal controls, and measured debug
-selection/resize performance, including remaining native rendering limits.
+selection/resize performance, including remaining native rendering limits. It is a
+dated record: its commands use the former `fm-ui`/`fm-engine` package names. The same
+ignored benchmarks are now `interaction_performance` in `midnight-ui`'s `integration`
+test binary and `interaction_selection_cpu` in `midnight-engine`'s library tests,
+and the resize probe is `midnight-ui`'s `native_resize` example.
 
 A small badge on a file/folder icon identifies compression reported by its
 filesystem. File sizes remain logical sizes. An archive extension alone does not
@@ -1146,8 +1188,14 @@ Run `me.exe` from that path or the matching `_build` path. It copies the executa
 the new installation's permissions, and refuses unsafe parents or an existing
 destination. It never changes the checkout's permissions or launches the app.
 This is a runtime installation; compiler and intermediate files remain in `_build`.
-Registrations live in `%USERPROFILE%\.midnight-explorer\plugin-runtimes`, keyed by
-the host's SHA-256. Protected portable installations still discover their adjacent
+Registrations live in `%USERPROFILE%\.midnight-explorer\plugin-runtimes`. Each is
+named by the deployed host's SHA-256, which deployment checked against the build
+output. By default, a protected launcher pointer for the build output's `me.exe` path
+selects the registration while that executable keeps the size and modification time
+recorded at deployment; startup then hashes no executable. With
+`MIDNIGHT_VERIFY_RUNTIME_SHA256=1`, startup instead hashes the running host, selects
+the registration named by that SHA-256 and requires the registered executable to have
+the same hash. Protected portable installations still discover their adjacent
 plugins directly. See the [resolution and security contract](docs/developer/RUNTIME_DISCOVERY.md).
 
 Options → Editors configures F4 using an absolute executable and a JSON array of
