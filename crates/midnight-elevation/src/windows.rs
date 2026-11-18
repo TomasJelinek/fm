@@ -57,6 +57,7 @@ mod children;
 #[path = "windows_trust.rs"]
 mod trust;
 use channel::{Channel, Monitor};
+pub(crate) use trust::HELPER_REQUIREMENT;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 /// Wait between attempts while another client holds the single pipe instance.

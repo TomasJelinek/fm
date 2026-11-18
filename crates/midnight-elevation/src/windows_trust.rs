@@ -68,16 +68,17 @@ static TRUSTED_INSTALLER: [u32; 8] = [
     2_271_478_464,
 ];
 
+/// Where the helper must be installed. A refused helper location and a missing helper (which
+/// per-user deployments omit) both explain authorization with this sentence.
+pub(crate) const HELPER_REQUIREMENT: &str = "Authorized listing requires \
+    midnight-elevated-listing.exe to be installed by an administrator in a protected folder \
+    that standard users cannot change, such as a folder under C:\\Program Files.";
+
 /// Explain how to make authorization available; elevated listing is refused otherwise.
 pub(super) fn unprotected(path: &Path, reason: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        format!(
-            "Authorized listing requires midnight-elevated-listing.exe to be installed by an \
-             administrator in a protected folder that standard users cannot change, such as a \
-             folder under C:\\Program Files. {} {reason}.",
-            path.display()
-        ),
+        format!("{HELPER_REQUIREMENT} {} {reason}.", path.display()),
     )
 }
 
