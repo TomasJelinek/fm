@@ -97,20 +97,24 @@ fn recycle_error(path: &Path, error: windows::core::Error) -> FsError {
             unsupported,
             "Windows Recycle Bin is unavailable for this location",
         )),
-        // Windows refuses to move an item that another program keeps open, and a folder
-        // while an entry below it is open (antivirus scanners open new files for a moment).
-        // The Shell reports either with one of these codes until that program closes it.
-        COPYENGINE_E_SHARING_VIOLATION_SRC => Some((
-            io::ErrorKind::ResourceBusy,
-            "the item or something inside it is in use by another program; \
-             retry when it is no longer in use",
-        )),
-        // The Shell reports other refused access (a restricted token's, for example) with
-        // this code too, so the message names that cause as well.
+        // Windows refuses to move a folder while a program keeps any entry below it open,
+        // whatever that handle's sharing (the Shell then fails with this code), and an item
+        // that a program keeps open without delete sharing (the sharing-violation code
+        // below). That program can be this application: a panel watches the folder it shows
+        // and each folder expanded in it, and a viewer keeps its file open. Virus scanners
+        // open new files for a moment. The Shell also reports other refused access (a
+        // restricted token's, for example) with this code, so its message names that too.
         COPYENGINE_E_ACCESS_DENIED_SRC => Some((
             io::ErrorKind::ResourceBusy,
-            "the item or something inside it is in use by another program, or access to it \
-             is denied; retry when it is no longer in use",
+            "the item or something inside it is open in a program, which can be this \
+             application (a panel, an expanded folder or a viewer), or access to it is \
+             denied; retry when it is no longer open",
+        )),
+        COPYENGINE_E_SHARING_VIOLATION_SRC => Some((
+            io::ErrorKind::ResourceBusy,
+            "the item or something inside it is open in a program, which can be this \
+             application (a panel, an expanded folder or a viewer); retry when it is no \
+             longer open",
         )),
         _ => None,
     };

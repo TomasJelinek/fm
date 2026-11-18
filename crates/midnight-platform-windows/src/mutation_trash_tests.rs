@@ -30,12 +30,18 @@ fn in_use_recycle_refusals_are_readable_retryable_and_keep_the_path() {
         assert_eq!(error.kind, io::ErrorKind::ResourceBusy, "{error}");
         assert_eq!((error.operation, error.path.as_path()), ("recycle", path));
         let message = &error.message;
+        // This application's own panels, expanded folders and viewers keep entries open
+        // too, so the message names them instead of blaming only another program.
         assert!(
-            message.contains("the item or something inside it is in use by another program"),
+            message.starts_with(
+                "the item or something inside it is open in a program, which can be this \
+                 application (a panel, an expanded folder or a viewer)"
+            ),
             "{error}"
         );
+        assert!(!message.contains("another program"), "{error}");
         assert!(
-            message.contains("retry when it is no longer in use"),
+            message.contains("; retry when it is no longer open; "),
             "{error}"
         );
         assert!(message.contains("not permanently deleted"), "{error}");
