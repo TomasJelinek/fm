@@ -74,9 +74,14 @@ export component OperationDialog inherits Rectangle {
         + (root.wait-visible ? max(Theme.control-height, wait-option.preferred-height) + 12px : 0px)
         + (root.policy != "" ? policy-measure.preferred-height + 12px : 0px)
         + max(32px, confirm-button.preferred-height) + 36px, 220px, 640px);
+    // Measured at the width DialogText draws the summary in the regular layout:
+    // inside the 16px padding on both sides, the scrollbar overlay the form
+    // reserves and DialogText's 16px text inset. The width cannot follow `compact`
+    // (the dialog height depends on this measure); the compact layout's narrower
+    // padding draws the summary wider, so never on more lines than measured.
     summary-measure := Text {
         visible: false; accessible-role: none;
-        width: max(1px, root.width - 48px);
+        width: max(1px, root.width - 2 * 16px - FluentScrollMetrics.overlay-size - 16px);
         text: (root.warning != "" ? root.warning + "\n\n" : "") + root.body;
         font-size: Theme.font-size; wrap: word-wrap;
     }

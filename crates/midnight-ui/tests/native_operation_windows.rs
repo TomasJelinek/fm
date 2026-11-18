@@ -601,9 +601,10 @@ fn embedded_copy_draft_keeps_the_source_box_above_a_single_line_destination() {
 
 /// Window widths below the dialog's desired 540 px narrow the dialog, so every wrap
 /// point of a multi-word source sweeps through any width mismatch between how the
-/// summary is measured and how it is drawn, independent of the font in use.
+/// summary is measured and how it is drawn, independent of the font in use. The
+/// short window makes the dialog compact: its narrower padding draws the summary
+/// wider than the regular layout it is measured for, never on more lines.
 #[test]
-#[ignore = "DEFERRED-CROSS F8: OperationDialog measures its summary 14 px wider than DialogText draws it, so a source that wraps inside that band loses its last line; enable with the fix"]
 fn embedded_copy_draft_shows_every_wrapped_source_completely() {
     let h = Harness::with_root(
         std::env::temp_dir().join("copy draft source with several short words that wrap 文档"),
@@ -613,18 +614,20 @@ fn embedded_copy_draft_shows_every_wrapped_source_completely() {
     h.main.invoke_apply_fonts("".into(), 13, 15);
     h.main.invoke_apply_preferences(3, 0);
     let mut clipped = Vec::new();
-    for width in (320..=600).step_by(2) {
-        modeless::layout(&child, width, 520);
-        let source = item(&child, &body, AccessibleRole::Text);
-        let (.., text_bottom) = bounds(&source);
-        let (.., box_bottom) = bounds(&viewport(&source));
-        if text_bottom > box_bottom + 0.5 {
-            clipped.push((width, text_bottom - box_bottom));
+    for (height, step) in [(520, 2), (250, 6)] {
+        for width in (320..=600).step_by(step) {
+            modeless::layout(&child, width, height);
+            let source = item(&child, &body, AccessibleRole::Text);
+            let (.., text_bottom) = bounds(&source);
+            let (.., box_bottom) = bounds(&viewport(&source));
+            if text_bottom > box_bottom + 0.5 {
+                clipped.push((width, height, text_bottom - box_bottom));
+            }
         }
     }
     assert!(
         clipped.is_empty(),
-        "the source summary hides its last line at these window widths (width, hidden px): {clipped:?}"
+        "the source summary hides its last line at these window sizes (width, height, hidden px): {clipped:?}"
     );
 }
 
