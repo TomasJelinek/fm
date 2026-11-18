@@ -53,6 +53,9 @@ That pixel cap accounts for 16-bit 4:4:4 color plus 16-bit alpha storage; it is
 separate from the existing 32768-edge and 128 MiB decoded-output limits. Native
 references, stride padding, conversion scratch and parser metadata are additionally
 contained by the worker process budget; files near a limit can still be refused.
+The patch also ends construction with an error when the color or alpha item yields
+no displayable frame (for example only a sequence header), instead of waiting for
+one forever.
 
 Only AVIF stages its encoded container before parsing, capped at 32 MiB with an
 explicit excess-input error. This prevents the upstream tolerant parser from

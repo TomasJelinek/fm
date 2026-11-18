@@ -13,8 +13,9 @@ worker, never sold on their own or relicensed. The exact pinned license files we
 inspected; no mandatory fee, subscription or royalty is introduced by this SVG
 batch. AVIF adds dav1d 0.11.0/dav1d-sys 0.8.3 (MIT), static native
 dav1d 1.5.4 (BSD-2-Clause), and mp4parse 0.17.0 (MPL-2.0). The exact
-mp4parse source archive is shipped beside its license. The minimal image-rs
-constructor patch is recorded in notices/image-0.25.10/MIDNIGHT_PATCH.md.
+mp4parse source archive is shipped beside its license. The image-rs patch (a
+decoder-settings constructor and a bounded wait that fails AV1 items without a
+displayable frame) is recorded in notices/image-0.25.10/MIDNIGHT_PATCH.md.
 Only the native decode feature is enabled, not an AVIF encoder. HEIC is not enabled.
 API/SDK and application licenses are not changed by the plugin's MIT license.
 
