@@ -262,9 +262,10 @@ fn discovery_rejects_escape_abi_target_and_required_service() {
     }
 }
 
-/// Routing among the discovered viewers belongs to the viewer engine (its `routing_tests`).
+/// Discovery publishes the manifest modes and extensions that the viewer engine routes on (its
+/// `routing_tests` build the catalog by hand); removing a manifest removes its capability.
 #[test]
-fn manifest_removal_removes_capability() {
+fn discovery_publishes_manifest_modes_and_extensions_until_removal() {
     let root = fixture_root();
     package(
         root.path(),
@@ -278,22 +279,27 @@ fn manifest_removal_removes_capability() {
         "viewer.markdown",
         "modes=[\"document\"]\nextensions=[\"md\"]",
     );
-    let ids = |runtime: Runtime| {
-        runtime
-            .catalog()
-            .iter()
-            .map(|info| info.id.clone())
-            .collect::<Vec<_>>()
+    let runtime = Runtime::discover(root.path()).unwrap();
+    let [basic, document] = runtime.catalog() else {
+        panic!("unexpected catalog {:?}", runtime.catalog());
     };
+    assert_eq!(basic.id, "viewer.basic");
     assert_eq!(
-        ids(Runtime::discover(root.path()).unwrap()),
-        ["viewer.basic", "viewer.markdown"]
+        basic.modes,
+        [api::viewer::MODE_TEXT, api::viewer::MODE_BINARY]
     );
+    assert!(basic.extensions.is_empty(), "{:?}", basic.extensions);
+    assert_eq!(document.id, "viewer.markdown");
+    assert_eq!(document.modes, [api::viewer::MODE_DOCUMENT]);
+    assert_eq!(document.extensions, ["md"]);
     std::fs::remove_file(markdown.join("plugin.toml")).unwrap();
-    assert_eq!(
-        ids(Runtime::discover(root.path()).unwrap()),
-        ["viewer.basic"]
-    );
+    let runtime = Runtime::discover(root.path()).unwrap();
+    let ids: Vec<_> = runtime
+        .catalog()
+        .iter()
+        .map(|info| info.id.as_str())
+        .collect();
+    assert_eq!(ids, ["viewer.basic"]);
 }
 
 #[test]
