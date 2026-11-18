@@ -353,6 +353,9 @@ struct State {
     retired: Vec<Box<dyn Send>>,
     highest_drag: u64,
     highest_host: u64,
+    /// Times the native actor returned from waiting for work.
+    #[cfg(test)]
+    actor_wakeups: u64,
 }
 type SharedState = Arc<WorkerOwned<Mutex<State>>>;
 struct Start {
@@ -406,6 +409,8 @@ pub(crate) struct Controller {
     transfers: Option<Arc<dyn TransferService>>,
     events: mpsc::Sender<DragDropEvent>,
     native: Option<mpsc::Sender<Start>>,
+    /// Wakes the native actor after a host change, a queued start or shutdown.
+    native_wake: Option<std::sync::mpsc::SyncSender<()>>,
     prepare: Option<std::sync::mpsc::SyncSender<()>>,
 }
 
@@ -454,6 +459,7 @@ impl Controller {
             transfers,
             events,
             native: None,
+            native_wake: None,
             prepare: None,
         }
     }
@@ -491,9 +497,14 @@ impl Controller {
                 }),
             });
         }
+        // A running native actor opens the new host's session now; a new one
+        // reads the host first.
+        self.wake_native();
         if self.native.is_none() {
             let (sender, receiver) = mpsc::channel(1);
             self.native = Some(sender);
+            let (wake, woken) = std::sync::mpsc::sync_channel(1);
+            self.native_wake = Some(wake);
             let state = self.state.clone();
             let events = self.events.clone();
             let cancel = self.cancel.clone();
@@ -501,7 +512,7 @@ impl Controller {
             // Both actors live for the rest of the session: keep them off the
             // bounded blocking pool that listings and scans need.
             crate::actor_thread::spawn("midnight-drag-drop", tasks, move || {
-                actor::run(state, service, receiver, events, cancel)
+                actor::run(state, service, receiver, woken, events, cancel)
             });
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
             self.prepare = Some(sender);
@@ -527,6 +538,8 @@ impl Controller {
                 host.sink.hover(None);
             }
             state.clear_source();
+            // The native actor closes the detached host's session now.
+            self.wake_native();
         }
     }
 
@@ -556,6 +569,12 @@ impl Controller {
     }
     fn wake_prepare(&self) {
         if let Some(sender) = &self.prepare {
+            let _ = sender.try_send(());
+        }
+    }
+    /// A full signal channel already holds a wakeup the actor has not taken.
+    fn wake_native(&self) {
+        if let Some(sender) = &self.native_wake {
             let _ = sender.try_send(());
         }
     }
@@ -671,8 +690,10 @@ impl Controller {
         if self
             .native
             .as_ref()
-            .is_none_or(|sender| sender.try_send(command).is_err())
+            .is_some_and(|sender| sender.try_send(command).is_ok())
         {
+            self.wake_native();
+        } else {
             self.cancel(id).await;
             self.failed(
                 Some(id),
@@ -759,6 +780,7 @@ impl Controller {
         }
         self.cancel.cancel();
         self.wake_prepare();
+        self.wake_native();
         // Without a resolver, the guarded state retires the backlog on final release.
         // A stopping Tokio blocking pool must never become a destructor fallback.
     }

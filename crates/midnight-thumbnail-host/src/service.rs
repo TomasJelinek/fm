@@ -292,7 +292,7 @@ impl Service {
         self.shared.lock().ready_notifier = Some(notifier);
     }
     pub fn set_view(&self, view: View) -> bool {
-        if view.targets.len() > 256
+        if view.targets.len() > midnight_core::MAX_THUMBNAIL_VIEW_TARGETS
             || view
                 .targets
                 .iter()
@@ -330,7 +330,8 @@ impl Service {
         let key = (work.generation, work.token, work.frame);
         if mailbox.stopped
             || (mailbox.retries.len()
-                >= 256 * usize::from(midnight_thumbnail_api::MAX_ANIMATION_FRAMES)
+                >= midnight_core::MAX_THUMBNAIL_VIEW_TARGETS
+                    * usize::from(midnight_thumbnail_api::MAX_ANIMATION_FRAMES)
                 && !mailbox.retries.contains_key(&key))
         {
             return false;

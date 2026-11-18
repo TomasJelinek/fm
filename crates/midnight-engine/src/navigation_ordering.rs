@@ -20,10 +20,12 @@ pub(crate) fn volumes(
     })
 }
 
+/// Volumes first, then special locations, each section in label order, without
+/// repeated canonical identities.
 pub(crate) fn locations(
     locations: Vec<NavigationLocation>,
     locale: Option<&dyn LocaleService>,
-) -> Result<(Vec<NavigationLocation>, usize), FsError> {
+) -> Result<Vec<NavigationLocation>, FsError> {
     let mut locations = order(locations, locale, |location| {
         (
             location.kind != LocationKind::Volume,
@@ -36,9 +38,7 @@ pub(crate) fn locations(
     locations.retain(|location| {
         seen.insert((location.kind, location.id.clone(), location.path.clone()))
     });
-    // Network is a virtual section boundary after drives, before every local
-    // special folder. Its label never participates in native location sorting.
-    Ok((locations, 0))
+    Ok(locations)
 }
 
 fn order<T>(

@@ -119,6 +119,11 @@ pub enum IconKind {
     Location(LocationKind),
 }
 
+/// Delivered icon keys the backend remembers: it does not load or resend a key
+/// while that key is among this many most recently requested ones. A UI image
+/// cache must therefore hold at least this many icons.
+pub const DESKTOP_ICON_CAPACITY: usize = 256;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IconKey {
     pub kind: IconKind,

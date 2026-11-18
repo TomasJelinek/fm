@@ -111,12 +111,18 @@ pub(super) fn generate_with_sizes(
         }
         Ok::<_, FsError>(row)
     };
+    // Only `:max` fields need a first pass over every row. Without one, `render`
+    // accepts empty widths and validates each row it renders: clipboard, viewer
+    // and file output still validate every row before the spool is finished,
+    // while a preview builds only the rows it shows.
     let mut widths = Vec::new();
-    for entry in &entries {
-        check(cancel)?;
-        format
-            .measure(&sized_record(entry)?, &mut widths)
-            .map_err(error)?;
+    if format.needs_measurement() {
+        for entry in &entries {
+            check(cancel)?;
+            format
+                .measure(&sized_record(entry)?, &mut widths)
+                .map_err(error)?;
+        }
     }
     let preview = request.destination == FileListDestination::Preview;
     let mut spool = if preview {
@@ -129,6 +135,9 @@ pub(super) fn generate_with_sizes(
         )
     };
     let mut text = String::new();
+    // Rows collect into one buffer, so the spool takes one write per MAX_IO
+    // bytes rather than one per row.
+    let mut chunk = Vec::with_capacity(spool.as_ref().map_or(0, |_| MAX_IO));
     let mut truncated = false;
     for (index, entry) in entries.iter().enumerate() {
         check(cancel)?;
@@ -140,11 +149,14 @@ pub(super) fn generate_with_sizes(
             .render(&sized_record(entry)?, &widths)
             .map_err(error)?;
         if let Some(spool) = spool.as_deref_mut() {
-            for bytes in row.as_bytes().chunks(MAX_IO) {
-                check(cancel)?;
-                spool
-                    .append(spool.length(), bytes)
-                    .map_err(|e| error(e.to_string()))?;
+            let mut bytes = row.as_bytes();
+            while !bytes.is_empty() {
+                let count = bytes.len().min(MAX_IO - chunk.len());
+                chunk.extend_from_slice(&bytes[..count]);
+                bytes = &bytes[count..];
+                if chunk.len() == MAX_IO {
+                    append(spool, &mut chunk, cancel)?;
+                }
             }
         } else {
             let remaining = (16usize * 1024).saturating_sub(text.len());
@@ -163,6 +175,9 @@ pub(super) fn generate_with_sizes(
     let items = entries.len() as u64;
     match spool {
         Some(mut spool) => {
+            if !chunk.is_empty() {
+                append(&mut spool, &mut chunk, cancel)?;
+            }
             spool.finish().map_err(|e| error(e.to_string()))?;
             Ok(Generated::Content {
                 source: Arc::new(Text(output.lease.own(Content {
@@ -180,6 +195,16 @@ pub(super) fn generate_with_sizes(
             truncated,
         }),
     }
+}
+
+/// Write the buffered rows at the end of the spool and empty the buffer.
+fn append(spool: &mut Spool, chunk: &mut Vec<u8>, cancel: &Cancellation) -> Result<(), FsError> {
+    check(cancel)?;
+    spool
+        .append(spool.length(), chunk)
+        .map_err(|e| error(e.to_string()))?;
+    chunk.clear();
+    Ok(())
 }
 
 struct Source {

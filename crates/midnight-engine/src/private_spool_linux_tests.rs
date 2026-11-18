@@ -8,7 +8,9 @@ use std::{
     path::Path,
 };
 
-fn session(variables: &[(&str, &str)], uid: Option<u32>) -> Session {
+/// A session whose bases resolve only through `links` (link, target); any other
+/// base is used as entered.
+fn linked_session(variables: &[(&str, &str)], links: &[(&str, &str)], uid: Option<u32>) -> Session {
     from_environment(
         |name| {
             variables
@@ -16,9 +18,19 @@ fn session(variables: &[(&str, &str)], uid: Option<u32>) -> Session {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| OsString::from(value))
         },
+        |path| {
+            links
+                .iter()
+                .find(|(link, _)| Path::new(link) == path)
+                .map(|(_, target)| PathBuf::from(target))
+        },
         uid,
         PathBuf::from("/tmp"),
     )
+}
+
+fn session(variables: &[(&str, &str)], uid: Option<u32>) -> Session {
+    linked_session(variables, &[], uid)
 }
 
 fn kept(path: impl Into<PathBuf>) -> SpoolRoot {
@@ -95,6 +107,113 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
         ),
         [per_process("/tmp/midnight-explorer-file-list-7")]
     );
+}
+
+#[test]
+fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() {
+    let links = [
+        ("/data/cache", "/mnt/disk/cache"),
+        ("/home/u", "/var/home/u"),
+        ("/run/user/1000", "/run/user/1000"),
+    ];
+    assert_eq!(
+        spool_roots(
+            &linked_session(
+                &[
+                    ("XDG_CACHE_HOME", "/data/cache"),
+                    ("XDG_RUNTIME_DIR", "/run/user/1000"),
+                ],
+                &links,
+                Some(1000),
+            ),
+            42,
+            "file-list",
+            SpoolContent::Large,
+        ),
+        [
+            kept("/mnt/disk/cache/midnight-explorer/file-list"),
+            kept("/run/user/1000/midnight-explorer/file-list"),
+            kept("/tmp/midnight-explorer-1000-file-list"),
+            per_process("/tmp/midnight-explorer-file-list-42"),
+        ]
+    );
+    // A linked home resolves before its missing `.cache` is appended; a base that
+    // cannot be resolved is used as entered.
+    assert_eq!(
+        spool_roots(
+            &linked_session(
+                &[("HOME", "/home/u"), ("XDG_RUNTIME_DIR", "/run/user/7")],
+                &links,
+                None,
+            ),
+            42,
+            "file-list",
+            SpoolContent::Large,
+        ),
+        [
+            kept("/var/home/u/.cache/midnight-explorer/file-list"),
+            kept("/run/user/7/midnight-explorer/file-list"),
+            per_process("/tmp/midnight-explorer-file-list-42"),
+        ]
+    );
+}
+
+#[test]
+fn a_linked_cache_base_is_usable_while_links_below_it_stay_refused() {
+    let temporary = tempfile::tempdir().unwrap();
+    let real = temporary.path().join("real-cache");
+    std::fs::create_dir(&real).unwrap();
+    let linked = temporary.path().join("linked-cache");
+    std::os::unix::fs::symlink(&real, &linked).unwrap();
+    let roots = |cache: &Path| {
+        let session = from_environment(
+            |name| (name == "XDG_CACHE_HOME").then(|| cache.as_os_str().to_owned()),
+            |path| std::fs::canonicalize(path).ok(),
+            None,
+            // Not absolute: no temporary candidates.
+            PathBuf::from("relative"),
+        );
+        spool_roots(&session, 7, "file-list", SpoolContent::Large)
+    };
+    // The private-root walk follows no link, so the entered spelling is unusable.
+    assert!(PrivateSpoolDirectory::open(&linked.join("midnight-explorer/file-list")).is_err());
+    let root = real
+        .canonicalize()
+        .unwrap()
+        .join("midnight-explorer/file-list");
+    assert_eq!(roots(&linked), [kept(&root)]);
+    let spool = create_private_spool(&roots(&linked), PrivateSpoolDirectory::create).unwrap();
+    assert_eq!(open_files_below(&root), 1);
+    drop(spool);
+    // Links at and below the application directory are never resolved.
+    let private = temporary.path().join("private");
+    std::fs::create_dir(&private).unwrap();
+    std::fs::set_permissions(&private, Permissions::from_mode(0o700)).unwrap();
+    for (index, linked_below) in ["midnight-explorer", "midnight-explorer/file-list"]
+        .into_iter()
+        .enumerate()
+    {
+        let base = temporary.path().join(format!("cache-{index}"));
+        let link = base.join(linked_below);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&private, &link).unwrap();
+        let candidates = roots(&base);
+        assert_eq!(
+            candidates,
+            [kept(
+                base.canonicalize()
+                    .unwrap()
+                    .join("midnight-explorer/file-list")
+            )]
+        );
+        assert!(
+            create_private_spool(&candidates, PrivateSpoolDirectory::create).is_err(),
+            "{linked_below}"
+        );
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+    }
+    assert_eq!(std::fs::read_dir(&private).unwrap().count(), 0);
+    assert_eq!(open_files_below(&private), 0);
 }
 
 #[test]

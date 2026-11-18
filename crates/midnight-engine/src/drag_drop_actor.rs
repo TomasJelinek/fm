@@ -1,9 +1,20 @@
 use super::*;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 
+#[cfg(test)]
+#[path = "drag_drop_actor_tests.rs"]
+mod tests;
+
+/// How often an open native session's non-blocking pump is serviced.
+const PUMP_INTERVAL: Duration = Duration::from_millis(10);
+
+/// The native actor. `wake` signals each controller change it must observe: a
+/// host attached or detached, a queued start and shutdown.
 pub(super) fn run(
     state: SharedState,
     service: Option<Arc<dyn FileDragDropService>>,
     mut commands: mpsc::Receiver<Start>,
+    wake: Receiver<()>,
     events: mpsc::Sender<DragDropEvent>,
     cancel: Cancellation,
 ) {
@@ -104,7 +115,25 @@ pub(super) fn run(
         let command = match commands.try_recv() {
             Ok(command) => command,
             Err(mpsc::error::TryRecvError::Empty) => {
-                std::thread::park_timeout(Duration::from_millis(10));
+                // A session's native queue is pumped without blocking, so it is
+                // serviced on an interval. Without a session only a controller
+                // change can matter, and each one signals `wake`.
+                let woken = if session.is_some() {
+                    wake.recv_timeout(PUMP_INTERVAL)
+                } else {
+                    wake.recv().map_err(RecvTimeoutError::from)
+                };
+                #[cfg(test)]
+                {
+                    state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .actor_wakeups += 1;
+                }
+                // The controller is gone.
+                if woken == Err(RecvTimeoutError::Disconnected) {
+                    break;
+                }
                 continue;
             }
             Err(mpsc::error::TryRecvError::Disconnected) => break,

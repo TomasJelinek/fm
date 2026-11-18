@@ -144,12 +144,14 @@ fn complete_size(make_log: impl FnOnce() -> ReportLog) -> FolderSize {
 fn report_retirement_folder_size_final_owner_destroys_actual_storage_off_caller() {
     let temporary = tempfile::tempdir().unwrap();
     let lifetime = crate::Engine::lifetime().unwrap();
-    let (make_log, observer) =
-        observed_with_arena(temporary.path().join("private"), lifetime.report_arena());
+    let (make_log, observer) = observed_with_arena(
+        temporary.path().join("private"),
+        lifetime.resources.reports.clone(),
+    );
     let size = thread::spawn(move || complete_size(make_log))
         .join()
         .unwrap();
-    // Real public startup context can disappear while an independent result survives.
+    // The real startup context can disappear while an independent result survives.
     drop(lifetime);
     let retained = size.clone();
     drop(size);

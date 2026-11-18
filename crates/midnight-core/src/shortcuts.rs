@@ -155,8 +155,24 @@ pub struct ShortcutBinding {
     pub keys: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ShortcutContext {
+/// Declares `ShortcutContext` and `CONTEXTS` from one list. Building and resolving
+/// index the same per-chord tables by `position()`, so every context needs its
+/// slot: a context cannot be declared without being listed in `CONTEXTS`, at the
+/// index of its implicit discriminant.
+macro_rules! shortcut_contexts {
+    ($($context:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum ShortcutContext {
+            $($context,)+
+        }
+
+        /// Every context, listed at its `position()`.
+        const CONTEXTS: [ShortcutContext; [$(ShortcutContext::$context),+].len()] =
+            [$(ShortcutContext::$context),+];
+    };
+}
+
+shortcut_contexts!(
     Files,
     Search,
     Command,
@@ -166,20 +182,7 @@ pub enum ShortcutContext {
     ViewerSearch,
     Comparison,
     ComparisonSearch,
-}
-
-/// Every context, listed at its `position()`.
-const CONTEXTS: [ShortcutContext; 9] = [
-    ShortcutContext::Files,
-    ShortcutContext::Search,
-    ShortcutContext::Command,
-    ShortcutContext::Other,
-    ShortcutContext::Volume,
-    ShortcutContext::Viewer,
-    ShortcutContext::ViewerSearch,
-    ShortcutContext::Comparison,
-    ShortcutContext::ComparisonSearch,
-];
+);
 
 impl ShortcutContext {
     /// The single slot of this context in per-chord resolution tables.
@@ -187,16 +190,6 @@ impl ShortcutContext {
         self as usize
     }
 }
-
-// Building and resolving index the same tables by `position()`. Listing contexts
-// out of declaration order fails to compile; append any new context to `CONTEXTS`.
-const _: () = {
-    let mut position = 0;
-    while position < CONTEXTS.len() {
-        assert!(CONTEXTS[position].position() == position);
-        position += 1;
-    }
-};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShortcutScope {

@@ -89,8 +89,10 @@ async fn rejected_capture(failed_preparation: bool) {
     })
     .await
     .unwrap();
+    // The strong count reaches zero before `Drop` records its thread, so wait for
+    // the record rather than for the weak reference to expire.
     let retired = tokio::time::timeout(Duration::from_millis(500), async {
-        while weak.upgrade().is_some() {
+        while dropped.lock().unwrap().is_none() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
@@ -99,6 +101,7 @@ async fn rejected_capture(failed_preparation: bool) {
         retired.is_ok(),
         "rejected drag retained provider until another gesture"
     );
+    assert!(weak.upgrade().is_none());
     assert_ne!(
         dropped.lock().unwrap().unwrap(),
         std::thread::current().id()

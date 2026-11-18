@@ -45,8 +45,10 @@ impl DirectoryService for Files {
                 path.join("link"),
                 EntryKind::DirectoryLink,
             ));
-            // Cross the real scan progress interval before entering the blocked child.
-            std::thread::sleep(Duration::from_millis(300));
+            // Cross the scan progress interval before entering the blocked child.
+            // This listing runs on the scanning thread, whose progress clock this
+            // advances without sleeping.
+            crate::folder_sizes::elapse_progress_interval();
             emit(Entry::new(
                 EntryId(58),
                 path.join("pending"),

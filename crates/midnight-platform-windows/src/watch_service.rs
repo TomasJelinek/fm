@@ -595,8 +595,10 @@ mod tests {
             .register(
                 targets(directory.path()),
                 Arc::new(move |mask| {
+                    // Set the flag before the receiver can observe this call.
+                    let first_call = !first.swap(true, Ordering::SeqCst);
                     let _ = sender.try_send(mask);
-                    if !first.swap(true, Ordering::SeqCst) {
+                    if first_call {
                         panic!("deliberate consumer callback panic");
                     }
                 }),

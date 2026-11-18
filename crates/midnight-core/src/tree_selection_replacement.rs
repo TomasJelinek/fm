@@ -59,9 +59,6 @@ impl TreeSelectionReplacement {
     pub fn stamp(&self) -> TreeViewStamp {
         self.stamp
     }
-    pub fn layout_revision(&self) -> TreeLayoutRevision {
-        self.layout
-    }
     pub fn bits(&self) -> &[u64] {
         &self.bits
     }

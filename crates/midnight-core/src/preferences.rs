@@ -322,6 +322,9 @@ pub const MAX_FONT_FAMILY_BYTES: usize = 512;
 pub const DEFAULT_PANEL_SPLIT_BASIS_POINTS: u16 = 5000;
 pub const DEFAULT_THUMBNAIL_SIZE: u16 = 96;
 pub const THUMBNAIL_SIZES: [u16; 7] = [48, 64, 72, 96, 128, 192, 256];
+/// Targets in one thumbnail view request. The thumbnail host refuses a larger
+/// view; the UI shares this budget between both panes.
+pub const MAX_THUMBNAIL_VIEW_TARGETS: usize = 256;
 
 impl Default for UserPreferences {
     fn default() -> Self {
