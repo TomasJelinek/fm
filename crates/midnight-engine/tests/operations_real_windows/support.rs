@@ -132,6 +132,26 @@ pub fn populate(directory: &Path) -> (u64, u64) {
     (files, bytes)
 }
 
+/// How long a real disk operation may take to reach the awaited event.
+const LIMIT: Duration = Duration::from_secs(120);
+
+/// One bounded wait for an engine event: what is awaited, and until when.
+struct Wait {
+    awaited: String,
+    limit: Duration,
+    deadline: tokio::time::Instant,
+}
+
+impl Wait {
+    fn new(awaited: String, limit: Duration) -> Self {
+        Self {
+            awaited,
+            limit,
+            deadline: tokio::time::Instant::now() + limit,
+        }
+    }
+}
+
 pub struct Harness {
     pub commands: midnight_engine::CommandSender,
     pub terminal_order: Vec<u64>,
@@ -217,8 +237,10 @@ impl Harness {
             .unwrap();
     }
 
-    async fn next(&mut self, deadline: tokio::time::Instant) -> CopyEvent {
-        tokio::time::timeout_at(deadline, async {
+    /// The next Copy event, recording terminal progress for `terminal`. Panics with
+    /// what the caller waited for once `wait` runs out.
+    async fn next(&mut self, wait: &Wait) -> CopyEvent {
+        tokio::time::timeout_at(wait.deadline, async {
             loop {
                 if let Event::Copy(event) = self.events.recv().await.expect("engine channel closed")
                 {
@@ -233,7 +255,13 @@ impl Harness {
             }
         })
         .await
-        .expect("operation stalled for 120 seconds")
+        .unwrap_or_else(|_| {
+            panic!(
+                "no {} within {} seconds",
+                wait.awaited,
+                wait.limit.as_secs()
+            )
+        })
     }
 
     pub async fn decide(&self, id: u64, version: u64, choice: CopyChoice) {
@@ -248,9 +276,9 @@ impl Harness {
     }
 
     pub async fn conflict(&mut self, id: u64) -> Arc<CopyConflict> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let wait = Wait::new(format!("conflict of operation {id}"), LIMIT);
         loop {
-            match self.next(deadline).await {
+            match self.next(&wait).await {
                 CopyEvent::Conflict(conflict) if conflict.id == OperationId(id) => return conflict,
                 CopyEvent::Failure(error) => panic!("unexpected operation failure: {error:?}"),
                 CopyEvent::Progress(progress) if progress.id == OperationId(id) => {
@@ -265,9 +293,9 @@ impl Harness {
     }
 
     pub async fn next_conflict(&mut self) -> Arc<CopyConflict> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let wait = Wait::new("conflict".into(), LIMIT);
         loop {
-            match self.next(deadline).await {
+            match self.next(&wait).await {
                 CopyEvent::Conflict(conflict) => return conflict,
                 CopyEvent::Failure(error) => panic!("unexpected operation failure: {error:?}"),
                 _ => {}
@@ -276,9 +304,9 @@ impl Harness {
     }
 
     pub async fn failure(&mut self, id: u64) -> Arc<CopyFailure> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let wait = Wait::new(format!("failure of operation {id}"), LIMIT);
         loop {
-            match self.next(deadline).await {
+            match self.next(&wait).await {
                 CopyEvent::Failure(failure) if failure.id == OperationId(id) => return failure,
                 CopyEvent::Progress(progress) if progress.id == OperationId(id) => {
                     assert!(
@@ -292,12 +320,12 @@ impl Harness {
     }
 
     pub async fn terminal(&mut self, id: u64) -> Arc<CopyProgress> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let wait = Wait::new(format!("terminal state of operation {id}"), LIMIT);
         loop {
             if let Some(progress) = self.terminals.remove(&id) {
                 return progress;
             }
-            match self.next(deadline).await {
+            match self.next(&wait).await {
                 CopyEvent::Failure(error) => panic!("unexpected operation failure: {error:?}"),
                 CopyEvent::Conflict(conflict) => panic!("unexpected conflict: {conflict:?}"),
                 _ => {}
@@ -305,10 +333,17 @@ impl Harness {
         }
     }
 
+    /// Returns once the job reports CancelRequested, or once it is terminal: the
+    /// engine sends CancelRequested with `try_send`, which a full event queue
+    /// drops, and a job that finishes first never reports it. A terminal state
+    /// stays recorded for `terminal`.
     pub async fn cancel_requested(&mut self, id: u64) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            if let CopyEvent::Progress(progress) = self.next(deadline).await
+        let wait = Wait::new(
+            format!("cancel request or terminal state of operation {id}"),
+            Duration::from_secs(30),
+        );
+        while !self.terminals.contains_key(&id) {
+            if let CopyEvent::Progress(progress) = self.next(&wait).await
                 && progress.id == OperationId(id)
                 && progress.state == CopyOperationState::CancelRequested
             {

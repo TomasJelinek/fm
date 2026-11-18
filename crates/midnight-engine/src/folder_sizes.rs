@@ -27,6 +27,34 @@ const SCAN_LIMITS: ScanLimits = ScanLimits {
     progress_interval: PROGRESS_INTERVAL,
 };
 
+/// The clock of the progress cadence on the scanning thread. Tests let time
+/// elapse on it (`elapse_progress_interval`) instead of sleeping across it.
+fn progress_clock() -> Instant {
+    let now = Instant::now();
+    #[cfg(test)]
+    let now = now + ELAPSED.get();
+    now
+}
+
+/// Whether `interval` has passed on the progress clock since `last`.
+fn progress_due(last: Instant, interval: Duration) -> bool {
+    progress_clock().saturating_duration_since(last) >= interval
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Time that tests let elapse on this thread's progress clock.
+    static ELAPSED: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+
+/// Let the production progress interval elapse on this thread's progress clock.
+/// A test provider calls this from its listing callback, which runs on the
+/// scanning thread, to cross the interval without sleeping.
+#[cfg(test)]
+pub(crate) fn elapse_progress_interval() {
+    ELAPSED.set(ELAPSED.get() + PROGRESS_INTERVAL);
+}
+
 mod batched;
 mod warnings;
 use crate::size_warnings::ReportLog;
@@ -130,7 +158,7 @@ fn scan_root<F: ScanSource + ?Sized>(
     if !emit(root.id, size.clone()) {
         return false;
     }
-    let mut last_progress = Instant::now();
+    let mut last_progress = progress_clock();
     let mut pending = vec![Pending::Enter(root.path.clone(), root.kind)];
     let mut ancestors = HashSet::new();
     let mut pending_bytes = path_cost(&root.path);
@@ -289,10 +317,10 @@ fn scan_root<F: ScanSource + ?Sized>(
             if cancel.is_cancelled() {
                 return false;
             }
-            if last_progress.elapsed() >= limits.progress_interval {
+            if progress_due(last_progress, limits.progress_interval) {
                 report.publish(&mut size);
                 receiver_open = emit(root.id, size.clone());
-                last_progress = Instant::now();
+                last_progress = progress_clock();
             }
             receiver_open
         });
@@ -307,12 +335,12 @@ fn scan_root<F: ScanSource + ?Sized>(
             emit(root.id, size);
             return false;
         }
-        if last_progress.elapsed() >= limits.progress_interval {
+        if progress_due(last_progress, limits.progress_interval) {
             report.publish(&mut size);
             if !emit(root.id, size.clone()) {
                 return false;
             }
-            last_progress = Instant::now();
+            last_progress = progress_clock();
         }
     }
     let cancelled = cancel.is_cancelled();

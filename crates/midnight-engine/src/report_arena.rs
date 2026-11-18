@@ -31,6 +31,9 @@ struct Control {
 struct Shared {
     queue: Mutex<Queue>,
     ready: Condvar,
+    /// Signalled whenever a node returns to the free list (`wait_idle`).
+    #[cfg(test)]
+    idle: Condvar,
 }
 struct Queue {
     nodes: Vec<Node>,
@@ -105,6 +108,8 @@ impl ReportArena {
                 panic_worker: false,
             }),
             ready: Condvar::new(),
+            #[cfg(test)]
+            idle: Condvar::new(),
         }));
         let arena = Self {
             control: Arc::new(Control {
@@ -159,6 +164,35 @@ impl ReportArena {
         let domain = crate::retirement::RetirementDomain::try_start(1, 0).unwrap();
         Self::try_start(domain.try_reserve().unwrap()).unwrap()
     }
+    /// Wait until no report retains a node and the cleanup worker has closed every
+    /// released file, so a test can remove their directory: Windows cannot remove
+    /// a directory that holds an open file. False when `timeout` elapses first.
+    #[cfg(test)]
+    pub(crate) fn wait_idle(&self, timeout: std::time::Duration) -> bool {
+        let shared = &self.control.shared;
+        let queue = shared
+            .queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (_queue, waited) = shared
+            .idle
+            .wait_timeout_while(queue, timeout, |queue| !queue.all_free())
+            .unwrap_or_else(|error| error.into_inner());
+        !waited.timed_out()
+    }
+}
+#[cfg(test)]
+impl Queue {
+    /// Every node is on the free list: none is reserved, queued or being closed.
+    fn all_free(&self) -> bool {
+        let mut free = 0;
+        let mut next = self.free;
+        while let Some(node) = next {
+            free += 1;
+            next = self.nodes[node].next;
+        }
+        free == self.nodes.len()
+    }
 }
 impl Reservation {
     /// Call on the creating native worker, before any raw value escapes its closure.
@@ -192,6 +226,8 @@ impl Drop for Token {
             // immediately rather than accumulating empty work behind a blocked close.
             queue.nodes[self.node].next = queue.free;
             queue.free = Some(self.node);
+            #[cfg(test)]
+            shared.idle.notify_all();
             return;
         }
         if let Some(tail) = queue.tail {
@@ -268,6 +304,8 @@ fn drain(shared: &Shared) {
             .unwrap_or_else(|error| error.into_inner());
         queue.nodes[node].next = queue.free;
         queue.free = Some(node);
+        #[cfg(test)]
+        shared.idle.notify_all();
     }
 }
 impl Drop for Shared {

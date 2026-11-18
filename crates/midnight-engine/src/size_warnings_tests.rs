@@ -1,9 +1,39 @@
 use super::*;
 
-fn log() -> (tempfile::TempDir, ReportLog) {
-    let temporary = tempfile::tempdir().unwrap();
-    let log = ReportLog::new(&ReportArena::testing(), temporary.path().join("warnings"));
-    (temporary, log)
+/// A temporary directory for one test's report files, with their arena. Reports
+/// close their files on the arena's cleanup worker after their last owner drops,
+/// and Windows cannot remove a directory that still holds an open file. Declared
+/// before the test's logs and reports, the fixture drops after them and waits for
+/// that worker before it removes the directory.
+struct Fixture {
+    arena: ReportArena,
+    directory: tempfile::TempDir,
+}
+impl Fixture {
+    fn new() -> Self {
+        Self {
+            arena: ReportArena::testing(),
+            directory: tempfile::tempdir().unwrap(),
+        }
+    }
+    fn path(&self) -> &Path {
+        self.directory.path()
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let idle = self.arena.wait_idle(std::time::Duration::from_secs(5));
+        assert!(
+            idle || std::thread::panicking(),
+            "report cleanup kept files open"
+        );
+    }
+}
+
+fn log() -> (Fixture, ReportLog) {
+    let fixture = Fixture::new();
+    let log = ReportLog::new(&fixture.arena, fixture.path().join("warnings"));
+    (fixture, log)
 }
 
 fn record(log: &ReportLog, name: &str) {
@@ -76,9 +106,9 @@ fn first_reason_is_per_range_and_finished_empty_ranges_release_summary_slots() {
 
 #[test]
 fn custom_diagnostic_title_does_not_describe_a_size_scan() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = Fixture::new();
     let log = ReportLog::with_title(
-        &ReportArena::testing(),
+        &temporary.arena,
         temporary.path().join("details"),
         "Folder listing error",
     );
@@ -146,10 +176,10 @@ fn diagnostic_larger_than_one_io_chunk_is_preserved_without_an_artificial_limit(
 
 #[test]
 fn unavailable_report_storage_keeps_observing_and_reports_missing_details() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = Fixture::new();
     let unavailable = temporary.path().join("occupied");
     std::fs::write(&unavailable, b"not a directory").unwrap();
-    let log = ReportLog::new(&ReportArena::testing(), unavailable);
+    let log = ReportLog::new(&temporary.arena, unavailable);
     let report = log.mark().report();
     for name in ["a", "b", "c"] {
         record(&log, name);
@@ -320,12 +350,12 @@ fn concurrent_snapshot_counts_only_complete_records_and_keeps_its_own_length() {
 
 #[test]
 fn a_failed_report_does_not_poison_another_file_in_the_same_arena() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = Fixture::new();
     let occupied = temporary.path().join("occupied");
     std::fs::write(&occupied, b"not a directory").unwrap();
-    let arena = ReportArena::testing();
-    let bad = ReportLog::new(&arena, occupied);
-    let good = ReportLog::new(&arena, temporary.path().join("good"));
+    let arena = &temporary.arena;
+    let bad = ReportLog::new(arena, occupied);
+    let good = ReportLog::new(arena, temporary.path().join("good"));
     let bad_range = bad.mark().report();
     let good_range = good.mark().report();
     record(&bad, "first unavailable details");
@@ -371,10 +401,13 @@ fn per_process(path: PathBuf) -> SpoolRoot {
 
 #[test]
 fn a_per_process_report_root_is_removed_after_its_last_log_and_snapshot() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = Fixture::new();
     let path = temporary.path().join("MidnightExplorer-reports-8");
-    let arena = ReportArena::testing();
-    let log = ReportLog::with_candidates(&arena, vec![per_process(path.clone())], DEFAULT_TITLE);
+    let log = ReportLog::with_candidates(
+        &temporary.arena,
+        vec![per_process(path.clone())],
+        DEFAULT_TITLE,
+    );
     let range = log.mark().report();
     record(&log, "kept 資料 record");
     range.finish(false);
@@ -397,12 +430,12 @@ fn a_per_process_report_root_is_removed_after_its_last_log_and_snapshot() {
 
 #[test]
 fn an_unusable_shared_root_falls_back_to_the_next_private_candidate() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = Fixture::new();
     // Stands in for a shared root that another account created first.
     let occupied = temporary.path().join("occupied");
     std::fs::write(&occupied, b"not a private directory").unwrap();
     let log = ReportLog::with_candidates(
-        &ReportArena::testing(),
+        &temporary.arena,
         vec![shared(occupied), shared(temporary.path().join("private"))],
         DEFAULT_TITLE,
     );
