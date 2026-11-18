@@ -214,6 +214,47 @@ fn a_tree_watch_status_needs_the_tree_navigation_and_session() {
     assert!(p.watch_status_text(PaneId::Left).is_some());
 }
 
+#[test]
+fn a_watch_hint_keeps_a_pending_tree_disclosure_and_then_refreshes_that_tree() {
+    // The user disclosed a folder; its tree is not published yet.
+    let (mut p, root) = super::tree::fixture();
+    let navigation = p.panes[0].successful_generation.unwrap();
+    assert!(
+        !p.refresh_if_changed(PaneId::Left, navigation, &|command| panic!(
+            "a re-read would discard the pending disclosure: {command:?}"
+        )),
+        "the hint waits for the tree"
+    );
+    assert!(!p.panes[0].loading);
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(super::tree::publication(
+            root, 1, true, false,
+        )))),
+        &|_| true,
+    );
+    let view = p.panes[0]
+        .tree_view()
+        .expect("the disclosed tree is adopted")
+        .clone();
+    let refreshed = RefCell::new(Vec::new());
+    p.flush_selection(&|command| {
+        if let Command::Tree(command) = &command
+            && let TreeCommand::RefreshLoaded(request) = command.as_ref()
+        {
+            refreshed.borrow_mut().push(request.view.clone());
+        }
+        assert!(
+            !matches!(command, Command::Refresh { .. } | Command::Navigate { .. }),
+            "the tree is kept: {command:?}"
+        );
+        true
+    });
+    let refreshed = refreshed.into_inner();
+    assert_eq!(refreshed.len(), 1, "the retained hint refreshes the tree");
+    assert!(Arc::ptr_eq(&refreshed[0], &view));
+    assert!(Arc::ptr_eq(p.panes[0].tree_view().unwrap(), &view));
+}
+
 fn file(id: u64, name: &str) -> Entry {
     Entry::new(EntryId(id), PathBuf::from(name), EntryKind::File)
 }

@@ -8,7 +8,10 @@ activated native share follows the native listing path.
 
 `presenter/tree.rs` retains the original entries and index, and requests Enable
 with those exact allocations and the accepted selection revision. Pending flat
-selection must settle before migration. A publication seeded before a later
+selection must settle before migration. A change notification for the folder
+waits while Enable is pending instead of re-reading the folder, which would
+discard the disclosure; it then refreshes the adopted tree, or re-reads the
+folder if the tree is refused. A publication seeded before a later
 selection is rejected and retried; it cannot erase newer marks. Initial adoption
 uses the backend root-alias map to preserve the caret. Every publication is
 adopted with its matching selection and acknowledged with its exact projection

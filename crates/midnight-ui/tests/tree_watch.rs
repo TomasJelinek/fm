@@ -22,6 +22,7 @@ fn exercise_external_changes(pane: PaneId) {
         service.clone(),
         service,
         watch.clone(),
+        false,
     );
     let branch = fixture.root.join("folder");
     // A live subscription must cover both directories (a historical batch that was

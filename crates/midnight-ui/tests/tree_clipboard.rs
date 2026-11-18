@@ -415,6 +415,8 @@ fn unselected_parent_is_excluded_and_focused_nested_folder_is_the_fallback() {
     let fixture = native::Fixture::new();
     let service = Arc::new(midnight_platform::LocalFileSystem::new(None));
     let clipboard = Arc::new(MemoryClipboard::new());
+    // The copies capture the exact tree; startup maintenance must not replace it
+    // first. This test needs no hints, so they stay held.
     let mut h = support::Harness::with_native_clipboard_transfer(
         PaneId::Left,
         fixture.root.clone(),
@@ -422,7 +424,7 @@ fn unselected_parent_is_excluded_and_focused_nested_folder_is_the_fallback() {
         service.clone(),
         service,
         clipboard.clone(),
-        false,
+        true,
     );
     focus(&h, PaneId::Left, "..", false);
     assert!(h.selection.as_ref().unwrap().is_empty());

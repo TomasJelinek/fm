@@ -40,6 +40,11 @@ impl Pane {
         self.tree_projection_ready() && !self.search.pending
     }
 
+    /// A disclosed folder waits for its tree's first publication.
+    pub(super) fn tree_enable_pending(&self) -> bool {
+        self.tree.pending.is_some()
+    }
+
     pub(super) fn tree_projection_ready(&self) -> bool {
         !self.tree.unavailable
             && !self.tree.commit_pending

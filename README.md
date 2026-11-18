@@ -959,9 +959,10 @@ viewport, selection, command editing, an open Panel Filter dialog and the comput
 sizes of folders that are still listed; folders it adds show as not calculated.
 Explicit Refresh discards computed sizes unless a size scan continues across it. A
 flat panel's automatic re-read waits while a drag from that panel or a directory
-comparison is in progress; maintenance of expanded branches waits for a running
-comparison. When the focused item disappears, the cursor moves to its nearest
-remaining neighbor.
+comparison is in progress, and a change notification also waits while a folder the
+user expanded is opening its tree, then refreshes that tree; maintenance of
+expanded branches waits for a running comparison. When the focused item
+disappears, the cursor moves to its nearest remaining neighbor.
 Folder sizing uses a bounded fair batch and a shared I/O budget: up to the Disk
 operations limit (four by default) of parallel reads only for proven local SSD,
 one stream for HDD/network/unknown storage. Detection errors remain conservative;

@@ -394,7 +394,11 @@ impl Presenter {
             return true;
         }
         let path = self.panes[pane.index()].path.clone();
+        // A re-read would discard a disclosure whose tree is not published
+        // yet; the retained hint refreshes that tree once it is adopted, or
+        // re-reads the folder if it is refused.
         if self.background_refresh_blocked(pane)
+            || self.panes[pane.index()].tree_enable_pending()
             || !self.navigate_impl(pane, path, None, Reload::Background, send)
         {
             self.panes[pane.index()].refresh_hint = true;

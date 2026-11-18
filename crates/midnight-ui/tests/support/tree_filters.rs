@@ -530,6 +530,8 @@ pub struct Harness {
     hold_maintenance_hints: bool,
     held_tree_hints: [Option<TreeViewStamp>; 2],
     held_directory_hints: [Option<NavigationId>; 2],
+    /// The latest hints, refreshes and tree publications, for failure messages.
+    maintenance: VecDeque<String>,
     pub send: Rc<dyn Fn(Command) -> bool>,
     pub pane: PaneId,
     runtime: Option<Runtime>,
@@ -628,12 +630,15 @@ impl Harness {
         )
     }
 
+    /// `hold_maintenance_hints`: see [`Self::release_maintenance_hints`]; a test
+    /// that captures exact tree state for a transfer holds them until its terminal.
     pub fn with_native_watch_transfer<T: AuditedSynchronousTransferService + 'static>(
         pane: PaneId,
         path: PathBuf,
         directory: Arc<dyn FileSystem>,
         transfer: Arc<T>,
         watch: Arc<dyn WatchService>,
+        hold_maintenance_hints: bool,
     ) -> Self {
         Self::with_fixture(
             pane,
@@ -647,7 +652,7 @@ impl Harness {
                 watch: Some(watch),
                 clipboard: None,
                 commands: None,
-                hold_maintenance_hints: false,
+                hold_maintenance_hints,
             }),
         )
     }
@@ -852,6 +857,7 @@ impl Harness {
             hold_maintenance_hints,
             held_tree_hints: [None; 2],
             held_directory_hints: [None; 2],
+            maintenance: VecDeque::new(),
             send,
             pane,
             runtime: Some(runtime),
@@ -917,22 +923,29 @@ impl Harness {
             .clone();
         h.ui.window
             .invoke_tree_disclosure(pane.index() as i32, identity);
+        // A pane's first check after acceptance can hint a change (a folder
+        // created for the fixture can be updated in its parent's index later)
+        // and re-read that pane meanwhile. The presenter keeps the disclosure
+        // above until its tree is adopted; the caller's next click must not
+        // reach a pane that is still loading either.
         h.until(|h| {
-            h.view.as_ref().is_some_and(|view| {
-                (if native_listing {
-                    children
-                        .iter()
-                        .all(|name| view.rows.iter().any(|row| row.entry.display_name == *name))
-                } else {
-                    view.rows.len() == 2 + children.len()
-                }) && view.rows.iter().any(|row| row.expanded)
-                    && view.rows.iter().all(|row| {
-                        !matches!(
-                            row.disclosure,
-                            TreeDisclosure::Unknown | TreeDisclosure::Loading
-                        )
-                    })
-            })
+            !h.ui.window.get_left_loading()
+                && !h.ui.window.get_right_loading()
+                && h.view.as_ref().is_some_and(|view| {
+                    (if native_listing {
+                        children
+                            .iter()
+                            .all(|name| view.rows.iter().any(|row| row.entry.display_name == *name))
+                    } else {
+                        view.rows.len() == 2 + children.len()
+                    }) && view.rows.iter().any(|row| row.expanded)
+                        && view.rows.iter().all(|row| {
+                            !matches!(
+                                row.disclosure,
+                                TreeDisclosure::Unknown | TreeDisclosure::Loading
+                            )
+                        })
+                })
         });
         h.calls.frozen.store(true, Ordering::SeqCst);
         h
@@ -1114,6 +1127,7 @@ impl Harness {
         presenter: &mut Presenter,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.record_maintenance(&event);
         if self.hold_maintenance_hints {
             match &event {
                 Event::Tree(tree) => {
@@ -1173,6 +1187,49 @@ impl Harness {
         } else {
             presenter.apply_with_sender(event, send);
         }
+    }
+
+    fn record_maintenance(&mut self, event: &Event) {
+        fn stamp_text(stamp: TreeViewStamp) -> String {
+            format!(
+                "{:?} n{} s{} r{}",
+                stamp.pane, stamp.navigation.0, stamp.session.0, stamp.revision.0
+            )
+        }
+        let held = if self.hold_maintenance_hints {
+            "held "
+        } else {
+            ""
+        };
+        let line = match event {
+            Event::DirectoryChanged { pane, navigation } => {
+                format!("{held}DirectoryChanged({pane:?} n{})", navigation.0)
+            }
+            Event::ListingFinished {
+                pane, navigation, ..
+            } => format!("ListingFinished({pane:?} n{})", navigation.0),
+            Event::Tree(tree) => match tree.as_ref() {
+                TreeEvent::Changed { stamp } => format!("{held}Changed({})", stamp_text(*stamp)),
+                TreeEvent::Published(publication) | TreeEvent::Reprojected { publication, .. } => {
+                    format!("Published({})", stamp_text(publication.view.stamp))
+                }
+                TreeEvent::Refreshed { stamp, result, .. } => {
+                    format!("Refreshed({}, ok={})", stamp_text(*stamp), result.is_ok())
+                }
+                TreeEvent::RefreshRejected {
+                    stamp, retryable, ..
+                } => format!(
+                    "RefreshRejected({}, retryable={retryable})",
+                    stamp_text(*stamp)
+                ),
+                _ => return,
+            },
+            _ => return,
+        };
+        if self.maintenance.len() == 24 {
+            self.maintenance.pop_front();
+        }
+        self.maintenance.push_back(line);
     }
 
     fn after_apply(&mut self) {
@@ -1296,7 +1353,7 @@ impl Harness {
             }
         }
         panic!(
-            "condition did not settle within {:?}: copy={:?}, clipboard_publications={}, desktop_status={}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}, notice=({},{:?},{:?}), active_pane={}, modal={}, dialog_blocked={}, clipboard_trace={:?}",
+            "condition did not settle within {:?}: copy={:?}, clipboard_publications={}, desktop_status={}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}, notice=({},{:?},{:?}), active_pane={}, modal={}, dialog_blocked={}, maintenance={:?}, clipboard_trace={:?}",
             teardown::UI_WAIT,
             self.copy_progress.last(),
             self.clipboard_publications,
@@ -1333,6 +1390,7 @@ impl Harness {
             self.ui.window.get_active_pane(),
             self.ui.window.get_embedded_modal_open(),
             self.ui.window.get_dialog_input_blocked(),
+            self.maintenance,
             self.clipboard_trace.borrow(),
         );
     }
