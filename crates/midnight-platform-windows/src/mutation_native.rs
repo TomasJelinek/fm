@@ -397,6 +397,15 @@ fn refused_for_open_entry(source: &File, parent: &File) -> bool {
 
 /// Waits `delay` between [`rename`] attempts in steps of at most [`RENAME_RETRY_STEP`].
 fn pause(delay: Duration, cancel: &Cancellation) -> io::Result<()> {
+    pause_with(delay, cancel, thread::sleep)
+}
+
+/// [`pause`] with each step's sleep supplied by the caller.
+fn pause_with(
+    delay: Duration,
+    cancel: &Cancellation,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<()> {
     let deadline = Instant::now() + delay;
     loop {
         if !cancel.wait_if_paused() {
@@ -406,7 +415,7 @@ fn pause(delay: Duration, cancel: &Cancellation) -> io::Result<()> {
         if left.is_zero() {
             return Ok(());
         }
-        thread::sleep(left.min(RENAME_RETRY_STEP));
+        sleep(left.min(RENAME_RETRY_STEP));
     }
 }
 

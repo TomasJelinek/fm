@@ -7,7 +7,10 @@ use std::{
     fs,
     io::{Read, Write},
     os::windows::io::OwnedHandle,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
 };
 use windows_sys::Win32::{
     Foundation::{ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION, HANDLE, INVALID_HANDLE_VALUE},
@@ -391,6 +394,44 @@ fn a_cancelled_directory_rename_stops_waiting_for_an_open_entry() {
     let started = Instant::now();
     pause(RENAME_RETRY_FIRST, &Cancellation::default()).unwrap();
     assert!(started.elapsed() >= RENAME_RETRY_FIRST);
+}
+
+/// Bounds the waits below; it elapses only when the wait under test is broken.
+const FAILURE_DEADLINE: Duration = Duration::from_secs(10);
+
+#[test]
+fn a_paused_job_holds_a_rename_wait_until_it_resumes() {
+    let job = Cancellation::default().pausable_child();
+    job.set_pause_requested(true);
+    let worker = job.child();
+    let (sent, received) = mpsc::channel();
+    let waiting = thread::spawn(move || sent.send(pause(RENAME_RETRY_FIRST, &worker)).unwrap());
+    // Only a worker waiting at the job's pause checkpoint acknowledges the pause.
+    let deadline = Instant::now() + FAILURE_DEADLINE;
+    while !job.is_paused() {
+        assert!(Instant::now() < deadline, "the wait ignored the pause");
+        thread::yield_now();
+    }
+    assert!(received.try_recv().is_err());
+    job.set_pause_requested(false);
+    received.recv_timeout(FAILURE_DEADLINE).unwrap().unwrap();
+    waiting.join().unwrap();
+}
+
+#[test]
+fn a_cancellation_ends_a_running_rename_wait_after_its_current_step() {
+    let cancel = Cancellation::default();
+    let mut steps = Vec::new();
+    // An hour-long wait; the cancellation arrives while it sleeps its second step.
+    let waited = pause_with(Duration::from_secs(3600), &cancel, |step| {
+        steps.push(step);
+        assert!(steps.len() <= 2, "the wait ignored the cancellation");
+        if steps.len() == 2 {
+            cancel.cancel();
+        }
+    });
+    assert_eq!(waited.unwrap_err().kind(), io::ErrorKind::Interrupted);
+    assert_eq!(steps, [RENAME_RETRY_STEP; 2]);
 }
 
 /// Gives the fixture directory `path` a protected DACL that denies `denied` to Everyone
