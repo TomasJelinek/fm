@@ -22,7 +22,12 @@ state. Crates with at most three integration files also keep one binary per
 file; CI selects some of those by name (`--test native`, `--test pdf_native`,
 `--test worker`). A test that re-runs its own executable must select the child
 by its module-qualified name (`<file>::<test>`, derived from `module_path!()`, run
-with `--exact`).
+with `--exact`). Targets without a test on any platform set `test = false`, so an
+unfiltered `cargo test` neither builds nor starts an empty harness for them: the
+`midnight-platform` library (`library_has_no_unit_tests` in its integration binary
+fails when a unit test is added) and the `midnight-elevated-listing` and
+`midnight-worker-probe` binaries, which integration tests still receive as
+`CARGO_BIN_EXE_<name>`.
 
 The `midnight-engine` library test executable re-runs itself for ten Copy seal
 tests (`copy_seal_tests.rs`, `copy_finish_seal_tests.rs` and
