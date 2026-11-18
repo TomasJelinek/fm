@@ -172,6 +172,10 @@ impl Staging {
         Self::open_root(root, ample_volume)
     }
     #[cfg(test)]
+    pub(crate) fn set_space(&mut self, space: SpaceQuery) {
+        self.space = space;
+    }
+    #[cfg(test)]
     pub(crate) fn set_cache_budget(&mut self, bytes: u64) {
         self.cache_budget = bytes;
     }
