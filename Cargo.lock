@@ -2912,11 +2912,10 @@ name = "midnight-ui-bindings"
 version = "0.2.0"
 dependencies = [
  "i-slint-compiler",
- "prettyplease",
+ "proc-macro2",
  "slint",
  "slint-build",
  "spin_on",
- "syn 2.0.119",
 ]
 
 [[package]]

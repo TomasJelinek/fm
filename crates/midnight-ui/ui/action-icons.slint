@@ -111,6 +111,43 @@ export component NativeActionImage inherits Image {
     image-fit: contain;
 }
 
+// The icon/caption row is one shared component: every button type that inherits
+// ActionButton gets a copy of its root, and would repeat this content inline.
+component ActionButtonContent inherits HorizontalLayout {
+    in property <string> text;
+    in property <image> native-icon;
+    in property <image> fallback-icon;
+    in property <bool> compact;
+    in property <length> font-size;
+    in property <length> vertical-padding;
+    in property <bool> removal-icon;
+    in property <bool> destructive;
+    in property <bool> enabled;
+    private property <bool> native-available: root.native-icon.width > 0 && root.native-icon.height > 0;
+    private property <image> artwork: root.native-available ? root.native-icon : root.fallback-icon;
+    private property <bool> has-icon: root.artwork.width > 0 && root.artwork.height > 0;
+    private property <color> foreground: !root.enabled ? Theme.muted-text
+        : root.destructive ? Theme.error-text : Theme.text;
+    padding-left: root.compact ? 4px : 12px;
+    padding-right: root.compact ? 4px : 12px;
+    padding-top: root.vertical-padding; padding-bottom: root.vertical-padding;
+    spacing: 4px; alignment: center; cross-axis-alignment: center;
+    if root.has-icon: Image {
+        source: root.artwork; image-fit: contain;
+        width: Theme.icon-size; height: Theme.icon-size;
+        colorize: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback-icon))
+            ? transparent : root.removal-icon && root.enabled ? Theme.error-text : root.foreground;
+        opacity: root.native-available && !root.enabled ? 0.45 : 1;
+        accessible-role: none;
+    }
+    if root.text != "": Text {
+        text: root.text; color: root.foreground;
+        font-family: Theme.effective-font-family; font-size: root.font-size;
+        horizontal-alignment: center; vertical-alignment: center;
+        accessible-role: none;
+    }
+}
+
 // Keep the native button's input/focus behavior, with application-owned paint.
 // Fluent's stock primary brush follows the OS accent rather than our palette.
 export component ActionButton inherits Rectangle {
@@ -130,11 +167,6 @@ export component ActionButton inherits Rectangle {
     out property <bool> has-focus: input.has-focus;
     out property <bool> pressed: root.enabled && pointer.pressed;
     callback clicked();
-    private property <bool> native-available: root.native-icon.width > 0 && root.native-icon.height > 0;
-    private property <image> artwork: root.native-available ? root.native-icon : root.fallback-icon;
-    private property <bool> has-icon: root.artwork.width > 0 && root.artwork.height > 0;
-    private property <color> foreground: !root.enabled ? Theme.muted-text
-        : root.destructive ? Theme.error-text : Theme.text;
     min-width: max(32px, content.min-width);
     min-height: max(root.minimum-control-height, root.control-height, content.min-height);
     horizontal-stretch: 0; vertical-stretch: 0;
@@ -159,25 +191,10 @@ export component ActionButton inherits Rectangle {
     border-color: !root.enabled ? Theme.frame
         : root.destructive ? Theme.error-text
         : root.has-focus || root.primary ? Theme.active-frame : Theme.frame;
-    content := HorizontalLayout {
-        padding-left: root.compact ? 4px : 12px;
-        padding-right: root.compact ? 4px : 12px;
-        padding-top: root.vertical-padding; padding-bottom: root.vertical-padding;
-        spacing: 4px; alignment: center; cross-axis-alignment: center;
-        if root.has-icon: Image {
-            source: root.artwork; image-fit: contain;
-            width: Theme.icon-size; height: Theme.icon-size;
-            colorize: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback-icon))
-                ? transparent : root.removal-icon && root.enabled ? Theme.error-text : root.foreground;
-            opacity: root.native-available && !root.enabled ? 0.45 : 1;
-            accessible-role: none;
-        }
-        if root.text != "": Text {
-            text: root.text; color: root.foreground;
-            font-family: Theme.effective-font-family; font-size: root.font-size;
-            horizontal-alignment: center; vertical-alignment: center;
-            accessible-role: none;
-        }
+    content := ActionButtonContent {
+        text: root.text; native-icon: root.native-icon; fallback-icon: root.fallback-icon;
+        compact: root.compact; font-size: root.font-size; vertical-padding: root.vertical-padding;
+        removal-icon: root.removal-icon; destructive: root.destructive; enabled: root.enabled;
     }
     input := Button {
         // Explicit placement keeps native input geometry out of content sizing.

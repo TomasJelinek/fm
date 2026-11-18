@@ -19,6 +19,30 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Slint compile time and UI sharpness — 18 November 2026
+
+On main `544b48db`, Linux only. Rebuilding `midnight-ui-bindings` after a `.slint`
+change took 41.4 s in its build script and 370.1 s in `rustc`; it now takes 10.8 s
+and 172.7 s ([record](verification/2026-11-18-slint-compile-time.md)). The causes
+were a `rustc` lint that copied the 63 MB generated source for every short block, the
+SDK `ScrollView` inlined with both scroll bars at 71 uses, the file pane, error
+notice, dialog frame and tooltips copied by the compiler's inlining rules, and
+incremental compilation that cost more than it saved for this crate. The main window
+now uses its own `ScrollView`/`ListView` (`ui/scroll-view.slint`) and a shared `Tip`.
+
+The same change removes the blur of file-pane content that did not start on a device
+pixel and puts the pane split, function keys, status metrics and dialog position on
+whole pixels ([record](verification/2026-11-18-ui-sharpness.md)). **Open:** native
+icons are still one 32 px bitmap (16 px enlarged on a GTK desktop without
+`gtk-3.0/settings.ini`) resampled to every drawn size, and glyphs are still
+positioned and hinted as the renderer does today.
+
+UI test results equal main's in the same Docker environment: 19 tests of
+`midnight-ui` and `midnight-viewer-ui` fail there before and after, and the
+`midnight-compare-ui` library test target does not compile on main. They are listed
+in the compile-time record and were not investigated. Not run: Windows, the full
+workspace gates, release builds.
+
 ### Deep code review — 18 November 2026
 
 A deep code review of the whole repository, started from main `3a27eeb2` on

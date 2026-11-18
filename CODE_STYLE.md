@@ -23,7 +23,10 @@ the formatting authority; strict Clippy checks run in CI.
   code instead of copying branches or widgets. Keep platform implementations
   separate; share only platform-neutral policy. Check generated-code size when
   changing component boundaries, since child content can force Slint to inline
-  an otherwise reusable component. Never hand-edit generated Rust.
+  an otherwise reusable component: so do `clip` at a use site, `visible` or
+  `opacity` on a component's root, and inheriting from a user component
+  ([measurements](docs/verification/2026-11-18-slint-compile-time.md)). Never
+  hand-edit generated Rust.
 - **Public APIs:** expose the smallest useful surface, prefer private or
   `pub(crate)` internals, document public contracts/errors and use typed IDs,
   paths, enums and capabilities. Each platform implements the common service

@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollStrip } from "scroll-strip.slint";
 import { Theme } from "theme.slint";
 import { NavigationButton } from "navigation-controls.slint";
 import { FallbackIcons } from "action-icons.slint";
@@ -32,12 +32,10 @@ export component OverflowToolbar inherits Rectangle {
         enabled: strip.content-x < -0.5px;
         clicked => { root.scroll(-1); }
     }
-    strip := ScrollView {
+    strip := ScrollStrip {
         x: root.arrow-width;
         width: max(0px, root.width - 2 * root.arrow-width);
         height: root.height;
-        horizontal-scrollbar-policy: always-off;
-        vertical-scrollbar-policy: always-off;
         content-width: max(items.preferred-width, self.visible-width);
         content-height: self.visible-height;
         changed content-width => { root.clamp-offset(); }

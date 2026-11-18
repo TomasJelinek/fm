@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 
 export global PathPasteView {
     callback request(int);
@@ -77,5 +77,5 @@ export component PathEditor inherits Rectangle {
             }
         }
     }
-    Tooltip { TipBody { text: root.hint; } }
+    Tip { text: root.hint; }
 }

@@ -1,7 +1,7 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollStrip } from "scroll-strip.slint";
 import { Theme } from "theme.slint";
 import { NativeActionImage, FallbackIcons } from "action-icons.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 
 export struct UserCommandRow {
@@ -69,25 +69,24 @@ component CommandButton inherits Rectangle {
         }
       }
     }
-    Tooltip { TipBody { text: root.command.hint; } }
+    Tip { text: root.command.hint; }
 }
 
-export component UserCommandToolbar inherits Rectangle {
+// One implementation for the main bar and the popup: `visible` on a component
+// root makes Slint inline every use, so the shell below keeps it instead.
+component UserCommandStrip inherits Rectangle {
     in property <[UserCommandRow]> commands;
+    in property <bool> shown;
     callback execute(string, string);
     callback settings(string);
     callback icon-visible(string, string, bool);
-    height: root.commands.length > 0 ? Theme.control-height : 0px;
-    visible: root.commands.length > 0;
-    background: Theme.secondary-surface;
     private property <bool> overflowing: items.preferred-width > root.width;
     ContextMenuArea {
         Menu { MenuItem { title: "Custom Commands settings…"; activated => { root.settings(""); } } }
-        bar := ScrollView {
+        bar := ScrollStrip {
             x: 0px; y: 0px; height: parent.height;
             width: max(0px, root.width - (root.overflowing ? 2 * Theme.tool-width : 0px));
             content-width: max(self.visible-width, items.preferred-width);
-            horizontal-scrollbar-policy: always-off; vertical-scrollbar-policy: always-off;
             mouse-drag-pan-enabled: true;
             items := HorizontalLayout {
                 spacing: 3px; padding-left: 4px; padding-right: 4px;
@@ -105,7 +104,7 @@ export component UserCommandToolbar inherits Rectangle {
                     }
                     if !command.separator : CommandButton {
                         command: command;
-                        private property <bool> showing-icon: root.visible
+                        private property <bool> showing-icon: root.shown
                             && self.absolute-position.x + self.width > bar.absolute-position.x
                             && self.absolute-position.x < bar.absolute-position.x + bar.visible-width;
                         // Revision changes must reannounce unchanged visible geometry.
@@ -134,4 +133,15 @@ export component UserCommandToolbar inherits Rectangle {
             clicked => { bar.content-x = max(bar.visible-width - bar.content-width, bar.content-x - max(40px, bar.visible-width * 0.6)); }
         }
     }
+}
+
+export component UserCommandToolbar inherits Rectangle {
+    in property <[UserCommandRow]> commands <=> strip.commands;
+    callback execute <=> strip.execute;
+    callback settings <=> strip.settings;
+    callback icon-visible <=> strip.icon-visible;
+    height: root.commands.length > 0 ? Theme.control-height : 0px;
+    visible: root.commands.length > 0;
+    background: Theme.secondary-surface;
+    strip := UserCommandStrip { shown: root.visible; }
 }

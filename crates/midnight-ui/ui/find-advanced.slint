@@ -1,5 +1,4 @@
-import { ComboBox } from "std-widgets.slint";
-import { HintedLineEdit } from "hinted-inputs.slint";
+import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { Theme } from "theme.slint";
 
@@ -43,7 +42,7 @@ export component FindAdvanced inherits Rectangle {
                 hint: "A positive whole number, up to 366 days in the chosen unit.";
                 accepted => { root.submit(); }
             }
-            ComboBox {
+            HintedComboBox {
                 row: root.narrow ? 2 : 0; col: root.narrow ? 0 : 2;
                 model: ["Minutes", "Hours", "Days"]; current-index <=> root.modified-unit;
                 enabled: root.enabled && root.modified-enabled;

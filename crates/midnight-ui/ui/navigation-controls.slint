@@ -1,10 +1,10 @@
 import { DialogFrame, DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
-import { ListView, ScrollView } from "std-widgets.slint";
+import { ScrollStrip } from "scroll-strip.slint";
 import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
-import { TipBody, CompactPicker } from "controls.slint";
+import { CompactPicker, Tip } from "controls.slint";
 import { TabRow, BookmarkRow, NavigationChoiceRow } from "navigation-models.slint";
 import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
@@ -96,7 +96,7 @@ export component NavigationButton inherits Rectangle {
             }
         }
     }
-    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+    if root.hint != "": Tip { text: root.hint; }
 }
 
 export component HistoryNavigation inherits Rectangle {
@@ -189,11 +189,9 @@ export component TabStrip inherits Rectangle {
     }
     HorizontalLayout {
         spacing: 2px;
-        tabs-scroll := ScrollView {
+        tabs-scroll := ScrollStrip {
             min-height: 0px;
             content-height: Theme.control-height;
-            vertical-scrollbar-policy: always-off;
-            horizontal-scrollbar-policy: always-off;
             content-width: max(root.tabs-width, self.visible-width);
             changed visible-width => { root.reveal-active(); }
             HorizontalLayout {
@@ -227,7 +225,7 @@ export component TabStrip inherits Rectangle {
                             reject
                         }
                         tab-area := TouchArea {
-                            Tooltip { TipBody { text: tab.path; width-limit: 1040px; } }
+                            Tip { text: tab.path; width-limit: 1040px; }
                             private property <string> pressed-id;
                             private property <int> pressed-revision;
                             private property <bool> middle-pressed;

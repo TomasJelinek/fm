@@ -1,6 +1,6 @@
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedCheckBox } from "hinted-inputs.slint";
+import { HintedActionButton, HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -202,7 +202,7 @@ export component OperationDialog inherits Rectangle {
                     if root.has-name && root.input-label != "" && !root.compact : Text {
                         text: root.input-label; color: Theme.text; font-size: Theme.font-size;
                     }
-                    name := LineEdit {
+                    name := HintedLineEdit {
                         max-height: max(Theme.control-height, self.preferred-height);
                         vertical-stretch: 0;
                         visible: root.has-name;

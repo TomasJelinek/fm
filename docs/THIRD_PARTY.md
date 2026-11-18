@@ -244,6 +244,23 @@ merged lockfile reaches neither `winapi` (gone from the lockfile) nor `winapi-ut
 (still locked only as walkdir's Windows-only dependency, while walkdir itself is now
 Linux-only) for the Windows or Linux target.
 
+On 18 November 2026 the `midnight-ui-bindings` build script stopped formatting its
+generated Rust with `syn`/`prettyplease` and writes the token stream itself
+([record](verification/2026-11-18-slint-compile-time.md)). Its build dependencies
+lose `prettyplease` 0.2.37 and `syn` 2.0.119 and gain a direct `proc-macro2` 1.0.107
+edge (MIT OR Apache-2.0, already in the graph through `quote` and `i-slint-compiler`).
+`prettyplease` leaves the application graph: the root lockfile still records it
+for `bindgen` 0.72.1, which no application target selects, and Linux-host
+`cargo tree --locked --offline -e normal,build,dev --target x86_64-unknown-linux-gnu
+-i prettyplease@0.2.37` prints nothing. The same query with `-e features` shows the
+`syn` 2.0.119 union (clone-impls, default, derive, extra-traits, full, parsing,
+printing, proc-macro, visit, visit-mut) and the `proc-macro2` union (default,
+proc-macro) unchanged. Exactly those rows changed, giving **642 records / 524 names /
+64 direct records**. This is a targeted refresh, not a full 46-pair recapture or
+generator `--check`: no Windows capture was taken, and the Windows result follows
+from the lockfile, where `midnight-ui-bindings` and `bindgen` are the only packages
+that name `prettyplease`. The build-graph notice staging below predates this change.
+
 On 18 November 2026 the dependency changes since commit `48ec78d` were rechecked
 (`git diff 48ec78d..HEAD` of `Cargo.lock` and every `Cargo.toml`). Besides the two
 removals above, they change only:

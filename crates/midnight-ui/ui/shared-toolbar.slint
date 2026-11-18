@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollStrip } from "scroll-strip.slint";
 import { Theme } from "theme.slint";
 import { CompactPicker } from "controls.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
@@ -77,10 +77,9 @@ export component SharedToolbar inherits Rectangle {
         enabled: tools.content-x < 0px;
         clicked => { tools.content-x = min(0px, tools.content-x + tools.visible-width * 0.8); }
     }
-    tools := ScrollView {
+    tools := ScrollStrip {
         x: root.overflowing ? root.tool-width + 4px : 4px; y: 3px;
         width: max(0px, root.actions-width - 2 * self.x); height: root.control-height;
-        horizontal-scrollbar-policy: always-off; vertical-scrollbar-policy: always-off;
         content-width: max(self.visible-width, root.full-width);
         content-height: self.visible-height;
         HorizontalLayout {
