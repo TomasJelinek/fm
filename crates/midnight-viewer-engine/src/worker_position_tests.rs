@@ -569,7 +569,9 @@ fn scrollbar_source_uneven_rows_correct_once_and_complete_the_actual_camera() {
     assert!(
         frame
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|pixel| pixel != &frame.pixels[..4]),
         "the acknowledged camera must render the authored content"
     );
@@ -869,7 +871,9 @@ fn scrollbar_source_correction_retains_actual_pixels_and_exact_numbered_gutter()
             .chunks_exact(worker.geometry.width as usize * 4)
             .any(|row| {
                 row[..gutter_bytes]
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .any(|pixel| pixel != &row[..4])
             }),
         "the actual visible Source gutter must contain line-number glyphs"
