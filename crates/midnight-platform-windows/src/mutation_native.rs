@@ -1,5 +1,5 @@
 //! Handle-relative native access keeps recursion independent of mutable path traversal.
-use super::{checked, failure};
+use super::{cancelled, checked, failure};
 use crate::{directory_records::Cursor, reparse::Native};
 use midnight_core::{Cancellation, FsError};
 use std::{
@@ -13,7 +13,8 @@ use std::{
         io::{AsRawHandle, FromRawHandle},
     },
     path::{Path, PathBuf},
-    ptr,
+    ptr, thread,
+    time::{Duration, Instant},
 };
 use windows_sys::{
     Wdk::{
@@ -25,12 +26,20 @@ use windows_sys::{
         },
     },
     Win32::{
-        Foundation::{RtlNtStatusToDosError, UNICODE_STRING},
+        Foundation::{ERROR_ACCESS_DENIED, RtlNtStatusToDosError, UNICODE_STRING},
         Security::{SECURITY_QUALITY_OF_SERVICE, SecurityIdentification},
         Storage::FileSystem::*,
         System::IO::IO_STATUS_BLOCK,
     },
 };
+
+/// The first wait before a refused directory rename is repeated; each later wait doubles.
+const RENAME_RETRY_FIRST: Duration = Duration::from_millis(10);
+/// The total wait after which a refused directory rename is reported (see [`rename`]).
+const RENAME_RETRY_BUDGET: Duration = Duration::from_secs(1);
+/// Cancellation and pause are observed at least this often while a rename waits (the
+/// job-pause polling cadence).
+const RENAME_RETRY_STEP: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Identity {
@@ -302,7 +311,116 @@ fn create_relative(
     Ok(unsafe { File::from_raw_handle(result) })
 }
 
-pub(crate) fn rename(source: &File, name: &OsStr) -> io::Result<()> {
+/// Renames `source` to `name` inside its own directory `parent` (see [`rename_once`]).
+///
+/// Windows refuses to rename a directory with `ERROR_ACCESS_DENIED` while any entry below
+/// it is open, whatever that handle's sharing, and antivirus, indexing and sync programs
+/// open files for a moment after they are written (Microsoft Defender: about 10-50 ms per
+/// new file on the test host). Such a refusal is waited out: the same rename is repeated
+/// after 10 ms, then after twice as long each time, for about one second in all, and
+/// then reported. Only a directory is retried, and only while the caller may still add a
+/// subdirectory to `parent`: NTFS refuses a caller without that right with the same
+/// error, and the DELETE access the rename also needs was granted when `source` was
+/// opened, so a refusal by the parent directory's DACL is reported at once. Any other
+/// refusal of a directory rename (a program, including this application's watch of a
+/// subfolder, keeps an entry below open, or a filter driver refuses the rename) is
+/// repeated and reported after about one second, once per refused folder. Meanwhile the
+/// handle denies delete sharing, so neither the directory nor (by the same rule) its
+/// ancestors can be renamed, and the no-replace rename still fails when another entry
+/// takes `name`. A paused job waits paused; a cancelled one stops waiting with
+/// `Interrupted`.
+pub(crate) fn rename(
+    source: &File,
+    parent: &File,
+    name: &OsStr,
+    cancel: &Cancellation,
+) -> io::Result<()> {
+    rename_with(source, parent, name, &mut |delay| pause(delay, cancel))
+}
+
+/// [`rename`] with the wait between attempts supplied by the caller.
+fn rename_with(
+    source: &File,
+    parent: &File,
+    name: &OsStr,
+    wait: &mut dyn FnMut(Duration) -> io::Result<()>,
+) -> io::Result<()> {
+    retry_refusal(
+        || rename_once(source, name),
+        || refused_for_open_entry(source, parent),
+        wait,
+    )
+}
+
+/// Repeats `attempt` while it fails with `ERROR_ACCESS_DENIED` and `transient` does not
+/// rule out that the refusal passes, waiting 10 ms, then twice as long each time, for at
+/// most [`RENAME_RETRY_BUDGET`] in all. Any other result, and the last refusal, is returned.
+fn retry_refusal(
+    mut attempt: impl FnMut() -> io::Result<()>,
+    mut transient: impl FnMut() -> bool,
+    wait: &mut dyn FnMut(Duration) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut delay = RENAME_RETRY_FIRST;
+    let mut waited = Duration::ZERO;
+    loop {
+        let error = match attempt() {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        if error.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32)
+            || waited >= RENAME_RETRY_BUDGET
+            || !transient()
+        {
+            return Err(error);
+        }
+        let step = delay.min(RENAME_RETRY_BUDGET - waited);
+        wait(step)?;
+        waited += step;
+        delay = delay.saturating_mul(2);
+    }
+}
+
+/// Whether `ERROR_ACCESS_DENIED` from renaming `source` may pass, as it does once no entry
+/// below it is open: `source` is a directory, not a link, and the caller may still add a
+/// subdirectory to `parent`, the one right besides DELETE that NTFS checks for it. A
+/// filter driver that refuses the rename itself cannot be told apart and is waited for
+/// too.
+fn refused_for_open_entry(source: &File, parent: &File) -> bool {
+    Native::query(source).is_ok_and(|native| native.directory() && !native.link())
+        && reopen(
+            parent,
+            FILE_ADD_SUBDIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+        .is_ok()
+}
+
+/// Waits `delay` between [`rename`] attempts in steps of at most [`RENAME_RETRY_STEP`].
+fn pause(delay: Duration, cancel: &Cancellation) -> io::Result<()> {
+    pause_with(delay, cancel, thread::sleep)
+}
+
+/// [`pause`] with each step's sleep supplied by the caller.
+fn pause_with(
+    delay: Duration,
+    cancel: &Cancellation,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<()> {
+    let deadline = Instant::now() + delay;
+    loop {
+        if !cancel.wait_if_paused() {
+            return Err(cancelled());
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        sleep(left.min(RENAME_RETRY_STEP));
+    }
+}
+
+/// One native rename of `source` to `name` in its own directory.
+fn rename_once(source: &File, name: &OsStr) -> io::Result<()> {
     let name: Vec<_> = name.encode_wide().chain(Some(0)).collect();
     let length = size_of::<FILE_RENAME_INFORMATION>() + name.len() * 2;
     let mut buffer = vec![0u64; length.div_ceil(size_of::<u64>())];

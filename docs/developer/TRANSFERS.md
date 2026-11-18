@@ -84,6 +84,11 @@ Native same-volume Move first attempts the retained native rename capability,
 before content/proof admission. It reads no contents and skips hashing. Actual
 cross-device results enter the ordinary verified transfer route; generic errors
 never authorize that fallback. Whole-directory rename does not list descendants.
+Windows refuses that rename while any entry below the folder is open, and virus
+scanners open files for a moment after they are written. The Move does not wait for
+that inside its namespace turn, which every other transfer waits for before its own
+name changes; it stops with its Retry/Skip/Cancel decision. (Rename and the metadata
+editor's case change wait such a refusal out for about one second.)
 `native_entries_moved` and items/s express this work separately from copied bytes.
 Committed errors retain their recovery facts and cannot replay a source transfer.
 The [current policy and API design](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md)
