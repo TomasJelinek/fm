@@ -138,6 +138,39 @@ fn shared_delivery(name: &str, renderer: &mut TextRenderer, page: &TextPage, ori
     );
 }
 
+/// B8-V1 decision input: a retained refill allocates a zeroed shared buffer and then
+/// clears it to the background; a buffer collected already filled with the background
+/// would skip one full pass. Best of alternating runs for a 22 MB refill.
+#[test]
+#[ignore = "timing harness; run optimized with --ignored --nocapture"]
+fn background_prefill_timing() {
+    let background = [24u8, 27, 34, 255];
+    let bytes = 1920 * 2867 * 4;
+    let mut zero_then_clear = Duration::MAX;
+    let mut prefilled = Duration::MAX;
+    for _ in 0..15 {
+        zero_then_clear = zero_then_clear.min(time(|| {
+            let mut pixels: Arc<[u8]> = std::iter::repeat_n(0, bytes).collect();
+            Arc::get_mut(&mut pixels)
+                .unwrap()
+                .as_chunks_mut::<4>()
+                .0
+                .fill(background);
+            std::hint::black_box(pixels);
+        }));
+        prefilled = prefilled.min(time(|| {
+            let pixels: Arc<[u8]> = (0..bytes).map(|index| background[index & 3]).collect();
+            std::hint::black_box(pixels);
+        }));
+    }
+    println!(
+        "raster_timing case=prefill bytes={bytes} zero_then_clear_ms={:.2} prefilled_ms={:.2} saved_ms={:.2}",
+        zero_then_clear.as_secs_f64() * 1000.0,
+        prefilled.as_secs_f64() * 1000.0,
+        (zero_then_clear.as_secs_f64() - prefilled.as_secs_f64()) * 1000.0,
+    );
+}
+
 #[test]
 #[ignore = "timing harness; run optimized with --ignored --nocapture"]
 fn raster_timing() {
