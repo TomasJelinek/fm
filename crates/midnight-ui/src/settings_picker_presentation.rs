@@ -2,8 +2,9 @@
 //!
 //! One restartable check per window: once a second while a picker is open with nothing
 //! to cancel, every 25 ms while a cancellation waits for the queue, and not at all
-//! otherwise. Callbacks that invalidate a picker call [`wake`], which re-arms a pending
-//! slow check at the cancellation cadence.
+//! otherwise. [`wake`] re-arms a pending slow check at the cancellation cadence; code
+//! that invalidates an open picker without delivering its cancellation must call it,
+//! or the cancellation waits for the next slow check.
 use crate::{MainWindow, Presenter};
 use midnight_core::Command;
 use slint::ComponentHandle;

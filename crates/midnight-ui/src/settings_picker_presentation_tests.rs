@@ -69,8 +69,9 @@ fn an_invalidated_picker_preempts_the_slow_check_and_retries_every_25_ms() {
     assert_eq!(timer.interval(), OPEN_CHECK);
     harness.advance(Duration::from_millis(100));
 
-    // Editing the draft invalidates the picker while its 1 s check is armed; the
-    // invalidating callback wakes the check, and the full queue refuses the cancellation.
+    // Discarding the draft invalidates the picker while its 1 s check is armed. Waking
+    // the check then re-arms it at the cancellation cadence, and the full queue refuses
+    // the cancellation.
     harness.refuse.set(true);
     harness.presenter.borrow_mut().discard_editor_draft();
     assert!(

@@ -25,8 +25,11 @@ mod native;
 /// or refused drag command is pending: pointer feedback and retries stay prompt.
 const ACTIVE_POLL: Duration = Duration::from_millis(16);
 /// Safety net otherwise. Refreshes, invalidations and native releases, wheel and touch
-/// input republish on the next loop turn; a popup closed on release or a finished
-/// scroll is caught here, and such staleness can only refuse a drop.
+/// input republish on the next loop turn. A region change without any of those reaches
+/// the published targets only here, up to this interval late, in either direction: a
+/// region that became droppable (a scroll animation ended) can refuse a drop meant for
+/// it, and a region that should be withdrawn (a popup opened by a timer, such as a
+/// long-press context menu) can still accept one.
 const IDLE_POLL: Duration = Duration::from_millis(250);
 
 thread_local! {
