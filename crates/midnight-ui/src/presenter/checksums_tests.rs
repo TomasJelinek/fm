@@ -164,7 +164,8 @@ fn focused_checksum_sidecar_prefills_verification_without_hashing_the_manifest()
     assert!(commands.borrow().is_empty());
 }
 
-fn finish(p: &mut Presenter, id: ChecksumJobId, completion: ChecksumCompletion) {
+/// Finish the session's current run with one calculated SHA-256 row.
+pub(super) fn finish(p: &mut Presenter, id: ChecksumJobId, completion: ChecksumCompletion) {
     let generation = p.checksums.sessions[&id].generation;
     let retention = ChecksumRetention::new(());
     let row = Arc::new(ChecksumRow {

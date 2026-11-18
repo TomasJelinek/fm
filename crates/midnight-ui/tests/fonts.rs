@@ -228,13 +228,9 @@ fn font_options_keep_family_and_density_bases_independent() {
             renderer.render(&mut pixels, 1040);
         });
         assert_eq!(pixels[(height / 2 + 60) * 1040 + 230], surface);
-        // Known product limitation: the User menu has six rows since a728d01, but
-        // `ui/main.slint` still sizes it for five (`Theme.control-height * 5 + 90px`),
-        // so at 32px Close starts below the clip. Until the height is fixed (F8), this
-        // test only requires that Close is reachable by scrolling its list; then it
-        // should again require Close to be visible without scrolling.
-        // Close must close the menu itself: any click outside, or on another row,
-        // would also close the popup.
+        // The User menu is sized for all of its rows, so its last row, Close, is
+        // visible at 32px without scrolling. Close must close the menu itself: any
+        // click outside, or on another row, would also close the popup.
         let rows_run = Rc::new(Cell::new(0));
         let bump = |counter: &Rc<Cell<i32>>| {
             let counter = counter.clone();
@@ -243,14 +239,14 @@ fn font_options_keep_family_and_density_bases_independent() {
         window.on_properties(bump(&rows_run));
         window.on_folder_sizes(bump(&rows_run));
         window.on_calculate_checksums(bump(&rows_run));
-        let (x, y) = revealed_center(&window, "Close", 1040.0, height as f32);
+        let (x, y) = unscrolled(&window, "Close", 1040.0, height as f32).center;
         click(&window, x, y);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
         assert!(
             !ui::has_popup(&window),
-            "User menu Close must be reachable at 32px and close the menu; density={density}"
+            "User menu Close must be visible without scrolling at 32px and close the menu; density={density}"
         );
         assert_eq!(rows_run.get(), 0, "Close must not run another menu row");
         assert_ne!(
@@ -262,10 +258,58 @@ fn font_options_keep_family_and_density_bases_independent() {
     window.hide().unwrap();
 }
 
-/// Scroll the open popup's button `label` into its list through real wheel input,
-/// then return its centre after asserting it is inside the window and every
-/// scrolling ancestor's clip (a clipped row could only be hit through another one).
-fn revealed_center(window: &MainWindow, label: &str, width: f32, height: f32) -> (f32, f32) {
+/// The User menu is sized for its title and all of its rows at every font size and
+/// density: Close, the last row, is visible without scrolling, and less than a row
+/// of the list stays blank below it.
+#[test]
+fn user_menu_fits_its_rows_at_every_font_size() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
+    midnight_ui::install_file_keys(&window);
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    native.set_size(slint::PhysicalSize::new(1040, 820));
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(1040.0, 820.0),
+    });
+    for (density, font) in [(0, 12), (0, 13), (0, 16), (0, 32), (1, 15), (1, 32)] {
+        window.invoke_apply_fonts("".into(), font, font);
+        window.invoke_apply_preferences(0, density);
+        window.invoke_focus_files();
+        key(&window, Key::F9);
+        ui::settle_layout(window.window());
+        let close = unscrolled(&window, "Close", 1040.0, 820.0);
+        assert!(
+            close.below < close.height,
+            "the User menu leaves a blank row below Close at {font}px, density {density}: {}px below a {}px row",
+            close.below,
+            close.height
+        );
+        key(&window, Key::Escape);
+        ui::settle_layout(window.window());
+        assert!(
+            !ui::has_popup(&window),
+            "Escape closes the User menu; font={font}, density={density}"
+        );
+    }
+    window.hide().unwrap();
+}
+
+/// An open popup's button, asserted to be inside the window and every scrolling
+/// ancestor's clip without scrolling anything (a clipped row could only be hit
+/// through another one).
+struct Unscrolled {
+    center: (f32, f32),
+    height: f32,
+    /// How far the innermost scrolling clip extends below the button.
+    below: f32,
+}
+
+fn unscrolled(window: &MainWindow, label: &str, width: f32, height: f32) -> Unscrolled {
     use i_slint_core::{
         item_tree::{ItemRc, ParentItemTraversalMode},
         items::Flickable,
@@ -280,52 +324,33 @@ fn revealed_center(window: &MainWindow, label: &str, width: f32, height: f32) ->
             origin.y + rect.height(),
         )
     };
-    let viewports = |item: &ItemRc| {
-        let mut found = Vec::new();
-        let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
-        while let Some(ancestor) = parent {
-            if ancestor.downcast::<Flickable>().is_some() {
-                found.push(ancestor.clone());
-            }
-            parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
-        }
-        found
-    };
     let item = ui::popup_item(window, label, AccessibleRole::Button);
-    for viewport in viewports(&item).iter().rev() {
-        let (area, clip) = (bounds(&item), bounds(viewport));
-        let delta = if area.1 < clip.1 {
-            clip.1 - area.1
-        } else if area.3 > clip.3 {
-            clip.3 - area.3
-        } else {
-            0.0
-        };
-        if delta != 0.0 {
-            window
-                .window()
-                .dispatch_event(WindowEvent::PointerScrolled {
-                    position: slint::LogicalPosition::new(clip.0 + 4.0, clip.1 + 4.0),
-                    delta_x: 0.0,
-                    delta_y: delta,
-                });
-            slint::platform::update_timers_and_animations();
-        }
-    }
     let area = bounds(&item);
     assert!(
         area.0 >= 0.0 && area.1 >= 0.0 && area.2 <= width && area.3 <= height,
         "{label} outside the window: {area:?}"
     );
-    for viewport in viewports(&item) {
-        let clip = bounds(&viewport);
-        assert!(
-            area.0 >= clip.0 - 0.5
-                && area.1 >= clip.1 - 0.5
-                && area.2 <= clip.2 + 0.5
-                && area.3 <= clip.3 + 0.5,
-            "{label} clipped by its scroll view: {area:?}, clip {clip:?}"
-        );
+    let mut below = None;
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = parent {
+        if ancestor.downcast::<Flickable>().is_some() {
+            let clip = bounds(&ancestor);
+            assert!(
+                area.0 >= clip.0 - 0.5
+                    && area.1 >= clip.1 - 0.5
+                    && area.2 <= clip.2 + 0.5
+                    && area.3 <= clip.3 + 0.5,
+                "{label} needs scrolling: {area:?}, clip {clip:?}"
+            );
+            if below.is_none() {
+                below = Some(clip.3 - area.3);
+            }
+        }
+        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
     }
-    ((area.0 + area.2) / 2.0, (area.1 + area.3) / 2.0)
+    Unscrolled {
+        center: ((area.0 + area.2) / 2.0, (area.1 + area.3) / 2.0),
+        height: area.3 - area.1,
+        below: below.expect("the button is inside a scrolling list"),
+    }
 }

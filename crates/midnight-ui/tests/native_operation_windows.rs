@@ -601,30 +601,57 @@ fn embedded_copy_draft_keeps_the_source_box_above_a_single_line_destination() {
 
 /// Window widths below the dialog's desired 540 px narrow the dialog, so every wrap
 /// point of a multi-word source sweeps through any width mismatch between how the
-/// summary is measured and how it is drawn, independent of the font in use.
+/// summary is measured and how it is drawn, independent of the font in use. The
+/// short window makes the dialog compact: its padding narrows and a warning moves
+/// from above the summary into it. The summary box must end exactly where its
+/// wrapped text ends in every case: lower would hide the last line, higher would
+/// leave a blank one.
 #[test]
-#[ignore = "DEFERRED-CROSS F8: OperationDialog measures its summary 14 px wider than DialogText draws it, so a source that wraps inside that band loses its last line; enable with the fix"]
 fn embedded_copy_draft_shows_every_wrapped_source_completely() {
     let h = Harness::with_root(
         std::env::temp_dir().join("copy draft source with several short words that wrap 文档"),
     );
     let child = h.transfer(PaneId::Left, false);
-    let body = h.main.global::<OperationPresentation>().get_body();
+    let presentation = h.main.global::<OperationPresentation>();
+    let body = presentation.get_body();
     h.main.invoke_apply_fonts("".into(), 13, 15);
     h.main.invoke_apply_preferences(3, 0);
-    let mut clipped = Vec::new();
-    for width in (320..=600).step_by(2) {
-        modeless::layout(&child, width, 520);
-        let source = item(&child, &body, AccessibleRole::Text);
-        let (.., text_bottom) = bounds(&source);
-        let (.., box_bottom) = bounds(&viewport(&source));
-        if text_bottom > box_bottom + 0.5 {
-            clipped.push((width, text_bottom - box_bottom));
+    let mut mismatched = Vec::new();
+    for warned in [false, true] {
+        if warned {
+            // A confirmation refused while the fixture's only owned scope is held
+            // keeps the draft open with a warning.
+            h.commands.borrow_mut().clear();
+            let held = (h.begin)().expect("no owned action is running");
+            key(&child, Key::Return);
+            drop(held);
+            assert!(
+                h.commands.borrow().is_empty(),
+                "the refused draft must not run"
+            );
+        }
+        let warning = presentation.get_warning();
+        assert_eq!(warning.is_empty(), !warned);
+        for (height, step) in [(520, 2), (250, 6)] {
+            let summary = if warned && height < 280 {
+                format!("{warning}\n\n{body}")
+            } else {
+                body.to_string()
+            };
+            for width in (320..=600).step_by(step) {
+                modeless::layout(&child, width, height);
+                let source = item(&child, &summary, AccessibleRole::Text);
+                let (.., text_bottom) = bounds(&source);
+                let (.., box_bottom) = bounds(&viewport(&source));
+                if (text_bottom - box_bottom).abs() > 0.5 {
+                    mismatched.push((warned, width, height, text_bottom - box_bottom));
+                }
+            }
         }
     }
     assert!(
-        clipped.is_empty(),
-        "the source summary hides its last line at these window widths (width, hidden px): {clipped:?}"
+        mismatched.is_empty(),
+        "the summary box must end where its wrapped text ends at these sizes (warning, width, height, hidden px; negative: blank px): {mismatched:?}"
     );
 }
 

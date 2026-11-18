@@ -81,6 +81,14 @@ impl Presenter {
                         );
                         if let Some(parent) = receipt.path.parent() {
                             for pane in [PaneId::Left, PaneId::Right] {
+                                // As after transfers and file operations, an adopted
+                                // native tree reconciles its loaded branches; a flat
+                                // re-read would leave tree mode.
+                                if self.panes[pane.index()]
+                                    .queue_native_tree_refresh(&mut self.retired)
+                                {
+                                    continue;
+                                }
                                 self.queue_operation_refresh(pane, parent, None);
                             }
                         }

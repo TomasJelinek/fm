@@ -358,6 +358,89 @@ fn all_terminal_transfer_outcomes_refresh_native_trees_without_path_sampling() {
 }
 
 #[test]
+fn saved_checksum_manifest_reconciles_an_adopted_tree_instead_of_reading_it_flat() {
+    let mut p = loaded();
+    let view = p.panes[0].tree_view().unwrap().clone();
+    let root = p.panes[0].display_path().to_path_buf();
+    let files = SelectedFiles {
+        selection: Arc::new(SelectionSnapshot::default()),
+        view: Arc::new(DirectoryIndex::default()),
+        fallback: Some(root.join("child")),
+    };
+    let id = p
+        .open_captured_checksums(PaneId::Left, root.clone(), files, &|_| true)
+        .unwrap();
+    super::super::checksums_tests::finish(&mut p, id, ChecksumCompletion::Completed);
+    let queued = RefCell::new(None);
+    let form = checksums::ChecksumSaveForm {
+        generation: p.checksums.sessions[&id].generation.0,
+        algorithm: ChecksumAlgorithm::Sha256,
+        destination: "checksums.sha256".into(),
+        acknowledge: false,
+    };
+    assert!(p.save_checksum_manifest(id, form, &|command| {
+        *queued.borrow_mut() = Some(command);
+        true
+    }));
+    let Some(Command::SaveChecksumManifest {
+        save_id,
+        job,
+        generation,
+        request,
+    }) = queued.into_inner()
+    else {
+        panic!("the manifest save must be queued");
+    };
+    assert_eq!(request.destination.parent(), Some(root.as_path()));
+    let sent = RefCell::new(Vec::new());
+    p.apply_with_sender(
+        Event::ChecksumManifest(Box::new(ChecksumManifestEvent {
+            save_id,
+            job,
+            generation,
+            update: ChecksumManifestUpdate::Finished(Ok(ChecksumManifestReceipt {
+                path: request.destination.clone(),
+                included: 1,
+                excluded: 0,
+                verified_bytes: 3,
+            })),
+        })),
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    let sent = sent.into_inner();
+    assert!(
+        sent.iter().all(|command| !matches!(
+            command,
+            Command::Navigate {
+                pane: PaneId::Left,
+                ..
+            } | Command::Refresh {
+                pane: PaneId::Left,
+                ..
+            }
+        )),
+        "a flat re-read would leave tree mode"
+    );
+    assert!(
+        p.operations
+            .refresh
+            .iter()
+            .all(|(pane, _, _)| *pane != PaneId::Left)
+    );
+    assert!(Arc::ptr_eq(p.panes[0].tree_view().unwrap(), &view));
+    assert!(
+        sent.iter()
+            .any(|command| matches!(command, Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::RefreshLoaded(request)
+                if Arc::ptr_eq(&request.view, &view)))),
+        "the saved manifest must reach the tree through maintenance"
+    );
+}
+
+#[test]
 fn archive_tree_never_gets_native_maintenance() {
     let mut p = loaded();
     p.panes[0].archive = super::archives::archive_pane().panes[0].archive.take();

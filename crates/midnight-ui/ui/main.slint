@@ -1456,10 +1456,21 @@ export component MainWindow inherits Window {
         close-policy: close-on-click-outside;
         x: (root.width - self.width) / 2; y: max(4px, root.height - self.height - 75px);
         width: min(root.width - 24px, max(340px, Theme.font-size * 18 + 24px));
-        height: min(root.height - 8px, max(Theme.touch ? 280px : 220px, Theme.control-height * 5 + 90px));
-        CommandMenuBody {
+        // Room for every row without scrolling when the window is tall enough:
+        // CommandMenuBody's 12px padding, its title, 8px spacing and each of its
+        // item-count rows at their Theme.control-height minimum, 8px apart.
+        height: min(root.height - 8px, max(Theme.touch ? 280px : 220px,
+            2 * 12px + user-menu-title.preferred-height + 8px
+            + user-menu-body.item-count * (Theme.control-height + 8px) - 8px));
+        user-menu-title := Text {
+            visible: false; accessible-role: none;
+            text: user-menu-body.title; font-size: Theme.font-size * 1.4;
+        }
+        user-menu-body := CommandMenuBody {
             dismissed => { user-menu.close(); }
             title: "User menu";
+            // The number of `rows`, kept constant (not `rows.length`) so that arriving
+            // icons or shortcut hints never rebuild the rows during a gesture.
             item-count: 6;
             rows: [
                 { native-icon: root.action-icons.terminal, fallback-icon: FallbackIcons.terminal, label: "Command line", hint: ShortcutHints.hint("Toggle command editor focus without running a command", "command.focus") },

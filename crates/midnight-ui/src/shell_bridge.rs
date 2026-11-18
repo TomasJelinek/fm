@@ -110,6 +110,13 @@ pub(crate) fn install(
         })
         .is_none()
         {
+            // The popup closed when the item was chosen. Release the captured menu
+            // as a dismissal does, or it would block every later context menu; a
+            // captured tree-menu owner stays in its slot until an owned action
+            // retires it.
+            if let Ok(mut p) = state.try_borrow_mut() {
+                p.dismiss_file_menu(token.as_str());
+            }
             report_busy(&state);
         }
         refresh_if_idle(&window, &state);

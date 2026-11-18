@@ -32,6 +32,15 @@ export component OperationDialog inherits Rectangle {
     callback cancel();
     callback move-dialog(length, length);
     private property <bool> compact: root.height < 280px;
+    // What DialogText draws: the compact layout moves the warning into the summary,
+    // the regular layout shows it separately above.
+    private property <string> summary: (root.compact && root.warning != "" ? root.warning + "\n\n" : "") + root.body;
+    pure function form-padding(is-compact: bool) -> length { return is-compact ? 8px : 16px; }
+    // The width DialogText draws the summary at: inside the form padding on both
+    // sides, the scrollbar overlay the form reserves and DialogText's 16px text inset.
+    pure function summary-width(is-compact: bool) -> length {
+        return max(1px, root.width - 2 * root.form-padding(is-compact) - FluentScrollMetrics.overlay-size - 16px);
+    }
     function reveal-middle(top: length, extent: length) {
         if top < -middle.content-y { middle.content-y = -top; }
         else if top + extent > -middle.content-y + middle.visible-height {
@@ -74,10 +83,21 @@ export component OperationDialog inherits Rectangle {
         + (root.wait-visible ? max(Theme.control-height, wait-option.preferred-height) + 12px : 0px)
         + (root.policy != "" ? policy-measure.preferred-height + 12px : 0px)
         + max(32px, confirm-button.preferred-height) + 36px, 220px, 640px);
+    // The dialog height counts the summary at its regular-layout width, a warning
+    // included as the compact layout draws it (standing in for the separate warning
+    // text). It cannot follow `compact`, which depends on that height.
     summary-measure := Text {
         visible: false; accessible-role: none;
-        width: max(1px, root.width - 48px);
+        width: root.summary-width(false);
         text: (root.warning != "" ? root.warning + "\n\n" : "") + root.body;
+        font-size: Theme.font-size; wrap: word-wrap;
+    }
+    // The summary box fits exactly what DialogText draws, in either layout; nothing
+    // that decides the dialog height reads this measure.
+    drawn-summary := Text {
+        visible: false; accessible-role: none;
+        width: root.summary-width(root.compact);
+        text: root.summary;
         font-size: Theme.font-size; wrap: word-wrap;
     }
     policy-measure := Text {
@@ -146,7 +166,7 @@ export component OperationDialog inherits Rectangle {
             reject
         }
         VerticalLayout {
-            padding: root.compact ? 8px : 16px; spacing: root.compact ? 4px : 12px;
+            padding: root.form-padding(root.compact); spacing: root.compact ? 4px : 12px;
             DialogHeader {
                 title: root.title; native-icon: root.native-icon; fallback-icon: root.fallback-icon;
                 compact: root.compact; text-size: Theme.font-size * 1.2;
@@ -170,12 +190,12 @@ export component OperationDialog inherits Rectangle {
                         font-size: Theme.font-size; wrap: word-wrap;
                     }
                     Rectangle {
-                        height: min(280px, summary-measure.preferred-height);
+                        height: min(280px, drawn-summary.preferred-height);
                         background: transparent; clip: true;
                         DialogText {
                             x: 0px;
                             y: 0px; width: parent.width; height: parent.height;
-                            text: (root.compact && root.warning != "" ? root.warning + "\n\n" : "") + root.body;
+                            text: root.summary;
                             min-height: 0px;
                         }
                     }
