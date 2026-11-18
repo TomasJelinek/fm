@@ -511,7 +511,10 @@ impl MountedFilesystem for CapturedArchive {
         }
         // Probes, tree collapse and re-requests cancel routinely; the host ends a
         // cancelled listing between pages and keeps the shared mount (archive_shared.rs).
-        let rows = self.mount.list(id, cancel).map_err(map_error)?;
+        let rows = self
+            .mount
+            .list(id, cancel)
+            .map_err(|error| map_error(error, cancel))?;
         check(self.mount.as_ref(), cancel)?;
         self.validate_rows(id, &rows)?;
         self.cache(&rows, false)?;
@@ -682,13 +685,16 @@ fn token(mount: u64, entry: u64) -> Result<NodeToken, ProviderError> {
 
 fn check(mount: &dyn ArchiveMount, cancel: &Cancellation) -> Result<(), ProviderError> {
     super::registry::check_cancel(cancel)?;
-    mount.validate().map_err(map_error)?;
+    mount.validate().map_err(|error| map_error(error, cancel))?;
     super::registry::check_cancel(cancel)
 }
 
-fn map_error(error: FsError) -> ProviderError {
+/// An interruption is this request's cancellation only when the request was cancelled.
+/// Otherwise the provider stopped on its own, for example a worker that a host ended
+/// after a protocol violation, and the request failed.
+fn map_error(error: FsError, cancel: &Cancellation) -> ProviderError {
     match error.kind {
-        io::ErrorKind::Interrupted => ProviderError::Cancelled,
+        io::ErrorKind::Interrupted if cancel.is_cancelled() => ProviderError::Cancelled,
         io::ErrorKind::Unsupported => ProviderError::Unsupported,
         _ => ProviderError::Failed(error.to_string()),
     }

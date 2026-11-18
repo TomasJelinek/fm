@@ -30,13 +30,13 @@ impl ContentSource for Source {
             self.token.cancel();
         }
         if count == self.stop_on_validation.load(Ordering::SeqCst) {
+            // The supervisor's idle deadline ends the worker meanwhile.
             self.supervision
                 .lock()
                 .unwrap()
                 .upgrade()
                 .unwrap()
-                .stop
-                .store(true, Ordering::Release);
+                .request_stop(Stop::Expired);
         }
         if count == self.change_on_validation.load(Ordering::SeqCst) {
             return Err(Error("fixture source changed".into()));
@@ -638,6 +638,7 @@ fn cooperative_watchdog_stop_during_cancel_acknowledgement_keeps_mount_failed() 
         .cancel_on_validation
         .store(1, Ordering::SeqCst);
     fixture.source.stop_on_validation.store(3, Ordering::SeqCst);
+    // The cancelled request itself still sees its cancellation.
     assert_eq!(fixture.read().unwrap_err().kind, io::ErrorKind::Interrupted);
     assert!(fixture.sent().iter().any(|message| matches!(
         message,
@@ -648,9 +649,12 @@ fn cooperative_watchdog_stop_during_cancel_acknowledgement_keeps_mount_failed() 
     )));
     assert!(fixture.mount.supervision.stop.load(Ordering::Acquire));
     fixture.source.cancelled.store(false, Ordering::Release);
-    assert!(
-        fixture.mount.list(1, &Cancellation::default()).is_err(),
-        "a racing watchdog stop must not leave a usable mount"
+    let error = fixture.mount.list(1, &Cancellation::default()).unwrap_err();
+    // Later requests are told that the watchdog ended the worker, not "cancelled".
+    assert_eq!(
+        error.kind,
+        io::ErrorKind::TimedOut,
+        "a racing watchdog stop must not leave a usable mount: {error}"
     );
 }
 
@@ -726,21 +730,54 @@ fn listing_then_next(pages: Vec<(Vec<api::Node>, bool)>) -> Vec<Message> {
     replies
 }
 /// A protocol violation ends the worker: later requests fail without an exchange, as
-/// after any other failed exchange.
+/// after any other failed exchange, and report that failure instead of a cancellation.
 fn assert_worker_ended(fixture: &Fixture, context: &str) {
     assert!(
         fixture.mount.supervision.stopped(),
         "{context}: the violating worker kept serving the mount"
     );
-    assert_eq!(
-        fixture
-            .mount
-            .list(1, &Cancellation::default())
-            .unwrap_err()
-            .kind,
-        io::ErrorKind::Interrupted,
-        "{context}"
+    let error = fixture.mount.list(1, &Cancellation::default()).unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::Other, "{context}: {error}");
+    assert!(
+        error.message.contains("stopped after a failed request"),
+        "{context}: {error}"
     );
+}
+
+#[test]
+fn an_unrequested_cancellation_reply_is_a_violation_not_a_cancellation() {
+    for protocol in [Protocol::V1, Protocol::V2, Protocol::V3] {
+        let context = format!("{protocol:?}");
+        let fixture = Fixture::new(protocol, vec![cancelled(1), next_page(2)]);
+        let error = fixture
+            .mount
+            .read(2, 0, 4, &Cancellation::default())
+            .unwrap_err();
+        assert_eq!(error.kind, io::ErrorKind::InvalidData, "{context}: {error}");
+        assert!(
+            error
+                .message
+                .contains("unrequested cancellation (request canceled)"),
+            "{context}: {error}"
+        );
+        assert_worker_ended(&fixture, &context);
+        // The later error names the violation that ended the worker.
+        let later = fixture
+            .mount
+            .read(2, 0, 4, &Cancellation::default())
+            .unwrap_err();
+        assert!(
+            later.message.contains("unrequested cancellation"),
+            "{context}: {later}"
+        );
+        assert!(
+            !fixture.sent().iter().any(|message| matches!(
+                message,
+                Message::Read { request: 2, .. } | Message::List { .. }
+            )),
+            "{context}: a stopped worker received another request"
+        );
+    }
 }
 
 #[test]

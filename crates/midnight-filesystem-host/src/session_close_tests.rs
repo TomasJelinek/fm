@@ -362,7 +362,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.gates.release_all();
-        self.supervision.request_stop();
+        self.supervision.request_stop(Stop::Closed);
         drop(self.mount.take());
         if let Some(worker) = self.supervisor.take()
             && let Err(payload) = worker.join()

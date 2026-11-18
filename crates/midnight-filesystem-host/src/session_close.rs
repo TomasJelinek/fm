@@ -1,6 +1,6 @@
 //! A session-specific acknowledgement from the existing independent supervisor.
 //! No archive/Copy retirement queue or fresh I/O acquisition participates in this wait.
-use super::{ACTIVE, Mount, Supervision};
+use super::{ACTIVE, Mount, Stop, Supervision};
 use midnight_core::{ArchiveMount, FsError};
 use std::{
     io,
@@ -341,7 +341,7 @@ pub(super) fn release(mount: Arc<Mount>) -> Result<(), FsError> {
                 receipt.observe_cleanup(true);
                 *retained += 1;
                 if Arc::strong_count(mount.get()) == *retained {
-                    mount.get().supervision.request_stop();
+                    mount.get().supervision.request_stop(Stop::Closed);
                 }
                 return Err(fail(failure));
             }
@@ -375,7 +375,7 @@ fn release_last(mount: Mount) -> Result<(), FsError> {
     let fail = |message: String| {
         FsError::from_io("release archive", &container, io::Error::other(message))
     };
-    mount.get().supervision.request_stop();
+    mount.get().supervision.request_stop(Stop::Closed);
     let receipt = mount.get().close.clone();
     receipt.wait().map_err(fail)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

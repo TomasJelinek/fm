@@ -7,7 +7,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -37,16 +37,45 @@ struct Watch {
 impl Watch {
     /// Time left before expiry, or None once idle progress or hard cancellation ended it.
     fn remaining(&self, now: Instant) -> Option<Duration> {
-        if self.cancel.as_ref().is_some_and(Cancellation::is_cancelled) {
+        if self.cancelled() {
             return None;
         }
         self.deadline
             .checked_duration_since(now)
             .filter(|remaining| !remaining.is_zero())
     }
+    fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(Cancellation::is_cancelled)
+    }
+}
+/// Why the worker of a session was ended. The first cause is kept, and every later
+/// request reports it: only a cancelled startup is a cancellation.
+#[derive(Debug)]
+enum Stop {
+    /// A failed exchange (a protocol violation, or a worker, pipe, source or staging
+    /// failure), with its failure message.
+    Failed(String),
+    /// The exchange made no progress before its idle deadline.
+    Expired,
+    /// The startup exchange was hard-cancelled by the caller that owns the mount.
+    Cancelled,
+    /// Mount teardown.
+    Closed,
+}
+impl Stop {
+    /// A failure message bounded for retention in the session and in later errors.
+    fn failed(message: &str) -> Self {
+        const MAX_BYTES: usize = 512;
+        let mut end = message.len().min(MAX_BYTES);
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        Self::Failed(message[..end].to_owned())
+    }
 }
 struct Supervision {
     stop: AtomicBool,
+    cause: OnceLock<Stop>,
     watch: Mutex<Option<Watch>>,
     changed: Condvar,
 }
@@ -54,6 +83,7 @@ impl Supervision {
     fn new(watch: Option<Watch>) -> Self {
         Self {
             stop: AtomicBool::new(false),
+            cause: OnceLock::new(),
             watch: Mutex::new(watch),
             changed: Condvar::new(),
         }
@@ -65,11 +95,31 @@ impl Supervision {
         self.stop.load(Ordering::Acquire)
     }
     /// Mount teardown or a failed exchange: wake the supervisor to end the worker.
-    fn request_stop(&self) {
+    fn request_stop(&self, cause: Stop) {
+        // Recorded before the flag, so whoever observes the stop finds its cause.
+        let _ = self.cause.set(cause);
         self.stop.store(true, Ordering::Release);
         // Notify under the lock: a supervisor between its check and wait cannot miss it.
         let _watch = self.lock();
         self.changed.notify_all();
+    }
+    /// The error of a request that finds the worker stopped. It names the cause: a
+    /// stopped worker is a failure, not a cancellation, unless startup was cancelled.
+    fn stopped_error(&self) -> io::Error {
+        match self.cause.get() {
+            Some(Stop::Cancelled) => io::ErrorKind::Interrupted.into(),
+            Some(Stop::Expired) => io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "Archive worker made no progress for {} seconds and was stopped; open the archive again",
+                    DEADLINE.as_secs()
+                ),
+            ),
+            Some(Stop::Failed(reason)) => io::Error::other(format!(
+                "Archive worker was stopped after a failed request ({reason}); open the archive again"
+            )),
+            Some(Stop::Closed) | None => io::Error::other("Archive session is closed"),
+        }
     }
     /// Arm the watchdog for one exchange; this wakes an idle supervisor.
     fn begin(&self, now: Instant, cancel: Option<&Cancellation>) {
@@ -92,7 +142,8 @@ impl Supervision {
             cancel: cancel.cloned(),
         });
     }
-    /// Supervisor only: block until teardown, deadline expiry or hard cancellation.
+    /// Supervisor only: block until teardown, deadline expiry or hard cancellation, and
+    /// record the last two as the cause unless a stop request recorded one first.
     fn wait_for_stop_or_expiry(&self) {
         let mut watch = self.lock();
         loop {
@@ -103,6 +154,11 @@ impl Supervision {
                 None => None,
                 Some(active) => {
                     let Some(remaining) = active.remaining(Instant::now()) else {
+                        let _ = self.cause.set(if active.cancelled() {
+                            Stop::Cancelled
+                        } else {
+                            Stop::Expired
+                        });
                         return;
                     };
                     Some(match active.cancel {
@@ -297,7 +353,7 @@ impl Mount {
                 }
             })
         {
-            state.request_stop();
+            state.request_stop(Stop::Closed);
             let retained = owner.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(retained) = retained {
                 // start() already runs on a backend worker; do not need another thread
@@ -373,7 +429,8 @@ impl Mount {
     /// checkpoints, earlier protocols finish the exchange first, and a cancelled read
     /// never returns or caches newly staged content. Every other failure ends the
     /// worker, including a terminal reply that breaks a wire rule of its request, so a
-    /// misbehaving worker never keeps serving the other owners of the mount.
+    /// misbehaving worker never keeps serving the other owners of the mount. Requests
+    /// that then find the worker stopped report why (`Supervision::stopped_error`).
     fn exchange_read(
         &self,
         cancel: Option<&Cancellation>,
@@ -394,9 +451,9 @@ impl Mount {
         }
         let mut canceled_safely = false;
         let mut cancel_sent = false;
-        self.ensure_active(cancel).map_err(fail)?;
+        self.ensure_active(cancel, cancelled).map_err(fail)?;
         self.validate()
-            .inspect_err(|_| self.supervision.request_stop())?;
+            .inspect_err(|error| self.supervision.request_stop(Stop::failed(&error.message)))?;
         self.supervision.begin(Instant::now(), cancel);
         let result = (|| {
             channel.request = channel
@@ -422,7 +479,7 @@ impl Mount {
                 if let Some(lease) = cached {
                     let bytes = lease.read(offset, length).map_err(fail)?;
                     self.validate()?;
-                    self.ensure_active(cancel).map_err(fail)?;
+                    self.ensure_active(cancel, cancelled).map_err(fail)?;
                     if is_cancelled() {
                         canceled_safely = true;
                         return Err(interrupted());
@@ -443,26 +500,26 @@ impl Mount {
                 if reply.request() != request {
                     return Err(fail(io::ErrorKind::InvalidData.into()));
                 }
-                if self.supervision.stopped() || hard_cancelled() {
-                    return Err(fail(io::ErrorKind::Interrupted.into()));
-                }
+                self.ensure_active(cancel, cancelled).map_err(fail)?;
+                // Staging is gone only once the supervisor has ended the worker.
+                let ended = || fail(self.ended(cancel, cancelled));
                 if cancel_sent {
                     if !matches!(&reply, Message::Failed { code: api::ErrorCode::Cancelled, .. }) {
                         return Err(fail(io::ErrorKind::InvalidData.into()));
                     }
                     self.validate()?;
-                    self.ensure_active(cancel).map_err(fail)?;
+                    self.ensure_active(cancel, cancelled).map_err(fail)?;
                     self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
-                        .ok_or_else(interrupted)?.abandon_member(request).map_err(fail)?;
+                        .ok_or_else(ended)?.abandon_member(request).map_err(fail)?;
                     canceled_safely = true;
                     return Err(interrupted());
                 }
                 if let Some(cooperative) = cooperative {
                     let checkpoint = self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-                        .ok_or_else(interrupted)?.cancellation_checkpoint(&operation, &reply).map_err(fail)?;
+                        .ok_or_else(ended)?.cancellation_checkpoint(&operation, &reply).map_err(fail)?;
                     if checkpoint && cooperative() {
                         self.validate()?;
-                        self.ensure_active(cancel).map_err(fail)?;
+                        self.ensure_active(cancel, cancelled).map_err(fail)?;
                         api::write_message_with_protocol(&mut channel.input, self.protocol,
                             &Message::Failed { request, code: api::ErrorCode::Cancelled, message: "Preview read cancelled".into() }).map_err(fail)?;
                         cancel_sent = true;
@@ -495,10 +552,22 @@ impl Mount {
                         )
                         .map_err(fail)?;
                     }
+                    // Only the acknowledgement of a cancellation that this host sent
+                    // (handled above) is a cancellation; an unrequested one breaks the
+                    // protocol.
+                    Message::Failed {
+                        code: api::ErrorCode::Cancelled,
+                        message,
+                        ..
+                    } => {
+                        return Err(fail(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Archive worker reported an unrequested cancellation ({message})"),
+                        )));
+                    }
                     Message::Failed { code, message, .. } => {
                         return Err(fail(io::Error::new(
                             match code {
-                                api::ErrorCode::Cancelled => io::ErrorKind::Interrupted,
                                 api::ErrorCode::Unsupported | api::ErrorCode::ReadOnly => {
                                     io::ErrorKind::Unsupported
                                 }
@@ -512,9 +581,7 @@ impl Mount {
                         if self.protocol.supports_staging() {
                             let mut staging =
                                 self.staging.lock().unwrap_or_else(|e| e.into_inner());
-                            let staging = staging
-                                .as_mut()
-                                .ok_or_else(|| fail(io::ErrorKind::Interrupted.into()))?;
+                            let staging = staging.as_mut().ok_or_else(ended)?;
                             if let Some(reply) = staging.nested(&operation, &other).map_err(fail)? {
                                 if matches!(
                                     &reply,
@@ -532,7 +599,7 @@ impl Mount {
                                 continue;
                             }
                             self.validate()?;
-                            self.ensure_active(cancel).map_err(fail)?;
+                            self.ensure_active(cancel, cancelled).map_err(fail)?;
                             let lease = if cancelled.is_some() {
                                 staging.terminal_with_cache(&operation, &other, false)
                             } else { staging.terminal(&operation, &other) }.map_err(fail)?;
@@ -541,7 +608,7 @@ impl Mount {
                             {
                                 let bytes = lease.read(*offset, *length).map_err(fail)?;
                                 self.validate()?;
-                                self.ensure_active(cancel).map_err(fail)?;
+                                self.ensure_active(cancel, cancelled).map_err(fail)?;
                                 if is_cancelled() {
                                     staging.abandon_member(request).map_err(fail)?;
                                     canceled_safely = true;
@@ -576,20 +643,53 @@ impl Mount {
         .and_then(|reply| {
             // Source validation and native spool I/O may outlive the watchdog. The
             // completed result is publishable only while this operation remains active.
-            self.ensure_active(cancel).map_err(fail)?;
+            self.ensure_active(cancel, cancelled).map_err(fail)?;
             Ok(reply)
         });
+        // Idle expiry or a cancelled startup ends the worker from the supervisor, and
+        // the pipe failure that this causes is reported by that cause instead.
+        let result = match result {
+            Err(_) if !canceled_safely && self.supervision.stopped() => {
+                Err(fail(self.ended(cancel, cancelled)))
+            }
+            result => result,
+        };
         self.supervision.finish();
-        if result.is_err() && !canceled_safely {
-            self.supervision.request_stop();
+        if let Err(error) = &result
+            && !canceled_safely
+        {
+            self.supervision.request_stop(if hard_cancelled() {
+                Stop::Cancelled
+            } else {
+                Stop::failed(&error.message)
+            });
         }
         result
     }
-    fn ensure_active(&self, cancel: Option<&Cancellation>) -> io::Result<()> {
-        if self.supervision.stopped() || cancel.is_some_and(Cancellation::is_cancelled) {
-            Err(io::ErrorKind::Interrupted.into())
+    /// Hard cancellation or a stopped worker ends the exchange (`ended`).
+    fn ensure_active(
+        &self,
+        cancel: Option<&Cancellation>,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> io::Result<()> {
+        if cancel.is_some_and(Cancellation::is_cancelled) || self.supervision.stopped() {
+            Err(self.ended(cancel, cancelled))
         } else {
             Ok(())
+        }
+    }
+    /// Why an exchange cannot go on. A request that was cancelled itself stays a
+    /// cancellation; otherwise the worker was stopped, and the stop's cause is reported.
+    fn ended(
+        &self,
+        cancel: Option<&Cancellation>,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> io::Error {
+        if cancel.is_some_and(Cancellation::is_cancelled) || cancelled.is_some_and(|check| check())
+        {
+            io::ErrorKind::Interrupted.into()
+        } else {
+            self.supervision.stopped_error()
         }
     }
     fn progress(&self, cancel: Option<&Cancellation>) {
@@ -859,7 +959,7 @@ impl ArchiveMount for Mount {
 impl Drop for Mount {
     fn drop(&mut self) {
         // Process wait and permit release stay on the supervisor, never a UI destructor.
-        self.supervision.request_stop();
+        self.supervision.request_stop(Stop::Closed);
     }
 }
 
