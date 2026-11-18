@@ -47,7 +47,13 @@ pub(super) fn name_available(
         Ok(stat) => {
             if Identity::from_stat(&stat) == item.identity {
                 // On casefold filesystems an alternate spelling may address the same entry.
-                // A different existing hard-link name must still be treated as a collision.
+                // A directory has exactly one name and a file with one link has no other, so
+                // the spelling found the selected entry itself; the no-replace rename stays
+                // authoritative. Only another hard-link name needs the exact-name scan, which
+                // would otherwise read the whole directory for every case-only rename.
+                if item.identity.kind == FileType::Directory || stat.st_nlink <= 1 {
+                    return Ok(());
+                }
                 let directory = File::from(
                     openat(
                         &*item.parent,
@@ -90,11 +96,34 @@ pub(super) fn name_available(
     }
 }
 
+/// A directory's captured child names and the identity-checked descriptor that each child
+/// is opened relative to, one at a time (see [`MetadataChildren`]).
+struct Children {
+    path: PathBuf,
+    identity: Identity,
+    directory: Arc<File>,
+    names: CapturedNames,
+}
+
+/// Listing and pinning change nothing, so their cancellation has its own text.
+fn listing_continues(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
+    if cancel.wait_if_paused() {
+        Ok(())
+    } else {
+        Err(error(
+            path,
+            ErrorKind::Interrupted,
+            "metadata listing cancelled",
+        ))
+    }
+}
+
 pub(super) fn children(
     item: &Prepared,
     cancel: &Cancellation,
-    max_targets: usize,
-) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
+    max_names: usize,
+    max_bytes: usize,
+) -> Result<Box<dyn MetadataChildren>, FsError> {
     item.revalidate(cancel)?;
     if item.identity.kind != FileType::Directory {
         return Err(error(
@@ -104,19 +133,23 @@ pub(super) fn children(
         ));
     }
     let directory = Arc::new(usable_handle(item, &item.name, &item.item.path)?);
+    let (max_names, max_bytes) = (
+        max_names.min(MAX_METADATA_NAMES),
+        max_bytes.min(MAX_METADATA_NAMES_BYTES),
+    );
     let mut entries = Dir::read_from(&*directory).map_err(|e| native_error(&item.item.path, e))?;
     let mut names = Vec::new();
     let mut bytes = 0usize;
     for entry in &mut entries {
-        check_cancel(cancel, &item.item.path)?;
+        listing_continues(cancel, &item.item.path)?;
         let entry = entry.map_err(|e| native_error(&item.item.path, e))?;
         let raw = entry.file_name().to_bytes();
         if raw == b"." || raw == b".." {
             continue;
         }
+        // Raw byte lengths are the names' `OsStr::len`.
         bytes = bytes.saturating_add(raw.len());
-        if names.len() >= max_targets.min(MAX_METADATA_TARGETS) || bytes > MAX_METADATA_NAMES_BYTES
-        {
+        if names.len() >= max_names || bytes > max_bytes {
             return Err(error(
                 &item.item.path,
                 ErrorKind::Other,
@@ -125,14 +158,45 @@ pub(super) fn children(
         }
         names.push(OsStr::from_bytes(raw).to_owned());
     }
-    let mut result: Vec<Arc<dyn PreparedMutation>> = Vec::with_capacity(names.len());
-    for name in names {
-        check_cancel(cancel, &item.item.path)?;
-        let path = item.item.path.join(&name);
+    drop(entries);
+    Ok(Box::new(Children {
+        path: item.item.path.clone(),
+        identity: item.identity,
+        directory,
+        names: CapturedNames::new(names),
+    }))
+}
+
+impl MetadataChildren for Children {
+    fn names(&self) -> &[OsString] {
+        self.names.remaining()
+    }
+
+    fn pin_next(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Option<Result<Arc<dyn PreparedMutation>, (OsString, FsError)>> {
+        let name = self.names.take_next()?;
+        Some(match self.open(&name, cancel) {
+            Ok(mut child) => {
+                child.name = name;
+                Ok(Arc::new(child))
+            }
+            Err(error) => Err((name, error)),
+        })
+    }
+}
+
+impl Children {
+    /// Opens and pins the entry now named `name` relative to the retained directory
+    /// descriptor; the caller hands the pinned entry its name.
+    fn open(&self, name: &OsStr, cancel: &Cancellation) -> Result<Prepared, FsError> {
+        let path = self.path.join(name);
+        listing_continues(cancel, &path)?;
         let source = File::from(
             openat2(
-                &*directory,
-                &name,
+                &*self.directory,
+                name,
                 OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
                 ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_XDEV,
@@ -147,7 +211,7 @@ pub(super) fn children(
             FileType::Symlink => EntryKind::Symlink,
             _ => EntryKind::Other,
         };
-        result.push(Arc::new(Prepared {
+        Ok(Prepared {
             item: MutationItem {
                 path,
                 kind,
@@ -157,16 +221,15 @@ pub(super) fn children(
                     ..Default::default()
                 },
             },
-            parent_path: item.item.path.clone(),
-            name,
-            parent: directory.clone(),
-            parent_identity: item.identity,
+            parent_path: self.path.clone(),
+            name: OsString::new(),
+            parent: self.directory.clone(),
+            parent_identity: self.identity,
             identity,
             _source: source,
             trash_root: None,
-        }));
+        })
     }
-    Ok(result)
 }
 
 pub(super) fn edit(

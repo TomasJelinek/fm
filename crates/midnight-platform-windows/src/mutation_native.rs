@@ -546,7 +546,7 @@ pub(super) fn open_listing(parent: &File, name: &OsStr) -> io::Result<File> {
 
 /// A directory replaced (or turned into a link) between its pin and its listing open is a
 /// changed selection, reported like the adapter's other revalidation failures: `NotFound`.
-/// The engine reserves `ErrorKind::Other` from a metadata listing for its pin-budget
+/// The engine reserves `ErrorKind::Other` from a metadata listing for its name-budget
 /// refusal, so this must not use `Other`.
 fn directory_changed() -> io::Error {
     io::Error::new(
@@ -556,16 +556,33 @@ fn directory_changed() -> io::Error {
 }
 
 fn child_names(directory: &File, cancel: &Cancellation) -> io::Result<Vec<OsString>> {
-    bounded_child_names(directory, cancel, usize::MAX, usize::MAX)
+    collect_child_names(
+        directory,
+        cancel,
+        Limits::wide(usize::MAX, usize::MAX),
+        None,
+    )
 }
 
+/// The recursive metadata snapshot: at most `max_names` names whose `OsStr::len` (their
+/// WTF-8 bytes) together stay within `max_bytes`, as `PreparedMutation::metadata_children`
+/// promises; the excess name is refused with `ErrorKind::Other` before it is retained. Each
+/// name and the list hold no spare capacity, so the bytes the engine charges for the
+/// snapshot are the bytes it keeps.
 pub(super) fn bounded_child_names(
     directory: &File,
     cancel: &Cancellation,
     max_names: usize,
     max_bytes: usize,
 ) -> io::Result<Vec<OsString>> {
-    collect_child_names(directory, cancel, max_names, max_bytes, None)
+    let limits = Limits {
+        names: max_names,
+        bytes: max_bytes,
+        snapshot: true,
+    };
+    let mut names = collect_child_names(directory, cancel, limits, None)?;
+    names.shrink_to_fit();
+    Ok(names)
 }
 
 pub(crate) fn has_exact_child_name(
@@ -573,17 +590,34 @@ pub(crate) fn has_exact_child_name(
     name: &OsStr,
     cancel: &Cancellation,
 ) -> io::Result<bool> {
-    Ok(
-        !collect_child_names(directory, cancel, 1_000_000, 64 * 1024 * 1024, Some(name))?
-            .is_empty(),
-    )
+    let limits = Limits::wide(1_000_000, 64 * 1024 * 1024);
+    Ok(!collect_child_names(directory, cancel, limits, Some(name))?.is_empty())
+}
+
+/// How a listing bounds the names it reads.
+#[derive(Clone, Copy)]
+struct Limits {
+    names: usize,
+    bytes: usize,
+    /// The metadata snapshot measures each name as its `OsStr::len` and keeps it shrunk to
+    /// fit. Deletion and exact-name probes (Move shares them) measure UTF-16 bytes.
+    snapshot: bool,
+}
+
+impl Limits {
+    fn wide(names: usize, bytes: usize) -> Self {
+        Self {
+            names,
+            bytes,
+            snapshot: false,
+        }
+    }
 }
 
 fn collect_child_names(
     directory: &File,
     cancel: &Cancellation,
-    max_names: usize,
-    max_bytes: usize,
+    limits: Limits,
     find: Option<&OsStr>,
 ) -> io::Result<Vec<OsString>> {
     let mut names = Vec::new();
@@ -599,24 +633,38 @@ fn collect_child_names(
             if !cancel.wait_if_paused() {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
-                    "deletion cancelled",
+                    if limits.snapshot {
+                        "metadata listing cancelled"
+                    } else {
+                        "deletion cancelled"
+                    },
                 ));
             }
-            name_bytes = name_bytes.saturating_add(record.name.len() * 2);
-            if name_count >= max_names || name_bytes > max_bytes {
+            let mut name = OsString::from_wide(record.name);
+            let size = if limits.snapshot {
+                name.len()
+            } else {
+                record.name.len() * 2
+            };
+            name_bytes = name_bytes.saturating_add(size);
+            if name_count >= limits.names || name_bytes > limits.bytes {
                 return Err(io::Error::other(
                     "metadata directory snapshot exceeds its resource budget",
                 ));
             }
             name_count += 1;
-            let name = OsString::from_wide(record.name);
             match find {
                 Some(find) if name == find => {
                     found = true;
                     names = vec![name];
                 }
                 Some(_) => {}
-                None => names.push(name),
+                None => {
+                    if limits.snapshot {
+                        name.shrink_to_fit();
+                    }
+                    names.push(name);
+                }
             }
             Ok(())
         })?;

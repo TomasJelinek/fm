@@ -342,9 +342,10 @@ impl PreparedMutation for Prepared {
     fn metadata_children(
         &self,
         cancel: &Cancellation,
-        max_targets: usize,
-    ) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
-        metadata::children(self, cancel, max_targets)
+        max_names: usize,
+        max_bytes: usize,
+    ) -> Result<Box<dyn midnight_core::MetadataChildren>, FsError> {
+        metadata::children(self, cancel, max_names, max_bytes)
     }
     fn metadata_name_available(&self, name: &OsStr, cancel: &Cancellation) -> Result<(), FsError> {
         metadata::name_available(self, name, cancel)

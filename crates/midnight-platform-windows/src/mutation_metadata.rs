@@ -200,11 +200,21 @@ fn snapshot_file(source: &File, path: &Path) -> Result<MetadataSnapshot, FsError
     })
 }
 
+/// A directory's captured child names and the identity-checked directory handle that each
+/// child is opened relative to, one at a time (see [`MetadataChildren`]).
+struct Children {
+    path: PathBuf,
+    volume: u64,
+    directory: File,
+    names: CapturedNames,
+}
+
 pub(super) fn children(
     item: &WindowsMutation,
     cancel: &Cancellation,
-    max_targets: usize,
-) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
+    max_names: usize,
+    max_bytes: usize,
+) -> Result<Box<dyn MetadataChildren>, FsError> {
     checked(cancel, &item.item.path)?;
     if item.item.kind != EntryKind::Directory {
         return Err(invalid(
@@ -212,25 +222,56 @@ pub(super) fn children(
             "only ordinary directories can be traversed",
         ));
     }
-    let source = item.revalidate(false)?;
-    let enumeration = native::open_enumeration(&item.parent, &source, &item.name)
+    let directory = item.revalidate(false)?;
+    let enumeration = native::open_enumeration(&item.parent, &directory, &item.name)
         .map_err(|e| failure("enumerate metadata targets", &item.item.path, e))?;
     let names = native::bounded_child_names(
         &enumeration,
         cancel,
-        max_targets.min(MAX_METADATA_TARGETS),
-        MAX_METADATA_NAMES_BYTES,
+        max_names.min(MAX_METADATA_NAMES),
+        max_bytes.min(MAX_METADATA_NAMES_BYTES),
     )
     .map_err(|e| failure("snapshot metadata targets", &item.item.path, e))?;
-    let mut children: Vec<Arc<dyn PreparedMutation>> = Vec::with_capacity(names.len());
-    for name in names {
-        checked(cancel, &item.item.path)?;
-        let path = item.item.path.join(&name);
-        let child = native::open_child(&source, &name, false)
+    drop(enumeration);
+    Ok(Box::new(Children {
+        path: item.item.path.clone(),
+        volume: item.identity.volume,
+        directory,
+        names: CapturedNames::new(names),
+    }))
+}
+
+impl MetadataChildren for Children {
+    fn names(&self) -> &[OsString] {
+        self.names.remaining()
+    }
+
+    fn pin_next(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Option<Result<Arc<dyn PreparedMutation>, (OsString, FsError)>> {
+        let name = self.names.take_next()?;
+        Some(match self.open(&name, cancel) {
+            Ok(mut child) => {
+                child.name = name;
+                Ok(Arc::new(child))
+            }
+            Err(error) => Err((name, error)),
+        })
+    }
+}
+
+impl Children {
+    /// Opens and pins the entry now named `name` relative to the retained directory handle;
+    /// the caller hands the pinned entry its name.
+    fn open(&self, name: &OsStr, cancel: &Cancellation) -> Result<WindowsMutation, FsError> {
+        let path = self.path.join(name);
+        checked(cancel, &path)?;
+        let child = native::open_child(&self.directory, name, false)
             .map_err(|e| failure("pin child", &path, e))?;
         let identity =
             native::local_identity(&child).map_err(|e| failure("identify child", &path, e))?;
-        if identity.volume != item.identity.volume {
+        if identity.volume != self.volume {
             return Err(invalid(&path, "mount crossings are not allowed"));
         }
         let meta = child
@@ -238,27 +279,26 @@ pub(super) fn children(
             .map_err(|e| failure("inspect child", &path, e))?;
         let native = crate::reparse::Native::of(&child, meta.file_attributes())
             .map_err(|e| failure("inspect child", &path, e))?;
-        let attrs = native.attributes;
-        let kind = native.kind();
-        children.push(Arc::new(WindowsMutation {
+        let parent = self
+            .directory
+            .try_clone()
+            .map_err(|e| failure("pin parent", &self.path, e))?;
+        Ok(WindowsMutation {
             item: MutationItem {
                 path,
-                kind,
+                kind: native.kind(),
                 metadata: EntryMetadata {
-                    native_attributes: Some(attrs),
+                    native_attributes: Some(native.attributes),
                     modified: meta.modified().ok(),
                     ..Default::default()
                 },
             },
-            parent: source
-                .try_clone()
-                .map_err(|e| failure("pin parent", &item.item.path, e))?,
+            parent,
             source: child,
-            name,
+            name: OsString::new(),
             identity,
-        }));
+        })
     }
-    Ok(children)
 }
 
 pub(super) fn edit(

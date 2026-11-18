@@ -262,3 +262,37 @@ fn file_identity_combines_volume_and_file_id() {
     assert_eq!(legacy.id[..8], first.id[..8]);
     assert_eq!(legacy.volume as u32, first.volume as u32);
 }
+
+#[test]
+fn metadata_snapshot_counts_encoded_name_bytes_and_keeps_no_spare_capacity() {
+    let temp = build_temp("snapshot-");
+    fs::create_dir(temp.path().join("listed")).unwrap();
+    for name in ["ab", "文"] {
+        fs::write(temp.path().join("listed").join(name), b"x").unwrap();
+    }
+    let parent = open_parent(temp.path()).unwrap();
+    // Each snapshot reads its own listing handle from the start.
+    let snapshot = |cancel: &Cancellation, max_names, max_bytes| {
+        let listing = open_listing(&parent, OsStr::new("listed")).unwrap();
+        bounded_child_names(&listing, cancel, max_names, max_bytes)
+    };
+    let cancel = Cancellation::default();
+    // "ab" is 2 bytes and "文" 3 (`OsStr::len`, WTF-8): 5 in all, where UTF-16 counts 6.
+    let mut names = snapshot(&cancel, 2, 5).unwrap();
+    assert_eq!(names.capacity(), names.len());
+    assert!(names.iter().all(|name| name.capacity() == name.len()));
+    names.sort();
+    assert_eq!(names, ["ab", "文"]);
+    for (max_names, max_bytes) in [(2, 4), (1, 5)] {
+        let refusal = snapshot(&cancel, max_names, max_bytes).unwrap_err();
+        assert_eq!(
+            refusal.kind(),
+            io::ErrorKind::Other,
+            "{max_names} names, {max_bytes} bytes: {refusal}"
+        );
+    }
+    cancel.cancel();
+    let cancelled = snapshot(&cancel, 2, 5).unwrap_err();
+    assert_eq!(cancelled.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(cancelled.to_string(), "metadata listing cancelled");
+}

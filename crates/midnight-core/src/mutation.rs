@@ -1,7 +1,7 @@
 //! Backend-only, platform-specific file mutation capabilities.
 use crate::{Cancellation, EntryKind, EntryMetadata, FsError};
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fmt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -100,6 +100,74 @@ pub struct PreparedRenameReplacement {
     pub directory: Arc<dyn crate::TransferDirectory>,
     pub target: Arc<dyn crate::TransferTarget>,
 }
+
+/// Child names not processed yet that the name snapshots on one recursive metadata
+/// traversal path hold together; each name returns to the budget when its entry is taken
+/// (see [`PreparedMutation::metadata_children`] and `MAX_METADATA_NAMES_BYTES`).
+pub const MAX_METADATA_NAMES: usize = 100_000;
+
+/// One directory's child names, captured for recursive metadata traversal through the
+/// directory's pinned native handle before any child is opened or changed. Its entries are
+/// taken in the captured order and opened and pinned one at a time, only when the traversal
+/// processes them, relative to the handle this retains. Dropping it closes that handle; the
+/// engine drops it before it edits the directory itself.
+pub trait MetadataChildren: Send {
+    /// The captured names not taken yet, in native enumeration order (the next one first),
+    /// without `.` and `..`.
+    fn names(&self) -> &[OsString];
+    /// Takes the first of `names()`, releasing it, and opens and pins the entry now so named
+    /// relative to the retained directory handle, never through a pathname. A link at that
+    /// name is pinned as the link and never followed; an entry on another mount (on Windows,
+    /// another volume) is refused. The entry found now is pinned under its current identity,
+    /// even if it replaced the captured one; a missing entry fails with `NotFound`. A
+    /// failure concerns only this entry and gives its name back. `None` once every name was
+    /// taken.
+    fn pin_next(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Option<Result<Arc<dyn PreparedMutation>, (OsString, FsError)>>;
+}
+
+/// Storage for [`MetadataChildren::names`]: captured names taken in order. The slots of
+/// taken names are dropped, and the list shrunk, once they are at least as many as the
+/// names left, so the list never holds more than twice as many slots as names not taken
+/// yet, and no name or list keeps spare capacity.
+#[derive(Debug)]
+pub struct CapturedNames {
+    names: Vec<OsString>,
+    /// Leading slots whose names were taken; they hold no name.
+    taken: usize,
+}
+
+impl CapturedNames {
+    pub fn new(mut names: Vec<OsString>) -> Self {
+        for name in &mut names {
+            name.shrink_to_fit();
+        }
+        names.shrink_to_fit();
+        Self { names, taken: 0 }
+    }
+
+    /// The names not taken yet, the next one first.
+    pub fn remaining(&self) -> &[OsString] {
+        &self.names[self.taken..]
+    }
+
+    /// Takes the next name, or `None` once every name was taken. Dropping the taken slots
+    /// moves the names left, which is at most as many moves as names taken since the last
+    /// drop: constant time per name on average.
+    pub fn take_next(&mut self) -> Option<OsString> {
+        let name = std::mem::take(self.names.get_mut(self.taken)?);
+        self.taken += 1;
+        if self.taken >= self.names.len() - self.taken {
+            self.names.drain(..self.taken);
+            self.names.shrink_to_fit();
+            self.taken = 0;
+        }
+        Some(name)
+    }
+}
+
 /// An identity captured on a worker before confirmation. Implementations must
 /// revalidate it before mutation and never follow directory links recursively.
 /// No operation may silently replace another entry or fall back from trash to
@@ -147,20 +215,21 @@ pub trait PreparedMutation: Send + Sync {
         let _ = (name, cancel);
         Ok(())
     }
-    /// Snapshot child names and pin identities before any child is renamed. Implementations
-    /// reject links/mount crossings and enforce MAX_METADATA_TARGETS / names-byte limits.
-    ///
-    /// A directory with more than `max_targets` children (at most MAX_METADATA_TARGETS),
-    /// or whose child names exceed the names-byte limit, fails with
-    /// `std::io::ErrorKind::Other` before any child is opened or pinned. Every other
-    /// failure uses another kind: callers rely on `Other` to tell this budget refusal
-    /// apart (the engine reports it as too few pinned targets for the folder).
+    /// Revalidates this directory and captures its child names for recursive metadata
+    /// traversal, before any child is opened, pinned or changed; a link or mount crossing is
+    /// never listed. A directory with more than `max_names` children, or whose names together
+    /// exceed `max_bytes` (each name counted as its `OsStr::len`), fails with
+    /// `std::io::ErrorKind::Other` before more names are retained; callers pass what is left
+    /// of their traversal budget (at most `MAX_METADATA_NAMES` and `MAX_METADATA_NAMES_BYTES`).
+    /// Every other failure uses another kind: the engine reports `Other` as a refusal of that
+    /// budget. Names are released as their entries are taken (see [`MetadataChildren`]).
     fn metadata_children(
         &self,
         cancel: &Cancellation,
-        max_targets: usize,
-    ) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
-        let _ = (cancel, max_targets);
+        max_names: usize,
+        max_bytes: usize,
+    ) -> Result<Box<dyn MetadataChildren>, FsError> {
+        let _ = (cancel, max_names, max_bytes);
         Err(FsError::from_io(
             "inspect children",
             &self.item().path,
@@ -308,5 +377,33 @@ mod tests {
         ] {
             assert!(!unconfirmed.contains(claim), "{unconfirmed}");
         }
+    }
+
+    #[test]
+    fn captured_names_are_taken_in_order_and_release_their_slots() {
+        let all: Vec<OsString> = (0..1000)
+            .map(|index| OsString::from(format!("名前{index}")))
+            .collect();
+        let mut spare = all.clone();
+        for name in &mut spare {
+            name.reserve(64);
+        }
+        let mut names = CapturedNames::new(spare);
+        assert!(
+            names
+                .remaining()
+                .iter()
+                .all(|name| name.capacity() == name.len())
+        );
+        for (taken, expected) in all.iter().enumerate() {
+            let left = all.len() - taken;
+            assert_eq!(names.remaining(), &all[taken..]);
+            assert!(names.names.len() < 2 * left, "{} slots", names.names.len());
+            assert_eq!(names.names.capacity(), names.names.len());
+            assert_eq!(names.take_next().as_ref(), Some(expected));
+        }
+        assert!(names.remaining().is_empty());
+        assert_eq!(names.names.capacity(), 0, "the last name frees every slot");
+        assert_eq!(names.take_next(), None);
     }
 }
