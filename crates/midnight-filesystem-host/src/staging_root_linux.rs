@@ -2,7 +2,7 @@
 //! another account; the private-root check then correctly refuses it, which would
 //! deny every staged archive read. Every candidate is scoped to this user or this
 //! process, so a directory another account pre-creates only disables that candidate.
-use midnight_worker_platform::spool::SpoolRoot;
+use midnight_worker_platform::spool::{SpoolRoot, resolve_base};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -23,7 +23,10 @@ pub(super) fn candidates() -> Vec<SpoolRoot> {
 /// NFS home without anonymous files; a name for this process alone in the temporary
 /// directory, for sessions whose cache is unusable when another account took the
 /// user-scoped name; and `$XDG_RUNTIME_DIR`, usually a small tmpfs meant for small
-/// runtime files, as the last resort for possibly large decoded members.
+/// runtime files, as the last resort for possibly large decoded members. Links in
+/// each base are resolved first (`resolve_base`), while the spool directories below
+/// it are not: a link there is refused, and the spool root itself must be owned by
+/// this user with mode 0700.
 fn candidates_from(
     variable: impl Fn(&str) -> Option<OsString>,
     canonical: impl Fn(&Path) -> Option<PathBuf>,
@@ -41,7 +44,7 @@ fn candidates_from(
     let temporary = Some(temporary).filter(|temporary| temporary.is_absolute());
     let root = |base: &Option<PathBuf>, name: String, per_process| {
         base.as_ref().map(|base| SpoolRoot {
-            path: resolve(base, &canonical).join(name),
+            path: resolve_base(base, &canonical).join(name),
             per_process,
         })
     };
@@ -68,31 +71,6 @@ fn candidates_from(
     .into_iter()
     .flatten()
     .collect()
-}
-
-/// Resolve links in a base directory chosen by the user or the system, such as `/home`
-/// linked to `/var/home` or a linked `~/.cache`, including trailing components that do
-/// not exist yet. The private-root walk then follows no link. The spool directories
-/// below the base are never resolved: a link there is refused, and the spool root
-/// itself must be owned by this user with mode 0700.
-fn resolve(base: &Path, canonical: &impl Fn(&Path) -> Option<PathBuf>) -> PathBuf {
-    let mut missing = Vec::new();
-    let mut existing = base;
-    loop {
-        if let Some(resolved) = canonical(existing) {
-            return missing
-                .iter()
-                .rev()
-                .fold(resolved, |path, name| path.join(name));
-        }
-        match (existing.parent(), existing.file_name()) {
-            (Some(parent), Some(name)) => {
-                missing.push(name);
-                existing = parent;
-            }
-            _ => return base.to_owned(),
-        }
-    }
 }
 
 /// The effective user ID from procfs, which the host already requires on Linux to
@@ -170,11 +148,10 @@ mod tests {
                 kept("/mnt/disk/cache/midnight-explorer/archive-spool"),
                 kept("/tmp/midnight-explorer-1000-archive-spool"),
                 process(),
-                // A base that cannot be resolved is used as entered.
                 kept("/run/user/1000/midnight-explorer-archive-spool"),
             ]
         );
-        // A linked home resolves before its missing `.cache` is appended.
+        // A relative `XDG_CACHE_HOME` is ignored for `~/.cache` below a linked home.
         assert_eq!(
             roots(&[("XDG_CACHE_HOME", "relative"), ("HOME", "/home/u")], None),
             [

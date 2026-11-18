@@ -109,12 +109,14 @@ fn spool_roots_use_xdg_directories_first_and_the_temporary_directory_last() {
     );
 }
 
+/// Both bases go through the shared resolver (`resolve_base`, whose own tests
+/// cover missing trailing names and unresolvable bases); the temporary
+/// directory is used as entered.
 #[test]
 fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() {
     let links = [
         ("/data/cache", "/mnt/disk/cache"),
-        ("/home/u", "/var/home/u"),
-        ("/run/user/1000", "/run/user/1000"),
+        ("/run/user/1000", "/run/user-sessions/1000"),
     ];
     assert_eq!(
         spool_roots(
@@ -132,27 +134,8 @@ fn linked_cache_and_runtime_bases_resolve_before_the_spool_names_are_appended() 
         ),
         [
             kept("/mnt/disk/cache/midnight-explorer/file-list"),
-            kept("/run/user/1000/midnight-explorer/file-list"),
+            kept("/run/user-sessions/1000/midnight-explorer/file-list"),
             kept("/tmp/midnight-explorer-1000-file-list"),
-            per_process("/tmp/midnight-explorer-file-list-42"),
-        ]
-    );
-    // A linked home resolves before its missing `.cache` is appended; a base that
-    // cannot be resolved is used as entered.
-    assert_eq!(
-        spool_roots(
-            &linked_session(
-                &[("HOME", "/home/u"), ("XDG_RUNTIME_DIR", "/run/user/7")],
-                &links,
-                None,
-            ),
-            42,
-            "file-list",
-            SpoolContent::Large,
-        ),
-        [
-            kept("/var/home/u/.cache/midnight-explorer/file-list"),
-            kept("/run/user/7/midnight-explorer/file-list"),
             per_process("/tmp/midnight-explorer-file-list-42"),
         ]
     );

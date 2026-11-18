@@ -49,6 +49,12 @@ pub use report::{AppendSpool, SpoolPrefix};
 mod roots;
 pub use roots::{ProcessRootGuard, SpoolRoot};
 
+#[cfg(target_os = "linux")]
+#[path = "spool_base_linux.rs"]
+mod base;
+#[cfg(target_os = "linux")]
+pub use base::resolve_base;
+
 /// A verified private directory capability. Open and all I/O belong on backend workers.
 pub struct PrivateSpoolDirectory(Arc<Root>);
 
