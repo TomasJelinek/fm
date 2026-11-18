@@ -115,8 +115,11 @@ commit is covered by the opt-in native fixture); physical IME input, native Chro
 Wayland and other display/system policies still need their own qualification. Windows measurements do not establish Linux frame pacing.
 The event-driven host session was qualified with real Chromium on Windows only: an idle
 open document caused about 174 host context switches per second before and under 1
-after. The provider still pumps CEF about every 2 ms while a document is open; CEF's
-external message pump measured only about 3x fewer idle pumps on Windows and is not used
+after. While a document is open, the provider still waits at most 2 ms for a command
+before it pumps CEF again. On Linux that is about every 2 ms (not measured). On an idle
+Windows document it is about 64 times per second, because the wait rounds up to the
+timer period (15.6 ms when measured). CEF's external message pump measured only about 3x
+fewer idle pumps on Windows and is not used
 ([idle-wakeup record](../verification/2026-11-18-html-idle-wakeups.md)).
 
 Viewer controls reuse Escape, Ctrl+F, Find next/previous and zoom. Pointer, keyboard

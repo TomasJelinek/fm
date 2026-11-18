@@ -45,16 +45,42 @@ provider, three interleaved rounds:
 
 The baseline's actor waits 5 ms and its supervisor sleeps 10 ms; the event-driven host
 blocks until there is work. The remaining switches come from the example's own
-threads. One baseline close took 24.5 s (profile removal under load); the other
+threads. One baseline close took 24.5 s; its cause was not investigated. The other
 closes took 0.3–0.7 s for both hosts.
 
-`html_wheel_latency` with the wheel fixture at 2705 × 1550 and scale 2.25 (the
-[frame-pacing](2026-11-12-html-frame-pacing.md) viewport), three interleaved rounds of
-12 gestures per host: pooled median wheel-to-first-changed-frame latency 96.9 ms for
-the baseline host (quartiles 82.6 / 415.2 ms) and 87.4 ms for the event-driven host
-(65.7 / 430.0 ms). Per-round medians were 96.0, 222.0 and 96.9 ms against 95.2, 73.4
-and 165.0 ms. The event-driven host is not slower; the long upper quartiles in both
-are the machine load.
+`html_wheel_latency` used the wheel fixture at 2705 × 1550 and scale 2.25 (the
+[frame-pacing](2026-11-12-html-frame-pacing.md) viewport). It ran three interleaved
+rounds of 12 gestures per host and starts each gesture 200 ms after the previous
+gesture's last changed frame.
+
+Wheel-to-first-changed-frame latency is bimodal for both hosts. In each host, 15 of the
+36 gestures took 353–526 ms. The other gestures took 47–108 ms, except one event-driven
+gesture at 251 ms. Five of the six runs alternate strictly between slow and fast
+gestures after their first one or two gestures. The third baseline run has four fast
+gestures in a row before its last slow one.
+
+Compared mode by mode (median latency), the event-driven host is not slower. The
+251 ms gesture is counted in neither mode.
+
+| Mode | Baseline host | Event-driven host | Change |
+| --- | ---: | ---: | ---: |
+| Fast | 83.3 ms (21 gestures) | 68.2 ms (20 gestures) | −18 % |
+| Slow | 427.1 ms (15 gestures) | 441.2 ms (15 gestures) | +3 % |
+
+Both modes are within the 10 % bound.
+
+The pooled medians are 96.9 ms for the baseline host (nearest-rank quartiles
+82.6 / 415.2 ms) and 87.4 ms for the event-driven host (65.7 / 430.0 ms). They describe
+only the fast mode, because 21 of each host's 36 gestures took under 260 ms. Four more
+slow gestures would put either median in the slow mode. The per-round medians vary for
+the same reason: 96.0, 222.0 and 96.9 ms for the baseline host, and 95.2, 73.4 and
+165.0 ms for the event-driven host.
+
+What causes the slow mode is not verified. The quiet frame-pacing runs used a probe
+that waits for 300 ms of changed-frame quiescence between gestures instead of 200 ms,
+and their largest D3D observation was 154.5 ms. Machine load may therefore trigger the
+slow mode. The regular alternation and the shorter wait between gestures may point to
+a systematic cause instead. Neither explanation was tested.
 
 `probe` (Find, offline script denial, online scripts in a recreated context, a
 fractional-DPI resize and close) passed with both hosts: first content 1593 ms and
@@ -65,32 +91,42 @@ close 3444 ms with the baseline host, 1130 ms and 370 ms with the event-driven h
 
 Pumps per second from the provider's trace, static fixture:
 
-- 2 ms loop: 63–74 per second throughout; consecutive pumps are 15.6–16 ms apart, the
-  Windows timer period that the 2 ms timeout rounds up to. Four paired runs measured
-  64–65 per second over their last 3 s.
+- 2 ms loop: 63–74 per second throughout. After the first 8 s of the 20 s run, 90 % of
+  consecutive pumps are 15–17.5 ms apart: the 2 ms timeout rounds up to the 15.6 ms
+  Windows timer period. Four paired runs measured 64–65 per second over their last 3 s.
 - External pump: 21–84 per second during the first 8 s after start (CEF-requested
   bursts 0–6 ms apart between 47 ms gaps), then a steady 21–23 per second: 47 ms
   apart, the 33 ms bound rounded up to three timer periods.
-- Over 20 s idle the browser process made 210 context switches per second with 1.87 %
-  CPU on the 2 ms loop, and 144 per second with 2.03 % CPU with the external pump.
 
-That is about 3x fewer main-loop pumps once idle and 1.5x fewer browser-process
-switches, with no CPU saving, below the required 5x. The provider therefore keeps its
-2 ms pump on both platforms. Because the decision failed on idle wakeups, the
-animation, script-timer, wheel and opt-in `native_runtime` comparisons were not run
-for that candidate. The trace does not record the delays CEF requests, so it cannot
-tell whether the steady 47 ms pumps are the fallback or clamped CEF requests; that
-decides whether a longer idle bound could help (backlog VIEW-04).
+These trace counts are about 3x fewer main-loop pumps once idle, below the required
+5x. Over 20 s idle, the per-process sampler also read 210 browser-process context
+switches per second at 1.87 % CPU on the 2 ms loop, and 144 per second at 2.03 % CPU
+with the external pump. Those readings are of uncertain reliability (see the
+measurement notes) and do not show whether CPU use changed. They were not used for
+the decision.
+
+The provider therefore keeps its 2 ms pump on both platforms. Because the decision
+failed on idle wakeups, the animation, script-timer, wheel and opt-in `native_runtime`
+comparisons were not run for that candidate. The trace does not record the delays CEF
+requests. It therefore cannot tell whether the steady 47 ms pumps are the fallback or
+clamped CEF requests, which decides whether a longer idle bound could help (backlog
+VIEW-04).
 
 ## Measurement notes
 
 The switch sampler was checked against a 5 ms sleep loop (71.8 per second) and against
 .NET thread CPU times. Its browser-process figures nevertheless disagreed with the
 provider's trace in several runs (0.5–2.5 switches per second while the trace of the
-same run showed about 64 pumps per second), and early runs also used a stale provider
-when a DLL swap was refused while the previous browser tree was still exiting. Those
-runs were discarded; provider conclusions use the trace counts. The host figures come
-from fresh example processes and need no swap.
+same run showed about 64 pumps per second). With the unchanged provider, the six
+host-session runs read between 0.5 and 167 browser-process switches per second.
+Early runs also used a stale provider when a DLL swap was refused while the previous
+browser tree was still exiting. Those runs were discarded. Provider conclusions use
+only the trace counts. The host figures come from fresh example processes and need no
+swap.
+
+The measured provider change is kept unmerged as commit `96b7a376` on branch
+`wp4-10a-external-pump-candidate`, on top of `93d36411`. Its diff is byte-identical to
+`wp4-10a-external-pump.patch` once the patch file's BOM and CRLF line ends are removed.
 
 Local evidence is under `_build/qa/html-pump/` and `_build/qa/html-host/`:
 `measure.ps1`, `switches.ps1`, `locate.ps1`, `run-host-ab.ps1`,
