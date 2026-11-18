@@ -25,7 +25,7 @@ if '--list' in args:
 filters = args[:args.index('--test-threads')]
 matched = [test for test in tests if not filters or any(value in test for value in filters)]
 record = {'name': name, 'cwd': os.getcwd(), 'tmp': os.environ['TMPDIR'],
-          'render': os.environ['MIDNIGHT_UI_RENDER_DIR'],
+          'render': os.environ.get('MIDNIGHT_UI_RENDER_DIR'),
           'threads': os.environ['RUST_TEST_THREADS'],
           'provider': os.environ.get('HOST_TEST_INSTALL_ROOT'),
           'native': os.environ.get('MIDNIGHT_NATIVE_TEST_ROOT')}
@@ -199,13 +199,59 @@ class TargetedRunnerTests(unittest.TestCase):
         self.assertEqual(summary['peak_processes'], 2)
         self.assertEqual(len(barrier.records), 4)
         self.assertEqual(len({row['tmp'] for row in barrier.records}), 4)
-        self.assertEqual(len({row['render'] for row in barrier.records}), 4)
         for row in barrier.records:
             self.assertEqual(row['cwd'], str(self.package))
             self.assertEqual(row['provider'], 'preserved-provider')
             self.assertEqual(row['native'], 'preserved-native-root')
             self.assertLessEqual(int(row['threads']) * summary['jobs'], summary['thread_budget'])
         self.assertTrue(all(child.poll() == 0 for child in self.children))
+
+    def records(self, summary):
+        return {case['target']: json.loads(Path(case['test_log']).read_text().splitlines()[0])
+                for case in summary['cases']}
+
+    def test_render_snapshots_stay_off_without_the_opt_in_even_when_inherited(self):
+        # A render directory makes UI tests render every geometry case and write BMPs;
+        # an inherited one would also be shared by parallel artifacts.
+        inherited = self.root / '_build/inherited render'
+        code, summary = self.run_cases([self.add('alpha'), self.add('beta')],
+                                      environment={'MIDNIGHT_UI_RENDER_DIR': str(inherited)})
+        self.assertEqual(code, 0, summary)
+        self.assertIs(summary['render_snapshots'], False)
+        for target, record in self.records(summary).items():
+            with self.subTest(target=target):
+                self.assertIsNone(record['render'])
+        self.assertFalse(inherited.exists())
+        self.assertFalse(any(path.name == 'render' for path in (self.root / '_build/qa/run').rglob('*')))
+
+    def test_requested_render_snapshots_use_a_private_directory_per_artifact(self):
+        inherited = self.root / '_build/inherited render'
+        code, summary = self.run_cases([self.add('alpha'), self.add('beta')], render=True,
+                                      environment={'MIDNIGHT_UI_RENDER_DIR': str(inherited)})
+        self.assertEqual(code, 0, summary)
+        self.assertIs(summary['render_snapshots'], True)
+        records = self.records(summary)
+        for case in summary['cases']:
+            with self.subTest(target=case['target']):
+                render = Path(records[case['target']]['render'])
+                self.assertEqual(render, Path(case['test_log']).parent / 'render')
+                self.assertTrue(render.is_dir())
+        self.assertEqual(len({record['render'] for record in records.values()}), 2)
+
+    def test_render_snapshot_option_reaches_execution(self):
+        metadata = self.root / 'metadata.json'
+        metadata.write_text(json.dumps(self.metadata))
+        receipt = self.root / 'receipt.jsonl'
+        receipt.write_text(json.dumps(self.receipts[0]) + '\n')
+        command = ['run-targeted-tests.py', '--metadata', str(metadata), '--receipt', str(receipt),
+                   '--target', 'demo', 'test:alpha']
+        for options, expected in (([], False), (['--render-snapshots'], True)):
+            with self.subTest(options=options):
+                with mock.patch.object(sys, 'argv', command + options), \
+                        mock.patch.object(self.runner.subprocess, 'check_output', return_value=str(self.root)), \
+                        mock.patch.object(self.runner, 'execute', return_value=0) as execute:
+                    self.assertEqual(self.runner.main(), 0)
+                self.assertIs(execute.call_args.kwargs['render'], expected)
 
     def test_filters_on_one_artifact_share_list_and_execution_and_validate_each_filter(self):
         first = self.add('alpha', 'alpha')
