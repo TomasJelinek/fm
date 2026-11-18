@@ -92,20 +92,10 @@ fn pixel_bytes(width: u32, height: u32) -> Option<usize> {
 }
 
 impl TextRenderer {
-    /// Paint a prepared annotation into an existing surface, without reshaping or
-    /// allocating another viewport. Annotation coordinates are physical pixels.
-    /// Fails without painting when `rgba` does not match the raster dimensions.
-    pub fn paint_over(
-        &mut self,
-        page: &TextPage,
-        raster: &mut Raster,
-        origin: [f32; 2],
-    ) -> Result<(), LayoutError> {
-        let mut target = RasterMut::new(raster.width, raster.height, &mut raster.rgba)?;
-        self.paint_over_into(page, &mut target, origin)
-    }
-
-    /// [`Self::paint_over`] for a borrowed surface.
+    /// Paint a prepared annotation over an existing surface, without clearing it,
+    /// reshaping or allocating another viewport: its glyphs are blended over the
+    /// current pixels. Annotation coordinates are physical pixels. A non-finite
+    /// `origin` fails with [`LayoutError::InvalidGeometry`] before anything is painted.
     pub fn paint_over_into(
         &mut self,
         page: &TextPage,

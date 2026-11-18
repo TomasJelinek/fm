@@ -1,6 +1,6 @@
 use midnight_viewer_render::{
-    CellAlignment, ColorSpan, LayoutError, Raster, RasterMut, StyleSpan, TableCell, TableRow,
-    TextOptions, TextRenderer, Viewport,
+    CellAlignment, ColorSpan, LayoutError, RasterMut, StyleSpan, TableCell, TableRow, TextOptions,
+    TextRenderer, Viewport,
 };
 use std::sync::Arc;
 
@@ -88,27 +88,31 @@ fn rasterize_into_a_shared_buffer_matches_rasterize_and_rejects_mismatched_buffe
 }
 
 #[test]
-fn paint_over_into_matches_paint_over_and_rejects_inconsistent_surfaces() {
+fn paint_over_into_blends_over_the_surface_and_rejects_inconsistent_ones() {
     let mut renderer = TextRenderer::default();
     let label = renderer.layout("1234", 18.0, 1.0).unwrap();
+    let mut view = viewport(64, 32);
+    view.origin = [-4.5, -3.0];
+    view.background = [10, 20, 30, 255];
+    // Painted over an opaque surface, the label must equal `rasterize` over that
+    // background: nothing is cleared or replaced around its glyphs.
+    let expected = renderer.rasterize(&label, view, None).unwrap();
     let background = [10, 20, 30, 255].repeat(64 * 32);
-    let mut owned = Raster {
-        width: 64,
-        height: 32,
-        rgba: background.clone(),
-    };
-    renderer
-        .paint_over(&label, &mut owned, [-4.5, -3.0])
-        .unwrap();
-    let mut borrowed = background.clone();
-    let mut target = RasterMut::new(64, 32, &mut borrowed).unwrap();
+    let mut surface = background.clone();
+    let mut target = RasterMut::new(64, 32, &mut surface).unwrap();
     assert_eq!((target.width(), target.height()), (64, 32));
     assert_eq!(target.rgba_mut().len(), 64 * 32 * 4);
     renderer
-        .paint_over_into(&label, &mut target, [-4.5, -3.0])
+        .paint_over_into(&label, &mut target, view.origin)
         .unwrap();
-    assert_eq!(owned.rgba, borrowed);
-    assert_ne!(borrowed, background, "the label is painted");
+    assert_ne!(surface, background, "the label is painted");
+    assert_eq!(surface, expected.rgba);
+    let mut target = RasterMut::new(64, 32, &mut surface).unwrap();
+    assert_eq!(
+        renderer.paint_over_into(&label, &mut target, [f32::NAN, -3.0]),
+        Err(LayoutError::InvalidGeometry)
+    );
+    assert_eq!(surface, expected.rgba, "a rejected origin paints nothing");
     for length in [0, 64 * 32 * 4 - 1, 64 * 32 * 4 + 4] {
         assert!(matches!(
             RasterMut::new(64, 32, &mut vec![0; length]),
@@ -116,17 +120,6 @@ fn paint_over_into_matches_paint_over_and_rejects_inconsistent_surfaces() {
         ));
     }
     assert!(RasterMut::new(u32::MAX, u32::MAX, &mut []).is_err());
-    // Public fields can disagree; that is an error, not an out-of-bounds panic.
-    let mut short = Raster {
-        width: 64,
-        height: 32,
-        rgba: vec![0; 16],
-    };
-    assert_eq!(
-        renderer.paint_over(&label, &mut short, [-4.5, -3.0]),
-        Err(LayoutError::InvalidGeometry)
-    );
-    assert_eq!(short.rgba, [0; 16]);
 }
 
 #[test]
