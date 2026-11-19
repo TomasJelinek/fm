@@ -136,7 +136,11 @@ dependencies. Existing viewer registry artifacts remain unchanged.
 Supply `-NoticesRoot` on Windows or the fourth positional argument on Linux,
 pointing to generated `_build/` notices with children `midnight-thumbnail-image/`
 and `midnight-thumbnail-video/`. Each contains pinned dependency declarations and
-original license/copyright files. Missing notices fail staging. The inventory
+original license/copyright files. `scripts/thumbnail-notices.py` reads each file
+below its package root (the crate's manifest directory, the shared decoder notices
+or the plugin directory) and refuses links, reparse points and `..` there; links
+above that root, such as a linked cargo home, are accepted. Missing notices fail
+staging. The inventory
 table alone does not generate these files. Optional video inputs are the verified FFmpeg prefix, matching
 source archive and libclang directory. A flat executable-adjacent
 `thumbnailers/` directory holds executable/JSON pairs, exact runtime libraries
