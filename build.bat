@@ -1,25 +1,44 @@
 @echo off
 setlocal
 
-if not "%~2"=="" goto usage
-if not "%2"=="" goto usage
-if not "%~1"=="" goto profile
-if not "%1"=="" goto usage
-goto debug
+rem Arguments in any order: at most one profile (default debug) and --validate.
+set "MIDNIGHT_BUILD_PROFILE="
+set "MIDNIGHT_VIEWER_PROFILE="
+set "MIDNIGHT_VALIDATE="
 
-:profile
-if /i "%~1"=="debug" goto debug
-if /i "%~1"=="release" goto release
+:parse_arguments
+if not "%~1"=="" goto parse_argument
+if not "%1"=="" goto usage
+goto arguments_parsed
+
+:parse_argument
+if /i "%~1"=="debug" goto choose_debug
+if /i "%~1"=="release" goto choose_release
+if /i "%~1"=="--validate" goto choose_validate
 goto usage
 
-:debug
+:choose_debug
+if defined MIDNIGHT_VIEWER_PROFILE goto usage
 set "MIDNIGHT_BUILD_PROFILE="
 set "MIDNIGHT_VIEWER_PROFILE=debug"
-goto build
+shift
+goto parse_arguments
 
-:release
+:choose_release
+if defined MIDNIGHT_VIEWER_PROFILE goto usage
 set "MIDNIGHT_BUILD_PROFILE=--release"
 set "MIDNIGHT_VIEWER_PROFILE=release"
+shift
+goto parse_arguments
+
+:choose_validate
+if defined MIDNIGHT_VALIDATE goto usage
+set "MIDNIGHT_VALIDATE=1"
+shift
+goto parse_arguments
+
+:arguments_parsed
+if not defined MIDNIGHT_VIEWER_PROFILE set "MIDNIGHT_VIEWER_PROFILE=debug"
 
 :build
 pushd "%~dp0" || exit /b 1
@@ -90,6 +109,12 @@ if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
 pwsh.exe -NoLogo -NoProfile -File scripts\build-archive-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+rem A build that fails validation is not deployed.
+if not defined MIDNIGHT_VALIDATE goto deploy
+pwsh.exe -NoLogo -NoProfile -File scripts\validate.ps1 %MIDNIGHT_VIEWER_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+:deploy
 pwsh.exe -NoLogo -NoProfile -File scripts\deploy-build.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 :exit_build
@@ -97,5 +122,6 @@ popd
 exit /b %MIDNIGHT_BUILD_EXIT%
 
 :usage
->&2 echo Usage: build.bat [debug^|release]
+>&2 echo Usage: build.bat [debug^|release] [--validate]
+>&2 echo --validate runs scripts\validate.ps1 ^(the checks and tests that CI runs on Windows^) after the build and before its private deployment.
 exit /b 2

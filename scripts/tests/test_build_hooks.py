@@ -10,7 +10,8 @@ import unittest
 class BuildHookTests(unittest.TestCase):
     # build.bat refuses to start without PowerShell 7; these cases need no pwsh.
     WITHOUT_POWERSHELL = {"test_missing_powershell_seven_fails_before_cargo_or_plugin_builds",
-                          "test_invalid_profile_does_not_start_any_build"}
+                          "test_invalid_profile_does_not_start_any_build",
+                          "test_invalid_validate_combinations_do_not_start_any_build"}
 
     def setUp(self):
         if (os.name == "nt" and shutil.which("pwsh") is None
@@ -30,7 +31,7 @@ class BuildHookTests(unittest.TestCase):
                                 BUILD_TEST_LOG=str(self.log), BUILD_TEST_APP_EXIT="0",
                                 BUILD_TEST_NATIVE_EXIT="0", BUILD_TEST_NETWORK_EXIT="0", BUILD_TEST_VIEWER_EXIT="0",
                                 BUILD_TEST_DEPLOY_EXIT="0", BUILD_TEST_THUMBNAIL_EXIT="0",
-                                BUILD_TEST_ARCHIVE_EXIT="0")
+                                BUILD_TEST_ARCHIVE_EXIT="0", BUILD_TEST_VALIDATE_EXIT="0")
         if os.name == "nt":
             entry = "build.bat"
             (fake_bin / "cargo.cmd").write_text(
@@ -53,6 +54,9 @@ class BuildHookTests(unittest.TestCase):
             (self.root / "scripts/deploy-build.ps1").write_text(
                 'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "deploy $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_DEPLOY_EXIT)\n')
+            (self.root / "scripts/validate.ps1").write_text(
+                'Add-Content -LiteralPath $env:BUILD_TEST_LOG ("validate " + ($args -join " "))\n'
+                'exit ([int]$env:BUILD_TEST_VALIDATE_EXIT)\n')
             self.command = ["cmd.exe", "/d", "/c", str(self.root / entry)]
         else:
             entry = "build.sh"
@@ -76,6 +80,9 @@ class BuildHookTests(unittest.TestCase):
             (self.root / "scripts/build-archive-filesystem.sh").write_text(
                 '#!/bin/sh\nprintf "archive %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
                 'exit "$BUILD_TEST_ARCHIVE_EXIT"\n')
+            (self.root / "scripts/validate.sh").write_text(
+                '#!/bin/sh\nprintf "validate %s\\n" "$*" >> "$BUILD_TEST_LOG"\n'
+                'exit "$BUILD_TEST_VALIDATE_EXIT"\n')
             self.command = ["sh", str(self.root / entry)]
         shutil.copyfile(repository / entry, self.root / entry)
 
@@ -171,6 +178,52 @@ class BuildHookTests(unittest.TestCase):
         self.assertEqual(code, 42, self.build_output)
         self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release",
                                  "native release", "network release"])
+
+    def run_arguments(self, *arguments, validate_exit="0"):
+        environment = dict(self.environment, BUILD_TEST_VALIDATE_EXIT=validate_exit)
+        result = subprocess.run(self.command + list(arguments), cwd=self.root, env=environment,
+                                capture_output=True, text=True, timeout=30)
+        self.build_output = result.stdout + result.stderr
+        return result.returncode, self.log.read_text().splitlines() if self.log.exists() else []
+
+    def test_validation_runs_after_every_build_step_and_before_deployment(self):
+        for arguments, profile in ((("release", "--validate"), "release"), (("--validate", "release"), "release"),
+                                   (("--validate",), "debug")):
+            with self.subTest(arguments=arguments):
+                if self.log.exists():
+                    self.log.unlink()
+                code, calls = self.run_arguments(*arguments)
+                self.assertEqual(code, 0, self.build_output)
+                build = "cargo build -p midnight-explorer -p midnight-elevation --locked"
+                expected = [build + (" --release" if profile == "release" else ""), f"native {profile}",
+                            f"network {profile}", f"viewer {profile}", f"thumbnail {profile}",
+                            f"archive {profile}", f"validate {profile}"]
+                if os.name == "nt":
+                    expected.append(f"deploy {profile}")
+                self.assertEqual(calls, expected)
+
+    def test_validation_failure_prevents_deployment_and_is_returned(self):
+        code, calls = self.run_arguments("--validate", validate_exit="1")
+        self.assertEqual(code, 1, self.build_output)
+        self.assertEqual(calls[-2:], ["archive debug", "validate debug"])
+        code, calls = self.run_arguments("release")
+        self.assertNotIn("validate release", calls, "validation runs only when requested")
+
+    def test_build_failure_skips_validation(self):
+        self.environment["BUILD_TEST_ARCHIVE_EXIT"] = "48"
+        code, calls = self.run_arguments("release", "--validate")
+        self.assertEqual(code, 48, self.build_output)
+        self.assertEqual(calls[-1], "archive release")
+        self.assertFalse([call for call in calls if call.startswith(("validate", "deploy"))])
+
+    def test_invalid_validate_combinations_do_not_start_any_build(self):
+        for arguments in (("clean", "--validate"), ("--validate", "--validate"), ("--validate", "debug", "release"),
+                          ("--validated",)):
+            with self.subTest(arguments=arguments):
+                code, calls = self.run_arguments(*arguments)
+                self.assertEqual(code, 2, self.build_output)
+                self.assertEqual(calls, [])
+                self.assertIn("--validate", self.build_output)
 
     @unittest.skipUnless(os.name == "nt", "Windows private deployment hook")
     def test_deployment_failure_is_returned_after_app_and_viewers(self):

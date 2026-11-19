@@ -120,8 +120,36 @@ class LinuxBuildSetupTests(unittest.TestCase):
         self.assertEqual(self.calls(), "")
         self.assertFalse((self.root / "_build").exists())
 
+    def test_validate_dry_run_prints_the_validation_plan_after_the_build_plan(self):
+        shutil.copyfile(ROOT / "scripts/validate.sh", self.root / "scripts/validate.sh")
+        result = self.run_script("build.sh", "--validate", "release", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("Command:")]
+        self.assertEqual(commands[-2:], ["Command: [bash] [scripts/build-archive-filesystem.sh] [release]",
+                                         "Command: [bash] [scripts/validate.sh] [release]"])
+        plan = result.stdout.split("Validation plan (dry run)", 1)[1]
+        self.assertIn("workspace-tests - Test (workspace gates, doc tests included)", plan)
+        self.assertIn("python3 -B scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast", plan)
+        self.assertIn("host-build - Host build (release)", plan)
+        self.assertEqual(self.calls(), "")
+        self.assertFalse((self.root / "_build").exists())
+
+    def test_validate_refuses_the_docker_backend_before_any_action(self):
+        for backend, hint in (("docker", "FM_BUILD_BACKEND"), ("auto", "--install-deps")):
+            for arguments in (("--validate",), ("release", "--validate", "--dry-run")):
+                with self.subTest(backend=backend, arguments=arguments):
+                    self.environment["FM_BUILD_BACKEND"] = backend
+                    self.command("pkg-config", "exit 1\n")  # auto would select Docker
+                    result = self.run_script("build.sh", *arguments)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("--validate runs the tests natively", result.stderr)
+                    self.assertIn(hint, result.stderr)
+                    self.assertEqual(self.calls(), "")
+                    self.assertFalse((self.root / "_build").exists())
+
     def test_invalid_or_conflicting_arguments_stop_before_any_tool(self):
         for arguments in (("release", "debug"), ("clean", "--install-deps"),
+                          ("clean", "--validate"), ("--validate", "--validate"),
                           ("--unknown",), ("release", "extra")):
             with self.subTest(arguments=arguments):
                 result = self.run_script("build.sh", *arguments)
