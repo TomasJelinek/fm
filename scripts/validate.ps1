@@ -50,18 +50,21 @@ $optionNames = @{
     '--profile' = 'profile'; '-profile' = 'profile'; '--help' = 'help'; '-help' = 'help'
     '-h' = 'help'; '-?' = 'help'
 }
+# Called in a session (& scripts\validate.ps1 --only a,b), PowerShell passes a list as an array.
+function ConvertTo-ArgumentText($Value) { return (@($Value) | ForEach-Object { [string]$_ }) -join ',' }
 for ($index = 0; $index -lt $args.Count; $index++) {
-    $argument = [string]$args[$index]
+    $argument = ConvertTo-ArgumentText $args[$index]
     $value = $null
     $name = $argument
     if ($argument -match '^(--[a-z-]+)=(.*)$') { $name = $Matches[1]; $value = $Matches[2] }
     $option = $optionNames[$name.ToLowerInvariant()]
     if ($argument -in @('debug', 'release')) { $option = 'profile'; $value = $argument }
     if (-not $option) { Stop-Usage "unknown argument '$argument'" }
+    if ($option -in @('help', 'strict', 'dry-run', 'offline') -and $null -ne $value) { Stop-Usage "$name takes no value" }
     if ($option -in @('only', 'PluginSdk', 'WorkerSdk', 'WebSdk', 'profile') -and $null -eq $value) {
         $index++
         if ($index -ge $args.Count) { Stop-Usage "$name needs a value" }
-        $value = [string]$args[$index]
+        $value = ConvertTo-ArgumentText $args[$index]
     }
     switch ($option) {
         'help' { Write-Line $usage; exit 0 }
@@ -69,12 +72,14 @@ for ($index = 0; $index -lt $args.Count; $index++) {
         'dry-run' { $dryRun = $true }
         'offline' { $offline = $true }
         'only' {
-            $selection += @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            $ids = @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if (-not $ids.Count) { Stop-Usage "$name needs at least one step id" }
+            $selection += $ids
         }
         'profile' {
             if ($value -notin @('debug', 'release')) { Stop-Usage "unknown profile '$value'" }
             if ($profileName) { Stop-Usage 'choose one profile' }
-            $profileName = $value
+            $profileName = $value.ToLowerInvariant()
         }
         default {
             if ($supplied[$option]) { Stop-Usage "$name was given twice" }
@@ -715,7 +720,8 @@ try {
         $pending = New-Object Collections.Generic.Stack[string]
         foreach ($id in $selection) {
             if (-not $byId.ContainsKey($id)) { Stop-Usage "unknown step '$id' (see --dry-run for the step list)" }
-            $pending.Push($id)
+            # Ids match case-insensitively; the set below holds their canonical spelling.
+            $pending.Push($byId[$id].Id)
         }
         while ($pending.Count) {
             $id = $pending.Pop()
@@ -773,8 +779,9 @@ try {
         return ($lines -join "`n") + "`n"
     }
 
+    # TMPDIR as well, as in CI: Python's tempfile and MSYS tools prefer it to TEMP.
     $environment = [ordered]@{
-        TEMP = $temporaryRoot; TMP = $temporaryRoot; PYTHONUTF8 = '1'
+        TEMP = $temporaryRoot; TMP = $temporaryRoot; TMPDIR = $temporaryRoot; PYTHONUTF8 = '1'
         CARGO_REGISTRIES_MIDNIGHT_INDEX = $(if ($env:CARGO_REGISTRIES_MIDNIGHT_INDEX) { $env:CARGO_REGISTRIES_MIDNIGHT_INDEX } else { 'https://midnight-explorer.invalid/api-index' })
     }
     if ($offline) { $environment['CARGO_NET_OFFLINE'] = 'true' }

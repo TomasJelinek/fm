@@ -58,9 +58,15 @@ while [[ $# -gt 0 ]]; do
             [[ -z $build_profile ]] || stop_usage 'choose one profile'
             build_profile=$value
             ;;
-        --strict) strict=1 ;;
-        --dry-run) dry_run=1 ;;
-        --offline) offline=1 ;;
+        --strict|--dry-run|--offline|--help)
+            [[ $has_value == 0 ]] || stop_usage "$name takes no value"
+            case "$name" in
+                --strict) strict=1 ;;
+                --dry-run) dry_run=1 ;;
+                --offline) offline=1 ;;
+                --help) usage; exit 0 ;;
+            esac
+            ;;
         --only|--plugin-sdk|--worker-sdk|--web-sdk)
             if [[ $has_value == 0 ]]; then
                 [[ $# -gt 0 ]] || stop_usage "$name needs a value"
@@ -70,8 +76,13 @@ while [[ $# -gt 0 ]]; do
             [[ -n $value ]] || stop_usage "$name needs a value"
             case "$name" in
                 --only)
+                    ids_found=0
                     IFS=, read -r -a ids <<< "$value"
-                    for id in "${ids[@]}"; do [[ -z $id ]] || selection+=("$id"); done
+                    for id in "${ids[@]}"; do
+                        id=${id//[[:space:]]/}
+                        [[ -z $id ]] || { selection+=("$id"); ids_found=1; }
+                    done
+                    [[ $ids_found == 1 ]] || stop_usage "$name needs at least one step id"
                     ;;
                 *)
                     variable=supplied_${name#--}
@@ -82,7 +93,7 @@ while [[ $# -gt 0 ]]; do
                     ;;
             esac
             ;;
-        --help|-h) usage; exit 0 ;;
+        -h) usage; exit 0 ;;
         *) stop_usage "unknown argument '$argument'" ;;
     esac
 done

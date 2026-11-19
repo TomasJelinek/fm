@@ -44,6 +44,11 @@ def expand(steps, profile):
     return result
 
 
+# Both scripts stop with usage (exit 2) before any tool runs: no step id after --only,
+# a value given to a flag, unknown steps, profiles or options and a missing SDK file.
+INVALID_ARGUMENTS = (("--bogus",), ("debug", "release"), ("--only",), ("--only", "no-such-step"),
+                     ("--only", ","), ("--only=",), ("--only=,,",), ("--strict=no",), ("--dry-run=",),
+                     ("--offline=yes",), ("--help=1",), ("--plugin-sdk", "missing.toml"))
 SELECTION = r"ci-workspace-tests\.py (?:run|artifact) (\S+) ([^\s)]+)"
 # A plugin's scripts/ci.* also runs its formatting and lint checks.
 PLUGIN_CI_SCRIPT = r'(?:&|bash) "[^"]*/scripts/ci\.(?:ps1|sh)"'
@@ -189,8 +194,7 @@ class LinuxValidationTests(ValidationRunFixture, unittest.TestCase):
                               capture_output=True, timeout=120)
 
     def test_invalid_arguments_stop_before_any_build_tool(self):
-        for arguments in (("--bogus",), ("debug", "release"), ("--only",), ("--only", "no-such-step"),
-                          ("--plugin-sdk", "missing.toml"), ("clean",)):
+        for arguments in INVALID_ARGUMENTS + (("clean",),):
             with self.subTest(arguments=arguments):
                 result = self.run_validation(*arguments)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
@@ -293,8 +297,7 @@ class WindowsValidationTests(ValidationRunFixture, unittest.TestCase):
                               text=True, encoding="utf-8", errors="replace", timeout=180)
 
     def test_invalid_arguments_stop_before_any_build_tool(self):
-        for arguments in (("--bogus",), ("debug", "release"), ("--only",), ("--only", "no-such-step"),
-                          ("--plugin-sdk", "missing.toml")):
+        for arguments in INVALID_ARGUMENTS:
             with self.subTest(arguments=arguments):
                 result = self.run_validation(*arguments)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
@@ -308,8 +311,27 @@ class WindowsValidationTests(ValidationRunFixture, unittest.TestCase):
         self.assert_plan_lists_every_step(result.stdout, "trash-qualification", "Linux only")
         self.assertIn("CARGO_NET_OFFLINE=true", result.stdout)
         self.assertIn("$OfflineFlag = @('--offline')", result.stdout)
+        # CI sets TEMP, TMP and TMPDIR; Python's tempfile prefers TMPDIR.
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            self.assertRegex(result.stdout, rf"[ ;]{name}=[^;]*\\_build\\tmp;")
         self.assertEqual(self.calls(), "")
         self.assertFalse((self.root / "_build/validate").exists())
+
+    def test_only_takes_ids_in_any_case_and_lists_from_a_powershell_session(self):
+        result = self.run_validation("--dry-run", "--only", "Workspace-Tests")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(re.findall(r"^\s*\d+\. (\S+) - ", result.stdout, re.MULTILINE),
+                         ["test-install", "workspace-tests"])
+        # In a session, PowerShell passes "a,b" to the script as an array.
+        script = str(self.root / "scripts/validate.ps1").replace("'", "''")
+        result = subprocess.run(
+            [self.shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+             f"& '{script}' --dry-run --only filesystem-api,decoder-native-tests; exit $LASTEXITCODE"],
+            cwd=self.owner.name, env=self.environment, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=180)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(re.findall(r"^\s*\d+\. (\S+) - ", result.stdout, re.MULTILINE),
+                         ["filesystem-api", "decoder-native-tests"])
 
     def test_results_skips_strictness_and_the_private_installation(self):
         self.cargo_output.write_text(
