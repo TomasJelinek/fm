@@ -64,7 +64,10 @@ mod tests {
     fn the_stored_choice_applies_unless_the_environment_names_another_exactly() {
         assert_eq!(glyph_fitting(None, Stored::Fitted), GlyphFitting::Fitted);
         assert_eq!(glyph_fitting(None, Stored::Snapped), GlyphFitting::Snapped);
-        assert_eq!(glyph_fitting(None, Stored::Subpixel), GlyphFitting::Subpixel);
+        assert_eq!(
+            glyph_fitting(None, Stored::Subpixel),
+            GlyphFitting::Subpixel
+        );
         assert_eq!(
             glyph_fitting(Some("subpixel"), Stored::Fitted),
             GlyphFitting::Subpixel

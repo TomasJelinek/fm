@@ -55,7 +55,8 @@ fn dragging_the_sky_moves_the_dialog_and_close_dismisses_it() {
     let left = PointerEventButton::Left;
     ui::pointer_button(&test.window, start, left, true);
     for step in 1..=4 {
-        let position = LogicalPosition::new(start.x - 10.0 * step as f32, start.y + 8.0 * step as f32);
+        let position =
+            LogicalPosition::new(start.x - 10.0 * step as f32, start.y + 8.0 * step as f32);
         test.window
             .window()
             .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
@@ -94,7 +95,8 @@ fn double_clicking_a_library_opens_its_license_and_back_returns_to_the_list() {
     let row = ui::popup_item(&test.window, "library-3 0.1.0", AccessibleRole::Button);
     let rect = row.geometry();
     let at = row.map_to_native_window(rect.origin);
-    let position = LogicalPosition::new(at.x + rect.size.width / 2.0, at.y + rect.size.height / 2.0);
+    let position =
+        LogicalPosition::new(at.x + rect.size.width / 2.0, at.y + rect.size.height / 2.0);
     let left = PointerEventButton::Left;
     for _ in 0..2 {
         ui::pointer_button(&test.window, position, left, true);
@@ -102,7 +104,14 @@ fn double_clicking_a_library_opens_its_license_and_back_returns_to_the_list() {
     }
     test.draw();
     assert!(test.window.get_license_detail_open());
-    assert!(ui::try_popup_item(&test.window, "Permission is hereby granted", AccessibleRole::Text).is_some());
+    assert!(
+        ui::try_popup_item(
+            &test.window,
+            "Permission is hereby granted",
+            AccessibleRole::Text
+        )
+        .is_some()
+    );
     render::snapshot(&test, "about-license-detail");
     ui::click_popup(&test.window, "Back", AccessibleRole::Button);
     test.draw();

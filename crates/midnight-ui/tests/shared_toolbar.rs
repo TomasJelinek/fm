@@ -93,7 +93,10 @@ fn options_and_about_stay_at_the_top_right_when_toolbar_scrolls() {
             AccessibleRole::Button,
         );
         test.draw();
-        assert!(test.window.get_about_open(), "About opens inside the main window");
+        assert!(
+            test.window.get_about_open(),
+            "About opens inside the main window"
+        );
         assert!(ui::has_popup(&test.window));
         test.window.set_about_open(false);
         test.draw();

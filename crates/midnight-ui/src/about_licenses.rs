@@ -308,7 +308,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("about-licenses-{}", std::process::id()));
         let dir = root.join("demo-1.2.3");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("LICENSE-MIT"), "MIT License\n\nCopyright (c) 2020 Ada Lovelace\n").unwrap();
+        fs::write(
+            dir.join("LICENSE-MIT"),
+            "MIT License\n\nCopyright (c) 2020 Ada Lovelace\n",
+        )
+        .unwrap();
         fs::write(dir.join("README.md"), "not a notice").unwrap();
         fs::write(
             dir.join("Cargo.toml"),
@@ -318,10 +322,16 @@ mod tests {
         assert_eq!(find(&[root.clone()], "demo", "1.2.3"), Some(dir.clone()));
         assert_eq!(find(&[root.clone()], "demo", "9"), None);
         let detail = read_detail(&dir);
-        assert!(detail.text.contains("──── LICENSE-MIT ────") && !detail.text.contains("not a notice"));
+        assert!(
+            detail.text.contains("──── LICENSE-MIT ────") && !detail.text.contains("not a notice")
+        );
         assert_eq!(
             detail.authors.lines().collect::<Vec<_>>(),
-            ["Ada <ada@example.org>", "Grace", "Copyright (c) 2020 Ada Lovelace"]
+            [
+                "Ada <ada@example.org>",
+                "Grace",
+                "Copyright (c) 2020 Ada Lovelace"
+            ]
         );
         fs::remove_dir_all(root).unwrap();
     }

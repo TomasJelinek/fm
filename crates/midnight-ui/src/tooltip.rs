@@ -4,8 +4,8 @@
 //! shares its host coordinates. Recheck this contract when upgrading Slint or
 //! adding a backend with native popup windows. This observer never consumes input.
 use crate::{
-    ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobProgressWindow,
-    JobsWindow, MainWindow, TooltipPlacement,
+    ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobProgressWindow, JobsWindow,
+    MainWindow, TooltipPlacement,
 };
 use i_slint_core::{
     items::TooltipArea,
