@@ -261,8 +261,10 @@ fn read_name(buffer: &[u8], offset: usize, count: usize) -> Option<Vec<u16>> {
     let bytes = buffer.get(offset..offset.checked_add(count)?)?;
     Some(
         bytes
-            .chunks_exact(2)
-            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|unit| u16::from_le_bytes(*unit))
             .collect(),
     )
 }

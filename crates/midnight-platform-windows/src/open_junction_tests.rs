@@ -107,7 +107,7 @@ fn tooltip_reads_the_stored_target_of_a_dangling_junction() {
     let mut verbatim = OsString::from(r"\\?\");
     verbatim.push(&target);
     assert!(
-        shown == target || shown == PathBuf::from(verbatim),
+        shown == target || shown == verbatim,
         "unexpected junction target {shown:?}"
     );
 }

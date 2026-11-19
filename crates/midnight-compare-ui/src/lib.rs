@@ -1,7 +1,5 @@
 //! Presentation and short input callbacks only. The comparator service owns file work.
 #![deny(unsafe_code)]
-#[cfg(test)]
-extern crate self as midnight_compare_ui;
 mod admission;
 #[cfg(test)]
 mod admission_tests;
