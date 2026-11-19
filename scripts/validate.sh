@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Full local validation on Linux: the checks and tests that CI (.github/workflows/ci.yml)
-# runs for this host, with CI's own commands and scripts, in CI's job order.
-# ./build.sh --validate runs it after its build steps. Each step runs in its own
-# subshell and logs to _build/validate/logs/<run>/; a step whose prerequisite is
-# missing is SKIPPED with the reason. Exit codes: 0 no step failed (with --strict:
-# also none skipped for a missing prerequisite), 1 a step failed, 2 invalid
-# arguments, 127 cargo, rustc or Python 3.12+ is missing.
+# Full local validation on Linux: the tests that CI (.github/workflows/ci.yml) runs for
+# this host, with CI's own test commands and the builds and packages those tests need,
+# in CI's job order. ./build.sh --validate runs it after its build steps. Each step
+# runs in its own subshell and logs to _build/validate/logs/<run>/; a step whose
+# prerequisite is missing is SKIPPED with the reason. Exit codes: 0 no step failed
+# (with --strict: also none skipped for a missing prerequisite), 1 a step failed,
+# 2 invalid arguments, 127 cargo, rustc or Python 3.12+ is missing.
 # See docs/developer/TEST_EXECUTION.md.
 set -euo pipefail
 
@@ -13,7 +13,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run]
            [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
-Runs the checks and tests that CI runs for this platform; debug|release selects the
+Runs the tests that CI runs for this platform; debug|release selects the
 profile of the host build and smoke test (default debug). --strict fails when a step is
 skipped for a missing prerequisite. --offline (or CARGO_NET_OFFLINE=true) forbids
 downloads. --dry-run prints the plan and its commands. --only runs the named steps and
@@ -207,9 +207,7 @@ add_step() {
 step_sdk_api() {
     export CARGO_TARGET_DIR="$out/sdk-target"
     cargo fetch --manifest-path api/Cargo.toml --locked "${offline_flag[@]}"
-    cargo fmt --manifest-path api/Cargo.toml --all -- --check
     cargo test --manifest-path api/Cargo.toml --all-targets --locked --offline
-    cargo clippy --manifest-path api/Cargo.toml --all-targets --locked --offline -- -D warnings
 }
 step_sdk_abi() {
     export CARGO_TARGET_DIR="$out/sdk-target"
@@ -226,9 +224,7 @@ step_sdk_protocols() {
         cargo fetch --manifest-path "$api/Cargo.toml" --locked "${offline_flag[@]}"
     done
     for api in worker-api thumbnail-api filesystem-api image-viewer-api web-viewer-api; do
-        cargo fmt --manifest-path "$api/Cargo.toml" --all -- --check
         cargo test --manifest-path "$api/Cargo.toml" --workspace --all-targets --locked --offline
-        cargo clippy --manifest-path "$api/Cargo.toml" --workspace --all-targets --locked --offline -- -D warnings
     done
 }
 step_sdk_web_package() {
@@ -242,37 +238,53 @@ step_sdk_worker_package() {
     done
     cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --locked --offline -- "$root" "$out/releases"
 }
+# The test command of the plugin's scripts/ci.sh (CI's viewers job), then the package
+# build that the private test installation needs.
 viewer_step() {
     local plugin_root="plugins/midnight-viewer-$plugin" build="$out/viewer-ci" config="$plugin_sdk"
     if [[ -f "$plugin_root/scripts/prepare-sdk.py" ]]; then
         config=$(python3 -B "$plugin_root/scripts/prepare-sdk.py" "$plugin_sdk" "$build")
     fi
     cargo --config "$config" fetch --manifest-path "$plugin_root/Cargo.toml" --locked "${offline_flag[@]}"
-    bash "$plugin_root/scripts/ci.sh" "$plugin_sdk" "$build"
+    cargo --config "$config" test --manifest-path "$plugin_root/Cargo.toml" \
+        --target-dir "$build/target" --target "$native_target" --locked --offline --all-targets
+    bash "$plugin_root/scripts/build.sh" "$plugin_sdk" "$build"
 }
 step_viewer_conformance() {
     local include manifest=plugins/viewer-conformance/Cargo.toml
     include="$(dirname -- "$(dirname -- "$plugin_sdk")")/include"
     export CARGO_TARGET_DIR="$out/conformance-target"
     cargo --config "$plugin_sdk" fetch --manifest-path "$manifest" --locked "${offline_flag[@]}"
-    cargo fmt --manifest-path "$manifest" --all -- --check
-    cargo clippy --config "$plugin_sdk" --manifest-path "$manifest" --all-targets --locked --offline -- -D warnings
     cargo test --config "$plugin_sdk" --manifest-path "$manifest" --locked --offline
     cargo build --config "$plugin_sdk" --manifest-path "$manifest" --release --locked --offline
     bash plugins/viewer-conformance/tests/test-linux.sh \
         "$CARGO_TARGET_DIR/release/libmidnight_viewer_conformance.so" "$include" "$out/conformance/linux"
 }
 # The image viewer, PDF viewer and image thumbnailer share one build root, so the
-# pinned dav1d tools and library are prepared once.
+# pinned dav1d tools and library are prepared once. Each runs the test commands of
+# its scripts/ci.sh (the image viewer also the shared decoder's); the two viewers
+# then build the package that the private test installation needs.
 raster_step() {
-    local plugin_root="plugins/midnight-$plugin"
+    local plugin_root="plugins/midnight-$plugin" build="$out/raster-ci" jobs=${CARGO_BUILD_JOBS:-2} project
+    local -a native_option=() projects=("plugins/midnight-$plugin") target_option=(--target "$native_target")
     cargo --config "$worker_sdk" fetch --manifest-path "$plugin_root/Cargo.toml" --locked "${offline_flag[@]}"
-    if [[ $offline == 1 ]]; then export MIDNIGHT_IMAGE_NATIVE_OFFLINE=1; fi
-    bash "$plugin_root/scripts/ci.sh" "$worker_sdk" "$out/raster-ci"
+    if [[ $offline == 1 ]]; then export MIDNIGHT_IMAGE_NATIVE_OFFLINE=1; native_option=(--offline); fi
+    if [[ $plugin != viewer-pdf ]]; then
+        source plugins/image-decoder/native/bootstrap-linux.sh "$build/native-tools" "$jobs" "${native_option[@]}"
+        source plugins/image-decoder/native/build-linux.sh "$build/native-dav1d" "$jobs" "${native_option[@]}"
+        # The native .pc prefix is absolute; an unrelated GUI sysroot must not rewrite it.
+        unset PKG_CONFIG_SYSROOT_DIR
+    fi
+    [[ $plugin != viewer-image ]] || projects=(plugins/image-decoder "$plugin_root")
+    [[ $plugin != thumbnail-image ]] || target_option=()
+    for project in "${projects[@]}"; do
+        cargo --config "$worker_sdk" test --manifest-path "$project/Cargo.toml" \
+            --target-dir "$build/target" "${target_option[@]}" --locked --offline --all-targets
+    done
+    [[ $plugin == thumbnail-image ]] || bash "$plugin_root/scripts/build.sh" "$worker_sdk" "$build"
 }
 step_thumbnail_video() {
     local manifest=plugins/midnight-thumbnail-video/Cargo.toml state prefix libclang
-    cargo fmt --manifest-path "$manifest" -- --check
     # The build's own preparation reuses (or verifies) the pinned FFmpeg the build made.
     state=$(python3 -B scripts/prepare-thumbnail-ffmpeg.py --build-root "$root/_build/thumbnailers/ffmpeg" "${offline_flag[@]}")
     prefix=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["prefix"])' <<< "$state")
@@ -280,15 +292,12 @@ step_thumbnail_video() {
     export FFMPEG_DIR="$prefix" LIBCLANG_PATH="$libclang"
     export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export CARGO_TARGET_DIR="$out/thumbnail-video-target"
-    cargo clippy --config "$worker_sdk" --manifest-path "$manifest" --all-targets --locked --offline -- -D warnings
     cargo test --config "$worker_sdk" --manifest-path "$manifest" --all-targets --locked --offline
 }
 step_html_viewer() {
     local manifest=plugins/midnight-viewer-html/Cargo.toml
     export CARGO_TARGET_DIR="$out/html-viewer-target"
     cargo --config "$web_sdk" fetch --manifest-path "$manifest" --locked "${offline_flag[@]}"
-    cargo fmt --manifest-path "$manifest" -- --check
-    cargo clippy --config "$web_sdk" --manifest-path "$manifest" --no-default-features --all-targets --locked --offline -- -D warnings
     cargo test --config "$web_sdk" --manifest-path "$manifest" --no-default-features --all-targets --locked --offline
 }
 step_archive() {
@@ -296,29 +305,23 @@ step_archive() {
     export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 RUST_TEST_THREADS=1
     export CARGO_TARGET_DIR="$build"
     cargo --config "$worker_sdk" fetch --manifest-path "$plugin/Cargo.toml" --locked "${offline_flag[@]}"
-    cargo fmt --manifest-path "$plugin/Cargo.toml" --all -- --check
-    cargo clippy --config "$worker_sdk" --manifest-path "$plugin/Cargo.toml" --all-targets --locked --offline -- -D warnings
     bash "$plugin/scripts/build.sh" "$worker_sdk" "$build" "$build/package/archive" release --test --offline
     MIDNIGHT_ARCHIVE_FIXTURES="$out/archive-fixtures" cargo test --config "$worker_sdk" \
         --manifest-path "$plugin/Cargo.toml" --test worker_fixtures --locked --offline -- --ignored
 }
 step_filesystem_api() {
     export CARGO_TARGET_DIR="$out/filesystem-library"
-    cargo fmt --manifest-path filesystem-api/Cargo.toml --all -- --check
     cargo test --manifest-path filesystem-api/Cargo.toml --workspace --locked
-    cargo clippy --manifest-path filesystem-api/Cargo.toml --workspace --all-targets --locked --offline -- -D warnings
 }
 filesystem_step() {
     local build="$out/filesystem-library" plugin_root="plugins/$plugin_name" package name
     export CARGO_TARGET_DIR="$build"
     if [[ $provider == network ]]; then export GIO_USE_VFS=local; fi
-    cargo fmt --manifest-path "$plugin_root/Cargo.toml" --all -- --check
     cargo test --manifest-path "$plugin_root/Cargo.toml" --locked
     if [[ $provider == network ]]; then
         cargo test --manifest-path "$plugin_root/Cargo.toml" --locked --offline \
             local_only_runtime_reports_network_backend_unavailable -- --ignored
     fi
-    cargo clippy --manifest-path "$plugin_root/Cargo.toml" --all-targets --locked --offline -- -D warnings
     cargo build --manifest-path "$plugin_root/Cargo.toml" --release --locked --offline
     package="$build/package/$provider.linux"
     rm -rf -- "$package"
@@ -372,11 +375,8 @@ step_test_install() {
     } > "$run_directory/test-install.env"
     printf 'HOST_TEST_INSTALL_ROOT=%s (mode 700)\n' "$test_root"
 }
-step_fmt() { cargo fmt --all -- --check; }
 step_script_tests() { python3 -B -m unittest discover -s scripts/tests -v; }
 step_decoder_native_tests() { python3 -B -m unittest discover -s plugins/image-decoder/native/tests -v; }
-step_source_size() { bash scripts/check-source-size.sh; }
-step_clippy() { cargo clippy --workspace --all-targets --locked -- -D warnings; }
 step_workspace_tests() {
     # CI's gates without its disk-saving artifact retirement; every gate runs.
     python3 -B scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast
@@ -500,10 +500,10 @@ after_bad_descriptor() {
 }
 
 all_viewers='viewer-basic viewer-source viewer-markdown viewer-image viewer-pdf'
-add_step sdk-api public-sdk 'Public API and SDK checks'
+add_step sdk-api public-sdk 'Public API and SDK tests'
 add_step sdk-abi public-sdk 'C and Rust ABI layout agreement' prerequisite=prerequisite_c_compiler
 add_step sdk-package public-sdk 'Build public SDK release bundle' supplied=plugin
-add_step sdk-protocols public-worker-sdk 'Check public protocol workspaces'
+add_step sdk-protocols public-worker-sdk 'Test public protocol workspaces'
 add_step sdk-web-package public-worker-sdk 'Package the public web SDK' supplied=web prerequisite=prerequisite_classic_zlib
 add_step sdk-worker-package public-worker-sdk 'Package public image and worker APIs' supplied=worker
 for name in basic source markdown; do
@@ -530,13 +530,10 @@ add_step filesystem-network filesystem-libraries 'Network filesystem plugin and 
     'variables=provider=network plugin_name=midnight-filesystem-network library=libmidnight_filesystem_network.so manifest=plugin.linux.toml' \
     prerequisite=prerequisite_gio
 add_step test-install check 'Private test installation'
-add_step fmt check 'Format'
 add_step script-tests check 'Build script and packaging tests' needs=test-install
 add_step decoder-native-tests check 'Shared image decoder native helper tests'
 add_step powershell-tests-7 check 'Deployment and shortcut tests (PowerShell 7)' platform=windows
 add_step powershell-tests-5 check 'Deployment and shortcut tests (PowerShell 5.1)' platform=windows
-add_step source-size check 'Source size'
-add_step clippy check 'Clippy'
 add_step workspace-tests check 'Test (workspace gates, doc tests included)' needs=test-install
 add_step trash-qualification check 'Qualify Linux cross-filesystem Trash'
 add_step bad-descriptor check 'Native viewer ABI rejection fixture'

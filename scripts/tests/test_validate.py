@@ -45,6 +45,9 @@ def expand(steps, profile):
 
 
 SELECTION = r"ci-workspace-tests\.py (?:run|artifact) (\S+) ([^\s)]+)"
+# A plugin's scripts/ci.* also runs its formatting and lint checks.
+PLUGIN_CI_SCRIPT = r'(?:&|bash) "[^"]*/scripts/ci\.(?:ps1|sh)"'
+FILESYSTEM_API_TESTS = "cargo test --manifest-path filesystem-api/Cargo.toml --workspace --locked"
 
 
 def ci_selections():
@@ -60,7 +63,7 @@ class ValidationPlanTests(unittest.TestCase):
 
     def test_both_platforms_list_the_same_steps_in_ci_job_order(self):
         linux, windows = bash_steps(self.bash), powershell_steps(self.powershell)
-        self.assertGreater(len(linux), 40)
+        self.assertGreaterEqual(len(linux), 40)
         self.assertEqual(linux, windows)
         identifiers = [step[0] for step in linux]
         self.assertEqual(len(identifiers), len(set(identifiers)))
@@ -83,13 +86,16 @@ class ValidationPlanTests(unittest.TestCase):
                 with self.subTest(script=script, selection=selection):
                     self.assertIn(selection, listed)
 
-    def test_the_main_workspace_runs_ci_commands_with_local_gates(self):
-        for text in (self.bash, self.powershell):
-            self.assertIn("cargo fmt --all -- --check", text)
-            self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", text)
-            self.assertIn("scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast", text)
-            self.assertIn("-m unittest discover -s scripts/tests -v", text)
-            self.assertNotIn("--retire-successful-test-artifacts", text)
+    def test_validation_runs_tests_only(self):
+        for script, text in (("validate.sh", self.bash), ("validate.ps1", self.powershell)):
+            with self.subTest(script=script):
+                self.assertIn("scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast", text)
+                self.assertIn("-m unittest discover -s scripts/tests -v", text)
+                self.assertIn(FILESYSTEM_API_TESTS, text)
+                self.assertNotIn("--retire-successful-test-artifacts", text)
+                for check in ("cargo fmt", "clippy", "check-source-size"):
+                    self.assertNotIn(check, text.lower())
+                self.assertEqual(re.findall(PLUGIN_CI_SCRIPT, text), [])
 
 
 class ValidationRunFixture:
@@ -155,7 +161,9 @@ class ValidationRunFixture:
         line = next(line for line in output.splitlines() if f". {skipped_platform_step} - " in line)
         self.assertIn(f"(skip: {platform_reason}", line)
         self.assertIn("ci-workspace-tests.py --keep-test-artifacts --no-fail-fast", output)
-        self.assertIn("cargo fmt --all -- --check", output)
+        self.assertIn(FILESYSTEM_API_TESTS, output)
+        self.assertNotIn("cargo fmt", output)
+        self.assertNotIn("clippy", output.lower())
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux validation script")
@@ -212,11 +220,11 @@ class LinuxValidationTests(ValidationRunFixture, unittest.TestCase):
             "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"
             "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n",
             encoding="utf-8")
-        result = self.run_validation("--only", "fmt,decoder-native-tests,workspace-tests")
+        result = self.run_validation("--only", "filesystem-api,decoder-native-tests,workspace-tests")
         output = result.stdout
         self.assertEqual(result.returncode, 1, output + result.stderr)
-        self.assertEqual(self.summary_row(output, "fmt")[:1] + self.summary_row(output, "fmt")[2:5],
-                         ["PASS", "5", "1", "1"])
+        self.assertEqual(self.summary_row(output, "filesystem-api")[:1]
+                         + self.summary_row(output, "filesystem-api")[2:5], ["PASS", "5", "1", "1"])
         self.assertEqual(self.summary_row(output, "decoder-native-tests")[:1]
                          + self.summary_row(output, "decoder-native-tests")[2:5], ["FAIL", "2", "1", "1"])
         self.assertEqual(self.summary_row(output, "workspace-tests")[:1]
@@ -228,7 +236,7 @@ class LinuxValidationTests(ValidationRunFixture, unittest.TestCase):
         self.assertEqual(len(logs), 1)
         run = self.root / "_build/validate/logs" / logs[0]
         self.assertTrue((run / "summary.txt").read_text(encoding="utf-8").strip().endswith(str(run)))
-        self.assertIn("cargo fmt --all -- --check", self.calls())
+        self.assertIn(FILESYSTEM_API_TESTS, self.calls())
         # The owner-only private installation reached the workspace tests and is gone.
         installation = re.search(r"^installation: (.+)$", output, re.MULTILINE).group(1)
         self.assertTrue(installation.startswith(str(self.root / "_build/tmp/viewer-tests-")))
@@ -242,7 +250,7 @@ class LinuxValidationTests(ValidationRunFixture, unittest.TestCase):
         self.assertEqual(self.summary_row(result.stdout, "sdk-package")[:1], ["FAIL"])
         self.assertIn("needs sdk-package (FAIL)", result.stdout)
         self.environment["CARGO_STUB_EXIT"] = "0"
-        result = self.run_validation("--only", "fmt")
+        result = self.run_validation("--only", "filesystem-api")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("VALIDATION PASSED", result.stdout)
 
@@ -260,7 +268,7 @@ class LinuxValidationTests(ValidationRunFixture, unittest.TestCase):
 
     def test_missing_rust_or_python_stops_with_127(self):
         (self.bin / "rustc").unlink()
-        result = self.run_validation("--only", "fmt")
+        result = self.run_validation("--only", "filesystem-api")
         self.assertEqual(result.returncode, 127, result.stdout + result.stderr)
         self.assertIn("rustc on PATH", result.stderr)
         self.assertEqual(self.calls(), "")
@@ -307,13 +315,13 @@ class WindowsValidationTests(ValidationRunFixture, unittest.TestCase):
         self.cargo_output.write_text(
             "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n",
             encoding="utf-8")
-        arguments = ("--only", "fmt,decoder-native-tests,workspace-tests,thumbnail-video,trash-qualification",
-                     "--worker-sdk", str(self.worker_sdk))
+        arguments = ("--only", "filesystem-api,decoder-native-tests,workspace-tests,thumbnail-video,"
+                     "trash-qualification", "--worker-sdk", str(self.worker_sdk))
         result = self.run_validation(*arguments)
         output = result.stdout
         self.assertEqual(result.returncode, 1, output + result.stderr)
-        self.assertEqual(self.summary_row(output, "fmt")[:1] + self.summary_row(output, "fmt")[2:5],
-                         ["PASS", "3", "0", "1"])
+        self.assertEqual(self.summary_row(output, "filesystem-api")[:1]
+                         + self.summary_row(output, "filesystem-api")[2:5], ["PASS", "3", "0", "1"])
         self.assertEqual(self.summary_row(output, "decoder-native-tests")[:1]
                          + self.summary_row(output, "decoder-native-tests")[2:5], ["FAIL", "2", "1", "1"])
         self.assertEqual(self.summary_row(output, "workspace-tests")[:1]
@@ -328,7 +336,8 @@ class WindowsValidationTests(ValidationRunFixture, unittest.TestCase):
         # Without the failing fixture: skips for other platforms or supplied SDKs never fail,
         # a missing prerequisite fails only with --strict.
         (self.root / "plugins/image-decoder/native/tests/test_fixture.py").unlink()
-        arguments = ("--only", "fmt,thumbnail-video,trash-qualification", "--worker-sdk", str(self.worker_sdk))
+        arguments = ("--only", "filesystem-api,thumbnail-video,trash-qualification", "--worker-sdk",
+                     str(self.worker_sdk))
         result = self.run_validation(*arguments)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("VALIDATION PASSED", result.stdout)

@@ -6,7 +6,7 @@ usage() {
     printf '%s\n' 'FM_BUILD_BACKEND selects auto, native or docker. Missing native Rust is bootstrapped with rustup.'
     printf '%s\n' 'Host packages are installed only with --install-deps, which selects the native backend.'
     printf '%s\n' 'Clean removes repository _build output, preserving .tools and the legacy _build/docker cache.'
-    printf '%s\n' '--validate then runs scripts/validate.sh: the checks and tests that CI runs on Linux (native backend only).'
+    printf '%s\n' '--validate then runs scripts/validate.sh: the tests that CI runs on Linux (native backend only).'
 }
 
 print_command() {

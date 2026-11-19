@@ -1,7 +1,8 @@
 <#
-Full local validation on Windows: the checks and tests that CI (.github/workflows/ci.yml)
-runs for this host, with CI's own commands and scripts, in CI's job order. build.bat
---validate runs it after its build steps and before the private deployment.
+Full local validation on Windows: the tests that CI (.github/workflows/ci.yml) runs for
+this host, with CI's own test commands and the builds and packages those tests need, in
+CI's job order. build.bat --validate runs it after its build steps and before the
+private deployment.
 
 Usage: scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run]
            [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
@@ -18,7 +19,7 @@ $ProgressPreference = 'SilentlyContinue'
 $usage = @'
 Usage: scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run]
            [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
-Runs the checks and tests that CI runs for this platform; debug|release selects the
+Runs the tests that CI runs for this platform; debug|release selects the
 profile of the host build and smoke test (default debug). --strict fails when a step is
 skipped for a missing prerequisite. --offline (or CARGO_NET_OFFLINE=true) forbids
 downloads. --dry-run prints the plan and its commands. --only runs the named steps and
@@ -373,6 +374,8 @@ try {
         $env:ARCHIVE_TEST_INSTALL_ROOT = $testRoot
         Write-Output "HOST_TEST_INSTALL_ROOT=$testRoot (owner, SYSTEM and Administrators only)"
     }
+    # The test command of the plugin's scripts/ci.ps1 (CI's viewers job), then the package
+    # build that the private test installation needs.
     $viewerBody = {
         $pluginRoot = "plugins/midnight-viewer-$Plugin"
         $build = Join-Path $Out 'viewer-ci'
@@ -382,31 +385,47 @@ try {
         }
         cargo --config $config fetch --manifest-path "$pluginRoot/Cargo.toml" --locked @OfflineFlag
         if ($LASTEXITCODE -ne 0) { throw 'Dependency fetch failed' }
-        & "$pluginRoot/scripts/ci.ps1" -SdkConfig $PluginSdk -BuildRoot $build
-        if ($LASTEXITCODE -ne 0) { throw 'Independent viewer checks failed' }
+        cargo --config $config test --manifest-path "$pluginRoot/Cargo.toml" --target-dir (Join-Path $build 'target') --target $Target --locked --offline --all-targets
+        if ($LASTEXITCODE -ne 0) { throw 'Viewer tests failed' }
+        & "$pluginRoot/scripts/build.ps1" -SdkConfig $PluginSdk -BuildRoot $build
+        if ($LASTEXITCODE -ne 0) { throw 'Viewer package build failed' }
     }
     # The image viewer, PDF viewer and image thumbnailer share one build root, so the
-    # pinned dav1d tools and library are prepared once.
+    # pinned dav1d tools and library are prepared once. Each runs the test commands of
+    # its scripts/ci.ps1 (the image viewer also the shared decoder's); the two viewers
+    # then build the package that the private test installation needs.
     $rasterBody = {
         $build = Join-Path $Out 'raster-ci'
         $pluginRoot = "plugins/midnight-$Plugin"
         cargo --config $WorkerSdk fetch --manifest-path "$pluginRoot/Cargo.toml" --locked @OfflineFlag
         if ($LASTEXITCODE -ne 0) { throw 'Dependency fetch failed' }
-        $native = @{}
-        if ($Plugin -ne 'viewer-pdf') { $native.NativeOffline = $Offline }
-        & "$pluginRoot/scripts/ci.ps1" -SdkConfig $WorkerSdk -BuildRoot $build @native
-        if ($LASTEXITCODE -ne 0) { throw 'Independent raster checks failed' }
+        if ($Plugin -ne 'viewer-pdf') {
+            $jobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { 2 }
+            & plugins/image-decoder/native/bootstrap-windows.ps1 -BuildRoot (Join-Path $build 'native-tools') -Offline:$Offline
+            & plugins/image-decoder/native/build-windows.ps1 -BuildRoot (Join-Path $build 'native-dav1d') -Jobs $jobs -Offline:$Offline
+        }
+        $projects = @($pluginRoot)
+        if ($Plugin -eq 'viewer-image') { $projects = @('plugins/image-decoder', $pluginRoot) }
+        $targetOption = @('--target', $Target)
+        if ($Plugin -eq 'thumbnail-image') { $targetOption = @() }
+        foreach ($project in $projects) {
+            cargo test --config $WorkerSdk --manifest-path "$project/Cargo.toml" --target-dir (Join-Path $build 'target') @targetOption --locked --offline --all-targets
+            if ($LASTEXITCODE -ne 0) { throw "$project tests failed" }
+        }
+        if ($Plugin -eq 'viewer-image') {
+            & "$pluginRoot/scripts/build.ps1" -SdkConfig $WorkerSdk -BuildRoot $build -NativeOffline:$Offline
+            if ($LASTEXITCODE -ne 0) { throw 'Image viewer package build failed' }
+        } elseif ($Plugin -eq 'viewer-pdf') {
+            & "$pluginRoot/scripts/build.ps1" -SdkConfig $WorkerSdk -BuildRoot $build -Profile release
+            if ($LASTEXITCODE -ne 0) { throw 'PDF viewer package build failed' }
+        }
     }
     $filesystemBody = {
         $build = Join-Path $Out 'filesystem-library'
         $env:CARGO_TARGET_DIR = $build
         $pluginRoot = "plugins/$PluginName"
-        cargo fmt --manifest-path "$pluginRoot/Cargo.toml" --all -- --check
-        if ($LASTEXITCODE -ne 0) { throw 'Filesystem plugin formatting failed' }
         cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked
         if ($LASTEXITCODE -ne 0) { throw 'Filesystem plugin tests failed' }
-        cargo clippy --manifest-path "$pluginRoot/Cargo.toml" --all-targets --locked --offline -- -D warnings
-        if ($LASTEXITCODE -ne 0) { throw 'Filesystem plugin strict checks failed' }
         cargo build --manifest-path "$pluginRoot/Cargo.toml" --release --locked --offline
         if ($LASTEXITCODE -ne 0) { throw 'Filesystem plugin release build failed' }
         $package = Join-Path $build "package/$Provider.windows"
@@ -422,16 +441,12 @@ try {
     }
     $allViewers = @('viewer-basic', 'viewer-source', 'viewer-markdown', 'viewer-image', 'viewer-pdf')
 
-    Add-Step @{ Id = 'sdk-api'; Job = 'public-sdk'; Title = 'Public API and SDK checks'; Body = {
+    Add-Step @{ Id = 'sdk-api'; Job = 'public-sdk'; Title = 'Public API and SDK tests'; Body = {
         $env:CARGO_TARGET_DIR = Join-Path $Out 'sdk-target'
         cargo fetch --manifest-path api/Cargo.toml --locked @OfflineFlag
         if ($LASTEXITCODE -ne 0) { throw 'API dependency fetch failed' }
-        cargo fmt --manifest-path api/Cargo.toml --all -- --check
-        if ($LASTEXITCODE -ne 0) { throw 'API formatting failed' }
         cargo test --manifest-path api/Cargo.toml --all-targets --locked --offline
         if ($LASTEXITCODE -ne 0) { throw 'API tests failed' }
-        cargo clippy --manifest-path api/Cargo.toml --all-targets --locked --offline -- -D warnings
-        if ($LASTEXITCODE -ne 0) { throw 'API strict Clippy failed' }
     } }
     Add-Step @{ Id = 'sdk-abi'; Job = 'public-sdk'; Title = 'C and Rust ABI layout agreement'
         Prerequisite = { Test-Msvc }; Body = {
@@ -453,19 +468,15 @@ try {
         $script:PluginSdk = Join-Path $bundle '.cargo\config.toml'
         if (-not (Test-Path -LiteralPath $PluginSdk -PathType Leaf)) { throw "missing $PluginSdk" }
     } }
-    Add-Step @{ Id = 'sdk-protocols'; Job = 'public-worker-sdk'; Title = 'Check public protocol workspaces'; Body = {
+    Add-Step @{ Id = 'sdk-protocols'; Job = 'public-worker-sdk'; Title = 'Test public protocol workspaces'; Body = {
         $env:CARGO_TARGET_DIR = Join-Path $Out 'sdk-target'
         foreach ($api in @('api', 'worker-api', 'thumbnail-api', 'filesystem-api', 'image-viewer-api', 'web-viewer-api')) {
             cargo fetch --manifest-path "$api/Cargo.toml" --locked @OfflineFlag
             if ($LASTEXITCODE -ne 0) { throw "$api dependency fetch failed" }
         }
         foreach ($api in @('worker-api', 'thumbnail-api', 'filesystem-api', 'image-viewer-api', 'web-viewer-api')) {
-            cargo fmt --manifest-path "$api/Cargo.toml" --all -- --check
-            if ($LASTEXITCODE -ne 0) { throw "$api formatting failed" }
             cargo test --manifest-path "$api/Cargo.toml" --workspace --all-targets --locked --offline
             if ($LASTEXITCODE -ne 0) { throw "$api tests failed" }
-            cargo clippy --manifest-path "$api/Cargo.toml" --workspace --all-targets --locked --offline -- -D warnings
-            if ($LASTEXITCODE -ne 0) { throw "$api strict Clippy failed" }
         }
     } }
     Add-Step @{ Id = 'sdk-web-package'; Job = 'public-worker-sdk'; Title = 'Package the public web SDK'
@@ -506,10 +517,6 @@ try {
         $env:CARGO_TARGET_DIR = Join-Path $Out 'conformance-target'
         cargo --config $PluginSdk fetch --manifest-path $manifest --locked @OfflineFlag
         if ($LASTEXITCODE -ne 0) { throw 'Conformance dependency fetch failed' }
-        cargo fmt --manifest-path $manifest --all -- --check
-        if ($LASTEXITCODE -ne 0) { throw 'Conformance formatting failed' }
-        cargo clippy --config $PluginSdk --manifest-path $manifest --all-targets --locked --offline -- -D warnings
-        if ($LASTEXITCODE -ne 0) { throw 'Conformance strict Clippy failed' }
         cargo test --config $PluginSdk --manifest-path $manifest --locked --offline
         if ($LASTEXITCODE -ne 0) { throw 'Conformance Rust tests failed' }
         cargo build --config $PluginSdk --manifest-path $manifest --release --locked --offline
@@ -535,8 +542,6 @@ try {
     Add-Step @{ Id = 'thumbnail-video'; Job = 'not in CI'; Title = 'Video thumbnailer (pinned FFmpeg)'
         Needs = @('sdk-worker-package'); Prerequisite = { Test-FfmpegInputs }; Body = {
         $manifest = 'plugins/midnight-thumbnail-video/Cargo.toml'
-        cargo fmt --manifest-path $manifest -- --check
-        if ($LASTEXITCODE -ne 0) { throw 'Video thumbnailer formatting failed' }
         # The build's own preparation validates the FFmpeg prefix and finds libclang.
         $state = & $Python -B scripts/prepare-thumbnail-ffmpeg.py --build-root (Join-Path $Root '_build/thumbnailers/ffmpeg') @OfflineFlag
         if ($LASTEXITCODE -ne 0) { throw 'FFmpeg preparation failed' }
@@ -545,8 +550,6 @@ try {
         $env:LIBCLANG_PATH = $native.libclang_path
         $env:PATH = (Join-Path $native.prefix 'bin') + [IO.Path]::PathSeparator + $env:PATH
         $env:CARGO_TARGET_DIR = Join-Path $Out 'thumbnail-video-target'
-        cargo clippy --config $WorkerSdk --manifest-path $manifest --all-targets --locked --offline -- -D warnings
-        if ($LASTEXITCODE -ne 0) { throw 'Video thumbnailer strict Clippy failed' }
         cargo test --config $WorkerSdk --manifest-path $manifest --all-targets --locked --offline
         if ($LASTEXITCODE -ne 0) { throw 'Video thumbnailer tests failed' }
     } }
@@ -558,10 +561,6 @@ try {
         $env:CARGO_TARGET_DIR = Join-Path $Out 'html-viewer-target'
         cargo --config $WebSdk fetch --manifest-path $manifest --locked @OfflineFlag
         if ($LASTEXITCODE -ne 0) { throw 'HTML viewer dependency fetch failed' }
-        cargo fmt --manifest-path $manifest -- --check
-        if ($LASTEXITCODE -ne 0) { throw 'HTML viewer formatting failed' }
-        cargo clippy --config $WebSdk --config $crt --manifest-path $manifest --no-default-features --all-targets --locked --offline -- -D warnings
-        if ($LASTEXITCODE -ne 0) { throw 'HTML viewer strict Clippy failed' }
         cargo test --config $WebSdk --config $crt --manifest-path $manifest --no-default-features --all-targets --locked --offline
         if ($LASTEXITCODE -ne 0) { throw 'HTML viewer tests failed' }
     } }
@@ -574,10 +573,6 @@ try {
         $env:CARGO_TARGET_DIR = $build
         cargo --config $WorkerSdk fetch --manifest-path "$plugin/Cargo.toml" --locked @OfflineFlag
         if ($LASTEXITCODE -ne 0) { throw 'Archive dependency fetch failed' }
-        cargo fmt --manifest-path "$plugin/Cargo.toml" --all -- --check
-        if ($LASTEXITCODE -ne 0) { throw 'Archive formatting failed' }
-        cargo clippy --config $WorkerSdk --manifest-path "$plugin/Cargo.toml" --all-targets --locked --offline -- -D warnings
-        if ($LASTEXITCODE -ne 0) { throw 'Archive strict Clippy failed' }
         & "$plugin/scripts/build.ps1" -SdkConfig $WorkerSdk -BuildRoot $build -OutputDirectory $package -Profile release -Test -Offline
         if ($LASTEXITCODE -ne 0) { throw 'Independent archive tests or packaging failed' }
         $env:MIDNIGHT_ARCHIVE_FIXTURES = Join-Path $Out 'archive-fixtures'
@@ -586,12 +581,8 @@ try {
     } }
     Add-Step @{ Id = 'filesystem-api'; Job = 'filesystem-libraries'; Title = 'Public filesystem API and SDK'; Body = {
         $env:CARGO_TARGET_DIR = Join-Path $Out 'filesystem-library'
-        cargo fmt --manifest-path filesystem-api/Cargo.toml --all -- --check
-        if ($LASTEXITCODE -ne 0) { throw 'Filesystem API formatting failed' }
         cargo test --manifest-path filesystem-api/Cargo.toml --workspace --locked
         if ($LASTEXITCODE -ne 0) { throw 'Filesystem API/SDK tests failed' }
-        cargo clippy --manifest-path filesystem-api/Cargo.toml --workspace --all-targets --locked --offline -- -D warnings
-        if ($LASTEXITCODE -ne 0) { throw 'Filesystem API/SDK strict checks failed' }
     } }
     Add-Step @{ Id = 'filesystem-native'; Job = 'filesystem-libraries'; Title = 'Native filesystem plugin and package'
         Variables = @{ Provider = 'native'; PluginName = 'midnight-filesystem-native-windows'
@@ -600,22 +591,6 @@ try {
         Variables = @{ Provider = 'network'; PluginName = 'midnight-filesystem-network'
             Library = 'midnight_filesystem_network.dll'; Manifest = 'plugin.windows.toml' }; Body = $filesystemBody }
     Add-Step @{ Id = 'test-install'; Job = 'check'; Title = 'Private test installation'; Local = { Install-TestPackages } }
-    Add-Step @{ Id = 'fmt'; Job = 'check'; Title = 'Format'; Body = {
-        # A deep checkout can exceed the command-line limit; then check each package (CODE_STYLE.md).
-        $output = @(& cmd.exe /d /c 'cargo fmt --all -- --check 2>&1')
-        $code = $LASTEXITCODE
-        $output | ForEach-Object { Write-Output $_ }
-        if ($code -ne 0 -and ($output -join "`n") -match 'filename or extension is too long') {
-            Write-Output 'cargo fmt --all exceeded the command-line limit; checking each workspace package.'
-            $metadata = (cargo metadata --no-deps --format-version 1 --locked) -join "`n" | ConvertFrom-Json
-            $code = 0
-            foreach ($package in $metadata.packages) {
-                cargo fmt -p $package.name -- --check
-                if ($LASTEXITCODE -ne 0) { $code = $LASTEXITCODE }
-            }
-        }
-        if ($code -ne 0) { throw 'Formatting failed' }
-    } }
     Add-Step @{ Id = 'script-tests'; Job = 'check'; Title = 'Build script and packaging tests'; Needs = @('test-install'); Body = {
         & $Python -B -m unittest discover -s scripts/tests -v
         if ($LASTEXITCODE -ne 0) { throw 'Script tests failed' }
@@ -636,14 +611,6 @@ try {
         Prerequisite = { if (-not $Pwsh) { 'PowerShell 7 (pwsh.exe) is not installed' } } }
     Add-Step @{ Id = 'powershell-tests-5'; Job = 'check'; Title = 'Deployment and shortcut tests (PowerShell 5.1)'
         Platform = 'windows'; Needs = @('test-install'); Variables = @{ TestShell = $WindowsPowerShell }; Body = $powerShellTests }
-    Add-Step @{ Id = 'source-size'; Job = 'check'; Title = 'Source size'; Body = {
-        & $StepShell -NoLogo -NoProfile -File scripts/check-source-size.ps1
-        if ($LASTEXITCODE -ne 0) { throw 'Source size check failed' }
-    } }
-    Add-Step @{ Id = 'clippy'; Job = 'check'; Title = 'Clippy'; Body = {
-        cargo clippy --workspace --all-targets --locked -- -D warnings
-        if ($LASTEXITCODE -ne 0) { throw 'Workspace strict Clippy failed' }
-    } }
     Add-Step @{ Id = 'workspace-tests'; Job = 'check'; Title = 'Test (workspace gates, doc tests included)'
         Needs = @('test-install'); Body = {
         # CI's gates without its disk-saving artifact retirement; every gate runs.
@@ -781,7 +748,7 @@ try {
 
     $globals = [ordered]@{
         Root = $Root; Out = $Out; RunId = (Split-Path -Leaf $RunDirectory); BuildProfile = $profileName
-        Target = $Target; Python = $Python; Pwsh = $Pwsh; StepShell = $Shell; Offline = $offline; OfflineFlag = $OfflineFlag
+        Target = $Target; Python = $Python; Pwsh = $Pwsh; Offline = $offline; OfflineFlag = $OfflineFlag
         CargoTarget = $CargoTarget; WebSdkOutput = $WebSdkOutput
     }
 

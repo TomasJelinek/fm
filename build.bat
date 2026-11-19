@@ -123,5 +123,5 @@ exit /b %MIDNIGHT_BUILD_EXIT%
 
 :usage
 >&2 echo Usage: build.bat [debug^|release] [--validate]
->&2 echo --validate runs scripts\validate.ps1 ^(the checks and tests that CI runs on Windows^) after the build and before its private deployment.
+>&2 echo --validate runs scripts\validate.ps1 ^(the tests that CI runs on Windows^) after the build and before its private deployment.
 exit /b 2
