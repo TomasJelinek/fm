@@ -39,6 +39,13 @@ using Paged navigation and Continuous drag and scrollbar controls. Ubuntu 24.04
 under WSL 2 passed 94 targeted media/viewer tests and two installed PDF worker
 tests. All Windows acceptance runs used an authored private desktop and files.
 
+The subsequent Delete regression reproduced a false failure after partial native
+cancellation. After the fix, all 15 targeted Delete tests passed, including the
+case retaining a genuine permission error. The amended Copy tests passed both
+a cancellation with pending work and a late cancellation after full publication.
+Ten Windows junction tests passed, and a separate C:/D: run verified the
+cross-volume junction fallback and retained source identity.
+
 ### Media follow-up — 19 November 2026
 
 The reviewed 64-file Media overlay is integrated. After EOF/empty-stream fixes,

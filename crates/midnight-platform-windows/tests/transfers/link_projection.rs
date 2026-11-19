@@ -229,8 +229,10 @@ fn native_directory_link_move_uses_the_stub_volume_and_leaves_cross_device_uncha
     let to = provider
         .prepare_transfer_destination(other.path(), &cancel)
         .unwrap();
-    assert_ne!(capture.entry().identity.device, to.identity().device);
-    assert_eq!(source.entry().identity.device, to.identity().device);
+    let original = capture.entry().identity;
+    assert_ne!(original.device, to.identity().device);
+    assert_eq!(source.native_identity(), None);
+    assert_eq!(source.native_original_identity(), Some(original));
     let name = OsStr::new("absent");
     assert!(matches!(
         capture
@@ -240,7 +242,13 @@ fn native_directory_link_move_uses_the_stub_volume_and_leaves_cross_device_uncha
     ));
     assert!(to.inspect(name, &cancel).unwrap().is_none());
     assert_eq!(fs::read(from.join("sentinel")).unwrap(), b"referent");
-    drop((capture, source));
+    let projection = capture.prepare_copy_projection(&cancel).unwrap();
+    assert_eq!(projection.native_original_identity(), Some(original));
+    assert_eq!(
+        projection.native_identity().unwrap().device,
+        to.identity().device
+    );
+    drop((capture, projection, source));
     fs::remove_dir(from).unwrap();
 }
 
@@ -485,9 +493,18 @@ fn move_projection_removes_only_its_original_junction_after_publication() {
         Some(capture.entry().identity),
         source.native_original_identity()
     );
-    assert_ne!(Some(capture.entry().identity), source.native_identity());
+    assert_eq!(source.native_identity(), None);
     assert!(source.next_move_child(&cancel).is_err());
-    let file = source.next_child(&cancel).unwrap().unwrap();
+    assert!(source.next_child(&cancel).is_err());
+    let mut projection = capture.prepare_copy_projection(&cancel).unwrap();
+    assert_eq!(
+        projection.native_original_identity(),
+        Some(capture.entry().identity)
+    );
+    let projected_identity = projection.native_identity().unwrap();
+    assert_ne!(projected_identity, capture.entry().identity);
+    assert!(projection.next_move_child(&cancel).is_err());
+    let file = projection.next_child(&cancel).unwrap().unwrap();
     assert_eq!(file.native_original_identity(), file.native_identity());
     let destination = provider
         .prepare_transfer_destination(&destination_path, &cancel)
@@ -518,13 +535,13 @@ fn move_projection_removes_only_its_original_junction_after_publication() {
             ..
         } if recovery.is_empty()
     ));
-    drop((capture, source, root));
+    drop((capture, projection, source, root));
     assert!(!link.exists());
     assert_eq!(fs::read(target.join("sentinel")).unwrap(), b"referent data");
 }
 
 #[test]
-fn move_projection_refuses_original_parent_rebind_and_retains_both_targets() {
+fn move_projection_rejects_aliased_parent_and_retains_both_targets() {
     let temp = fixture();
     let parent = temp.path().join("original-parent");
     let replacement = temp.path().join("replacement-parent");
@@ -536,23 +553,37 @@ fn move_projection_refuses_original_parent_rebind_and_retains_both_targets() {
     junction(&original_link, &target);
     fs::write(replacement.join("junction"), b"replacement entry").unwrap();
     fs::write(target.join("sentinel"), b"original target").unwrap();
-    let alias = temp.path().join("parent-alias");
-    let moved = temp.path().join("retired-parent-alias");
-    junction(&alias, &parent);
+
     let cancel = Cancellation::default();
-    let PreparedTransferMoveEntry::DirectoryLink { source, capture } = WindowsFileSystem::new(None)
-        .prepare_move_source_with_links(
-            &alias.join("junction"),
+    let provider = WindowsFileSystem::new(None);
+    let prepare = |path: &Path| {
+        provider.prepare_move_source_with_links(
+            path,
             CopyLinkPolicy::FollowDirectoryContents,
             &cancel,
         )
-        .unwrap()
-    else {
-        panic!("expected directory link capability");
     };
-    fs::rename(&alias, &moved).unwrap();
+    let PreparedTransferMoveEntry::DirectoryLink { source, capture } =
+        prepare(&original_link).unwrap()
+    else {
+        panic!("expected directory link capability through an ordinary parent");
+    };
+    capture.revalidate(&cancel).unwrap();
+
+    let alias = temp.path().join("parent-alias");
+    let retired_alias = temp.path().join("retired-alias");
+    junction(&alias, &parent);
+    assert_eq!(
+        fs::read(alias.join("junction/sentinel")).unwrap(),
+        b"original target"
+    );
+    match prepare(&alias.join("junction")) {
+        Err(error) => assert_eq!(error.kind, std::io::ErrorKind::Unsupported),
+        Ok(_) => panic!("a junction ancestor must fail before Move is admitted"),
+    }
+    fs::rename(&alias, &retired_alias).unwrap();
     junction(&alias, &replacement);
-    assert!(capture.remove_original(&cancel).is_err());
+    capture.revalidate(&cancel).unwrap();
     assert!(fs::symlink_metadata(&original_link).is_ok());
     assert_eq!(
         fs::read(alias.join("junction")).unwrap(),
@@ -565,5 +596,5 @@ fn move_projection_refuses_original_parent_rebind_and_retains_both_targets() {
     drop((capture, source));
     fs::remove_dir(original_link).unwrap();
     fs::remove_dir(alias).unwrap();
-    fs::remove_dir(moved).unwrap();
+    fs::remove_dir(retired_alias).unwrap();
 }

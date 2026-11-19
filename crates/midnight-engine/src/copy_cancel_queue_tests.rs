@@ -370,9 +370,8 @@ async fn cancelled_case(
     );
 }
 
-/// Cancellation that arrives while a recoverable replacement is being published cannot
-/// undo the commit: the job ends Cancelled with the publication counted and the
-/// displaced original retained at its reported recovery path.
+/// Cancellation during a recoverable replacement keeps the committed publication
+/// and displaced original, then stops before starting the next selected root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_during_replacement_publication_keeps_publication_and_recovery_facts() {
     for verification in [
@@ -382,11 +381,13 @@ async fn cancel_during_replacement_publication_keeps_publication_and_recovery_fa
         let (_temp, parent) = moves::protected_fixture();
         let earlier = parent.join("earlier");
         let source = parent.join("current");
+        let pending = parent.join("pending");
         let destination = parent.join("destination");
         fs::create_dir(&destination).unwrap();
         fs::write(&earlier, b"completed earlier").unwrap();
         let bytes = vec![0x5a; 300_017];
         fs::write(&source, &bytes).unwrap();
+        fs::write(&pending, b"unstarted source").unwrap();
         fs::write(destination.join("current"), b"old existing target").unwrap();
         let control = Arc::new(Control {
             point: Point::Publish,
@@ -400,7 +401,7 @@ async fn cancel_during_replacement_publication_keeps_publication_and_recovery_fa
             inner: moves::CrossDeviceService(midnight_platform::LocalFileSystem::new(None)),
             control: control.clone(),
         })));
-        let mut request = request(1, &[earlier.clone(), source.clone()], &destination);
+        let mut request = request(1, &[earlier, source.clone(), pending.clone()], &destination);
         request.verification = verification;
         h.controller.enqueue(request).await;
         let conflict = h.conflict(1).await;
@@ -419,7 +420,9 @@ async fn cancel_during_replacement_publication_keeps_publication_and_recovery_fa
         let done = h.terminal(1).await;
         h.close().await;
         assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+        assert_eq!(done.completed_roots, 2, "{done:?}");
         assert_eq!(done.files_completed, 2, "{done:?}");
+        assert_eq!(done.closure.unwrap().unfinished_roots, 1);
         assert_eq!(done.recovery_count, 1, "{done:?}");
         assert_eq!(fs::read(destination.join("current")).unwrap(), bytes);
         assert_eq!(
@@ -427,5 +430,11 @@ async fn cancel_during_replacement_publication_keeps_publication_and_recovery_fa
             b"old existing target"
         );
         assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(
+            fs::read(destination.join("earlier")).unwrap(),
+            b"completed earlier"
+        );
+        assert_eq!(fs::read(&pending).unwrap(), b"unstarted source");
+        assert!(!destination.join("pending").exists());
     }
 }

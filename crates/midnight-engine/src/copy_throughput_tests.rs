@@ -281,7 +281,7 @@ async fn throughput_timer_cannot_publish_terminal_before_native_resource_cleanup
 }
 
 #[tokio::test]
-async fn final_cleanup_preserves_an_already_requested_cancellation() {
+async fn final_cleanup_keeps_committed_copy_complete_after_late_cancellation() {
     let temp = fixture();
     let source = temp.path().join("source");
     let destination = temp.path().join("destination");
@@ -313,8 +313,18 @@ async fn final_cleanup_preserves_an_already_requested_cancellation() {
         .await
         .unwrap();
     let during_cleanup = snapshot(&status).state;
+    let cleanup_still_pending = !pending.is_finished();
     released.store(true, Ordering::Release);
     let done = pending.await.unwrap();
+
     assert_eq!(during_cleanup, CopyOperationState::CancelRequested);
-    assert_eq!(done.state, CopyOperationState::Cancelled);
+    assert!(cleanup_still_pending);
+    assert_eq!(done.state, CopyOperationState::Completed);
+    assert_eq!(done.requested_roots, 1);
+    assert_eq!(done.completed_roots, 1);
+    assert_eq!(done.files_completed, 1);
+    assert_eq!(
+        fs::read(destination.join("source")).unwrap(),
+        b"completed content"
+    );
 }
