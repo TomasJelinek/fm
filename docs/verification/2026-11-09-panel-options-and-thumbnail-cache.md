@@ -98,7 +98,7 @@ Executable: `_build/debug/me.exe`, 86,270,464 bytes, SHA-256:
 ```
 
 The exact executable and 579 previously verified plugin/notice files were copied
-to `C:\Users\tjelinek\MidnightExplorer-20261109-options-candidate`. Deployment
+to `<user-profile>\MidnightExplorer-20261109-options-candidate`. Deployment
 checked every installed hash, protected private ACLs, the prior frozen runtimes
 and current/legacy preference files. It registered the executable's exact hash
 under `%USERPROFILE%\.midnight-explorer\plugin-runtimes`; it did not relax plugin

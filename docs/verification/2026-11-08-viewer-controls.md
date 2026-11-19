@@ -60,7 +60,7 @@ information disabled and incremental compilation disabled. Logs are under
 ## Native evidence
 
 The updated source package is staged in the authorized protected QA runtime
-`C:\Users\tjelinek\MidnightExplorer-20261108-041855-1aaca13e`.
+`<user-profile>\MidnightExplorer-20261108-041855-1aaca13e`.
 Its DLL SHA-256 is
 `09ECFA256E1C509F8B4B08820456A50C31E7761315EED814DF98422CD33BEE68`.
 Uniquely named acceptance/performance executables use owned `_build` fixtures,
@@ -114,7 +114,7 @@ zero read counters in this latency report do not claim absence of I/O.
 The Windows debug application rebuilt successfully after the final production
 control changes. The source DLL above and existing compatible viewer/archive/
 thumbnail packages were deployed to a new protected runtime:
-`C:\Users\tjelinek\MidnightExplorer-20261108-053905-dd9620fe`.
+`<user-profile>\MidnightExplorer-20261108-053905-dd9620fe`.
 The hash-bound registration also permits launching `_build/debug/me.exe`.
 Executable SHA-256:
 `951653FD8802C9A91BE2F42743A7475296C0F9883A4A631870A0B1470C4FFF7C`.

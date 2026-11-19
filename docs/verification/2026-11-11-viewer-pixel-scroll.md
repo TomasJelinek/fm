@@ -65,7 +65,7 @@ completion timestamp; pixel matching runs after each gesture. Matching can be
 ambiguous for repeated text rows, so its estimated displacement is diagnostic,
 not an exact coordinate oracle.
 
-Private runtime: `C:\Users\tjelinek\MidnightViewerWheel-20261111-55ed211d`.
+Private runtime: `<user-profile>\MidnightViewerWheel-20261111-55ed211d`.
 Its viewer plugins were copied from the protected installed runtime; no plugin
 trust policy was weakened. Native window 2250×1575 physical, scale 2.25, no
 synthetic CPU load. Frozen `wheel-trace1.exe` is the original-renderer control;
@@ -166,7 +166,7 @@ Evidence: `viewer-outlines-red.log`, `viewer-outlines-green.log`,
 
 The final combined application feature graph built `me`, `native_scroll` and
 `performance_probe` together. The frozen probe is
-`C:\Users\tjelinek\MidnightViewerWheel-20261111-55ed211d\wheel-final1.exe`,
+`<user-profile>\MidnightViewerWheel-20261111-55ed211d\wheel-final1.exe`,
 SHA-256 `3AE49CAE7AB5C75E58C4C9BD7F152DA99B687DD6E71EF83A7988951440262AE2`.
 It includes the exact outline cache and final renderer changes, with the unhelpful
 Zeno opt2 override removed. It ran after all Windows/Linux compilers exited,
@@ -266,7 +266,7 @@ These are submission observations, not monitor scanout measurements.
 Explicit Vulkan and high-performance DX12 adapter experiments did not produce a
 consistent improvement. Vulkan reduced some idle delays but roughly doubled warm
 frame intervals to 31 ms. The high-performance preference selected the available
-NVIDIA RTX 3500 Ada laptop GPU, yet still showed moving-frame stalls up to 1.07 s.
+a discrete laptop GPU, yet still showed moving-frame stalls up to 1.07 s.
 Neither experiment changes the shipped adapter/backend policy. Full metadata,
 limitations and artifact names are in [native verification](../NATIVE_SCROLL_VERIFICATION.md).
 
@@ -354,7 +354,7 @@ operations. Failed hidden attempts cannot overwrite saved preferences/geometry.
 See [startup evidence](2026-11-08-startup-first-frame.md).
 
 Build output: `_build/debug/me.exe`. Protected installation:
-`C:\Users\tjelinek\MidnightExplorer-20261111-pixel-scroll-80e7d310`.
+`<user-profile>\MidnightExplorer-20261111-pixel-scroll-80e7d310`.
 Artifacts: `viewer-exact5-*`, `final3-ui-*-startup.png`,
 `final3-{no-adapter,late-device,explicit-software}*`. The broad project goal and
 remaining large-fragment/PDF/Linux desktop performance qualification are separate

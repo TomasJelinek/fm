@@ -45,7 +45,7 @@ above are preserved: JSON/XML's largest gap is the final exact-raster repaint af
 has stopped, with unchanged pixel offset and a roughly 1.5e-8 normalized float adjustment.
 It is not evidence of a 73 ms moving-content stall. No secondary calculation replaces the guard.
 
-Exact paths are `D:/dev/ov-physics-trunk/ovclash/build.bat`, that directory's `AGENTS.md`,
+Exact paths are `<source-checkout>/ovclash/build.bat`, that directory's `AGENTS.md`,
 `D:/temp/ovclash/results/2026-09-07-mfg/manifest.json`, and
 `C:/Windows/System32/WwanFeatureTests.xml`. Geometry remains 1000×700 logical at scale 2.25,
 Segoe UI 13, DX12, with spatial/GPU readback disabled. Raw reports, source hashes, process
@@ -104,7 +104,7 @@ untitled/default-caption initialization samples are retained in the raw metadata
 All per-case compiler lists before/after are empty.
 
 Both probes were staged beside the same installed providers in
-`C:/Users/tjelinek/MidnightExplorer-20261112-lifetime-dfbafca6/`:
+`<user-profile>/MidnightExplorer-20261112-lifetime-dfbafca6/`:
 
 - Preserved baseline SHA-256:
   `ABDAA33884CC14A657EBB5024446E67BEB85927FAFC5C7AE3FF496EACEB2F85E`.
@@ -162,7 +162,7 @@ adds causal detail without replacing any guard.
 ## Fresh application and physical-key evidence
 
 The deployed application was
-`C:/Users/tjelinek/MidnightExplorer-20261112-user-menu-d5cf41d7/me.exe`, SHA-256
+`<user-profile>/MidnightExplorer-20261112-user-menu-d5cf41d7/me.exe`, SHA-256
 `D5CF41D7F8A7529E08A0E4A94D3FBFD5229888FEA5A81C488DF49BC37386BA17`.
 Three separate bounded in-memory smoke instances all exit 0, emit zero stderr
 bytes, and leave the native preferences hash unchanged. Only verified owned

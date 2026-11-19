@@ -90,7 +90,7 @@ tree integration; this is not a warning-free workspace claim. The executable is
 84,574,720 bytes with SHA-256
 `f4391f20544ad7ae50b43999edd314079c8e8da360a60745593bb5781cc2c763`.
 Its matching private runtime, including existing viewer/filesystem/thumbnailer
-packages, is `C:\Users\tjelinek\MidnightExplorer-20261108-185633-275f1844`.
+packages, is `<user-profile>\MidnightExplorer-20261108-185633-275f1844`.
 Registration allows the original `_build/debug/me.exe` to discover that trusted
 runtime without relaxing checkout/plugin ACL checks.
 

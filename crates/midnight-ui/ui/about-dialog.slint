@@ -1,53 +1,224 @@
 import { AboutSlint } from "std-widgets.slint";
-import { VScrollView } from "scroll-view.slint";
+import { ListView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { DialogHeader } from "dialog-frame.slint";
-import { HintedActionButton } from "hinted-inputs.slint";
+import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { FallbackIcons } from "action-icons.slint";
+
+export struct LicenseRow { name: string, version: string, license: string }
+
+// A tab is a label with an accent underline; the whole dialog stays keyboard-free
+// of extra focus stops, since the text filter and Close already take focus.
+component AboutTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: Theme.control-height + 4px;
+    Text {
+        text: root.text; font-size: Theme.font-size; font-weight: root.active ? 700 : 400;
+        color: root.active ? Theme.strong-text : area.has-hover ? Theme.text : Theme.secondary-text;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    Rectangle {
+        y: parent.height - 2px; height: 2px;
+        x: root.active ? 0px : parent.width / 2; width: root.active ? parent.width : 0px;
+        background: Theme.accent;
+        animate x, width { duration: 140ms; easing: ease-out; }
+    }
+    area := TouchArea { clicked => { root.clicked(); } }
+}
+
+component InfoRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 12px;
+    Text { text: root.label; color: Theme.secondary-text; font-size: Theme.small-font; width: 96px; vertical-alignment: top; }
+    Text { text: root.value; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; horizontal-stretch: 1; }
+}
+
+// The hero is the same midnight sky in every theme: drifting stars, a rare shooting
+// star, a glowing crescent and a hill line. One looping phase drives all of it.
+component Sky inherits Rectangle {
+    in property <float> phase;
+    in property <image> logo;
+    in property <string> version;
+    callback dragged(length, length);
+    background: @linear-gradient(180deg, #070a24 0%, #141a4a 55%, #3b2a72 100%);
+    clip: true;
+    // Glow behind the crescent.
+    Rectangle {
+        x: parent.width - 150px; y: -20px; width: 130px; height: 130px; border-radius: 65px;
+        background: @radial-gradient(circle, #f6d78a55 0%, #f6d78a00 70%);
+        opacity: 0.8 + 0.2 * Math.sin(root.phase * 2rad);
+    }
+    Path {
+        x: parent.width - 118px; y: 12px; width: 52px; height: 52px; viewbox-width: 60; viewbox-height: 60;
+        commands: "M 34 3 A 28 28 0 1 0 57 42 A 22 22 0 1 1 34 3 Z";
+        fill: @linear-gradient(135deg, #fff4cf 0%, #f2c768 100%);
+    }
+    for i in 34 : Rectangle {
+        private property <float> twinkle: Math.abs(Math.sin((root.phase * (1 + Math.mod(i, 4)) + i * 1.7) * 1rad));
+        x: Math.mod(i * 53 + i * i * 11, 97) / 97 * parent.width;
+        y: Math.mod(i * 29 + i * i * 7, 61) / 61 * (parent.height - 46px);
+        width: (1 + Math.mod(i, 3) * 0.7) * 1px; height: self.width; border-radius: self.width / 2;
+        background: Math.mod(i, 5) == 0 ? #ffd9a8 : #dfe6ff;
+        opacity: 0.25 + 0.75 * self.twinkle;
+    }
+    // A shooting star crosses the sky once per loop.
+    Path {
+        private property <float> t: Math.clamp(Math.mod(root.phase / 6.2832, 1) * 3.2 - 0.4, 0, 1);
+        x: parent.width * 0.85 - self.t * parent.width * 0.55; y: 8px + self.t * 70px;
+        width: 64px; height: 30px; viewbox-width: 64; viewbox-height: 30;
+        commands: "M 0 0 L 64 30";
+        stroke: @linear-gradient(90deg, #ffffff00 0%, #ffffff 100%); stroke-width: 1.5px;
+        opacity: Math.sin(self.t * 3.1416 * 1rad);
+    }
+    // Hills in front of the sky.
+    Path {
+        y: parent.height - 44px; width: parent.width; height: 44px; viewbox-width: 480; viewbox-height: 44;
+        commands: "M 0 44 L 0 26 Q 70 4 150 24 T 300 20 T 480 26 L 480 44 Z";
+        fill: #080b22;
+    }
+    Path {
+        y: parent.height - 30px; width: parent.width; height: 30px; viewbox-width: 480; viewbox-height: 30;
+        commands: "M 0 30 L 0 20 Q 90 2 200 18 T 480 14 L 480 30 Z";
+        fill: Theme.surface;
+    }
+    // Pulsing halo and the application icon.
+    Rectangle {
+        x: (parent.width - self.width) / 2; y: 14px; width: 112px; height: 112px; border-radius: 56px;
+        background: @radial-gradient(circle, #8fa2ff66 0%, #8fa2ff00 70%);
+        opacity: 0.65 + 0.35 * Math.sin(root.phase * 3rad);
+    }
+    Image {
+        source: root.logo; image-fit: contain;
+        x: (parent.width - self.width) / 2; y: 28px; width: 72px; height: 72px;
+    }
+    Text {
+        y: 108px; width: parent.width; text: "Midnight Explorer";
+        color: #ffffff; font-size: 26px; font-weight: 700; horizontal-alignment: center;
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2; y: 144px;
+        width: pill.preferred-width + 20px; height: 20px; border-radius: 10px;
+        background: #ffffff26; border-width: 1px; border-color: #ffffff3a;
+        pill := Text {
+            text: "Version " + root.version; color: #e6e9ff; font-size: Theme.small-font;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+    }
+    drag := TouchArea {
+        private property <length> anchor-x;
+        private property <length> anchor-y;
+        private property <bool> dragging;
+        mouse-cursor: move;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.anchor-x = self.mouse-x; self.anchor-y = self.mouse-y; self.dragging = true;
+            } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                self.dragging = false;
+            }
+        }
+        moved => {
+            if self.pressed && self.dragging { root.dragged(self.mouse-x - self.anchor-x, self.mouse-y - self.anchor-y); }
+        }
+    }
+}
 
 export component AboutDialog inherits Rectangle {
     in property <string> application-version;
     in property <image> application-icon;
-    in property <image> close-icon;
+    in property <[LicenseRow]> licenses;
+    in property <string> license-summary;
     callback close();
-    // Hosted by the main window's embedded dialog frame.
+    callback move-dialog(length, length);
+    callback license-filter(string);
+    in-out property <int> tab: 0;
+    private property <float> phase: 0;
+    // Hosted by the main window's embedded dialog frame; the sky moves it.
     background: Theme.surface;
-    init => { close-button.focus(); }
+    clip: true;
+    init => { self.phase = 6.2832 * 3; close-button.focus(); }
+    animate phase { duration: 24s; iteration-count: -1; easing: linear; }
     FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
             reject
         }
         VerticalLayout {
-            padding: 8px; spacing: 6px;
-            DialogHeader {
-                title: "Midnight Explorer"; text-size: Theme.font-size * 1.5; compact: true;
-                native-icon: root.application-icon;
-                close-label: "Close dialog"; close => { root.close(); }
+            spacing: 0px;
+            Sky {
+                height: 176px;
+                phase: root.phase; logo: root.application-icon; version: root.application-version;
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
-            VScrollView {
-                min-height: 0px; vertical-stretch: 1;
-                VerticalLayout {
-                    spacing: 8px; alignment: start;
-                    Text { text: "Version " + root.application-version; color: Theme.text; wrap: word-wrap; }
-                    Text { text: "A focused, two-pane file manager."; color: Theme.secondary-text; wrap: word-wrap; }
-                    // Slint's royalty-free license requires this attribution to stay
-                    // visible. The covering TouchArea keeps a click from opening its
-                    // link: Slint would start the browser with std::process::Command on
-                    // the UI thread, outside the process-creation lock (WORKER_SDK.md).
-                    Rectangle {
-                        min-height: attribution.min-height;
-                        preferred-height: attribution.preferred-height;
-                        attribution := VerticalLayout { AboutSlint {} }
-                        TouchArea {}
+            VerticalLayout {
+                padding: 12px; padding-top: 4px; spacing: 8px; vertical-stretch: 1;
+                HorizontalLayout {
+                    spacing: 4px; alignment: center;
+                    AboutTab { text: "About"; active: root.tab == 0; min-width: 96px; clicked => { root.tab = 0; } }
+                    AboutTab { text: "Licenses"; active: root.tab == 1; min-width: 96px; clicked => { root.tab = 1; } }
+                }
+                Rectangle { height: 1px; background: Theme.frame; }
+                if root.tab == 0 : VScrollView {
+                    min-height: 0px; vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 10px; alignment: start; padding-right: 6px;
+                        Text {
+                            text: "A focused, two-pane file manager."; color: Theme.text;
+                            font-size: Theme.font-size * 1.1; wrap: word-wrap;
+                        }
+                        Text {
+                            text: "Built for keyboard and mouse alike: fast panels, tabs, previews, archives as folders and a command line within reach.";
+                            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                        }
+                        Rectangle { height: 1px; background: Theme.frame; }
+                        InfoRow { label: "Version"; value: root.application-version; }
+                        InfoRow { label: "Built with"; value: "Rust, Slint and FemtoVG"; }
+                        InfoRow { label: "Libraries"; value: "Open-source libraries are listed with their licenses on the Licenses tab."; }
+                        Rectangle { height: 1px; background: Theme.frame; }
+                        // Slint's royalty-free license requires this attribution to stay
+                        // visible. The covering TouchArea keeps a click from opening its
+                        // link: Slint would start the browser with std::process::Command on
+                        // the UI thread, outside the process-creation lock (WORKER_SDK.md).
+                        Rectangle {
+                            min-height: attribution.min-height;
+                            preferred-height: attribution.preferred-height;
+                            attribution := HorizontalLayout { alignment: center; VerticalLayout { width: 240px; AboutSlint {} } }
+                            TouchArea {}
+                        }
                     }
                 }
-            }
-            close-button := HintedActionButton {
-                native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
-                text: "Close"; min-height: Theme.control-height;
-                hint: "Close this dialog and return to the file manager.";
-                clicked => { root.close(); }
+                if root.tab == 1 : VerticalLayout {
+                    spacing: 6px; vertical-stretch: 1; min-height: 0px;
+                    HintedLineEdit {
+                        placeholder-text: "Filter by library or license";
+                        hint: "Show only libraries whose name or license contains this text.";
+                        edited(text) => { root.license-filter(text); }
+                    }
+                    Text { text: root.license-summary; color: Theme.secondary-text; font-size: Theme.small-font; }
+                    Rectangle {
+                        vertical-stretch: 1; min-height: 80px;
+                        border-width: 1px; border-color: Theme.frame; border-radius: 4px; clip: true;
+                        licenses := ListView {
+                            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                            for row[index] in root.licenses : Rectangle {
+                                width: licenses.visible-width; height: 24px;
+                                background: Math.mod(index, 2) == 1 ? Theme.alternate-row : transparent;
+                                HorizontalLayout {
+                                    padding-left: 8px; padding-right: 8px; spacing: 8px;
+                                    Text { text: row.name; color: Theme.text; font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                                    Text { text: row.version; color: Theme.secondary-text; font-size: Theme.small-font; width: 64px; overflow: elide; vertical-alignment: center; }
+                                    Text { text: row.license; color: Theme.secondary-text; font-size: Theme.small-font; width: 150px; overflow: elide; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+                }
+                close-button := HintedActionButton {
+                    text: "Close"; min-height: Theme.control-height;
+                    hint: "Close this dialog and return to the file manager.";
+                    clicked => { root.close(); }
+                }
             }
         }
     }

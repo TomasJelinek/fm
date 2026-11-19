@@ -33,7 +33,7 @@ Evidence is under `_build/goal/viewer-opening-toolbar/`:
   geometry, document enlargement, 64× maximum and bounded raster remain covered.
 - `pdf-plugin-acceptance.log`: real sandboxed PDF package passed, 8.68 seconds,
   using the current engine test executable and protected runtime
-  `C:\Users\tjelinek\MidnightExplorer-20261108-064756-80106a72\me.exe`.
+  `<user-profile>\MidnightExplorer-20261108-064756-80106a72\me.exe`.
   A saved 234.56% preference still opens the actual 400×600 PDF page in Fit at 20%
   in a 160×120 viewport. Actual pixels and exact manual scales survive page turns
   in both directions across differently sized pages. Resizing to 1200×1200

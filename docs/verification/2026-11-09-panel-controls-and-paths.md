@@ -45,7 +45,7 @@ Logs and render artifacts remain under `_build/delete-followups/` and
 The coherent debug application built successfully and was copied with complete
 viewer/thumbnail/native/network packages and the new archive worker into a fresh
 private candidate installation:
-`C:/Users/tjelinek/MidnightExplorer-20261109-provider-candidate`.
+`<user-profile>/MidnightExplorer-20261109-provider-candidate`.
 Application SHA-256:
 `E20D92F39DA66E7F2AA6EE877B56BA1D6554D9E8CED28F3817B3E2AD28EB5698`.
 Both headless and software UI startup smoke checks exited zero, with unchanged

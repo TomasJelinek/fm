@@ -142,7 +142,7 @@ passes above are not a claim that the entire in-progress workspace is lint-clean
 The new executable and the existing verified five viewer packages, native/archive
 filesystems and thumbnail workers were staged under `_build/goal/shared-toolbar/`
 and copied with SHA-256 readback to the protected runtime
-`C:\Users\tjelinek\MidnightExplorer-20261108-100543-7c516b26`.
+`<user-profile>\MidnightExplorer-20261108-100543-7c516b26`.
 The matching build hash is registered, so `_build/debug/me.exe` resolves these
 packages without weakening plugin path checks. Existing installations remain.
 

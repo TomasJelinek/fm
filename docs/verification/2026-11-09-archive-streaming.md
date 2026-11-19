@@ -111,7 +111,7 @@ Complete packages, including protocol-2 manifests and dependency licenses:
   `55f9ad26a6c2b1a99a815468ff882599aea6e56686d62325befb6984f6b0a50e`.
 
 Windows installed-worker qualification used the protected generated installation
-`C:/Users/tjelinek/_build/archive-streaming-20261109-1455`. Linux qualification
+`<user-profile>/_build/archive-streaming-20261109-1455`. Linux qualification
 creates a private installation below `/tmp/fm-interaction/_build` in the same run;
 its path is ephemeral and is recorded in `linux-installation.txt`.
 

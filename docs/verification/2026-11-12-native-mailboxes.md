@@ -117,7 +117,7 @@ hashes and per-filter timings. The completed tree/shutdown controls pass on both
 Windows debug app/elevation build completed in **1 min 18 s** with two pre-existing
 vendored femtovg warnings. App `_build/debug/me.exe` SHA-256:
 `1fa6ee37f6023e2f53770e25d4b0286e3b318fe34841dacffd00cc2dad1b76fe`.
-Private plugin runtime: `C:/Users/tjelinek/MidnightExplorer-20261112-mailboxes-1fa6ee37`, registered against this exact build hash.
+Private plugin runtime: `<user-profile>/MidnightExplorer-20261112-mailboxes-1fa6ee37`, registered against this exact build hash.
 Previously qualified plugin payloads were reused; no plugin source or ABI changed.
 The deployment verified private ownership and hashes, then removed its validated
 owned staging copy, recovering another approximately 0.532 GiB.

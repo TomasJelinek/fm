@@ -5,7 +5,7 @@
 The audit starts at `origin/main`, commit
 `5e04723319e341abcbd33adfad15b569b2f1c9b0`, in the isolated
 `codex/main-deep-audit` branch at
-`C:/Users/tjelinek/.codex/worktrees/main-deep-audit/FM`. Documentation/inventory
+`<worktree>`. Documentation/inventory
 commit `1dbe4c761104120876dbab596e2970bf36cf4a69` precedes the audit fixes.
 Verified source commit: **962ebb5049f51d7b2e268c213fb4436d5308b621**. The newer dirty source checkout at
 `D:/experiments/dev/FM` was outside scope and was not used as the source of fixes.
@@ -157,7 +157,7 @@ PowerShell's measured test body fell from 7.917 s to 0.888 s in the final run,
 with the same 33 native argument cases. This is one before/after observation,
 not a stable latency budget.
 
-Linux qualification ran as the ordinary `tjelinek` user (uid 1000), not root,
+Linux qualification ran as the ordinary `<user>` user (uid 1000), not root,
 on Ubuntu 24.04 / WSL2 kernel `6.6.87.2-microsoft-standard-WSL2`. Main fixtures
 used `/tmp/_build/midnight-main-audit/tmp` on the distro's native ext4 filesystem;
 the second-device fixture area was `/dev/shm/_build/midnight-main-audit`.

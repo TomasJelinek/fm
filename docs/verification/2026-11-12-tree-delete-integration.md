@@ -51,7 +51,7 @@ those checks finish. This report does not claim broad-goal completion.
 The first full Windows engine suite passed 843 tests and failed 13 diagnostic
 storage assertions (7 opt-in tests ignored). All failures reported access denied
 while writing private warning reports. `_build/tmp/MidnightExplorer-size-warnings`
-was owned by `CodexSandboxOffline`, whereas the authorized runner used `tjelinek`.
+was owned by `CodexSandboxOffline`, whereas the authorized runner used `<user>`.
 The spool's existing restrictive ACL correctly refused another identity.
 
 The unchanged engine binary reproduced one failure with the old TEMP and passed
@@ -112,7 +112,7 @@ The [font catalog correction](2026-11-12-monospace-catalog.md),
 Final app: `_build/debug/me.exe`, SHA-256
 `07f4fcc14373c87cf677ec800a50217e8078f196d674b6704c2ad7f63fdfde12`.
 The verified private plugin runtime is
-`C:/Users/tjelinek/MidnightExplorer-20261112-tree-delete-07f4fcc1`, registered
+`<user-profile>/MidnightExplorer-20261112-tree-delete-07f4fcc1`, registered
 against this exact app hash. The previously qualified plugin payloads were copied
 from the existing private runtime, alongside the newly built app and elevation
 helper. Deployment verifies hashes and restrictive ownership; it does not weaken

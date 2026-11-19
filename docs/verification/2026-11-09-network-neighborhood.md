@@ -81,7 +81,7 @@ Windows icon tests then passed, including native artwork and bounded path-free
 lookups. `network-icon-red.log` and `network-icon-green.log` retain this evidence.
 
 The debug application and new Windows plugin are installed together at
-`C:\Users\tjelinek\MidnightExplorer-20261109-network-final` with the existing
+`<user-profile>\MidnightExplorer-20261109-network-final` with the existing
 unchanged viewer/archive/thumbnail packages. The private deployer verifies all
 copied files and ACLs; desktop shortcut and matching-build registration point to
 the new installation. Headless and real-window software-renderer startup smoke

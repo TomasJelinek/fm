@@ -19,6 +19,7 @@ mod support {
     pub mod ui;
 }
 
+mod about_dialog;
 mod action_icon_colors;
 mod archive_badges;
 mod archive_options;

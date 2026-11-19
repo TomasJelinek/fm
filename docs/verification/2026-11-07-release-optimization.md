@@ -76,7 +76,7 @@ request to render submission and native redraw-dispatch span, **not compositor
 presentation latency or FPS**.
 
 Hardware: Intel Core i7-13800H, Windows 11 Enterprise build 26200. Installed GPUs
-are NVIDIA RTX 3500 Ada Generation Laptop GPU (driver 32.0.16.2114) and Intel Iris
+are a discrete laptop GPU (driver 32.0.16.2114) and Intel Iris
 Xe (32.0.101.7088). The benchmark does not emit the selected adapter name, so the
 result is not attributed to either adapter specifically.
 

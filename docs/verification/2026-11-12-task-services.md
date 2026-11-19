@@ -77,7 +77,7 @@ No dependency, lockfile, platform policy or operation admission quota changed.
 The rebuilt `D:/experiments/dev/FM/_build/debug/me.exe` has SHA-256
 `0d73139064eb925a4971dd81eb1bc8ca045b80ed3bdabdd737e9f31f4ed6a088`.
 It and the matching elevation helper were deployed with unchanged existing plugin
-artifacts to `C:/Users/tjelinek/MidnightExplorer-20261112-owners-0d731390`; the private
+artifacts to `<user-profile>/MidnightExplorer-20261112-owners-0d731390`; the private
 runtime registration matches this executable hash. Deployment did not relax plugin
 ACL validation. The temporary deployment stage was removed after registration.
 

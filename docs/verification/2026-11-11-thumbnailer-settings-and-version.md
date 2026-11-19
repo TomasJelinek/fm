@@ -73,7 +73,7 @@ Size: 94,712,832 bytes.
 SHA-256: `534A46B085E3328453CE2937AB4F8E1DDE4EC5B92C5F5ACE7CFAA375C225B71E`.
 
 The built EXE was copied with the existing compatible viewer/filesystem/thumbnail
-packages to `C:\Users\tjelinek\MidnightExplorer-20261111-thumbnailer-settings`.
+packages to `<user-profile>\MidnightExplorer-20261111-thumbnailer-settings`.
 Deployment verified file hashes and registered that exact executable hash under
 `%USERPROFILE%\.midnight-explorer\plugin-runtimes`. Existing deployments and
 checkout ACLs were not changed. Backend `--smoke-test` and software-rendered

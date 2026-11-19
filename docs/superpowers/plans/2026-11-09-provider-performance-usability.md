@@ -43,9 +43,9 @@ replace a size limit by a whole-input allocation or restore the JPEG adapter.
 
 - `D:\experiments\godot\Godot_v4.7.2-stable_win64.exe.zip` exists and is
   86,013,866 bytes, larger than the current 64 MiB archive mount ceiling.
-- `C:\Users\tjelinek\OneDrive - NVIDIA Corporation\Pictures\Screenshots`
+- `<user-profile>/OneDrive\Pictures\Screenshots`
   is the requested native thumbnail performance/flicker reproduction directory.
-- `C:\Users\tjelinek\OneDrive - NVIDIA Corporation\Pictures\Backgrounds\QQQ`
+- `<user-profile>/OneDrive\Pictures\Backgrounds\QQQ`
   exists with Directory, Archive, ReparsePoint and Compressed flags. The actual
   tag, permissions and failing native call still require investigation.
 - Ordinary archive mutation guards already exist in presenter/backend. Their

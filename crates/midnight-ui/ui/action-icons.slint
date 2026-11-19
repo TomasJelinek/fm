@@ -135,8 +135,10 @@ component ActionButtonContent inherits HorizontalLayout {
     in property <bool> removal-icon;
     in property <bool> destructive;
     in property <bool> enabled;
-    private property <bool> native-available: root.native-icon.width > 0 && root.native-icon.height > 0;
-    private property <image> fallback: root.fallback-icon.width > 0 ? root.fallback-icon : FallbackIcons.for-label(root.text);
+    // Close dismisses; it is never the red window-close cross, so it ignores native artwork.
+    private property <bool> closing: root.text == "Close";
+    private property <bool> native-available: !root.closing && root.native-icon.width > 0 && root.native-icon.height > 0;
+    private property <image> fallback: root.closing ? FallbackIcons.exit : root.fallback-icon.width > 0 ? root.fallback-icon : FallbackIcons.for-label(root.text);
     private property <bool> colored: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback));
     private property <image> artwork: root.native-available ? root.native-icon : root.fallback;
     private property <bool> has-icon: root.artwork.width > 0 && root.artwork.height > 0;

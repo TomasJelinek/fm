@@ -82,7 +82,7 @@ Final results:
 ## Exact Windows artifact
 
 The debug executable at `D:\experiments\dev\FM\_build\debug\me.exe` and the private
-runtime at `C:\Users\tjelinek\MidnightExplorer-20261110-html\me.exe` were read back
+runtime at `<user-profile>\MidnightExplorer-20261110-html\me.exe` were read back
 with the same SHA-256:
 
 `E71ED919E0B0EAE14DEC5B3062213F9DA6978F287206AC849CB20FA0BCAC6E11`

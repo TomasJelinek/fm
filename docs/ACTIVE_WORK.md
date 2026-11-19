@@ -933,7 +933,7 @@ LaterCassembly actuallycompleted0/normal-onlyregistration; Rootc14c67c8 rehashed
 2,487files/752,608,762B incl6Viewers/3FS/2thumbs/662notices/normal673/testcf411.
 Freeze/postregistrationhashesmatch; no app/testlaunched/nativeacceptance. Actual
 NativeRoot fromnative-identities/completion, verbatim:
-`\\?\C:\Users\tjelinek\MidnightExplorer-validation-20261118-07672814`.
+`<user-profile>\MidnightExplorer-validation-20261118-07672814`.
 AfteractualBuildsourceholdrelease RootpromotedONEhelper e3bc→1e73/fdf06c25 withfull
 2288guards/fmt0/normal673Mainunchanged. Currentcanonicalsource9c25 distinctoldC9297;
 same7graphcompile+originalpalettecase/2newlifecyclecasespending300s. OldCbundleand
@@ -1037,7 +1037,7 @@ no runtime rebuild is required for this test/docs-only change.
 
 The c97 host EXE is independently built and normal-profile deployed: SHA-256
 prefix `2d906dea…`, **106,150,912 B**,
-`C:/Users/tjelinek/MidnightExplorer-20261117-044645-b596dbbb/me.exe`.
+`<user-profile>/MidnightExplorer-20261117-044645-b596dbbb/me.exe`.
 Inventory checked all 13 components / 1,823 files (only host changed, twelve
 retained); validators and registration/pointer checks exited **0** as normal
 non-admin, without launching the user app. This deployment does not qualify the
@@ -1145,7 +1145,7 @@ scoped automated acceptance, not physical desktop or Linux qualification.
 Actual normal-profile deployment and the protected registration plus launcher
 pointer were checked in `final-normal-profile-deploy467/verified-registration.json`.
 Source and deployed EXE SHA-256: `803a8b72bb98c5d804943905f76fe31bc7d01ee0b5bbfbda5ba0caf51e04629e`.
-Installation: `C:\Users\tjelinek\MidnightExplorer-20261117-012737-57ffdd4e`. No application was launched for this
+Installation: `<user-profile>\MidnightExplorer-20261117-012737-57ffdd4e`. No application was launched for this
 deployment. Own-EXE SHA verification remains default OFF, opt-in with
 `MIDNIGHT_VERIFY_RUNTIME_SHA256=1`. Git/remote CI outcomes are reported separately.
 
@@ -1348,7 +1348,7 @@ SHA256 `89090e27e82ae4718794a3f8ca4a666d9ab1b4217c4e22c10ec7c2939c803ac6`.
 It records normal debug **exit 0 / 584.880 s**, **14** coherent core consumers,
 zero compiler warnings/errors/native-build diagnostics and zero source drift.
 The registered private EXE is
-`C:/Users/tjelinek/MidnightExplorer-20261113-123202-937e9bfc/me.exe`,
+`<user-profile>/MidnightExplorer-20261113-123202-937e9bfc/me.exe`,
 **102,327,296 bytes**, SHA256
 `937e9bfc9caeaf107845a8538fd871e0cf0534694ca91eb9c3a4c00b6b6f1cdd`.
 The real PE VERSIONINFO, icon and manifest checks pass: file/product version
@@ -1398,7 +1398,7 @@ records **exit 0 / 254.609 s**, source
 origins rebuilt/coherent. The registered startup receipt is
 `_build/verification/integrated-debug-20261113-v2/final-qualified-debug-result.json`.
 The private EXE is
-`C:/Users/tjelinek/MidnightExplorer-20261113-083454-f5b29eab/me.exe`,
+`<user-profile>/MidnightExplorer-20261113-083454-f5b29eab/me.exe`,
 **102,148,096 bytes**, SHA256
 `f5b29eab9776990bb15c82b60b0fe5fa4b19421c05d089a5313a4478f9dc8a88`.
 
@@ -1424,7 +1424,7 @@ remained pending.
 The receipts under `_build/verification/integrated-debug-20261113/` record a
 fresh debug build, **102,041,600 bytes**, source
 `d6455a0133df5e279ffbdab62b86691007c2c5be` and zero drift. The private binary is
-`C:/Users/tjelinek/MidnightExplorer-20261113-051356-516fc158/me.exe`,
+`<user-profile>/MidnightExplorer-20261113-051356-516fc158/me.exe`,
 SHA256 `516fc158567c2179087f4c166d23c8b51387c8c077236fc87bcabfa684226018`.
 
 `qualified-debug-result.json` records engine **17.882 s** and native UI **7.901 s**,

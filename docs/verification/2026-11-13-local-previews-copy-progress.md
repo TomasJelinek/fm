@@ -7,7 +7,7 @@ processes were not stopped or restarted.
 
 ## Screenshots folder admission
 
-The reported `/home/tjelinek/Pictures/Screenshots` contained 36 regular PNG files.
+The reported `<home>/Pictures/Screenshots` contained 36 regular PNG files.
 Saved previews were enabled, network previews disabled, and the left pane used
 Thumbnails. The running process loaded the current Debug executable. Its actual
 cache and source mounts were writable; cache ownership/private modes were valid.

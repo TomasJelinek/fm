@@ -334,8 +334,8 @@ toolchain on PATH, a Windows example is:
 ```powershell
 ./plugins/midnight-fs-archive/scripts/build.ps1 `
   -SdkConfig D:/release/worker-sdk/.cargo/registry.toml `
-  -BuildRoot D:/work/_build/archive-worker `
-  -OutputDirectory D:/work/_build/install/filesystems/archive `
+  -BuildRoot <work-dir>/_build/archive-worker `
+  -OutputDirectory <work-dir>/_build/install/filesystems/archive `
   -Test -Offline
 ```
 

@@ -14,8 +14,8 @@ export { UserCommandRow }
 import { ShortcutHints } from "shortcut-hints.slint";
 export { ShortcutHints }
 import { HelpWindow } from "help-window.slint";
-import { AboutDialog } from "about-dialog.slint";
-export { HelpWindow }
+import { AboutDialog, LicenseRow } from "about-dialog.slint";
+export { HelpWindow, LicenseRow }
 import { JobProgressWindow } from "job-progress-window.slint";
 export { JobProgressWindow }
 import { JobsWindow } from "jobs-window.slint";
@@ -704,6 +704,9 @@ export component MainWindow inherits Window {
         else { main-menu.show(); }
     }
     in-out property <bool> about-open;
+    in property <[LicenseRow]> license-rows;
+    in property <string> license-summary;
+    callback license-filter(string);
     changed about-open => {
         PopupFocus.update();
         if root.about-open { about-popup.show(); } else { about-popup.close(); root.focus-files(); }
@@ -1319,13 +1322,16 @@ export component MainWindow inherits Window {
     about-popup := PopupWindow {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
-        DialogFrame {
-            desired-width: 420px; desired-height: 280px;
+        about-frame := DialogFrame {
+            desired-width: 560px; desired-height: 660px;
             dismiss-on-outside: true; dim: true;
             dismiss => { root.about-open = false; }
             AboutDialog {
                 application-version: root.application-version;
-                application-icon: root.icon; close-icon: root.action-icons.close;
+                application-icon: root.icon;
+                licenses: root.license-rows; license-summary: root.license-summary;
+                move-dialog(dx, dy) => { about-frame.move-by(dx, dy); }
+                license-filter(query) => { root.license-filter(query); }
                 close => { root.about-open = false; }
             }
         }

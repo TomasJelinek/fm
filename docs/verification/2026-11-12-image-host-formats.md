@@ -14,7 +14,7 @@ decoder project. No user's image, application settings or active runtime is chan
 
 The probe and separately compiled workers were copied with SHA-256 readback to a
 new private directory with protected current-user/SYSTEM/Administrators permissions:
-`C:/Users/tjelinek/MidnightExplorer-QA-ImageFormats-20261112-81db99e7`.
+`<user-profile>/MidnightExplorer-QA-ImageFormats-20261112-81db99e7`.
 At this checkpoint, its test-only image manifest additionally advertised AVIF.
 The public association awaited production packaging qualification recorded below.
 

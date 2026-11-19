@@ -111,7 +111,7 @@ plain metadata. LIFE-01 and the full product/UI goal remain open.
 
 The fresh debug executable is `D:/experiments/dev/FM/_build/debug/me.exe`.
 SHA-256: dd95b93683ee2e3e8350d0363b99d6f6ab435ae5ce26ba93799bedeef20cfc3b.
-The matching private installation is `C:/Users/tjelinek/MidnightExplorer-20261112-results-dd95b936`, registered for this exact
+The matching private installation is `<user-profile>/MidnightExplorer-20261112-results-dd95b936`, registered for this exact
 executable hash. Unchanged viewer, filesystem and thumbnail plugins were reused
 from the preceding qualified private installation; no plugin rebuild was required.
 Deployment removed its own 0.532 GiB staging copy after containment/reparse checks.

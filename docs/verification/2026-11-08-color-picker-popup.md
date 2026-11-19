@@ -47,4 +47,4 @@ for their picker assertions. Evidence: `app-acceptance.txt`, `deploy.log` and
 
 - Executable: `_build/debug/me.exe`
 - SHA-256: `DA46082EAA265E2B675DB4D7169ED9D621082F85FCE22E1B12D525819A6BC03C`
-- Private runtime: `C:\Users\tjelinek\MidnightExplorer-20261108-040725-abe4e8da`
+- Private runtime: `<user-profile>\MidnightExplorer-20261108-040725-abe4e8da`

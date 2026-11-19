@@ -141,7 +141,7 @@ bundle remains separate.
 The real host integration test requires `ARCHIVE_WORKER` to point to the generated
 helper and `ARCHIVE_TEST_INSTALL_ROOT` to a private generated installation directory.
 Use `cargo test -p midnight-filesystem-host -- --include-ignored`. The Windows test
-installation used `C:\Users\tjelinek\_build\archive-filesystems\install-tests`.
+installation used `<user-profile>\_build\archive-filesystems\install-tests`.
 Its ACL grants write only to its owner, SYSTEM and Administrators; AppContainer
 packages have read/execute only. The D: checkout has shared-writable ancestors and
 is correctly rejected by installation trust checks. Do not weaken those checks or

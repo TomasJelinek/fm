@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 #[cfg(test)]
 extern crate self as midnight_ui;
+mod about_licenses;
 mod action_icons;
 mod archive_options;
 mod argument_rows;
@@ -991,6 +992,7 @@ pub fn install_with_owned(
         }
     });
     dialog_focus::install(window);
+    about_licenses::install(window);
     information_windows::install(window, presenter.clone(), send.clone());
     shortcut_bridge::install(window, presenter.clone(), send.clone());
     path_paste::install(window, presenter.clone(), send.clone());

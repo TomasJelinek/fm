@@ -69,7 +69,7 @@ DLL, updated manifest, README and notices. SHA-256 values recorded by that runne
 - Manifest: `EE4AC25999F380CAB2D48FE13A34C5E618C730993756CEB86952B8D3BD364CFC`.
 
 Protected installation is complete at
-`C:/Users/tjelinek/MidnightExplorer-20261112-user-menu-2be96843`. The installed
+`<user-profile>/MidnightExplorer-20261112-user-menu-2be96843`. The installed
 `viewers/midnight-viewer-source/` DLL and manifest were independently hashed and
 match both package hashes above. Deployment and runtime registration are recorded
 in `_build/qa/find-metadata-scroll-20261112/deployment.log`.

@@ -4,8 +4,8 @@
 
 The native Windows probe used the supplied files:
 
-- `D:/dev/ov-physics-trunk/ovclash/AGENTS.md` (213,103 bytes).
-- `D:/dev/ov-physics-trunk/ovclash/build.bat` (22,632 bytes).
+- `<source-checkout>/ovclash/AGENTS.md` (213,103 bytes).
+- `<source-checkout>/ovclash/build.bat` (22,632 bytes).
 
 The user geometry was reproduced at 1,340 × 820 logical / 3,015 × 1,845 physical
 pixels, 225% scaling, Segoe UI 13. Viewer typography retained its defaults.

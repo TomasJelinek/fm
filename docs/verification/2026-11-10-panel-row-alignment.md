@@ -37,7 +37,7 @@ capture fields; this is not a claim of clean workspace lint.
 The final debug app was rebuilt after the backend's mechanical lint cleanup:
 
 - Build: `D:\experiments\dev\FM\_build\debug\me.exe`.
-- Private installation: `C:\Users\tjelinek\MidnightExplorer-20261110-html\me.exe`.
+- Private installation: `<user-profile>\MidnightExplorer-20261110-html\me.exe`.
 - Both SHA-256: `AB8628BFF2BB6396F673C754E6712E6A7B7C9C2B9D497A55517C4F4109705B34`.
 - SHA-bound private plugin runtime registration refreshed for that exact build.
 - Actual build-path `--smoke-test` exited 0; stderr was empty.

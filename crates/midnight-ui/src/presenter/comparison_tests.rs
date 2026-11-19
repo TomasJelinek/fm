@@ -56,6 +56,16 @@ fn result(request: Arc<CompareRequest>) -> Event {
 }
 
 #[test]
+fn the_dialog_closes_as_soon_as_compare_is_pressed_and_the_comparison_keeps_running() {
+    let mut p = loaded();
+    let request = start(&mut p);
+    assert!(!p.comparison.open, "no dialog is left open over the panels");
+    assert!(p.comparison.busy, "closing is not cancelling");
+    p.apply_with_sender(result(request), &|_| true);
+    assert!(!p.comparison.open && p.comparison.error.is_empty());
+}
+
+#[test]
 fn comparison_publishes_both_and_next_toggle_carries_authoritative_seed() {
     let mut p = loaded();
     let request = start(&mut p);

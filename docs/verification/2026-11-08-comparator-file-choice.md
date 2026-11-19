@@ -34,7 +34,7 @@ Windows debug build: `_build/debug/me.exe`, 84,874,240 bytes, SHA-256
 The app build succeeds with the existing 34 warnings from unfinished tree-engine
 code. The comparator crates pass Clippy with warnings denied. Release was not rebuilt.
 The matching protected plugin runtime was registered at
-`C:\Users\tjelinek\MidnightExplorer-20261108-133357-db6052ee`. Native startup from
+`<user-profile>\MidnightExplorer-20261108-133357-db6052ee`. Native startup from
 `_build/debug/me.exe --ui-smoke-test` exited 0, produced the inspected `startup.png`
 and empty stderr, and left user preferences unchanged (SHA-256
 `bcf7388cc3c3e2742fd86febf6f91a3edac29fb312fdfc6bc054492bcbbab053`).

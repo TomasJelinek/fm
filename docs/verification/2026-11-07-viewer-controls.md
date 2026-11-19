@@ -78,7 +78,7 @@ Evidence logs under `_build/`:
   obsolete inputs, cycling, cleanup, disabled providers and duplicate identifiers.
 - `viewer-final-linux-native.log`: corresponding Linux native/process integration
   run, using the trusted deployment
-  `/home/tjelinek/_build/MidnightExplorerViewerQA/viewer-integration-KqpzCX`.
+  `<home>/_build/MidnightExplorerViewerQA/viewer-integration-KqpzCX`.
   Basic and image packages reuse existing Linux builds; missing Source and
   Markdown packages were built in debug mode against the released native SDK,
   using their independent locks and offline cache.

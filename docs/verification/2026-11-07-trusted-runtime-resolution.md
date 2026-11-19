@@ -57,7 +57,7 @@ The final optimized Windows release built successfully in 3m 42s:
 - Executable: `D:\experiments\dev\FM\_build\release\me.exe`, 38,997,504 bytes.
 - SHA-256: `559CE0249758E6E2E2D961B0EFA4A2521B2C8AB7D083377FAA0539098E45D1FB`.
 - Matching protected runtime:
-  `C:\Users\tjelinek\MidnightExplorer-20261107-120804-5c2b92b9\me.exe`.
+  `<user-profile>\MidnightExplorer-20261107-120804-5c2b92b9\me.exe`.
 - All viewer, filesystem and thumbnail packages were copied with SHA-256 readback,
   and the matching record was published under the protected profile namespace.
 

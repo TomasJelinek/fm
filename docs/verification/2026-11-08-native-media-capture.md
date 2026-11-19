@@ -77,7 +77,7 @@ test deliberately changes the first owned binary fixture to test invalidation.
 Final app SHA-256:
 `9BA584CFE4C3167126F69E84BA0E14CC905DD8F28385FF4296BC6079D45E6F61`.
 Private deployment:
-`C:\Users\tjelinek\MidnightExplorer-20261108-224503-eb237483`.
+`<user-profile>\MidnightExplorer-20261108-224503-eb237483`.
 The build's hash-specific runtime registration and redirected-desktop shortcut
 were updated by `scripts/deploy-private.ps1`.
 

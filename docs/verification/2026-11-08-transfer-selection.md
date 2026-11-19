@@ -66,7 +66,7 @@ The debug executable `_build/debug/me.exe` is 83,524,096 bytes, SHA-256
 `1a1825df6fa18d393e59c3939ba3b448a138d9387e3c9d80da95657acd7527f0`.
 Release was not rebuilt. The existing verified plugin packages were deployed
 with readback checks and registered for this executable in
-`C:\Users\tjelinek\MidnightExplorer-20261108-125803-b94ba8f6`.
+`<user-profile>\MidnightExplorer-20261108-125803-b94ba8f6`.
 
 Native Windows startup with isolated Unicode fixtures passed, exited zero with
 empty stderr, and its screenshot was inspected. Saved preferences were unchanged

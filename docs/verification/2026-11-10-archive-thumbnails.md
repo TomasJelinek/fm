@@ -110,7 +110,7 @@ The later [tree-search integration](2026-11-10-tree-prefix-search.md) rebuilt an
 registered a subsequent main executable against this same protected runtime;
 the hashes and probe results here describe this archive-thumbnail baseline.
 The final probe uses that application's actual protected runtime at
-`C:\Users\tjelinek\MidnightExplorer-20261110-html`, including its existing HTML
+`<user-profile>\MidnightExplorer-20261110-html`, including its existing HTML
 viewer, filesystem and thumbnail packages. The native filesystem DLL is unchanged.
 Startup proves application/runtime discovery and listing. Archive-thumbnail
 qualification instead comes from the separate successful installed probe, which
@@ -285,7 +285,7 @@ The release archive package is `_build/media-cancel/package`, advertises protoco
 3, and includes normal third-party notices. Its executable SHA256 is
 `92EF3B1C52E945A28DDADC278373173FC69955866E8211D9AF7FBA172DD94C37`.
 The same hash was verified after normal private deployment to
-`C:/Users/tjelinek/MidnightExplorer-20261111-media-v3-92ef3b1c/filesystems/archive/`.
+`<user-profile>/MidnightExplorer-20261111-media-v3-92ef3b1c/filesystems/archive/`.
 This unregistered qualification runtime retains the previous application EXE; only
 the new host test executables ran against its installed workers.
 

@@ -131,7 +131,7 @@ handwritten files.
 The rebuilt `_build/debug/me.exe` has SHA-256
 `aba2ba71dff79ea99e3497e71c6573832d1b1cae015404089016b59ffd0d718c`.
 Its identical protected copy is registered at
-`C:\Users\tjelinek\MidnightExplorer-20261110-html\me.exe`. The ordinary build-path
+`<user-profile>\MidnightExplorer-20261110-html\me.exe`. The ordinary build-path
 executable passed `--smoke-test`, listing five drives and both fixture panels
 (30 and 132 entries). Evidence is in `build.log`, `build-hash.json`,
 `deployment.log` and `app-smoke/` beneath this report's artifact directory.
