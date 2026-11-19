@@ -3,8 +3,7 @@
 mod render;
 #[path = "support/toolbar.rs"]
 mod toolbar;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;
@@ -661,4 +660,30 @@ fn alt_history_wraps_without_changing_terminal_or_executing() {
             .iter()
             .any(|command| matches!(command, Command::LaunchTerminal { .. }))
     );
+}
+
+#[test]
+fn split_panes_start_and_end_on_whole_pixels() {
+    // A frame between two pixel columns is anti-aliased across both, and everything
+    // aligned to the pane's right edge inherits the fraction.
+    let mut test = ui::TestUi::new();
+    for width in [1339, 1340, 1705] {
+        test.resize(width, 780);
+        for ratio in [0.3, 0.5, 0.59, 0.6183] {
+            test.window.set_panel_ratio(ratio);
+            test.draw();
+            for (name, edge) in [
+                ("left pane x", test.window.get_left_pane_left()),
+                ("left pane width", test.window.get_left_pane_width()),
+                ("right pane x", test.window.get_right_pane_left()),
+                ("right pane width", test.window.get_right_pane_width()),
+            ] {
+                assert_eq!(edge.fract(), 0.0, "{name} at width {width}, ratio {ratio}");
+            }
+            assert!(
+                (test.window.get_panel_ratio() - ratio).abs() < 0.0001,
+                "rounding the split must not rewrite the stored ratio"
+            );
+        }
+    }
 }

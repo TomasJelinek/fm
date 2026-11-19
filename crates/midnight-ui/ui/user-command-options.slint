@@ -1,6 +1,6 @@
 import { ListHeader } from "list-header.slint";
-import { TipBody } from "controls.slint";
-import { ListView } from "std-widgets.slint";
+import { Tip } from "controls.slint";
+import { ListView } from "scroll-view.slint";
 import { UserCommandSettingsView, UserCommandSettingsForm, UserCommandSettingsRow } from "user-command-models.slint";
 import { UserCommandForm } from "user-command-form.slint";
 import { Theme } from "theme.slint";
@@ -167,7 +167,8 @@ export component UserCommandOptions inherits VerticalLayout {
         }
         moved => { root.update-gesture(); }
       command-list := ListView {
-        width: parent.width; height: parent.height;
+        // Positioned, so that its minimum size stays out of the parent's layout info.
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
         horizontal-scrollbar-policy: always-off;
         changed visible-height => { root.reveal-selection(); }
         accessible-label: "Configured Custom Commands"; accessible-item-count: UserCommandSettingsView.rows.length;
@@ -183,7 +184,7 @@ export component UserCommandOptions inherits VerticalLayout {
                 color: row.selected ? Theme.selected-text : row.separator ? Theme.secondary-text : Theme.text;
                 font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
             }
-            Tooltip { TipBody { text: row.summary; } }
+            Tip { text: row.summary; }
 
         }
       }

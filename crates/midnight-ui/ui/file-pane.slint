@@ -1,8 +1,9 @@
-import { ProgressIndicator, ScrollView } from "std-widgets.slint";
+import { ProgressIndicator } from "std-widgets.slint";
+import { ScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { ErrorNotice } from "error-notice.slint";
-import { TipBody, CompactPicker } from "controls.slint";
+import { CompactPicker, Tip } from "controls.slint";
 import { CompactLocationButton } from "location-controls.slint";
 import { OverflowToolbar } from "overflow-toolbar.slint";
 import { PanelList } from "panel-list.slint";
@@ -323,10 +324,14 @@ export component FilePane inherits Rectangle {
     callback bookmark-open(string);
     callback bookmark-remove(string);
     callback bookmark-assign(string, int);
-    background: Theme.pane-background;
-    border-color: active ? Theme.active-frame : Theme.frame;
-    border-width: 1px;
-    border-radius: 5px;
+    // Clipped here, not where the pane is used: `clip` on a use site makes Slint
+    // inline the whole pane into the window once per pane. The clip is square. A
+    // rounded one renders the pane into a texture and samples it at the pane's
+    // unrounded position, which blurs every row of a pane that does not start on a
+    // device pixel. The rounded frame is drawn as a fill below the content and an
+    // outline above it instead.
+    clip: true;
+    Rectangle { background: Theme.pane-background; border-radius: 5px; }
 
     public function focus-list() { path-input.finish-edit(); search.focus-input(); }
     public function remember-navigation-viewport() {
@@ -547,7 +552,7 @@ export component FilePane inherits Rectangle {
                 vertical-alignment: center; overflow: elide;
             }
             TouchArea { clicked => { root.activate(); root.filter(); } }
-            Tooltip { TipBody { text: ShortcutHints.hint(root.filter-label, "panel.filter"); } }
+            Tip { text: ShortcutHints.hint(root.filter-label, "panel.filter"); }
             clear-filter := NavigationButton {
                 x: parent.width - self.width; y: 0px;
                 width: max(24px, Theme.hint-font + 8px); height: parent.height;
@@ -644,20 +649,26 @@ export component FilePane inherits Rectangle {
                         }
                     }
                 }
-                for heading in [
-                    { title: "Size", column: 1 }, { title: "Modified", column: 2 },
-                    { title: "Time", column: 2 }
-                ] : FileColumnHeading {
-                    title: heading.title;
-                    sort-label: heading.title == "Time" ? "Modified time" : heading.title;
-                    width: heading.column == 1 ? root.size-column-width
-                        : heading.title == "Time" ? root.time-column-width : root.date-column-width;
-                    horizontal-stretch: 0;
-                    align-right: heading.column == 1;
-                    show-direction: heading.title != "Time";
-                    icons: root.action-icons; sorted: root.sort-column == heading.column;
+                FileColumnHeading {
+                    title: "Size"; sort-label: "Size";
+                    width: root.size-column-width; horizontal-stretch: 0; align-right: true;
+                    icons: root.action-icons; sorted: root.sort-column == 1;
                     descending: root.descending;
-                    activate => { root.activate(); root.sort(heading.column); }
+                    activate => { root.activate(); root.sort(1); }
+                }
+                FileColumnHeading {
+                    title: "Modified"; sort-label: "Modified";
+                    width: root.date-column-width; horizontal-stretch: 0;
+                    icons: root.action-icons; sorted: root.sort-column == 2;
+                    descending: root.descending;
+                    activate => { root.activate(); root.sort(2); }
+                }
+                FileColumnHeading {
+                    title: "Time"; sort-label: "Modified time";
+                    width: root.time-column-width; horizontal-stretch: 0; show-direction: false;
+                    icons: root.action-icons; sorted: root.sort-column == 2;
+                    descending: root.descending;
+                    activate => { root.activate(); root.sort(2); }
                 }
 
             }
@@ -759,7 +770,9 @@ export component FilePane inherits Rectangle {
             Rectangle {
                 width: list.visible-width; height: list.visible-height;
                 clip: true;
-                if SelectionRectangle.active && SelectionRectangle.pane == root.pane-id : Rectangle {
+                // Hidden rather than conditional: one decoration needs no generated component.
+                Rectangle {
+                    visible: SelectionRectangle.active && SelectionRectangle.pane == root.pane-id;
                     x: SelectionRectangle.left - list.absolute-position.x;
                     y: SelectionRectangle.top - list.absolute-position.y;
                     width: SelectionRectangle.width; height: SelectionRectangle.height;
@@ -810,10 +823,8 @@ export component FilePane inherits Rectangle {
                 vertical-alignment: center; overflow: elide;
                 accessible-role: none;
             }
-            Tooltip {
-                TipBody {
-                    text: root.watch-status + (root.watch-details == "" ? "" : "\n\n" + root.watch-details);
-                }
+            Tip {
+                text: root.watch-status + (root.watch-details == "" ? "" : "\n\n" + root.watch-details);
             }
         }
         details-bar := PanelDetails { visible: !root.minimal; height: root.minimal ? 0px : Theme.status-height; model: root.details; free-space: root.free-space; copy-field(identity) => { root.activate(); root.detail-copy(identity); } }
@@ -829,5 +840,9 @@ export component FilePane inherits Rectangle {
             copy-details(text) => { root.activate(); root.copy-error(text); }
             dismissed => { root.activate(); root.focus-list(); }
         }
+    }
+    Rectangle {
+        border-color: root.active ? Theme.active-frame : Theme.frame;
+        border-width: 1px; border-radius: 5px;
     }
 }

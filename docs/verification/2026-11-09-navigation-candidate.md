@@ -1,7 +1,7 @@
 # Navigation candidate deployment and native smoke — 2026-11-09
 
 The combined debug candidate is installed privately at
-`C:\Users\tjelinek\MidnightExplorer-20261109-navigation-candidate\me.exe`.
+`<user-profile>\MidnightExplorer-20261109-navigation-candidate\me.exe`.
 Its native startup smoke test passed with exit code 0 and empty stderr. Both
 panels rendered their requested directories, and the captured drive bars show
 Network in the same relative position.

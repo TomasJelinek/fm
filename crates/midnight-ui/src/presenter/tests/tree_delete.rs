@@ -117,7 +117,7 @@ fn tree_delete_prepares_exact_occurrences_and_requires_confirmation_in_both_mode
         ))));
         p.confirm_operation("wrong", String::new(), &|_| panic!("wrong token"));
         p.confirm_operation(&id.0.to_string(), String::new(), &|command| {
-            assert!(matches!(command, Command::ConfirmOperation { id: confirmed, new_name: None } if confirmed == id));
+            assert!(matches!(command, Command::ConfirmOperation { id: confirmed, new_name: None, replace_existing: false } if confirmed == id));
             true
         });
         assert_eq!(crate::job_presentation::rows(&p).len(), 1);

@@ -1,6 +1,6 @@
 import { HintedCheckBox, HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
-import { ArchiveExtensionChip, ArchiveExtensionInput } from "archive-extension-controls.slint";
+import { ArchiveExtensionChip } from "archive-extension-controls.slint";
 import { NavigationButton } from "navigation-controls.slint";
 
 export struct ArchiveAssociationRow {
@@ -103,7 +103,16 @@ export component ArchiveOptions inherits VerticalLayout {
             hint: "Add an extension for this archive format.";
             clicked => { root.adding = true; }
         }
-        extension-input := ArchiveExtensionInput {
+        // Not a component of its own: one that inherits the hinted LineEdit is
+        // compiled as another copy of the LineEdit.
+        extension-input := HintedLineEdit {
+            accessible-label: "Custom archive extension";
+            placeholder-text: "Extension, then Enter";
+            hint: "Enter a literal extension, such as backup or backup.tar. Press Enter to add it, or Escape to cancel.";
+            key-pressed(event) => {
+                if event.text == Key.Escape { ArchiveOptionsView.draft = ""; root.adding = false; return accept; }
+                reject
+            }
             visible: root.adding; enabled: root.adding && ArchiveOptionsView.ready;
             width: parent.width;
             text <=> ArchiveOptionsView.draft;
@@ -114,7 +123,6 @@ export component ArchiveOptions inherits VerticalLayout {
                     if ArchiveOptionsView.error == "" && ArchiveOptionsView.draft == "" { root.adding = false; }
                 }
             }
-            cancelled => { ArchiveOptionsView.draft = ""; root.adding = false; }
         }
     }
     if root.adding && ArchiveOptionsView.error != "" : Text {

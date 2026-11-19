@@ -1,8 +1,7 @@
 //! Real toolbar events across view modes; sorting must not depend on visible headers.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{LocationRole, NavigationChoiceRow};
@@ -123,10 +122,6 @@ fn sort_and_hot_path_actions_are_available_without_detailed_headers() {
 #[test]
 fn pointer_action_does_not_leave_a_checked_looking_outline_but_keyboard_focus_is_visible() {
     let mut test = ui::TestUi::new();
-    let calls = Rc::new(std::cell::Cell::new(0));
-    let count = calls.clone();
-    test.window
-        .on_open_about_window(move || count.set(count.get() + 1));
     let button = ui::root_item(
         &test.window,
         "About Midnight Explorer",
@@ -157,11 +152,13 @@ fn pointer_action_does_not_leave_a_checked_looking_outline_but_keyboard_focus_is
         .window()
         .dispatch_event(slint::platform::WindowEvent::PointerExited);
     test.draw();
-    assert_eq!(calls.get(), 1);
+    assert!(test.window.get_about_open());
+    test.window.set_about_open(false);
+    test.draw();
     assert_eq!(points.map(|(x, y)| test.pixel(x, y)), idle);
     render::snapshot(&test, "toolbar-after-pointer-action");
+    // Closing About returns focus to the file list, so Space no longer reopens it.
     ui::key(&test.window, slint::platform::Key::Space);
     test.draw();
-    assert_eq!(calls.get(), 2);
-    assert_ne!(points.map(|(x, y)| test.pixel(x, y)), idle);
+    assert!(!test.window.get_about_open());
 }

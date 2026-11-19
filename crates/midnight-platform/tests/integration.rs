@@ -33,3 +33,31 @@ fn every_test_file_is_a_module() {
         .collect();
     assert_eq!(files, declared, "declare every tests/*.rs file as a module");
 }
+
+/// Cargo.toml sets `[lib] test = false`, so `cargo test` builds no unit-test harness for
+/// the library and a unit test added to it would never run.
+#[test]
+fn library_has_no_unit_tests() {
+    fn check(directory: &std::path::Path) {
+        for entry in std::fs::read_dir(directory).expect("source directory") {
+            let path = entry.expect("source directory entry").path();
+            if path.is_dir() {
+                check(&path);
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("library source");
+            for line in source.lines().map(str::trim_start) {
+                let attribute = line.starts_with("#[") || line.starts_with("#![");
+                let names_test = line
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|word| word == "test");
+                assert!(
+                    !(attribute && names_test),
+                    "{}: `{line}`; remove `test = false` from [lib] in Cargo.toml",
+                    path.display()
+                );
+            }
+        }
+    }
+    check(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+}

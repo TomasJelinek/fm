@@ -64,7 +64,7 @@ required Windows privilege. The actual junction, hard-link and retagging tests
 above ran natively; this document does not claim an unperformed symlink test.
 
 The existing user's Desktop shortcut was updated to
-`C:\Users\tjelinek\MidnightExplorer-20261107-120804-5c2b92b9\me.exe`, SHA-256
+`<user-profile>\MidnightExplorer-20261107-120804-5c2b92b9\me.exe`, SHA-256
 `559ce0249758e6e2e2d961b0efa4a2521b2c8ab7d083377faa0539098e45d1fb`.
 COM readback verified target, icon, working directory and empty arguments. The
 application was not launched and preferences were not written. A previous-link

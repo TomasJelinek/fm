@@ -75,6 +75,7 @@ async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified(
         algorithm: ChecksumAlgorithm::Sha256,
         destination: manifest.clone(),
         acknowledge_partial: None,
+        overwrite: false,
     };
     let receipt = checksum::save_manifest(
         &run,
@@ -88,14 +89,34 @@ async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified(
         fs::read_to_string(&manifest).unwrap(),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad *č文🦀 abc.txt\n"
     );
-    assert!(
+    // An existing destination is refused until the caller confirms the replacement.
+    assert_eq!(
         checksum::save_manifest(
             &run,
             &save,
             &midnight_platform::LocalFileSystem::new(None),
             &Cancellation::default()
         )
-        .is_err()
+        .unwrap_err()
+        .kind,
+        std::io::ErrorKind::AlreadyExists
+    );
+    fs::write(&manifest, b"stale").unwrap();
+    let replace = ChecksumManifestRequest {
+        overwrite: true,
+        ..save.clone()
+    };
+    let replaced = checksum::save_manifest(
+        &run,
+        &replace,
+        &midnight_platform::LocalFileSystem::new(None),
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert_eq!(replaced.included, 1);
+    assert_eq!(
+        fs::read_to_string(&manifest).unwrap(),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad *č文🦀 abc.txt\n"
     );
     let alias = temp.path().join("source-alias.sha256");
     fs::hard_link(&path, &alias).unwrap();
@@ -165,6 +186,7 @@ async fn recursion_is_explicit_and_partial_manifests_require_exact_acknowledgeme
         algorithm: ChecksumAlgorithm::Sha256,
         destination: temp.path().join("partial.sha256"),
         acknowledge_partial: None,
+        overwrite: false,
     };
     assert!(
         checksum::save_manifest(&run, &save, provider.as_ref(), &Cancellation::default()).is_err()
@@ -224,6 +246,7 @@ async fn unknown_recursive_failure_requires_explicit_incomplete_discovery_acknow
             excluded: 1,
             incomplete_discovery: false,
         }),
+        overwrite: false,
     };
     assert!(
         checksum::save_manifest(&run, &save, provider.as_ref(), &Cancellation::default()).is_err()

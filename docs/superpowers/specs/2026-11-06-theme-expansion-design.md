@@ -104,7 +104,7 @@ white text retain the terminal character with a calmer hierarchy. The removed
 new name. It is not a second picker entry. IDs 0–12 remain unchanged.
 
 Append **Verdant Light** (14, `verdant-light`), an original white/graphite and
-forest-green palette with restrained lime accents, without NVIDIA naming or
+forest-green palette with restrained lime accents, without vendor naming or
 branding. Append the established light community palettes **Catppuccin Latte**
 (15, `catppuccin-latte`) and **Rosé Pine Dawn** (16, `rose-pine-dawn`), adapted for
 file-manager readability rather than copied literally. Latte uses cool porcelain,

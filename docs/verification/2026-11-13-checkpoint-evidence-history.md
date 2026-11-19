@@ -80,7 +80,7 @@ The fresh debug receipt (`_build/verification/image-prewarm-debug-20261113/debug
 records exit 0, zero drift and **101,975,552 bytes** for `_build/debug/me.exe`,
 SHA256 `c6c371bc313b15913ea2584bf5adc88a3ad165702d9bd64a5b95e40d012511ac`.
 The registered private entrypoint is
-`C:/Users/tjelinek/MidnightExplorer-20261113-024953-c6c371bc/me.exe`.
+`<user-profile>/MidnightExplorer-20261113-024953-c6c371bc/me.exe`.
 
 The qualified startup receipt (`_build/verification/image-prewarm-debug-20261113/qualified-debug-result.json`)
 records source `fd94d8568f83cf10fe61729bec4f66556aa5c353`, all 17 frozen sources
@@ -106,7 +106,7 @@ records exit 0, zero source drift and **101,794,816 bytes** for
 `_build/debug/me.exe`, SHA-256
 `26ff61f2de03e13b86e82e66bf3ddad1087fc21d47bdd445e9dedb4d10d9ad59`.
 The registered private entrypoint is
-`C:/Users/tjelinek/MidnightExplorer-20261113-004830-26ff61f2/me.exe`.
+`<user-profile>/MidnightExplorer-20261113-004830-26ff61f2/me.exe`.
 
 The qualified startup receipt (`_build/verification/backend-folder-presence-links-20261113/qualified-debug-result.json`)
 and `private-entrypoint-smoke-results.json` in that directory record engine
@@ -126,7 +126,7 @@ records exit 0, zero source drift and **101,794,816 bytes** for
 `_build/debug/me.exe`, SHA-256
 `269f34195139865e4fb68430fdc396eeb384469dc9cc28a7222612b6f89658eb`.
 The registered private entrypoint is
-`C:/Users/tjelinek/MidnightExplorer-20261113-269f3419/me.exe`.
+`<user-profile>/MidnightExplorer-20261113-269f3419/me.exe`.
 
 `private-entrypoint-smoke-results.json` and `private-qualified-windows-result.json`
 in that directory record both engine `--smoke-test` and native `--ui-smoke-test`
@@ -139,7 +139,7 @@ startup, not full viewer workflows, manual CSC/UAC access or Linux desktop UI.
 ### Previous launch-qualified runtime `d2643b49`
 
 The historical **101,768,704-byte** EXE is
-`C:/Users/tjelinek/MidnightExplorer-20261112-224859-d2643b49/me.exe`, SHA256
+`<user-profile>/MidnightExplorer-20261112-224859-d2643b49/me.exe`, SHA256
 `d2643b49917c29b8f5f3b0171dc075bb30058817de6f0b6b1212d8361c0f658d`.
 Its original startup scope is retained in the
 [recursive-tree report](2026-11-12-recursive-tree.md). Additional ledger provenance:
@@ -173,7 +173,7 @@ recorded in the [26ff61f2 runtime receipts](#previous-windows-launch-qualified-r
 
 The earlier Find diagnostic receipt (`_build/verification/backend-find-result-revision-20261113/build-owned-20261113T002043Z/runtime-result.json`)
 records **13/0/0**, including read-only probes of the exact reported
-`D:/dev/ov-physics-trunk/ovclash/source/DynamicMatrixCacheLimit.h`. Its hash, size
+`<source-checkout>/ovclash/source/DynamicMatrixCacheLimit.h`. Its hash, size
 and mtime were unchanged; raw path, kind, identity and all six revision words
 matched, and repeated validation was accepted. The original Open report remains
 unreproduced: its old build and captured metadata are unknown. No production Find

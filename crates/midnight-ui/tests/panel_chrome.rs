@@ -1,8 +1,7 @@
 //! Header spacing and overflow retain the displayed suffix and native breadcrumb identities.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{item_tree::ItemRc, items::AccessibleRole};
 use midnight_ui::PathPartRow;

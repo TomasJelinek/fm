@@ -1,24 +1,58 @@
 use crate::{LinuxFileSystem, desktop::read_bounded};
 use midnight_core::{
     ActionIcon, Cancellation, FsError, IconKey, IconKind, IconPixels, IconService, LocationKind,
-    StorageKind,
+    MAX_ICON_EDGE, StorageKind,
 };
 use std::{
     collections::{HashSet, VecDeque},
     io::Cursor,
     os::unix::ffi::OsStrExt,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 #[path = "icons_executable.rs"]
 mod executable;
+#[path = "icons_theme.rs"]
+mod theme;
+use theme::{configured_theme, manifest_field, theme_directories};
 
-const ICON_ROOTS: &[&str] = &["/usr/share/icons", "/usr/local/share/icons"];
 const PNG_LIMIT: usize = 1024 * 1024;
+
+/// The only places icons are read from: fixed system locations, never a
+/// directory a user or a listed folder can choose.
+#[derive(Clone, Copy)]
+struct Roots<'a> {
+    themes: &'a [&'a str],
+    pixmaps: &'a str,
+}
+
+const SYSTEM: Roots<'static> = Roots {
+    themes: &["/usr/share/icons", "/usr/local/share/icons"],
+    pixmaps: "/usr/share/pixmaps",
+};
+
+impl Roots<'_> {
+    /// The resolved `path`, if it is still inside one of these places.
+    fn trusted(&self, path: &Path) -> Option<PathBuf> {
+        let path = path.canonicalize().ok()?;
+        self.themes
+            .iter()
+            .copied()
+            .chain(Some(self.pixmaps))
+            .any(|root| path.starts_with(root))
+            .then_some(path)
+    }
+
+    fn load_png(&self, path: &Path, size: u16) -> Option<IconPixels> {
+        // Most probes miss: one `lstat` answers them before the path is resolved.
+        path.symlink_metadata().ok()?;
+        decode_png(read_bounded(&self.trusted(path)?, PNG_LIMIT)?, size)
+    }
+}
 
 impl IconService for LinuxFileSystem {
     fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError> {
-        if !(1..=64).contains(&key.size) {
+        if !(1..=MAX_ICON_EDGE).contains(&key.size) {
             return Ok(None);
         }
         Ok(load_named_icon(
@@ -27,6 +61,10 @@ impl IconService for LinuxFileSystem {
             key.size,
             &Cancellation::default(),
         ))
+    }
+    /// Theme artwork is looked up and scaled for the exact edge it is drawn at.
+    fn icon_edge(&self, drawn: u16) -> u16 {
+        drawn.clamp(1, MAX_ICON_EDGE)
     }
     fn load_executable_icon(
         &self,
@@ -43,73 +81,118 @@ pub(crate) fn theme_directory(home: Option<&Path>) -> Option<PathBuf> {
         .into_iter()
         .chain(["Adwaita".into(), "hicolor".into()]);
     for theme in themes {
-        for root in ICON_ROOTS {
-            if let Some(path) = trusted_path(&Path::new(root).join(&theme))
+        for root in SYSTEM.themes {
+            if let Some(path) = SYSTEM.trusted(&Path::new(root).join(&theme))
                 && path.is_dir()
             {
                 return Some(path);
             }
         }
     }
-    trusted_path(Path::new("/usr/share/icons")).filter(|path| path.is_dir())
+    SYSTEM
+        .trusted(Path::new("/usr/share/icons"))
+        .filter(|path| path.is_dir())
 }
+/// Probes for one lookup, across every theme and name. A name that no theme
+/// has costs one probe per listed directory: 131 in Yaru, 649 in hicolor.
+const MAX_PROBES: usize = 8192;
+/// Themes followed from the desktop's theme through `Inherits`.
+const MAX_INHERITED: usize = 16;
+
 fn load_named_icon(
     home: Option<&Path>,
     names: &[&str],
     size: u16,
     cancel: &Cancellation,
 ) -> Option<IconPixels> {
+    if cancel.is_cancelled() {
+        return None;
+    }
+    find_icon(SYSTEM, configured_theme(home), names, size, cancel)
+}
+
+/// The first of `names` that `theme` or a theme behind it has as a PNG, at
+/// `size` device pixels.
+fn find_icon(
+    roots: Roots<'_>,
+    theme: Option<String>,
+    names: &[&str],
+    size: u16,
+    cancel: &Cancellation,
+) -> Option<IconPixels> {
     if cancel.is_cancelled()
-        || !(1..=64).contains(&size)
+        || !(1..=MAX_ICON_EDGE).contains(&size)
         || names.iter().any(|name| !safe_theme_name(name))
     {
         return None;
     }
-    let mut themes = VecDeque::new();
-    if let Some(theme) = configured_theme(home) {
-        themes.push_back(theme);
-    }
-    themes.extend(["Adwaita".into(), "breeze".into(), "hicolor".into()]);
+    // The desktop's theme, then the themes it inherits, depth first in their
+    // listed order, so a variant such as Yaru-blue reaches Yaru before any
+    // built-in fallback. hicolor is the last resort of every theme.
+    let mut themes: VecDeque<String> = theme.into_iter().collect();
+    let mut fallbacks = ["Adwaita", "breeze", "hicolor"].into_iter();
     let mut seen = HashSet::new();
-    let mut attempts = 0;
-    // A malformed installed inheritance graph cannot recurse indefinitely.
-    while let Some(theme) = themes.pop_front() {
-        if cancel.is_cancelled() || seen.len() >= 16 || attempts >= 1024 {
+    let (mut followed, mut probes) = (0, 0);
+    'themes: loop {
+        let theme = match themes.pop_front() {
+            Some(theme) if followed < MAX_INHERITED => {
+                followed += 1;
+                theme
+            }
+            // A malformed installed inheritance graph cannot recurse
+            // indefinitely, and it does not use up the fallbacks either.
+            Some(_) => {
+                themes.clear();
+                continue;
+            }
+            None => match fallbacks.next() {
+                Some(theme) => theme.to_owned(),
+                None => break,
+            },
+        };
+        if cancel.is_cancelled() {
             break;
         }
         if !safe_theme_name(&theme) || !seen.insert(theme.clone()) {
             continue;
         }
-        for root in ICON_ROOTS {
+        for root in roots.themes {
             if cancel.is_cancelled() {
                 return None;
             }
             let theme_root = Path::new(root).join(&theme);
-            let manifest = trusted_path(&theme_root.join("index.theme"))
+            let manifest = roots
+                .trusted(&theme_root.join("index.theme"))
                 .and_then(|path| read_bounded(&path, 256 * 1024))
                 .and_then(|bytes| String::from_utf8(bytes).ok());
             let Some(manifest) = manifest else {
                 continue;
             };
-            for inherited in manifest_field(&manifest, "Inherits")
+            let inherited: Vec<&str> = manifest_field(&manifest, "Inherits")
                 .unwrap_or("")
                 .split(',')
+                .map(str::trim)
                 .take(16)
-            {
-                if safe_theme_name(inherited) && !seen.contains(inherited) {
-                    themes.push_back(inherited.into());
-                }
+                .filter(|parent| {
+                    safe_theme_name(parent) && *parent != "hicolor" && !seen.contains(*parent)
+                })
+                .collect();
+            for parent in inherited.into_iter().rev() {
+                themes.push_front(parent.into());
             }
             let directories = theme_directories(&manifest, size);
             // Specific MIME names are preferred across all sizes within this theme.
             for name in names {
                 for directory in &directories {
-                    attempts += 1;
-                    if cancel.is_cancelled() || attempts > 1024 {
+                    if cancel.is_cancelled() {
                         return None;
                     }
+                    probes += 1;
+                    if probes > MAX_PROBES {
+                        break 'themes;
+                    }
                     let path = theme_root.join(directory).join(format!("{name}.png"));
-                    if let Some(mut icon) = load_png(&path, size) {
+                    if let Some(mut icon) = roots.load_png(&path, size) {
                         icon.generic = *name == "text-x-generic";
                         return Some(icon);
                     }
@@ -121,10 +204,9 @@ fn load_named_icon(
         if cancel.is_cancelled() {
             return None;
         }
-        if let Some(mut icon) = load_png(
-            &Path::new("/usr/share/pixmaps").join(format!("{name}.png")),
-            size,
-        ) {
+        if let Some(mut icon) =
+            roots.load_png(&Path::new(roots.pixmaps).join(format!("{name}.png")), size)
+        {
             icon.generic = *name == "text-x-generic";
             return Some(icon);
         }
@@ -258,80 +340,10 @@ fn safe_theme_name(name: &str) -> bool {
         && name != ".."
 }
 
-fn configured_theme(home: Option<&Path>) -> Option<String> {
-    let root = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| home.map(|home| home.join(".config")))?;
-    let input =
-        String::from_utf8(read_bounded(&root.join("gtk-3.0/settings.ini"), 64 * 1024)?).ok()?;
-    input
-        .lines()
-        .filter_map(|line| line.trim().split_once('='))
-        .find_map(|(key, value)| {
-            let value = value.trim().trim_matches('"');
-            (key.trim() == "gtk-icon-theme-name" && safe_theme_name(value)).then(|| value.into())
-        })
-}
-
-fn manifest_field<'a>(input: &'a str, field: &str) -> Option<&'a str> {
-    let mut in_theme = false;
-    for line in input.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_theme = line == "[Icon Theme]";
-            continue;
-        }
-        if in_theme
-            && let Some((key, value)) = line.split_once('=')
-            && key.trim() == field
-        {
-            return Some(value.trim());
-        }
-    }
-    None
-}
-
-fn theme_directories(input: &str, size: u16) -> Vec<String> {
-    let mut directories: Vec<_> = ["Directories", "ScaledDirectories"]
-        .into_iter()
-        .filter_map(|key| manifest_field(input, key))
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|name| {
-            !name.is_empty()
-                && name.len() <= 256
-                && Path::new(name)
-                    .components()
-                    .all(|component| matches!(component, Component::Normal(_)))
-        })
-        .take(128)
-        .map(String::from)
-        .collect();
-    // Prefer exact nominal raster size. PNG-only lookup deliberately permits graceful
-    // fallback for scalable/SVG-only themes rather than loading external SVG resources.
-    let exact = format!("{size}x{size}/");
-    directories.sort_by_key(|directory| !directory.starts_with(&exact));
-    directories.dedup();
-    directories
-}
-
-fn trusted_path(path: &Path) -> Option<PathBuf> {
-    let path = path.canonicalize().ok()?;
-    ICON_ROOTS
-        .iter()
-        .copied()
-        .chain(Some("/usr/share/pixmaps"))
-        .any(|root| path.starts_with(root))
-        .then_some(path)
-}
-
-fn load_png(path: &Path, size: u16) -> Option<IconPixels> {
-    decode_png(read_bounded(&trusted_path(path)?, PNG_LIMIT)?, size)
-}
-
+/// Decodes a bounded PNG to a `size` by `size` icon. Artwork that already has
+/// that size is returned pixel for pixel.
 pub(crate) fn decode_png(bytes: Vec<u8>, size: u16) -> Option<IconPixels> {
-    if bytes.len() > PNG_LIMIT || !(1..=64).contains(&size) {
+    if bytes.len() > PNG_LIMIT || !(1..=MAX_ICON_EDGE).contains(&size) {
         return None;
     }
     let mut limits = image::Limits::default();
@@ -341,13 +353,42 @@ pub(crate) fn decode_png(bytes: Vec<u8>, size: u16) -> Option<IconPixels> {
     let mut reader = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Png);
     reader.limits(limits);
     let source = reader.decode().ok()?.into_rgba8();
-    let pixels = image::imageops::resize(
-        &source,
-        u32::from(size),
-        u32::from(size),
-        image::imageops::FilterType::Triangle,
-    );
-    IconPixels::new(u32::from(size), u32::from(size), pixels.into_raw()).ok()
+    let edge = u32::from(size);
+    let pixels = if source.dimensions() == (edge, edge) {
+        source
+    } else {
+        resize(&source, edge)
+    };
+    IconPixels::new(edge, edge, pixels.into_raw()).ok()
+}
+
+/// Scales in premultiplied alpha, so the hidden color of transparent pixels
+/// neither darkens nor tints the edges of the artwork.
+fn resize(source: &image::RgbaImage, edge: u32) -> image::RgbaImage {
+    let mut premultiplied = image::Rgba32FImage::new(source.width(), source.height());
+    for (from, to) in source.pixels().zip(premultiplied.pixels_mut()) {
+        let alpha = f32::from(from[3]) / 255.0;
+        let channel = |index: usize| f32::from(from[index]) / 255.0 * alpha;
+        *to = image::Rgba([channel(0), channel(1), channel(2), alpha]);
+    }
+    // Lanczos keeps reduced artwork sharp; it would ring around enlarged pixels.
+    let filter = if edge < source.width().max(source.height()) {
+        image::imageops::FilterType::Lanczos3
+    } else {
+        image::imageops::FilterType::CatmullRom
+    };
+    let scaled = image::imageops::resize(&premultiplied, edge, edge, filter);
+    let mut result = image::RgbaImage::new(edge, edge);
+    for (from, to) in scaled.pixels().zip(result.pixels_mut()) {
+        let alpha = from[3].clamp(0.0, 1.0);
+        let opacity = (alpha * 255.0).round() as u8;
+        if opacity == 0 {
+            continue;
+        }
+        let channel = |index: usize| ((from[index] / alpha).clamp(0.0, 1.0) * 255.0).round() as u8;
+        *to = image::Rgba([channel(0), channel(1), channel(2), opacity]);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -442,15 +483,6 @@ mod tests {
     }
 
     #[test]
-    fn theme_directories_are_bounded_relative_names_only() {
-        let input = "[Icon Theme]\nDirectories=../evil,/tmp/evil,16x16/mimetypes,32x32/places\n[Other]\nDirectories=outside\n";
-        assert_eq!(
-            theme_directories(input, 32),
-            ["32x32/places", "16x16/mimetypes"]
-        );
-    }
-
-    #[test]
     fn png_decode_rejects_oversized_input_and_dimensions_and_resizes_bounded_output() {
         use std::io::Cursor;
         fn png(width: u32) -> Vec<u8> {
@@ -466,8 +498,300 @@ mod tests {
             (24, 24, 24 * 24 * 4)
         );
         assert!(decode_png(png(513), 32).is_none());
-        assert!(decode_png(png(1), 65).is_none());
+        assert!(decode_png(png(1), 256).is_some());
+        assert!(decode_png(png(1), 257).is_none());
+        assert!(decode_png(png(1), 0).is_none());
         assert!(decode_png(vec![0; 1024 * 1024 + 1], 32).is_none());
+    }
+
+    /// A theme tree under a temporary directory: `(theme, Inherits, [(directory,
+    /// Size, Scale, icon names)])`. Each icon is a solid square of its
+    /// directory's pixel size whose red channel is the index of its theme and
+    /// whose green channel is the index of its directory.
+    struct Themes {
+        root: tempfile::TempDir,
+        icons: String,
+        pixmaps: String,
+    }
+
+    /// Name, `Size`, `Scale` and the icons it holds.
+    type Directory = (&'static str, u32, u32, Vec<&'static str>);
+
+    impl Themes {
+        fn new(themes: Vec<(&str, &str, Vec<Directory>)>) -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let base = root.path().canonicalize().unwrap();
+            let (icons, pixmaps) = (base.join("icons"), base.join("pixmaps"));
+            std::fs::create_dir_all(&pixmaps).unwrap();
+            for (index, (theme, inherits, directories)) in themes.iter().enumerate() {
+                let listed: Vec<_> = directories.iter().map(|directory| directory.0).collect();
+                let mut manifest = format!(
+                    "[Icon Theme]\nName={theme}\nInherits={inherits}\nDirectories={}\n",
+                    listed.join(",")
+                );
+                for (position, (directory, size, scale, names)) in directories.iter().enumerate() {
+                    manifest += &format!("[{directory}]\nSize={size}\nScale={scale}\n");
+                    let path = icons.join(theme).join(directory);
+                    std::fs::create_dir_all(&path).unwrap();
+                    for name in names {
+                        let edge = size * scale;
+                        let pixels = image::RgbaImage::from_pixel(
+                            edge,
+                            edge,
+                            image::Rgba([index as u8, position as u8, 0, 255]),
+                        );
+                        std::fs::write(path.join(format!("{name}.png")), encoded(&pixels)).unwrap();
+                    }
+                }
+                std::fs::create_dir_all(icons.join(theme)).unwrap();
+                std::fs::write(icons.join(theme).join("index.theme"), manifest).unwrap();
+            }
+            Self {
+                root,
+                icons: icons.to_str().unwrap().into(),
+                pixmaps: pixmaps.to_str().unwrap().into(),
+            }
+        }
+
+        /// The indexes of the theme and of the directory that served the first
+        /// of `names`, and the edge of the delivered icon.
+        fn find(&self, theme: Option<&str>, names: &[&str], size: u16) -> Option<(u8, u8, u32)> {
+            let roots = Roots {
+                themes: &[&self.icons],
+                pixmaps: &self.pixmaps,
+            };
+            let icon = find_icon(
+                roots,
+                theme.map(String::from),
+                names,
+                size,
+                &Cancellation::default(),
+            )?;
+            assert_eq!(icon.width, icon.height);
+            Some((icon.rgba[0], icon.rgba[1], icon.width))
+        }
+    }
+
+    #[test]
+    fn a_variant_theme_reaches_its_parents_depth_first_before_any_fallback() {
+        let themes = Themes::new(vec![
+            // hicolor comes last however early a theme names it.
+            (
+                "Accent",
+                "hicolor,Base,Side",
+                vec![("24x24/places", 24, 1, vec![])],
+            ),
+            (
+                "Base",
+                "Deep",
+                vec![
+                    ("16x16/places", 16, 1, vec!["folder"]),
+                    ("24x24/places", 24, 1, vec!["folder"]),
+                    ("48x48@2x/places", 48, 2, vec!["folder"]),
+                ],
+            ),
+            (
+                "Deep",
+                "",
+                vec![("32x32/places", 32, 1, vec!["folder", "deep-or-side"])],
+            ),
+            (
+                "Side",
+                "",
+                vec![("32x32/places", 32, 1, vec!["deep-or-side", "side"])],
+            ),
+            (
+                "Adwaita",
+                "hicolor",
+                vec![("16x16/places", 16, 1, vec!["folder", "fallback-or-last"])],
+            ),
+            (
+                "hicolor",
+                "",
+                vec![(
+                    "32x32/apps",
+                    32,
+                    1,
+                    vec!["folder", "side", "fallback-or-last", "last"],
+                )],
+            ),
+        ]);
+        let find = |names: &[&str], size| themes.find(Some("Accent"), names, size);
+        // Base (theme 1) serves every size at exactly the requested edge, from
+        // its exact directory, else the nearest larger one, else the largest.
+        for (size, directory) in [
+            (16, 0),
+            (17, 1),
+            (20, 1),
+            (24, 1),
+            (32, 2),
+            (96, 2),
+            (200, 2),
+        ] {
+            assert_eq!(
+                find(&["folder"], size),
+                Some((1, directory, u32::from(size))),
+                "{size}"
+            );
+        }
+        // Depth first: Base's parent precedes Accent's second parent.
+        assert_eq!(find(&["deep-or-side"], 20), Some((2, 0, 20)));
+        assert_eq!(find(&["side"], 20), Some((3, 0, 20)));
+        // Then the built-in fallbacks, with hicolor after them.
+        assert_eq!(find(&["fallback-or-last"], 20), Some((4, 0, 20)));
+        assert_eq!(find(&["last"], 20), Some((5, 0, 20)));
+        // A specific name in a later theme does not beat a general one in an earlier.
+        assert_eq!(find(&["last", "folder"], 20), Some((1, 1, 20)));
+        assert_eq!(find(&["missing"], 20), None);
+        // Without a desktop theme the fallbacks are searched as before.
+        assert_eq!(themes.find(None, &["folder"], 16), Some((4, 0, 16)));
+        assert_eq!(
+            themes.find(Some("NotInstalled"), &["folder"], 16),
+            Some((4, 0, 16))
+        );
+    }
+
+    #[test]
+    fn long_or_circular_inheritance_ends_and_still_reaches_the_fallbacks() {
+        // Twenty themes in a chain, the last one inheriting the first again.
+        let names: Vec<String> = (0..20).map(|index| format!("Chain{index}")).collect();
+        let mut tree: Vec<(&str, &str, Vec<Directory>)> = (0..20)
+            .map(|index| {
+                let icons = match index {
+                    15 => vec!["within"],
+                    19 => vec!["beyond", "beyond-or-fallback"],
+                    _ => vec![],
+                };
+                (
+                    names[index].as_str(),
+                    names[(index + 1) % 20].as_str(),
+                    vec![("16x16/apps", 16, 1, icons)],
+                )
+            })
+            .collect();
+        tree.push((
+            "Adwaita",
+            "",
+            vec![("16x16/apps", 16, 1, vec!["beyond-or-fallback"])],
+        ));
+        let themes = Themes::new(tree);
+        let find = |name| themes.find(Some("Chain0"), &[name], 16);
+        assert_eq!(find("within"), Some((15, 0, 16)), "the sixteenth theme");
+        assert_eq!(find("beyond"), None, "the twentieth is not followed");
+        assert_eq!(find("beyond-or-fallback"), Some((20, 0, 16)));
+    }
+
+    #[test]
+    fn an_exhausted_probe_budget_still_searches_pixmaps() {
+        let themes = Themes::new(vec![
+            ("Huge", "", vec![]),
+            ("Adwaita", "", vec![("16x16/apps", 16, 1, vec!["name8"])]),
+        ]);
+        // A manifest that lists far more directories than exist on disk.
+        let listed: Vec<String> = (0..1024)
+            .map(|index| format!("{index}x{index}/apps"))
+            .collect();
+        std::fs::write(
+            Path::new(&themes.icons).join("Huge/index.theme"),
+            format!("[Icon Theme]\nDirectories={}\n", listed.join(",")),
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&themes.pixmaps).join("name8.png"),
+            encoded(&image::RgbaImage::from_pixel(
+                16,
+                16,
+                image::Rgba([9, 9, 0, 255]),
+            )),
+        )
+        .unwrap();
+        let names: Vec<String> = (0..9).map(|index| format!("name{index}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        // Nine names in 1024 directories use up the budget inside Huge, so
+        // Adwaita is never reached; the legacy directory still is.
+        assert_eq!(themes.find(Some("Huge"), &names, 16), Some((9, 9, 16)));
+        assert_eq!(themes.find(Some("Huge"), &names[8..], 16), Some((1, 0, 16)));
+    }
+
+    #[test]
+    fn lookups_stay_inside_the_icon_roots_and_fall_back_to_pixmaps() {
+        let themes = Themes::new(vec![(
+            "Base",
+            "",
+            vec![("16x16/apps", 16, 1, vec!["inside"])],
+        )]);
+        let outside = themes.root.path().join("outside.png");
+        std::fs::write(
+            &outside,
+            encoded(&image::RgbaImage::from_pixel(
+                16,
+                16,
+                image::Rgba([9, 0, 0, 255]),
+            )),
+        )
+        .unwrap();
+        let apps = Path::new(&themes.icons).join("Base/16x16/apps");
+        std::os::unix::fs::symlink(&outside, apps.join("escaped.png")).unwrap();
+        std::os::unix::fs::symlink(apps.join("inside.png"), apps.join("alias.png")).unwrap();
+        std::fs::copy(&outside, Path::new(&themes.pixmaps).join("legacy.png")).unwrap();
+        let find = |name| themes.find(Some("Base"), &[name], 16);
+        assert_eq!(find("inside"), Some((0, 0, 16)));
+        assert_eq!(
+            find("alias"),
+            Some((0, 0, 16)),
+            "a link inside the roots is followed"
+        );
+        assert_eq!(find("escaped"), None, "a link out of the roots is refused");
+        assert_eq!(find("legacy"), Some((9, 0, 16)), "pixmaps is searched last");
+        assert_eq!(find("../outside"), None);
+    }
+
+    fn encoded(image: &image::RgbaImage) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn artwork_of_the_requested_size_is_returned_pixel_for_pixel() {
+        let source = image::RgbaImage::from_fn(24, 24, |x, y| {
+            image::Rgba([
+                (x * 10) as u8,
+                (y * 10) as u8,
+                (x ^ y) as u8,
+                (x * y % 256) as u8,
+            ])
+        });
+        let icon = decode_png(encoded(&source), 24).unwrap();
+        assert_eq!((icon.width, icon.height), (24, 24));
+        assert_eq!(&icon.rgba[..], source.as_raw().as_slice());
+    }
+
+    #[test]
+    fn scaling_ignores_the_color_hidden_in_transparent_pixels() {
+        // An opaque red left half beside a transparent right half whose hidden
+        // color is green. Straight-alpha filtering would tint the seam green.
+        let source = image::RgbaImage::from_fn(24, 24, |x, _| {
+            if x < 12 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 255, 0, 0])
+            }
+        });
+        for edge in [20u16, 36] {
+            let icon = decode_png(encoded(&source), edge).unwrap();
+            assert_eq!(icon.rgba.len(), usize::from(edge) * usize::from(edge) * 4);
+            let mut partial = 0;
+            for pixel in icon.rgba.as_chunks::<4>().0 {
+                if pixel[3] == 0 {
+                    assert_eq!(pixel[..3], [0, 0, 0], "transparent pixels carry no color");
+                    continue;
+                }
+                assert!(pixel[0] >= 250 && pixel[1] <= 5, "edge {edge}: {pixel:?}");
+                partial += usize::from(pixel[3] < 255);
+            }
+            assert!(partial > 0, "the seam is antialiased at edge {edge}");
+        }
     }
 
     #[test]

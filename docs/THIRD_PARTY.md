@@ -111,7 +111,7 @@ were used; captures, command/host receipts and hashes are retained under
 `_build/qa/accessibility-feature-20261119/`. The earlier 12/17/18 November
 counts and targeted row edits below remain historical. The current tables are:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **66**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **69**
   package/version records declared by project crates, including build/test tools.
 - [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **655**
   package/version/source records, **537** distinct crate names, including transitives.
@@ -154,7 +154,8 @@ MIT alternative, retaining both upstream license texts and
 [exact source provenance and patch details](../vendor/README.md). Application
 package/version selections are unchanged. The same local source also guards
 feature-specific imports/helpers so the app's `swash,wgpu` feature set compiles
-without unused-item warnings; no dependency, license or feature selection changes.
+without unused-item warnings; that correction changes no dependency, license or
+feature selection (the later `skrifa` edge is recorded under 18 November below).
 Its lockfile changes only the
 renderer source from the registry to the local patch. The `renderer-tests` scope
 accounts for the independent vendored test workspace with
@@ -318,6 +319,96 @@ the tables hold **643 records / 525 names / 65 direct records**: `cargo tree -i`
 merged lockfile reaches neither `winapi` (gone from the lockfile) nor `winapi-util`
 (still locked only as walkdir's Windows-only dependency, while walkdir itself is now
 Linux-only) for the Windows or Linux target.
+
+On 18 November 2026 the `midnight-ui-bindings` build script stopped formatting its
+generated Rust with `syn`/`prettyplease` and writes the token stream itself
+([record](verification/2026-11-18-slint-compile-time.md)). Its build dependencies
+lose `prettyplease` 0.2.37 and `syn` 2.0.119 and gain a direct `proc-macro2` 1.0.107
+edge (MIT OR Apache-2.0, already in the graph through `quote` and `i-slint-compiler`).
+`prettyplease` leaves the application graph: the root lockfile still records it
+for `bindgen` 0.72.1, which no application target selects, and Linux-host
+`cargo tree --locked --offline -e normal,build,dev --target x86_64-unknown-linux-gnu
+-i prettyplease@0.2.37` prints nothing. The same query with `-e features` shows the
+`syn` 2.0.119 union (clone-impls, default, derive, extra-traits, full, parsing,
+printing, proc-macro, visit, visit-mut) and the `proc-macro2` union (default,
+proc-macro) unchanged. Exactly those rows changed, giving **642 records / 524 names /
+64 direct records**. This is a targeted refresh, not a full 46-pair recapture or
+generator `--check`: no Windows capture was taken, and the Windows result follows
+from the lockfile, where `midnight-ui-bindings` and `bindgen` are the only packages
+that name `prettyplease`. The build-graph notice staging below predates this change.
+
+On 19 November 2026 `midnight-ui-bindings` also names `proc-macro2` 1.0.107 under
+`[dev-dependencies]`, for the test target of its build script's token passes
+(`tests/build_passes.rs`; [record](verification/2026-11-19-slint-build-speed.md)).
+It is the package, version and default feature set (default, proc-macro) that the
+crate already uses as a build dependency: no package, version, license or feature
+changes, `Cargo.lock` is unchanged (`cargo build --locked` and `cargo test --locked`
+accept it), and the record counts stay as above.
+
+Also on 18 November 2026 the vendored FemtoVG 0.27.0 gained a selectable text fitting
+([vendor notes](../vendor/README.md), [record](verification/2026-11-18-ui-sharpness.md)).
+Two dependency edges change and no package, version, license or feature does:
+
+- `femtovg` now depends directly on `skrifa` 0.44.0 (MIT OR Apache-2.0), optional
+  and enabled by its existing `swash` feature, with default features off and
+  `std`. swash 0.2.10 already brought that package into the application, so its
+  row is unchanged; both lockfiles only add the name to the `femtovg` entry. The
+  application graph already selects `skrifa`'s `default` feature, which includes
+  `std` (Linux-host `cargo tree --locked --offline -e features -i skrifa@0.44.0
+  -p midnight-explorer --target x86_64-unknown-linux-gnu` lists `default`, `std`
+  and `autohint_shaping`), so the feature union is unchanged.
+- `midnight-explorer` now names `femtovg` itself, to choose the fitting before its
+  first window, with `default-features = false` and `features = ["swash"]`: the
+  version and features Slint's renderer already requires, resolved by the same
+  `[patch.crates-io]` entry to `vendor/femtovg`. The vendored package thereby
+  becomes a direct record: **642 records / 524 names / 65 direct records**. The
+  three generated tables were edited for that one row; as above this is a targeted
+  refresh without a Windows capture or generator `--check`.
+
+The local source remains under the upstream MIT OR Apache-2.0 choice and release
+notices are unchanged: the collector already copies both FemtoVG license files.
+
+On 19 November 2026 two manifest changes made the application build and a targeted
+`cargo test -p midnight-ui` or `-p midnight-viewer-ui` resolve the same features
+below Slint, so that Cargo can use one compiled Slint and one compiled copy of the
+generated UI bindings for both. No package, version or license selection changes;
+`Cargo.lock` gains three dependency edges of `midnight-ui-input` and nothing else.
+
+- The workspace `slint` 1.18.1 dependency names `unstable-winit-030` and
+  `unstable-wgpu-30` for every member. `midnight-explorer` already selected both,
+  so the application's features are unchanged. A package selection without
+  `midnight-explorer` or the `midnight-viewer-ui` tests now gains
+  `unstable-wgpu-30` on `slint` and `i-slint-backend-selector` (and
+  `unstable-winit-030` when only `midnight-ui-bindings` is selected); `i-slint-core`
+  and `i-slint-backend-winit` had identical features in every selection before and
+  keep them.
+- `midnight-ui-input` declares `tracing-core` 0.1.36 (MIT), `indexmap` 2.14.2
+  (Apache-2.0 OR MIT) and `lazy_static` 1.5.1 (MIT OR Apache-2.0) without using
+  them. The first two carry their `default` feature (`tracing-core`: `default`,
+  `std`, `once_cell`; `indexmap`: `default`, `std`), which `tracing-log` and `zip`
+  already enable in the application; `lazy_static` has no feature and is already a
+  normal application dependency through `sharded-slab`. The pinned license files of
+  the three packages were inspected. All three were locked at these versions and
+  are linked into the application already, so release notices are unchanged.
+
+The three packages become direct records declared by `midnight-ui-input`; the
+tables hold **642 records / 524 names** as before and list 69 direct rows (66
+before this change, counted in the tables). Rendering the previous rows with the
+generator's own `render` reproduces the three committed tables byte for byte, and
+the same code wrote the three changed rows. A native Linux `app` capture
+(`cargo metadata --locked --offline --filter-platform x86_64-unknown-linux-gnu` and
+`cargo tree --locked --offline --workspace --target x86_64-unknown-linux-gnu --edges
+normal,build,dev --prefix none`), selected with the generator's own code, lists
+these three declarations, and all of its 400 third-party records are listed for
+`app` and Linux (its eight other records are project-owned API/SDK crates, which a
+complete run excludes). It also reports `midnight-work-budget` as a declarer of `tokio`
+1.54.1 (its optional `resident-workers` dependency), which the direct-dependant
+column does not name; that row is older than this change and was left as it is.
+This is a targeted refresh, not a full 46-pair recapture or generator `--check`.
+No Windows capture was taken: the Windows-only packages are not in this host's
+offline cache, and the Windows rows follow from the three declarations being
+unconditional. Whether Cargo then reuses the compiled units is a build result,
+not a dependency fact, and is not recorded here.
 
 On 18 November 2026 the dependency changes since commit `48ec78d` were rechecked
 (`git diff 48ec78d..HEAD` of `Cargo.lock` and every `Cargo.toml`). Besides the two

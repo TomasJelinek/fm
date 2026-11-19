@@ -1,7 +1,5 @@
 //! Modeless information tools and embedded notices retain their own lifetimes.
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 
 use i_slint_core::{items::AccessibleRole, window::WindowInner};
 use midnight_ui::{MainWindow, NoticePresentation, Presenter};
@@ -121,44 +119,34 @@ fn repeated_help_open_reuses_one_visible_window_and_native_x_releases_it() {
 }
 
 #[test]
-fn native_about_shows_the_application_version_and_keeps_main_usable() {
+fn about_opens_inside_the_main_window_without_an_os_window() {
     let (main, windows) = harness();
     main.set_application_version("9.8.7".into());
     main.invoke_show_about();
-    let about = windows.borrow()[1].clone();
-    modeless::draw(&about, 320, 200, "native-about-version");
-    assert!(
-        modeless::accessible_item(
-            &about,
-            i_slint_core::items::AccessibleRole::Text,
-            "Version 9.8.7"
-        )
-        .is_some()
-    );
-    assert!(!main.get_dialog_input_blocked());
-    modeless::click(&about, "Close");
-    assert!(!about.window().is_visible());
+    assert!(main.get_about_open());
+    assert_eq!(windows.borrow().len(), 1, "About creates no native window");
+    assert!(main.window().is_visible());
+    main.set_about_open(false);
+    assert!(!main.get_about_open());
 }
 
 #[test]
 fn embedded_notice_blocks_background_input_and_shutdown_closes_information_tools() {
     let (main, windows) = harness();
     main.invoke_show_app_menu(0);
-    main.invoke_show_about();
     assert!(!main.get_dialog_input_blocked());
     main.invoke_set_command("preserved command".into(), 17);
     main.set_message_title("Diagnostic".into());
     main.set_message_body("Complete diagnostic text".into());
     main.set_message_generation(1);
     assert_notice_open(&main);
-    assert_eq!(windows.borrow().len(), 3);
+    assert_eq!(windows.borrow().len(), 2);
     main.window()
         .dispatch_event(WindowEvent::KeyPressed { text: "x".into() });
     main.window()
         .dispatch_event(WindowEvent::KeyReleased { text: "x".into() });
     assert_eq!(main.get_command_text(), "preserved command");
     assert!(windows.borrow()[1].window().is_visible());
-    assert!(windows.borrow()[2].window().is_visible());
     main.invoke_close_information_windows();
     assert_notice_closed(&main);
     assert!(
@@ -169,12 +157,11 @@ fn embedded_notice_blocks_background_input_and_shutdown_closes_information_tools
             .all(|window| !window.window().is_visible())
     );
     main.invoke_show_app_menu(0);
-    main.invoke_show_about();
     main.set_message_generation(2);
     slint::platform::update_timers_and_animations();
     assert_eq!(
         windows.borrow().len(),
-        3,
+        2,
         "shutdown must not reopen children"
     );
     assert_notice_closed(&main);

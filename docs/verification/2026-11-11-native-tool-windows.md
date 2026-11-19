@@ -237,7 +237,7 @@ Windows's three directly affected counterparts also passed, bringing Windows to
 
 The current Windows debug application build passed in **10.66 seconds**. The
 matching runtime was registered and installed at
-`C:/Users/tjelinek/MidnightExplorer-20261111-tools-0c91722c`. Executable SHA-256:
+`<user-profile>/MidnightExplorer-20261111-tools-0c91722c`. Executable SHA-256:
 `0c91722cdcafdb9d52dac5e2c6d7e9fc64a60fe17905e94ab41e31f8e90cce03`.
 Logs: `_build/qa/native-tools-20261111/build.log`, `deploy.log`, `runtime-path.txt`
 and `app-sha256.txt`.

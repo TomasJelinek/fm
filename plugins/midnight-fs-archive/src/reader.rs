@@ -65,6 +65,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::seek_from_current,
+        reason = "exercises Seek::seek with a zero relative offset; stream_position is a separate override"
+    )]
     fn in_window_seeks_keep_bytes_and_report_the_logical_cursor() {
         let (mut reader, observed) = reader(b"abcdefghij".to_vec(), usize::MAX);
         let mut bytes = [0; 3];

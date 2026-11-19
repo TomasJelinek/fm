@@ -52,6 +52,7 @@ fn save(job: u64, generation: u64, id: u64, destination: std::path::PathBuf) -> 
             algorithm: ChecksumAlgorithm::Sha256,
             destination,
             acknowledge_partial: None,
+            overwrite: false,
         }),
     }
 }

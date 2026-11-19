@@ -1,8 +1,7 @@
 //! Actual child-first mouse input through the installed bridge and virtualized panels.
 #[path = "support/selection.rs"]
 mod selection;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use midnight_core::*;
 use midnight_ui::{Presenter, SelectionRectangle, install, refresh};
 use slint::{

@@ -92,7 +92,7 @@ The executable `_build/debug/me.exe` is 83,480,064 bytes, SHA-256
 Release was not rebuilt during this debug iteration.
 
 The executable and existing verified plugin packages were copied with readback
-checks to `C:\Users\tjelinek\MidnightExplorer-20261108-122321-7ed57705` and registered
+checks to `<user-profile>\MidnightExplorer-20261108-122321-7ed57705` and registered
 by executable hash. Plugin trust checks remain enabled. The rebuilt debug app's
 native startup smoke test passed with owned Unicode fixtures, exit zero and empty
 stderr (`app-startup.json` and logs). Its screenshot was inspected. Preferences

@@ -44,7 +44,7 @@ earlier thumbnail RED result within that scope.
 source drift. `_build/debug/me.exe` is **101,768,704 bytes**, SHA-256
 `d2643b49917c29b8f5f3b0171dc075bb30058817de6f0b6b1212d8361c0f658d`.
 The registered private entrypoint is
-`C:/Users/tjelinek/MidnightExplorer-20261112-224859-d2643b49/me.exe`, with the same
+`<user-profile>/MidnightExplorer-20261112-224859-d2643b49/me.exe`, with the same
 SHA-256. `final-private-entrypoint-smoke-results.json` records engine
 `--smoke-test` and native `--ui-smoke-test`, both exit 0 with unchanged fixtures.
 `final-private-qualified-debug-result.json` records source `3619070`; Root visually

@@ -1,7 +1,5 @@
 #![forbid(unsafe_code)]
 
-#[cfg(test)]
-mod actor_thread;
 mod archive_selection;
 mod archive_shared;
 mod archive_sizes;
@@ -690,6 +688,7 @@ impl EngineServices {
             operations::Services {
                 mutation: self.mutations,
                 locale: self.locale.clone(),
+                transfer: self.transfers.clone(),
             },
             snapshots.clone(),
             self.outbox.clone(),
@@ -1002,7 +1001,7 @@ impl EngineServices {
                         Some(Command::PrepareCapturedDelete(request)) => operations.prepare_captured_delete(request).await,
                         Some(Command::PrepareCapturedRename(request)) => operations.prepare_captured_rename(request).await,
                         Some(Command::PrepareCapturedMetadata(request)) => operations.prepare_captured_metadata(request).await,
-                        Some(Command::ConfirmOperation { id, new_name }) => operations.confirm(id, new_name).await,
+                        Some(Command::ConfirmOperation { id, new_name, replace_existing }) => operations.confirm_with(id, new_name, replace_existing).await,
                         Some(Command::CancelOperation(id)) => operations.cancel(id),
                         Some(Command::PreviewMetadata { id, revision, patch }) => operations.preview_metadata(id, revision, patch).await,
                         Some(Command::ConfirmMetadata { id, revision, conflicts }) => operations.confirm_metadata(id, revision, conflicts).await,
@@ -1064,6 +1063,7 @@ impl EngineServices {
                         Some(Command::ListDesktopContext) => desktop.context(),
                         Some(Command::OpenSystemLocation { request, location }) => desktop.open_system_location(request, location, &mut tasks).await,
                         Some(Command::SetCommandIconView { generation, targets }) => desktop.command_icons(generation, targets),
+                        Some(Command::SetIconEdges(edges)) => desktop.icon_edges(edges),
                         Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
                         Some(Command::ListComparatorCapabilities { disabled_plugins }) => {
                             viewer_plugins.comparator_capabilities(disabled_plugins);

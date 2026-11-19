@@ -5,8 +5,7 @@ mod bitmap;
 mod drag_cases;
 #[path = "support/popup_scroll.rs"]
 mod popup_scroll;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
 use midnight_core::*;
 use midnight_ui::{Presenter, Theme, UserCommandSettingsView, install, refresh};

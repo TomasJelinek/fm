@@ -1,6 +1,6 @@
-import { CheckBox } from "std-widgets.slint";
+import { HintedCheckBox } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 
 // Keep native keyboard/accessibility semantics. The indicator owns a fixed,
 // centered box instead of stretching the stock focus ring over a wrapped row.
@@ -27,7 +27,10 @@ export component WrappingCheckBox inherits Rectangle {
                 background: root.checked && root.enabled ? Theme.active-header : Theme.secondary-surface;
                 border-width: 1px;
                 border-color: root.enabled && root.checked ? Theme.active-frame : Theme.frame;
-                if root.checked: Path {
+                // The mark and the focus ring are hidden instead of conditional:
+                // an `if` is one more generated component.
+                Path {
+                    visible: root.checked;
                     x: 3px; y: 3px; width: 12px; height: 12px;
                     viewbox-width: 12; viewbox-height: 12;
                     commands: "M 1 6 L 4 9 L 11 2";
@@ -35,12 +38,14 @@ export component WrappingCheckBox inherits Rectangle {
                     stroke-width: 2px;
                 }
             }
-            if checkbox.has-focus && root.enabled: Rectangle {
+            Rectangle {
+                visible: checkbox.has-focus && root.enabled;
                 x: indicator.x - 3px; y: indicator.y - 3px;
                 width: indicator.width + 6px; height: indicator.height + 6px;
                 border-width: 2px; border-radius: 4px; border-color: Theme.active-frame;
             }
-            checkbox := CheckBox {
+            // Hint-less on purpose: shares the one compiled native checkbox.
+            checkbox := HintedCheckBox {
                 width: parent.width; height: parent.height; opacity: 0;
                 text: ""; checked <=> root.checked; enabled: root.enabled;
                 accessible-label: root.accessible-name == "" ? root.text : root.accessible-name;
@@ -60,5 +65,5 @@ export component WrappingCheckBox inherits Rectangle {
             }
         }
     }
-    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+    Tip { text: root.hint; }
 }

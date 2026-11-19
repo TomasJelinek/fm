@@ -124,6 +124,7 @@ fn request(directory: &Path, id: u64) -> ChecksumManifestRequest {
         algorithm: ChecksumAlgorithm::Sha256,
         destination: directory.join(format!("test-{id}.sha256")),
         acknowledge_partial: None,
+        overwrite: false,
     }
 }
 async fn terminal(

@@ -79,7 +79,7 @@ The companion `midnight-elevated-listing.exe` and independently qualified Markdo
 Source and HTML plugins were installed with the existing filesystem/thumbnail
 packages in:
 
-`C:/Users/tjelinek/MidnightExplorer-20261112-progress-final-0cad3979/`
+`<user-profile>/MidnightExplorer-20261112-progress-final-0cad3979/`
 
 The protected runtime is registered for the exact build hash, so
 `D:/experiments/dev/FM/_build/debug/me.exe` locates these qualified packages too.

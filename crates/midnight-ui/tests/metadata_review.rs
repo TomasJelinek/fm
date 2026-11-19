@@ -1,6 +1,5 @@
 //! Real presenter callbacks and asynchronous metadata responses must survive review.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use i_slint_core::{
     accessibility::AccessibilityAction,
     items::AccessibleRole,

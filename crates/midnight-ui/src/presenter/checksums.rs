@@ -32,6 +32,8 @@ pub(crate) struct ChecksumState {
 
 pub(crate) struct ChecksumSession {
     pub revision: u64,
+    /// The captured panel's folder; only tests read it now that the window shows no details.
+    #[allow(dead_code)]
     pub directory: PathBuf,
     pub files: SelectedFiles,
     pub tree_sources: Option<Arc<dyn CapturedChecksumFiles>>,
@@ -52,11 +54,27 @@ pub(crate) struct ChecksumSession {
     pub destination_revision: u64,
     pub manifest_revision: u64,
     pub picker: Option<picker::Pending>,
+    /// A destination was just chosen: the window saves to it on its next refresh.
+    pub save_pending: Option<ChecksumAlgorithm>,
+    /// A question the user must answer before a save goes ahead.
+    pub save_prompt: Option<SavePrompt>,
     streamed: Vec<Arc<ChecksumRow>>,
+}
+
+/// Asked in the window instead of failing: partial results, or an existing file to replace.
+pub(crate) struct SavePrompt {
+    pub algorithm: ChecksumAlgorithm,
+    pub destination: PathBuf,
+    pub acknowledged: bool,
+    pub overwrite: bool,
+    pub message: String,
 }
 
 pub(crate) struct ChecksumSave {
     pub id: ChecksumManifestId,
+    pub algorithm: ChecksumAlgorithm,
+    pub destination: PathBuf,
+    pub acknowledged: bool,
     pub accepted: bool,
     pub stopping: bool,
 }
@@ -66,6 +84,7 @@ pub(crate) struct ChecksumSaveForm {
     pub algorithm: ChecksumAlgorithm,
     pub destination: String,
     pub acknowledge: bool,
+    pub overwrite: bool,
 }
 
 impl ChecksumSession {
@@ -139,6 +158,31 @@ impl ChecksumState {
         session.revision = session.revision.wrapping_add(1);
         Some(session)
     }
+}
+
+fn is_checksum_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            ChecksumAlgorithm::ALL
+                .iter()
+                .any(|a| extension.eq_ignore_ascii_case(a.extension()))
+        })
+}
+
+/// The checksum file among the captured files: any selected one, else the lone cursor file.
+fn selected_checksum_file(files: &SelectedFiles) -> Option<PathBuf> {
+    if files.selection.is_empty() {
+        return files.fallback.as_ref().filter(|p| is_checksum_file(p)).cloned();
+    }
+    files
+        .selection
+        .basis()
+        .by_path
+        .keys()
+        .filter(|path| is_checksum_file(path) && files.selection.contains_path(path))
+        .min()
+        .cloned()
 }
 
 impl Presenter {
@@ -215,22 +259,9 @@ impl Presenter {
         };
         self.checksums.next_job = id.0;
         let algorithms = self.preferences.values.checksum_algorithms;
-        let manifest = files
-            .fallback
-            .as_ref()
-            .filter(|path| {
-                if !files.selection.is_empty() {
-                    return false;
-                }
-                path.extension()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|extension| {
-                        ChecksumAlgorithm::ALL
-                            .iter()
-                            .any(|a| extension.eq_ignore_ascii_case(a.extension()))
-                    })
-            })
-            .cloned();
+        // A checksum file in the selection (or under the cursor) means the user wants to
+        // verify it, so the window opens on Verify with that file chosen.
+        let manifest = selected_checksum_file(&files);
         let verify_initial = manifest.is_some()
             || (tree_sources.is_none() && files.selection.is_empty() && files.fallback.is_none());
         let algorithm = preferred_algorithm(algorithms);
@@ -245,6 +276,8 @@ impl Presenter {
                 destination_revision: 0,
                 manifest_revision: 0,
                 picker: None,
+                save_pending: None,
+                save_prompt: None,
                 directory,
                 files,
                 tree_sources,
@@ -261,9 +294,8 @@ impl Presenter {
                 streamed: Vec::new(),
             },
         );
-        if !verify_initial {
-            self.start_checksums(id, algorithms, false, send);
-        }
+        // Nothing is calculated until the user presses Calculate.
+        let _ = send;
         Some(id)
     }
 

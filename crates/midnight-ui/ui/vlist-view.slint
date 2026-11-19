@@ -1,0 +1,10 @@
+import { VScrollView } from "scroll-view.slint";
+
+// The list without a horizontal bar. Slint 1.18 virtualizes a repeater only below
+// a component that is itself named ListView, and scroll-view.slint already exports
+// one, so this one needs its own file.
+export component ListView inherits VScrollView {
+    @children
+    accessible-role: list;
+    accessible-orientation: Orientation.vertical;
+}

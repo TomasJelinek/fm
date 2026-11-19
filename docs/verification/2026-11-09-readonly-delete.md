@@ -1,7 +1,7 @@
 # Confirmed permanent deletion and Windows Read-only attributes
 
 The user reported error5 deleting
-`C:\Users\tjelinek\OneDrive - NVIDIA Corporation\Pictures\Backgrounds\QQQ`
+`<user-profile>/OneDrive\Pictures\Backgrounds\QQQ`
 and explicitly requested a permanent-delete test of that exact directory.
 Read-only was present alongside Directory/Archive/Compressed and a OneDrive
 cloud reparse tag. No arbitrary files or sibling directories were deleted.

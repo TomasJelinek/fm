@@ -1,4 +1,5 @@
-import { ScrollView, ProgressIndicator } from "std-widgets.slint";
+import { ProgressIndicator } from "std-widgets.slint";
+import { VScrollView } from "scroll-view.slint";
 import { DialogWindow } from "dialog-window.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
@@ -64,9 +65,9 @@ export component JobProgressWindow inherits DialogWindow {
                     : root.can-request-cancel ? "Cancel operation" : "Close progress";
                 close => { root.request-dismiss(); }
             }
-            progress-scroll := ScrollView {
+            progress-scroll := VScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+                content-width: self.visible-width;
                 content-height: max(self.visible-height, content.preferred-height);
                 content := VerticalLayout {
                     x: 0px; y: 0px; width: progress-scroll.visible-width;
@@ -218,14 +219,18 @@ export component JobProgressWindow inherits DialogWindow {
                     hint: "Pause or resume this operation at a safe file-operation checkpoint.";
                     clicked => { root.set-paused(!root.job.pause-requested); }
                 }
-                if root.show-actions : HintedActionButton {
-                    text: root.details-visible ? "Fewer details" : "Details";
-                    hint: "Show operation counters, source, destination and diagnostics.";
-                    clicked => { root.details-visible = !root.details-visible; }
-                }
-                if root.show-actions : HintedActionButton {
-                    text: "Jobs"; hint: "Open the session's job list.";
-                    clicked => { root.show-jobs(); }
+                // One conditional, with the footer's spacing, instead of one per button.
+                if root.show-actions : HorizontalLayout {
+                    spacing: 8px;
+                    HintedActionButton {
+                        text: root.details-visible ? "Fewer details" : "Details";
+                        hint: "Show operation counters, source, destination and diagnostics.";
+                        clicked => { root.details-visible = !root.details-visible; }
+                    }
+                    HintedActionButton {
+                        text: "Jobs"; hint: "Open the session's job list.";
+                        clicked => { root.show-jobs(); }
+                    }
                 }
                 if root.show-actions && !root.job.active : HintedActionButton {
                     text: "Copy details"; fallback-icon: FallbackIcons.copy;

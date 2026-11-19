@@ -83,6 +83,8 @@ fn draw(
 }
 
 fn fixture_directory(name: &str) -> std::path::PathBuf {
+    // Native capture accepts only literal absolute paths without `.` or `..` steps,
+    // so the default root is the checkout's own _build, named without dot steps.
     let root = std::env::var_os("ME_COMPARE_POLISH_SCREENSHOTS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {

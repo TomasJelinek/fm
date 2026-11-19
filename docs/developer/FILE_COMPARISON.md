@@ -161,7 +161,10 @@ that failed before it arrived is dropped and cannot end the next comparison's wa
 completed catalog is kept for the service. Closing a comparison cancels the scan once no
 other comparison waits for it; a cancelled scan keeps no partial catalog. A scan that
 fails, or panics, answers every waiting comparison with no catalog: it keeps its family
-without a chooser list, and the next comparison scans again.
+without a chooser list, and the next comparison scans again. Whole-input identity
+verification starts once the first frame has been taken and publishes its verdict in a
+new frame, so the chooser list can arrive before, with or after the verdict; every frame
+carries the latest verdict and, once it has arrived, the chooser list.
 
 Arrow keys move exactly one row (`Input::Lines`), Page Up/Down move by the rows that
 were fully visible (`Input::Pages`), and wheel distances are converted with the painted
@@ -224,8 +227,8 @@ process-wide, so it is the only test in that binary that installs a platform.
 `take` against a concurrent output, and `capture_tests.rs` the two refusal reasons of
 `Session::send`, the inbox (a close or catalog reply that a full queue refused, and a
 late reply to an earlier request), a window with a full queue next to one waiting for
-the same scan, and a failed earlier comparison's reply arriving while the next one
-opens its files.
+the same scan, a failed earlier comparison's reply arriving while the next one
+opens its files, and a catalog that arrives after the whole-input verdict and keeps it.
 
 Image comparison exposes **Side by side**, **Swipe** and **Onion skin** buttons.
 Their primary style and accessible checked state reflect the requested mode.

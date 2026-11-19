@@ -46,7 +46,7 @@ existing 34 warnings are in unfinished tree-engine code; no release rebuild.
 `_build/debug/me.exe` is 84,908,032 bytes, SHA-256
 `6fe00a0e3f2d2e49e5ddd75bd55b1130da21439e92ae424978312dbf01618f34`.
 Its existing plugin set is registered through the protected runtime at
-`C:\Users\tjelinek\MidnightExplorer-20261108-135514-14157850`.
+`<user-profile>\MidnightExplorer-20261108-135514-14157850`.
 Native `--ui-smoke-test` startup exited 0 with empty stderr and produced
 `startup.png`. User preferences were unchanged (SHA-256
 `bcf7388cc3c3e2742fd86febf6f91a3edac29fb312fdfc6bc054492bcbbab053`).

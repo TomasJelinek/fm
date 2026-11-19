@@ -32,7 +32,7 @@ Fresh app and elevation-helper build passed in 7.13 seconds. Executable:
 `89a4a1095d1e48b3a355044630b0594eed9f6d7f2fd011246c9693da37d82690`.
 
 Registered private runtime:
-`C:/Users/tjelinek/MidnightExplorer-20261112-reports-icons-89a4a109`.
+`<user-profile>/MidnightExplorer-20261112-reports-icons-89a4a109`.
 Unchanged independent plugins came from the previous verified mailboxes runtime. No plugin was
 rebuilt or represented as newly qualified by this app-only batch. Owned deployment staging was
 removed, reclaiming 0.532 GiB. Earlier obsolete release-build cleanup reclaimed 4.29 GiB.

@@ -407,6 +407,8 @@ struct Bridge {
     /// The row ranges of the last pass, and whether the latest pass moved them.
     ranges: Ranges,
     ranges_moved: bool,
+    /// Icons are drawn at other edges than the rows on screen were built for.
+    icons_moved: bool,
 }
 
 impl Bridge {
@@ -423,6 +425,23 @@ impl Bridge {
             self.route_generation = routing.generation;
             self.epoch.set(self.epoch.get().wrapping_add(1));
         }
+
+        // Density, fonts, view modes, the window's size and the display scale
+        // decide the edges native icons are drawn at, and each of them wakes
+        // this pulse. Also while hidden: the backend then has the artwork of the
+        // right size ready when the window shows.
+        let icons_refused = Cell::new(false);
+        // Read the window before borrowing the presenter its models read.
+        let icon_view = midnight_ui::icon_view(&window);
+        let icons_moved = self
+            .presenter
+            .borrow_mut()
+            .sync_icon_view(icon_view, &|command| {
+                let sent = (self.send)(command);
+                icons_refused.set(!sent);
+                sent
+            });
+        self.icons_moved |= icons_moved;
         if !window.window().is_visible() {
             if route_changed {
                 // A hidden window can still have work from its previous view.
@@ -435,7 +454,8 @@ impl Bridge {
             // Startup waits hidden for preferences; poll until the window shows.
             return true;
         }
-        let mut busy = false;
+        // A refused send is offered again on the next pass.
+        let mut busy = icons_refused.get();
         if let Some(path) = self.service.take_cache_location() {
             window.set_thumbnail_cache_location(
                 midnight_core::visible_name(&path.to_string_lossy())
@@ -459,7 +479,8 @@ impl Bridge {
         });
         busy |= refused.get();
         let scale = window.window().scale_factor();
-        let mut refresh_all = false;
+        // Rows, tiles and choices take the bitmaps of their new edges.
+        let mut refresh_all = std::mem::take(&mut self.icons_moved);
         let mut changed = Vec::new();
         let epoch_changed = self.epoch.get() != self.last_epoch;
         if epoch_changed {
@@ -736,6 +757,7 @@ fn install_service_with_routing(
         last_epoch: 1,
         ranges: Ranges::default(),
         ranges_moved: false,
+        icons_moved: false,
     }));
     BRIDGE.with(|slot| *slot.borrow_mut() = Rc::downgrade(&bridge));
     let follower: Rc<RefCell<Weak<Pulse>>> = Rc::default();

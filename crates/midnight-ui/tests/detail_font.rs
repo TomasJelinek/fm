@@ -1,6 +1,5 @@
 //! Detail text must fit its rendered viewport at every supported font size.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

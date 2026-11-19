@@ -629,6 +629,202 @@ qualification remain open. [Merged check receipt](../_build/merge-main-20261118/
 - **Archive performance.** The direct-plugin ZIP measurements below apply to
   their dated runs. End-to-end performance validation remains open.
 
+### Checkpoints from main
+
+### Test speed and full validation — 19 November 2026
+
+Two follow-ups of the deep code review are on main. The test speed pass
+(`57d03d20`..`8dedeac9`, with TEST-04 in `62f3e14d`) cuts the workspace test run
+without losing a test: optimized `regex-automata` in development builds takes the
+comparator budget test from about 5 s to 0.5 s, the rejected-work engine test runs
+its nine kinds concurrently (1.95 s to 0.43 s), three targets without tests no
+longer build test harnesses, the Linux-only worker-platform files are modules of
+their topic executables, and guards keep unit tests out of `test = false` targets.
+Warm runs are about 10 % shorter on Windows and 12 % on Linux, with 63 instead of 69
+test executables ([test speed pass](verification/2026-11-18-test-speed-pass.md)).
+
+`build.bat --validate` and `./build.sh --validate` (`e8eb7878`..`a9ea2b53`) run
+`scripts/validate.ps1` or `scripts/validate.sh` after the build: every workspace
+test target including doc tests, the Python script tests and the separate
+workspaces' CI test commands, tests only (no formatting, Clippy or source-size
+checks). A step whose prerequisite is missing is SKIPPED with its reason and named
+in a warning; `--strict` makes such skips fail; on Windows a build that fails
+validation is not deployed ([test execution](developer/TEST_EXECUTION.md)).
+
+Evidence (orchestrator logs in the integration worktree's `_build/validate/logs` and
+`_build/qa`): a full Windows run of `validate.ps1` at `f3bde653` passed 27 of 40
+steps, including the workspace tests with 6,813 passed / 0 failed / 143 ignored; one
+step failed on a flaky directory rename in the script tests, which `34bd4e29`
+retries, after which the script tests passed (209 / 0); 12 steps were skipped for
+missing prerequisites or as Linux-only. On Linux the workspace tests passed (6,738 /
+0 / 133) and, in a git checkout, the 15 SDK, viewer, PDF, archive and qualification
+steps passed (473 / 0); the script tests passed (316 / 0).
+
+Not established:
+
+- `build.bat --validate` end to end on this machine: PowerShell 7 is not installed
+  here, so `build.bat` stops before building; its validation hooks are covered by
+  the build hook tests, which ran here only with a test stand-in for PowerShell 7.
+- The image viewer and image thumbnailer steps (they need PowerShell 7 or cached
+  pinned dav1d inputs), the video thumbnailer (FFmpeg) and the HTML viewer (its web
+  SDK package needs a Python with classic zlib, 3.13 or older on Windows) were
+  skipped here.
+- Reusing the build helpers' target directories in validation, to avoid compiling
+  the modules twice, is not done.
+
+### Merge repair — 19 November 2026
+
+The deep code review (`3ebc2001`) and the viewer, comparator and filesystem
+integration work (`ecf9374e`) were developed in parallel from `3a27eeb2` and merged
+in `cf8138e4`; `48db5ec6`, `45ede585` and `544b48db` followed. That merge did not
+build the test targets of the engine, viewer engine, comparator, plugin host and
+explorer, failed workspace Clippy, and failed several comparator and UI tests on
+every run. Twenty-seven repair commits on `544b48db` resolve these semantic
+conflicts; each commit message names the cause and the side whose intent it follows.
+
+- Engine: production files included into the single `integration` test binary reach
+  their modules through `super::` paths; library tests use the merged comparator
+  snapshot and resident-worker APIs; the actor-thread module that the resident
+  worker pool replaced is removed, and the engine contracts describe the resident
+  workers.
+- Viewers and comparator: viewer-engine tests start resident pools and use
+  shared-pixel document rasters; the comparator test builds, configuration tests
+  (now linked into core's integration binary as `file_comparators::`) and fixture
+  paths are fixed; a picker closed by an Options page change is published at once,
+  also when the change is deferred (a product fix); tests that met the asynchronous
+  font catalog frame now wait for it or hold the scan.
+- UI, plugin host and explorer: tests follow the merged accessible names, restored
+  theme fills, optional-source status, retained viewer windows, web policy
+  presentation and picker callbacks; HTML captured navigation below the synthetic
+  document root is admitted (a product fix); queued change handlers settle before
+  the viewer mode list opens.
+- Separate workspaces: the source viewer's tests follow the merged lookahead and
+  YAML lexer, and the archive reader keeps its zero relative seek check under strict
+  Clippy.
+
+The two TEST-03 timeouts were races inside the tests and are fixed on top of the
+repair ([test timeout races](verification/2026-11-18-test-timeout-races.md)).
+
+Validation of the integrated tip (orchestrator logs `vrepair-*` in the repair
+worktree's `_build/qa`): Windows: `cargo fmt -p <package> -- --check` for every
+workspace package and workspace Clippy with `-D warnings` reported nothing, and
+`cargo test --workspace --no-fail-fast` gave 6,780 passed / 0 failed / 143 ignored
+in 92 groups. Linux (WSL Ubuntu 24.04): workspace Clippy with `-D warnings` reported
+nothing, and the workspace tests gave 6,692 passed / 0 failed / 133 ignored in 92
+groups. The separate workspaces' CI commands passed at the repair's `e0ce73fe` (logs
+`repair-*-separate*`): on Windows the API, plugin SDK consumer, viewer conformance,
+worker package, PDF, archive and filesystem plugin workspaces and the HTML viewer
+without its native CEF feature; on Linux the API, plugin SDK consumer, viewer
+conformance, PDF, archive and filesystem plugin workspaces (the HTML viewer's
+dependencies cannot be resolved offline there).
+
+Not established:
+
+- The HTML viewer's native CEF code, where both sides changed `native.rs`,
+  `handlers.rs` and `resources.rs`, has not been compiled: no CEF SDK or `cef`
+  crates are cached on this machine.
+- The image decoder, image viewer, image thumbnail and video thumbnail workspaces
+  got formatting checks only, because their native inputs are not available offline;
+  their trees equal the review's validated `3ebc2001`.
+- No GitHub-hosted CI run.
+- On this machine Microsoft Defender for Endpoint data loss prevention moves the
+  NTFS ChangeTime of newly written files of some types, which makes live-validated
+  captures report a change; a few comparator tests fail intermittently here for that
+  reason (COMPARE-02).
+
+### Slint build speed — 19 November 2026
+
+On main `e7e0f390`, Linux only. Rebuilding the application after a `.slint` change
+took 202 s, 187.2 s of it in `rustc` on `midnight-ui-bindings`; it now takes
+134 s and 119.2 s ([record](verification/2026-11-19-slint-build-speed.md)).
+`rustc` never divides a module over code generation units, and the Slint generator
+writes every component into one module, so one unit held most of the crate and was
+optimised on one thread. The build script now moves the generated component structs
+into 16 private submodules and removes 569 match arms that the generator repeats in
+the accessibility lookups and that can never match. Neither pass changes an
+expression, a path or a public item; the release profile compiles this crate as one
+unit, where the split made no measurable difference.
+
+A targeted `cargo test -p midnight-ui` now reuses the application build's Slint,
+bindings and `midnight-ui` library instead of compiling its own (the workspace names
+the application's Slint features, and `midnight-ui-input` pins three shared
+dependencies as the application resolves them); `cargo test --workspace` still has
+its own units. The `midnight-ui` integration tests compile their `ui` helper once
+instead of 115 times and `modeless` 21 instead of 51 times, and three fixtures no
+longer copy the palette into every binding; the 766 tests of that binary are
+unchanged.
+
+The `.slint` sources lost cost that a shared control carries at every use: scroll
+views without the bar a site never shows (`VScrollView`, `HScrollView`,
+`ui/vlist-view.slint`), a focus scope instead of a hidden stock button in every
+`ActionButton`, two controls that no longer inherit a stock widget, and 54 fewer
+conditional components (`Tip` owns its empty-text condition and serves 19 more
+sites). The main UI's generated Rust went from 30.57 MB and 591 components to
+26.97 MB and 523; the viewer and comparator UIs shrank by 0.18 and 0.13 MB. With
+them the rebuild after a `.slint` change takes 108 s, 95.1 s of it in `rustc` on the
+bindings.
+
+**Open:** run-time speed of debug builds with the split was not measured (the dev
+machine code is 1.4 MB larger); Windows and the release executable were not built;
+the running application was not looked at with the `.slint` changes, whose evidence
+is the UI test suites and comparisons of the generated code.
+Measured and left as they are: thin local LTO off, opt-level `"z"` or 0 for the
+bindings, an optimised Slint compiler for the build script, and 16 code generation
+units for the release compile of the bindings; the record gives each number and
+reason.
+
+### Slint compile time and UI sharpness — 18 November 2026
+
+On main `544b48db`, Linux only. Rebuilding `midnight-ui-bindings` after a `.slint`
+change took 41.4 s in its build script and 370.1 s in `rustc`; it now takes 10.8 s
+and 172.7 s ([record](verification/2026-11-18-slint-compile-time.md)). The causes
+were a `rustc` lint that copied the 63 MB generated source for every short block, the
+SDK `ScrollView` inlined with both scroll bars at 71 uses, the file pane, error
+notice, dialog frame and tooltips copied by the compiler's inlining rules, and
+incremental compilation that cost more than it saved for this crate. The main window
+now uses its own `ScrollView`/`ListView` (`ui/scroll-view.slint`) and a shared `Tip`.
+
+The same change removes the blur of file-pane content that did not start on a device
+pixel and puts the pane split, function keys, status metrics and dialog position on
+whole pixels ([record](verification/2026-11-18-ui-sharpness.md)).
+
+A second change delivers native icons at the size they are drawn. The UI reports the
+device-pixel edges of rows, tiles and location choices (`Command::SetIconEdges`), the
+backend loads each icon at the edges of its kind and again when they change, and the
+UI keeps one bitmap per edge. On Linux the provider follows the desktop's icon theme
+through XSETTINGS and its inherited themes, picks the theme directory by pixel size
+and scales at most once, in premultiplied alpha. With Yaru, tiles are untouched 96 px
+artwork and rows are 24 px artwork reduced to 20 px. The icons are therefore the
+desktop's own and no longer Adwaita's, including more theme artwork among the
+toolbar actions. **Open:** the Windows provider still delivers one 32 px bitmap
+(`IconService::icon_edge` keeps it unchanged); action icons stay at 32 px because one
+bitmap is drawn at six sizes; SVG-only themes fall back as before.
+
+A third change adds two text fittings to the vendored FemtoVG. `fitted` puts stems
+on whole pixel columns through the hinting engine swash already uses and keeps word
+spacing with whole-pixel advances inside words. The explorer uses it since
+19 November 2026, by the user's decision after comparing snapshots;
+`MIDNIGHT_GLYPH_FITTING=subpixel` or `=snapped` selects the earlier rendering or the
+intermediate one for a run. **Open:** `fitted` can leave ink up to one pixel from
+layout positions, which may show where selections, carets or the quick-search prefix
+clip text and in scrolled line edits; that was read from the code, not yet seen or
+ruled out in use. The vendored renderer gains a `skrifa` edge and the explorer a
+direct `femtovg` one, with no new package ([third-party record](THIRD_PARTY.md)).
+
+UI test results equal main's in the same Docker environment: 19 tests of
+`midnight-ui` and `midnight-viewer-ui` fail there before and after, and the
+`midnight-compare-ui` library test target does not compile on main. They are listed
+in the compile-time record and were not investigated. Not run: Windows, the full
+workspace gates, release builds.
+
+The icon and text changes were developed and measured on `544b48db`, before the
+merge repair above: their records name the tests that failed there, which the repair
+has since addressed, and the engine's test targets were made to compile locally to
+run the icon worker's tests. The branch was then merged with the repaired main, whose
+own fixes of those targets replace the local ones; what was run again after that
+merge is at the end of the
+[sharpness record](verification/2026-11-18-ui-sharpness.md).
+
 ### Deep code review — 18 November 2026
 
 A deep code review of the whole repository, started from main `3a27eeb2` on
@@ -809,9 +1005,20 @@ on Windows and the workspace tests gave 6,156 passed / 0 failed / 127 ignored in
 groups (logs `vfinal-win-*`); on Linux workspace Clippy reported no warnings, and in
 a third run the workspace tests gave 6,004 passed / 0 failed / 128
 ignored in 85 groups (log `vfinal-linux-test3.log`). The two earlier Linux runs of
-`ac4c2e87` each had one timeout, a different test each time: the first while Windows
-Clippy and the Windows tests ran beside it, the second after the Windows suite had
-finished; both tests passed five isolated runs and the other full runs (TEST-03).
+`ac4c2e87` each had one timeout, a different test each time; both are fixed in the
+tests only (TEST-03, [test timeout
+races](verification/2026-11-18-test-timeout-races.md)).
+`navigation::blocked_left_listing_does_not_prevent_right_completion` was a race
+inside the test: it waited for its listing to reach the provider without reading
+its 8-slot event channel, which the Engine's unsolicited startup and navigation
+events could fill before the listing sent its start event. The timeout of
+`operations_native_ui::real_copy_conflict_shows_both_entries_in_the_native_locale`
+is attributed, by its mechanism and an injected-delay reproduction with the
+identical message, to a click on a row before the Engine's saved preferences
+restored the tabs, which replaced the panel, so F5 found no target; no trace of the
+historical run exists. The engine tests now read events while they wait, the
+real-Engine UI harnesses wait for the restored tabs, and the operations harness
+checks the cursor after each click.
 
 Not established by this checkpoint:
 
@@ -848,8 +1055,8 @@ UI-PERF-01 (idle wakeups); PERF-04 (unmeasured hot paths and the corpus test tim
 ARCH-01 (small-content budget); ARCH-05, ARCH-06 and LIFE-02 (captures retained
 after a taint or quarantine); ARCH-07, REL-01 and SDK-01 to SDK-04 (next API/SDK
 releases); META-04, WATCH-01, SPOOL-01, LINK-01, IO-02, TREE-PERF-01, TREE-02,
-INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, BUILD-01, TRASH-01, TEST-01, TEST-02, TEST-03 and
-OPTIONS-02. The role table under
+INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, COMPARE-02, BUILD-01, TRASH-01, TEST-01, TEST-02, TABS-01,
+NOTICE-03, IO-03 and OPTIONS-02. The role table under
 [current role boundaries](#current-role-boundaries-and-exclusive-ownership)
 describes assignments made before this review; the review assigned no further role
 work beyond these rows. The [corrections table](#corrections-to-stale-staged-references)
@@ -1338,7 +1545,7 @@ LaterCassembly actuallycompleted0/normal-onlyregistration; Rootc14c67c8 rehashed
 2,487files/752,608,762B incl6Viewers/3FS/2thumbs/662notices/normal673/testcf411.
 Freeze/postregistrationhashesmatch; no app/testlaunched/nativeacceptance. Actual
 NativeRoot fromnative-identities/completion, verbatim:
-`\\?\C:\Users\tjelinek\MidnightExplorer-validation-20261118-07672814`.
+`<user-profile>\MidnightExplorer-validation-20261118-07672814`.
 AfteractualBuildsourceholdrelease RootpromotedONEhelper e3bc→1e73/fdf06c25 withfull
 2288guards/fmt0/normal673Mainunchanged. Currentcanonicalsource9c25 distinctoldC9297;
 same7graphcompile+originalpalettecase/2newlifecyclecasespending300s. OldCbundleand
@@ -1442,7 +1649,7 @@ no runtime rebuild is required for this test/docs-only change.
 
 The c97 host EXE is independently built and normal-profile deployed: SHA-256
 prefix `2d906dea…`, **106,150,912 B**,
-`C:/Users/tjelinek/MidnightExplorer-20261117-044645-b596dbbb/me.exe`.
+`<user-profile>/MidnightExplorer-20261117-044645-b596dbbb/me.exe`.
 Inventory checked all 13 components / 1,823 files (only host changed, twelve
 retained); validators and registration/pointer checks exited **0** as normal
 non-admin, without launching the user app. This deployment does not qualify the
@@ -1550,7 +1757,7 @@ scoped automated acceptance, not physical desktop or Linux qualification.
 Actual normal-profile deployment and the protected registration plus launcher
 pointer were checked in `final-normal-profile-deploy467/verified-registration.json`.
 Source and deployed EXE SHA-256: `803a8b72bb98c5d804943905f76fe31bc7d01ee0b5bbfbda5ba0caf51e04629e`.
-Installation: `C:\Users\tjelinek\MidnightExplorer-20261117-012737-57ffdd4e`. No application was launched for this
+Installation: `<user-profile>\MidnightExplorer-20261117-012737-57ffdd4e`. No application was launched for this
 deployment. Own-EXE SHA verification remains default OFF, opt-in with
 `MIDNIGHT_VERIFY_RUNTIME_SHA256=1`. Git/remote CI outcomes are reported separately.
 
@@ -1753,7 +1960,7 @@ SHA256 `89090e27e82ae4718794a3f8ca4a666d9ab1b4217c4e22c10ec7c2939c803ac6`.
 It records normal debug **exit 0 / 584.880 s**, **14** coherent core consumers,
 zero compiler warnings/errors/native-build diagnostics and zero source drift.
 The registered private EXE is
-`C:/Users/tjelinek/MidnightExplorer-20261113-123202-937e9bfc/me.exe`,
+`<user-profile>/MidnightExplorer-20261113-123202-937e9bfc/me.exe`,
 **102,327,296 bytes**, SHA256
 `937e9bfc9caeaf107845a8538fd871e0cf0534694ca91eb9c3a4c00b6b6f1cdd`.
 The real PE VERSIONINFO, icon and manifest checks pass: file/product version
@@ -1803,7 +2010,7 @@ records **exit 0 / 254.609 s**, source
 origins rebuilt/coherent. The registered startup receipt is
 `_build/verification/integrated-debug-20261113-v2/final-qualified-debug-result.json`.
 The private EXE is
-`C:/Users/tjelinek/MidnightExplorer-20261113-083454-f5b29eab/me.exe`,
+`<user-profile>/MidnightExplorer-20261113-083454-f5b29eab/me.exe`,
 **102,148,096 bytes**, SHA256
 `f5b29eab9776990bb15c82b60b0fe5fa4b19421c05d089a5313a4478f9dc8a88`.
 
@@ -1829,7 +2036,7 @@ remained pending.
 The receipts under `_build/verification/integrated-debug-20261113/` record a
 fresh debug build, **102,041,600 bytes**, source
 `d6455a0133df5e279ffbdab62b86691007c2c5be` and zero drift. The private binary is
-`C:/Users/tjelinek/MidnightExplorer-20261113-051356-516fc158/me.exe`,
+`<user-profile>/MidnightExplorer-20261113-051356-516fc158/me.exe`,
 SHA256 `516fc158567c2179087f4c166d23c8b51387c8c077236fc87bcabfa684226018`.
 
 `qualified-debug-result.json` records engine **17.882 s** and native UI **7.901 s**,

@@ -72,4 +72,4 @@ this exact executable hash. The ordinary build-path launcher can use it.
 
 - Executable: D:/experiments/dev/FM/_build/debug/me.exe
 - SHA-256: C70619DCEC1911D6A081BF36D14DC1DF757C9FA11EF0E224C9069EB991DC2F98
-- Protected runtime: C:/Users/tjelinek/MidnightExplorer-20261111-selection-c70619dc
+- Protected runtime: <user-profile>/MidnightExplorer-20261111-selection-c70619dc

@@ -40,7 +40,7 @@ pub(super) fn decode(
     stored: Option<StoredAssociations>,
 ) -> io::Result<Arc<ThumbnailerAssociations>> {
     match (version, stored) {
-        (1..=33, None) => Ok(Arc::default()),
+        (1..=34, None) => Ok(Arc::default()),
         (34.., Some(stored)) => {
             let preferences = ThumbnailerAssociations {
                 overrides: stored.0,

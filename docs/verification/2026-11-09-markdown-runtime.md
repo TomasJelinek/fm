@@ -13,7 +13,7 @@ panel also showed the fixture member's modification date/time. No source change
 was necessary to make these two routing/rendering cases pass.
 
 The check used the owned diagnostic application at
-`C:\Users\tjelinek\MidnightExplorer-20261109-panel-probe\panel-baseline.exe`,
+`<user-profile>\MidnightExplorer-20261109-panel-probe\panel-baseline.exe`,
 SHA-256 `B3B8F9C69E481EA3812575681FD8E4929BB98C02363B37D413A42E4A149EE055`,
 with its installed viewers/filesystems and software rendering. It preserves the
 normal application composition and callbacks; its diagnostic change holds the

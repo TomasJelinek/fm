@@ -28,6 +28,8 @@ pub(super) struct Job {
     _captured_rename: Option<Arc<dyn CapturedRenameTarget>>,
     _captured_metadata: Option<Arc<dyn CapturedMetadataSources>>,
     pub(super) metadata_covered: Vec<bool>,
+    /// A confirmed empty file replaces the existing one through this service.
+    replace_existing: Option<Arc<dyn TransferService>>,
     // Release serialization only after all native pins and provider owners close.
     mutation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -230,7 +232,8 @@ fn new_job(
         _captured_rename: None,
         _captured_metadata: None,
         metadata_covered: vec![],
-        mutation_permit: None,
+        replace_existing: None,
+            mutation_permit: None,
         preview: OperationPreview {
             id,
             kind,
@@ -337,8 +340,31 @@ impl Job {
             self.rename_locale = locale;
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))] // Tests confirm without replacing.
     pub(super) fn confirm(&mut self, name: Option<String>) -> Result<(), FsError> {
+        self.confirm_with(name, false, None)
+    }
+    pub(super) fn confirm_with(
+        &mut self,
+        name: Option<String>,
+        replace_existing: bool,
+        transfer: Option<Arc<dyn TransferService>>,
+    ) -> Result<(), FsError> {
         let progress = self.progress();
+        if replace_existing {
+            if progress.kind != MutationKind::CreateFile {
+                return Err(error(
+                    &progress.source_directory,
+                    "Only a new empty file can replace an existing file.",
+                ));
+            }
+            self.replace_existing = Some(transfer.ok_or_else(|| {
+                error(
+                    &progress.source_directory,
+                    "Replacing a file is not available here.",
+                )
+            })?);
+        }
         match progress.kind {
             MutationKind::Rename | MutationKind::CreateDirectory | MutationKind::CreateFile => {
                 let name =
@@ -399,12 +425,21 @@ impl Job {
             progress.current_path = Some(path);
             self.store_progress(&mut progress);
             let result = match progress.kind {
-                MutationKind::CreateFile => self
-                    .directory
-                    .as_ref()
-                    .expect("prepared base")
-                    .create_file(self.name.as_deref().expect("validated name"), &self.cancel)
-                    .map(|path| (Some(path), None)),
+                MutationKind::CreateFile => match &self.replace_existing {
+                    Some(transfer) => crate::checksum::replace_with_empty_file(
+                        transfer.as_ref(),
+                        &progress
+                            .source_directory
+                            .join(self.name.as_deref().expect("validated name")),
+                        &self.cancel,
+                    ),
+                    None => self
+                        .directory
+                        .as_ref()
+                        .expect("prepared base")
+                        .create_file(self.name.as_deref().expect("validated name"), &self.cancel),
+                }
+                .map(|path| (Some(path), None)),
                 MutationKind::Rename => unreachable!("rename jobs use their typed worker"),
                 MutationKind::CreateDirectory => self
                     .directory

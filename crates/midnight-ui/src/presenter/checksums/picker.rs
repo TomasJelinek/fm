@@ -5,6 +5,7 @@ pub(crate) struct Pending {
     request: DesktopRequestId,
     generation: ChecksumGeneration,
     verify: bool,
+    algorithm: ChecksumAlgorithm,
 }
 
 impl Presenter {
@@ -25,6 +26,13 @@ impl Presenter {
         };
         if s.picker.is_some() || s.save.is_some() || s.running {
             return;
+        }
+        if !verify
+            && s.suggested
+                .file_stem()
+                .is_some_and(|name| name == "checksums")
+        {
+            s.suggested.set_extension(algorithm.extension());
         }
         let path = if verify {
             &s.manifest_suggested
@@ -53,6 +61,7 @@ impl Presenter {
                 request,
                 generation: s.generation,
                 verify,
+                algorithm,
             });
             s.error.clear();
         } else {
@@ -101,6 +110,7 @@ impl Presenter {
                 } else {
                     s.suggested = path;
                     s.destination_revision = s.destination_revision.wrapping_add(1);
+                    s.save_pending = Some(pending.algorithm);
                 }
                 s.error.clear();
             }

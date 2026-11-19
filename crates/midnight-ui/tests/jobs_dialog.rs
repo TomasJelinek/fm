@@ -1,6 +1,4 @@
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 #[path = "support/jobs_form.rs"]
 mod ui;
 use i_slint_core::items::AccessibleRole;

@@ -18,7 +18,7 @@ Build outputs in _build; root coordinates Cargo. No full-file text loading.
 ## Parallel work
 
 - [x] Text/Markdown scrolling: reproduce AGENTS.md and build.bat from
-  D:/dev/ov-physics-trunk/ovclash; fix wheel/scrollbar ownership or extent defects
+  <source-checkout>/ovclash; fix wheel/scrollbar ownership or extent defects
   from measured evidence. Preserve bounded on-demand reads. Add BAT highlighting
   alongside SH, with plugin tests independent of the main application.
 - [ ] Image loading: measure actual discovery/start/decode/delivery times; improve

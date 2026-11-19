@@ -7,8 +7,7 @@ use midnight_core::*;
 use midnight_ui::{MainWindow, Presenter, install};
 #[path = "support/bitmap.rs"]
 mod bitmap;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use slint::{
     ComponentHandle,
     platform::{Key, WindowEvent},

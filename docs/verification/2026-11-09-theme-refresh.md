@@ -53,7 +53,7 @@ a warning-free whole-project build.
 The binary SHA-256 is
 `5B8714ACB08B06E380B8CA05C77B8F92FE2EDC375D11DF8DE7B7874316883F7E`.
 It was installed with the existing viewer/filesystem/thumbnail packages into
-`C:\Users\tjelinek\MidnightExplorer-20261109-080643-b1143a4b`, and the redirected
+`<user-profile>\MidnightExplorer-20261109-080643-b1143a4b`, and the redirected
 Desktop shortcut was updated and read back. The first shortcut publication hit
 a temporary file-sharing error; retrying the same validated installer succeeded.
 Both headless enumeration and native UI startup smoke exited 0. The startup

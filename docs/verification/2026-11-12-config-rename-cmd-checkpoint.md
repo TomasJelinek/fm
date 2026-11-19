@@ -80,7 +80,7 @@ of every installed desktop font configuration.
 - Size: 99,159,552 bytes.
 - SHA-256: `b3fdb18826381c704e5b3133e3dbde5e8fb11a3cf541d7435c1c279d35028a67`.
 - Registered private runtime:
-  `C:/Users/tjelinek/MidnightExplorer-20261112-confirm-rename-cmd-b3fdb188`.
+  `<user-profile>/MidnightExplorer-20261112-confirm-rename-cmd-b3fdb188`.
 - Matching unchanged plugins were deployed from the previous verified runtime;
   no ABI change required a plugin rebuild.
 

@@ -67,7 +67,7 @@ The new `D:/experiments/dev/FM/_build/debug/me.exe` SHA-256 is:
 `2da12aa577aef0b8903af3059f839a2fc5a7badc10875d58856be8a231afb003`
 
 It and the matching elevation helper were deployed with unchanged plugin binaries to
-`C:/Users/tjelinek/MidnightExplorer-20261112-native-2da12aa5`, with a registration matching
+`<user-profile>/MidnightExplorer-20261112-native-2da12aa5`, with a registration matching
 this exact executable. Only the owned deployment staging copy was removed afterward,
 reclaiming 0.531 GiB; existing private installations and user content were retained.
 

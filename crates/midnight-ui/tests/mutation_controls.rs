@@ -1,11 +1,8 @@
 //! Real keyboard/pointer routing; mock commands never touch a filesystem.
-#[allow(dead_code)] // This fixture uses the render helpers, not its pointer helpers.
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 #[path = "support/owned_windows.rs"]
 mod owned_windows;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 #[path = "support/window_input.rs"]
 mod window_input;
 use midnight_core::*;
@@ -105,7 +102,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
     key_current(&ui, &windows, "new"); // Only the basename is selected; .txt survives.
     key_current(&ui, &windows, Key::Return);
     assert!(commands.borrow().iter().any(|command| matches!(command,
-        Command::ConfirmOperation { id, new_name: Some(name) } if *id == request.id && name == "new.txt")));
+        Command::ConfirmOperation { id, new_name: Some(name), replace_existing: false } if *id == request.id && name == "new.txt")));
     assert!(ui.window.get_operation_token().is_empty());
 
     for (delete_key, permanent) in [
@@ -169,7 +166,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
         let progress_before = visible_children();
         key_current(&ui, &windows, Key::Return);
         assert!(commands.borrow().iter().any(|command| matches!(command,
-        Command::ConfirmOperation { id, new_name: None } if *id == deletion.id)));
+        Command::ConfirmOperation { id, new_name: None, replace_existing: false } if *id == deletion.id)));
         assert!(!ui.window.get_embedded_modal_open(), "progress is modeless");
         assert!(!ui.window.get_dialog_input_blocked());
         assert_eq!(
@@ -260,7 +257,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
         };
         key_current(&ui, &windows, Key::Return);
         assert!(commands.borrow().iter().any(|command| matches!(command,
-        Command::ConfirmOperation { id, new_name: Some(name) }
+        Command::ConfirmOperation { id, new_name: Some(name), replace_existing: false }
             if *id == creation.id && *name == expected_name)));
     }
 }

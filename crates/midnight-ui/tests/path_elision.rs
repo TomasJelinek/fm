@@ -1,6 +1,5 @@
 //! Path omissions are explicit while native targets and complete values survive.
-#[path = "support/modeless.rs"]
-mod ui;
+use crate::support::modeless as ui;
 use i_slint_core::{
     item_tree::ItemRc,
     items::{AccessibleRole, ComplexText, SimpleText},
@@ -12,6 +11,10 @@ use slint::{
 use std::{cell::RefCell, rc::Rc};
 
 slint::slint! {
+    // Exported so that the scheme is not a compile-time constant, which would copy the
+    // whole palette into every color binding of the fixture.
+    import { Theme } from "../ui/theme.slint";
+    export { Theme }
     import { PathNavigation } from "../ui/path-navigation.slint";
     import { PathPartRow } from "../ui/navigation-models.slint";
     import { PathText } from "../ui/path-text.slint";

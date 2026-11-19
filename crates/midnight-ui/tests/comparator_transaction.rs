@@ -10,8 +10,7 @@ mod raw_paths;
 mod raw_paths;
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},
@@ -334,8 +333,10 @@ fn leaving_picker_page_releases_busy_controls_even_before_a_picker_reply() {
             .iter()
             .any(|command| matches!(command, Command::CancelPathPicker { .. }))
     );
-    // No PathPicked reply is delivered. The scheduled final picker tick must
-    // publish context cancellation even when the pending slot is already empty.
+    // No PathPicked reply is delivered. The context change that delivered the
+    // cancellation also publishes the emptied slot; it does not wait for the open
+    // picker's one-second check.
+    assert!(!view.get_busy());
     clock.set(Duration::from_millis(30));
     harness.settle();
     window.set_options_topic_index(10);

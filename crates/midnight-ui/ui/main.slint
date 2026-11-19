@@ -14,8 +14,8 @@ export { UserCommandRow }
 import { ShortcutHints } from "shortcut-hints.slint";
 export { ShortcutHints }
 import { HelpWindow } from "help-window.slint";
-import { AboutWindow } from "about-window.slint";
-export { HelpWindow, AboutWindow }
+import { AboutDialog, LicenseRow } from "about-dialog.slint";
+export { HelpWindow, LicenseRow }
 import { JobProgressWindow } from "job-progress-window.slint";
 export { JobProgressWindow }
 import { JobsWindow } from "jobs-window.slint";
@@ -23,11 +23,12 @@ import { DecisionWindow } from "decision-window.slint";
 export { JobsWindow, DecisionWindow }
 
 import { HintedActionButton } from "hinted-inputs.slint";
-import { ScrollView, Palette } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
+import { ScrollStrip } from "scroll-strip.slint";
 import { CommandMenuBody } from "command-menu.slint";
 import { MainMenuBody } from "main-menu.slint";
 import { Theme } from "theme.slint";
-import { TipBody, CompactPicker, TooltipPlacement } from "controls.slint";
+import { Tip, CompactPicker, TooltipPlacement } from "controls.slint";
 import { FileActionMenu } from "file-menu.slint";
 import { DirectoryLinkTooltip, FileRow } from "file-models.slint";
 export { FileRow }
@@ -94,7 +95,7 @@ export component MainWindow inherits Window {
     out property <bool> modal-overlay-open: filter-overlay.active || hot-paths-overlay.active
         || operation-overlay.active || file-list-overlay.active || notice-overlay.active;
     out property <bool> embedded-modal-open: root.modal-overlay-open
-        || root.options-open || root.comparison-open || root.metadata-token != "";
+        || root.options-open || root.about-open || root.comparison-open || root.metadata-token != "";
     changed embedded-modal-open => {
         if root.embedded-modal-open {
             root.drag-invalidate-targets();
@@ -103,7 +104,6 @@ export component MainWindow inherits Window {
         }
     }
     callback open-help-window();
-    callback open-about-window();
     callback open-notice-window();
     callback refresh-information-windows();
     callback close-information-windows();
@@ -513,6 +513,7 @@ export component MainWindow inherits Window {
     in-out property <bool> remember-command-history: true;
     in-out property <bool> copy-checksum-verification: true;
     in-out property <int> disk-io-concurrency-index;
+    in-out property <int> glyph-fitting-index;
     in-out property <int> options-topic-index;
     in property <[UserCommandRow]> user-commands;
     in property <string> command-preview-token;
@@ -621,6 +622,7 @@ export component MainWindow inherits Window {
     callback remember-command-history-changed(bool);
     callback copy-verification-changed(bool);
     callback disk-io-concurrency-changed(bool, int);
+    callback glyph-fitting-changed(int);
     callback insert-path(int);
     callback insert-name();
     callback insert-full-path();
@@ -715,7 +717,22 @@ export component MainWindow inherits Window {
         if menu == 0 { root.open-help-window(); } else if menu == 1 { user-menu.show(); }
         else { main-menu.show(); }
     }
-    public function show-about() { root.drag-invalidate-targets(); root.open-about-window(); }
+    in-out property <bool> about-open;
+    in property <[LicenseRow]> license-rows;
+    in property <string> license-summary;
+    callback license-filter(string);
+    callback license-open(string, string);
+    in-out property <bool> license-detail-open;
+    in property <string> license-detail-title;
+    in property <string> license-detail-license;
+    in property <string> license-detail-authors;
+    in property <string> license-detail-text;
+    changed about-open => {
+        PopupFocus.update();
+        if root.about-open { about-popup.show(); } else { about-popup.close(); root.license-detail-open = false; root.focus-files(); }
+        PopupFocus.update();
+    }
+    public function show-about() { if root.about-open { return; } root.drag-invalidate-targets(); root.about-open = true; }
     public function show-bookmarks(pane: int) {
         root.open-hot-paths-window(pane);
     }
@@ -833,9 +850,11 @@ export component MainWindow inherits Window {
             private property <length> minimum-pane: min(286px, self.usable / 2);
             private property <length> rail-width: root.panel-zoomed ? 0px : (Theme.touch ? 44px : 28px);
             private property <bool> active-on-left: (root.active-pane == 0) != root.panels-swapped;
+            // Whole device pixels: a pane frame between two pixel columns smears its
+            // vertical edges, and so does every framed control aligned to them.
             private property <length> left-width: root.single-panel
                 ? (self.active-on-left ? self.usable - self.rail-width : self.rail-width)
-                : clamp(self.usable * root.panel-ratio, self.minimum-pane, self.usable - self.minimum-pane);
+                : round(clamp(self.usable * root.panel-ratio, self.minimum-pane, self.usable - self.minimum-pane) / 1phx) * 1phx;
             private property <length> right-width: self.usable - self.left-width;
             left := FilePane {
                 directory-link-tooltip: root.directory-link-tooltip;
@@ -859,7 +878,7 @@ export component MainWindow inherits Window {
                 mutation(action) => { root.mutation(0, action); }
                 x: root.panels-swapped ? panels.left-width + panels.gutter : 0px;
                 width: root.panels-swapped ? panels.right-width : panels.left-width;
-                y: 0px; height: parent.height; clip: true;
+                y: 0px; height: parent.height;
                 action-icons: root.action-icons; choices: root.navigation-choices;
                 choice-index: root.left-navigation-index; choice-revision: root.navigation-revision;
                 navigation-choice(identity) => { root.navigation-choice(0, identity); }
@@ -946,7 +965,7 @@ export component MainWindow inherits Window {
                 mutation(action) => { root.mutation(1, action); }
                 x: root.panels-swapped ? 0px : panels.left-width + panels.gutter;
                 width: root.panels-swapped ? panels.left-width : panels.right-width;
-                y: 0px; height: parent.height; clip: true;
+                y: 0px; height: parent.height;
                 action-icons: root.action-icons; choices: root.navigation-choices;
                 choice-index: root.right-navigation-index; choice-revision: root.navigation-revision;
                 navigation-choice(identity) => { root.navigation-choice(1, identity); }
@@ -1043,7 +1062,7 @@ export component MainWindow inherits Window {
                     }
                     rail-touch := TouchArea { clicked => { root.activate(1 - root.active-pane); root.focus-files(); } }
                 }
-                Tooltip { TipBody { text: "Activate other panel\n" + (root.active-pane == 0 ? root.right-path : root.left-path); } }
+                Tip { text: "Activate other panel\n" + (root.active-pane == 0 ? root.right-path : root.left-path); }
             }
         }
         if root.user-commands.length > 0 && !root.compact-window: UserCommandToolbar {
@@ -1087,11 +1106,9 @@ export component MainWindow inherits Window {
                         max(max(0px, self.width) * 0.5, min(320px, self.width - 120px)));
                     private property <length> prompt-width: root.command-directory == "" ? 0px
                         : min(root.command-path-natural-width, max(0px, self.width - self.editor-reserve));
-                    cwd-scroll := ScrollView {
+                    cwd-scroll := ScrollStrip {
                         x: 0px; y: 0px;
                         width: command-content.prompt-width; height: parent.height;
-                        horizontal-scrollbar-policy: always-off;
-                        vertical-scrollbar-policy: always-off;
                         mouse-drag-pan-enabled: true;
                         content-width: max(self.visible-width, root.command-path-natural-width);
                         content-height: self.visible-height;
@@ -1117,7 +1134,7 @@ export component MainWindow inherits Window {
                                     reject
                                 }
                             }
-                            Tooltip { TipBody { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; } }
+                            Tip { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; }
                         }
                     }
                     if cwd-scroll.content-x < -0.5px : Rectangle {
@@ -1174,14 +1191,14 @@ export component MainWindow inherits Window {
                             }
                             edited => { root.command-history-reset(); root.command-edited(self.text != ""); }
                         }
-                        Tooltip { TipBody { text: root.command-hint + "\nWorking folder: " + root.command-directory
+                        Tip { text: root.command-hint + "\nWorking folder: " + root.command-directory
                             + "\n" + ShortcutHints.hint("Run command", "command.execute")
                             + "\n" + ShortcutHints.hint("Return to files", "command.focus-files")
                             + "\n" + ShortcutHints.hint("Append focused filename", "command.insert-name")
                             + "\n" + ShortcutHints.hint("Append focused full path", "command.insert-full-path")
                             + "\n" + ShortcutHints.hint("Insert active panel path", "command.insert-path")
                             + "\n" + ShortcutHints.hint("Insert left panel path", "command.insert-left-path")
-                            + "\n" + ShortcutHints.hint("Insert right panel path", "command.insert-right-path"); } }
+                            + "\n" + ShortcutHints.hint("Insert right panel path", "command.insert-right-path"); }
                     }
                 }
                 command-history-picker := CompactPicker {
@@ -1231,9 +1248,9 @@ export component MainWindow inherits Window {
         if !root.compact-window && root.desktop-feedback-important && root.desktop-status != "" : Text {
             text: root.desktop-status;
             color: Theme.secondary-text; font-size: Theme.hint-font;
-            height: Theme.hint-font * 1.5; overflow: elide;
+            height: ceil(Theme.hint-font * 1.5 / 1px) * 1px; overflow: elide;
             accessible-label: root.desktop-status;
-            Tooltip { TipBody { text: root.desktop-status; } }
+            Tip { text: root.desktop-status; }
         }
       }
     }
@@ -1322,6 +1339,28 @@ export component MainWindow inherits Window {
                 confirm(policy) => { root.confirm-metadata(root.metadata-token, root.metadata-revision, policy); }
                 cancel => { root.cancel-metadata(root.metadata-token); }
                 dismiss-hints => { root.dismiss-metadata-hints(); }
+            }
+        }
+    }
+    // About lives inside the main window like the other embedded dialogs; no OS frame.
+    about-popup := PopupWindow {
+        close-policy: no-auto-close;
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        about-frame := DialogFrame {
+            desired-width: 560px; desired-height: 660px;
+            dismiss-on-outside: true; dim: true;
+            dismiss => { root.about-open = false; }
+            AboutDialog {
+                application-version: root.application-version;
+                application-icon: root.icon;
+                licenses: root.license-rows; license-summary: root.license-summary;
+                move-dialog(dx, dy) => { about-frame.move-by(dx, dy); }
+                license-filter(query) => { root.license-filter(query); }
+                license-open(name, version) => { root.license-open(name, version); }
+                detail-open <=> root.license-detail-open;
+                detail-title: root.license-detail-title; detail-license: root.license-detail-license;
+                detail-authors: root.license-detail-authors; detail-text: root.license-detail-text;
+                close => { root.about-open = false; }
             }
         }
     }
@@ -1450,6 +1489,7 @@ export component MainWindow inherits Window {
                 remember-command-history <=> root.remember-command-history;
                 copy-checksum-verification <=> root.copy-checksum-verification;
                 disk-io-concurrency-index: root.disk-io-concurrency-index;
+                glyph-fitting-index: root.glyph-fitting-index;
                 command-history-empty: root.command-history.length == 0;
                 thumbnails-enabled <=> root.thumbnails-enabled;
                 thumbnails-network <=> root.thumbnails-network;
@@ -1465,6 +1505,7 @@ export component MainWindow inherits Window {
                 sizes-format-changed(value) => { root.sizes-format-changed(value); }
                 remember-command-history-changed(value) => { root.remember-command-history-changed(value); }
                 copy-verification-changed(value) => { root.copy-verification-changed(value); }
+                glyph-fitting-changed(index) => { root.glyph-fitting-changed(index); }
                 disk-io-concurrency-changed(automatic, maximum) => { root.disk-io-concurrency-changed(automatic, maximum); }
                 command-history-clear => { root.command-history-clear(); }
                 confirm => { root.options-accepted(); }
@@ -1531,8 +1572,12 @@ export component MainWindow inherits Window {
         y: max(4px, min(root.drag-y + 20px, root.height - self.height - 4px));
     }
     // Native owner-modal dialogs retain the main surface but gate its input.
-    if root.dialog-input-blocked: TouchArea {
-        width: root.width; height: root.height;
+    // Disabled instead of conditional (an `if` is one more generated component):
+    // a disabled area passes every event on. The explicit origin keeps it out
+    // of the window's size constraints.
+    TouchArea {
+        enabled: root.dialog-input-blocked;
+        x: 0px; y: 0px; width: root.width; height: root.height;
         scroll-event(event) => { accept }
     }
     operation-overlay := EmbeddedOperation { x: 0px; y: 0px; width: root.width; height: root.height; }

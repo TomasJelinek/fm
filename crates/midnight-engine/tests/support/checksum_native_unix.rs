@@ -63,6 +63,7 @@ async fn native_raw_name_can_be_hashed_but_never_lossily_exported() {
         algorithm: ChecksumAlgorithm::Sha256,
         destination: temp.path().join("refused.sha256"),
         acknowledge_partial: None,
+        overwrite: false,
     };
     assert_eq!(
         checksum::save_manifest(&run, &request, provider.as_ref(), &Cancellation::default())

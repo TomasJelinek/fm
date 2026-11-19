@@ -82,6 +82,18 @@ fn tree_checksums_selected_folder_uses_origin_panel_and_recalculates_same_captur
         sent.borrow_mut().push(command);
         true
     });
+    let id = *p.checksums.sessions.keys().next().unwrap();
+    assert!(
+        sent.borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::StartCapturedChecksums(_))),
+        "opening calculates nothing"
+    );
+    let algorithms = p.checksums.sessions[&id].algorithms;
+    assert!(p.start_checksums(id, algorithms, false, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
     let first = sent
         .borrow()
         .iter()
@@ -137,6 +149,8 @@ fn tree_checksums_retries_capture_queue_and_retains_failed_calculation_for_expli
     let drops = Arc::new(AtomicUsize::new(0));
     p.apply_with_sender(receipt(&request, None, drops.clone()), &|_| false);
     let id = *p.checksums.sessions.keys().next().unwrap();
+    assert!(!p.checksums.sessions[&id].running);
+    p.start_checksums(id, ChecksumAlgorithms::default(), false, &|_| false);
     assert!(!p.checksums.sessions[&id].running);
     assert!(p.checksums.sessions[&id].error.contains("queue is busy"));
     assert!(p.start_checksums(id, ChecksumAlgorithms::default(), false, &|_| true));

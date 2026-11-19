@@ -1,6 +1,5 @@
 //! Rendered footer contents must share the vertical center at every supported density.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

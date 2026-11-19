@@ -5,10 +5,21 @@
 //! start-up cost; libtest still runs all tests in parallel. Cargo `autotests` is
 //! disabled for this package, so `every_test_file_is_a_module` fails when a new
 //! file is not declared below.
-// Each module keeps its own copy of the shared `support` files it includes, exactly
+// Each module keeps its own copy of any other `support` file it includes, exactly
 // as when every file was a separate test crate, so their types never mix.
 #![allow(clippy::duplicate_mod)]
 
+// Compiled once for the test modules that include them directly, instead of once per
+// module. Support files that include `modeless.rs` themselves (`tree_filters`,
+// `operation_form`, `job_windows`, `operations_native`) keep their own copy. Neither
+// file holds process-wide state, so sharing them shares only their types. Nested, so
+// that `every_test_file_is_a_module` does not take them for test files.
+mod support {
+    pub mod modeless;
+    pub mod ui;
+}
+
+mod about_dialog;
 mod action_icon_colors;
 mod archive_badges;
 mod archive_options;
@@ -59,6 +70,7 @@ mod font_catalog;
 mod fonts;
 mod function_bar;
 mod hidden_icons;
+mod icon_edges;
 mod information_window_lifetime;
 mod interaction_controls;
 mod interaction_performance;

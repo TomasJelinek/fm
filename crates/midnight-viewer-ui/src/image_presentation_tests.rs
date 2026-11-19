@@ -230,6 +230,14 @@ impl Drop for TestWindows {
         self.0.close_all();
     }
 }
+impl TestWindows {
+    /// Lets go of every window without closing its session, as dropping a plain
+    /// manager does; the closing guard above then has nothing left to close.
+    pub(super) fn release_without_closing(&self) {
+        let windows = std::mem::take(&mut *self.0.windows.borrow_mut());
+        drop(windows);
+    }
+}
 
 pub(super) fn opening_appearance() -> ViewerAppearance {
     ViewerAppearance {
@@ -1594,9 +1602,7 @@ fn fixture_runtime_closes_a_retained_session_before_checked_shutdown() {
     // alive until hide. Release UI ownership without closing the actual session.
     open.window.hide().unwrap();
     let session = Rc::clone(&open.session);
-    // Exercise TestRuntime's retained-session cleanup independently of the
-    // normal manager guard, whose Drop closes every registered window.
-    manager.windows.borrow_mut().clear();
+    manager.release_without_closing();
     drop((manager, open, service));
     assert!(weak_open.upgrade().is_none(), "OpenWindow still retained");
     assert!(
@@ -1604,7 +1610,7 @@ fn fixture_runtime_closes_a_retained_session_before_checked_shutdown() {
         "hidden viewer component still retained"
     );
     let appearance = opening_appearance();
-    assert!(session.restore_palette(&appearance).is_ok());
+    assert_eq!(session.restore_palette(&appearance).err(), None);
     drop(runtime);
     assert_eq!(
         session.restore_palette(&appearance),
@@ -1624,16 +1630,14 @@ fn fixture_runtime_closes_a_retained_session_without_replacing_the_primary_panic
     // alive until hide. Release UI ownership without closing the actual session.
     open.window.hide().unwrap();
     let session = Rc::clone(&open.session);
-    // Leave the retained session live for TestRuntime to retire during unwind.
-    // An empty registry makes normal TestWindows cleanup a harmless no-op.
-    manager.windows.borrow_mut().clear();
+    manager.release_without_closing();
     drop((manager, open, service));
     assert!(weak_open.upgrade().is_none(), "OpenWindow still retained");
     assert!(
         weak_component.upgrade().is_none(),
         "hidden viewer component still retained"
     );
-    assert!(session.restore_palette(&opening_appearance()).is_ok());
+    assert_eq!(session.restore_palette(&opening_appearance()).err(), None);
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _runtime = runtime;
         panic!("fixture unwind probe");

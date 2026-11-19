@@ -1,5 +1,4 @@
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{MainWindow, UserCommandRow, UserCommandSettingsView};
 use modeless::{Windows, click, draw};

@@ -110,7 +110,7 @@ These are the affected package union and selected integrations, not every indepe
 plugin/workspace target; see the [integration report](2026-11-12-tree-delete-integration.md).
 
 The earlier 13 diagnostic-storage failures came from a protected TEMP spool owned
-by CodexSandboxOffline being used by the authorized tjelinek runner. All 13 unchanged
+by CodexSandboxOffline being used by the authorized <user> runner. All 13 unchanged
 cases passed with a fresh same-user TEMP. No ACL, product code, security policy or
 assertion was weakened; the old protected directory was left untouched.
 

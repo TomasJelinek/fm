@@ -172,7 +172,9 @@ fn refresh(
 fn sync(window: &FileListPresentation<'_>, s: &FileListSession, locale: &NumberLocale) {
     window.set_busy(s.busy());
     // Only the shown preview escapes bidirectional controls; the written list keeps raw names.
-    window.set_preview_text(crate::shown_text(&s.preview));
+    // Tabs are laid out to columns like a text editor would show the list; a literal tab
+    // has no glyph in the preview font.
+    window.set_preview_text(crate::shown_text(&expand_tabs(&s.preview)));
     window.set_summary(crate::shown_text(&s.summary));
     window.set_error_text(crate::shown_text(&s.error));
     window.set_conflict_pending(s.can_confirm());
@@ -481,5 +483,42 @@ mod tests {
             insert_variable("文档", 6, 3, "$(TAB)"),
             Some(("文$(TAB)".into(), 9))
         );
+    }
+}
+
+/// Replace each tab with spaces up to the next multiple of eight characters on its line.
+fn expand_tabs(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\t') {
+        return text.into();
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut column = 0;
+    for c in text.chars() {
+        match c {
+            '\t' => {
+                let next = (column / 8 + 1) * 8;
+                out.extend(std::iter::repeat_n(' ', next - column));
+                column = next;
+            }
+            '\n' | '\r' => {
+                out.push(c);
+                column = 0;
+            }
+            _ => {
+                out.push(c);
+                column += 1;
+            }
+        }
+    }
+    out.into()
+}
+
+#[cfg(test)]
+mod expand_tabs_tests {
+    #[test]
+    fn tabs_become_spaces_to_the_next_eight_column_stop() {
+        assert_eq!(super::expand_tabs("a\tbc\td\nxyz\t1"), "a       bc      d\nxyz     1");
+        assert_eq!(super::expand_tabs("12345678\tx"), "12345678        x");
+        assert_eq!(super::expand_tabs("plain"), "plain");
     }
 }

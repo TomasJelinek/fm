@@ -83,7 +83,7 @@ and its exact layout formula; they are not GPU compositor readback.
 
 The first final candidate probe is SHA-256
 `d492fdb8da925bd5ad18bcf61776eaf432b3eb37fca311562c816f28da48959b`, staged uniquely in
-`C:/Users/tjelinek/MidnightExplorer-20261112-tree-delete-07f4fcc1`. No plugin, receipt or
+`<user-profile>/MidnightExplorer-20261112-tree-delete-07f4fcc1`. No plugin, receipt or
 registration changed. Both Windows and Linux compilation were quiet during the batch.
 
 The 12 cases return 11 nominal guard successes and one D3D EOF frame-count failure.

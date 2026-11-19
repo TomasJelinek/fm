@@ -712,3 +712,27 @@ fn rename_foundation_descriptor_minor_two_with_minimum_host_three_is_rejected() 
     api.header.abi_minor = 3;
     assert!(validate_descriptor(&api).is_ok());
 }
+
+#[test]
+fn closing_a_handle_the_plugin_already_retired_does_not_stop_the_instance() {
+    let _serial = rename_ffi_lock(&TESTS);
+    for request in [
+        Request::CloseList { cursor: 9 },
+        Request::CloseRead { reader: 9 },
+    ] {
+        let stale = rename_ffi_failed(ErrorCode::StaleReference);
+        let fixture = RenameFfiReplies::new(vec![stale.clone(), Response::Unit]);
+        fixture.with_instance(|instance| {
+            assert_eq!(instance.call(&request, &|| false), Ok(stale), "{request:?}");
+            assert!(!instance.poisoned.load(Ordering::Acquire), "{request:?}");
+            // Later work still reaches the plugin.
+            assert_eq!(instance.call(&request, &|| false), Ok(Response::Unit));
+        });
+    }
+    // Any other cleanup refusal still stops new work.
+    let fixture = RenameFfiReplies::new(vec![rename_ffi_failed(ErrorCode::Io)]);
+    fixture.with_instance(|instance| {
+        let _ = instance.call(&Request::CloseList { cursor: 9 }, &|| false);
+        assert!(instance.poisoned.load(Ordering::Acquire));
+    });
+}

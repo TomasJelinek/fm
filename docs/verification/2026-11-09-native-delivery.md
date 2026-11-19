@@ -49,7 +49,7 @@ All local evidence is under `_build/qa/native-delivery/`:
   or build output. Changed source files satisfy UTF-8/LF and the 100 KB limit.
 - `windows-installed-tests.log`: both unchanged native host integration tests
   passed against that helper-built DLL in a fresh protected installation under
-  `C:/Users/tjelinek/_build/`. The existing qualified backend test binary was
+  `<user-profile>/_build/`. The existing qualified backend test binary was
   reused; its hash and installed-library match are in
   `windows-installed-metadata.json`.
 

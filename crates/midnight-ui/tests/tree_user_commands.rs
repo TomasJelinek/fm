@@ -3,8 +3,7 @@
 mod native;
 #[path = "support/tree_filters.rs"]
 mod support;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use midnight_core::*;
 use slint::Model;
 use std::{

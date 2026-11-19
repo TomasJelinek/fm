@@ -1,8 +1,7 @@
 //! Render command artwork through the real toolbar across every palette.
 #[path = "support/toolbar.rs"]
 mod toolbar;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

@@ -3,7 +3,7 @@
 The exact Linux x64 provider is qualified on Ubuntu 24.04, WSL2 kernel
 6.6.87.2-microsoft-standard-WSL2 and WSLg XWayland. The actual Slint component uses
 software presentation. Tests use a protected native installation beneath
-`/home/tjelinek/_build/fm-html-linux-install`, including the installed native
+`<home>/_build/fm-html-linux-install`, including the installed native
 filesystem provider. Existing [Windows evidence](2026-11-10-html-viewer.md) and
 its provider remain unchanged. Full Linux main-application packaging is separate
 from this installed host/component qualification.

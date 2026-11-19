@@ -51,7 +51,7 @@ layout, including a long native path rendered on one line. Evidence: `tab-width-
 ## Final deployed debug qualification
 
 After the navigation and HTML-input follow-ups, the final debug executable is
-`C:/Users/tjelinek/MidnightExplorer-20261112-user-menu-d5cf41d7/me.exe`, SHA-256
+`<user-profile>/MidnightExplorer-20261112-user-menu-d5cf41d7/me.exe`, SHA-256
 `d5cf41d7f8a7529e08a0e4a94d3fbfd5229888fea5a81c488df49bc37386ba17`.
 Backend, native-rendered and software-rendered startup checks each exit 0 with no
 stderr and unchanged preferences. The final screenshots and logs are in the

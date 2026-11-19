@@ -31,7 +31,7 @@ incremental compilation disabled:
   strict Windows Clippy passes.
 - Existing image plugin: 8 tests pass after migration to public SDK 0.2.0.
 - Native Windows AppContainer: both host tests pass against a new protected
-  installation under `C:/Users/tjelinek/_build/PdfViewerQA-20261107`. They render
+  installation under `<user-profile>/_build/PdfViewerQA-20261107`. They render
   pages 0, 1 and 0 with distinct dimensions/colors, confirm no further source
   reads, reject changed source versions permanently and reject reuse after
   cancellation. These are actual sandbox worker runs, not mocked raster output.
@@ -56,7 +56,7 @@ The image and PDF release workers were subsequently built with the final SDK
 bundle using `scripts/build-image-viewer.ps1 -Profile release -Offline -Viewer`
 and staged under `_build/release/viewers/`. The post-0.2 host test binary passed
 both native AppContainer tests against the actual release PDF executable in a
-fresh protected `C:/Users/tjelinek/_build/PdfViewerReleaseQA-20261107` installation.
+fresh protected `<user-profile>/_build/PdfViewerReleaseQA-20261107` installation.
 The staged executable hash matched the release output. Required manifests,
 executables, plugin licenses and complete third-party notices were checked.
 API/plugin manifest and lockfile hashes remained unchanged.

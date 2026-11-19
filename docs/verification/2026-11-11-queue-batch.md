@@ -66,7 +66,7 @@ The debug entry point is `D:/experiments/dev/FM/_build/debug/me.exe`:
 - Size: 96,190,464 bytes.
 - SHA-256: `ae5544ac4cc47e86aeceda6f6b56d07a3826af58e099f80c4a0ec534c8c04c6e`.
 - Matching protected runtime:
-  `C:/Users/tjelinek/MidnightExplorer-20261111-queue-ae5544ac`.
+  `<user-profile>/MidnightExplorer-20261111-queue-ae5544ac`.
 
 Existing verified viewer/filesystem/thumbnailer packages were reused; this batch
 changes no plugin ABI or independently packaged plugin. The matching executable

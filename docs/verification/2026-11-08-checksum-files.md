@@ -75,7 +75,7 @@ interactive desktop testing of the system file dialogs. macOS remains untested.
 The final Windows debug build is `_build/debug/me.exe` (85,580,288 bytes), SHA-256
 `998cbccafa9bdb765c8ec1e86714e93627f1efc65d3cb5cd923fd59b7b860daa`.
 The existing compatible plugins were deployed with this executable to
-`C:\Users\tjelinek\MidnightExplorer-20261108-144102-50441492` and its matching
+`<user-profile>\MidnightExplorer-20261108-144102-50441492` and its matching
 runtime was registered without changing checkout or ancestor permissions.
 
 A native startup smoke test launched `_build/debug/me.exe` through that runtime,

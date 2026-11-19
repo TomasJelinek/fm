@@ -772,7 +772,7 @@ bundle (`c14c67c8…30d4`): six Viewers, three filesystems, two thumbnailers,662
 normal `673084…` (`test=false`) and genuine `cf411…` payload (`test=true`). Inventory
 and post-registration hashes match. NativeRoot is copied verbatim from actual
 native-identities/completion:
-`\\?\C:\Users\tjelinek\MidnightExplorer-validation-20261118-07672814`.
+`<user-profile>\MidnightExplorer-validation-20261118-07672814`.
 This is a complete frozen validation input with normal-only registration, not
 normal/native acceptance: no application or test has launched from it.
 

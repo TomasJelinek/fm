@@ -1,6 +1,5 @@
 //! Model changes must retire row-owned tooltips before Slint instantiates popup children.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     items::AccessibleRole,

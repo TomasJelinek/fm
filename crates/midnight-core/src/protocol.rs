@@ -46,6 +46,8 @@ pub enum Command {
         generation: u64,
         targets: Vec<crate::CommandIconTarget>,
     },
+    /// The device-pixel edges at which the frontend now draws native icons.
+    SetIconEdges(crate::IconEdges),
     EnqueueCapturedTransfer(crate::CapturedTransferRequest),
     RunFileList(Box<crate::FileListRequest>),
     ConfirmFileList {
@@ -150,6 +152,8 @@ pub enum Command {
         id: crate::OperationId,
         /// Basename for Rename/CreateFile, relative path for CreateDirectory, absent for Delete.
         new_name: Option<String>,
+        /// The user confirmed replacing an existing file with the new empty file.
+        replace_existing: bool,
     },
     CancelOperation(crate::OperationId),
     PreviewMetadata {

@@ -1,6 +1,6 @@
-import { ScrollView } from "std-widgets.slint";
+import { VScrollView } from "scroll-view.slint";
 import { HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
-import { CompactPicker, TipBody } from "controls.slint";
+import { CompactPicker, Tip } from "controls.slint";
 import { Theme } from "theme.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { KeyboardEditor, KeyboardEditorView } from "keyboard-editor.slint";
@@ -73,6 +73,7 @@ export component OptionsBody inherits Rectangle {
     in-out property <bool> remember-command-history;
     in-out property <bool> copy-checksum-verification: true;
     in property <int> disk-io-concurrency-index;
+    in property <int> glyph-fitting-index;
     in property <bool> command-history-empty;
     in-out property <bool> thumbnails-enabled;
     in-out property <bool> thumbnails-network;
@@ -86,6 +87,7 @@ export component OptionsBody inherits Rectangle {
     callback remember-command-history-changed(bool);
     callback copy-verification-changed(bool);
     callback disk-io-concurrency-changed(bool, int);
+    callback glyph-fitting-changed(int);
     callback command-history-clear();
     callback thumbnail-options-changed(bool, bool, bool, int);
     callback thumbnail-size-changed(int);
@@ -242,9 +244,8 @@ export component OptionsBody inherits Rectangle {
                 width: root.navigation-width;
                 selected <=> root.topic-index;
             }
-            content := ScrollView {
+            content := VScrollView {
                 horizontal-stretch: 1; min-height: 0px; min-width: 0px;
-                horizontal-scrollbar-policy: always-off;
                 content-width: self.visible-width;
                 changed visible-height => { root.reveal-comparator-error(); }
                 changed content-height => { root.reveal-comparator-error(); }
@@ -399,13 +400,29 @@ export component OptionsBody inherits Rectangle {
                         }
                     }
                 }
-                for label[index] in ["Desktop font", "Touch font"] : OptionPicker {
+                OptionPicker {
                     narrow: root.narrow;
-                    label: label;
+                    label: "Desktop font";
                     model: ["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"];
-                    current-index: (index == 0 ? root.desktop-font-size : root.touch-font-size) - 8;
+                    current-index: root.desktop-font-size - 8;
                     hint: "Base text size in logical pixels, from 8 to 32. Controls grow with text; screen scaling converts logical to physical pixels.";
-                    selected(size) => { root.font-options-changed(root.font-index, index == 0 ? size + 8 : root.desktop-font-size, index == 1 ? size + 8 : root.touch-font-size, index + 1); }
+                    selected(size) => { root.font-options-changed(root.font-index, size + 8, root.touch-font-size, 1); }
+                }
+                OptionPicker {
+                    narrow: root.narrow;
+                    label: "Touch font";
+                    model: ["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"];
+                    current-index: root.touch-font-size - 8;
+                    hint: "Base text size in logical pixels, from 8 to 32. Controls grow with text; screen scaling converts logical to physical pixels.";
+                    selected(size) => { root.font-options-changed(root.font-index, root.desktop-font-size, size + 8, 2); }
+                }
+                OptionPicker {
+                    narrow: root.narrow;
+                    label: "Text rendering";
+                    model: ["Sharp (fitted)", "Balanced (snapped)", "Smooth (subpixel)"];
+                    current-index: root.glyph-fitting-index;
+                    hint: "How glyphs meet the pixel grid. Sharp puts stems on whole pixel columns; Smooth keeps fractional positions with more anti-aliasing. Takes effect after restarting Midnight Explorer. OK saves; Cancel discards changes.";
+                    selected(index) => { root.glyph-fitting-changed(index); }
                 }
             }
             }
@@ -418,7 +435,7 @@ export component OptionsBody inherits Rectangle {
             text: root.fixed-page-error != "" ? root.fixed-page-error : root.preferences-save-status;
             min-width: 0px; overflow: elide; font-size: Theme.small-font;
             color: Theme.error-text;
-            Tooltip { TipBody { text: root.fixed-page-error != "" ? root.fixed-page-error : root.preferences-save-status; } }
+            Tip { text: root.fixed-page-error != "" ? root.fixed-page-error : root.preferences-save-status; }
         }
         footer := DialogFooter {
             compact-height: root.compact;
@@ -452,7 +469,10 @@ export component OptionsBody inherits Rectangle {
     }
     // Block input to the form during validation/write and before settings load,
     // keeping the footer and (during validation) the header's Cancel available.
-    if root.options-busy || !root.preferences-ready : TouchArea {
+    // Disabled instead of conditional (an `if` is one more generated component):
+    // a disabled area passes every event on.
+    TouchArea {
+        enabled: root.options-busy || !root.preferences-ready;
         y: header.absolute-position.y - root.absolute-position.y + header.height;
         width: root.width;
         height: max(0px, footer.absolute-position.y - root.absolute-position.y - self.y - 6px);

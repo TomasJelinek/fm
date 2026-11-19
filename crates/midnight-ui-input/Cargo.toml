@@ -14,3 +14,13 @@ path = "tests/integration.rs"
 midnight-core.workspace = true
 slint = { workspace = true, features = ["unstable-winit-030"] }
 i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"] }
+# Not used by the code: feature pins. This crate is part of every build of a UI crate,
+# so these make Slint's dependencies resolve as in the application build: the default
+# features of tracing-core and indexmap, and lazy_static as a normal dependency (as a
+# build-only dependency of the Slint compiler it is compiled without debug info). Slint
+# is then the same compiled unit for `cargo build -p midnight-explorer`, `cargo test -p
+# midnight-ui` and `cargo test -p midnight-viewer-ui`, and so are the generated bindings
+# for the first two. Checked on Linux: docs/verification/2026-11-19-slint-build-speed.md.
+tracing-core = "0.1"
+indexmap = "2"
+lazy_static = "1"

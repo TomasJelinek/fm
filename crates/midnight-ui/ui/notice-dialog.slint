@@ -2,13 +2,8 @@ import { Theme } from "theme.slint";
 import { DialogText } from "dialog-text.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
-import { ScrollView } from "std-widgets.slint";
+import { HScrollView } from "scroll-view.slint";
 import { FallbackIcons } from "action-icons.slint";
-
-component AuthorizationButton inherits HintedActionButton {
-    text: "Retry with authorization"; fallback-icon: FallbackIcons.refresh;
-    hint: "Request operating-system permission for one folder listing.";
-}
 
 export component NoticeDialog inherits Rectangle {
     in property <string> title;
@@ -38,6 +33,10 @@ export component NoticeDialog inherits Rectangle {
     private property <length> action-row-height: max(32px, Theme.control-height, copy-button.preferred-height)
         + (root.narrow ? 14px : 0px);
     private property <string> authorization-hint: "Your operating system will ask for permission to read this folder.";
+    // Shared by the two placements of the offer. A component derived from the button
+    // would be a second generated copy of the whole button.
+    private property <string> authorization-text: "Retry with authorization";
+    private property <string> authorization-button-hint: "Request operating-system permission for one folder listing.";
     public function focus-close() { close-button.focus(); }
     init => { close-button.focus(); }
     changed generation => { root.details-expanded = false; close-button.focus(); }
@@ -96,15 +95,17 @@ export component NoticeDialog inherits Rectangle {
                     DialogText { text: root.details; vertical-stretch: 1; min-height: 0px; }
                 }
             }
-            if root.can-authorize && root.narrow: AuthorizationButton {
+            if root.can-authorize && root.narrow: HintedActionButton {
+                text: root.authorization-text; fallback-icon: FallbackIcons.refresh;
+                hint: root.authorization-button-hint;
                 clicked => { root.authorize-retry(); }
             }
             HorizontalLayout {
                 spacing: 8px;
-                ScrollView {
+                HScrollView {
                     horizontal-stretch: 1; min-width: 0px;
                     height: root.action-row-height;
-                    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: as-needed;
                     HorizontalLayout {
                         alignment: start; spacing: 8px;
                         if root.details != "": HintedActionButton {
@@ -118,7 +119,9 @@ export component NoticeDialog inherits Rectangle {
                             hint: "Copy the complete message and diagnostic report to the clipboard.";
                             clicked => { root.copy-details(); }
                         }
-                        if root.can-authorize && !root.narrow: AuthorizationButton {
+                        if root.can-authorize && !root.narrow: HintedActionButton {
+                            text: root.authorization-text; fallback-icon: FallbackIcons.refresh;
+                            hint: root.authorization-button-hint;
                             clicked => { root.authorize-retry(); }
                         }
                     }

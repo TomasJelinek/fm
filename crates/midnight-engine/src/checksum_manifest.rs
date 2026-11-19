@@ -15,7 +15,8 @@ use std::{
 const SAVE: midnight_work_budget::Admission = midnight_work_budget::Admission::Exclusive;
 
 /// Save through exclusive native staging, sync and independent destination SHA-256 readback.
-/// Existing destinations fail explicitly (AlreadyExists); this first backend never overwrites.
+/// An existing destination fails with AlreadyExists unless the caller confirmed `overwrite`;
+/// a confirmed one is replaced through the same verified staging and recoverable publication.
 pub fn save_manifest(
     run: &ChecksumRun,
     request: &ChecksumManifestRequest,
@@ -88,6 +89,7 @@ pub fn save_manifest(
         ));
     }
     let source_identities: HashSet<_> = run.rows.iter().filter_map(|row| row.identity).collect();
+    let mut target = None;
     if let Some(existing) = with_io(SAVE, cancel, path, || directory.inspect(name, cancel))? {
         if source_identities.contains(&existing.identity) {
             return Err(failure(
@@ -96,11 +98,36 @@ pub fn save_manifest(
                 "Manifest destination aliases a calculated source.",
             ));
         }
-        return Err(failure(
-            path,
-            io::ErrorKind::AlreadyExists,
-            "Manifest destination already exists; choose another filename.",
-        ));
+        if !request.overwrite {
+            return Err(failure(
+                path,
+                io::ErrorKind::AlreadyExists,
+                "Manifest destination already exists.",
+            ));
+        }
+        let Some(pinned) = with_io(SAVE, cancel, path, || directory.prepare_target(name, cancel))?
+        else {
+            return Err(failure(
+                path,
+                io::ErrorKind::NotFound,
+                "The manifest destination disappeared; save again.",
+            ));
+        };
+        if pinned.entry().item.kind != EntryKind::File {
+            return Err(failure(
+                path,
+                io::ErrorKind::InvalidInput,
+                "The destination is a folder, link or special file and cannot be replaced.",
+            ));
+        }
+        if source_identities.contains(&pinned.entry().identity) {
+            return Err(failure(
+                path,
+                io::ErrorKind::InvalidInput,
+                "Manifest destination aliases a calculated source.",
+            ));
+        }
+        target = Some(pinned);
     }
     let (bytes, counts) = encode(run, request, parent, cancel)?;
     let source = Box::new(ManifestBytes {
@@ -121,19 +148,47 @@ pub fn save_manifest(
         bytes: bytes.into(),
         offset: 0,
     });
-    let stage = with_io(SAVE, cancel, path, || directory.stage_file(cancel))?;
+    let stage = with_io(SAVE, cancel, path, || match &target {
+        Some(target) => {
+            let capabilities = directory.capabilities();
+            let policy = if capabilities.conditional_overwrite {
+                TransferReplacementPolicy::ConditionalIdentity
+            } else if capabilities.recoverable_replacement {
+                TransferReplacementPolicy::RecoverableCurrentEntry
+            } else {
+                return Err(failure(
+                    path,
+                    io::ErrorKind::Unsupported,
+                    "This filesystem does not support safely replacing a file.",
+                ));
+            };
+            directory.stage_file_preserving_target(name, target.clone(), policy, cancel)
+        }
+        None => directory.stage_file(cancel),
+    })?;
     let mut copy = VerifiedFileCopy::new(source, stage)?;
     let mut saved = (|| {
         while copy.phase() != CopyPhase::ReadyToPublish {
             copy.step(cancel)?;
         }
-        match copy.publish(name, cancel)? {
-            TransferPublication::Published(path) => Ok(ChecksumManifestReceipt {
-                path,
-                included: counts.included,
-                excluded: counts.excluded,
-                verified_bytes: copy.verified_bytes(),
-            }),
+        let publication = if let Some(target) = &target {
+            with_io(SAVE, cancel, path, || target.revalidate(cancel))?;
+            copy.publish_replace(name, cancel)?
+        } else {
+            copy.publish(name, cancel)?
+        };
+        let receipt = |path, recovery| ChecksumManifestReceipt {
+            path,
+            included: counts.included,
+            excluded: counts.excluded,
+            verified_bytes: copy.verified_bytes(),
+            recovery,
+        };
+        match publication {
+            TransferPublication::Published(path) => Ok(receipt(path, Vec::new())),
+            TransferPublication::Replaced { path, recovery } => {
+                Ok(receipt(path, vec![recovery.path]))
+            }
             TransferPublication::PublishedDurabilityUnconfirmed { path, mut error } => {
                 error.message = format!(
                     "Manifest published at {}; directory durability is unconfirmed: {}",
@@ -142,11 +197,16 @@ pub fn save_manifest(
                 );
                 Err(error)
             }
-            _ => Err(failure(
-                path,
-                io::ErrorKind::InvalidData,
-                "Unexpected replacement outcome for a no-replace manifest.",
-            )),
+            TransferPublication::RecoveryRequired {
+                recovery, mut error, ..
+            } => {
+                for item in recovery {
+                    error
+                        .message
+                        .push_str(&format!("\nRecovery file: {}", item.path.display()));
+                }
+                Err(error)
+            }
         }
     })();
     if let Err(ref mut primary) = saved
@@ -157,6 +217,108 @@ pub fn save_manifest(
             .push_str(&format!(" Staging cleanup also failed: {cleanup}"));
     }
     saved
+}
+
+/// Replace an existing regular file with an empty one, or create it when absent, through
+/// verified staging and the platform's safe replacement. A confirmed Shift+F4 over an
+/// existing name uses this; the plain create path never replaces.
+pub(crate) fn replace_with_empty_file(
+    service: &dyn TransferService,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<std::path::PathBuf, FsError> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(failure(
+            path,
+            io::ErrorKind::InvalidInput,
+            "A new file needs a containing folder and a name.",
+        ));
+    };
+    let directory = with_io(SAVE, cancel, parent, || {
+        service.prepare_transfer_destination(parent, cancel)
+    })?;
+    let target = with_io(SAVE, cancel, path, || directory.prepare_target(name, cancel))?;
+    if target
+        .as_ref()
+        .is_some_and(|target| target.entry().item.kind != EntryKind::File)
+    {
+        return Err(failure(
+            path,
+            io::ErrorKind::InvalidInput,
+            "Only a file can be replaced with an empty file.",
+        ));
+    }
+    let source = Box::new(ManifestBytes {
+        entry: TransferEntry {
+            item: MutationItem {
+                path: path.to_owned(),
+                kind: EntryKind::File,
+                metadata: EntryMetadata {
+                    size: Some(0),
+                    ..EntryMetadata::default()
+                },
+            },
+            identity: TransferIdentity {
+                device: 0,
+                object: [0; 16],
+            },
+        },
+        bytes: Vec::new().into(),
+        offset: 0,
+    });
+    let stage = with_io(SAVE, cancel, path, || match &target {
+        Some(target) => {
+            let capabilities = directory.capabilities();
+            let policy = if capabilities.conditional_overwrite {
+                TransferReplacementPolicy::ConditionalIdentity
+            } else if capabilities.recoverable_replacement {
+                TransferReplacementPolicy::RecoverableCurrentEntry
+            } else {
+                return Err(failure(
+                    path,
+                    io::ErrorKind::Unsupported,
+                    "This filesystem does not support safely replacing a file.",
+                ));
+            };
+            directory.stage_file_preserving_target(name, target.clone(), policy, cancel)
+        }
+        None => directory.stage_file(cancel),
+    })?;
+    let mut copy = VerifiedFileCopy::new(source, stage)?;
+    let mut created = (|| {
+        while copy.phase() != CopyPhase::ReadyToPublish {
+            copy.step(cancel)?;
+        }
+        let publication = if let Some(target) = &target {
+            with_io(SAVE, cancel, path, || target.revalidate(cancel))?;
+            copy.publish_replace(name, cancel)?
+        } else {
+            copy.publish(name, cancel)?
+        };
+        match publication {
+            TransferPublication::Published(path)
+            | TransferPublication::Replaced { path, .. } => Ok(path),
+            TransferPublication::PublishedDurabilityUnconfirmed { error, .. } => Err(error),
+            TransferPublication::RecoveryRequired {
+                recovery, mut error, ..
+            } => {
+                for item in recovery {
+                    error
+                        .message
+                        .push_str(&format!("\nRecovery file: {}", item.path.display()));
+                }
+                Err(error)
+            }
+        }
+    })();
+    if let Err(ref mut primary) = created
+        && let Err(cleanup) = copy.cleanup()
+    {
+        primary
+            .message
+            .push_str(&format!(" Staging cleanup also failed: {cleanup}"));
+    }
+    created
 }
 
 pub(super) fn encode(

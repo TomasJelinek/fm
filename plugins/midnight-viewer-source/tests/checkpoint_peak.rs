@@ -51,7 +51,9 @@ fn one_byte_newline_dense_viewport_has_a_bounded_checkpoint_heap_peak() {
         let reads = host.reads();
         assert_eq!(reads[before..].len(), 1);
         assert_eq!(reads[before].offset, 0);
-        // Include the bounded lexical lookahead in addition to the replay and page.
+        // BOM replay plus the one-byte, one-line page's span and margin, and the
+        // 512-byte lexical lookahead of a highlighted read from a checkpoint
+        // (preparation::LOOKAHEAD).
         assert_eq!(reads[before].length, 32768 + 1 + 1 + 8 + 512);
         let page: TextPage = codec::decode(
             &events

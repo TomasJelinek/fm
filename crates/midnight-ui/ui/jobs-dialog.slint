@@ -1,4 +1,5 @@
-import { ListView, ScrollView } from "std-widgets.slint";
+import { HScrollView } from "scroll-view.slint";
+import { ListView } from "vlist-view.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { NativeActionImage, FallbackIcons } from "action-icons.slint";
@@ -71,12 +72,12 @@ component FinishedJobButton inherits HintedActionButton {
     clicked => { root.clear-finished(root.without-errors); }
 }
 
-component FinishedJobActions inherits ScrollView {
+component FinishedJobActions inherits HScrollView {
     in property <[OperationRow]> rows;
     callback clear-finished(bool);
     min-width: 0px;
     height: max(Theme.control-height, clear-all.preferred-height) + 12px;
-    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+    horizontal-scrollbar-policy: as-needed;
     HorizontalLayout {
         alignment: start; spacing: 8px;
         clear-all := FinishedJobButton {
@@ -153,7 +154,6 @@ export component OperationsBody inherits Rectangle {
                     }
                     jobs := ListView {
                         x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                        horizontal-scrollbar-policy: always-off;
                         for job in root.rows : JobRow {
                             job: job; selected: job.identity == root.selected.identity;
                             width: jobs.visible-width;
@@ -193,13 +193,17 @@ export component OperationsBody inherits Rectangle {
                     hint: "Request cancellation of this job. Completed changes are retained.";
                     clicked => { root.cancel(root.selected.identity); }
                 }
-                if root.compact : FinishedJobButton {
-                    rows: root.rows;
-                    clear-finished(value) => { root.clear-finished(value); }
-                }
-                if root.compact : FinishedJobButton {
-                    rows: root.rows; without-errors: true;
-                    clear-finished(value) => { root.clear-finished(value); }
+                // One conditional, with the footer's spacing, instead of one per button.
+                if root.compact : HorizontalLayout {
+                    spacing: 8px;
+                    FinishedJobButton {
+                        rows: root.rows;
+                        clear-finished(value) => { root.clear-finished(value); }
+                    }
+                    FinishedJobButton {
+                        rows: root.rows; without-errors: true;
+                        clear-finished(value) => { root.clear-finished(value); }
+                    }
                 }
                 if root.selected.attention : HintedActionButton {
                     text: "Resolve"; hint: "Review the decision needed by this job.";

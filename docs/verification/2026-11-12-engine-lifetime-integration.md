@@ -100,7 +100,7 @@ The corrected native performance probe passed all six focused tests before rebui
 `_build/debug/me.exe` has SHA-256
 `dfbafca6af61e1ee23f7341131958110ed048ed384d2e7c9858419fce0c901cf`.
 Its verified private runtime is
-`C:/Users/tjelinek/MidnightExplorer-20261112-lifetime-dfbafca6`; hash-bound registration
+`<user-profile>/MidnightExplorer-20261112-lifetime-dfbafca6`; hash-bound registration
 lets the checkout executable use the same existing viewer/filesystem/thumbnail plugins.
 No plugin binaries or public plugin APIs changed in this batch.
 

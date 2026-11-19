@@ -1,10 +1,10 @@
 import { DialogFrame, DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
-import { ListView, ScrollView } from "std-widgets.slint";
+import { ScrollStrip } from "scroll-strip.slint";
 import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
-import { TipBody, CompactPicker } from "controls.slint";
+import { CompactPicker, Tip } from "controls.slint";
 import { TabRow, BookmarkRow, NavigationChoiceRow } from "navigation-models.slint";
 import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
@@ -30,6 +30,8 @@ export component NavigationButton inherits Rectangle {
     // Border while the button has no keyboard focus. Callers set this instead
     // of `border-color`, which would hide the keyboard focus indicator.
     in property <brush> rest-border: transparent;
+    out property <bool> hovered: area.has-hover;
+    out property <bool> focused: focus.has-focus && NavigationFocus.keyboard;
     callback clicked();
     callback middle-clicked();
     width: Theme.touch ? Theme.tool-width : 24px;
@@ -97,7 +99,7 @@ export component NavigationButton inherits Rectangle {
             }
         }
     }
-    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+    Tip { text: root.hint; }
 }
 
 export component HistoryNavigation inherits Rectangle {
@@ -190,11 +192,9 @@ export component TabStrip inherits Rectangle {
     }
     HorizontalLayout {
         spacing: 2px;
-        tabs-scroll := ScrollView {
+        tabs-scroll := ScrollStrip {
             min-height: 0px;
             content-height: Theme.control-height;
-            vertical-scrollbar-policy: always-off;
-            horizontal-scrollbar-policy: always-off;
             content-width: max(root.tabs-width, self.visible-width);
             changed visible-width => { root.reveal-active(); }
             HorizontalLayout {
@@ -228,7 +228,7 @@ export component TabStrip inherits Rectangle {
                             reject
                         }
                         tab-area := TouchArea {
-                            Tooltip { TipBody { text: tab.path; width-limit: 1040px; } }
+                            Tip { text: tab.path; width-limit: 1040px; }
                             private property <string> pressed-id;
                             private property <int> pressed-revision;
                             private property <bool> middle-pressed;
@@ -263,6 +263,9 @@ export component TabStrip inherits Rectangle {
                         width: Theme.touch ? max(24px, self.height) : min(20px, self.height);
                         height: parent.height - 6px;
                         icon-size: 12px;
+                        // Hidden until the pointer is over the tab or the button (or the
+                        // keyboard reaches it); touch has no hover, so it stays visible.
+                        opacity: Theme.touch || tab-area.has-hover || self.hovered || self.focused ? 1 : 0;
                         identity: tab.identity; model-revision: root.revision;
                         icon: FallbackIcons.close-tab;
                         native-icon: root.action-icons.close-tab;
@@ -291,16 +294,20 @@ export component TabStrip inherits Rectangle {
                 double-clicked => { if self.left-pressed { root.new-tab(); } }
             }
         }
-        if root.overflowing : NavigationButton {
-            icon: FallbackIcons.back; native-icon: root.action-icons.back;
-            hint: "Scroll tabs left"; enabled: tabs-scroll.content-x < -0.5px;
-            clicked => { root.scroll-tabs(-1); }
-        }
-        if root.overflowing : NavigationButton {
-            icon: FallbackIcons.forward; native-icon: root.action-icons.forward;
-            hint: "Scroll tabs right";
-            enabled: tabs-scroll.content-x > tabs-scroll.visible-width - tabs-scroll.content-width + 0.5px;
-            clicked => { root.scroll-tabs(1); }
+        // One conditional, with the strip's spacing, instead of one per button.
+        if root.overflowing : HorizontalLayout {
+            spacing: 2px;
+            NavigationButton {
+                icon: FallbackIcons.back; native-icon: root.action-icons.back;
+                hint: "Scroll tabs left"; enabled: tabs-scroll.content-x < -0.5px;
+                clicked => { root.scroll-tabs(-1); }
+            }
+            NavigationButton {
+                icon: FallbackIcons.forward; native-icon: root.action-icons.forward;
+                hint: "Scroll tabs right";
+                enabled: tabs-scroll.content-x > tabs-scroll.visible-width - tabs-scroll.content-width + 0.5px;
+                clicked => { root.scroll-tabs(1); }
+            }
         }
         NavigationButton {
             icon: FallbackIcons.tab-add; native-icon: root.action-icons.tab-add;

@@ -3,8 +3,7 @@
 mod render;
 #[path = "support/toolbar.rs"]
 mod toolbar;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty, input::TouchPhase, item_tree::ItemRc,
@@ -53,11 +52,6 @@ fn native_touch(window: &MainWindow, point: slint::LogicalPosition, phase: Touch
 fn options_and_about_stay_at_the_top_right_when_toolbar_scrolls() {
     let mut test = ui::TestUi::new();
     test.window.set_application_version("0.1".into());
-    let about_requests = Rc::new(RefCell::new(0));
-    let requests = about_requests.clone();
-    test.window
-        .on_open_about_window(move || *requests.borrow_mut() += 1);
-    let mut expected_requests = 0;
     for (width, height) in [(1340, 820), (320, 200)] {
         test.resize(width, height);
         test.draw();
@@ -99,8 +93,10 @@ fn options_and_about_stay_at_the_top_right_when_toolbar_scrolls() {
             AccessibleRole::Button,
         );
         test.draw();
-        expected_requests += 1;
-        assert_eq!(*about_requests.borrow(), expected_requests);
+        assert!(test.window.get_about_open(), "About opens inside the main window");
+        assert!(ui::has_popup(&test.window));
+        test.window.set_about_open(false);
+        test.draw();
         assert!(!ui::has_popup(&test.window));
     }
 }

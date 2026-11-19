@@ -1,6 +1,5 @@
 //! Exercise native identities through the installed tab/bookmark UI bridge.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_core::*;
 use midnight_ui::{Presenter, install};

@@ -3,8 +3,7 @@ use midnight_core::*;
 mod owned_commands;
 #[path = "support/selection.rs"]
 mod selection;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use midnight_ui::{BeginOwned, MainWindow, Presenter, refresh};
 use slint::{
     ComponentHandle, Model,

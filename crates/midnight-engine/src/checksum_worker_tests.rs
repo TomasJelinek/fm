@@ -372,6 +372,7 @@ fn export(run: &ChecksumRun, directory: &Path) -> Result<Vec<u8>, FsError> {
         destination: directory.join("out.sha256"),
         acknowledge_partial: (partial.excluded > 0 || partial.incomplete_discovery)
             .then_some(partial),
+        overwrite: false,
     };
     super::super::manifest::encode(run, &request, directory, &Cancellation::default())
         .map(|(bytes, _)| bytes)

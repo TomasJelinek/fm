@@ -2,10 +2,10 @@ import { ActionButton } from "action-icons.slint";
 import { Theme } from "theme.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
-import { ListView } from "std-widgets.slint";
+import { ListView } from "vlist-view.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 import { ListHeader } from "list-header.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 
@@ -76,7 +76,6 @@ component ColorPriorityList inherits Rectangle {
         rules := ListView {
             x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
             enabled: !ColorOptionsView.busy;
-            horizontal-scrollbar-policy: always-off;
             accessible-label: "Filename color rules"; accessible-item-count: root.rule-count;
             changed visible-height => { root.reveal-selection(); }
             for label[index] in ColorOptionsView.labels : Rectangle {
@@ -101,7 +100,7 @@ component ColorPriorityList inherits Rectangle {
                     enabled: !ColorOptionsView.busy;
                     clicked => { root.select-rule(index); }
                 }
-                Tooltip { TipBody { text: label; } }
+                Tip { text: label; }
             }
         }
     }
@@ -183,7 +182,9 @@ component ColorPreview inherits Rectangle {
     }
     // Same marks as an active panel row (file-entry.slint): side stripe, plus
     // an outline when the cursor is on a selected row.
-    if root.selected && root.cursor : Rectangle {
+    // Hidden instead of conditional: an `if` is one more generated component.
+    Rectangle {
+        visible: root.selected && root.cursor;
         x: 4px; y: 0px; width: parent.width - 4px; height: parent.height;
         background: transparent; border-width: 1px; border-color: Theme.cursor-edge;
     }

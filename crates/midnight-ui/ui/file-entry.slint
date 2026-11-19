@@ -265,15 +265,21 @@ export component FileEntry inherits Rectangle {
                 horizontal-alignment: right; vertical-alignment: center;
             }
         }
-        if root.view-mode == 0 : Text {
-            text: item.modified-date; color: Theme.secondary-text; font-size: Theme.small-font;
-            wrap: no-wrap; max-lines: 1;
-            width: root.date-column-width; overflow: elide; vertical-alignment: center;
-        }
-        if root.view-mode == 0 : Text {
-            text: item.modified-time; color: Theme.secondary-text; font-size: Theme.small-font;
-            wrap: no-wrap; max-lines: 1;
-            width: root.time-column-width; overflow: elide; vertical-alignment: center;
+        // One conditional for both columns: every `if` is a component instance
+        // per row. The size column stays apart, since its warning bounds the
+        // height of whatever shares a layout with it.
+        if root.view-mode == 0 : HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: item.modified-date; color: Theme.secondary-text; font-size: Theme.small-font;
+                wrap: no-wrap; max-lines: 1;
+                width: root.date-column-width; overflow: elide; vertical-alignment: center;
+            }
+            Text {
+                text: item.modified-time; color: Theme.secondary-text; font-size: Theme.small-font;
+                wrap: no-wrap; max-lines: 1;
+                width: root.time-column-width; overflow: elide; vertical-alignment: center;
+            }
         }
     }
     if root.view-mode == 2 : Rectangle {
@@ -318,22 +324,7 @@ export component FileEntry inherits Rectangle {
             }
         }
     }
-    // A square means marked for an operation; a full-height stroke is the caret.
-    // Shape remains distinguishable in monochrome/high-contrast themes.
-    if item.cursor && root.active : Rectangle {
-        x: 0px; y: 0px; width: 3px; height: parent.height;
-        background: Theme.cursor-edge;
-    }
-    if item.selected : Rectangle {
-        x: 0px; y: (parent.height - self.height) / 2;
-        width: Theme.touch ? 9px : 7px; height: self.width;
-        background: Theme.selected-edge;
-    }
-    if item.selected && item.cursor : Rectangle {
-        x: 4px; y: 0px; width: parent.width - 4px; height: parent.height;
-        background: transparent; border-width: 1px;
-        border-color: root.active ? Theme.cursor-edge : Theme.selected-edge;
-    }
+    // Declared before the outlines so its hover highlight never paints over them.
     if item.tree-disclosure != 0 && item.tree-disclosure != 5 : TreeDisclosure {
         x: (root.view-mode == 2 ? 6px : 12px) + root.tree-indent;
         y: root.view-mode == 2 ? 10px : (root.height - self.height) / 2;
@@ -343,8 +334,26 @@ export component FileEntry inherits Rectangle {
         disclose(identity) => { root.disclosure(identity); }
         disclose-recursive(identity) => { root.disclosure-recursive(identity); }
     }
-    if root.drop-highlight : Rectangle {
+    // A square marks selection. The full-height stroke marks the caret.
+    Rectangle {
+        x: 0px; y: 0px; width: 3px; height: parent.height;
+        background: item.cursor && root.active ? Theme.cursor-edge : transparent;
+    }
+    Rectangle {
+        x: 0px; y: (parent.height - self.height) / 2;
+        width: Theme.touch ? 9px : 7px; height: self.width;
+        background: item.selected ? Theme.selected-edge : transparent;
+    }
+    // Frames without a border paint nothing. Keeping them in the row avoids a
+    // generated component per decoration and a repeater in every visible cell.
+    Rectangle {
+        x: 4px; y: 0px; width: parent.width - 4px; height: parent.height;
+        background: transparent; border-width: item.selected && item.cursor ? 1px : 0px;
+        border-color: root.active ? Theme.cursor-edge : Theme.selected-edge;
+    }
+    Rectangle {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
-        background: transparent; border-width: 2px; border-color: Theme.active-frame;
+        background: transparent; border-width: root.drop-highlight ? 2px : 0px;
+        border-color: Theme.active-frame;
     }
 }

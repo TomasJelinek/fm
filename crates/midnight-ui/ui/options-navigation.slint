@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { ScrollView } from "std-widgets.slint";
+import { VScrollView } from "scroll-view.slint";
 
 // Keep topic identities stable for asynchronous pickers and validation results.
 // The removed Command topic (2) now belongs to General, rather than shifting IDs.
@@ -29,9 +29,8 @@ export component OptionsNavigation inherits Rectangle {
             topics.content-y = min(0px, topics.visible-height - top - root.row-height - 6px);
         }
     }
-    topics := ScrollView {
+    topics := VScrollView {
         min-height: 0px;
-        horizontal-scrollbar-policy: always-off;
         changed visible-height => { root.reveal-selected(); }
     VerticalLayout {
         padding: 6px; spacing: 4px; alignment: start;

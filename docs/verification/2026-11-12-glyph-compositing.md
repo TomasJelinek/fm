@@ -28,10 +28,10 @@ functional regression in already-correct pixels to manufacture a red test.
 
 ## Fresh attribution and candidate
 
-All runs use the actual `D:/dev/ov-physics-trunk/ovclash/AGENTS.md`, SHA-256
+All runs use the actual `<source-checkout>/ovclash/AGENTS.md`, SHA-256
 `6656eea6ce179c31d7c2c1e08ab24443bf44afc4fae5dcc0e9e8462229d633ad`, Segoe UI 13,
 and current protected plugins beside
-`C:/Users/tjelinek/MidnightExplorer-20261112-eta-17e2147a/me.exe`. Only uniquely
+`<user-profile>/MidnightExplorer-20261112-eta-17e2147a/me.exe`. Only uniquely
 named diagnostic executables were added there; no package, receipt or registration
 was changed. The existing `seek_latency` example submits 60 position changes at
 10 ms intervals across three legs (two reversals), waits for the final acknowledgement, and
@@ -104,7 +104,7 @@ Every Cargo command uses `--config $sdkConfig --target-dir _build --locked --off
 - Candidate: `cargo test ... -p midnight-viewer-render --lib --test raster --test source_continuity`:
   14/14 pass, including full framebuffer/cached-font/selection/source-rebase checks.
 - Baseline/candidate: `cargo build ... -p midnight-viewer-engine --example seek_latency`.
-- Probe: `glyph-seek-{baseline,candidate}-20261112.exe D:/dev/ov-physics-trunk/ovclash/AGENTS.md`,
+- Probe: `glyph-seek-{baseline,candidate}-20261112.exe <source-checkout>/ovclash/AGENTS.md`,
   with `MIDNIGHT_VIEWER_SEEK_SCALE=1` or `2.25`, and trace variables as described above.
 
 Artifacts are under `_build/qa/glyph-compositing-20261112/`: baseline/candidate
@@ -128,7 +128,7 @@ files and `git diff --check` pass; the largest owned source is 12,947 bytes.
 
 The final application and probe were built before the quiet native batch. The
 protected runtime is
-`C:/Users/tjelinek/MidnightExplorer-20261112-tree-delete-07f4fcc1` with the same
+`<user-profile>/MidnightExplorer-20261112-tree-delete-07f4fcc1` with the same
 qualified plugin set. Application SHA-256:
 `07f4fcc14373c87cf677ec800a50217e8078f196d674b6704c2ad7f63fdfde12`.
 The timing probe SHA-256 is
@@ -140,7 +140,7 @@ Markdown, BAT Source, BAT Text, JSON and XML in D3D and software, then MD/JSON/X
 scrollbar drags in both, plus one sustained Markdown D3D run. The supplied files
 have sizes 213103, 22632, 2659 and 3865 bytes. Ordinary cases use a 1000x700 logical
 window (2250x1575 physical at scale 2.25); sustained Markdown uses 1340x820 logical.
-The text paths are the Markdown above, `D:/dev/ov-physics-trunk/ovclash/build.bat`,
+The text paths are the Markdown above, `<source-checkout>/ovclash/build.bat`,
 `D:/temp/ovclash/results/2026-09-07-mfg/manifest.json` and
 `C:/Windows/System32/WwanFeatureTests.xml`.
 

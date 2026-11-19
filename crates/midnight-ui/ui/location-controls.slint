@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 import { LocationImage } from "action-icons.slint";
 import { LocationRole } from "navigation-models.slint";
 
@@ -109,5 +109,5 @@ export component CompactLocationButton inherits Rectangle {
         }
     }
     // Tooltip observers must precede accepting input in hit-test order.
-    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+    Tip { text: root.hint; }
 }

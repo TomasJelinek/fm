@@ -77,7 +77,7 @@ All compiler/generated/test output stays below the repository's `_build`. Native
 loading tests additionally require a deployed installation with safe native ownership
 and ancestors. The shared Windows D: checkout and WSL drvfs mount did not meet that
 condition: the loader correctly refused them. Windows QA copies were deployed under
-`C:\Users\tjelinek\_build\MidnightExplorerViewerQA\windows`, protected for the current
+`<user-profile>\_build\MidnightExplorerViewerQA\windows`, protected for the current
 user, SYSTEM and Administrators. Linux QA uses a private native filesystem directory
 below `/tmp/fm-interaction/_build` with normal `0755` directories and `0644` files.
 These are deployment copies, not additional compiler caches. A protected child under

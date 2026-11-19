@@ -23,6 +23,9 @@ mod raw_paths;
 #[cfg(all(test, windows))]
 #[path = "external_outcome_windows_tests.rs"]
 mod raw_paths;
+// The shared integration-test support names this crate by its public path.
+#[cfg(test)]
+extern crate self as midnight_compare_ui;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod support;

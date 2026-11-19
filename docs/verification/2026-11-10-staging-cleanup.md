@@ -100,7 +100,7 @@ Its rendered snapshot was inspected: both populated panels, path bars, status
 lines, command line and bottom actions are visible, without a startup error.
 
 Paths: `_build/debug/me.exe` and
-`C:\Users\tjelinek\MidnightExplorer-20261110-html\me.exe`.
+`<user-profile>\MidnightExplorer-20261110-html\me.exe`.
 Logs/result JSON and the inspected `native-startup-acf1f7bb58784e36b29a2c7604603c08.png`
 are under `_build/qa/operation-speed-charts/`; final build/test logs are under
 `_build/qa/compact-staging/`. This is debug qualification, not a new release or a

@@ -59,7 +59,7 @@ application/host packages; the two existing vendored FemtoVG warnings remain.
 The debug executable is `_build/debug/me.exe`, SHA-256
 `b0b2b6cdff7adbbe4703a396a11a1b09d4f99adb1b57b2c98b8a5e0281bd9697`.
 Its matching private runtime is
-`C:/Users/tjelinek/MidnightExplorer-20261111-operations-b0b2b6cd`, with the archive
+`<user-profile>/MidnightExplorer-20261111-operations-b0b2b6cd`, with the archive
 worker above. Backend, software-rendered and native-rendered startup checks all
 exited zero with empty stderr. Both startup images were inspected; the normal
 debug app was then opened successfully. This is a debug deployment, not a release.

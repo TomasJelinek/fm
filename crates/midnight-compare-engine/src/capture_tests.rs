@@ -188,12 +188,20 @@ fn frame(session: &Session) -> Frame {
     })
 }
 
+/// The first frame that carries the font catalog. Taking a frame whose identity is
+/// pending starts whole-input verification, which can publish its verdict before the
+/// catalog arrives; that verdict frame is the only one allowed to precede the catalog.
 fn catalog_frame(session: &Session) -> Frame {
     loop {
         let frame = frame(session);
         if frame.fonts.is_some() {
             return frame;
         }
+        assert_ne!(
+            frame.identity,
+            crate::IdentityVerdict::Pending,
+            "only the identity verdict may be painted before the catalog"
+        );
     }
 }
 
@@ -745,7 +753,8 @@ fn a_missing_preferred_family_falls_back_to_consolas_then_monospace_before_the_c
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (_owner, spawner) = crate::resident_test_support::workers();
     for (installed, painted) in [(Some("Consolas"), "Consolas"), (None, "monospace")] {
-        let (service, release) = held_scan(text_service(&runtime, spawner.clone()), &Arc::default());
+        let (service, release) =
+            held_scan(text_service(&runtime, spawner.clone()), &Arc::default());
         let service = service.with_font_check(move |candidates, _| {
             installed
                 .filter(|family| candidates.contains(family))
@@ -837,7 +846,7 @@ fn a_comparison_after_a_failed_one_gets_the_catalog_of_the_same_scan() {
     session.send(Input::Compare(text)).unwrap();
     assert!(frame(&session).fonts.is_none());
     deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
-    let fonts = frame(&session)
+    let fonts = catalog_frame(&session)
         .fonts
         .expect("the waiting comparison gets the catalog");
     assert_eq!(fonts.selected, "Wide Mono");
@@ -846,6 +855,32 @@ fn a_comparison_after_a_failed_one_gets_the_catalog_of_the_same_scan() {
         1,
         "one scan serves both requests"
     );
+    session.close();
+}
+
+#[test]
+fn the_catalog_repaint_after_the_identity_verdict_keeps_the_verdict() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let (service, deliver) = held_scan(text_service(&runtime, spawner), &Arc::default());
+    let service = service.with_font_check(|_, _| None);
+    let session = open_in_family(&service, launch(&paths), "Wide Mono").unwrap();
+    let first = frame(&session);
+    assert_eq!(first.identity, crate::IdentityVerdict::Pending);
+    // Taking the first frame starts whole-input verification; the held scan keeps the
+    // catalog back until the verdict is painted.
+    let verdict = frame(&session);
+    assert!(verdict.fonts.is_none());
+    assert_eq!(verdict.identity, crate::IdentityVerdict::IdenticalFiles);
+    deliver.send(Arc::from(["Wide Mono".to_owned()])).unwrap();
+    let repainted = frame(&session);
+    assert_eq!(
+        repainted.fonts.expect("the catalog is painted").selected,
+        "Wide Mono"
+    );
+    assert_eq!(repainted.identity, crate::IdentityVerdict::IdenticalFiles);
     session.close();
 }
 

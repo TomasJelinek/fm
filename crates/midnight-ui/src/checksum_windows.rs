@@ -1,6 +1,6 @@
 //! Modeless checksum presentation. Backend result owners survive native window cancellation.
 use crate::dialog_host::{CloseDisposition, DialogHost, DialogOwner, DialogSessions};
-use crate::presenter::checksums::{ChecksumSaveForm, ChecksumSession, OUTPUT_ALGORITHMS};
+use crate::presenter::checksums::{ChecksumSession, OUTPUT_ALGORITHMS};
 use crate::tool_window_failure::Failures;
 use crate::{ChecksumDisplayRow, ChecksumDraft, ChecksumWindow, MainWindow, Presenter, Theme};
 use midnight_core::*;
@@ -96,7 +96,6 @@ struct Record {
     shown: bool,
     rows: Rc<Rows>,
     revision: Option<u64>,
-    destination_revision: u64,
     manifest_revision: u64,
     suggested: Option<std::path::PathBuf>,
     /// Algorithm set behind the published output models. `ModelRc` compares by
@@ -250,21 +249,6 @@ fn refresh(
                     .unwrap_or(0) as i32,
             );
         }
-        let untouched = record
-            .suggested
-            .as_ref()
-            .is_some_and(|path| w.get_destination() == path.to_string_lossy().as_ref());
-        if record.destination_revision != s.destination_revision
-            || (untouched && record.suggested.as_ref() != Some(&s.suggested))
-        {
-            if record.destination_revision != s.destination_revision {
-                // A confirmed native choice opens the export review; cancelling
-                // the picker leaves the current page and the manifest unchanged.
-                w.set_page(2);
-            }
-            record.destination_revision = s.destination_revision;
-            w.set_destination(s.suggested.to_string_lossy().as_ref().into());
-        }
         record.suggested = Some(s.suggested.clone());
         if record.manifest_revision != s.manifest_revision {
             record.manifest_revision = s.manifest_revision;
@@ -292,7 +276,19 @@ fn refresh(
                     .is_some_and(|r| r.summary.completion != ChecksumCompletion::Completed),
         );
         w.set_progress(progress(s, &p.number_locale).into());
-        w.set_details(crate::shown_text(&details(s, &p.number_locale)));
+        w.set_save_prompt(
+            s.save_prompt
+                .as_ref()
+                .map_or_else(Default::default, |prompt| crate::shown_text(&prompt.message)),
+        );
+        w.set_save_prompt_action(
+            if s.save_prompt.as_ref().is_some_and(|prompt| prompt.overwrite) {
+                "Replace"
+            } else {
+                "Save"
+            }
+            .into(),
+        );
         if record.output_algorithms != Some(s.algorithms) {
             record.output_algorithms = Some(s.algorithms);
             publish_outputs(w, s.algorithms);
@@ -304,27 +300,6 @@ fn refresh(
             .unwrap_or(ChecksumAlgorithm::Sha256);
         let counts = s.export_counts(first);
         w.set_has_output(counts.is_some_and(|counts| counts.included > 0) && !s.running);
-        w.set_partial(
-            counts.is_some_and(|counts| counts.excluded > 0 || counts.incomplete_discovery),
-        );
-        let summary = counts.map_or_else(
-            || "Wait for calculation to finish.".into(),
-            |counts| {
-                format!(
-                    "{} included · {} known excluded\n{}\n{}",
-                    p.number_locale.format_u64(counts.included),
-                    p.number_locale.format_u64(counts.excluded),
-                    if counts.incomplete_discovery {
-                        "Incomplete discovery: additional files may not have been examined."
-                    } else {
-                        "Discovery completed."
-                    },
-                    s.save_message
-                )
-            },
-        );
-        // The save message names the saved manifest.
-        w.set_export_summary(crate::shown_text(&summary));
         record.rows.update(s.generation.0, s.rows().len());
         let shown = if record.shown {
             Ok(())
@@ -366,10 +341,16 @@ fn create(
     });
     window.set_rows(rows.clone().into());
     if let Some(s) = state.borrow().checksums.sessions.get(&id) {
-        window.set_destination(s.suggested.to_string_lossy().as_ref().into());
+        window.set_draft(draft(s));
+        window.set_output_algorithm(
+            OUTPUT_ALGORITHMS
+                .iter()
+                .position(|&a| s.algorithms.contains(a))
+                .unwrap_or(0) as i32,
+        );
         window.set_manifest_path(s.manifest_suggested.to_string_lossy().as_ref().into());
         if s.verify_initial {
-            window.set_page(4);
+            window.set_page(1);
         }
         window.set_draft(draft(s));
     }
@@ -448,45 +429,6 @@ fn create(
             }
         });
     }
-    {
-        let weak = window.as_weak();
-        let state = state.clone();
-        let main_weak = main.as_weak();
-        let host = host.clone();
-        window.on_output_changed(move |index| {
-            if !host.is_current(session) {
-                return;
-            }
-            let Some(w) = weak.upgrade() else { return };
-            let Some(&algorithm) = usize::try_from(index)
-                .ok()
-                .and_then(|i| OUTPUT_ALGORITHMS.get(i))
-            else {
-                return;
-            };
-            // A backend refresh may update this property while it reads Presenter.
-            // Only a user change should rewrite an untouched generated suggestion.
-            let Ok(mut p) = state.try_borrow_mut() else {
-                return;
-            };
-            let Some(s) = p.checksums.sessions.get_mut(&id) else {
-                return;
-            };
-            if w.get_destination() == s.suggested.to_string_lossy().as_ref()
-                && s.suggested
-                    .file_stem()
-                    .is_some_and(|name| name == "checksums")
-            {
-                s.suggested.set_extension(algorithm.extension());
-                s.revision = s.revision.wrapping_add(1);
-                w.set_destination(s.suggested.to_string_lossy().as_ref().into());
-                drop(p);
-                if let Some(main) = main_weak.upgrade() {
-                    crate::refresh(&main, &state.borrow());
-                }
-            }
-        });
-    }
     callback!(on_copy_result, |p, send, token, index, whole| {
         if let Some(&algorithm) = usize::try_from(index)
             .ok()
@@ -495,39 +437,13 @@ fn create(
             p.copy_checksum(id, &token, algorithm, whole, send);
         }
     });
-    callback!(on_copy_details, |p, send| {
-        if let Some(s) = p.checksums.sessions.get(&id) {
-            let text = format!(
-                "{}\n\n{}\n{}",
-                progress(s, &p.number_locale),
-                s.error,
-                details(s, &p.number_locale)
-            );
-            p.copy_viewer_text(text, send);
-        }
+    callback!(on_confirm_save, |p, send| {
+        p.confirm_checksum_save(id, send);
     });
-    callback!(
-        on_save_manifest,
-        |p, send, token, index, destination, acknowledge| {
-            if let (Ok(generation), Some(&algorithm)) = (
-                token.parse::<u64>(),
-                usize::try_from(index)
-                    .ok()
-                    .and_then(|i| OUTPUT_ALGORITHMS.get(i)),
-            ) {
-                p.save_checksum_manifest(
-                    id,
-                    ChecksumSaveForm {
-                        generation,
-                        algorithm,
-                        destination: destination.to_string(),
-                        acknowledge,
-                    },
-                    send,
-                );
-            }
-        }
-    );
+    callback!(on_cancel_save_prompt, |p, send| {
+        let _ = send;
+        p.dismiss_checksum_save_prompt(id);
+    });
     let weak = window.as_weak();
     window.window().on_close_requested(move || {
         if let Some(w) = weak.upgrade() {
@@ -541,7 +457,6 @@ fn create(
         shown: false,
         rows,
         revision: None,
-        destination_revision: 0,
         manifest_revision: 0,
         output_algorithms: None,
         suggested: state
@@ -588,23 +503,6 @@ fn publish_outputs(w: &ChecksumWindow, algorithms: ChecksumAlgorithms) {
         ))
         .into(),
     );
-    let output_indices: Vec<i32> = OUTPUT_ALGORITHMS
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &algorithm)| algorithms.contains(algorithm).then_some(index as i32))
-        .collect();
-    let output_labels: Vec<slint::SharedString> = output_indices
-        .iter()
-        .map(|&index| OUTPUT_ALGORITHMS[index as usize].label().into())
-        .collect();
-    w.set_output_values(Rc::new(slint::VecModel::from(output_indices)).into());
-    w.set_output_labels(Rc::new(slint::VecModel::from(output_labels)).into());
-    let formats: Vec<slint::SharedString> = OUTPUT_ALGORITHMS
-        .iter()
-        .filter(|&&a| algorithms.contains(a))
-        .map(|a| format!("{} (*.{})", a.label(), a.extension()).into())
-        .collect();
-    w.set_format_labels(Rc::new(slint::VecModel::from(formats)).into());
 }
 fn digest(row: &ChecksumRow, algorithm: ChecksumAlgorithm) -> slint::SharedString {
     row.digest(algorithm)
@@ -627,7 +525,7 @@ fn row_status(row: &ChecksumRow) -> String {
 }
 fn progress(s: &ChecksumSession, locale: &NumberLocale) -> String {
     let status = if !s.error.is_empty() {
-        "Error · see Details"
+        "Error"
     } else if s.stopping {
         "Stopping…"
     } else if s.running {
@@ -667,112 +565,9 @@ fn progress(s: &ChecksumSession, locale: &NumberLocale) -> String {
         locale.format_u64(s.progress.bytes_read)
     )
 }
-fn details(s: &ChecksumSession, locale: &NumberLocale) -> String {
-    details_text(
-        &s.directory,
-        &s.progress,
-        &s.save_message,
-        s.verification.as_deref(),
-        s.run.as_ref().map(|run| &run.summary),
-        locale,
-    )
-}
-fn details_text(
-    directory: &std::path::Path,
-    progress: &ChecksumProgress,
-    save_message: &str,
-    verification: Option<&std::path::Path>,
-    summary: Option<&ChecksumSummary>,
-    locale: &NumberLocale,
-) -> String {
-    use crate::error_presentation::append_path;
-    // Paths keep their identity and cannot inject lines (see `append_path`).
-    let mut text = String::from("Captured folder\n");
-    append_path(&mut text, directory);
-    text.push_str(&format!(
-        "\n\n{} discovered · {} skipped · {} errors\n{save_message}",
-        locale.format_u64(progress.discovered),
-        locale.format_u64(progress.skipped),
-        locale.format_u64(progress.errors),
-    ));
-    if let Some(path) = &progress.current {
-        text.push_str("\n\nCurrent file\n");
-        append_path(&mut text, path);
-    }
-    if let Some(path) = verification {
-        text.push_str("\n\nChecksum file\n");
-        append_path(&mut text, path);
-    }
-    if let Some(summary) = summary {
-        if !summary.reached_budgets.is_empty() {
-            let limits: Vec<_> = summary
-                .reached_budgets
-                .iter()
-                .map(|budget| match budget {
-                    ChecksumBudget::Rows => "result rows",
-                    ChecksumBudget::Depth => "folder depth",
-                    ChecksumBudget::Nodes => "visited entries",
-                    ChecksumBudget::RetainedBytes => "retained memory",
-                })
-                .collect();
-            text.push_str(&format!(
-                "\n\nReached resource limits: {}",
-                limits.join(", ")
-            ));
-        }
-        for error in &summary.diagnostics {
-            text.push_str(&format!(
-                "\n\n{}",
-                crate::error_presentation::describe(error)
-            ));
-        }
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn details_name_limits_in_words_and_keep_paths_on_their_own_lines() {
-        let progress = ChecksumProgress {
-            discovered: 12_345,
-            current: Some("folder/a\nCurrent file\nforged.txt".into()),
-            ..Default::default()
-        };
-        let summary = ChecksumSummary {
-            completion: ChecksumCompletion::Incomplete,
-            progress: progress.clone(),
-            reached_budgets: vec![ChecksumBudget::Rows, ChecksumBudget::RetainedBytes],
-            diagnostics: Vec::new(),
-        };
-        let locale = NumberLocale {
-            decimal_separator: ",".into(),
-            group_separator: ".".into(),
-            grouping: vec![3],
-            repeat_last_group: true,
-        };
-        let text = details_text(
-            std::path::Path::new("folder"),
-            &progress,
-            "",
-            None,
-            Some(&summary),
-            &locale,
-        );
-        assert!(text.contains("12.345 discovered"), "{text}");
-        assert!(
-            text.contains("Reached resource limits: result rows, retained memory"),
-            "{text}"
-        );
-        assert_eq!(
-            text.lines().filter(|line| *line == "Current file").count(),
-            1,
-            "{text}"
-        );
-        assert!(!text.contains("\nforged.txt"), "{text}");
-    }
 
     #[test]
     fn checksum_updates_keep_the_output_models_of_an_unchanged_algorithm_set() {
@@ -808,12 +603,7 @@ mod tests {
         let outputs = || {
             let records = windows.borrow();
             let window = &records[&id].window;
-            (
-                window.get_output_labels(),
-                window.get_output_values(),
-                window.get_output_available(),
-                window.get_format_labels(),
-            )
+            window.get_output_available()
         };
         update();
         let published = outputs();
@@ -837,8 +627,8 @@ mod tests {
                     }),
                 })));
             update();
-            // ModelRc equality is identity: a republished model resets both
-            // output choosers and every visible result row.
+            // ModelRc equality is identity: a republished model resets the
+            // algorithm menu and every visible result row.
             assert!(
                 outputs() == published,
                 "progress {discovered} republished the output models"
@@ -856,7 +646,7 @@ mod tests {
         update();
         let republished = outputs();
         assert!(republished != published, "a new algorithm set republishes");
-        assert_eq!(republished.0.row_count(), 1);
-        assert_eq!(republished.0.row_data(0).unwrap(), "MD5");
+        let available: Vec<bool> = republished.iter().collect();
+        assert_eq!(available, [false, false, true, false, false]);
     }
 }

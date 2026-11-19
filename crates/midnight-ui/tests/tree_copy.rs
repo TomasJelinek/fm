@@ -8,8 +8,7 @@ mod modeless;
 mod support;
 #[path = "support/tree_copy.rs"]
 mod transfer;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_core::*;

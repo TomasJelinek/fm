@@ -44,7 +44,7 @@ Midnight Explorer's added display scope; no source code was copied.
   handwritten files, each at most 100,000 bytes.
 - The Windows debug application built successfully. Both
   `D:\experiments\dev\FM\_build\debug\me.exe` and the existing private installation
-  `C:\Users\tjelinek\MidnightExplorer-20261110-html\me.exe` have SHA-256
+  `<user-profile>\MidnightExplorer-20261110-html\me.exe` have SHA-256
   `24620126053B5909EB9191559BC05A6F96F262DD0433AFAD3188583DB20A2B91`.
   The private plugin runtime was registered for that exact hash.
 - The actual build-path executable passed `--smoke-test`, exited with code 0

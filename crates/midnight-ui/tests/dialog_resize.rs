@@ -1,7 +1,5 @@
 //! Pointer resize checks for the actual shared embedded dialog frame.
-#[allow(dead_code)] // Only the shared software platform is used.
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 
 use slint::{
     ComponentHandle, LogicalPosition,

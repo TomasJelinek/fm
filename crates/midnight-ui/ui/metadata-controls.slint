@@ -1,7 +1,7 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView } from "scroll-view.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogTabs } from "dialog-tabs.slint";
 import { DialogHeader } from "dialog-frame.slint";
@@ -314,16 +314,20 @@ export component MetadataDialog inherits Rectangle {
                     hint: "Check the captured files and exact draft, then review the confirmation before Apply.";
                     clicked => { root.review-requested = true; root.preview(root.draft); }
                 }
-                if root.reviewing : HintedActionButton {
-                    text: "Back to editing"; fallback-icon: FallbackIcons.edit;
-                    hint: "Keep this draft and return to its editable fields.";
-                    clicked => { root.dismiss-hints(); root.reviewing = false; root.review-requested = false; }
-                }
-                if root.reviewing : HintedActionButton {
-                    text: "Apply"; primary: true; fallback-icon: FallbackIcons.done; enabled: root.ready && root.preview-current && !root.busy
-                        && !root.draft-edited && root.reviewed-revision == root.revision;
-                    hint: "Queue the exact reviewed draft. Conflicts offer Skip, Skip all or Cancel. Completed changes are retained if later steps fail.";
-                    clicked => { root.confirm(0); }
+                // One conditional, with the footer's spacing, instead of one per button.
+                if root.reviewing : HorizontalLayout {
+                    spacing: 8px;
+                    HintedActionButton {
+                        text: "Back to editing"; fallback-icon: FallbackIcons.edit;
+                        hint: "Keep this draft and return to its editable fields.";
+                        clicked => { root.dismiss-hints(); root.reviewing = false; root.review-requested = false; }
+                    }
+                    HintedActionButton {
+                        text: "Apply"; primary: true; fallback-icon: FallbackIcons.done; enabled: root.ready && root.preview-current && !root.busy
+                            && !root.draft-edited && root.reviewed-revision == root.revision;
+                        hint: "Queue the exact reviewed draft. Conflicts offer Skip, Skip all or Cancel. Completed changes are retained if later steps fail.";
+                        clicked => { root.confirm(0); }
+                    }
                 }
             }
         }

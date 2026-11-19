@@ -1,5 +1,5 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
-import { ScrollView } from "std-widgets.slint";
+import { VScrollView } from "scroll-view.slint";
 import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
 import { CompactPicker, TipBody } from "controls.slint";
 import { ThemedLineEdit } from "content-controls.slint";
@@ -66,9 +66,8 @@ export component PanelFilterDialog inherits Rectangle {
                 enabled: root.input-enabled;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
-            ScrollView {
+            VScrollView {
                 min-height: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     spacing: 8px; alignment: start;
                     mode := HintedComboBox {

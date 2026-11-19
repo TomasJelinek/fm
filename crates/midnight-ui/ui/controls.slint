@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView } from "vlist-view.slint";
 import { Theme } from "theme.slint";
 import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
 import { LocationImage } from "action-icons.slint";
@@ -11,10 +11,11 @@ export component TipBody inherits Rectangle {
     in property <string> text;
     in property <length> width-limit: 560px;
     x: 0px; y: 0px;
-    width: min(root.width-limit, max(120px, content.preferred-width + 20px),
-        TooltipPlacement.max-room(TooltipPlacement.cursor-x, TooltipPlacement.surface-width, 14px));
-    height: min(content.preferred-height + 16px,
-        TooltipPlacement.max-room(TooltipPlacement.cursor-y, TooltipPlacement.surface-height, 18px));
+    // Whole device pixels keep the 1px frame crisp.
+    width: TooltipPlacement.snap(min(root.width-limit, max(120px, content.preferred-width + 20px),
+        TooltipPlacement.max-room(TooltipPlacement.cursor-x, TooltipPlacement.surface-width, 14px)));
+    height: TooltipPlacement.snap(min(content.preferred-height + 16px,
+        TooltipPlacement.max-room(TooltipPlacement.cursor-y, TooltipPlacement.surface-height, 18px)));
     clip: true;
     background: Theme.surface;
     border-color: Theme.active-frame;
@@ -26,6 +27,23 @@ export component TipBody inherits Rectangle {
         wrap: char-wrap;
         accessible-label: root.text;
     }
+}
+
+// A Tooltip written in a control compiles to its own popup component, again for
+// every component that inherits or inlines that control. This child-free area
+// covers its parent like the hover area of a direct Tooltip, ignores input and
+// is generated once for all of them.
+export component Tip inherits Rectangle {
+    in property <string> text;
+    in property <length> width-limit: 560px;
+    // Pinned Slint 1.18.1 fixes a popup declared directly in a component to the
+    // stock frame's own size. Under a conditional that frame follows TipBody, as
+    // it did for the conditional and per-row hints this replaces. The condition
+    // is the hosts' own: they place Tip without one, and an empty text gets no
+    // hover area. Inside a popup, a text that can become empty while its tooltip
+    // shows needs tooltip::dismiss first: Slint 1.18.1 panics when the shown
+    // tooltip is destroyed there.
+    if root.text != "": Tooltip { TipBody { text: root.text; width-limit: root.width-limit; } }
 }
 
 // Keep the closed control compact while giving full labels a readable popup.
@@ -287,7 +305,7 @@ export component CompactPicker inherits Rectangle {
             clicked => { if !root.press-cancelled && self.pressed-context == root.context { focus.focus(); root.open(); } }
         }
     }
-    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+    Tip { text: root.hint; }
     popup := PopupWindow {
         private property <length> below: max(1px, TooltipPlacement.surface-height - root.absolute-position.y - root.height - 8px);
         private property <length> above: max(1px, root.absolute-position.y - 8px);
@@ -338,7 +356,6 @@ export component CompactPicker inherits Rectangle {
                 border-color: Theme.active-frame; border-radius: 4px;
                 ListView {
                     x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
-                    horizontal-scrollbar-policy: always-off;
                     // Direct ListView children stay virtualized even for a full
                     // installed-font catalog. The host keeps the committed index.
                     content-y: -min(max(0px, root.item-count * root.control-height - self.visible-height),
@@ -358,7 +375,9 @@ export component CompactPicker inherits Rectangle {
                         accessible-label: root.row-label(index);
                         accessible-enabled: root.row-enabled(index);
                         accessible-action-default => { root.commit(index); }
-                        if root.has-separator(index) : Rectangle {
+                        // Hidden instead of conditional: an `if` is one more generated component.
+                        Rectangle {
+                            visible: root.has-separator(index);
                             x: 8px; y: 1px; width: parent.width - 16px; height: 1px;
                             background: Theme.frame;
                         }
@@ -408,7 +427,7 @@ export component CompactPicker inherits Rectangle {
                                 }
                             }
                         }
-                        Tooltip { TipBody { text: root.row-hint(index); } }
+                        Tip { text: root.row-hint(index); }
                     }
                 }
             }

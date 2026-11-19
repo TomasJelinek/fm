@@ -970,10 +970,9 @@ impl RejectedWork {
     }
 }
 
-#[tokio::test]
-async fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_consumer() {
-    let mut unbounded = Vec::new();
-    for case in [
+#[test]
+fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_consumer() {
+    let cases = [
         RejectedWork::Terminal,
         RejectedWork::Open,
         RejectedWork::SystemOpen,
@@ -983,29 +982,25 @@ async fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_co
         RejectedWork::EntryScan,
         RejectedWork::Clipboard,
         RejectedWork::SelectionProperties,
-    ] {
-        let (sender, events) = mpsc::channel(1);
-        sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
-        let mut command_engine_2 = Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Services::default()),
-            sender,
-        );
-        let (commands, receiver) = command_engine_2.command_channel(2).unwrap();
-        let engine = tokio::spawn(command_engine_2.run(receiver));
-        let mut producer = tokio::spawn(async move {
-            for id in 1..=2048 {
-                commands.send(case.command(id)).await.unwrap();
-            }
-        });
-        let result = tokio::time::timeout(Duration::from_millis(200), &mut producer).await;
-        producer.abort();
-        engine.abort();
-        // Release blocking clipboard/output workers before any assertion can panic.
-        drop(events);
-        let _ = engine.await;
-        if let Ok(result) = result {
-            result.unwrap();
+    ];
+    // Independent engines share one detection window. Each case runs on a current-thread
+    // runtime and thread of its own, as when the cases ran one after another, so an
+    // unbounded case's engine and producer hand its commands over within one thread.
+    let checks = cases.map(|case| {
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(rejected_work_is_bounded(case))
+        })
+    });
+    let mut unbounded = Vec::new();
+    for (case, check) in cases.into_iter().zip(checks) {
+        let bounded = check
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        if !bounded {
             unbounded.push(case);
         }
     }
@@ -1013,6 +1008,43 @@ async fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_co
         unbounded.is_empty(),
         "Unbounded pending responses: {unbounded:?}"
     );
+}
+
+/// Twice the 200 ms that each case had when the cases ran one after another: running
+/// together, they share the CPUs while their engines start. A bounded case never sends
+/// all its commands, so a longer window cannot fail it.
+const REJECTED_WORK_WINDOW: Duration = Duration::from_millis(400);
+
+/// Whether 2048 commands of `case` stay blocked for [`REJECTED_WORK_WINDOW`] behind a
+/// full event output.
+async fn rejected_work_is_bounded(case: RejectedWork) -> bool {
+    let (sender, events) = mpsc::channel(1);
+    sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
+    let mut command_engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Services::default()),
+        sender,
+    );
+    let (commands, receiver) = command_engine.command_channel(2).unwrap();
+    let engine = tokio::spawn(command_engine.run(receiver));
+    let mut producer = tokio::spawn(async move {
+        for id in 1..=2048 {
+            commands.send(case.command(id)).await.unwrap();
+        }
+    });
+    let result = tokio::time::timeout(REJECTED_WORK_WINDOW, &mut producer).await;
+    producer.abort();
+    engine.abort();
+    // Release blocking clipboard/output workers before any assertion can panic.
+    drop(events);
+    let _ = engine.await;
+    match result {
+        Ok(result) => {
+            result.unwrap();
+            false
+        }
+        Err(_) => true,
+    }
 }
 
 #[tokio::test]

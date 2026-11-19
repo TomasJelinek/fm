@@ -464,7 +464,10 @@ mod tests {
         assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));
         assert!(sent.borrow().is_empty(), "saves wait for the first load");
         p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|command| {
-            sent.borrow_mut().push(command);
+            // The first read also requests comparator image metadata; keep the saves.
+            if !matches!(command, Command::ListComparatorCapabilities { .. }) {
+                sent.borrow_mut().push(command);
+            }
             true
         });
         assert!(matches!(

@@ -1,6 +1,5 @@
 //! Exercise actual independent Slint windows, including callback reentrancy and bounds.
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 use midnight_core::*;
 use midnight_ui::{FindWindow, MainWindow, Presenter};
 use modeless::{Windows, click};

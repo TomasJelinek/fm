@@ -75,6 +75,9 @@ impl Presenter {
         self.comparison.busy = true;
         self.comparison.waiting = true;
         self.flush_comparison(send);
+        // The panels show the result by selecting the differences, so the dialog gets out of
+        // the way at once; closing it here, unlike cancel, lets the comparison run on.
+        self.comparison.open = false;
     }
 
     pub(crate) fn cancel_comparison(&mut self, send: &dyn Fn(Command) -> bool) {
@@ -202,7 +205,12 @@ impl Presenter {
             return None;
         }
         match result {
-            Err(error) => self.comparison.error = crate::error_presentation::describe(&error),
+            Err(error) => {
+                // The dialog has closed by now, so a failure is reported as a notice.
+                let message = crate::error_presentation::describe(&error);
+                self.comparison.error = message.clone();
+                self.desktop.report("Directory comparison failed", message);
+            }
             Ok(result) => {
                 if !self.comparison_current(&result.request)
                     || self

@@ -197,7 +197,7 @@ Windows application/helper refresh passed, with generated UI bindings reused.
 Final debug `me.exe` SHA-256:
 `d731397f751647c5feb6ff2ba6ec822a598711bc48ee738e452f364363138984`.
 It is available at `_build/debug/me.exe` and in the verified private deployment
-`C:/Users/tjelinek/MidnightExplorer-20261112-panels-d731397f/me.exe`.
+`<user-profile>/MidnightExplorer-20261112-panels-d731397f/me.exe`.
 The desktop shortcut and matching runtime registration reference this build.
 
 All three smoke modes passed on that final executable: backend, default native

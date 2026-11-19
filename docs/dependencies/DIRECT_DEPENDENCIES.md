@@ -16,6 +16,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [chrono](https://crates.io/crates/chrono/0.4.45) | 0.4.45 | MIT OR Apache-2.0 | midnight-platform-linux, midnight-ui |
 | [crc32fast](https://crates.io/crates/crc32fast/1.5.4) | 1.5.4 | MIT OR Apache-2.0 | midnight-engine |
 | [dav1d](https://crates.io/crates/dav1d/0.11.0) | 0.11.0 | MIT | midnight-image-decoder |
+| femtovg | 0.27.0 | MIT OR Apache-2.0 | midnight-explorer |
 | [ffmpeg-next](https://crates.io/crates/ffmpeg-next/9.0.0) | 9.0.0 | WTFPL | midnight-thumbnail-video |
 | [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.15) | 0.1.15 | MIT OR Apache-2.0 | midnight-explorer |
 | [flate2](https://crates.io/crates/flate2/1.1.10) | 1.1.10 | MIT OR Apache-2.0 | midnight-api-package, midnight-fs-archive, midnight-office-preview |
@@ -29,6 +30,8 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [icu_locale_core](https://crates.io/crates/icu_locale_core/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | image | 0.25.10 | MIT OR Apache-2.0 | midnight-image-decoder, midnight-thumbnail-image, midnight-viewer-image |
 | [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-common, midnight-platform-linux |
+| [indexmap](https://crates.io/crates/indexmap/2.14.2) | 2.14.2 | Apache-2.0 OR MIT | midnight-ui-input |
+| [lazy_static](https://crates.io/crates/lazy_static/1.5.1) | 1.5.1 | MIT OR Apache-2.0 | midnight-ui-input |
 | [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-linux, midnight-filesystem-native-macos, midnight-platform-linux, midnight-plugin-host, midnight-worker-sdk |
 | [libloading](https://crates.io/crates/libloading/0.8.9) | 0.8.9 | ISC | midnight-filesystem-network, midnight-media-output |
 | [lzma-rust2](https://crates.io/crates/lzma-rust2/0.21.0) | 0.21.0 | Apache-2.0 | midnight-fs-archive |
@@ -39,6 +42,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [parley](https://crates.io/crates/parley/0.11.1) | 0.11.1 | Apache-2.0 OR MIT | midnight-viewer-render |
 | [png](https://crates.io/crates/png/0.18.1) | 0.18.1 | MIT OR Apache-2.0 | midnight-viewer-ui |
 | [prettyplease](https://crates.io/crates/prettyplease/0.2.37) | 0.2.37 | MIT OR Apache-2.0 | midnight-compare-ui, midnight-ui-bindings |
+| [proc-macro2](https://crates.io/crates/proc-macro2/1.0.107) | 1.0.107 | MIT OR Apache-2.0 | midnight-ui-bindings |
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.6) | 0.13.6 | MIT | midnight-viewer-markdown |
 | [quick-xml](https://crates.io/crates/quick-xml/0.41.0) | 0.41.0 | MIT | midnight-office-preview |
 | [regex](https://crates.io/crates/regex/1.13.1) | 1.13.1 | MIT OR Apache-2.0 | midnight-platform-common, midnight-viewer-source |
@@ -61,6 +65,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [tokio](https://crates.io/crates/tokio/1.54.1) | 1.54.1 | MIT | midnight-compare-engine, midnight-compare-ui, midnight-engine, midnight-explorer, midnight-platform-linux, midnight-ui, midnight-viewer-engine, midnight-viewer-ui, midnight-work-budget |
 | [toml](https://crates.io/crates/toml/0.9.12%2Bspec-1.1.0) | 0.9.12+spec-1.1.0 | MIT OR Apache-2.0 | midnight-api-package, midnight-filesystem-host, midnight-native-filesystem-host, midnight-plugin-host |
 | [tracing](https://crates.io/crates/tracing/0.1.44) | 0.1.44 | MIT | midnight-explorer |
+| [tracing-core](https://crates.io/crates/tracing-core/0.1.36) | 0.1.36 | MIT | midnight-ui-input |
 | [tracing-subscriber](https://crates.io/crates/tracing-subscriber/0.3.23) | 0.3.23 | MIT | midnight-explorer |
 | [unicase](https://crates.io/crates/unicase/2.10.0) | 2.10.0 | MIT OR Apache-2.0 | midnight-compare-engine, midnight-core, midnight-engine, midnight-viewer-engine |
 | [unicode-segmentation](https://crates.io/crates/unicode-segmentation/1.13.3) | 1.13.3 | MIT OR Apache-2.0 | midnight-compare-engine, midnight-engine, midnight-ui, midnight-viewer-engine, midnight-viewer-render |

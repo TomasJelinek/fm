@@ -1,4 +1,119 @@
-# Targeted test execution
+# Test execution
+
+## Full validation
+
+`scripts/validate.ps1` (Windows) and `scripts/validate.sh` (Linux) are the
+full-validation entry point: they run every test that CI
+(`.github/workflows/ci.yml`) runs for the host platform, with CI's own test commands,
+and build only the SDK bundles, packages and fixtures that those tests need.
+`build.bat --validate` runs `validate.ps1` after its build steps and before
+the private deployment; `./build.sh --validate` runs `validate.sh` after its last
+build step (native backend only). Run them on their own once the toolchain and
+Python 3.12+ are installed:
+
+```text
+pwsh -NoProfile -File scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run] [--only ID[,ID...]]
+bash scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run] [--only ID[,ID...]]
+```
+
+`--dry-run` prints every step with its commands, the variables they use and why a
+step would be skipped, and runs nothing. Both scripts list the same 40 steps in CI's
+job order (a test keeps them in step); a step that belongs to the other platform is
+listed as skipped:
+
+| CI job | Steps |
+| --- | --- |
+| `public-sdk` | `sdk-api` (tests), `sdk-abi` (C/Rust layouts; MSVC on Windows), `sdk-package` |
+| `public-worker-sdk` | `sdk-protocols` (tests of the worker, thumbnail, filesystem, image-viewer and web-viewer APIs), `sdk-web-package`, `sdk-worker-package` |
+| `viewers`, `viewer-conformance` | `viewer-basic`, `viewer-source`, `viewer-markdown` (the test command of their `scripts/ci.*`, then their package build), `viewer-conformance` (tests, fixture build and the native C loader test) |
+| `image-viewer`, `thumbnail-image` | `viewer-image`, `viewer-pdf`, `thumbnail-image` (the test commands of their `scripts/ci.*`; the two viewers then build their packages) |
+| not in CI | `thumbnail-video` (needs an FFmpeg 9.0.2 prefix), `html-viewer` (`--no-default-features`, without native CEF) |
+| `archive-filesystem`, `filesystem-libraries` | `archive` (tests, release package, fixture export), `filesystem-api`, `filesystem-native` and `filesystem-network` (tests, release package) |
+| `check` | `test-install`, `script-tests`, `decoder-native-tests`, `powershell-tests-7`, `powershell-tests-5`, `workspace-tests`, `trash-qualification`, `bad-descriptor`, the nine ignored qualification steps, `x11-dnd`, `x11-clipboard` |
+| `release` | `host-build` and `smoke-test` for the selected profile |
+
+CI runs the `public-sdk` and `public-worker-sdk` jobs on ubuntu-24.04 only; its
+Windows plugin jobs download the bundles that those jobs package. Windows validation
+runs these steps in addition: it packages the bundles its plugin steps need, and
+`sdk-api`, `sdk-abi` (`api/scripts/check-abi.ps1`, which CI never runs) and
+`sdk-protocols` are extra Windows coverage.
+
+`workspace-tests` runs CI's gates (below) with
+`scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast`: the same Cargo
+selections and features, including doc tests and example builds, but it retires no
+test executable, needs no `CI=true` or `_build` target directory, adds Cargo's
+`--no-fail-fast` and runs every gate after a failure (exiting with the first failing
+status). The later qualification steps reuse those executables through its `run` and
+`artifact` modes, as CI does.
+
+Each step runs in its own process (a PowerShell 7 process, or Windows PowerShell 5.1
+when PowerShell 7 is not installed; a `bash` subshell on Linux), with `TEMP`, `TMP`
+and `TMPDIR` (Windows, as CI sets them) or `TMPDIR` (Linux) under `_build/tmp`,
+`PYTHONUTF8=1` and CI's registry name variable. `rustc` must be on `PATH` (the
+user-command probe tests compile with it); a checkout's `.tools/cargo` is used when
+Cargo is not on `PATH`, as by the build helpers. The independent modules are built
+below `_build/validate/` (the image viewer, PDF viewer and image thumbnailer share
+`raster-ci`, so the pinned dav1d build is prepared once); the main workspace uses the
+normal target directory. A few outputs lie outside `_build/validate/`: the plugin SDK
+packager writes its bundle to `_build/plugin-sdk-<timestamp>` (removed when
+validation ends), the web SDK packager compiles in `_build/html-viewer/api-target`,
+`thumbnail-video` prepares FFmpeg in the build helpers' `_build/thumbnailers/ffmpeg`,
+temporary files go to `_build/tmp`, and the Windows private test installation
+(below) is created in `%USERPROFILE%`.
+`test-install` mirrors CI's `private-test-installation` action with the packages this
+run built: on Windows a new `%USERPROFILE%\MidnightViewerTests-<guid>` whose DACL
+grants only the user, SYSTEM and Administrators; on Linux a mode-700
+`_build/tmp/viewer-tests-*` directory. It sets `HOST_TEST_INSTALL_ROOT` and the other
+installation variables of that action for every later step, and is removed when
+validation ends, as are the SDK bundles the run packaged. Tests use the debug test
+profile; the selected profile applies only to `host-build` and `smoke-test`.
+
+A step whose prerequisite is missing is skipped with the reason: PowerShell 7 and
+the x64 MSVC tools for the AV1 decoder bootstrap (`viewer-image`,
+`thumbnail-image`), MSVC for the ABI tests on Windows, a Python with classic zlib
+for the web SDK (Python 3.14+ on Windows and Fedora's Python use zlib-ng), the
+pinned dav1d downloads of an earlier online run when `--offline`, the HTML viewer's
+locked crates (its lockfile includes the optional CEF bindings) in Cargo's cache when
+`--offline`, an FFmpeg prefix,
+the GIO runtime for the Linux network plugin, and `xvfb-run` with `xauth`. A step
+whose required step did not pass is skipped as well. `--strict` turns a skip for a
+missing prerequisite into a failure; other-platform steps and SDKs given with
+`--plugin-sdk`, `--worker-sdk` or `--web-sdk` never count. Without `--strict` such a
+run still passes, but when a step that CI runs was skipped this way (or because a
+step it needs did not pass), the summary names it before the result:
+`WARNING: N CI step(s) SKIPPED for a missing prerequisite or needed step: IDS (use
+--strict to fail)`; the two steps that CI does not run are not listed. `--only` runs
+the named steps (at least one, comma-separated) and the steps they need, for example
+`--only workspace-tests` reruns the workspace tests with their private installation.
+A flag given a value, such as `--strict=no`, is rejected with exit status 2.
+
+Validation continues after a failure. Each step's output is shown and saved as
+`_build/validate/logs/<run>/NN-<step>.log`, next to the generated step script
+(Windows) and `summary.txt`, the closing table of every step with its result,
+duration and the passed, failed and ignored counts of its libtest and unittest
+summaries. The exit status is 0 when no step failed, 1 when a step failed (or a
+`--strict` skip), 2 for invalid arguments and 127 when cargo, rustc or Python 3.12+
+is missing.
+
+Differences from CI, all deliberate: validation runs tests only, so CI's
+formatting, Clippy and source size checks are not steps, the plugins' `scripts/ci.*`
+(which also run those checks) are not called but their test commands are (a test
+compares the arguments of every `cargo test` run with each plugin's `ci.ps1` and
+`ci.sh`), and the image thumbnailer's optimized build, which no test uses, is not
+run: the build helpers compile the thumbnailer optimized only for a release build
+(`build.bat release`, `./build.sh release`), so `--validate` with a debug build never
+compiles it optimized; the steps run one after another on one machine instead of in
+parallel jobs; test executables are kept; the developer's Cargo profile settings are
+kept, while CI's `check` job sets
+`CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_INCREMENTAL=0` and
+`CARGO_BUILD_JOBS=2` to fit its hosted disk (set them yourself to reproduce a CI
+build exactly); the filesystem API tests run once instead of in both filesystem
+jobs; and the two modules above that CI does not build yet are included when their
+inputs exist. Validation does not run inside `build.sh`'s Docker backend: the build
+image has no Xvfb, mounts the source read-only and has not been qualified for the
+tests, so `build.sh --validate` refuses Docker.
+
+## Targeted test execution
 
 Use `scripts/run-targeted-tests.py` for independent **headless Rust libtest** targets that have already been built. It does not change CI coverage, compile code, discover executables by glob, or delete build artifacts. Native dialogs, desktop input, renderer pacing and profiling are unsupported: run their dedicated tools serially, with compilers and other test processes idle. For example, `scripts/probe-keyboard-search.ps1` drives the release `native_keyboard_search` example with real Windows keyboard input on a desktop session (see its [verification record](../verification/2026-11-07-keyboard-native-input.md)). Idle event-loop wakeups are measured the same way: `MIDNIGHT_IDLE_WAKEUP_PROBE=<warmup_s>:<seconds>[:thumbnails]` makes `me` use in-memory default preferences, count winit wakeups by cause after the warmup and print one `idle_wakeups=` line to stderr before it quits. Only the preferences are isolated: the probe uses the plugins installed next to `me` and the real preview cache, so set `LOCALAPPDATA` (Windows) or `XDG_CACHE_HOME` (Linux) to a scratch directory for the run. Run one probe at a time with the pointer outside the window (see the [idle wakeup record](../verification/2026-11-18-ui-idle-wakeups.md)).
 
@@ -18,11 +133,51 @@ binary per crate avoids one link step, one executable and one cold process start
 per test file; select a former file with a module filter such as `shortcuts::`.
 `midnight-worker-platform` and `midnight-platform-windows` keep one binary per
 file because their tests change or inspect process-wide containment and terminal
-state. Crates with at most three integration files also keep one binary per
-file; CI selects some of those by name (`--test native`, `--test pdf_native`,
+state. In `midnight-worker-platform` a topic's Linux-only tests are the `linux`
+module of that topic's binary (`tests/linux/spool.rs` in `spool`, likewise `store`
+and `worker_policy`), so Windows does not build and start three binaries without a
+test; they change process attributes (the dumpable flag, the CPU limit) only in a
+re-executed child, and Linux workers start through `std::process::Command`. Its
+Windows-only files stay separate binaries: on Linux an empty executable starts in
+1 to 2 ms, and `worker_policy_windows` starts its child with plain
+`std::process::Command` while Windows worker creation briefly makes pipe ends
+inheritable (`lock_process_creation`), so it must not share a process with
+`worker_policy`'s workers. Crates with at most three integration files also keep one
+binary per file; CI selects some of those by name (`--test native`, `--test pdf_native`,
 `--test worker`). A test that re-runs its own executable must select the child
 by its module-qualified name (`<file>::<test>`, derived from `module_path!()`, run
-with `--exact`).
+with `--exact`). Targets without a test on any platform set `test = false`, so an
+unfiltered `cargo test` neither builds nor starts an empty harness for them: the
+`midnight-platform` library and the `midnight-elevated-listing` and
+`midnight-worker-probe` binaries (the `midnight-worker-platform` integration tests
+still receive the probe as `CARGO_BIN_EXE_midnight-worker-probe`). A unit test added
+to one of them would never run, so a guard test fails on any test attribute in its
+sources: `library_has_no_unit_tests` in the platform integration binary, and
+`listing_binary_has_no_unit_tests` and `probe_binary_has_no_unit_tests` in the
+`midnight-elevation` and `midnight-worker-platform` library tests, which read only
+the binary's entry point and therefore also refuse a module file declared there.
+
+Some `midnight-engine` integration test files include library sources with
+`#[path]` to reach their `#[cfg(test)]` internals (checksums, retirement, file
+targets). `cfg(test)` holds there too, so each include also compiles and runs the
+unit tests that those sources declare: 162 of the library's unit tests run again in
+the `integration` executable. No `cfg` tells the library's test build from such an
+include, and declaring the test modules inside a macro would hide their files from
+`cargo fmt`, which follows no `mod` inside a macro call; a new `#[path]` include of a
+source with unit tests adds them again.
+
+On Windows with Microsoft Defender real-time protection, the first start of a newly
+linked test executable costs about 1.3 s plus 0.17 s per MB (0.8 to 2.2 s below 5 MB,
+17.6 s for the 108 MB `me` test executable), a later start 0.01 to 0.1 s. Most of the
+cost follows a new file content (a byte-identical copy of a known executable costs
+about a fifth), and it returns after some minutes without a start. A test run right
+after a build pays it once per new executable, so fewer and smaller executables save
+time even where they hold no test; Linux has no such cost. When comparing test times,
+compare runs in the same state (each executable newly linked, or each one started
+moments before) and say which. Single first starts vary widely (an unchanged 1.1 MB
+executable took 1.2 s in one probe and 9.5 s in another), so compare first starts of the
+executables that a change adds, removes or resizes over several samples each, not as the
+difference of two sums of single starts ([test speed pass](../verification/2026-11-18-test-speed-pass.md)).
 
 The `midnight-engine` library test executable re-runs itself for ten Copy seal
 tests (`copy_seal_tests.rs`, `copy_finish_seal_tests.rs` and
@@ -57,7 +212,9 @@ python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:me
 
 `run PACKAGE lib|test:NAME|bin:NAME [LIBTEST ARGS...]` reuses (or relinks) that
 package's test executable and runs it from the package directory; `artifact`
-prints its path. Neither mode retires anything or needs `CI=true`.
+prints its path. Neither mode retires anything or needs `CI=true`. Locally,
+`python -B scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast` runs
+all gates without retiring executables ([full validation](#full-validation)).
 
 Fixture readiness is not a maintenance-quiescence fence. Exact pre-ACK capture
 fixtures must account for independent startup maintenance without weakening

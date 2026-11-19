@@ -80,7 +80,7 @@ mobile-style frame rates or replace release scroll/drag benchmarking.
 The Windows executable for that original qualification is `_build/debug/me.exe`, SHA-256
 `7771cfcebc6981a7ea069dea27e0ae9a37ca547752be446f0b50f039e4196f78`.
 Its matching registered private installation is
-`C:\Users\tjelinek\MidnightExplorer-20261110-html`; the HTML package is under
+`<user-profile>\MidnightExplorer-20261110-html`; the HTML package is under
 `viewers/html`. Provider DLL SHA-256 is
 `347b99e554c5e111d9414ce14561c6f3b445e12284cf09e15d0a9c43f1fec3c2`.
 Final GUI and normal debug-app smoke checks passed with this registration, and

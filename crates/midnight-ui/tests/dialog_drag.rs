@@ -1,6 +1,5 @@
 //! Dialog headers move real open popups without replacing their focused controls.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

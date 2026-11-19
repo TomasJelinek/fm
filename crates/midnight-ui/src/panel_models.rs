@@ -36,7 +36,7 @@ pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow
             tooltip: shown_text(&bookmark_tooltip(presenter, bookmark)),
             icon: presenter
                 .desktop
-                .image(&IconKey::action(ActionIcon::Bookmarks)),
+                .image(&IconKey::action(ActionIcon::Bookmarks), IconPlace::Location),
             kind: LocationRole::HotPath,
         })
         .collect()
@@ -50,6 +50,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_right_can_target_selection(presenter.can_target_selection(PaneId::Right));
     window.set_left_free_space(volume_presentation::panel_space(presenter, PaneId::Left).into());
     window.set_right_free_space(volume_presentation::panel_space(presenter, PaneId::Right).into());
+    window.set_glyph_fitting_index(presenter.preferences.values.glyph_fitting.index());
     window.set_sizes_in_bytes(presenter.preferences.values.size_display == SizeDisplay::Bytes);
     window.set_remember_command_history(presenter.preferences.values.remember_command_history);
     window.set_copy_checksum_verification(presenter.preferences.values.copy_checksum_verification);
@@ -64,9 +65,10 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         label: "Add path".into(),
         compact_label: "Add path".into(),
         tooltip: "Save the active panel's current folder".into(),
-        icon: presenter
-            .desktop
-            .image(&IconKey::action(ActionIcon::AddBookmark)),
+        icon: presenter.desktop.image(
+            &IconKey::action(ActionIcon::AddBookmark),
+            IconPlace::Location,
+        ),
         kind: LocationRole::HotPath,
     });
     hot_paths.push(NavigationChoiceRow {
@@ -76,7 +78,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         tooltip: "Add or remove saved paths and assign numbered shortcuts".into(),
         icon: presenter
             .desktop
-            .image(&IconKey::action(ActionIcon::Bookmarks)),
+            .image(&IconKey::action(ActionIcon::Bookmarks), IconPlace::Location),
         kind: LocationRole::HotPath,
     });
     navigation_models::update(

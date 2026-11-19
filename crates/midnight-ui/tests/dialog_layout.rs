@@ -1,8 +1,7 @@
 //! Render actual dialog controls with long Unicode paths and every theme/density.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::ItemRc,

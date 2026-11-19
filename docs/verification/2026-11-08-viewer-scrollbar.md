@@ -114,7 +114,7 @@ exact scope and remaining PDF/line-indexing limitations.
 The runnable debug executable is `_build/debug/me.exe`, SHA-256
 `01F000C3E40C87DB255B1C35FBF9657C3E6B5ECED545FCAB241DB4C8AA8712BB`.
 Its protected runtime was deployed and registered at
-`C:\Users\tjelinek\MidnightExplorer-20261108-013509-a5fe735d`, including independently
+`<user-profile>\MidnightExplorer-20261108-013509-a5fe735d`, including independently
 built viewer, filesystem and thumbnail packages. Deployment verifies every copied
 file by SHA-256 readback and preserves plugin path validation. This is a debug
 deployment; the release executable was not replaced.

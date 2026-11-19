@@ -1,3 +1,9 @@
+#[path = "build/arms.rs"]
+mod arms;
+#[path = "build/partition.rs"]
+mod partition;
+#[path = "build/source.rs"]
+mod source;
 #[path = "build/tooltip.rs"]
 mod tooltip;
 

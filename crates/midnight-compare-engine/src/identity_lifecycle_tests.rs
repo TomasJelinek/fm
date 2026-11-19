@@ -26,7 +26,12 @@ fn retry_increments_comparison_generation_but_geometry_and_text_navigation_do_no
     let capture: NativeCapture = Arc::new(move |_, _| memory(b"same\ntext\n", &reads));
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (_owner, spawner) = crate::resident_test_support::workers();
-    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
+    // The held font scan does not answer during the test, so no catalog repaint can be
+    // published between the verdict and the frames that answer the inputs below.
+    let (service, _catalog) = held_scan(
+        Service::with_native_capture(runtime.handle().clone(), spawner, capture),
+        &Arc::default(),
+    );
     let session = open(&service, launch(&paths)).unwrap();
     let first = frame(&session);
     assert_eq!(first.identity, IdentityVerdict::Pending);
@@ -103,6 +108,10 @@ impl ContentSource for PausedRead {
 struct PausedSession {
     session: Session,
     _owner: midnight_work_budget::resident::Owner,
+    /// Holds the font scan, so neither a catalog repaint nor its wake reaches the worker:
+    /// a repaint after the first frame was taken would hold back whole-input verification,
+    /// and a queued wake would take an input slot while the worker is paused.
+    _catalog: mpsc::Sender<Arc<[String]>>,
     source: Arc<PausedRead>,
     entered: mpsc::Receiver<()>,
     release: Option<mpsc::SyncSender<()>>,
@@ -129,10 +138,14 @@ impl PausedSession {
             }
         });
         let (owner, spawner) = crate::resident_test_support::workers();
-        let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture);
+        let (service, catalog) = held_scan(
+            Service::with_native_capture(runtime.handle().clone(), spawner, capture),
+            &Arc::default(),
+        );
         Self {
             session: open(&service, launch(paths)).unwrap(),
             _owner: owner,
+            _catalog: catalog,
             source,
             entered: entry,
             release: Some(release),

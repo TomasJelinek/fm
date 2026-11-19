@@ -32,7 +32,7 @@ pub(super) fn load(
     size: u16,
     cancel: &Cancellation,
 ) -> Option<IconPixels> {
-    if cancel.is_cancelled() || !(1..=64).contains(&size) {
+    if cancel.is_cancelled() || !(1..=midnight_core::MAX_ICON_EDGE).contains(&size) {
         return None;
     }
     let roots: Vec<_> = APPLICATION_ROOTS.iter().map(Path::new).collect();

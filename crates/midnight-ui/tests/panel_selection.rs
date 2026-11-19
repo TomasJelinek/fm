@@ -1,8 +1,7 @@
 //! Selection survives focus changes in real detailed, brief and thumbnail rows.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{FileRow, Theme};
@@ -63,6 +62,9 @@ fn selected_rows_keep_their_fill_when_focused_in_every_theme_and_view() {
                     fills[0], fills[2],
                     "selection must differ from ordinary rows"
                 );
+                // Selected rows keep each theme's own hue (the accepted fills that
+                // themes.rs pins), which can lie close to the caret fill: the fills
+                // differ, and the caret is marked by its outline, checked below.
                 if !matches!(theme, 21..=22) {
                     assert_ne!(
                         fills[1], fills[2],

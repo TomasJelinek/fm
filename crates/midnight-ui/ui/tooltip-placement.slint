@@ -6,6 +6,12 @@ export global TooltipPlacement {
     in-out property <length> surface-height: 800px;
     in-out property <length> cursor-x;
     in-out property <length> cursor-y;
+    // Device pixels per logical pixel. A popup edge off the pixel grid is resampled and looks soft.
+    in-out property <float> scale: 1;
+
+    public pure function snap(value: length) -> length {
+        return Math.round(value / 1px * root.scale) / root.scale * 1px;
+    }
 
     public pure function max-room(cursor: length, surface: length, gap: length) -> length {
         return max(1px, max(cursor - gap - 8px, surface - 8px - cursor - gap));
@@ -14,6 +20,6 @@ export global TooltipPlacement {
         let after = cursor + gap;
         let before = cursor - gap - body;
         let desired = after + body <= surface - 8px ? after : before;
-        return clamp(desired, 8px, max(8px, surface - 8px - body));
+        return root.snap(clamp(desired, 8px, max(8px, surface - 8px - body)));
     }
 }

@@ -13,8 +13,9 @@ release notices; it does not turn it into project-owned code.
 A feature-gating correction in `femtovg/src/lib.rs` keeps the `FilePath` import
 only when image loading or text layout uses it, and the private `font_scale`
 helper only with text layout. This removes unused-item warnings for the app
-feature set (`swash`, `wgpu`) without changing enabled rendering paths. Version,
-feature selection and the MIT license choice remain unchanged.
+feature set (`swash`, `wgpu`) without changing enabled rendering paths. Version
+and the MIT license choice remain unchanged; the one manifest change is the
+`skrifa` dependency of the text fitting described below.
 
 The host workspace patch adds bounded reuse of managed image/glyph bind groups.
 Native DX12 stack sampling identified per-draw bind-group allocation and release
@@ -73,14 +74,65 @@ eviction drops only cache ownership, so deferred/in-flight GPU commands retain
 their bindings safely. This removes the measured per-render viewport buffer
 allocation without changing device polling or texture lifetimes.
 
-The source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`,
+A fourth change adds an opt-in fitting of filled text to the pixel grid. In the
+crate it is off by default: with `GlyphFitting::Subpixel` glyph bitmaps, their
+cache keys and their quads are exactly upstream's. `femtovg::set_glyph_fitting`
+selects a fitting for the process, and each glyph atlas reads it once when its
+canvas is created, so one atlas never holds bitmaps of two fittings. The explorer
+selects `Fitted` before its first window and keeps the other two reachable
+([how and why](../docs/verification/2026-11-18-ui-sharpness.md)); tests and
+examples that create windows without it keep `Subpixel`.
+
+- `Snapped` gives every glyph one bitmap, rasterized at offset zero and drawn at
+  the rounded layout position instead of at one of eleven tenth-pixel phases, and
+  applies a mild contrast curve to its coverage.
+- `Fitted` also fits outlines horizontally. Upstream renders through swash, whose
+  fixed hinting mode moves outlines vertically only, so a 1.1 px stem covers two
+  gray columns. The fitted path asks skrifa, the crate swash itself hints with,
+  for full hinting instead: the font's own TrueType program when that puts the
+  stem of `l` on whole pixels, otherwise the automatic hinter with stem adjustment
+  plus the contrast curve. zeno, swash's rasterizer, draws the result. Because a
+  fitted outline is drawn for a whole-pixel advance, glyphs inside a word follow
+  each other at their fitted advances; the pen returns to the rounded layout
+  position after every blank, on another baseline, after a glyph that was not
+  fitted, and whenever it would be more than one pixel from the layout.
+
+Stroked text, glyphs drawn as paths (rotated, large or non-solid text), color
+glyphs and every font with color glyph tables keep the upstream path in all three
+fittings. Text layout, measurement, carets and selections are not part of this
+crate and keep using linear advances, so with `Fitted` ink can sit up to one pixel
+from its layout position. A word is followed from the first glyph of a
+`fill_glyph_run` call. Slint 1.18.1 leaves out the glyphs of unelided text that
+lie more than a line height outside the clip, so a word that crosses the left
+clip edge, as in a scrolled line edit, can be placed one pixel differently from
+one scroll position to the next.
+
+The fitting is in `src/text/fitting.rs`, its use in `src/text.rs`
+(`render_atlas`, `render_glyph`, and `upload_glyph`, which is the former tail of
+`render_glyph_swash`) and its export in `src/lib.rs`. It makes `skrifa` 0.44 a
+direct optional dependency enabled by the existing `swash` feature, with default
+features off and `std`; swash 0.2.10 already depends on that version, so no
+package is added to the application or to the standalone lockfile. Run its tests
+from the repository root:
+
+```bash
+cargo test --manifest-path vendor/femtovg/Cargo.toml --lib --no-default-features --features swash --locked --target-dir _build text::fitting
+```
+
+The pen and contrast tests need nothing else. Two tests of the fitted rasterizer
+read DejaVu Sans from `/usr/share/fonts/truetype/dejavu`, because the vendored
+tree ships no font, and are ignored by default; add `-- --include-ignored` on a
+machine that has it.
+
+The WGPU source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`,
 `wgpu/uploads.rs` and `wgpu/viewports.rs`, with its tests in `wgpu/*_tests.rs` and
 their shared validated test device in `wgpu/test_gpu.rs`. The added code remains under the upstream
 MIT OR Apache-2.0
 license choice; application packaging continues to select MIT.
 Upstream tests remain alongside the source. The packaged book, GitHub workflows
 and Cargo extraction marker are omitted; they are not needed to build the library
-or run its tests. The unchanged published manifest still declares three
+or run its tests. Apart from the `skrifa` dependency the published manifest is
+unchanged and still declares three
 `[[example]]` targets under the omitted `book/`, so build or test the vendored
 package with `--lib`, `--tests` or `--test <name>`; `--all-targets`, `--examples`
 and an unfiltered `cargo test` fail to find those example sources.
@@ -88,6 +140,8 @@ The standalone lockfile starts from the published lock. Its Windows API family
 is unified at `windows` 0.62.2 to match WGPU 30 and gpu-allocator; the original
 0.58 selection did not compile their DX12 interface types together. This affects
 only the independent test graph; the application retains its existing versions.
+The lock's `femtovg` entry also names `skrifa 0.44.0`, which it already held for
+swash.
 
 Run the added GPU regressions from the repository root (the explicit tests require
 a real adapter and fail if none is available):

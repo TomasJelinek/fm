@@ -49,7 +49,7 @@ Evidence directory: `_build/goal/options-transaction/`.
 Debug executable SHA256:
 `5A1F7BCDB5B056FF42D7ECAA2099457EE2D0147DEFF74AD264253B10DC8090F0`.
 Its protected plugin runtime is
-`C:/Users/tjelinek/MidnightExplorer-20261108-031759-52f96323`.
+`<user-profile>/MidnightExplorer-20261108-031759-52f96323`.
 See `build-final.log`, `deploy.log` and `app-acceptance.txt`. This is Windows
 debug verification; no new release build or native Linux/macOS run was performed.
 

@@ -1,8 +1,7 @@
 //! A color chooser is a separate, scrollable popup within the Options session.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     items::AccessibleRole,

@@ -201,6 +201,7 @@ fn different_native_volume_is_refused_before_manifest_staging_even_with_a_common
         algorithm: ChecksumAlgorithm::Sha256,
         destination: directory.join("out.sha256"),
         acknowledge_partial: None,
+        overwrite: false,
     };
     let service = provider(EntryKind::File);
     let error = save_manifest(&run, &request, &service, &Cancellation::default()).unwrap_err();

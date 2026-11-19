@@ -1,6 +1,5 @@
 //! Exercise Network through the installed menu, pointer and keyboard bridge.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_core::*;

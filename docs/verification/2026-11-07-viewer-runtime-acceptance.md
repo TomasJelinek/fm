@@ -27,9 +27,9 @@ Evidence: `_build/viewer-native-acceptance-final.log` and ten PNGs in
 `_build/viewer-native-acceptance-final/`. The acceptance steps completed in 5.27 seconds
 on this workstation; this is a functional acceptance observation, not a benchmark.
 The packages came from
-`C:\Users\tjelinek\MidnightExplorer-20261107-113047-bb5e8fef` and were copied with
+`<user-profile>\MidnightExplorer-20261107-113047-bb5e8fef` and were copied with
 the private deployment helper into
-`C:\Users\tjelinek\_build\viewer-qa-20261107-native`. The probe executable was
+`<user-profile>\_build\viewer-qa-20261107-native`. The probe executable was
 built from the current host sources and placed beside those packages. No installed
 application executable was run in ordinary mode.
 
@@ -79,9 +79,9 @@ The final probe also ran as
 `D:\experiments\dev\FM\_build\qa\shared-viewer-probe-profile-20261107\me.exe`, with a
 copied viewer tree beside it in the shared checkout. `deploy-private.ps1`
 copied that exact executable and packages into
-`C:\Users\tjelinek\_build\viewer-qa-profile-20261107` and registered the
+`<user-profile>\_build\viewer-qa-profile-20261107` and registered the
 matching executable digest under the protected QA profile
-`C:\Users\tjelinek\_build\viewer-profile-root-20261107`, in
+`<user-profile>\_build\viewer-profile-root-20261107`, in
 `.midnight-explorer/plugin-runtimes/`. This matches the final production default
 `USERPROFILE/.midnight-explorer/plugin-runtimes`, separate from preferences.
 Only the probe child received the QA `USERPROFILE`; `LOCALAPPDATA` retained its

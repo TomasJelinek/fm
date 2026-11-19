@@ -5,8 +5,7 @@ mod input;
 mod native;
 #[path = "support/tree_filters.rs"]
 mod support;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use midnight_core::*;
 use slint::{platform::Key, platform::WindowAdapter};
 use std::{fs, sync::Arc};
@@ -38,6 +37,16 @@ fn finished(h: &mut support::Harness, pane: PaneId) -> Arc<ChecksumRun> {
     }
 }
 
+/// The footer button; the "Calculate" page tab has the same label and comes first.
+fn click_calculate(child: &slint::platform::software_renderer::MinimalSoftwareWindow) {
+    let buttons = modeless::accessible_items(
+        child,
+        i_slint_core::items::AccessibleRole::Button,
+        "Calculate",
+    );
+    modeless::click_item(child, buttons.last().unwrap(), "Calculate");
+}
+
 fn exercise(pane: PaneId, folders: bool) {
     let fixture = native::Fixture::new();
     fs::write(fixture.root.join("root.txt"), b"abc").unwrap();
@@ -67,6 +76,11 @@ fn exercise(pane: PaneId, folders: bool) {
     }
     h.ui.window.invoke_focus_files();
     ui::chord(&h.ui.window, &[Key::Control], Key::F8);
+    // Opening calculates nothing; the user presses Calculate once the window is up.
+    h.until(|h| h.has_tool_window());
+    let child = h.tool_window();
+    modeless::draw(&child, 1000, 720, "tree-checksums-ready");
+    click_calculate(&child);
     let first = finished(&mut h, pane);
     let root = first
         .rows
@@ -78,7 +92,6 @@ fn exercise(pane: PaneId, folders: bool) {
         root.digest(ChecksumAlgorithm::Sha256).unwrap().hex(),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
-    let child = h.tool_window();
     modeless::draw(&child, 1000, 720, "tree-checksums-result");
     if folders {
         assert!(
@@ -88,16 +101,18 @@ fn exercise(pane: PaneId, folders: bool) {
                 .any(|row| row.path == fixture.root.join("folder/small")
                     && row.state == ChecksumRowState::Skipped)
         );
-        modeless::click(&child, "Options");
+        modeless::click(&child, "Checksum algorithms");
         modeless::draw(&child, 1000, 720, "tree-checksums-options");
-        let recursive = modeless::accessible_item(
+        let recursive = modeless::accessible_popup_item(
             &child,
             i_slint_core::items::AccessibleRole::Checkbox,
             "Include subfolders",
         )
         .unwrap();
         input::click(&child, &recursive);
-        modeless::click(&child, "Calculate");
+        // A click outside the open menu only closes it, as in any dropdown.
+        modeless::click(&child, "Checksum algorithms");
+        click_calculate(&child);
         let next = finished(&mut h, pane);
         assert_eq!(next.generation.0, first.generation.0 + 1);
         assert_eq!(next.captured_roots, first.captured_roots);

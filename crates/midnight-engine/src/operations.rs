@@ -54,7 +54,8 @@ pub(crate) const MAX_JOBS: usize = 32;
 
 enum Message {
     Prepare(WorkerOwned<Input>, Cancellation, Status),
-    Confirm(OperationId, Option<String>, Arc<Predecessors>),
+    /// The flag replaces an existing file; only a confirmed empty-file creation sets it.
+    Confirm(OperationId, Option<String>, bool, Arc<Predecessors>),
     PreviewMetadata(OperationId, u64, MetadataPatch),
     ConfirmMetadata(OperationId, u64, MetadataConflictPolicy, Arc<Predecessors>),
     ResolveMetadataConflict(OperationId, u64, MetadataConflictPolicy),
@@ -226,9 +227,19 @@ impl Controller {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // Tests confirm without replacing.
     pub(crate) async fn confirm(&self, id: OperationId, name: Option<String>) {
+        self.confirm_with(id, name, false).await;
+    }
+
+    pub(crate) async fn confirm_with(
+        &self,
+        id: OperationId,
+        name: Option<String>,
+        replace_existing: bool,
+    ) {
         if let Some(predecessors) = self.capture_confirmation(id) {
-            self.send_confirmation(id, Message::Confirm(id, name, predecessors))
+            self.send_confirmation(id, Message::Confirm(id, name, replace_existing, predecessors))
                 .await;
         }
     }
@@ -371,6 +382,8 @@ async fn finish(registry: &Registry, outbox: &Outbox, progress: OperationProgres
 pub(crate) struct Services {
     pub(crate) mutation: Option<Arc<dyn MutationService>>,
     pub(crate) locale: Option<Arc<dyn LocaleService>>,
+    /// Safe replacement for a confirmed empty file over an existing one.
+    pub(crate) transfer: Option<Arc<dyn TransferService>>,
 }
 
 async fn run(
@@ -419,9 +432,9 @@ async fn run(
                         (original, result)
                     });
                 }
-                Some(Message::Confirm(id, name, predecessors)) => {
+                Some(Message::Confirm(id, name, replace_existing, predecessors)) => {
                     if let Some(mut job) = prepared.remove(&id) {
-                        if let Err(error) = job.confirm(name) {
+                        if let Err(error) = job.confirm_with(name, replace_existing, services.transfer.clone()) {
                             disposing.spawn(job.status.clone(), job.failure(error));
                         } else {
                             if !matches!(job.progress().kind, MutationKind::CreateDirectory | MutationKind::CreateFile) {

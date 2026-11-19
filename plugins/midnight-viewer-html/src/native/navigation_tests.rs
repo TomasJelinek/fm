@@ -123,7 +123,7 @@ fn exact_per_request_completion_releases_a_claim_before_body_handler_only_once()
             document: 1,
             browser: 1,
             frame: "main".into(),
-            url: "https://mewv-1.invalid/a".into(),
+            url: "https://mewv-1.invalid/mewv-document/a".into(),
         },
         marker: "private-attempt".into(),
         native_request: 77,
@@ -156,7 +156,7 @@ fn ordinary_network_return_cancels_latest_but_preserves_allowed_before_io_claim(
         document: 1,
         browser: 1,
         frame: "main".into(),
-        url: "https://mewv-1.invalid/".into(),
+        url: "https://mewv-1.invalid/mewv-document/".into(),
     };
     let issued = {
         let mut nav = doc.navigation.lock().unwrap();
@@ -199,7 +199,7 @@ fn ordinary_network_return_cancels_latest_but_preserves_allowed_before_io_claim(
     };
     let facts = crate::navigation_route::BrowseFacts {
         unmarked: true,
-        target: "https://mewv-1.invalid/",
+        target: "https://mewv-1.invalid/mewv-document/",
         main_frame: true,
         current_main_url: Some("http://127.0.0.1:32123/roundtrip"),
         get_no_post: true,

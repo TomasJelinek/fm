@@ -10,9 +10,9 @@ from this source cleanliness statement. No branch or worktree was removed.
 | Worktree | Branch | Baseline tip |
 | --- | --- | --- |
 | `D:/experiments/dev/FM` | `codex/viewer-plugins` | `d63ba30` |
-| `C:/Users/tjelinek/.codex/worktrees/main-deep-audit/FM` | `codex/main-deep-audit` | `dd5ad34` |
-| `C:/Users/tjelinek/.codex/worktrees/midnight-archives/FM` | `codex/archive-filesystems` | `99e619c` |
-| `C:/Users/tjelinek/.codex/worktrees/midnight-thumbnails/FM` | `codex/thumbnail-worktree` | `ea4b0d8` |
+| `<worktree>` | `codex/main-deep-audit` | `dd5ad34` |
+| `<user-profile>/.codex/worktrees/midnight-archives/FM` | `codex/archive-filesystems` | `99e619c` |
+| `<user-profile>/.codex/worktrees/midnight-thumbnails/FM` | `codex/thumbnail-worktree` | `ea4b0d8` |
 
 The other local branches are `main` (`a98b518`) and `feat/panel-prefix-search`
 (`5295cd7`). Both `codex/main-deep-audit` and `feat/panel-prefix-search` are ancestors

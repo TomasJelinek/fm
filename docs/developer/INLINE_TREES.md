@@ -216,8 +216,8 @@ be selected by clicks, ranges or rectangles. Ctrl+I inverts non-directory entrie
 and retains both folder and directory-link selection.
 
 The production controller owns these sessions on one persistent model worker per
-pane, normally a dedicated thread outside Tokio's blocking pool; branch listings
-still run as separate blocking jobs. Completed-root notifications, bounded command
+pane, which runs on one of the engine's resident worker threads outside Tokio's
+blocking pool; branch listings still run as separate blocking jobs. Completed-root notifications, bounded command
 admission, loading and collapse publications, selection and typed navigation use
 the real Engine command/event boundary. Selection, viewport, reprojection and
 operation captures require the exact `Commit` of the current projection. Branch

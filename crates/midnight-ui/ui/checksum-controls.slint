@@ -1,61 +1,107 @@
-import { ScrollView } from "std-widgets.slint";
-import { HintedComboBox } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
-import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { Tip } from "controls.slint";
 
 export struct ChecksumDraft { md5: bool, sha1: bool, sha256: bool, sha512: bool, crc32: bool, recursive: bool }
 
-// Copy and export choose among algorithms from the captured run.
-export component ChecksumOutputPicker inherits HintedComboBox {
-    in property <[string]> labels;
-    in property <[int]> values;
-    in-out property <int> algorithm;
-    model: root.labels;
-    private property <int> selected-index: root.values.length == 0 ? -1 : root.values[0] == root.algorithm ? 0
-        : root.values.length > 1 && root.values[1] == root.algorithm ? 1
-        : root.values.length > 2 && root.values[2] == root.algorithm ? 2
-        : root.values.length > 3 && root.values[3] == root.algorithm ? 3
-        : root.values.length > 4 && root.values[4] == root.algorithm ? 4 : -1;
-    // ComboBox writes current-index on user selection and model reset. Restore
-    // the shared algorithm explicitly; a one-way binding alone is overwritten.
-    current-index: root.selected-index;
-    changed selected-index => { root.current-index = root.selected-index; }
-    changed values => { root.current-index = root.selected-index; }
-    changed labels => { root.current-index = root.selected-index; }
-    selected(value) => {
-        if root.current-index >= 0 && root.current-index < root.values.length {
-            root.algorithm = root.values[root.current-index];
-        }
+// One drawn checkbox: the popup rows below toggle and select through separate hit areas.
+component MenuCheck inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    width: 16px; height: 16px; border-radius: 3px; border-width: 1px;
+    border-color: root.checked ? Theme.active-frame : Theme.frame;
+    background: root.checked ? Theme.active-header : Theme.surface;
+    opacity: root.enabled ? 1 : 0.5;
+    if root.checked : Image {
+        source: @image-url("icons/check.svg"); colorize: Theme.strong-text; image-fit: contain;
+        x: 2px; y: 2px; width: 12px; height: 12px;
     }
-    accessible-label: "Output algorithm";
-    hint: "Choose a calculated algorithm for copying or saving. This does not recalculate files.";
-    enabled: root.values.length > 0;
-    min-width: 0px; min-height: Theme.control-height;
-    preferred-height: Theme.control-height; vertical-stretch: 0;
 }
 
-export component ChecksumOptions inherits ScrollView {
+// The algorithm dropdown. Each row has a checkbox (include it in the next calculation) and
+// a name (show that algorithm's column once it has been calculated). "Include subfolders"
+// is the last row; nothing here recalculates by itself.
+export component ChecksumAlgorithmMenu inherits Rectangle {
     in-out property <ChecksumDraft> draft;
+    in-out property <int> algorithm;
+    in property <[bool]> available;
     in property <bool> busy;
-    horizontal-scrollbar-policy: always-off;
-    VerticalLayout {
-        padding: 12px; spacing: 12px; alignment: start;
-        Text { text: "Calculate algorithms"; color: Theme.strong-text; font-weight: 600; }
-        WrappingCheckBox { text: "SHA-256"; checked <=> root.draft.sha256; enabled: !root.busy;
-            hint: "Recommended default. Copy verification uses SHA-256 independently of these choices."; }
-        WrappingCheckBox { text: "SHA-512"; checked <=> root.draft.sha512; enabled: !root.busy; }
-        Rectangle { height: 1px; background: Theme.frame; }
-        Text { text: "Legacy compatibility"; color: Theme.secondary-text; }
-        WrappingCheckBox { text: "CRC32 / SFV"; checked <=> root.draft.crc32; enabled: !root.busy;
-            hint: "Compatibility with SFV checksum files. Detects accidental damage; not authentication."; }
-        WrappingCheckBox { text: "MD5"; checked <=> root.draft.md5; enabled: !root.busy;
-            hint: "Compatibility with existing MD5 manifests. Not suitable for authenticating files."; }
-        WrappingCheckBox { text: "SHA-1"; checked <=> root.draft.sha1; enabled: !root.busy;
-            hint: "Compatibility with existing SHA-1 manifests. Not suitable for authenticating files."; }
-        Rectangle { height: 1px; background: Theme.frame; }
-        WrappingCheckBox { text: "Include subfolders"; checked <=> root.draft.recursive; enabled: !root.busy;
-            hint: "Recalculate the captured selection recursively. Links and other devices are excluded and counted."; }
-        if root.busy: Text { text: "Options are locked while work is running.";
-            color: Theme.secondary-text; wrap: word-wrap; }
+    in property <bool> enabled: true;
+    private property <[string]> names: ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"];
+    pure function included(index: int) -> bool {
+        return index == 0 ? root.draft.sha256 : index == 1 ? root.draft.sha512
+            : index == 2 ? root.draft.md5 : index == 3 ? root.draft.sha1 : root.draft.crc32;
+    }
+    function toggle(index: int) {
+        if root.busy { return; }
+        if index == 0 { root.draft.sha256 = !root.draft.sha256; }
+        else if index == 1 { root.draft.sha512 = !root.draft.sha512; }
+        else if index == 2 { root.draft.md5 = !root.draft.md5; }
+        else if index == 3 { root.draft.sha1 = !root.draft.sha1; }
+        else { root.draft.crc32 = !root.draft.crc32; }
+    }
+    min-width: 0px; min-height: Theme.control-height; preferred-height: Theme.control-height; vertical-stretch: 0;
+    accessible-role: button; accessible-label: "Checksum algorithms"; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { menu.show(); } }
+    background: trigger.has-hover && root.enabled ? Theme.hover : Theme.secondary-surface;
+    border-width: 1px; border-color: Theme.frame; border-radius: 4px;
+    Text {
+        x: 10px; width: parent.width - 30px; height: parent.height;
+        text: root.names[root.algorithm]; color: root.enabled ? Theme.text : Theme.muted-text;
+        font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
+    }
+    Image {
+        source: @image-url("icons/chevron-down.svg"); colorize: Theme.secondary-text; image-fit: contain;
+        x: parent.width - 20px; y: (parent.height - self.height) / 2; width: 12px; height: 12px;
+    }
+    trigger := TouchArea {
+        enabled: root.enabled;
+        Tip { text: "Choose which checksums to calculate (checkboxes) and which one to show. Nothing recalculates until you press Calculate."; }
+        clicked => { menu.show(); }
+    }
+    menu := PopupWindow {
+        close-policy: close-on-click-outside;
+        x: parent.width - self.width; y: parent.height + 2px;
+        width: max(210px, root.width); height: 6 * 30px + 12px;
+        Rectangle { background: Theme.surface; border-width: 1px; border-color: Theme.active-frame; border-radius: 4px; }
+        VerticalLayout {
+            padding: 4px; spacing: 0px;
+            for name[index] in root.names : Rectangle {
+                height: 30px; border-radius: 3px;
+                accessible-role: checkbox; accessible-label: name; accessible-checked: root.included(index);
+                accessible-action-default => { root.toggle(index); }
+                background: index == root.algorithm ? Theme.active-header : name-area.has-hover ? Theme.hover : transparent;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; spacing: 10px;
+                    VerticalLayout { alignment: center; MenuCheck { checked: root.included(index); enabled: !root.busy; } }
+                    Text {
+                        text: name; color: root.available[index] || !root.available[root.algorithm] ? Theme.text : Theme.secondary-text;
+                        font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1;
+                    }
+                }
+                name-area := TouchArea {
+                    clicked => { if root.available[index] { root.algorithm = index; } }
+                }
+                TouchArea {
+                    x: 0px; width: 34px; enabled: !root.busy;
+                    clicked => { root.toggle(index); }
+                }
+            }
+            Rectangle { height: 1px; background: Theme.frame; }
+            Rectangle {
+                height: 30px;
+                accessible-role: checkbox; accessible-label: "Include subfolders"; accessible-checked: root.draft.recursive;
+                accessible-action-default => { if !root.busy { root.draft.recursive = !root.draft.recursive; } }
+                background: recursive-area.has-hover ? Theme.hover : transparent;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; spacing: 10px;
+                    VerticalLayout { alignment: center; MenuCheck { checked: root.draft.recursive; enabled: !root.busy; } }
+                    Text { text: "Include subfolders"; color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1; }
+                }
+                recursive-area := TouchArea {
+                    enabled: !root.busy;
+                    clicked => { root.draft.recursive = !root.draft.recursive; }
+                }
+            }
+        }
     }
 }

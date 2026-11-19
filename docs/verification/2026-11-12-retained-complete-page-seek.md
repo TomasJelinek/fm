@@ -82,7 +82,7 @@ The log is `viewer-clippy.log`. All five changed source files use LF and pass
 ## Matched foreground comparison
 
 Both executables are preserved beside the same installed providers under
-`C:/Users/tjelinek/MidnightExplorer-20261112-lifetime-dfbafca6/`:
+`<user-profile>/MidnightExplorer-20261112-lifetime-dfbafca6/`:
 
 | Variant | Executable | SHA-256 |
 |---|---|---|
@@ -171,9 +171,9 @@ one refresh period in some frames.
 
 The two additional exact-file hashes are:
 
-- `D:/dev/ov-physics-trunk/ovclash/build.bat`:
+- `<source-checkout>/ovclash/build.bat`:
   `8EF5E6ACB593E5352778286868A8406B665CC403ABB7BDBB04FBD34870F0CED6`.
-- `D:/dev/ov-physics-trunk/ovclash/AGENTS.md`:
+- `<source-checkout>/ovclash/AGENTS.md`:
   `6656EEA6CE179C31D7C2C1E08AB24443BF44AFC4FAE5DCC0E9E8462229D633AD`.
 
 Raw files are `pending-final-bat-text-07.*` and `pending-final-md-drag.*` under

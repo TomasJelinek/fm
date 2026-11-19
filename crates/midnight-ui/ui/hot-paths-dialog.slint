@@ -1,10 +1,11 @@
 import { NavigationButton } from "navigation-controls.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
-import { ListView, ScrollView } from "std-widgets.slint";
+import { VScrollView } from "scroll-view.slint";
+import { ListView } from "vlist-view.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
-import { TipBody } from "controls.slint";
+import { Tip, TipBody } from "controls.slint";
 import { BookmarkRow } from "navigation-models.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
@@ -75,14 +76,12 @@ export component HotPathsDialog inherits Rectangle {
                 close-label: "Close dialog"; close => { root.dismiss(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
                 fallback-icon: FallbackIcons.bookmarks; }
-            ScrollView {
+            VScrollView {
                 min-height: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
                 content-width: self.visible-width;
                 VerticalLayout { spacing: 8px;
                     ListView {
                         height: root.list-height;
-                        horizontal-scrollbar-policy: always-off;
                         for bookmark[index] in root.model : Rectangle {
                             height: root.row-height;
                             background: bookmark.identity == root.selected-identity ? Theme.selected-background : row-area.has-hover ? Theme.hover : transparent;
@@ -108,7 +107,7 @@ export component HotPathsDialog inherits Rectangle {
                                     reject
                                 }
                                 row-area := TouchArea {
-                                    Tooltip { TipBody { text: bookmark.path; } }
+                                    Tip { text: bookmark.path; }
                                     width: parent.width; height: parent.height;
                                     private property <string> pressed-id;
                                     private property <int> pressed-revision;

@@ -1,8 +1,7 @@
 //! Compare/filter dialogs retain drafts on validation and keep actions in the viewport.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_ui::ComparisonView;

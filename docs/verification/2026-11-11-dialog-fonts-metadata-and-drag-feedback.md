@@ -222,7 +222,7 @@ Its cached build completed in 1m45s. Formatting and scoped whitespace checks pas
   `D:/experiments/dev/FM/_build/debug/me.exe` has SHA-256
   `fed5b6aa80f45b48a5e5efbd2e7c35878a6d918541af7b6235c97dd9edfa8267`.
 - The matching private plugin runtime is registered at
-  `C:/Users/tjelinek/MidnightExplorer-20261111-dialogs-fed5b6aa`.
+  `<user-profile>/MidnightExplorer-20261111-dialogs-fed5b6aa`.
   Windows plugin binaries were reused unchanged; no Windows plugin/API source
   changed in this batch. Linux native-plugin changes have separate evidence above.
 - The actual `_build/debug/me.exe` passed backend listing, native-renderer UI and

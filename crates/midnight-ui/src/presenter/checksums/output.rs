@@ -50,6 +50,7 @@ impl Presenter {
             algorithm,
             destination,
             acknowledge,
+            overwrite,
         } = form;
         // IDs are never reused, including refused or stale attempts.
         let Some(save_id) = self
@@ -79,7 +80,7 @@ impl Presenter {
             return false;
         };
         if (counts.excluded > 0 || counts.incomplete_discovery) && !acknowledge {
-            s.error = "Acknowledge the displayed excluded files and incomplete discovery before saving a partial manifest.".into();
+            s.error = "Confirm saving a partial manifest first.".into();
             return false;
         }
         let mut destination = match destination::resolve(&s.suggested, &destination) {
@@ -100,13 +101,21 @@ impl Presenter {
                 algorithm,
                 destination,
                 acknowledge_partial: acknowledge.then_some(counts),
+                overwrite,
             }),
+        };
+        let saved_to = match &command {
+            Command::SaveChecksumManifest { request, .. } => request.destination.clone(),
+            _ => unreachable!(),
         };
         if !send(command) {
             s.error = "Manifest queue is busy. Try saving again.".into();
             return false;
         }
         s.save = Some(ChecksumSave {
+            algorithm,
+            destination: saved_to,
+            acknowledged: acknowledge,
             id: save_id,
             accepted: false,
             stopping: false,
@@ -114,6 +123,110 @@ impl Presenter {
         s.error.clear();
         s.save_message = "Waiting to save manifest…".into();
         true
+    }
+
+    /// Save to the destination the user just chose. Partial results need a yes first;
+    /// an existing file is asked about when the engine reports it.
+    pub(crate) fn begin_checksum_save(
+        &mut self,
+        id: ChecksumJobId,
+        algorithm: ChecksumAlgorithm,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let Some(s) = self.checksums.session_mut(id) else {
+            return;
+        };
+        if s.running || s.save.is_some() || s.picker.is_some() {
+            return;
+        }
+        let Some(counts) = s
+            .export_counts(algorithm)
+            .filter(|counts| counts.included > 0)
+        else {
+            s.error = "No calculated checksums for this algorithm can be saved.".into();
+            return;
+        };
+        let generation = s.generation.0;
+        let destination = s.suggested.to_string_lossy().into_owned();
+        if counts.excluded > 0 || counts.incomplete_discovery {
+            s.save_prompt = Some(SavePrompt {
+                algorithm,
+                destination: s.suggested.clone(),
+                acknowledged: true,
+                overwrite: false,
+                message: format!(
+                    "{} files were excluded{}. Save the {} completed checksums anyway?",
+                    counts.excluded,
+                    if counts.incomplete_discovery {
+                        " and discovery is incomplete"
+                    } else {
+                        ""
+                    },
+                    counts.included
+                ),
+            });
+            s.revision = s.revision.wrapping_add(1);
+            return;
+        }
+        self.save_checksum_manifest(
+            id,
+            ChecksumSaveForm {
+                generation,
+                algorithm,
+                destination,
+                acknowledge: false,
+                overwrite: false,
+            },
+            send,
+        );
+    }
+
+    /// The user answered Save or Replace on the prompt.
+    pub(crate) fn confirm_checksum_save(
+        &mut self,
+        id: ChecksumJobId,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let Some(s) = self.checksums.session_mut(id) else {
+            return;
+        };
+        let Some(prompt) = s.save_prompt.take() else {
+            return;
+        };
+        s.revision = s.revision.wrapping_add(1);
+        let generation = s.generation.0;
+        self.save_checksum_manifest(
+            id,
+            ChecksumSaveForm {
+                generation,
+                algorithm: prompt.algorithm,
+                destination: prompt.destination.to_string_lossy().into_owned(),
+                acknowledge: prompt.acknowledged,
+                overwrite: prompt.overwrite,
+            },
+            send,
+        );
+    }
+
+    pub(crate) fn dismiss_checksum_save_prompt(&mut self, id: ChecksumJobId) {
+        if let Some(s) = self.checksums.session_mut(id)
+            && s.save_prompt.take().is_some()
+        {
+            s.revision = s.revision.wrapping_add(1);
+        }
+    }
+
+    /// Run saves whose destination was just chosen; called by the window's refresh.
+    pub(crate) fn begin_pending_checksum_saves(&mut self, send: &dyn Fn(Command) -> bool) {
+        let pending: Vec<_> = self
+            .checksums
+            .sessions
+            .iter_mut()
+            .filter_map(|(id, s)| s.save_pending.take().map(|algorithm| (*id, algorithm)))
+            .collect();
+        for (id, algorithm) in pending {
+            self.begin_checksum_save(id, algorithm, send);
+        }
     }
 
     pub(crate) fn cancel_checksum_save(

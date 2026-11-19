@@ -61,7 +61,7 @@ this fix, not a complete application or cross-platform test run.
 `D:\experiments\dev\FM\_build\debug\me.exe` (0.2.0, 94,733,312 bytes) has
 SHA-256 `368d5d9f4ac6ad62da042170bdddd6804dc9c79087b07f88c2f41b2da2ef3a34`.
 It is registered against the new protected runtime
-`C:\Users\tjelinek\MidnightExplorer-20261111-tree-expansion`; existing private
+`<user-profile>\MidnightExplorer-20261111-tree-expansion`; existing private
 installations are retained. Both backend and native software-rendered UI startup
 checks passed from the D: executable with the two panels set to the reported Git
 folder and its bin folder (exit 0, empty stderr). The startup screenshot was

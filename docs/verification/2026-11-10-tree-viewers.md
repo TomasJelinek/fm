@@ -56,7 +56,7 @@ production behavior.
 The final debug executable is `_build/debug/me.exe`, SHA-256
 `cfb3bed652e5aa91620e4383d322333272cfe05210a4e0d2462e405636579340`.
 The identical binary is installed in
-`C:\Users\tjelinek\MidnightExplorer-20261110-html\me.exe`, with a matching
+`<user-profile>\MidnightExplorer-20261110-html\me.exe`, with a matching
 hash-bound runtime registration. The actual build-path startup smoke exited zero
 and listed five drives with 30 left-panel and 132 right-panel entries.
 The HTML provider package was unchanged in this integration.

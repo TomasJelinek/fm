@@ -5,6 +5,8 @@
 mod command_reclaim;
 #[path = "modeless.rs"]
 pub(super) mod modeless;
+#[path = "engine_startup.rs"]
+mod startup;
 #[path = "engine_teardown.rs"]
 mod teardown;
 use midnight_core::*;
@@ -860,6 +862,7 @@ impl Harness {
             send.clone(),
             begin_owned.clone(),
         );
+        let startup_tabs = startup::active_tabs(&presenter.borrow());
         let mut h = Self {
             ui,
             windows,
@@ -925,7 +928,14 @@ impl Harness {
                 comparators: midnight_core::FileComparatorSnapshot::default(),
             },
         ))));
+        // The Engine's own answer to the installed preferences request is ignored
+        // from now on. Wait for the tab restore as well: a restore navigation that
+        // the command queue refused is sent again with a later event, and would then
+        // replace a pane after these waits.
         h.until(|h| {
+            if !startup::tabs_restored(&h.presenter.borrow(), &startup_tabs) {
+                return false;
+            }
             if native_listing {
                 return !h.ui.window.get_left_loading() && !h.ui.window.get_right_loading();
             }
@@ -1018,6 +1028,16 @@ impl Harness {
             "the confirmation must be the only non-tooltip popup on Main"
         );
         self.ui.native.clone()
+    }
+
+    /// Whether an independent tool window is open (it opens after an Engine round trip).
+    #[allow(dead_code)]
+    pub fn has_tool_window(&self) -> bool {
+        self.windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .any(|window| window.window().is_visible())
     }
 
     pub fn tool_window(&self) -> Rc<MinimalSoftwareWindow> {

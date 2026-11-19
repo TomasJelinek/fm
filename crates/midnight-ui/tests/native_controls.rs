@@ -1,6 +1,5 @@
 //! Native navigation identities survive asynchronous metadata; full cwd stays readable.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

@@ -48,6 +48,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     };
     let token: SharedString = preview.id.0.to_string().into();
     if window.get_operation_token() == token {
+        // The same dialog stays open; only an existing-name question can appear in it.
+        present_replace(window, state.replace_name.as_ref(), preview);
         return;
     }
     let kind = preview.kind;
@@ -112,7 +114,11 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         MutationKind::CreateFile => (ActionIcon::NewFile, 4, ""),
         MutationKind::EditMetadata => return,
     };
-    window.set_operation_icon(presenter.desktop.image(&IconKey::action(role)));
+    window.set_operation_icon(
+        presenter
+            .desktop
+            .image(&IconKey::action(role), IconPlace::Action),
+    );
     window.set_operation_kind(kind_id);
     window.set_operation_warning(warning.into());
     window.set_operation_body(shown_text(&body));
@@ -122,6 +128,28 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_operation_has_name(has_name);
     window.set_operation_dangerous(kind == MutationKind::Delete(DeleteMode::Permanent));
     window.set_operation_token(token);
+    present_replace(window, state.replace_name.as_ref(), preview);
+}
+
+/// A new empty file over an existing name: the dialog asks before replacing it.
+fn present_replace(
+    window: &MainWindow,
+    replace_name: Option<&(OperationId, String)>,
+    preview: &OperationPreview,
+) {
+    let Some((_, name)) = replace_name.filter(|(id, _)| preview.kind == MutationKind::CreateFile && *id == preview.id)
+    else {
+        return;
+    };
+    window.set_operation_title("Replace file".into());
+    window.set_operation_warning(
+        format!(
+            "{} already exists. Choose Replace file to replace it with an empty file, or change the name.",
+            shown_text(name)
+        )
+        .into(),
+    );
+    window.set_operation_dangerous(true);
 }
 
 fn rename_selection_end(name: &str, kind: Option<EntryKind>) -> usize {

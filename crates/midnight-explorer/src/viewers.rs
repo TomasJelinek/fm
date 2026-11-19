@@ -1,5 +1,3 @@
-#[cfg(test)]
-use midnight_core::ViewerAppearance;
 use midnight_core::{Command, PaneId, ViewerAssociations, ViewerLaunch};
 use midnight_ui::{MainWindow, Presenter, Theme};
 use midnight_viewer_ui::{ViewerWindows, WindowPlacement};
@@ -459,7 +457,8 @@ mod preparation_tests {
 mod restore_tests {
     use super::*;
     use midnight_core::{
-        DirectoryIndex, Entry, EntryId, EntryKind, Event, UserPreferences, ViewerPreferences,
+        DirectoryIndex, Entry, EntryId, EntryKind, Event, UserPreferences, ViewerAppearance,
+        ViewerPreferences,
     };
     use midnight_viewer_ui::ViewerWindow;
     use slint::platform::{

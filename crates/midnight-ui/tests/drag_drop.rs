@@ -1,8 +1,7 @@
 //! Actual pointer gestures must keep their original rows and leave clicks unchanged.
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::FileRow;

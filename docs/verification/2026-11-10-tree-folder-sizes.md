@@ -113,7 +113,7 @@ the source-size helper checked 1,617 handwritten files, all at most 100,000 byte
 The final Windows debug executable is `_build/debug/me.exe`, SHA-256
 `1282969b6bd82a869212c417fa09d2afbd0cfe2b82e3771b0716b1ed08a65f33`.
 Its identical protected copy is at
-`C:\Users\tjelinek\MidnightExplorer-20261110-html\me.exe`; the build hash was
+`<user-profile>\MidnightExplorer-20261110-html\me.exe`; the build hash was
 registered against the existing plugin runtime. The actual build-path executable
 passed `--smoke-test`, listing five drives and both panels (30 and 132 entries).
 `app-build.log`, `build-hash.json`, `deployment.log` and `app-smoke/` retain the

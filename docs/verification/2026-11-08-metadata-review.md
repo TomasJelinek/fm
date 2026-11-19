@@ -68,7 +68,7 @@ The final native Winit/FemtoVG-WGPU metadata probe completed all 13 steps with e
 The debug app and that probe built successfully. `me.exe` is 83,528,704 bytes,
 SHA-256 `a76fd28ae1f6b28632317455a54e1e0f47a8bce982475602bf3403765e835056`.
 Its matching private plugin runtime is registered at
-`C:\Users\tjelinek\MidnightExplorer-20261108-170505-7c201158`. The workspace debug
+`<user-profile>\MidnightExplorer-20261108-170505-7c201158`. The workspace debug
 executable passed `--ui-smoke-test` against owned folders, produced `startup.png`,
 exited 0 with empty stderr and left the user's preferences hash unchanged.
 The release executable was not rebuilt.
@@ -108,7 +108,7 @@ and probe were rebuilt; the existing 39 unused inline-tree warnings remain.
 The new app SHA-256 is
 `DFDA43F9770E3384FBE6676E98FC80EC0A704CD9502504B3DBC0D8EA757FDC06`.
 Its matching protected plugin runtime is registered at
-`C:\Users\tjelinek\MidnightExplorer-20261108-215348-44c23679`.
+`<user-profile>\MidnightExplorer-20261108-215348-44c23679`.
 The startup smoke exited 0 with empty stderr, produced a snapshot and preserved
 the saved preferences hash. The normal `_build/debug/me.exe` window was then
 reopened successfully (`smoke-result.json`, `reopened.json`).

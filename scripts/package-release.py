@@ -552,7 +552,7 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, destination)
         inventory.append({key: package.get(key) for key in
-                          ("name", "version", "license", "repository", "source")})
+                          ("name", "version", "license", "repository", "source", "authors")})
     if missing:
         raise ValueError("Missing dependency license files: " + ", ".join(missing))
     rust_target = stage / "licenses" / "rust"

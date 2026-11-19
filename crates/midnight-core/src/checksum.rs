@@ -389,6 +389,9 @@ pub struct ChecksumManifestRequest {
     pub algorithm: ChecksumAlgorithm,
     pub destination: PathBuf,
     pub acknowledge_partial: Option<ChecksumPartialAcknowledgement>,
+    /// Replace an existing regular file after the user confirmed it. Without this an
+    /// existing destination fails with `AlreadyExists` so the caller can ask first.
+    pub overwrite: bool,
 }
 #[derive(Clone, Debug)]
 pub struct ChecksumManifestReceipt {
@@ -396,6 +399,8 @@ pub struct ChecksumManifestReceipt {
     pub included: u64,
     pub excluded: u64,
     pub verified_bytes: u64,
+    /// A replaced file the platform kept for recovery; user data, never removed here.
+    pub recovery: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug)]

@@ -208,7 +208,7 @@ captures and does not prove that old captures match today's source files.
 | [fdeflate](https://crates.io/crates/fdeflate/0.3.7) | 0.3.7 | MIT OR Apache-2.0 | app, image-decoder, image-viewer, pdf-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
 | [fearless_simd](https://crates.io/crates/fearless_simd/0.7.0) | 0.7.0 | Apache-2.0 OR MIT | pdf-viewer | Linux, Windows | — |
 | [fearless_simd](https://crates.io/crates/fearless_simd/1.2.0) | 1.2.0 | Apache-2.0 OR MIT | pdf-viewer | Linux, Windows | — |
-| femtovg | 0.27.0 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
+| femtovg | 0.27.0 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | yes |
 | [ffmpeg-next](https://crates.io/crates/ffmpeg-next/9.0.0) | 9.0.0 | WTFPL | thumbnail-video | Linux, Windows | yes |
 | [ffmpeg-sys-next](https://crates.io/crates/ffmpeg-sys-next/9.0.1) | 9.0.1 | WTFPL | thumbnail-video | Linux, Windows | — |
 | [field-offset](https://crates.io/crates/field-offset/0.3.6) | 0.3.6 | MIT OR Apache-2.0 | app | Linux, Windows | — |
@@ -327,7 +327,7 @@ captures and does not prove that old captures match today's source files.
 | [imgref](https://crates.io/crates/imgref/1.12.1) | 1.12.1 | CC0-1.0 OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [imgref](https://crates.io/crates/imgref/1.12.3) | 1.12.3 | CC0-1.0 OR Apache-2.0 | app | Linux, Windows | — |
 | [indexmap](https://crates.io/crates/indexmap/2.14.0) | 2.14.0 | Apache-2.0 OR MIT | renderer-tests | Linux, Windows | — |
-| [indexmap](https://crates.io/crates/indexmap/2.14.2) | 2.14.2 | Apache-2.0 OR MIT | api, app, archive | Linux, Windows | — |
+| [indexmap](https://crates.io/crates/indexmap/2.14.2) | 2.14.2 | Apache-2.0 OR MIT | api, app, archive | Linux, Windows | yes |
 | [indicatif](https://crates.io/crates/indicatif/0.18.6) | 0.18.6 | MIT | html-viewer | Linux, Windows | — |
 | [inotify](https://crates.io/crates/inotify/0.11.5) | 0.11.5 | ISC | app | Linux | — |
 | [inotify-sys](https://crates.io/crates/inotify-sys/0.1.8) | 0.1.8 | ISC | app | Linux | — |
@@ -341,7 +341,7 @@ captures and does not prove that old captures match today's source files.
 | [khronos_api](https://crates.io/crates/khronos_api/3.1.0) | 3.1.0 | Apache-2.0 | app, renderer-tests | Linux, Windows | — |
 | [kurbo](https://crates.io/crates/kurbo/0.13.1) | 0.13.1 | Apache-2.0 OR MIT | app, image-decoder, image-viewer, pdf-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
 | [lazy_static](https://crates.io/crates/lazy_static/1.5.0) | 1.5.0 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
-| [lazy_static](https://crates.io/crates/lazy_static/1.5.1) | 1.5.1 | MIT OR Apache-2.0 | app | Linux, Windows | — |
+| [lazy_static](https://crates.io/crates/lazy_static/1.5.1) | 1.5.1 | MIT OR Apache-2.0 | app | Linux, Windows | yes |
 | [libbz2-rs-sys](https://crates.io/crates/libbz2-rs-sys/0.2.6) | 0.2.6 | bzip2-1.0.6 | archive, html-viewer | Linux, Windows | — |
 | [libc](https://crates.io/crates/libc/0.2.186) | 0.2.186 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | api, app, archive, html-viewer, image-decoder, image-viewer, image-viewer-api, native-linux, native-macos, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Linux, Windows, macOS arm64, macOS x86-64 | yes |
@@ -431,10 +431,9 @@ captures and does not prove that old captures match today's source files.
 | [portable-atomic](https://crates.io/crates/portable-atomic/1.15.0) | 1.15.0 | Apache-2.0 OR MIT | app, html-viewer | Linux, Windows | — |
 | [potential_utf](https://crates.io/crates/potential_utf/0.1.6) | 0.1.6 | Unicode-3.0 | app, renderer-tests | Linux, Windows | — |
 | [presser](https://crates.io/crates/presser/0.3.1) | 0.3.1 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
-| [prettyplease](https://crates.io/crates/prettyplease/0.2.37) | 0.2.37 | MIT OR Apache-2.0 | app | Linux, Windows | yes |
 | [proc-macro-crate](https://crates.io/crates/proc-macro-crate/3.5.0) | 3.5.0 | MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [proc-macro2](https://crates.io/crates/proc-macro2/1.0.106) | 1.0.106 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
-| [proc-macro2](https://crates.io/crates/proc-macro2/1.0.107) | 1.0.107 | MIT OR Apache-2.0 | api, app, basic, conformance, html-viewer, image-decoder, image-viewer, markdown, pdf-viewer, source, thumbnail-image, thumbnail-video | Linux, Windows | — |
+| [proc-macro2](https://crates.io/crates/proc-macro2/1.0.107) | 1.0.107 | MIT OR Apache-2.0 | api, app, basic, conformance, html-viewer, image-decoder, image-viewer, markdown, pdf-viewer, source, thumbnail-image, thumbnail-video | Linux, Windows | yes |
 | [profiling](https://crates.io/crates/profiling/1.0.18) | 1.0.18 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.6) | 0.13.6 | MIT | app, markdown | Linux, Windows | yes |
 | [pxfm](https://crates.io/crates/pxfm/0.1.29) | 0.1.29 | BSD-3-Clause OR Apache-2.0 | renderer-tests | Linux, Windows | — |
@@ -540,7 +539,7 @@ captures and does not prove that old captures match today's source files.
 | [svgtypes](https://crates.io/crates/svgtypes/0.16.1) | 0.16.1 | Apache-2.0 OR MIT | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
 | [swash](https://crates.io/crates/swash/0.2.10) | 0.2.10 | Apache-2.0 OR MIT | app, renderer-tests | Linux, Windows | yes |
 | [syn](https://crates.io/crates/syn/2.0.117) | 2.0.117 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
-| [syn](https://crates.io/crates/syn/2.0.119) | 2.0.119 | MIT OR Apache-2.0 | api, app, basic, conformance, image-decoder, image-viewer, markdown, pdf-viewer, source, thumbnail-image | Linux, Windows | yes |
+| [syn](https://crates.io/crates/syn/2.0.119) | 2.0.119 | MIT OR Apache-2.0 | api, app, basic, conformance, image-decoder, image-viewer, markdown, pdf-viewer, source, thumbnail-image | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/3.0.10) | 3.0.10 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/3.0.4) | 3.0.4 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/3.0.9) | 3.0.9 | MIT OR Apache-2.0 | api, app, image-decoder, image-viewer, pdf-viewer, thumbnail-image, thumbnail-video | Linux, Windows | — |
@@ -583,7 +582,7 @@ captures and does not prove that old captures match today's source files.
 | [toml_writer](https://crates.io/crates/toml_writer/1.2.0%2Bspec-1.1.0) | 1.2.0+spec-1.1.0 | MIT OR Apache-2.0 | api, app | Linux, Windows | — |
 | [tracing](https://crates.io/crates/tracing/0.1.44) | 0.1.44 | MIT | app, renderer-tests | Linux, Windows | yes |
 | [tracing-attributes](https://crates.io/crates/tracing-attributes/0.1.31) | 0.1.31 | MIT | app | Linux, Windows | — |
-| [tracing-core](https://crates.io/crates/tracing-core/0.1.36) | 0.1.36 | MIT | app, renderer-tests | Linux, Windows | — |
+| [tracing-core](https://crates.io/crates/tracing-core/0.1.36) | 0.1.36 | MIT | app, renderer-tests | Linux, Windows | yes |
 | [tracing-log](https://crates.io/crates/tracing-log/0.2.0) | 0.2.0 | MIT | app | Linux, Windows | — |
 | [tracing-subscriber](https://crates.io/crates/tracing-subscriber/0.3.23) | 0.3.23 | MIT | app | Linux, Windows | yes |
 | [tree_magic_mini](https://crates.io/crates/tree_magic_mini/3.2.2) | 3.2.2 | MIT | app | Linux | — |

@@ -15,7 +15,7 @@ pointer events to the actual Fluent scrollbar, and cadence is logged. It is not
 a compositor scanout or physical mouse-to-photon measurement.
 
 The private diagnostic runtime is
-`C:\Users\tjelinek\MidnightExplorer-20261109-panel-probe`. The original coherent
+`<user-profile>\MidnightExplorer-20261109-panel-probe`. The original coherent
 candidate at `MidnightExplorer-20261109-provider-candidate` remains intact.
 Run under its ordinary owner identity; the sandbox account cannot authorize a
 different owner's private plugin installation. An initial run that contained
@@ -202,7 +202,7 @@ and [name-surrogate semantics](https://learn.microsoft.com/en-us/windows/win32/a
 ## Frozen candidate and final gates
 
 The private candidate is
-`C:\Users\tjelinek\MidnightExplorer-20261109-panels-candidate`. The desktop
+`<user-profile>\MidnightExplorer-20261109-panels-candidate`. The desktop
 shortcut and user preferences were not changed. The original provider candidate
 and renderer-only diagnostic remain separate. Frozen application source,
 dependency graph and hashes are retained under

@@ -201,8 +201,11 @@ pub(super) mod tests {
             .unwrap()
             .active
             .insert(7, stream.clone());
-        let handler =
-            CapturedResource::new(doc.clone(), stream, "https://mewv-1.invalid/a.css".into());
+        let handler = CapturedResource::new(
+            doc.clone(),
+            stream,
+            "https://mewv-1.invalid/mewv-document/a.css".into(),
+        );
         handler.cancel();
         assert!(doc.requests.lock().unwrap().active.is_empty());
         reply(
@@ -253,7 +256,7 @@ pub(super) mod tests {
             document: 1,
             browser: 1,
             frame: "main".into(),
-            url: "https://mewv-1.invalid/a".into(),
+            url: "https://mewv-1.invalid/mewv-document/a".into(),
         };
         let response = {
             let mut nav = doc.navigation.lock().unwrap();
@@ -317,7 +320,7 @@ pub(super) mod tests {
         let handler = CapturedResource::new(
             doc.clone(),
             stream.clone(),
-            "https://mewv-1.invalid/a".into(),
+            "https://mewv-1.invalid/mewv-document/a".into(),
         );
         let mut bytes = [0_u8; 2];
         let mut count = 0;
@@ -361,7 +364,7 @@ pub(super) mod tests {
             document: 1,
             browser: 1,
             frame: "main".into(),
-            url: "https://mewv-1.invalid/b".into(),
+            url: "https://mewv-1.invalid/mewv-document/b".into(),
         };
         {
             let mut nav = doc.navigation.lock().unwrap();

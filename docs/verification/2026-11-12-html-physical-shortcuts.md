@@ -84,7 +84,7 @@ physical chords (`final-web-input-windows.log`, 0.42 seconds). The protected HTM
 (`html-native-windows.log`, 4.18 seconds). These exercise the new Backspace and Alt
 arrow signals outside editable content and preserve textarea editing without file
 navigation. The tested runtime is
-`C:/Users/tjelinek/MidnightExplorer-20261112-user-menu-d5cf41d7`. The coordinating
+`<user-profile>/MidnightExplorer-20261112-user-menu-d5cf41d7`. The coordinating
 Windows startup qualification additionally reports native and software backends
 starting with exit code 0, empty stderr and unchanged preferences. No installed
 Linux Chromium result is claimed.

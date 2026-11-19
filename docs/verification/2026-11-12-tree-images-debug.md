@@ -4,7 +4,7 @@ The Windows debug application was rebuilt after the producer-side command captur
 retirement correction. Its SHA-256 is
 `ea19572aa83b8ac2fa20886d538ca63ccbf5700f57fe3ce473816061c124b8d1`.
 The protected installation is
-`C:/Users/tjelinek/MidnightExplorer-20261112-tree-images-ea19572a`.
+`<user-profile>/MidnightExplorer-20261112-tree-images-ea19572a`.
 An explicit deployment registered that exact build hash for the development EXE;
 startup never copies code or relaxes the normal plugin trust policy.
 

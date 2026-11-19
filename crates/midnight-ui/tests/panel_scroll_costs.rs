@@ -1,6 +1,5 @@
 //! Deterministic counts at the real FilePane/Rows boundary; no latency thresholds.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_core::*;
 use midnight_ui::{FileRow, Presenter, install, refresh};

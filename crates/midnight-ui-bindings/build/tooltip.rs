@@ -69,10 +69,10 @@ pub fn compile(input: &Path, output: &Path) -> Result<Vec<PathBuf>, String> {
     adapt(&document, "TooltipPlacement", "TipBody")?;
     let generated = i_slint_compiler::generator::rust::generate(&document, &loader.compiler_config)
         .map_err(|error| error.to_string())?;
-    // Format the generated Rust AST normally. A multi-megabyte single source
-    // line makes debug spans and diagnostics expensive for the downstream build.
-    let syntax = syn::parse2::<syn::File>(generated).map_err(|error| error.to_string())?;
-    std::fs::write(output, prettyplease::unparse(&syntax)).map_err(|error| error.to_string())?;
+    // Neither pass changes what the code does: see build/arms.rs and build/partition.rs.
+    let generated =
+        crate::partition::spread(crate::arms::prune(generated), crate::partition::PARTS)?;
+    std::fs::write(output, crate::source::text(generated)?).map_err(|error| error.to_string())?;
     Ok(dependencies)
 }
 

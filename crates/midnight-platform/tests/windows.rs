@@ -15,6 +15,39 @@ fn list(provider: &LocalFileSystem, path: &Path) -> Vec<Entry> {
     entries
 }
 
+/// `mklink /J` is a cmd.exe builtin and needs no privilege; starting cmd costs a
+/// fraction of a Windows PowerShell start. Both paths are passed quoted and verbatim,
+/// so shell syntax such as `&` stays literal; cmd would still expand `%NAME%` and end a
+/// quoted path at `"`, so such fixture paths are rejected instead of reinterpreted.
+fn create_junction(link: &Path, target: &Path) {
+    use std::os::windows::process::CommandExt;
+    for path in [link, target] {
+        assert!(
+            !path.as_os_str().to_string_lossy().contains(['"', '%']),
+            "unsupported junction fixture path: {path:?}"
+        );
+    }
+    let mut command = std::ffi::OsString::from("/d /v:off /c mklink /J \"");
+    command.push(link);
+    command.push("\" \"");
+    command.push(target);
+    command.push("\"");
+    let cmd = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("cmd.exe");
+    let output = std::process::Command::new(cmd)
+        .raw_arg(command)
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW; the fixture needs no console.
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success() && link.is_dir(),
+        "mklink /J {link:?} {target:?}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn cached_listing_metadata_matches_the_native_query() {
     let directory = tempfile::tempdir().unwrap();
@@ -39,24 +72,7 @@ fn directory_junction_is_classified_as_directory_link_and_dangling_metadata_is_s
     let junction = dir.path().join("junction");
     fs::create_dir(&target).unwrap();
     // Directory junctions exercise reparse points without requiring symlink privilege.
-    let powershell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/create-junction.ps1");
-    let output = std::process::Command::new(powershell)
-        .args(["-NoProfile", "-NonInteractive", "-File"])
-        .arg(fixture)
-        .arg("-JunctionPath")
-        .arg(&junction)
-        .arg("-TargetPath")
-        .arg(&target)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "junction creation failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    create_junction(&junction, &target);
     let provider = LocalFileSystem::new(None);
     let entries = list(&provider, dir.path());
     assert_eq!(

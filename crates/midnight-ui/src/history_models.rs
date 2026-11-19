@@ -48,7 +48,9 @@ impl HistoryRows {
                         length,
                         current,
                     },
-                    presenter.desktop.image(&IconKey::folder()),
+                    presenter
+                        .desktop
+                        .image(&IconKey::folder(), IconPlace::Location),
                 )
             }
             Source::Commands => {
@@ -63,7 +65,7 @@ impl HistoryRows {
                     },
                     presenter
                         .desktop
-                        .image(&IconKey::action(ActionIcon::Terminal)),
+                        .image(&IconKey::action(ActionIcon::Terminal), IconPlace::Action),
                 )
             }
         };

@@ -68,7 +68,10 @@ impl Presenter {
                 self.retired.push(Box::new(error));
             }
             ChecksumManifestUpdate::Finished(result) => {
-                s.save = None;
+                let last = s
+                    .save
+                    .take()
+                    .map(|save| (save.algorithm, save.destination, save.acknowledged));
                 match result {
                     Ok(receipt) => {
                         s.error.clear();
@@ -92,6 +95,28 @@ impl Presenter {
                                 self.queue_operation_refresh(pane, parent, None);
                             }
                         }
+                    }
+                    Err(error)
+                        if error.kind == std::io::ErrorKind::AlreadyExists && last.is_some() =>
+                    {
+                        // Ask instead of failing: the user may want the file replaced.
+                        let (algorithm, destination, acknowledged) = last.unwrap();
+                        let name = destination
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        s.save_message.clear();
+                        s.save_prompt = Some(SavePrompt {
+                            algorithm,
+                            destination,
+                            acknowledged,
+                            overwrite: true,
+                            message: format!(
+                                "{} already exists. Replace it?",
+                                crate::shown_text(&name)
+                            ),
+                        });
+                        self.retired.push(Box::new(error));
                     }
                     Err(error) => {
                         s.save_message.clear();

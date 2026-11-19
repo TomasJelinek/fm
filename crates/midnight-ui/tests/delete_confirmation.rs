@@ -1,11 +1,8 @@
 //! Delete confirmation renders a bounded summary of the worker's captured metadata.
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 #[path = "support/owned_windows.rs"]
 mod owned_windows;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

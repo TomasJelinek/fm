@@ -65,7 +65,7 @@ Executable: D:/experiments/dev/FM/_build/debug/me.exe, 96,123,904 bytes.
 SHA-256: 47a89e92edc2cbe2740d91ba0539f79d9c7f16b0356b0cf2ddbf67cf1164083a.
 
 Matching protected runtime:
-C:/Users/tjelinek/MidnightExplorer-20261111-footer-47a89e92.
+<user-profile>/MidnightExplorer-20261111-footer-47a89e92.
 The normal deployment helper verified existing plugin packages and registered
 the new executable hash; executable/plugin trust checks were not bypassed.
 

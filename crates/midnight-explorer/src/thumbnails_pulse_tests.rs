@@ -107,6 +107,10 @@ struct Fixture {
     controller: Controller,
     icon_views: Rc<RefCell<Vec<usize>>>,
     refuse: Rc<Cell<bool>>,
+    /// The icon edges the backend accepted, in order.
+    icon_edges: Rc<RefCell<Vec<midnight_core::IconEdges>>>,
+    /// While set, the backend refuses icon edges alone, as a full queue does.
+    refuse_edges: Rc<Cell<bool>>,
     /// The cache location the service reports; never created, as discovery fails first.
     cache: PathBuf,
     event_loop: TestEventLoop,
@@ -197,6 +201,9 @@ impl Fixture {
         let icon_views = Rc::new(RefCell::new(Vec::new()));
         let refuse = Rc::new(Cell::new(false));
         let (views, refused) = (icon_views.clone(), refuse.clone());
+        let icon_edges = Rc::new(RefCell::new(Vec::new()));
+        let refuse_edges = Rc::new(Cell::new(false));
+        let (edges, edges_refused) = (icon_edges.clone(), refuse_edges.clone());
         let cache = root.join("thumbnail cache");
         let event_loop = TestEventLoop::default();
         // An empty executable identity fails discovery on the first preview request.
@@ -209,10 +216,16 @@ impl Fixture {
                 storage: Arc::new(|_| panic!("no storage is queried")),
             },
             Rc::new(move |command| {
-                if let Command::SetCommandIconView { targets, .. } = command {
-                    views.borrow_mut().push(targets.len());
+                let accepted = !refused.get()
+                    && !(matches!(command, Command::SetIconEdges(_)) && edges_refused.get());
+                match command {
+                    Command::SetIconEdges(sent) if accepted => edges.borrow_mut().push(sent),
+                    Command::SetCommandIconView { targets, .. } => {
+                        views.borrow_mut().push(targets.len());
+                    }
+                    _ => {}
                 }
-                !refused.get()
+                accepted
             }),
             event_loop.post(),
         );
@@ -226,6 +239,8 @@ impl Fixture {
             controller,
             icon_views,
             refuse,
+            icon_edges,
+            refuse_edges,
             cache,
             event_loop,
         };
@@ -270,6 +285,65 @@ impl Drop for Fixture {
         self.controller.stop();
         let _ = self.window.hide();
     }
+}
+
+#[test]
+fn icon_edges_are_sent_once_retried_when_refused_and_rows_follow_the_view() {
+    use midnight_core::{ActionIcon, IconEdges, IconKey, IconPixels};
+    let fixture = Fixture::new(PanelViewMode::Thumbnails, false);
+    fixture.settle();
+    let tiles = IconEdges {
+        entry: 20,
+        tile: 96,
+        location: 20,
+    };
+    assert_eq!(fixture.icon_edges.borrow().last(), Some(&tiles));
+    let sent = fixture.icon_edges.borrow().len();
+    for _ in 0..20 {
+        fixture.advance();
+        assert!(!fixture.running());
+    }
+    assert_eq!(
+        fixture.icon_edges.borrow().len(),
+        sent,
+        "unchanged edges are not sent again"
+    );
+
+    // The backend delivers the parent row's art at both edges it is drawn at.
+    for edge in [20, 96] {
+        let pixels = vec![255; usize::from(edge) * usize::from(edge) * 4];
+        fixture.presenter.borrow_mut().apply(Event::IconLoaded {
+            key: IconKey::action(ActionIcon::Parent).sized(edge),
+            pixels: Arc::new(IconPixels::new(edge.into(), edge.into(), pixels).unwrap()),
+        });
+    }
+    midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
+    fixture.settle();
+    let parent_icon = || {
+        let row = fixture.window.get_left_rows().row_data(0).unwrap();
+        assert!(row.parent_entry);
+        row.icon.size().width
+    };
+    assert_eq!(parent_icon(), 96, "a tile");
+
+    // A compact window lists rows, while the backend's queue is full.
+    fixture.refuse_edges.set(true);
+    fixture.native.set_size(slint::PhysicalSize::new(600, 300));
+    for _ in 0..5 {
+        fixture.advance();
+        assert!(
+            fixture.running(),
+            "refused edges are offered again on the next pass"
+        );
+    }
+    assert_eq!(fixture.icon_edges.borrow().len(), sent);
+    assert_eq!(parent_icon(), 20, "rows follow the window at once");
+    fixture.refuse_edges.set(false);
+    fixture.settle();
+    assert_eq!(
+        fixture.icon_edges.borrow()[sent..],
+        [IconEdges { tile: 0, ..tiles }]
+    );
 }
 
 #[test]

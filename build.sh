@@ -2,10 +2,11 @@
 set -eu
 
 usage() {
-    printf '%s\n' 'Usage: ./build.sh [debug|release|clean] [--install-deps] [--dry-run]'
+    printf '%s\n' 'Usage: ./build.sh [debug|release|clean] [--install-deps] [--dry-run] [--validate]'
     printf '%s\n' 'FM_BUILD_BACKEND selects auto, native or docker. Missing native Rust is bootstrapped with rustup.'
     printf '%s\n' 'Host packages are installed only with --install-deps, which selects the native backend.'
     printf '%s\n' 'Clean removes repository _build output, preserving .tools and the legacy _build/docker cache.'
+    printf '%s\n' '--validate then runs scripts/validate.sh: the tests that CI runs on Linux (native backend only).'
 }
 
 print_command() {
@@ -48,6 +49,7 @@ build_profile=debug
 profile_chosen=0
 install_deps=0
 dry_run=0
+validate=0
 for argument in "$@"; do
     case "$argument" in
         debug|release|clean)
@@ -57,11 +59,15 @@ for argument in "$@"; do
             ;;
         --install-deps) install_deps=1 ;;
         --dry-run) dry_run=1 ;;
+        --validate)
+            if [ "$validate" = 1 ]; then usage >&2; exit 2; fi
+            validate=1
+            ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
-if [ "$build_profile" = clean ] && [ "$install_deps" = 1 ]; then
+if [ "$build_profile" = clean ] && { [ "$install_deps" = 1 ] || [ "$validate" = 1 ]; }; then
     usage >&2
     exit 2
 fi
@@ -100,6 +106,17 @@ if [ "$build_backend" = auto ]; then
     fi
 fi
 if [ "$build_backend" = docker ]; then
+    # The build image lacks the X11 test display (Xvfb) and mounts the source read-only,
+    # and validation inside it is unqualified; validation therefore runs natively only.
+    if [ "$validate" = 1 ]; then
+        printf '%s\n' '--validate runs the tests natively and cannot use the Docker build backend.' >&2
+        if [ "${FM_BUILD_BACKEND:-auto}" = docker ]; then
+            printf '%s\n' 'Unset FM_BUILD_BACKEND=docker (or set it to native).' >&2
+        else
+            printf '%s\n' 'The native compiler or GUI development libraries are missing; install them with ./build.sh --install-deps.' >&2
+        fi
+        exit 2
+    fi
     if [ "$dry_run" = 1 ]; then exec sh scripts/build-docker.sh "$build_profile" --dry-run; fi
     exec sh scripts/build-docker.sh "$build_profile"
 fi
@@ -118,6 +135,10 @@ if [ "$dry_run" = 1 ]; then
     print_command bash scripts/build-viewers.sh "$build_profile"
     print_command bash scripts/build-default-thumbnailers.sh "$build_profile"
     print_command bash scripts/build-archive-filesystem.sh "$build_profile"
+    if [ "$validate" = 1 ]; then
+        print_command bash scripts/validate.sh "$build_profile"
+        exec bash scripts/validate.sh "$build_profile" --dry-run
+    fi
     exit 0
 fi
 
@@ -171,4 +192,6 @@ bash scripts/build-native-filesystem.sh "$build_profile"
 bash scripts/build-network-filesystem.sh "$build_profile"
 bash scripts/build-viewers.sh "$build_profile"
 bash scripts/build-default-thumbnailers.sh "$build_profile"
-exec bash scripts/build-archive-filesystem.sh "$build_profile"
+if [ "$validate" = 0 ]; then exec bash scripts/build-archive-filesystem.sh "$build_profile"; fi
+bash scripts/build-archive-filesystem.sh "$build_profile"
+exec bash scripts/validate.sh "$build_profile"

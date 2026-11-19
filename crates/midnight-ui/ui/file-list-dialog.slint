@@ -1,7 +1,8 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
-import { ScrollView, TextEdit } from "std-widgets.slint";
+import { TextEdit } from "std-widgets.slint";
+import { VScrollView } from "scroll-view.slint";
 import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
-import { CompactPicker, TipBody } from "controls.slint";
+import { CompactPicker, Tip } from "controls.slint";
 import { Theme } from "theme.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
@@ -81,8 +82,7 @@ export component FileListDialog inherits Rectangle {
             }
             Rectangle {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1; clip: true;
-                if root.conflict-pending: ScrollView {
-                    horizontal-scrollbar-policy: always-off;
+                if root.conflict-pending: VScrollView {
                     VerticalLayout {
                         spacing: 10px; padding: 8px; alignment: start;
                         Text {
@@ -96,9 +96,8 @@ export component FileListDialog inherits Rectangle {
                         }
                     }
                 }
-                form-scroll := ScrollView {
+                form-scroll := VScrollView {
                     visible: !root.conflict-pending;
-                    horizontal-scrollbar-policy: always-off;
                     content-width: self.visible-width;
                     content-height: max(self.visible-height, form.min-height);
                     form := VerticalLayout {
@@ -147,7 +146,7 @@ export component FileListDialog inherits Rectangle {
                                         }
                                     }
                                 }
-                                Tooltip { TipBody { text: "One template is expanded for each selected item. Insert variables, tabs and line endings from the menu."; } }
+                                Tip { text: "One template is expanded for each selected item. Insert variables, tabs and line endings from the menu."; }
                             }
                             CompactPicker {
                                 model: root.template-history; label: ""; width: Theme.control-height;

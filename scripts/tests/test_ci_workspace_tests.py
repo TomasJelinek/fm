@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -226,6 +227,53 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(runner.execute(self.root, metadata, invoke, batch_size=1), 37)
         self.assertTrue(Path(artifact['executable']).exists())
         self.assertNotIn('z_later', visited)
+
+    def test_local_validation_keeps_every_executable_and_needs_no_build_target_directory(self):
+        # Local validation (scripts/validate.*) may use a CARGO_TARGET_DIR outside _build.
+        metadata = graph(self.root, [target('selection')])
+        metadata['target_directory'] = str(self.root / 'elsewhere')
+        artifact = self.artifact()
+        def invoke(command, root, gate):
+            return 0, [artifact] if gate['cleanup'] else []
+        self.assertEqual(runner.execute(self.root, metadata, invoke, retire_artifacts=False), 0)
+        self.assertTrue(Path(artifact['executable']).exists())
+
+    def test_no_fail_fast_runs_every_gate_and_returns_the_first_failure(self):
+        metadata = graph(self.root, [target('lib', kind='lib'), target('selection'), target('z_later')])
+        commands = []
+        def invoke(command, root, gate):
+            commands.append(command)
+            return {'selection': 37, 'z_later': 41}.get(gate['name'], 0), []
+        code = runner.execute(self.root, metadata, invoke, batch_size=1, retire_artifacts=False,
+                              fail_fast=False)
+        self.assertEqual(code, 37)
+        self.assertEqual([command[command.index('--features') + 2] for command in commands],
+                         ['--lib', '--doc', '--test', '--test'])
+        self.assertTrue(all(command[-1] == '--no-fail-fast' for command in commands))
+
+    def test_command_line_requires_ci_for_retirement_but_not_for_local_validation(self):
+        def run(arguments, ci):
+            environment = {name: value for name, value in os.environ.items() if name != 'CI'}
+            if ci:
+                environment['CI'] = 'true'
+            with mock.patch.object(sys, 'argv', ['ci-workspace-tests.py', *arguments]), \
+                    mock.patch.dict('os.environ', environment, clear=True), \
+                    mock.patch.object(runner, 'load_metadata', return_value={'loaded': True}), \
+                    mock.patch.object(runner, 'execute', return_value=0) as execute, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    return runner.main(), execute.call_args
+                except SystemExit as error:
+                    return error.code, None
+        code, call = run(['--keep-test-artifacts', '--no-fail-fast'], ci=False)
+        self.assertEqual(code, 0)
+        self.assertEqual((call.kwargs['retire_artifacts'], call.kwargs['fail_fast']), (False, False))
+        code, call = run(['--retire-successful-test-artifacts'], ci=True)
+        self.assertEqual((code, call.kwargs['retire_artifacts'], call.kwargs['fail_fast']), (0, True, True))
+        for arguments in ([], ['--retire-successful-test-artifacts'],
+                          ['--keep-test-artifacts', '--retire-successful-test-artifacts']):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(run(arguments, ci=False)[0], 2)
 
     def test_outside_or_unexpected_artifact_never_gets_deleted(self):
         metadata = graph(self.root, [target('selection')])

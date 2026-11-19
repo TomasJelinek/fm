@@ -274,6 +274,7 @@ impl Harness {
             Services {
                 mutation: Some(service.unwrap_or_else(|| Arc::new(FakeService(calls.clone())))),
                 locale: None,
+                transfer: None,
             },
             snapshots,
             Outbox {

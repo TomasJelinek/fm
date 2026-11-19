@@ -1,6 +1,5 @@
 //! Real editor events protect a draft from late settings and cross-shell picks.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_core::*;
 use midnight_ui::{MainWindow, Presenter, install};

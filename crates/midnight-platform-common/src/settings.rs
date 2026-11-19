@@ -89,6 +89,12 @@ struct StoredPreferences {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
+    glyph_fitting: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     user_commands: Option<Vec<StoredUserCommand>>,
     #[serde(
         default,
@@ -438,6 +444,15 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
             ));
         }
     }
+    if stored.version == 34 && stored.glyph_fitting.is_none() && stored.thumbnailer_associations.is_none() {
+        return Err(invalid("missing schema 34 preferences"));
+    }
+    let glyph_fitting = match (stored.version, stored.glyph_fitting.as_deref()) {
+        (1..=33, None) | (34, None) => midnight_core::GlyphFitting::default(),
+        (34, Some(name)) => midnight_core::GlyphFitting::from_name(name)
+            .ok_or_else(|| invalid("unknown glyph fitting"))?,
+        _ => return Err(invalid("unexpected glyph fitting")),
+    };
     let thumbnail_size = match (stored.version, stored.thumbnail_size) {
         (1..=24, None) => midnight_core::DEFAULT_THUMBNAIL_SIZE,
         (25..=CURRENT_PREFERENCES_VERSION, Some(size)) => size,
@@ -808,6 +823,7 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
             stored.thumbnailer_associations,
         )?,
         thumbnail_size,
+        glyph_fitting,
         shortcuts,
         panel_filters,
         panel_filter_history: match (stored.version, stored.panel_filter_history) {
@@ -875,9 +891,10 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         .any(|bookmark| bookmark.network.is_some());
     let disk_choices = preferences.disk_io_concurrency != DiskIoConcurrency::Automatic;
     let archive_preview_choices = !preferences.thumbnails_archives;
+    let glyph_choices = preferences.glyph_fitting != midnight_core::GlyphFitting::default();
     let comparator_choices = !preferences.file_comparators.rules.is_empty();
     let thumbnailer_choices = !preferences.thumbnailer_associations.overrides.is_empty();
-    let comparator_fields = comparator_choices || thumbnailer_choices;
+    let comparator_fields = comparator_choices || thumbnailer_choices || glyph_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -954,6 +971,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
             .then(|| preferences.viewer_associations.as_ref().into()),
         file_list: file_list_choices.then(|| preferences.file_list.into()),
         thumbnail_size: thumbnail_choices.then_some(preferences.thumbnail_size),
+        glyph_fitting: glyph_choices.then(|| preferences.glyph_fitting.name().to_owned()),
         user_commands: command_choices.then(|| {
             preferences
                 .user_commands
@@ -983,7 +1001,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if thumbnailer_choices {
+        version: if thumbnailer_choices || glyph_choices {
             34
         } else if comparator_choices {
             33

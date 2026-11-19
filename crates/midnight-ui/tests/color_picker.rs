@@ -1,6 +1,5 @@
 //! Exercise the real color picker without a settings store or main app window.
-#[path = "support/modeless.rs"]
-mod ui;
+use crate::support::modeless as ui;
 
 use slint::{
     ComponentHandle,
@@ -9,6 +8,10 @@ use slint::{
 use std::{cell::RefCell, rc::Rc};
 
 slint::slint! {
+    // Exported so that the scheme is not a compile-time constant, which would copy the
+    // whole palette into every color binding of the fixture.
+    import { Theme } from "../ui/theme.slint";
+    export { Theme }
     import { ColorPicker } from "../ui/color-picker.slint";
     import { Button } from "std-widgets.slint";
     export component ColorFixture inherits Window {

@@ -41,7 +41,7 @@ The locked, offline Windows release build completed successfully in 6m39s.
 `_build/release/me.exe` is 42,960,896 bytes, SHA-256
 `D6EB6C6284569568F52E3DD77CE2FEAFB05F984FB12DFC0BFC4231B4BD748F8F`.
 The verified private installation is
-`C:\Users\tjelinek\MidnightExplorer-20261107-192543-2656d48c`; the redirected
+`<user-profile>\MidnightExplorer-20261107-192543-2656d48c`; the redirected
 Desktop shortcut targets it, and the direct checkout executable has a matching
 hash-bound runtime registration. Existing plugin packages were reused; their API
 and sources did not change in this checkpoint.

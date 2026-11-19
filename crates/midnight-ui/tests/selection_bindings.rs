@@ -8,8 +8,7 @@ use slint::{
 use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc};
 #[path = "support/selection.rs"]
 mod selection;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 fn control(window: &MainWindow, text: &str) {
     chord(window, text, false);

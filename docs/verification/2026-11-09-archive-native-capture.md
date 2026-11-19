@@ -149,7 +149,7 @@ or counted as passing. App harness staging happened only after Cargo completed,
 and the source/staged harness hashes were verified.
 
 Windows deployment is complete in
-`C:\Users\tjelinek\MidnightExplorer-20261109-064239-a020dd9d`.
+`<user-profile>\MidnightExplorer-20261109-064239-a020dd9d`.
 The installed archive worker hash matches the qualified worker. Protected runtime
 registration matches the app hash above, and the desktop shortcut targets this
 new installation. The previous installation remains available.

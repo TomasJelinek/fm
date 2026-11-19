@@ -1,5 +1,5 @@
-import { ListView } from "std-widgets.slint";
-import { CompactPicker, TipBody } from "controls.slint";
+import { ListView } from "vlist-view.slint";
+import { CompactPicker, Tip } from "controls.slint";
 import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { Theme } from "theme.slint";
@@ -50,7 +50,7 @@ component CommandRow inherits Rectangle {
         Text { text: root.command.label; color: root.command.selected ? Theme.selected-text : Theme.text; font-size: Theme.font-size; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
         Text { text: root.command.aliases; color: root.command.selected ? Theme.selected-text : Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; overflow: elide; max-width: parent.width * 0.45; }
     }
-    area := TouchArea { clicked => { root.select(); } Tooltip { TipBody { text: root.command.id; } } }
+    area := TouchArea { clicked => { root.select(); } Tip { text: root.command.id; } }
 }
 
 export component KeyboardEditor inherits VerticalLayout {
@@ -98,7 +98,6 @@ export component KeyboardEditor inherits VerticalLayout {
             }
             commands := ListView {
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                horizontal-scrollbar-policy: always-off;
                 changed visible-height => { root.reveal-selection(); }
                 for command in KeyboardEditorView.commands : CommandRow {
                     width: commands.visible-width; command: command;
@@ -165,7 +164,7 @@ export component KeyboardEditor inherits VerticalLayout {
                 }
                 TouchArea {
                     mouse-cursor: text; clicked => { capture.focus(); }
-                    Tooltip { TipBody { text: "Press the desired combination. Tab or Escape records that key and leaves this field. Captured keys never run application commands."; } }
+                    Tip { text: "Press the desired combination. Tab or Escape records that key and leaves this field. Captured keys never run application commands."; }
                 }
             }
         }

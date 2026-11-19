@@ -24,7 +24,7 @@ are reaped and nonzero exit status is surfaced; queue overload fails visibly.
 - Native FemtoVG-WGPU UI smoke exited successfully and produced the inspected
   [screenshot](../screenshots/mouse-activation-windows.png). Both panels, parent
   rows, active decoration, metadata, host icons and multilingual text render.
-- Updated application launched as `NVIDIA.COM\tjelinek`, PID **22584**, title
+- Updated application launched as `<domain>\<user>`, PID **22584**, title
   `FM — File Manager`; native window visible and responding at verification.
 
 ## Linux / Ubuntu WSL

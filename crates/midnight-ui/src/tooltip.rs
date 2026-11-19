@@ -4,7 +4,7 @@
 //! shares its host coordinates. Recheck this contract when upgrading Slint or
 //! adding a backend with native popup windows. This observer never consumes input.
 use crate::{
-    AboutWindow, ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobProgressWindow,
+    ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobProgressWindow,
     JobsWindow, MainWindow, TooltipPlacement,
 };
 #[cfg(test)]
@@ -33,7 +33,6 @@ enum Target {
     Find(slint::Weak<FindWindow>),
     Checksum(slint::Weak<ChecksumWindow>),
     Help(slint::Weak<HelpWindow>),
-    About(slint::Weak<AboutWindow>),
     Jobs(slint::Weak<JobsWindow>),
     JobProgress(slint::Weak<JobProgressWindow>),
     Decision(slint::Weak<DecisionWindow>),
@@ -43,7 +42,6 @@ enum Host {
     Find(FindWindow),
     Checksum(ChecksumWindow),
     Help(HelpWindow),
-    About(AboutWindow),
     Jobs(JobsWindow),
     JobProgress(JobProgressWindow),
     Decision(DecisionWindow),
@@ -55,7 +53,6 @@ impl Target {
             Self::Find(window) => window.upgrade().map(Host::Find),
             Self::Checksum(window) => window.upgrade().map(Host::Checksum),
             Self::Help(window) => window.upgrade().map(Host::Help),
-            Self::About(window) => window.upgrade().map(Host::About),
             Self::Jobs(window) => window.upgrade().map(Host::Jobs),
             Self::JobProgress(window) => window.upgrade().map(Host::JobProgress),
             Self::Decision(window) => window.upgrade().map(Host::Decision),
@@ -69,7 +66,6 @@ impl Host {
             Self::Find(window) => window.window(),
             Self::Checksum(window) => window.window(),
             Self::Help(window) => window.window(),
-            Self::About(window) => window.window(),
             Self::Jobs(window) => window.window(),
             Self::JobProgress(window) => window.window(),
             Self::Decision(window) => window.window(),
@@ -81,7 +77,6 @@ impl Host {
             Self::Find(window) => window.global::<TooltipPlacement>(),
             Self::Checksum(window) => window.global::<TooltipPlacement>(),
             Self::Help(window) => window.global::<TooltipPlacement>(),
-            Self::About(window) => window.global::<TooltipPlacement>(),
             Self::Jobs(window) => window.global::<TooltipPlacement>(),
             Self::JobProgress(window) => window.global::<TooltipPlacement>(),
             Self::Decision(window) => window.global::<TooltipPlacement>(),
@@ -103,9 +98,6 @@ pub(crate) fn install_checksum(window: &ChecksumWindow) -> Result<(), PlatformEr
 }
 pub(crate) fn install_help(window: &HelpWindow) -> Result<(), PlatformError> {
     register(Target::Help(window.as_weak()))
-}
-pub(crate) fn install_about(window: &AboutWindow) -> Result<(), PlatformError> {
-    register(Target::About(window.as_weak()))
 }
 pub(crate) fn install_job_progress(window: &JobProgressWindow) -> Result<(), PlatformError> {
     register(Target::JobProgress(window.as_weak()))
@@ -193,6 +185,7 @@ fn register(target: Target) -> Result<(), PlatformError> {
                 global.set_surface_width(size.width);
                 global.set_surface_height(size.height);
             }
+            global.set_scale(host.window().scale_factor());
             match event {
                 WindowEvent::PointerMoved { position }
                 | WindowEvent::PointerPressed { position, .. }

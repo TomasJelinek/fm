@@ -1,6 +1,6 @@
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { HScrollView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedCheckBox } from "hinted-inputs.slint";
+import { HintedActionButton, HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -206,9 +206,8 @@ export component OperationDialog inherits Rectangle {
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
-            middle := ScrollView {
+            middle := VScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
                 content-width: self.visible-width;
                 content-height: max(self.visible-height, form.min-height);
                 changed height => { root.reveal-focused(); }
@@ -234,7 +233,7 @@ export component OperationDialog inherits Rectangle {
                     if root.has-name && root.input-label != "" && !root.compact : Text {
                         text: root.input-label; color: Theme.text; font-size: Theme.font-size;
                     }
-                    name := LineEdit {
+                    name := HintedLineEdit {
                         max-height: max(Theme.control-height, self.preferred-height);
                         vertical-stretch: 0;
                         visible: root.has-name;
@@ -242,11 +241,11 @@ export component OperationDialog inherits Rectangle {
                         changed has-focus => { if self.has-focus { root.reveal-middle(self.y, self.height); } }
                         accepted => { if root.confirm-enabled && self.text != "" { root.confirm(self.text); } }
                     }
-                    option-scroll := ScrollView {
+                    option-scroll := HScrollView {
                         visible: root.option-visible; min-width: 0px;
                         height: root.option-visible ? max(Theme.control-height, option.preferred-height)
                             + (root.wait-visible && self.width >= option.preferred-width ? 0px : FluentScrollMetrics.overlay-size) : 0px;
-                        horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                        horizontal-scrollbar-policy: as-needed;
                         HorizontalLayout {
                             option := HintedCheckBox {
                                 text: root.option-label; hint: root.option-hint;
@@ -257,11 +256,11 @@ export component OperationDialog inherits Rectangle {
                             }
                         }
                     }
-                    links-scroll := ScrollView {
+                    links-scroll := HScrollView {
                         visible: root.follow-directory-links-visible; min-width: 0px;
                         height: root.follow-directory-links-visible ? max(Theme.control-height, follow-links.preferred-height)
                             + (self.width >= follow-links.preferred-width ? 0px : FluentScrollMetrics.overlay-size) : 0px;
-                        horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                        horizontal-scrollbar-policy: as-needed;
                         HorizontalLayout {
                             follow-links := HintedCheckBox {
                                 text: "Follow directory links";
@@ -273,11 +272,11 @@ export component OperationDialog inherits Rectangle {
                             }
                         }
                     }
-                    wait-scroll := ScrollView {
+                    wait-scroll := HScrollView {
                         visible: root.wait-visible; min-width: 0px;
                         height: root.wait-visible ? max(Theme.control-height, wait-option.preferred-height)
                             + (self.width >= wait-option.preferred-width ? 0px : FluentScrollMetrics.overlay-size) : 0px;
-                        horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                        horizontal-scrollbar-policy: as-needed;
                         HorizontalLayout {
                             wait-option := HintedCheckBox {
                                 text: "Wait for other operations to finish";
@@ -301,9 +300,10 @@ export component OperationDialog inherits Rectangle {
                 Rectangle {
                     horizontal-stretch: 1; min-width: 0px;
                     height: max(32px, Theme.control-height + (root.compact ? 12px : 0px), confirm-button.preferred-height);
-                    primary-scroll := ScrollView {
-                        width: parent.width; height: parent.height;
-                        horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                    primary-scroll := HScrollView {
+                        // Positioned, so that its minimum size stays out of the parent's layout info.
+                        x: 0px; y: 0px; width: parent.width; height: parent.height;
+                        horizontal-scrollbar-policy: as-needed;
                         HorizontalLayout { alignment: end;
                             confirm-button := HintedActionButton {
                                 primary: true; destructive: root.dangerous;

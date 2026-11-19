@@ -94,6 +94,6 @@ Final independent Markdown DLL SHA-256:
 `92D7A43655962F1C445D38AB720DBB0861EDC5531A0453497A330766D5DD7F87`.
 
 The matching private runtime is registered at
-`C:\Users\tjelinek\MidnightExplorer-20261108-212102-75f7a701`.
+`<user-profile>\MidnightExplorer-20261108-212102-75f7a701`.
 Plugin/ancestor trust checks remain enabled. This is a debug application for
 iteration with a separately optimized plugin, not a newly published release.

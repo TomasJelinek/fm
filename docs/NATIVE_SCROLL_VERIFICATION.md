@@ -687,7 +687,7 @@ case, compared with approximately 16 ms under DX12. Image and Markdown first
 movement still waited 314.033 and 334.171 ms. It was not extended to a sustained
 run and does not support a backend-policy change.
 
-Read-only adapter discovery found Intel Iris Xe (driver 32.0.101.7088) and NVIDIA
+Read-only adapter discovery found Intel Iris Xe (driver 32.0.101.7088) and a discrete
 RTX 3500 Ada Generation Laptop GPU (driver 621.14). Pinned WGPU 30.0.1 disables
 DX12 suballocation for adapter names containing `Iris(R) Xe`; its documented
 workaround selects committed allocations regardless of memory hints. The
@@ -696,7 +696,7 @@ workaround and all driver/security policies remain unchanged.
 A child-only `WGPU_POWER_PREF=high`, `WGPU_BACKEND=dx12` isolated run used the
 same executable, with `WGPU_ADAPTER_NAME` explicitly absent. A separate,
 timing-excluded run under identical settings confirmed its exact owned PID as
-an NVIDIA C+G process (`viewer-high-adapter-evidence2-adapter.json`). The adapter
+a discrete-GPU C+G process (`viewer-high-adapter-evidence2-adapter.json`). The adapter
 has 12,282 MiB framebuffer memory; WDDM reported its per-process GPU usage as
 unavailable. This separate adapter observation supports selection under those
 settings; the clean timing process itself was not queried during measurement.

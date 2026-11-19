@@ -58,7 +58,7 @@ Evidence is under `_build/qa/custom-command-preview/`.
   `source-hashes.json` records the 11 scoped source hashes. The build also contains
   the shared Network ordering and metadata-only archive folder-size sorting.
 - The isolated Windows candidate is
-  `C:/Users/tjelinek/MidnightExplorer-20261109-navigation-candidate/me.exe`.
+  `<user-profile>/MidnightExplorer-20261109-navigation-candidate/me.exe`.
   Its default-renderer `--ui-smoke-test` rendered both panels and exited 0 with
   empty stderr. The screenshot was visually inspected without a startup error.
   Real/legacy preference hashes and the previous frozen performance candidate

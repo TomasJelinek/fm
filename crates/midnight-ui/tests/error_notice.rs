@@ -1,6 +1,5 @@
 //! Dismissing presentation never clears the host's failure or grants capabilities.
-#[path = "support/modeless.rs"]
-mod ui;
+use crate::support::modeless as ui;
 use i_slint_core::{
     accessibility::AccessibilityAction,
     item_tree::ItemRc,
@@ -13,6 +12,10 @@ use slint::{
 use std::{cell::RefCell, rc::Rc};
 
 slint::slint! {
+    // Exported so that the scheme is not a compile-time constant, which would copy the
+    // whole palette into every color binding of the fixture.
+    import { Theme } from "../ui/theme.slint";
+    export { Theme }
     import { ErrorNotice } from "../ui/error-notice.slint";
     export component NoticeFixture inherits Window {
         preferred-width: 320px; preferred-height: 200px;

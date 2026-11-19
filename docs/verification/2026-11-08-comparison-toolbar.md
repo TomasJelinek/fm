@@ -48,7 +48,7 @@ Evidence: `_build/goal/comparison-toolbar/`.
 The executable SHA256 is
 `8BBE191FAC651DB4CFCDC83B20AD83B0B0C64AB4E647BC569C11A8F443384F02`.
 Its matching protected runtime is
-`C:/Users/tjelinek/MidnightExplorer-20261108-023418-11e8dd13`.
+`<user-profile>/MidnightExplorer-20261108-023418-11e8dd13`.
 Registration lets the debug build resolve these protected plugin files without
 relaxing plugin path trust checks. See `app-build.log`, `deploy.log` and
 `app-acceptance.txt` in the evidence directory.

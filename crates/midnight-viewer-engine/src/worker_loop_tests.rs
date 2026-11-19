@@ -341,9 +341,15 @@ fn fatal_failure_naming_the_optional_locate_request_is_reported_at_once() {
         worker.session_events(vec![failed(12, code, MESSAGE)], &output);
         assert!(worker.text.locate_request.is_none());
         assert_eq!(worker.text.unavailable, code != QUEUE_FULL);
-        assert!(
-            worker.status.is_empty(),
-            "an optional lookup's own failure leaves the page usable (code {code})"
+        // An optional lookup's own failure leaves the page usable: an unsupported or
+        // busy lookup stays silent, and any other failure only names itself on the
+        // status line.
+        let expected = if code == INVALID { MESSAGE } else { "" };
+        assert_eq!(worker.status, expected, "code {code}");
+        assert_eq!(
+            output.take_open_result(),
+            None,
+            "the lookup failure does not fail the session (code {code})"
         );
     }
     let (mut worker, output) = worker();

@@ -3,8 +3,7 @@
 mod input;
 #[path = "support/operations_native.rs"]
 mod native;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 #[cfg(windows)]
 #[path = "operations_native_ui/windows_delete.rs"]
 mod windows_delete;

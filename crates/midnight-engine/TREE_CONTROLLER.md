@@ -180,21 +180,21 @@ for a still-running callback.
 
 Model construction, projection, target resolution and session/command/completion
 retirement run on the pane's model worker, outside snapshot and mailbox mutexes.
-Each model worker normally runs on a dedicated `midnight-tree-worker` thread for
-the controller's lifetime, outside Tokio's bounded blocking pool; only when the
-OS refuses that thread does the pool run the worker instead. The worker keeps
-the engine runtime's context to wait for permits and start branch jobs. Branch
-jobs run separately on that pool so collapse and navigation can be processed
-while enumeration is blocked. Root-ready messages contain no provider resources.
+Each model worker runs for the controller's lifetime on one of the engine's
+resident worker threads (`midnight-engine-<n>`), outside Tokio's bounded blocking
+pool; when the resident pool refuses the worker, the pane's lane is closed. The
+worker runs in the engine runtime's context to wait for permits and start branch
+jobs. Branch jobs run separately on the blocking pool so collapse and navigation
+can be processed while enumeration is blocked. Root-ready messages contain no
+provider resources.
 
 Shutdown or disconnected command input closes both lanes and cancels their
 generations. Idle model workers terminate and drain their queues. Controller
 shutdown waits at most 200 ms per worker; an uncancellable provider callback
-retains its bounded worker and resources until its actual return. For a worker
-on its dedicated thread that join is the only wait: as for the engine's other
-dedicated actor threads, runtime shutdown does not wait for the thread, so a
-worker still blocked in a provider call outlives the runtime until the call
-returns and then exits. A late branch completion retires directly on its branch
-worker when the lane is already closed.
+retains its bounded worker and resources until its actual return. That join is
+the controller's only wait, and engine shutdown observes the resident pool's exit
+for at most another 200 ms: a worker still blocked in a provider call keeps its
+resident thread until the call returns. A late branch completion retires
+directly on its branch worker when the lane is already closed.
 Accepted navigation targets retain their independent lifetime until the receiver
 releases them through its normal background reclamation path.

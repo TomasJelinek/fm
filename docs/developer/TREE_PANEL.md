@@ -19,9 +19,10 @@ Arc before branch, navigation, selection, or viewport requests.
 
 Each emitted projection waits for the UI to acknowledge its exact Arc before a
 new unsolicited publication replaces it. At most one newer publication is retained
-and coalesced on the model worker. Each pane's model worker normally runs on its
-own `midnight-tree-worker` thread, outside Tokio's bounded blocking pool (the pool
-runs it only when the OS refuses that thread); branch listings still run as
+and coalesced on the model worker. Each pane's model worker runs for the session on
+one of the engine's resident worker threads (`midnight-engine-<n>`, a fixed pool that
+starts with the engine), outside Tokio's bounded blocking pool; if that pool refuses
+the worker, the pane's tree lane is closed instead. Branch listings still run as
 separate blocking jobs, so collapse and navigation proceed while an enumeration is
 blocked. A completed provider task releases its mutation permit even while
 publication delivery waits. The mailbox retains a weak receipt
