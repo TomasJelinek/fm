@@ -103,6 +103,58 @@ pub(super) fn pipe() -> io::Result<(File, File)> {
 
 static PROCESS_CREATION: Mutex<()> = Mutex::new(());
 
+/// Serializes acquiring the per-user AppContainer profile: concurrent first creation of the
+/// same profile can fail with E_UNEXPECTED (seen on a fresh CI user while workers started in
+/// parallel).
+static WORKER_PROFILE: Mutex<()> = Mutex::new(());
+
+/// The SID of the restricted workers' AppContainer, creating its per-user profile when absent.
+/// A concurrent creator in another process is given a few short retries.
+fn worker_profile_sid() -> io::Result<Sid> {
+    const ALREADY_EXISTS: i32 = 0x800700b7u32 as i32;
+    const UNEXPECTED: i32 = 0x8000ffffu32 as i32;
+    let name: Vec<u16> = "MidnightExplorer.RestrictedWorker.v1"
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let _profile = WORKER_PROFILE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut result = UNEXPECTED;
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(10 << attempt));
+        }
+        let mut sid = null_mut();
+        // SAFETY: fixed terminated name, no granted capabilities, and writable SID output.
+        // Windows requires the per-user profile to exist; merely deriving its SID makes
+        // CreateProcess fail.
+        result = unsafe {
+            CreateAppContainerProfile(
+                name.as_ptr(),
+                name.as_ptr(),
+                name.as_ptr(),
+                null(),
+                0,
+                &mut sid,
+            )
+        };
+        if result == ALREADY_EXISTS {
+            // SAFETY: the same terminated name and a writable SID output.
+            result = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+        }
+        if result >= 0 {
+            return Ok(Sid(sid));
+        }
+        if result != UNEXPECTED {
+            break;
+        }
+    }
+    Err(io::Error::other(format!(
+        "AppContainer SID unavailable: {result:#x}"
+    )))
+}
+
 /// Serializes the short intervals in which this process holds handles marked inheritable for
 /// one specific child. In-process launchers that let `CreateProcessW` inherit every inheritable
 /// handle, including `std::process::Command::spawn`, should hold this guard while spawning so
@@ -223,32 +275,7 @@ fn spawn_impl(
     let error = OpenOptions::new().write(true).open("NUL")?;
     #[cfg(feature = "startup-diagnostics")]
     timing.mark("pipes");
-    let name: Vec<u16> = "MidnightExplorer.RestrictedWorker.v1"
-        .encode_utf16()
-        .chain([0])
-        .collect();
-    let mut sid = null_mut();
-    // SAFETY: fixed terminated name, no granted capabilities, and writable SID output. Windows
-    // requires the per-user profile to exist; merely deriving its SID makes CreateProcess fail.
-    let mut result = unsafe {
-        CreateAppContainerProfile(
-            name.as_ptr(),
-            name.as_ptr(),
-            name.as_ptr(),
-            null(),
-            0,
-            &mut sid,
-        )
-    };
-    if result == 0x800700b7u32 as i32 {
-        result = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
-    }
-    if result < 0 {
-        return Err(io::Error::other(format!(
-            "AppContainer SID unavailable: {result:#x}"
-        )));
-    }
-    let sid = Sid(sid);
+    let sid = worker_profile_sid()?;
     #[cfg(feature = "startup-diagnostics")]
     timing.mark("profile");
     // SAFETY: unnamed non-inheritable job; ownership begins only after a nonnull handle.
