@@ -19,6 +19,66 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Merge repair — 19 November 2026
+
+The deep code review (`3ebc2001`) and the viewer, comparator and filesystem
+integration work (`ecf9374e`) were developed in parallel from `3a27eeb2` and merged
+in `cf8138e4`; `48db5ec6`, `45ede585` and `544b48db` followed. That merge did not
+build the test targets of the engine, viewer engine, comparator, plugin host and
+explorer, failed workspace Clippy, and failed several comparator and UI tests on
+every run. Twenty-seven repair commits on `544b48db` resolve these semantic
+conflicts; each commit message names the cause and the side whose intent it follows.
+
+- Engine: production files included into the single `integration` test binary reach
+  their modules through `super::` paths; library tests use the merged comparator
+  snapshot and resident-worker APIs; the actor-thread module that the resident
+  worker pool replaced is removed, and the engine contracts describe the resident
+  workers.
+- Viewers and comparator: viewer-engine tests start resident pools and use
+  shared-pixel document rasters; the comparator test builds, configuration tests
+  (now linked into core's integration binary as `file_comparators::`) and fixture
+  paths are fixed; a picker closed by an Options page change is published at once,
+  also when the change is deferred (a product fix); tests that met the asynchronous
+  font catalog frame now wait for it or hold the scan.
+- UI, plugin host and explorer: tests follow the merged accessible names, restored
+  theme fills, optional-source status, retained viewer windows, web policy
+  presentation and picker callbacks; HTML captured navigation below the synthetic
+  document root is admitted (a product fix); queued change handlers settle before
+  the viewer mode list opens.
+- Separate workspaces: the source viewer's tests follow the merged lookahead and
+  YAML lexer, and the archive reader keeps its zero relative seek check under strict
+  Clippy.
+
+The two TEST-03 timeouts were races inside the tests and are fixed on top of the
+repair ([test timeout races](verification/2026-11-18-test-timeout-races.md)).
+
+Validation of the integrated tip (orchestrator logs `vrepair-*` in the repair
+worktree's `_build/qa`): Windows: `cargo fmt -p <package> -- --check` for every
+workspace package and workspace Clippy with `-D warnings` reported nothing, and
+`cargo test --workspace --no-fail-fast` gave 6,780 passed / 0 failed / 143 ignored
+in 92 groups. Linux (WSL Ubuntu 24.04): workspace Clippy with `-D warnings` reported
+nothing, and the workspace tests gave 6,692 passed / 0 failed / 133 ignored in 92
+groups. The separate workspaces' CI commands passed at the repair's `e0ce73fe` (logs
+`repair-*-separate*`): on Windows the API, plugin SDK consumer, viewer conformance,
+worker package, PDF, archive and filesystem plugin workspaces and the HTML viewer
+without its native CEF feature; on Linux the API, plugin SDK consumer, viewer
+conformance, PDF, archive and filesystem plugin workspaces (the HTML viewer's
+dependencies cannot be resolved offline there).
+
+Not established:
+
+- The HTML viewer's native CEF code, where both sides changed `native.rs`,
+  `handlers.rs` and `resources.rs`, has not been compiled: no CEF SDK or `cef`
+  crates are cached on this machine.
+- The image decoder, image viewer, image thumbnail and video thumbnail workspaces
+  got formatting checks only, because their native inputs are not available offline;
+  their trees equal the review's validated `3ebc2001`.
+- No GitHub-hosted CI run.
+- On this machine Microsoft Defender for Endpoint data loss prevention moves the
+  NTFS ChangeTime of newly written files of some types, which makes live-validated
+  captures report a change; a few comparator tests fail intermittently here for that
+  reason (COMPARE-02).
+
 ### Deep code review — 18 November 2026
 
 A deep code review of the whole repository, started from main `3a27eeb2` on
@@ -249,7 +309,7 @@ UI-PERF-01 (idle wakeups); PERF-04 (unmeasured hot paths and the corpus test tim
 ARCH-01 (small-content budget); ARCH-05, ARCH-06 and LIFE-02 (captures retained
 after a taint or quarantine); ARCH-07, REL-01 and SDK-01 to SDK-04 (next API/SDK
 releases); META-04, WATCH-01, SPOOL-01, LINK-01, IO-02, TREE-PERF-01, TREE-02,
-INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, BUILD-01, TRASH-01, TEST-01, TEST-02, TABS-01,
+INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, COMPARE-02, BUILD-01, TRASH-01, TEST-01, TEST-02, TABS-01,
 NOTICE-03, IO-03 and OPTIONS-02. The role table under
 [current role boundaries](#current-role-boundaries-and-exclusive-ownership)
 describes assignments made before this review; the review assigned no further role
