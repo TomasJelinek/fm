@@ -104,6 +104,32 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
     assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::ConfirmOperation { id, new_name: Some(name), replace_existing: false } if *id == request.id && name == "new.txt")));
     assert!(ui.window.get_operation_token().is_empty());
+    // Panel keys wait for the confirmed Rename; this mock Engine ends it unchanged.
+    assert!(ui.window.get_mutation_input_blocked());
+    state
+        .borrow_mut()
+        .apply(Event::Operation(OperationEvent::Progress(Arc::new(
+            OperationProgress {
+                pause_requested: false,
+                paused: false,
+                discovery: Default::default(),
+                id: request.id,
+                throughput: Arc::default(),
+                kind: MutationKind::Rename,
+                state: OperationState::Cancelled,
+                total: 1,
+                completed: 0,
+                failed: 0,
+                processed_entries: 0,
+                current_path: None,
+                message: String::new(),
+                errors: vec![],
+                source_directory: path.clone(),
+                renamed_to: None,
+            },
+        ))));
+    refresh(&ui.window, &state.borrow());
+    assert!(!ui.window.get_mutation_input_blocked());
 
     for (delete_key, permanent) in [
         (Key::Delete, true),

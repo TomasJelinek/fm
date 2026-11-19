@@ -373,7 +373,7 @@ fn completion_refresh_follows_a_pane_that_moved_on_while_its_old_refresh_waited(
     p.operations
         .refresh
         .push((PaneId::Left, PathBuf::from("a"), None));
-    p.queue_operation_refresh(PaneId::Left, Path::new("b"), None);
+    p.queue_operation_refresh(PaneId::Left, Path::new("b"), None, false);
     assert_eq!(
         p.operations.refresh,
         [(PaneId::Left, PathBuf::from("b"), None)],
@@ -524,4 +524,353 @@ fn a_new_empty_file_over_a_listed_file_asks_then_replaces() {
     ));
     assert!(p.operations.preview.is_none());
     assert!(p.operations.replace_name.is_none());
+}
+
+/// Confirm a Rename of the focused `文档.txt` to `renamed.txt`; returns its job.
+fn confirmed_rename(p: &mut Presenter) -> OperationId {
+    p.start_operation(PaneId::Left, MutationKind::Rename, &|_| true);
+    let id = p.operations.pending.expect("prepared rename");
+    p.apply(Event::Operation(OperationEvent::Preview(Arc::new(
+        OperationPreview {
+            id,
+            kind: MutationKind::Rename,
+            files: 1,
+            folders: 0,
+            file_bytes: None,
+            sample: vec![MutationItem {
+                path: p.panes[0].entries[0].path.clone(),
+                kind: EntryKind::File,
+                metadata: Default::default(),
+            }],
+        },
+    ))));
+    p.confirm_operation(&id.0.to_string(), "renamed.txt".into(), &|_| true);
+    id
+}
+
+fn rename_finished(id: OperationId, directory: &Path, state: OperationState) -> Event {
+    let completed = u64::from(state == OperationState::Completed);
+    Event::Operation(OperationEvent::Progress(Arc::new(OperationProgress {
+        pause_requested: false,
+        paused: false,
+        discovery: Default::default(),
+        id,
+        throughput: Arc::default(),
+        kind: MutationKind::Rename,
+        state,
+        total: 1,
+        completed,
+        failed: 1 - completed,
+        processed_entries: completed,
+        current_path: None,
+        message: String::new(),
+        errors: (completed == 0)
+            .then(|| {
+                FsError::from_io(
+                    "Rename",
+                    directory,
+                    io::Error::from(io::ErrorKind::PermissionDenied),
+                )
+            })
+            .into_iter()
+            .collect(),
+        source_directory: directory.to_owned(),
+        renamed_to: (completed == 1).then(|| directory.join("renamed.txt")),
+    })))
+}
+
+fn listed(pane: PaneId, navigation: NavigationId, entries: Vec<Entry>) -> Event {
+    Event::ListingFinished {
+        pane,
+        navigation,
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries: entries.into(),
+    }
+}
+
+/// The completion event alone re-reads the folder, even over a same-folder watch
+/// re-read already in flight, and input waits exactly until that re-read shows
+/// the new name with the cursor on it.
+#[test]
+fn rename_completion_reveals_the_new_name_without_a_watch_event_and_holds_input_until_shown() {
+    let mut p = ready();
+    let directory = p.panes[0].path.clone();
+    let id = confirmed_rename(&mut p);
+    assert!(p.mutation_settling(), "input waits from the confirmation");
+    // A watch re-read (often caused by the rename itself) is still listing.
+    let watched = p.panes[0].successful_generation.unwrap();
+    let sent = RefCell::new(Vec::new());
+    let record = |command: Command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    assert!(p.refresh_if_changed(PaneId::Left, watched, &record));
+    let watch_read = NavigationId(p.panes[0].generation);
+    sent.borrow_mut().clear();
+
+    p.apply_with_sender(
+        rename_finished(id, &directory, OperationState::Completed),
+        &record,
+    );
+    let reads: Vec<_> = sent
+        .borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::Refresh {
+                pane, navigation, ..
+            }
+            | Command::Navigate {
+                pane, navigation, ..
+            } => Some((*pane, *navigation)),
+            _ => None,
+        })
+        .collect();
+    let left = reads
+        .iter()
+        .find(|(pane, _)| *pane == PaneId::Left)
+        .map(|(_, navigation)| *navigation)
+        .expect("the completion re-reads the left panel at once");
+    assert!(left > watch_read, "the older watch re-read is superseded");
+    assert!(
+        p.mutation_settling(),
+        "input waits for the revealing re-read"
+    );
+    assert!(
+        p.operations.refresh.is_empty(),
+        "nothing is left to a later event"
+    );
+
+    // The superseded read and the other panel's read do not end the wait early.
+    p.apply_with_sender(listed(PaneId::Left, watch_read, vec![]), &|_| true);
+    assert!(p.mutation_settling());
+    let renamed = Entry::new(EntryId(9), directory.join("renamed.txt"), EntryKind::File);
+    let second = Entry::new(EntryId(10), directory.join("second.txt"), EntryKind::File);
+    let rows = vec![renamed.clone(), second];
+    for (pane, navigation) in reads.iter().filter(|(pane, _)| *pane == PaneId::Right) {
+        p.apply_with_sender(listed(*pane, *navigation, rows.clone()), &|_| true);
+    }
+    assert!(p.mutation_settling());
+    p.apply_with_sender(listed(PaneId::Left, left, rows), &|_| true);
+    assert!(!p.mutation_settling(), "the new name is shown");
+    assert!(
+        p.panes[0]
+            .entries
+            .iter()
+            .any(|entry| entry.path == renamed.path)
+    );
+    assert_eq!(p.panes[0].cursor, Some(renamed.id));
+    assert!(!p.panes[0].parent_cursor);
+}
+
+#[test]
+fn failed_cancelled_or_conflicting_renames_and_queued_ones_never_hold_input() {
+    // A failure reports its error and releases input.
+    let mut p = ready();
+    let directory = p.panes[0].path.clone();
+    let id = confirmed_rename(&mut p);
+    p.apply_with_sender(
+        rename_finished(id, &directory, OperationState::Failed),
+        &|_| true,
+    );
+    assert!(!p.mutation_settling());
+    assert!(
+        p.desktop.notice.is_some(),
+        "the failure is reported as before"
+    );
+
+    // An existing destination asks the user, who needs the input.
+    let mut p = ready();
+    let id = confirmed_rename(&mut p);
+    let item = |name: &str| MutationItem {
+        path: directory.join(name),
+        kind: EntryKind::File,
+        metadata: Default::default(),
+    };
+    p.apply(Event::Operation(OperationEvent::RenameConflict(Arc::new(
+        CopyConflict {
+            id,
+            version: 1,
+            source: item("文档.txt"),
+            target: item("renamed.txt"),
+            destination: directory.join("renamed.txt"),
+            can_replace: true,
+            can_merge: false,
+        },
+    ))));
+    assert!(!p.mutation_settling());
+
+    // Cancelling the confirmed job releases input.
+    let mut p = ready();
+    let id = confirmed_rename(&mut p);
+    p.cancel_operation(&id.0.to_string(), &|_| true);
+    assert!(!p.mutation_settling());
+
+    // A Rename confirmed behind another live job may wait for it: no hold.
+    let mut p = ready();
+    p.start_operation(
+        PaneId::Left,
+        MutationKind::Delete(DeleteMode::Trash),
+        &|_| true,
+    );
+    let other = p.operations.pending.unwrap();
+    Arc::make_mut(&mut p.operations.progress[0]).state = OperationState::Running;
+    p.operations.pending = None;
+    p.operations.unconfirmed.remove(&other);
+    confirmed_rename(&mut p);
+    assert!(!p.mutation_settling());
+}
+
+/// Re-reads sent for `pane` by `send` calls recorded in `sent`.
+fn reads_of(sent: &RefCell<Vec<Command>>, pane: PaneId) -> Vec<NavigationId> {
+    sent.borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::Refresh {
+                pane: target,
+                navigation,
+                ..
+            }
+            | Command::Navigate {
+                pane: target,
+                navigation,
+                ..
+            } if *target == pane => Some(*navigation),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Copy, Move and Delete completions re-read their panels at once, over an
+/// in-flight watch re-read, and hold input until those re-reads commit; failed
+/// or cancelled ones still refresh but never hold input.
+#[test]
+fn completed_copy_move_and_delete_refresh_at_once_and_hold_input_until_shown() {
+    let directory = test_root().join("operations");
+    let transfer = |intent, state| {
+        let mut progress = CopyProgress::queued(OperationId(1), directory.clone(), 1, intent);
+        progress.state = state;
+        Event::Copy(CopyEvent::Progress(Arc::new(progress)))
+    };
+    let deletion = |state| {
+        let completed = u64::from(state == OperationState::Completed);
+        Event::Operation(OperationEvent::Progress(Arc::new(OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
+            id: OperationId(1),
+            throughput: Arc::default(),
+            kind: MutationKind::Delete(DeleteMode::Trash),
+            state,
+            total: 1,
+            completed,
+            failed: 0,
+            processed_entries: completed,
+            current_path: None,
+            message: String::new(),
+            errors: vec![],
+            source_directory: directory.clone(),
+            renamed_to: None,
+        })))
+    };
+    let cases: Vec<(&str, Box<dyn Fn(bool) -> Event>)> = vec![
+        (
+            "copy",
+            Box::new(|done| {
+                transfer(
+                    TransferIntent::Copy,
+                    if done {
+                        CopyOperationState::Completed
+                    } else {
+                        CopyOperationState::Failed
+                    },
+                )
+            }),
+        ),
+        (
+            "move",
+            Box::new(|done| {
+                transfer(
+                    TransferIntent::Move,
+                    if done {
+                        CopyOperationState::CompletedWithErrors
+                    } else {
+                        CopyOperationState::Cancelled
+                    },
+                )
+            }),
+        ),
+        (
+            "delete",
+            Box::new(|done| {
+                deletion(if done {
+                    OperationState::Completed
+                } else {
+                    OperationState::Failed
+                })
+            }),
+        ),
+    ];
+    for (name, finished) in &cases {
+        for done in [true, false] {
+            let mut p = ready();
+            if name != &"delete" {
+                let mut queued = CopyProgress::queued(
+                    OperationId(1),
+                    directory.clone(),
+                    1,
+                    TransferIntent::Copy,
+                );
+                queued.state = CopyOperationState::Running;
+                p.copies.progress.push(Arc::new(queued));
+            } else {
+                p.start_operation(
+                    PaneId::Left,
+                    MutationKind::Delete(DeleteMode::Trash),
+                    &|_| true,
+                );
+                p.operations.pending = None;
+                p.operations.unconfirmed.clear();
+            }
+            assert!(
+                !p.mutation_settling(),
+                "{name}: a long job never holds input"
+            );
+            let watched = p.panes[0].successful_generation.unwrap();
+            assert!(p.refresh_if_changed(PaneId::Left, watched, &|_| true));
+            let watch_read = NavigationId(p.panes[0].generation);
+            let sent = RefCell::new(Vec::new());
+            p.apply_with_sender(finished(done), &|command| {
+                sent.borrow_mut().push(command);
+                true
+            });
+            let left = reads_of(&sent, PaneId::Left);
+            assert_eq!(p.mutation_settling(), done, "{name} {done}");
+            let rows = p.panes[0].entries.to_vec();
+            if done {
+                assert!(
+                    left.len() == 1 && left[0] > watch_read,
+                    "{name}: re-read at once over the watch read: {left:?}"
+                );
+            } else {
+                // Without a change to show, the refresh waits for the watch read.
+                assert!(left.is_empty(), "{name}: {left:?}");
+                p.apply_with_sender(listed(PaneId::Left, watch_read, rows.clone()), &|command| {
+                    sent.borrow_mut().push(command);
+                    true
+                });
+                assert_eq!(
+                    reads_of(&sent, PaneId::Left).len(),
+                    1,
+                    "{name}: refreshed after"
+                );
+                assert!(!p.mutation_settling(), "{name}: never held");
+            }
+            for pane in [PaneId::Right, PaneId::Left] {
+                for navigation in reads_of(&sent, pane) {
+                    p.apply_with_sender(listed(pane, navigation, rows.clone()), &|_| true);
+                }
+            }
+            assert!(!p.mutation_settling(), "{name} {done}: released once shown");
+        }
+    }
 }

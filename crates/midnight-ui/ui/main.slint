@@ -92,6 +92,21 @@ export { FunctionSlot } from "function-models.slint";
 
 export component MainWindow inherits Window {
     in property <bool> dialog-input-blocked;
+    // A file job until its panels show its change. Bounded, so a stalled job or
+    // re-read never leaves the window without input.
+    in property <bool> mutation-settling;
+    private property <bool> mutation-settle-expired;
+    out property <bool> mutation-input-blocked: root.mutation-settling && !root.mutation-settle-expired;
+    changed mutation-settling => {
+        mutation-settle-limit.stop();
+        root.mutation-settle-expired = false;
+        if root.mutation-settling { mutation-settle-limit.start(); mutation-settle-limit.restart(); }
+    }
+    mutation-settle-limit := Timer {
+        interval: 3s;
+        running: false;
+        triggered => { self.stop(); root.mutation-settle-expired = true; }
+    }
     out property <bool> modal-overlay-open: filter-overlay.active || hot-paths-overlay.active
         || operation-overlay.active || file-list-overlay.active || notice-overlay.active;
     out property <bool> embedded-modal-open: root.modal-overlay-open
@@ -788,6 +803,7 @@ export component MainWindow inherits Window {
         NavigationFocus.keyboard = true;
         if root.dialog-input-blocked { return accept; }
         if root.modal-overlay-open { return reject; }
+        if root.mutation-input-blocked { return accept; }
         root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
         if event.text == Key.Escape && SelectionRectangle.cancel() { return accept; }
         if event.text == Key.Escape && root.drag-escape() { return accept; }
@@ -797,6 +813,7 @@ export component MainWindow inherits Window {
       capture-key-released(event) => {
         if root.dialog-input-blocked { return accept; }
         if root.modal-overlay-open { return reject; }
+        if root.mutation-input-blocked { return accept; }
         root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
         root.window-key-release(event); reject
       }
@@ -1576,7 +1593,8 @@ export component MainWindow inherits Window {
     // a disabled area passes every event on. The explicit origin keeps it out
     // of the window's size constraints.
     TouchArea {
-        enabled: root.dialog-input-blocked;
+        enabled: root.dialog-input-blocked || root.mutation-input-blocked;
+        mouse-cursor: root.mutation-input-blocked ? MouseCursor.wait : MouseCursor.default;
         x: 0px; y: 0px; width: root.width; height: root.height;
         scroll-event(event) => { accept }
     }

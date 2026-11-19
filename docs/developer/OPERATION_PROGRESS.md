@@ -38,6 +38,19 @@ application delivery remain pending.
   edited item is still revealed under its new name. Notices of jobs that end
   Completed with errors are titled "File operation completed with errors", never
   "failed", and say that changes were not undone only when a target did not complete.
+- A completed or completed-with-errors Copy, Move, Delete, Rename, New file, New
+  folder or Properties job re-reads every flat native panel showing an affected folder
+  as soon as its terminal progress is applied, without waiting for a watch
+  notification. An in-flight same-folder background re-read (a watch refresh, which
+  may predate the change) is superseded; any other load, a directory comparison or a
+  drag from the panel still defers it. Main-window panel input (keys, pointer and
+  wheel) then waits, with a wait cursor, until those re-reads commit, fail or are
+  superseded; a renamed or created entry gets the cursor. A Rename, New file or New
+  folder also holds input from its confirmation when no other copy or file job is
+  live, because it may otherwise run behind that job. Failed or cancelled jobs, a
+  Rename name-conflict question, a deferred re-read and native tree panels never
+  hold input; failures are reported as before. The main window releases the hold
+  after 3 seconds in any case.
 - Closing Jobs only closes the ledger. It does not cancel independent operations.
 - Successfully completed automatic progress closes. A manually reopened progress
   window stays open; so does manually opened Jobs.

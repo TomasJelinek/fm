@@ -459,6 +459,7 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.release_mutation_settle(None);
         self.cancel_tree_editor(None);
         self.cancel_tree_rename(None);
         self.cancel_tree_metadata(None);

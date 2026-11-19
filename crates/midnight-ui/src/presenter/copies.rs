@@ -276,6 +276,11 @@ impl Presenter {
                     self.copies.backend_observed.insert(progress.id);
                 }
                 if progress.state.is_terminal() {
+                    // A completed transfer holds input until its panels show it.
+                    let hold = matches!(
+                        progress.state,
+                        CopyOperationState::Completed | CopyOperationState::CompletedWithErrors
+                    );
                     for pane in [PaneId::Left, PaneId::Right] {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
                             continue;
@@ -293,6 +298,7 @@ impl Presenter {
                                 shown,
                                 directory,
                                 None,
+                                hold,
                                 &mut self.retired,
                             );
                         }

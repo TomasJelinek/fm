@@ -752,6 +752,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_right_descending(p.sort.descending);
         }
     }
+    window.set_mutation_settling(presenter.mutation_settling());
     navigation_models::update(
         window.get_left_locations(),
         navigation_models::locations(

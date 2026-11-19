@@ -92,7 +92,7 @@ impl Presenter {
                                 {
                                     continue;
                                 }
-                                self.queue_operation_refresh(pane, parent, None);
+                                self.queue_operation_refresh(pane, parent, None, false);
                             }
                         }
                     }

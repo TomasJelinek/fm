@@ -23,6 +23,21 @@ pub(crate) struct OperationsState {
     pub(crate) metadata_results: HashMap<OperationId, Arc<MetadataResult>>,
     pub(crate) closing: bool,
     pub(super) refresh: Vec<(PaneId, PathBuf, Option<PathBuf>)>,
+    pub(crate) settle: Settle,
+}
+
+/// Panel input waits while a confirmed single-entry job (Rename, New file, New
+/// folder) runs, and after any completed file job while the panel re-reads that
+/// show its change are in flight. Stale rows cannot be acted on, and a completed
+/// change does not look as if it failed. The window bounds the wait.
+#[derive(Debug, Default)]
+pub(crate) struct Settle {
+    /// The confirmed single-entry job input waits for.
+    job: Option<OperationId>,
+    /// Panes whose queued refresh shows a completed change.
+    hold: [bool; 2],
+    /// Per pane, the in-flight re-read that shows it.
+    reads: [Option<NavigationId>; 2],
 }
 
 impl OperationsState {
@@ -34,11 +49,13 @@ impl OperationsState {
         shown: &Pane,
         directory: &Path,
         reveal: Option<PathBuf>,
+        hold: bool,
         retired: &mut Vec<DeferredDrop>,
     ) {
         if !shown.native_capabilities() || shown.display_path() != directory {
             return;
         }
+        self.settle.hold[pane.index()] |= hold;
         if let Some(change) = self
             .refresh
             .iter_mut()
@@ -285,11 +302,20 @@ impl Presenter {
                 Some(name)
             }
         };
+        let single_entry = matches!(
+            preview.kind,
+            MutationKind::Rename | MutationKind::CreateFile | MutationKind::CreateDirectory
+        );
         if send(Command::ConfirmOperation {
             id,
             new_name: name,
             replace_existing,
         }) {
+            // A job queued behind another one may wait for it; never hold input
+            // for that.
+            if single_entry && !self.other_mutation_live(id) {
+                self.operations.settle.job = Some(id);
+            }
             self.operations.replace_name = None;
             self.operations.unconfirmed.remove(&id);
             self.operations.pending = None;
@@ -324,6 +350,46 @@ impl Presenter {
         })
     }
 
+    /// Whether a copy or another file operation can delay the engine's next job.
+    fn other_mutation_live(&self, id: OperationId) -> bool {
+        self.copies.progress.iter().any(|p| !p.state.is_terminal())
+            || self
+                .operations
+                .progress
+                .iter()
+                .any(|p| p.id != id && !p.state.is_terminal())
+    }
+
+    /// Whether panel input waits for a file job's change to become visible.
+    pub(crate) fn mutation_settling(&self) -> bool {
+        let settle = &self.operations.settle;
+        settle.job.is_some() || settle.reads.iter().any(Option::is_some)
+    }
+
+    /// Stop waiting for `id`'s job (every wait without one); its re-reads still
+    /// hold input once it completes.
+    pub(super) fn release_mutation_settle(&mut self, id: Option<OperationId>) {
+        let settle = &mut self.operations.settle;
+        match id {
+            Some(id) if settle.job == Some(id) => settle.job = None,
+            Some(_) => {}
+            None => *settle = Settle::default(),
+        }
+    }
+
+    /// Release each re-read once it committed, failed or was superseded.
+    fn settle_mutation_reads(&mut self) {
+        let settle = &mut self.operations.settle;
+        for pane in [PaneId::Left, PaneId::Right] {
+            let p = &self.panes[pane.index()];
+            if settle.reads[pane.index()]
+                .is_some_and(|navigation| p.generation != navigation.0 || !p.loading)
+            {
+                settle.reads[pane.index()] = None;
+            }
+        }
+    }
+
     pub(crate) fn cancel_operation(&mut self, token: &str, send: &dyn Fn(Command) -> bool) {
         let Ok(id) = token
             .strip_prefix("rename-job:")
@@ -334,6 +400,7 @@ impl Presenter {
             return;
         };
         if send(Command::CancelOperation(id)) {
+            self.release_mutation_settle(Some(id));
             if let Some(progress) = self
                 .operations
                 .progress
@@ -380,6 +447,7 @@ impl Presenter {
         self.operations.rename_versions.clear();
         self.operations.rename_deferred.clear();
         self.operations.rename_selected = None;
+        self.release_mutation_settle(None);
         for job in &self.command_launches.jobs {
             if !job.finished {
                 let _ = send(Command::CancelUserCommand(job.id));
@@ -419,7 +487,11 @@ impl Presenter {
                 }
             }
             OperationEvent::MetadataConflict(conflict) => self.apply_metadata_conflict(conflict),
-            OperationEvent::RenameConflict(conflict) => self.apply_rename_conflict(conflict),
+            OperationEvent::RenameConflict(conflict) => {
+                // The conflict prompt needs the user; the panel must not wait for it.
+                self.release_mutation_settle(Some(conflict.id));
+                self.apply_rename_conflict(conflict);
+            }
             OperationEvent::Preview(preview) => {
                 if preview.kind != MutationKind::EditMetadata
                     && self.operations.pending == Some(preview.id)
@@ -466,18 +538,30 @@ impl Presenter {
                         self.operations.pending = None;
                         self.operations.preview = None;
                     }
+                    let reveal = progress
+                        .renamed_to
+                        .as_ref()
+                        .filter(|destination| {
+                            destination.parent() == Some(progress.source_directory.as_path())
+                        })
+                        .cloned();
+                    self.release_mutation_settle(Some(progress.id));
+                    // Only a completed change keeps input waiting, for its re-reads;
+                    // a failure is reported without holding the panel.
+                    let hold = matches!(
+                        progress.state,
+                        OperationState::Completed | OperationState::CompletedWithErrors
+                    );
                     for pane in [PaneId::Left, PaneId::Right] {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
                             continue;
                         }
-                        let reveal = progress
-                            .renamed_to
-                            .as_ref()
-                            .filter(|destination| {
-                                destination.parent() == Some(progress.source_directory.as_path())
-                            })
-                            .cloned();
-                        self.queue_operation_refresh(pane, &progress.source_directory, reveal);
+                        self.queue_operation_refresh(
+                            pane,
+                            &progress.source_directory,
+                            reveal.clone(),
+                            hold,
+                        );
                     }
                     let title = if progress.state == OperationState::CompletedWithErrors {
                         "File operation completed with errors"
@@ -536,30 +620,47 @@ impl Presenter {
         pane: PaneId,
         directory: &Path,
         reveal: Option<PathBuf>,
+        hold: bool,
     ) {
         self.operations.queue_refresh(
             pane,
             &self.panes[pane.index()],
             directory,
             reveal,
+            hold,
             &mut self.retired,
         );
     }
 
     pub(super) fn refresh_operation_paths(&mut self, send: &dyn Fn(Command) -> bool) {
         let changes = mem::take(&mut self.operations.refresh);
+        // A completion's re-read holds input only when it starts now; one left
+        // waiting (comparison, drag, full queue) runs later without a hold.
+        let hold = mem::take(&mut self.operations.settle.hold);
         let mut revealed = Vec::new();
         for (pane, directory, destination) in changes {
             let p = &self.panes[pane.index()];
             if !p.native_capabilities() || p.display_path() != directory {
                 continue;
             }
-            if p.loading
+            // A completed change must not wait for a same-folder re-read (a watch
+            // refresh, often caused by this very change) to finish first: that
+            // read may predate the change, and a busy folder keeps one in flight
+            // nearly all the time. Supersede it; any other load still wins.
+            let supersede = (destination.is_some() || hold[pane.index()])
+                && p.pending
+                    .as_ref()
+                    .is_some_and(|request| request.keep_rows && request.path == directory);
+            if (p.loading && !supersede)
                 || self.background_refresh_blocked(pane)
                 || !self.navigate_impl(pane, directory.clone(), None, Reload::Background, send)
             {
                 self.operations.refresh.push((pane, directory, destination));
                 continue;
+            }
+            if hold[pane.index()] {
+                self.operations.settle.reads[pane.index()] =
+                    Some(NavigationId(self.panes[pane.index()].generation));
             }
             let p = &mut self.panes[pane.index()];
             p.preserve_viewport = destination.is_none();
@@ -580,5 +681,6 @@ impl Presenter {
         for pane in revealed {
             self.change_search_query(pane, "", send);
         }
+        self.settle_mutation_reads();
     }
 }

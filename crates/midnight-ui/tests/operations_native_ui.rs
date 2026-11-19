@@ -259,6 +259,9 @@ fn real_delete_confirmation_cancel_and_shift_f8_permanently_delete_only_the_sele
     assert_eq!(result.state, OperationState::Completed, "{result:?}");
     assert_eq!(result.kind, MutationKind::Delete(DeleteMode::Permanent));
     assert!(!h.left.join("nested").exists());
+    // The completion re-reads the panel and holds input only until it shows.
+    h.until(|h| !h.rows(PaneId::Left).iter().any(|row| row.name == "nested"));
+    assert!(!h.ui.window.get_mutation_input_blocked());
     assert!(h.left.join("file-00.bin").exists());
     assert!(h.left.join("inside").is_dir());
     h.assert_sentinel();
@@ -424,5 +427,90 @@ fn real_folder_drag_uses_same_volume_move_ctrl_copy_and_escape_cancellation() {
     assert!(h.left.join("file-05.bin").exists());
     assert!(!h.left.join("inside/file-05.bin").exists());
     assert_eq!(h.copies.len(), start);
+    h.assert_sentinel();
+}
+
+/// F2 on `name`, type `stem` over the selected basename and press Enter.
+fn rename_with_f2(h: &mut native::Harness, name: &str, stem: &str) {
+    h.focus(PaneId::Left, name, false);
+    ui::key(&h.ui.window, Key::F2);
+    h.until(|h| !h.ui.window.get_operation_token().is_empty());
+    input::key(&h.dialog(), stem);
+    input::key(&h.dialog(), Key::Return);
+}
+
+#[test]
+fn real_f2_rename_shows_the_new_name_and_holds_panel_input_until_then() {
+    let mut h = native::Harness::new();
+    let operations = h.operations.len();
+    rename_with_f2(&mut h, "file-05.bin", "renamed-05");
+    // No Engine event has been applied yet: the panel still lists the old name.
+    assert!(
+        h.ui.window.get_operation_token().is_empty(),
+        "the dialog closed"
+    );
+    assert!(h.ui.window.get_mutation_input_blocked());
+    assert!(
+        h.rows(PaneId::Left)
+            .iter()
+            .any(|row| row.name == "file-05.bin")
+    );
+    let cursor = h.cursor(PaneId::Left);
+    ui::key(&h.ui.window, Key::DownArrow);
+    assert_eq!(
+        h.cursor(PaneId::Left),
+        cursor,
+        "panel keys wait for the new name"
+    );
+
+    // Completion alone re-reads the folder; no watch notification is needed.
+    h.until(|h| {
+        h.rows(PaneId::Left)
+            .iter()
+            .any(|row| row.name == "renamed-05.bin")
+    });
+    assert!(!h.ui.window.get_mutation_input_blocked());
+    assert!(
+        h.operations[operations..]
+            .iter()
+            .any(|progress| progress.state == OperationState::Completed)
+    );
+    let rows = h.rows(PaneId::Left);
+    assert!(!rows.iter().any(|row| row.name == "file-05.bin"));
+    let cursor = usize::try_from(h.cursor(PaneId::Left)).unwrap();
+    assert_eq!(rows[cursor].name, "renamed-05.bin");
+    assert!(h.left.join("renamed-05.bin").exists());
+    ui::key(&h.ui.window, Key::DownArrow);
+    assert_eq!(
+        usize::try_from(h.cursor(PaneId::Left)).unwrap(),
+        cursor + 1,
+        "input is accepted again"
+    );
+    h.assert_sentinel();
+}
+
+#[test]
+fn real_failed_f2_rename_reports_the_error_without_holding_input() {
+    let mut h = native::Harness::new();
+    let operations = h.operations.len();
+    // A folder never replaces the existing folder `inside`.
+    rename_with_f2(&mut h, "nested", "inside");
+    h.until(|h| {
+        h.operations[operations..]
+            .iter()
+            .any(|progress| progress.state.is_terminal())
+    });
+    h.settle();
+    let done = h.operations[operations..]
+        .iter()
+        .find(|progress| progress.state.is_terminal())
+        .unwrap();
+    assert_eq!(done.state, OperationState::Failed, "{done:?}");
+    assert!(!h.ui.window.get_mutation_input_blocked());
+    assert!(
+        !h.ui.window.get_message_title().is_empty(),
+        "the error is shown"
+    );
+    assert!(h.left.join("nested/child.txt").exists());
     h.assert_sentinel();
 }
