@@ -101,8 +101,18 @@ instead of 115 times and `modeless` 21 instead of 51 times, and three fixtures n
 longer copy the palette into every binding; the 766 tests of that binary are
 unchanged.
 
+The `.slint` sources lost cost that a shared control carries at every use: scroll
+views without the bar a site never shows (`VScrollView`, `HScrollView`,
+`ui/vlist-view.slint`), a focus scope instead of a hidden stock button in every
+`ActionButton`, two controls that no longer inherit a stock widget, and 54 fewer
+conditional components (`Tip` owns its empty-text condition and serves 19 more
+sites). The main UI's generated Rust went from 30.57 MB and 591 components to
+26.97 MB and 523; the viewer and comparator UIs shrank by 0.18 and 0.13 MB.
+
 **Open:** run-time speed of debug builds with the split was not measured (the dev
-machine code is 1.4 MB larger); Windows and the release executable were not built.
+machine code is 1.4 MB larger); Windows and the release executable were not built;
+the running application was not looked at with the `.slint` changes, whose evidence
+is the UI test suites and comparisons of the generated code.
 Measured and left as they are: thin local LTO off, opt-level `"z"` or 0 for the
 bindings, an optimised Slint compiler for the build script, and 16 code generation
 units for the release compile of the bindings; the record gives each number and

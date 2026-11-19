@@ -138,7 +138,10 @@ Each incremental session also wrote about 1.8 GB. The dev profile now sets
 Most of the remaining time is LLVM at opt-level 1, including thin local LTO. The
 generated module still has about 21,000 bindings.
 
-Measured but not applied, because behavior would change or tests are needed first:
+Measured but not applied, because behavior would change or tests are needed first
+(on 19 November the tooltip sites except two, `ChecksumOutputPicker` and
+`ArchiveExtensionInput` were done:
+[record](2026-11-19-slint-build-speed.md)):
 
 - About 30 remaining single-line `Tooltip { TipBody { … } }` sites can use `Tip`
   (measured about 1.4 MB of token text); each needs a check that its parent is not a

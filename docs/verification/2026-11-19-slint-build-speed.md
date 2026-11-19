@@ -156,6 +156,73 @@ Not done: sharing `support/tree_filters.rs`. It includes a `midnight-explorer`
 source file whose eight unit tests the binary therefore runs once per including
 module; sharing would reduce 766 test names to 654.
 
+## Smaller generated code
+
+Changes to the `.slint` sources, on main `816436b5`. The plain generator output of
+the main UI, before the two build passes, is 30.57 MB on that commit; sizes move by a
+few KB with the checkout path, which the generated code embeds.
+
+| | Before | After 5 | After 5 and 6 |
+| --- | ---: | ---: | ---: |
+| Main UI, generated Rust | 30.57 MB | 28.05 MB | 26.97 MB |
+| Main UI, generated components (conditional or repeated) | 591 (419) | 577 (407) | 523 (353) |
+| Viewer UI, generated Rust | 3.11 MB | 2.99 MB | 2.93 MB |
+| Comparator UI, generated Rust | 2.58 MB | 2.46 MB | 2.45 MB |
+| Tooltip popup components | 27 | 27 | 8 |
+
+### 5. A shared control is paid for at every use
+
+Every item inside a shared component is repeated in the item tree, item array,
+geometry and accessibility tables of each enclosing item tree, and each public
+property left at its default costs a `set_constant` per use.
+
+- **Scroll views.** A child with a size but no position enters its parent's layout
+  info through eight synthesized properties; for the `Flickable` of `ScrollView`
+  and `ScrollStrip` they only ever held the defaults, in 562 binding closures. It now
+  has an explicit position. Two scroll views that their non-layout parents then
+  merged with their own 50px minimum are positioned too, so those parents merge
+  nothing, as before.
+- **One-bar scroll views.** A scroll bar whose policy is constantly `always-off` is
+  still an instance with 12 items at every use. `VScrollView` and `HScrollView`
+  (`ui/scroll-view.slint`) leave that bar out, and `ui/vlist-view.slint` exports a
+  `ListView` over `VScrollView`; 18 `ScrollView` and 9 `ListView` sites lose the
+  horizontal bar, 8 the vertical one, and the command prompt strip is a
+  `ScrollStrip`. Scroll bar instances 112 to 66; the 14 virtualized lists stay
+  virtualized.
+- **ActionButton.** Each of about 130 buttons held an invisible stock `Button` for
+  its focus and keyboard behaviour, with a hidden text and layout. It is replaced by
+  a `FocusScope` with the geometry, enabled expression and Space/Return handling of
+  the Fluent button's own scope.
+- **Inherited controls.** A component that inherits a hinted control is compiled as
+  another copy of the stock widget under it. `ArchiveExtensionInput` is written at
+  its single use, and `ChecksumOutputPicker` contains a `HintedComboBox` instead of
+  inheriting it; one `LineEdit` and one `ComboBox` copy are gone.
+
+Not taken: creating the scroll bar's body only while the bar shows. It removes
+0.46 MB from the main UI but adds a conditional component, and 38 KB, to the viewer
+and comparator UIs, and the bar's hover and drag state would restart on each
+appearance. `WrappingCheckBox` keeps its hidden stock check box, whose keyboard and
+accessibility behaviour the component exists to keep.
+
+### 6. Conditional components
+
+Each `if`, `for` and popup is its own generated component: about 0.25 s of `rustc`
+and 15 KB of machine code. Without changing layout, accessibility or what a test can
+observe:
+
+- `Tip` owns the `text != ""` condition that ten hosts wrapped around it, and 19
+  sites that declared a `Tooltip` directly use `Tip`, so they share its popup
+  component (27 tooltip popups to 8). Two direct sites remain. A `Tip`'s text is now
+  evaluated when its host is created, not when the tooltip opens.
+- Neighbouring conditionals with the same condition are merged where the merged
+  cells cannot grow or shrink (seven of nine candidate groups).
+- Four `for` loops over a constant count are written out.
+- Eleven elements that only paint or block input, sit outside layouts and carry no
+  accessible role use `visible`, or `enabled` for the three input gates, instead of
+  `if`. Eight further candidates stay conditional: a test counts them, they carry an
+  accessible role, they would enter a layout, or they would be instantiated in every
+  file row.
+
 ## Measured and not changed
 
 Bindings compiled alone as above, against 176 s:
@@ -222,6 +289,9 @@ With changes 3 and 4,
 `cargo clippy --locked --offline -p midnight-ui -p midnight-ui-input --all-targets --
 -D warnings` passes.
 
+The same command passed with the same counts after change 5 and again after
+changes 5 and 6 together; they change `.slint` files only.
+
 ## Not verified
 
 - Windows builds and the release executable: the release profile compiles this crate
@@ -233,3 +303,9 @@ With changes 3 and 4,
   Linux host) and a Windows build of the test code of change 4.
 - The build time of the integration test target with change 4 inside Cargo; only its
   type-check was timed.
+- The running application with changes 5 and 6: hover, painting, scroll bars and
+  focus were not looked at, because the application's smoke test renders only a
+  320 by 200 window on this host. The evidence is the test suites and comparisons of
+  the generated layout, accessibility and item-tree code.
+- Run-time cost of change 6's earlier tooltip-text evaluation (one string comparison
+  per `Tip` host, including tree rows created while scrolling).

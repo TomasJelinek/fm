@@ -92,6 +92,14 @@ content without emitting `scrolled`. The viewer and comparator windows' own file
 still import the SDK widgets; shared controls they reuse, such as `CompactPicker`,
 bring the shared scroll view with them.
 
+A bar whose policy is constantly `always-off` is still instantiated with its items at
+every use. `VScrollView` and `HScrollView` in the same file are `ScrollView` without
+the horizontal or the vertical bar, for sites that never show it, and
+`ui/vlist-view.slint` exports a `ListView` over `VScrollView` for lists that never
+scroll horizontally (Slint virtualizes only below a component named `ListView`).
+These variants and `ScrollStrip` repeat `ScrollView`'s `Flickable` and bar bindings
+and change together ([record](../verification/2026-11-19-slint-build-speed.md)).
+
 `midnight-ui-input::NativeScroll` handles the paths that these scroll bars and
 Slint Fluent 1.18.1 update immediately: wheel input on scrollbar overlays and the
 application's vertical-to-horizontal command-directory strip. Ordinary `ScrollView`
