@@ -1,6 +1,8 @@
 @echo off
 setlocal
 
+rem The repository root, taken before the argument loop shifts the arguments.
+set "MIDNIGHT_BUILD_ROOT=%~dp0"
 rem Arguments in any order: at most one profile (default debug) and --validate.
 set "MIDNIGHT_BUILD_PROFILE="
 set "MIDNIGHT_VIEWER_PROFILE="
@@ -21,27 +23,27 @@ goto usage
 if defined MIDNIGHT_VIEWER_PROFILE goto usage
 set "MIDNIGHT_BUILD_PROFILE="
 set "MIDNIGHT_VIEWER_PROFILE=debug"
-shift
+shift /1
 goto parse_arguments
 
 :choose_release
 if defined MIDNIGHT_VIEWER_PROFILE goto usage
 set "MIDNIGHT_BUILD_PROFILE=--release"
 set "MIDNIGHT_VIEWER_PROFILE=release"
-shift
+shift /1
 goto parse_arguments
 
 :choose_validate
 if defined MIDNIGHT_VALIDATE goto usage
 set "MIDNIGHT_VALIDATE=1"
-shift
+shift /1
 goto parse_arguments
 
 :arguments_parsed
 if not defined MIDNIGHT_VIEWER_PROFILE set "MIDNIGHT_VIEWER_PROFILE=debug"
 
 :build
-pushd "%~dp0" || exit /b 1
+pushd "%MIDNIGHT_BUILD_ROOT%" || exit /b 1
 where pwsh.exe >nul 2>nul
 if errorlevel 1 goto missing_pwsh
 pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "if ($PSVersionTable.PSVersion.Major -lt 7 -or -not $IsWindows -or -not [Environment]::Is64BitProcess) { exit 1 }"

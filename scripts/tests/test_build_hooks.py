@@ -34,54 +34,61 @@ class BuildHookTests(unittest.TestCase):
                                 BUILD_TEST_ARCHIVE_EXIT="0", BUILD_TEST_VALIDATE_EXIT="0")
         if os.name == "nt":
             entry = "build.bat"
+            # Every stub also records its working directory when BUILD_TEST_CWD_LOG is set.
             (fake_bin / "cargo.cmd").write_text(
-                '@echo off\n>>"%BUILD_TEST_LOG%" echo cargo %*\nexit /b %BUILD_TEST_APP_EXIT%\n')
+                '@echo off\n>>"%BUILD_TEST_LOG%" echo cargo %*\n'
+                'if defined BUILD_TEST_CWD_LOG >>"%BUILD_TEST_CWD_LOG%" echo %CD%\n'
+                'exit /b %BUILD_TEST_APP_EXIT%\n')
+            directory = ('if ($env:BUILD_TEST_CWD_LOG) { Add-Content -LiteralPath $env:BUILD_TEST_CWD_LOG '
+                         '(Get-Location).ProviderPath }\n')
             (self.root / "scripts/build-viewers.ps1").write_text(
-                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "viewer $Profile"\n'
+                'param([string]$Profile)\n' + directory + 'Add-Content -LiteralPath $env:BUILD_TEST_LOG "viewer $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_VIEWER_EXIT)\n')
             (self.root / "scripts/build-native-filesystem.ps1").write_text(
-                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "native $Profile"\n'
+                'param([string]$Profile)\n' + directory + 'Add-Content -LiteralPath $env:BUILD_TEST_LOG "native $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_NATIVE_EXIT)\n')
             (self.root / "scripts/build-network-filesystem.ps1").write_text(
-                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "network $Profile"\n'
+                'param([string]$Profile)\n' + directory + 'Add-Content -LiteralPath $env:BUILD_TEST_LOG "network $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_NETWORK_EXIT)\n')
             (self.root / "scripts/build-default-thumbnailers.ps1").write_text(
-                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "thumbnail $Profile"\n'
+                'param([string]$Profile)\n' + directory + 'Add-Content -LiteralPath $env:BUILD_TEST_LOG "thumbnail $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_THUMBNAIL_EXIT)\n')
             (self.root / "scripts/build-archive-filesystem.ps1").write_text(
-                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "archive $Profile"\n'
+                'param([string]$Profile)\n' + directory + 'Add-Content -LiteralPath $env:BUILD_TEST_LOG "archive $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_ARCHIVE_EXIT)\n')
             (self.root / "scripts/deploy-build.ps1").write_text(
-                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "deploy $Profile"\n'
+                'param([string]$Profile)\n' + directory + 'Add-Content -LiteralPath $env:BUILD_TEST_LOG "deploy $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_DEPLOY_EXIT)\n')
             (self.root / "scripts/validate.ps1").write_text(
-                'Add-Content -LiteralPath $env:BUILD_TEST_LOG ("validate " + ($args -join " "))\n'
+                directory + 'Add-Content -LiteralPath $env:BUILD_TEST_LOG ("validate " + ($args -join " "))\n'
                 'exit ([int]$env:BUILD_TEST_VALIDATE_EXIT)\n')
             self.command = ["cmd.exe", "/d", "/c", str(self.root / entry)]
         else:
             entry = "build.sh"
             self.environment["FM_BUILD_BACKEND"] = "native"
+            # Every stub also records its working directory when BUILD_TEST_CWD_LOG is set.
+            directory = '[ -z "${BUILD_TEST_CWD_LOG:-}" ] || pwd -P >> "$BUILD_TEST_CWD_LOG"\n'
             cargo = fake_bin / "cargo"
-            cargo.write_text('#!/bin/sh\nprintf "cargo %s\\n" "$*" >> "$BUILD_TEST_LOG"\n'
+            cargo.write_text('#!/bin/sh\n' + directory + 'printf "cargo %s\\n" "$*" >> "$BUILD_TEST_LOG"\n'
                              'exit "$BUILD_TEST_APP_EXIT"\n')
             cargo.chmod(0o755)
             (self.root / "scripts/build-viewers.sh").write_text(
-                '#!/bin/sh\nprintf "viewer %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
+                '#!/bin/sh\n' + directory + 'printf "viewer %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
                 'exit "$BUILD_TEST_VIEWER_EXIT"\n')
             (self.root / "scripts/build-native-filesystem.sh").write_text(
-                '#!/bin/sh\nprintf "native %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
+                '#!/bin/sh\n' + directory + 'printf "native %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
                 'exit "$BUILD_TEST_NATIVE_EXIT"\n')
             (self.root / "scripts/build-network-filesystem.sh").write_text(
-                '#!/bin/sh\nprintf "network %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
+                '#!/bin/sh\n' + directory + 'printf "network %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
                 'exit "$BUILD_TEST_NETWORK_EXIT"\n')
             (self.root / "scripts/build-default-thumbnailers.sh").write_text(
-                '#!/bin/sh\nprintf "thumbnail %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
+                '#!/bin/sh\n' + directory + 'printf "thumbnail %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
                 'exit "$BUILD_TEST_THUMBNAIL_EXIT"\n')
             (self.root / "scripts/build-archive-filesystem.sh").write_text(
-                '#!/bin/sh\nprintf "archive %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
+                '#!/bin/sh\n' + directory + 'printf "archive %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
                 'exit "$BUILD_TEST_ARCHIVE_EXIT"\n')
             (self.root / "scripts/validate.sh").write_text(
-                '#!/bin/sh\nprintf "validate %s\\n" "$*" >> "$BUILD_TEST_LOG"\n'
+                '#!/bin/sh\n' + directory + 'printf "validate %s\\n" "$*" >> "$BUILD_TEST_LOG"\n'
                 'exit "$BUILD_TEST_VALIDATE_EXIT"\n')
             self.command = ["sh", str(self.root / entry)]
         shutil.copyfile(repository / entry, self.root / entry)
@@ -186,6 +193,16 @@ class BuildHookTests(unittest.TestCase):
         self.build_output = result.stdout + result.stderr
         return result.returncode, self.log.read_text().splitlines() if self.log.exists() else []
 
+    @staticmethod
+    def validated_build_calls(profile):
+        build = "cargo build -p midnight-explorer -p midnight-elevation --locked"
+        calls = [build + (" --release" if profile == "release" else ""), f"native {profile}",
+                 f"network {profile}", f"viewer {profile}", f"thumbnail {profile}",
+                 f"archive {profile}", f"validate {profile}"]
+        if os.name == "nt":
+            calls.append(f"deploy {profile}")
+        return calls
+
     def test_validation_runs_after_every_build_step_and_before_deployment(self):
         for arguments, profile in ((("release", "--validate"), "release"), (("--validate", "release"), "release"),
                                    (("--validate",), "debug")):
@@ -194,13 +211,40 @@ class BuildHookTests(unittest.TestCase):
                     self.log.unlink()
                 code, calls = self.run_arguments(*arguments)
                 self.assertEqual(code, 0, self.build_output)
-                build = "cargo build -p midnight-explorer -p midnight-elevation --locked"
-                expected = [build + (" --release" if profile == "release" else ""), f"native {profile}",
-                            f"network {profile}", f"viewer {profile}", f"thumbnail {profile}",
-                            f"archive {profile}", f"validate {profile}"]
-                if os.name == "nt":
-                    expected.append(f"deploy {profile}")
-                self.assertEqual(calls, expected)
+                self.assertEqual(calls, self.validated_build_calls(profile))
+
+    def test_arguments_from_another_directory_still_build_the_repository(self):
+        # build.bat's argument loop once shifted %0 as well, so a call with arguments
+        # from another directory built there and ran that directory's scripts.
+        caller_directory = tempfile.TemporaryDirectory(dir=self.root.parent)
+        self.addCleanup(caller_directory.cleanup)
+        caller = Path(caller_directory.name)
+        (caller / "scripts").mkdir()
+        for name in ("build-native-filesystem", "build-network-filesystem", "build-viewers",
+                     "build-default-thumbnailers", "build-archive-filesystem", "validate", "deploy-build"):
+            if os.name == "nt":
+                (caller / f"scripts/{name}.ps1").write_text(
+                    f'Add-Content -LiteralPath $env:BUILD_TEST_LOG "decoy {name}"\n')
+            else:
+                (caller / f"scripts/{name}.sh").write_text(
+                    f'#!/bin/sh\nprintf "decoy {name}\\n" >> "$BUILD_TEST_LOG"\n')
+        directories = self.root / "directories.log"
+        root = os.path.normcase(os.path.realpath(self.root))
+        for arguments, profile in ((("release", "--validate"), "release"), (("--validate",), "debug")):
+            with self.subTest(arguments=arguments):
+                for log in (self.log, directories):
+                    if log.exists():
+                        log.unlink()
+                result = subprocess.run(self.command + list(arguments), cwd=caller,
+                                        env=dict(self.environment, BUILD_TEST_CWD_LOG=str(directories)),
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = self.log.read_text().splitlines()
+                self.assertEqual(calls, self.validated_build_calls(profile))
+                used = directories.read_text().splitlines()
+                self.assertEqual(len(used), len(calls), used)
+                self.assertEqual({os.path.normcase(os.path.realpath(path.strip())) for path in used}, {root})
+                self.assertFalse((caller / "_build").exists())
 
     def test_validation_failure_prevents_deployment_and_is_returned(self):
         code, calls = self.run_arguments("--validate", validate_exit="1")
