@@ -69,6 +69,9 @@ pub fn compile(input: &Path, output: &Path) -> Result<Vec<PathBuf>, String> {
     adapt(&document, "TooltipPlacement", "TipBody")?;
     let generated = i_slint_compiler::generator::rust::generate(&document, &loader.compiler_config)
         .map_err(|error| error.to_string())?;
+    // Neither pass changes what the code does: see build/arms.rs and build/partition.rs.
+    let generated =
+        crate::partition::spread(crate::arms::prune(generated), crate::partition::PARTS)?;
     std::fs::write(output, crate::source::text(generated)?).map_err(|error| error.to_string())?;
     Ok(dependencies)
 }

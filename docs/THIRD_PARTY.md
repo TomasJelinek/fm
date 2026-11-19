@@ -262,6 +262,14 @@ generator `--check`: no Windows capture was taken, and the Windows result follow
 from the lockfile, where `midnight-ui-bindings` and `bindgen` are the only packages
 that name `prettyplease`. The build-graph notice staging below predates this change.
 
+On 19 November 2026 `midnight-ui-bindings` also names `proc-macro2` 1.0.107 under
+`[dev-dependencies]`, for the test target of its build script's token passes
+(`tests/build_passes.rs`; [record](verification/2026-11-19-slint-build-speed.md)).
+It is the package, version and default feature set (default, proc-macro) that the
+crate already uses as a build dependency: no package, version, license or feature
+changes, `Cargo.lock` is unchanged (`cargo build --locked` and `cargo test --locked`
+accept it), and the record counts stay as above.
+
 Also on 18 November 2026 the vendored FemtoVG 0.27.0 gained a selectable text fitting
 ([vendor notes](../vendor/README.md), [record](verification/2026-11-18-ui-sharpness.md)).
 Two dependency edges change and no package, version, license or feature does:

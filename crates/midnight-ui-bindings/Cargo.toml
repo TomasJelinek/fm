@@ -7,6 +7,8 @@ publish.workspace = true
 
 # Generated bindings have no unit tests. Keep presenter tests in midnight-ui so
 # the large generated module is not compiled again as part of its test harness.
+# tests/build_passes.rs tests the build script's token passes and uses nothing of
+# this library.
 [lib]
 test = false
 doctest = false
@@ -20,4 +22,8 @@ slint.workspace = true
 slint-build.workspace = true
 i-slint-compiler = { version = "=1.18.1", default-features = false, features = ["rust"] }
 spin_on = "=0.1.1"
+proc-macro2 = "=1.0.107"
+
+[dev-dependencies]
+# For tests/build_passes.rs only: the build dependency above, same version.
 proc-macro2 = "=1.0.107"

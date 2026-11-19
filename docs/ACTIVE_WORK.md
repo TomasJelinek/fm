@@ -79,6 +79,26 @@ Not established:
   captures report a change; a few comparator tests fail intermittently here for that
   reason (COMPARE-02).
 
+### Slint build speed — 19 November 2026
+
+On main `e7e0f390`, Linux only. Rebuilding the application after a `.slint` change
+took 202 s, 187.2 s of it in `rustc` on `midnight-ui-bindings`; it now takes
+134 s and 119.2 s ([record](verification/2026-11-19-slint-build-speed.md)).
+`rustc` never divides a module over code generation units, and the Slint generator
+writes every component into one module, so one unit held most of the crate and was
+optimised on one thread. The build script now moves the generated component structs
+into 16 private submodules and removes 569 match arms that the generator repeats in
+the accessibility lookups and that can never match. Neither pass changes an
+expression, a path or a public item; the release profile compiles this crate as one
+unit, where the split made no measurable difference.
+
+**Open:** run-time speed of debug builds with the split was not measured (the dev
+machine code is 1.4 MB larger); Windows and the release executable were not built.
+Measured and left as they are: thin local LTO off, opt-level `"z"` or 0 for the
+bindings, an optimised Slint compiler for the build script, and 16 code generation
+units for the release compile of the bindings; the record gives each number and
+reason.
+
 ### Slint compile time and UI sharpness — 18 November 2026
 
 On main `544b48db`, Linux only. Rebuilding `midnight-ui-bindings` after a `.slint`
