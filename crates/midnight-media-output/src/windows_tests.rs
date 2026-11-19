@@ -18,7 +18,10 @@ fn frames(played_frames: u64, queued_frames: usize) -> DeviceClock {
 fn stream_latency_accepts_zero_and_rounds_positive_clock_ticks_up() {
     assert_eq!(stream_latency_ticks(0, 192_000, 2_400).unwrap(), 0);
     assert_eq!(stream_latency_ticks(1, 192_000, 2_400).unwrap(), 1);
-    assert_eq!(stream_latency_ticks(500_000, 192_000, 2_400).unwrap(), 9_600);
+    assert_eq!(
+        stream_latency_ticks(500_000, 192_000, 2_400).unwrap(),
+        9_600
+    );
 
     let mut clock = Timeline::new(stream_latency_ticks(0, 192_000, 2_400).unwrap());
     assert_eq!(clock.observe(0, 4, 4).unwrap(), frames(0, 4));
