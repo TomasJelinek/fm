@@ -1,22 +1,13 @@
 //! Bounded form validation only; native inspection, time capture and edits are backend work.
-use crate::MetadataDraft;
-use chrono::DateTime;
+use crate::{MetadataDraft, MetadataTimeDraft, metadata_time};
 use midnight_core::*;
-use std::time::{Duration, UNIX_EPOCH};
 
-#[path = "metadata_datetime.rs"]
-mod datetime;
-pub(crate) use datetime::example as timestamp_example;
-
-pub(crate) fn patch(
-    draft: &MetadataDraft,
-    format: Option<&DateTimeInputFormat>,
-) -> Result<MetadataPatch, String> {
+pub(crate) fn patch(draft: &MetadataDraft) -> Result<MetadataPatch, String> {
     let mut edit = MetadataPatch {
         compressed: state(draft.compressed)?,
-        created: timestamp(draft.created_mode, &draft.created_text, format)?,
-        modified: timestamp(draft.modified_mode, &draft.modified_text, format)?,
-        accessed: timestamp(draft.accessed_mode, &draft.accessed_text, format)?,
+        created: timestamp("Created", &draft.created)?,
+        modified: timestamp("Modified", &draft.modified)?,
+        accessed: timestamp("Accessed", &draft.accessed)?,
         recursive: draft.recursive,
         ..Default::default()
     };
@@ -69,37 +60,13 @@ fn state(value: i32) -> Result<Option<bool>, String> {
     }
 }
 
-fn timestamp(
-    mode: i32,
-    text: &str,
-    format: Option<&DateTimeInputFormat>,
-) -> Result<TimeEdit, String> {
-    match mode {
-        0 => return Ok(TimeEdit::Keep),
-        2 => return Ok(TimeEdit::Now),
-        1 => {}
-        _ => return Err("Choose a timestamp action.".into()),
+fn timestamp(label: &str, time: &MetadataTimeDraft) -> Result<TimeEdit, String> {
+    match time.mode {
+        0 => Ok(TimeEdit::Keep),
+        2 => Ok(TimeEdit::Now),
+        1 => metadata_time::instant(label, &time.date, &time.time, &time.offset).map(TimeEdit::Set),
+        _ => Err("Choose a timestamp action.".into()),
     }
-    if text.len() > 256 {
-        return Err("Timestamp is too long.".into());
-    }
-    let value = DateTime::parse_from_rfc3339(text.trim()).ok()
-        .or_else(|| format.and_then(|format| datetime::parse(text, format)))
-        .ok_or_else(|| format!("Use a four-digit year and explicit UTC offset, e.g. {}. ISO timestamps are also accepted.", timestamp_example(format)))?;
-    let nanos = value.timestamp_subsec_nanos();
-    if nanos >= 1_000_000_000 {
-        return Err("Leap seconds cannot be represented as a filesystem timestamp.".into());
-    }
-    let seconds = value.timestamp();
-    let instant = if seconds >= 0 {
-        UNIX_EPOCH.checked_add(Duration::new(seconds as u64, nanos))
-    } else {
-        UNIX_EPOCH
-            .checked_sub(Duration::from_secs(seconds.unsigned_abs()))
-            .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(nanos))))
-    }
-    .ok_or_else(|| "Timestamp is outside the supported range.".to_string())?;
-    Ok(TimeEdit::Set(instant))
 }
 
 #[cfg(test)]
@@ -109,15 +76,12 @@ mod tests {
 
     #[test]
     fn opening_attributes_has_no_edits_and_case_has_explicit_opt_in() {
-        assert!(patch(&MetadataDraft::default(), None).unwrap().is_empty());
+        assert!(patch(&MetadataDraft::default()).unwrap().is_empty());
         let draft = MetadataDraft {
             case_enabled: true,
             ..Default::default()
         };
-        assert_eq!(
-            patch(&draft, None).unwrap().case,
-            Some(CaseChange::default())
-        );
+        assert_eq!(patch(&draft).unwrap().case, Some(CaseChange::default()));
     }
 
     #[test]
@@ -129,7 +93,7 @@ mod tests {
             compressed: 2,
             ..Default::default()
         };
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft).unwrap();
         assert_eq!(
             edit.windows_mask,
             EDIT_READ_ONLY | EDIT_HIDDEN | EDIT_ARCHIVE
@@ -146,14 +110,14 @@ mod tests {
             unix_mode: "640".into(),
             ..Default::default()
         };
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft).unwrap();
         assert_eq!((edit.unix_mask, edit.unix_value), (0o777, 0o640));
         draft.unix_mode = "2750".into();
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft).unwrap();
         assert_eq!((edit.unix_mask, edit.unix_value), (0o7777, 0o2750));
         for invalid in ["", "75", "888", "10000", "-755", "0x755"] {
             draft.unix_mode = invalid.into();
-            assert!(patch(&draft, None).is_err(), "{invalid}");
+            assert!(patch(&draft).is_err(), "{invalid}");
         }
     }
 
@@ -164,86 +128,57 @@ mod tests {
             unix_value: 0o020,
             ..Default::default()
         };
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft).unwrap();
         assert_eq!((edit.unix_mask, edit.unix_value), (0o220, 0o020));
         draft.unix_edit = true;
         draft.unix_mode = "755".into();
-        assert!(patch(&draft, None).is_err());
+        assert!(patch(&draft).is_err());
         draft.unix_edit = false;
         for (mask, value) in [(-1, 0), (0o10000, 0), (0, 1), (0o7777, -1)] {
             draft.unix_mask = mask;
             draft.unix_value = value;
-            assert!(patch(&draft, None).is_err());
+            assert!(patch(&draft).is_err());
+        }
+    }
+
+    fn time(mode: i32, date: &str, time: &str, offset: &str) -> MetadataTimeDraft {
+        MetadataTimeDraft {
+            mode,
+            date: date.into(),
+            time: time.into(),
+            offset: offset.into(),
         }
     }
 
     #[test]
-    fn timestamps_require_explicit_offsets_and_current_is_captured_by_backend() {
+    fn typed_date_time_and_offset_become_the_patch_and_now_is_captured_by_backend() {
         let mut draft = MetadataDraft {
-            modified_mode: 1,
-            modified_text: "1970-01-01T01:00:01.125+01:00".into(),
-            accessed_mode: 2,
+            modified: time(1, "2026-11-06", "12:30:15", "+01:00"),
+            created: time(1, "1970-01-01", "01:00:01.125", "+01:00"),
+            accessed: time(2, "", "", ""),
             ..Default::default()
         };
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft).unwrap();
         assert_eq!(
             edit.modified,
+            TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(1_793_964_615))
+        );
+        assert_eq!(
+            edit.created,
             TimeEdit::Set(UNIX_EPOCH + Duration::from_millis(1125))
         );
         assert_eq!(edit.accessed, TimeEdit::Now);
-        for invalid in [
-            "2026-10-25 02:30:00",
-            "2026-02-30T12:00:00Z",
-            "2016-12-31T23:59:60Z",
-        ] {
-            draft.modified_text = invalid.into();
-            assert!(patch(&draft, None).is_err(), "{invalid}");
-        }
-    }
-
-    #[test]
-    fn captured_locale_is_used_by_the_typed_patch_without_relaxing_time_validation() {
-        let format = DateTimeInputFormat {
-            pattern: "%d. %m. %Y %H:%M:%S".into(),
-            am_pm: ["".into(), "".into()],
-        };
-        let mut draft = MetadataDraft {
-            modified_mode: 1,
-            modified_text: "01. 01. 1970 01:00:01 +01:00".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            patch(&draft, Some(&format)).unwrap().modified,
-            TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(1))
-        );
+        // Unchecked fields keep their native value whatever their text says.
+        draft.modified.mode = 0;
+        draft.modified.date = "not a date".into();
+        assert_eq!(patch(&draft).unwrap().modified, TimeEdit::Keep);
+        draft.modified.mode = 1;
+        assert!(patch(&draft).unwrap_err().starts_with("Modified date:"));
+        draft.modified = time(1, "2026-10-25", "02:30:00", "");
         assert!(
-            patch(&draft, None).is_err(),
-            "there is no guessed locale without a captured format"
+            patch(&draft).unwrap_err().contains("UTC offset"),
+            "there is no guessed local offset"
         );
-        draft.modified_text = "31. 12. 2016 23:59:60 Z".into();
-        assert!(
-            patch(&draft, Some(&format))
-                .unwrap_err()
-                .contains("Leap seconds")
-        );
-        draft.modified_text = "01. 01. 1970 01:00:01".into();
-        assert!(patch(&draft, Some(&format)).is_err());
-    }
-
-    #[test]
-    fn repeated_daylight_saving_hour_is_disambiguated_by_explicit_offset() {
-        let TimeEdit::Set(earlier) = timestamp(1, "2026-10-25T02:30:00+02:00", None).unwrap()
-        else {
-            panic!("explicit timestamp")
-        };
-        let TimeEdit::Set(later) = timestamp(1, "2026-10-25T02:30:00+01:00", None).unwrap() else {
-            panic!("explicit timestamp")
-        };
-        assert_eq!(
-            later.duration_since(earlier).unwrap(),
-            Duration::from_secs(3600)
-        );
-        assert!(timestamp(1, "2026-10-25T02:30:00", None).is_err());
     }
 
     #[test]
@@ -254,7 +189,7 @@ mod tests {
                 ..Default::default()
             },
             MetadataDraft {
-                modified_mode: -1,
+                modified: time(-1, "", "", ""),
                 ..Default::default()
             },
             MetadataDraft {
@@ -268,18 +203,11 @@ mod tests {
                 ..Default::default()
             },
             MetadataDraft {
-                modified_mode: 1,
-                modified_text: "x".repeat(4097).into(),
+                modified: time(1, &"1".repeat(4097), "12:00", "Z"),
                 ..Default::default()
             },
         ] {
-            assert!(patch(&draft, None).is_err());
+            assert!(patch(&draft).is_err());
         }
-        // The timestamp field limit is exactly 256 bytes: one more is refused
-        // as too long, while 256 bytes reaches parsing (and fails there).
-        let too_long = timestamp(1, &"x".repeat(257), None).unwrap_err();
-        assert_eq!(too_long, "Timestamp is too long.");
-        let at_limit = timestamp(1, &"x".repeat(256), None).unwrap_err();
-        assert_ne!(at_limit, too_long, "256 bytes is within the limit");
     }
 }

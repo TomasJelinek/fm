@@ -148,6 +148,7 @@ fn review_workflow(scenario: Scenario) {
             patch,
             localized_times: Default::default(),
             time_input_format: None,
+            time_defaults: Default::default(),
             capabilities: MetadataCapabilities {
                 windows_attributes: EDIT_READ_ONLY | EDIT_HIDDEN | EDIT_SYSTEM | EDIT_ARCHIVE,
                 compressed: true,

@@ -109,7 +109,13 @@ operations and copy actions (Copy details,
   confirmation and execution boundaries are retained.
 - Attributes, times and case share a readable form, useful icons and compact
   operation summary. An obsolete preview table must not dominate the dialog;
-  backend preflight and necessary confirmation remain intact.
+  backend preflight and necessary confirmation remain intact. The header shows
+  the single item's name or the item count, plus plain sentences only for taken
+  names, unsupported items or hard links. Timestamps use separate Date, Time and
+  UTC offset fields (`metadata-time-field.slint`): typing always works, Up/Down
+  step the part under the cursor, and calendar/time picker popups are aids. Their
+  starting values come from the preparation worker (`LocaleService::local_calendar`);
+  the UI never infers a timezone. A clean Apply closes without a result notice.
 
 ## Command-line insertion
 

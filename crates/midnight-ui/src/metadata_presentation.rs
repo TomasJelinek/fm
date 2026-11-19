@@ -65,6 +65,7 @@ pub(super) fn bind(
     send: &Rc<dyn Fn(Command) -> bool>,
 ) {
     install_permissions(window);
+    install_time_codec(window);
     let weak = window.as_weak();
     window.on_dismiss_metadata_hints(move || {
         if let Some(window) = weak.upgrade() {
@@ -99,12 +100,7 @@ pub(super) fn bind(
         p.dirty_metadata(token.as_str());
     });
     callback!(on_preview_metadata, |p, s, token, draft| {
-        let format = p
-            .metadata
-            .preview
-            .as_ref()
-            .and_then(|preview| preview.time_input_format.as_ref());
-        let patch = metadata_input::patch(&draft, format);
+        let patch = metadata_input::patch(&draft);
         p.preview_metadata(token.as_str(), patch, s);
     });
     callback!(on_confirm_metadata, |p, s, token, revision, policy| {
@@ -125,15 +121,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     {
         dismiss_controls(window);
     }
-    window.set_metadata_timestamp_example(
-        metadata_input::timestamp_example(
-            state
-                .preview
-                .as_ref()
-                .and_then(|preview| preview.time_input_format.as_ref()),
-        )
-        .into(),
-    );
+    set_time_defaults(window, state.preview.as_deref());
     window.set_metadata_start_case(state.start_case);
     window.set_metadata_revision(state.revision.to_string().into());
     // Preview errors name the paths they concern.
@@ -164,36 +152,20 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_metadata_can_accessed(caps.accessed);
     window.set_metadata_can_rename(caps.rename);
     if let Some(preview) = &state.preview {
-        let suffix = if preview.hard_linked > 0 {
-            " · Metadata changes also affect other hard links to these files."
-        } else {
-            ""
-        };
-        window.set_metadata_summary(
-            format!(
-                "{} selected items · {} name conflicts · {} unsupported{}",
-                preview.total, preview.conflicts, preview.unsupported, suffix
-            )
-            .into(),
-        );
+        window.set_metadata_summary(selection_summary(preview).into());
         window.set_metadata_preview_text(preview_status(presenter).into());
         window.set_metadata_list_status(
-            format!(
-                "{} of {} captured roots shown{}",
-                preview.sample.len(),
-                preview.total,
-                if preview.patch.recursive {
-                    " · Descendants are inspected during Apply."
-                } else {
-                    ""
-                }
-            )
+            if preview.patch.recursive {
+                "Reviewed. Subfolder contents are checked while applying."
+            } else {
+                "Reviewed. Apply it from the review, or change the draft and review again."
+            }
             .into(),
         );
     } else {
-        window.set_metadata_summary("Preparing captured selection…".into());
+        window.set_metadata_summary("Checking the selected items…".into());
         window.set_metadata_preview_text("".into());
-        window.set_metadata_list_status("Preparing captured files…".into());
+        window.set_metadata_list_status("Checking the selected items…".into());
     }
     window.set_metadata_token(
         state
@@ -217,6 +189,129 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         window.set_metadata_conflict_token("".into());
         window.invoke_close_metadata_conflict();
     }
+}
+
+/// Plain header: the item's name or count, then only the issues that need attention.
+fn selection_summary(preview: &MetadataPreview) -> String {
+    let count = |count: u64, one: &str, many: &str| {
+        if count == 1 {
+            one.to_string()
+        } else {
+            format!("{count} {many}")
+        }
+    };
+    let mut lines = vec![match preview.sample.as_slice() {
+        [row] if preview.total == 1 => path_text(std::path::Path::new(
+            row.path.file_name().unwrap_or(row.path.as_os_str()),
+        )),
+        _ => format!("{} items selected", preview.total),
+    }];
+    if preview.conflicts > 0 {
+        lines.push(format!(
+            "{} already taken. You will be asked whether to skip {}.",
+            count(preview.conflicts, "One new name is", "new names are"),
+            if preview.conflicts == 1 { "it" } else { "them" }
+        ));
+    }
+    if preview.unsupported > 0 {
+        lines.push(format!(
+            "{} be changed this way; see the details below.",
+            count(preview.unsupported, "One item cannot", "items cannot")
+        ));
+    }
+    if preview.hard_linked > 0 {
+        lines.push("Other hard links to these files change too.".into());
+    }
+    lines.join("\n")
+}
+
+/// Starting values for the time fields: each field's shared current value, else now.
+/// Without worker-local values, now is shown in UTC with an explicit +00:00.
+fn set_time_defaults(window: &MainWindow, preview: Option<&MetadataPreview>) {
+    let defaults = preview
+        .map(|preview| preview.time_defaults)
+        .unwrap_or_default();
+    let now = defaults
+        .now
+        .map(|now| metadata_time::texts(&now))
+        .unwrap_or_else(|| metadata_time::utc_texts(std::time::SystemTime::now()));
+    let value = |field: Option<LocalCalendarTime>| {
+        let texts = field.map_or_else(|| now.clone(), |value| metadata_time::texts(&value));
+        MetadataTimeValue {
+            date: texts.date.into(),
+            time: texts.time.into(),
+            offset: texts.offset.into(),
+        }
+    };
+    let codec = window.global::<MetadataTimeCodec>();
+    codec.set_created_default(value(defaults.created));
+    codec.set_modified_default(value(defaults.modified));
+    codec.set_accessed_default(value(defaults.accessed));
+    codec.set_now_default(value(None));
+}
+
+fn install_time_codec(window: &MainWindow) {
+    use metadata_time::Field;
+    let codec = window.global::<MetadataTimeCodec>();
+    codec.on_step(|text, field, cursor, delta, fallback| {
+        let failed = MetadataTimeStep::default();
+        let Some(field) = Field::from_index(field) else {
+            return failed;
+        };
+        let part = metadata_time::part_at(&text, usize::try_from(cursor).unwrap_or_default());
+        step_result(metadata_time::step(&text, field, part, delta, &fallback))
+    });
+    codec.on_step_part(|text, field, part, delta, fallback| {
+        let Some(field) = Field::from_index(field) else {
+            return MetadataTimeStep::default();
+        };
+        let part = usize::try_from(part).unwrap_or_default();
+        step_result(metadata_time::step(&text, field, part, delta, &fallback))
+    });
+    codec.on_parts(|text, field, fallback| {
+        let parts = Field::from_index(field)
+            .map(|field| metadata_time::parts(&text, field, &fallback))
+            .unwrap_or_default();
+        ModelRc::new(VecModel::from(
+            parts
+                .into_iter()
+                .map(SharedString::from)
+                .collect::<Vec<_>>(),
+        ))
+    });
+    codec.on_month(|cursor, fallback| {
+        metadata_time::month_view(&cursor, &fallback)
+            .map(|view| MetadataMonthView {
+                title: view.title.into(),
+                year: view.year,
+                month: view.month as i32,
+                leading: view.leading as i32,
+                days: view.days as i32,
+                day: view.day as i32,
+                valid: true,
+            })
+            .unwrap_or_default()
+    });
+    codec.on_shift(|cursor, fallback, days, months| {
+        metadata_time::shift(&cursor, &fallback, days, months)
+            .unwrap_or_else(|| cursor.to_string())
+            .into()
+    });
+    codec.on_compose(|year, month, day| {
+        metadata_time::compose(year, month, day)
+            .unwrap_or_default()
+            .into()
+    });
+}
+
+fn step_result(step: Option<(String, std::ops::Range<usize>)>) -> MetadataTimeStep {
+    step.map(|(text, range)| MetadataTimeStep {
+        text: text.into(),
+        start: range.start as i32,
+        end: range.end as i32,
+        valid: true,
+    })
+    .unwrap_or_default()
 }
 
 pub(super) fn show_conflict(window: &MainWindow, conflict: &MetadataConflict, force: bool) {
@@ -397,6 +492,7 @@ mod tests {
             patch: MetadataPatch::default(),
             localized_times: Default::default(),
             time_input_format: None,
+            time_defaults: Default::default(),
             capabilities: MetadataCapabilities::default(),
             total: 1,
             conflicts: 0,
@@ -435,6 +531,41 @@ mod tests {
         assert!(
             !text.contains("\n/home/u/.ssh/id_rsa: permissions"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn header_names_a_single_item_and_mentions_only_issues_that_exist() {
+        let mut preview = empty_preview(1);
+        preview.sample.push(MetadataPreviewRow {
+            path: "/home/u/Žluťoučký report.txt".into(),
+            proposed_name: None,
+            current: MetadataSnapshot::default(),
+            proposed: MetadataSnapshot::default(),
+            issue: None,
+        });
+        assert_eq!(selection_summary(&preview), "Žluťoučký report.txt");
+        preview.total = 3;
+        assert_eq!(selection_summary(&preview), "3 items selected");
+        preview.conflicts = 1;
+        preview.unsupported = 2;
+        preview.hard_linked = 1;
+        assert_eq!(
+            selection_summary(&preview),
+            "3 items selected\n\
+             One new name is already taken. You will be asked whether to skip it.\n\
+             2 items cannot be changed this way; see the details below.\n\
+             Other hard links to these files change too."
+        );
+        preview.conflicts = 2;
+        assert!(selection_summary(&preview).contains("2 new names are already taken"));
+        let forged = std::path::PathBuf::from("a\nb.txt");
+        preview.total = 1;
+        preview.sample[0].path = forged;
+        assert_eq!(
+            selection_summary(&preview).lines().count(),
+            4,
+            "a name cannot add lines"
         );
     }
 

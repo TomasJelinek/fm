@@ -62,6 +62,8 @@ export { SpeedChartData }
 export { JobsView }
 import { MetadataDialog, MetadataDraft } from "metadata-controls.slint";
 export { MetadataDraft }
+import { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeStep, MetadataMonthView } from "metadata-time-field.slint";
+export { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeStep, MetadataMonthView }
 import { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView } from "unix-permissions.slint";
 export { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView }
 import { ComparisonView, CompareDirectoriesDialog } from "comparison-dialog.slint";
@@ -256,7 +258,6 @@ export component MainWindow inherits Window {
     in property <string> metadata-revision;
     in property <bool> metadata-start-case;
     in property <string> metadata-summary;
-    in property <string> metadata-timestamp-example: "2026-11-06T12:30:00+01:00";
     in property <string> metadata-preview-text;
     in property <string> metadata-list-status;
     in property <bool> metadata-preview-current;
@@ -1338,7 +1339,6 @@ export component MainWindow inherits Window {
                 move-dialog(dx, dy) => { metadata-popup-frame.move-by(dx, dy); }
                 token: root.metadata-token; revision: root.metadata-revision;
                 summary: root.metadata-summary; preview-text: root.metadata-preview-text;
-                timestamp-example: root.metadata-timestamp-example;
                 list-status: root.metadata-list-status;
                 preview-current: root.metadata-preview-current;
                 error: root.metadata-error; ready: root.metadata-ready; busy: root.metadata-busy;

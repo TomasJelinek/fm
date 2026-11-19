@@ -50,6 +50,19 @@ impl LocaleService for WindowsFileSystem {
         modified(value)
     }
 
+    fn local_calendar(&self, value: SystemTime) -> Option<midnight_core::LocalCalendarTime> {
+        let local = local_system_time(value)?;
+        midnight_core::LocalCalendarTime::from_local_fields(
+            i32::from(local.wYear),
+            u8::try_from(local.wMonth).ok()?,
+            u8::try_from(local.wDay).ok()?,
+            u8::try_from(local.wHour).ok()?,
+            u8::try_from(local.wMinute).ok()?,
+            u8::try_from(local.wSecond).ok()?,
+            value,
+        )
+    }
+
     fn format_archive_local_time(
         &self,
         value: midnight_core::ArchiveTimestamp,
@@ -220,6 +233,10 @@ impl WindowsLocale {
 }
 
 pub(crate) fn modified(time: SystemTime) -> Option<LocalizedDateTime> {
+    snapshot().ok()?.format(&local_system_time(time)?).ok()
+}
+
+fn local_system_time(time: SystemTime) -> Option<SYSTEMTIME> {
     let locale = snapshot().ok()?;
     // FILETIME is an unsigned count of 100 ns ticks since 1601, not a floating-point timestamp.
     let ticks = match time.duration_since(UNIX_EPOCH) {
@@ -241,7 +258,7 @@ pub(crate) fn modified(time: SystemTime) -> Option<LocalizedDateTime> {
     {
         return None;
     }
-    locale.format(&local).ok()
+    Some(local)
 }
 
 fn locale_value(field: u32) -> io::Result<Vec<u16>> {

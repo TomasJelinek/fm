@@ -126,6 +126,7 @@ impl Edit {
                 patch: MetadataPatch::default(),
                 localized_times: Default::default(),
                 time_input_format: None,
+                time_defaults: Default::default(),
                 capabilities: MetadataCapabilities::default(),
                 total: targets.len() as u64,
                 conflicts: 0,
@@ -149,8 +150,24 @@ impl Edit {
     pub(super) fn localize(&mut self, locale: Option<&dyn LocaleService>) {
         self.preview.localized_times.clear();
         self.preview.time_input_format = locale.and_then(LocaleService::datetime_input_format);
+        self.preview.time_defaults = MetadataTimeDefaults::default();
         let Some(locale) = locale else {
             return;
+        };
+        // Editors start from the roots' shared current time, else the current instant.
+        let sample = &self.preview.sample;
+        let shared = |field: fn(&MetadataSnapshot) -> Option<SystemTime>| {
+            let first = field(&sample.first()?.current)?;
+            (sample.len() as u64 == self.preview.total
+                && sample.iter().all(|row| field(&row.current) == Some(first)))
+            .then(|| locale.local_calendar(first))
+            .flatten()
+        };
+        self.preview.time_defaults = MetadataTimeDefaults {
+            now: locale.local_calendar(SystemTime::now()),
+            created: shared(|snapshot| snapshot.created),
+            modified: shared(|snapshot| snapshot.modified),
+            accessed: shared(|snapshot| snapshot.accessed),
         };
         let times = self
             .preview

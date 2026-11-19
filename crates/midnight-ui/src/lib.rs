@@ -52,6 +52,7 @@ mod job_speed;
 mod jobs_windows;
 mod metadata_input;
 mod metadata_presentation;
+mod metadata_time;
 #[cfg(test)]
 mod native_operation_tests;
 mod native_path_edit;

@@ -43,3 +43,27 @@ fn grouping_termination_small_values_and_empty_grouping_are_exact() {
     };
     assert_eq!(invalid.format_u64(12345), "12345");
 }
+
+#[test]
+fn local_calendar_offset_is_the_difference_between_local_fields_and_the_instant() {
+    use std::time::{Duration, UNIX_EPOCH};
+    // 2026-10-25 00:30:00 UTC is 02:30 in both Central European offsets that day.
+    let instant = UNIX_EPOCH + Duration::from_secs(1_792_888_200);
+    let summer = LocalCalendarTime::from_local_fields(2026, 10, 25, 2, 30, 0, instant).unwrap();
+    assert_eq!(summer.offset_seconds, 7200);
+    let later = instant + Duration::from_secs(3600);
+    let winter = LocalCalendarTime::from_local_fields(2026, 10, 25, 2, 30, 0, later).unwrap();
+    assert_eq!(winter.offset_seconds, 3600);
+    let before_epoch = UNIX_EPOCH - Duration::from_millis(500);
+    let west = LocalCalendarTime::from_local_fields(1969, 12, 31, 18, 59, 59, before_epoch);
+    assert_eq!(west.unwrap().offset_seconds, -5 * 3600);
+    for (year, month, day, hour) in [(2026, 2, 29, 0), (2026, 13, 1, 0), (2026, 1, 1, 24)] {
+        assert!(
+            LocalCalendarTime::from_local_fields(year, month, day, hour, 0, 0, instant).is_none()
+        );
+    }
+    assert!(
+        LocalCalendarTime::from_local_fields(2026, 10, 27, 2, 30, 0, instant).is_none(),
+        "an offset of a day or more is not a timezone"
+    );
+}

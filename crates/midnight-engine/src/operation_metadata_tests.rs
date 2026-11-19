@@ -697,6 +697,20 @@ async fn metadata_preview_captures_native_locale_on_worker_for_current_and_propo
                 time: "native time".into(),
             })
         }
+        fn local_calendar(&self, value: std::time::SystemTime) -> Option<LocalCalendarTime> {
+            assert_ne!(
+                std::thread::current().id(),
+                self.0,
+                "timezone lookup must use a worker"
+            );
+            let seconds = value.duration_since(UNIX_EPOCH).ok()?.as_secs();
+            // A fixed test zone: the day count stands in for the calendar.
+            Some(LocalCalendarTime {
+                day: (seconds / 86_400 % 28 + 1) as u8,
+                offset_seconds: 3600,
+                ..Default::default()
+            })
+        }
     }
     let mut harness = Harness::with_locale(
         &[("žluťoučký.txt", false)],
@@ -710,6 +724,15 @@ async fn metadata_preview_captures_native_locale_on_worker_for_current_and_propo
     );
     let current = initial.sample[0].current.modified.unwrap();
     assert_eq!(initial.localized_times[&current].date, "native date");
+    // One captured root: its own times seed the editors, in the native zone.
+    let seconds = current.duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let modified = initial
+        .time_defaults
+        .modified
+        .expect("shared modified time");
+    assert_eq!(modified.day, (seconds / 86_400 % 28 + 1) as u8);
+    assert_eq!(modified.offset_seconds, 3600);
+    assert!(initial.time_defaults.now.is_some());
     let proposed = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     harness
         .controller

@@ -1,0 +1,404 @@
+import { Theme } from "theme.slint";
+import { Tip } from "controls.slint";
+import { TooltipPlacement } from "tooltip-placement.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+
+// One timestamp of the draft: mode 0 keeps it, 1 sets the typed value, 2 uses Now.
+export struct MetadataTimeDraft { mode: int, date: string, time: string, offset: string }
+export struct MetadataTimeValue { date: string, time: string, offset: string }
+export struct MetadataTimeStep { text: string, start: int, end: int, valid: bool }
+export struct MetadataMonthView { title: string, year: int, month: int, leading: int, days: int, day: int, valid: bool }
+
+// Pure field logic lives in Rust (metadata_time.rs). Field: 0 date, 1 time, 2 offset.
+export global MetadataTimeCodec {
+    // Worker-captured starting values: each field's shared current time, else now.
+    in property <MetadataTimeValue> created-default;
+    in property <MetadataTimeValue> modified-default;
+    in property <MetadataTimeValue> accessed-default;
+    in property <MetadataTimeValue> now-default;
+    // Step the part under a byte cursor; an unparsable text becomes the fallback.
+    pure callback step(string, int, int, int, string) -> MetadataTimeStep;
+    pure callback step-part(string, int, int, int, string) -> MetadataTimeStep;
+    pure callback parts(string, int, string) -> [string];
+    pure callback month(string, string) -> MetadataMonthView;
+    pure callback shift(string, string, int, int) -> string;
+    pure callback compose(int, int, int) -> string;
+}
+
+// A typed field; Up/Down change the part under the cursor. Typing always works.
+component SegmentField inherits Rectangle {
+    in property <int> field;
+    in property <string> label;
+    in property <string> hint;
+    in property <string> placeholder;
+    in property <string> fallback;
+    in property <bool> enabled: true;
+    in-out property <string> text <=> input.text;
+    callback edited();
+    callback open-picker();
+    forward-focus: input;
+    height: Theme.control-height;
+    min-width: Theme.font-size * 4;
+    background: root.enabled ? Theme.surface : Theme.secondary-surface;
+    border-width: 1px; border-radius: 3px;
+    border-color: input.has-focus ? Theme.active-frame : Theme.frame;
+    public function step-part(part: int, delta: int) {
+        root.apply(MetadataTimeCodec.step-part(input.text, root.field, part, delta, root.fallback));
+    }
+    function apply(step: MetadataTimeStep) {
+        if step.valid {
+            input.text = step.text;
+            input.set-selection-offsets(step.start, step.end);
+            root.edited();
+        }
+    }
+    Text {
+        x: 6px; width: parent.width - 12px;
+        visible: input.text == "" && input.preedit-text == "";
+        text: root.placeholder; color: Theme.muted-text;
+        font-size: Theme.font-size; font-family: Theme.font-family;
+        vertical-alignment: center; overflow: elide;
+    }
+    input := TextInput {
+        x: 6px; width: parent.width - 12px; height: parent.height;
+        enabled: root.enabled;
+        single-line: true; vertical-alignment: center;
+        font-size: Theme.font-size; font-family: Theme.font-family;
+        color: root.enabled ? Theme.text : Theme.muted-text;
+        selection-foreground-color: Theme.selection-text;
+        selection-background-color: Theme.selection-background;
+        accessible-role: text-input; accessible-label: root.label;
+        accessible-value: self.text; accessible-placeholder-text: root.placeholder;
+        accessible-description: root.hint;
+        edited => { root.edited(); }
+        key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.meta { return reject; }
+            if event.modifiers.alt {
+                if event.text == Key.DownArrow { root.open-picker(); return accept; }
+                return reject;
+            }
+            if event.text == Key.UpArrow || event.text == Key.DownArrow {
+                root.apply(MetadataTimeCodec.step(self.text, root.field,
+                    self.cursor-position-byte-offset, event.text == Key.UpArrow ? 1 : -1, root.fallback));
+                return accept;
+            }
+            reject
+        }
+    }
+    Tip { text: root.hint; }
+}
+
+component PickerButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <bool> clock;
+    callback activate();
+    width: Theme.control-height; height: Theme.control-height;
+    background: area.has-hover && root.enabled ? Theme.hover : Theme.secondary-surface;
+    border-width: 1px; border-radius: 3px;
+    border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
+    accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.activate(); } }
+    Path {
+        width: parent.width * 0.6; height: self.width;
+        viewbox-width: 16; viewbox-height: 16;
+        stroke: root.enabled ? Theme.text : Theme.muted-text; stroke-width: 1.3px;
+        commands: root.clock
+            ? "M 8 1.5 A 6.5 6.5 0 1 1 7.99 1.5 Z M 8 4.5 L 8 8 L 10.5 9.5"
+            : "M 2 3.5 L 14 3.5 L 14 14 L 2 14 Z M 2 6.5 L 14 6.5 M 5 1.5 L 5 4.5 M 11 1.5 L 11 4.5 M 5 9.5 L 6.5 9.5 M 9.5 9.5 L 11 9.5 M 5 12 L 6.5 12";
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
+                root.activate(); return accept;
+            }
+            reject
+        }
+        area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.activate(); } }
+    }
+}
+
+component PopupCell inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> strong;
+    callback activate();
+    border-radius: 3px;
+    background: root.selected ? Theme.active-header : area.has-hover ? Theme.hover : transparent;
+    border-width: root.selected ? 1px : 0px; border-color: Theme.active-frame;
+    Text {
+        text: root.text; color: Theme.text; font-size: Theme.font-size;
+        font-weight: root.selected || root.strong ? 600 : 400;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    area := TouchArea { clicked => { root.activate(); } }
+}
+
+// Popup frame placement shared by both pickers: below the anchor, else above it.
+component PickerFrame inherits Rectangle {
+    background: Theme.surface;
+    border-width: 1px; border-radius: 4px; border-color: Theme.active-frame;
+    drop-shadow-blur: 8px; drop-shadow-color: #0004;
+}
+
+// Date field with a calendar. Arrows move the day, Page Up/Down the month.
+component DateField inherits HorizontalLayout {
+    in property <string> label;
+    in property <bool> enabled;
+    in property <string> placeholder;
+    in property <string> fallback;
+    in-out property <string> text;
+    callback edited();
+    private property <string> cursor;
+    private property <MetadataMonthView> view: MetadataTimeCodec.month(root.cursor, root.fallback);
+    private property <length> cell: max(28px, Theme.font-size * 2.2);
+    spacing: 2px;
+    function open() {
+        root.cursor = root.text;
+        if !MetadataTimeCodec.month(root.cursor, "").valid { root.cursor = root.fallback; }
+        popup.show();
+    }
+    function choose(date: string) {
+        if date != "" {
+            root.text = date; root.edited();
+        }
+        popup.close();
+        field.focus();
+    }
+    function move(days: int, months: int) {
+        root.cursor = MetadataTimeCodec.shift(root.cursor, root.fallback, days, months);
+    }
+    field := SegmentField {
+        field: 0; label: root.label + " date"; enabled: root.enabled;
+        text <=> root.text; placeholder: root.placeholder; fallback: root.fallback;
+        min-width: Theme.font-size * 6.5; horizontal-stretch: 2;
+        hint: "Year-month-day, e.g. 2026-11-06. Up/Down change the part under the cursor; Alt+Down opens the calendar.";
+        edited => { root.edited(); }
+        open-picker => { root.open(); }
+    }
+    anchor := PickerButton {
+        label: root.label + ": choose date"; enabled: root.enabled;
+        activate => { root.open(); }
+        popup := PopupWindow {
+            private property <length> frame-width: root.cell * 7 + 16px;
+            private property <length> frame-height: root.cell * 8 + Theme.control-height + 24px;
+            private property <bool> above: TooltipPlacement.surface-height - anchor.absolute-position.y - anchor.height < self.frame-height + 8px
+                && anchor.absolute-position.y > self.frame-height + 8px;
+            x: clamp(anchor.absolute-position.x + anchor.width - self.frame-width, 8px,
+                max(8px, TooltipPlacement.surface-width - self.frame-width - 8px)) - anchor.absolute-position.x;
+            y: self.above ? -self.frame-height - 2px : anchor.height + 2px;
+            width: self.frame-width; height: self.frame-height;
+            forward-focus: keys;
+            PickerFrame {
+                accessible-role: groupbox; accessible-label: root.label + " calendar";
+                keys := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.LeftArrow { root.move(-1, 0); return accept; }
+                        if event.text == Key.RightArrow { root.move(1, 0); return accept; }
+                        if event.text == Key.UpArrow { root.move(-7, 0); return accept; }
+                        if event.text == Key.DownArrow { root.move(7, 0); return accept; }
+                        if event.text == Key.PageUp { root.move(0, -1); return accept; }
+                        if event.text == Key.PageDown { root.move(0, 1); return accept; }
+                        if event.text == Key.Return || event.text == Key.Space { root.choose(root.cursor); return accept; }
+                        if event.text == Key.Escape { popup.close(); field.focus(); return accept; }
+                        accept
+                    }
+                }
+                PopupCell {
+                    x: 8px; y: 8px; width: root.cell; height: root.cell; text: "‹";
+                    accessible-role: button; accessible-label: "Previous month";
+                    activate => { root.move(0, -1); }
+                }
+                Text {
+                    x: 8px + root.cell; y: 8px; width: root.cell * 5; height: root.cell;
+                    text: root.view.title; color: Theme.text; font-size: Theme.font-size; font-weight: 600;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                PopupCell {
+                    x: 8px + root.cell * 6; y: 8px; width: root.cell; height: root.cell; text: "›";
+                    accessible-role: button; accessible-label: "Next month";
+                    activate => { root.move(0, 1); }
+                }
+                for name[index] in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"] : Text {
+                    x: 8px + root.cell * index; y: 8px + root.cell; width: root.cell; height: root.cell;
+                    text: name; color: Theme.secondary-text; font-size: Theme.small-font;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                for index in 42 : PopupCell {
+                    property <int> day: index - root.view.leading + 1;
+                    visible: self.day >= 1 && self.day <= root.view.days;
+                    x: 8px + root.cell * mod(index, 7); y: 8px + root.cell * (2 + floor(index / 7));
+                    width: root.cell; height: root.cell;
+                    text: self.day; selected: self.day == root.view.day;
+                    accessible-role: button; accessible-label: MetadataTimeCodec.compose(root.view.year, root.view.month, self.day);
+                    activate => { root.choose(MetadataTimeCodec.compose(root.view.year, root.view.month, self.day)); }
+                }
+                PopupCell {
+                    x: 8px; y: parent.height - Theme.control-height - 8px; width: root.cell * 3; height: Theme.control-height;
+                    text: "Today"; accessible-role: button; accessible-label: "Today";
+                    activate => { root.choose(MetadataTimeCodec.now-default.date); }
+                }
+            }
+        }
+    }
+}
+
+// Time field with an hour/minute/second picker. Left/Right choose, Up/Down change.
+component TimeField inherits HorizontalLayout {
+    in property <string> label;
+    in property <bool> enabled;
+    in property <string> placeholder;
+    in property <string> fallback;
+    in-out property <string> text;
+    callback edited();
+    private property <int> part;
+    private property <[string]> values: MetadataTimeCodec.parts(root.text, 1, root.fallback);
+    private property <length> column: max(44px, Theme.font-size * 3.4);
+    spacing: 2px;
+    function open() { root.part = 0; popup.show(); }
+    field := SegmentField {
+        field: 1; label: root.label + " time"; enabled: root.enabled;
+        text <=> root.text; placeholder: root.placeholder; fallback: root.fallback;
+        min-width: Theme.font-size * 5; horizontal-stretch: 2;
+        hint: "24-hour hours:minutes:seconds, e.g. 14:30:00. Up/Down change the part under the cursor; Alt+Down opens the picker.";
+        edited => { root.edited(); }
+        open-picker => { root.open(); }
+    }
+    anchor := PickerButton {
+        label: root.label + ": choose time"; enabled: root.enabled; clock: true;
+        activate => { root.open(); }
+        popup := PopupWindow {
+            private property <length> frame-width: root.column * 3 + 16px;
+            private property <length> frame-height: Theme.control-height * 4 + 24px;
+            private property <bool> above: TooltipPlacement.surface-height - anchor.absolute-position.y - anchor.height < self.frame-height + 8px
+                && anchor.absolute-position.y > self.frame-height + 8px;
+            x: clamp(anchor.absolute-position.x + anchor.width - self.frame-width, 8px,
+                max(8px, TooltipPlacement.surface-width - self.frame-width - 8px)) - anchor.absolute-position.x;
+            y: self.above ? -self.frame-height - 2px : anchor.height + 2px;
+            width: self.frame-width; height: self.frame-height;
+            forward-focus: keys;
+            PickerFrame {
+                accessible-role: groupbox; accessible-label: root.label + " time picker";
+                keys := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.LeftArrow { root.part = max(0, root.part - 1); return accept; }
+                        if event.text == Key.RightArrow { root.part = min(2, root.part + 1); return accept; }
+                        if event.text == Key.UpArrow { field.step-part(root.part, 1); return accept; }
+                        if event.text == Key.DownArrow { field.step-part(root.part, -1); return accept; }
+                        if event.text == Key.PageUp { field.step-part(root.part, 10); return accept; }
+                        if event.text == Key.PageDown { field.step-part(root.part, -10); return accept; }
+                        if event.text == Key.Return || event.text == Key.Space || event.text == Key.Escape {
+                            popup.close(); field.focus(); return accept;
+                        }
+                        accept
+                    }
+                }
+                for name[index] in ["Hour", "Minute", "Second"] : Rectangle {
+                    x: 8px + root.column * index; y: 8px; width: root.column; height: parent.height - 16px;
+                    border-radius: 3px;
+                    border-width: index == root.part ? 1px : 0px; border-color: Theme.active-frame;
+                    Text {
+                        y: 0px; height: Theme.control-height;
+                        text: name; color: Theme.secondary-text; font-size: Theme.small-font;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    PopupCell {
+                        y: Theme.control-height; height: Theme.control-height; text: "▲";
+                        accessible-role: button; accessible-label: "Increase " + name;
+                        activate => { root.part = index; field.step-part(index, 1); }
+                    }
+                    Text {
+                        y: Theme.control-height * 2; height: Theme.control-height;
+                        text: root.values[index]; color: Theme.text; font-size: Theme.font-size * 1.2;
+                        font-weight: 600; horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    PopupCell {
+                        y: Theme.control-height * 3; height: Theme.control-height; text: "▼";
+                        accessible-role: button; accessible-label: "Decrease " + name;
+                        activate => { root.part = index; field.step-part(index, -1); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One timestamp row: change checkbox, date and time with pickers, UTC offset, Now.
+export component MetadataTime inherits GridLayout {
+    in property <string> label;
+    in property <bool> enabled;
+    in property <bool> narrow;
+    in property <MetadataTimeValue> default;
+    in-out property <MetadataTimeDraft> value;
+    callback edited();
+    private property <bool> typed: root.enabled && root.value.mode != 2;
+    spacing: 8px;
+    // Editing a field selects the row and completes its other, still empty fields.
+    function complete(edited-field: int) {
+        if edited-field != 0 && root.value.date == "" { root.value.date = root.default.date; }
+        if edited-field != 1 && root.value.time == "" { root.value.time = root.default.time; }
+        if edited-field != 2 && root.value.offset == "" { root.value.offset = root.default.offset; }
+        root.value.mode = 1; root.edited();
+    }
+    WrappingCheckBox {
+        row: 0; col: 0; colspan: root.narrow ? 2 : 1;
+        text: root.label; accessible-name: "Change " + root.label;
+        checked: root.value.mode != 0; enabled: root.enabled;
+        preferred-width: max(120px, Theme.font-size * 7);
+        hint: "Tick to change this timestamp. Unticked keeps the current value.";
+        toggled => { if self.checked { root.complete(-1); } else { root.value.mode = 0; root.edited(); } }
+    }
+    HorizontalLayout {
+        row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 3 : 1;
+        spacing: 6px;
+        DateField {
+            label: root.label; enabled: root.typed; text <=> root.value.date;
+            placeholder: root.value.mode == 2 ? "Now" : root.default.date; fallback: root.default.date;
+            horizontal-stretch: 3;
+            edited => { root.complete(0); }
+        }
+        TimeField {
+            label: root.label; enabled: root.typed; text <=> root.value.time;
+            placeholder: root.value.mode == 2 ? "" : root.default.time; fallback: root.default.time;
+            horizontal-stretch: 2;
+            edited => { root.complete(1); }
+        }
+        SegmentField {
+            field: 2; label: root.label + " UTC offset"; enabled: root.typed;
+            text <=> root.value.offset;
+            placeholder: root.value.mode == 2 ? "" : root.default.offset; fallback: root.default.offset;
+            min-width: Theme.font-size * 4.2; horizontal-stretch: 1;
+            hint: "UTC offset of the typed time, e.g. +01:00, -05:00 or Z. Up/Down change hours or quarter hours. It is used exactly as entered.";
+            edited => { root.complete(2); }
+        }
+    }
+    now := Rectangle {
+        row: 0; col: 2;
+        min-width: max(52px, Theme.font-size * 3.5); height: Theme.control-height; horizontal-stretch: 0;
+        background: root.value.mode == 2 ? Theme.active-header : now-area.has-hover ? Theme.hover : Theme.secondary-surface;
+        border-width: 1px; border-radius: 3px;
+        border-color: root.value.mode == 2 || now-focus.has-focus ? Theme.active-frame : Theme.frame;
+        accessible-role: button; accessible-label: root.label + ": Now";
+        accessible-checkable: true; accessible-checked: root.value.mode == 2;
+        accessible-enabled: root.enabled;
+        accessible-action-default => { if root.enabled { root.toggle-now(); } }
+        Text {
+            text: "Now"; color: root.enabled ? Theme.text : Theme.muted-text;
+            font-size: Theme.font-size; font-weight: root.value.mode == 2 ? 600 : 400;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+        now-focus := FocusScope {
+            enabled: root.enabled;
+            key-pressed(event) => {
+                if event.text == Key.Space || event.text == Key.Return { root.toggle-now(); return accept; }
+                reject
+            }
+            now-area := TouchArea { enabled: root.enabled; clicked => { now-focus.focus(); root.toggle-now(); } }
+        }
+        Tip { text: "Set this timestamp to the moment you review the changes. Click again to type a time instead."; }
+    }
+    function toggle-now() {
+        if root.value.mode == 2 { root.complete(-1); } else { root.value.mode = 2; root.edited(); }
+    }
+}

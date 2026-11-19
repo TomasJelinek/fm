@@ -894,7 +894,15 @@ editor scope and shortcuts reserved for later stages.
   what one edit holds (100,000 names and 4 MiB of names not processed yet, shared
   with the folders above it) is reported and left unchanged with its contents. Name
   conflicts offer Skip, Skip all or Cancel; a name that stays is never a conflict,
-  and existing entries are never overwritten.
+  and existing entries are never overwritten. The header names a single selected
+  item, or counts the items, and mentions taken names or unsupported items only
+  when there are any. Each timestamp on the Times page has separate Date
+  (year-month-day), Time (24-hour) and UTC offset fields that start from the
+  item's current time in the native timezone (or the current time when the items
+  differ). Type freely, press Up/Down to change the part under the cursor, or use
+  the calendar and time pickers (Alt+Down from a field). The offset is used
+  exactly as shown; Now uses the moment of review. A change that completes without
+  problems closes without a summary; only failures, skips or cancellation report.
 - Click the blank area after the top breadcrumb to enter a custom path; Enter
   navigates and Escape cancels. Breadcrumb navigation/copy gestures remain available.
 - Panel view picker: independent Brief, Detailed and large-icon Thumbnails modes.

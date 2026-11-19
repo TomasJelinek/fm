@@ -1,6 +1,6 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
 import { ScrollView } from "scroll-view.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogTabs } from "dialog-tabs.slint";
@@ -9,14 +9,13 @@ import { DialogFooter } from "dialog-footer.slint";
 import { DialogText } from "dialog-text.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { MetadataAttribute } from "metadata-attribute.slint";
+import { MetadataTime, MetadataTimeCodec, MetadataTimeDraft } from "metadata-time-field.slint";
 import { UnixPermissions } from "unix-permissions.slint";
 
 export struct MetadataDraft {
     read-only: int, hidden: int, system: int, archive: int, compressed: int,
     unix-edit: bool, unix-mode: string, unix-mask: int, unix-value: int,
-    created-mode: int, created-text: string,
-    modified-mode: int, modified-text: string,
-    accessed-mode: int, accessed-text: string,
+    created: MetadataTimeDraft, modified: MetadataTimeDraft, accessed: MetadataTimeDraft,
     case-enabled: bool, case-mode: int, case-scope: int, recursive: bool,
 }
 
@@ -43,73 +42,6 @@ component MetadataChoice inherits GridLayout {
     }
 }
 
-component MetadataButton inherits Rectangle {
-    in property <string> label;
-    in property <string> caption;
-    in property <bool> selected;
-    in property <bool> enabled: true;
-    callback choose();
-    min-width: max(64px, Theme.font-size * 4);
-    height: Theme.control-height;
-    horizontal-stretch: 1;
-    background: root.selected ? Theme.active-header : area.has-hover ? Theme.hover : Theme.secondary-surface;
-    border-width: 1px; border-radius: 3px;
-    border-color: root.selected || focus.has-focus ? Theme.active-frame : Theme.frame;
-    accessible-role: button; accessible-label: root.label;
-    accessible-checkable: true; accessible-checked: root.selected;
-    accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { root.choose(); } }
-    forward-focus: focus;
-    Text {
-        text: root.caption; color: root.enabled ? Theme.text : Theme.muted-text;
-        font-size: Theme.font-size; horizontal-alignment: center; vertical-alignment: center;
-        font-weight: root.selected ? 600 : 400;
-    }
-    focus := FocusScope {
-        enabled: root.enabled;
-        key-pressed(event) => {
-            if event.text == Key.Space || event.text == Key.Return { root.choose(); return accept; }
-            reject
-        }
-        area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.choose(); } }
-    }
-}
-
-component MetadataTime inherits GridLayout {
-    in property <string> label;
-    in property <string> example;
-    in property <bool> enabled;
-    in-out property <int> mode;
-    in-out property <string> value;
-    callback edited();
-    in property <bool> narrow;
-    spacing: 8px;
-    WrappingCheckBox {
-        row: 0; col: 0; colspan: root.narrow ? 2 : 1;
-        text: root.label; accessible-name: "Change " + root.label;
-        checked: root.mode != 0; enabled: root.enabled;
-        preferred-width: max(150px, Theme.font-size * 8);
-        hint: "Enable this field to change its timestamp. Unchecked preserves the native value.";
-        toggled => { root.mode = self.checked ? 1 : 0; root.edited(); }
-    }
-    HintedLineEdit {
-        row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 3 : 1;
-        accessible-label: root.label + " timestamp";
-        enabled: root.enabled && root.mode != 0; text <=> root.value;
-        horizontal-stretch: 1; vertical-stretch: 0;
-        min-height: Theme.control-height; max-height: Theme.control-height;
-        placeholder-text: root.mode == 2 ? "Now (captured at review)" : root.example;
-        hint: "Use the shown date/time format with a four-digit year and explicit UTC offset or Z. ISO timestamps are also accepted.";
-        edited => { root.mode = 1; root.edited(); }
-    }
-    MetadataButton {
-        row: 0; col: 2;
-        label: root.label + ": Now"; caption: "Now"; selected: root.mode == 2;
-        enabled: root.enabled && root.mode != 0; horizontal-stretch: 0;
-        choose => { root.mode = 2; root.value = ""; root.edited(); }
-    }
-}
-
 export component MetadataDialog inherits Rectangle {
     accessible-role: groupbox; accessible-label: "Attributes, times and case";
     callback move-dialog(length, length);
@@ -117,7 +49,6 @@ export component MetadataDialog inherits Rectangle {
     in property <string> revision;
     in property <string> summary;
     in property <string> preview-text;
-    in property <string> timestamp-example: "2026-11-06T12:30:00+01:00";
     in property <string> list-status;
     in property <bool> preview-current;
     in property <string> error;
@@ -148,6 +79,8 @@ export component MetadataDialog inherits Rectangle {
     private property <bool> reviewing;
     private property <string> reviewed-revision;
     private property <bool> narrow-fields: root.width < max(500px, Theme.font-size * 24);
+    // A timestamp row holds a label, three fields, two pickers and Now.
+    private property <bool> narrow-times: root.width < max(560px, Theme.font-size * 34);
     // A compact viewport can fully clip the focused page field. Keep Escape
     // reachable; Slint drops keyboard events aimed at an invisible item. Act
     // once on entering the compact height, not on every resize step inside it.
@@ -178,8 +111,7 @@ export component MetadataDialog inherits Rectangle {
         root.draft = {
             read-only: 0, hidden: 0, system: 0, archive: 0, compressed: 0,
             unix-edit: false, unix-mode: "", unix-mask: 0, unix-value: 0,
-            created-mode: 0, created-text: "", modified-mode: 0, modified-text: "",
-            accessed-mode: 0, accessed-text: "",
+            created: { mode: 0 }, modified: { mode: 0 }, accessed: { mode: 0 },
             case-enabled: case-enabled, case-mode: 0, case-scope: 0, recursive: false,
         };
         root.draft-edited = true;
@@ -259,11 +191,11 @@ export component MetadataDialog inherits Rectangle {
                     }
                     if root.topic == 1 : VerticalLayout {
                         spacing: 14px; alignment: start;
-                        Text { text: "Enable a field, then enter a date/time (" + root.timestamp-example + ") or choose Now."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
-                        MetadataTime { narrow: root.narrow-fields; example: root.timestamp-example; label: "Modified"; enabled: root.can-modified; mode <=> root.draft.modified-mode; value <=> root.draft.modified-text; edited => { root.edited(); } }
-                        MetadataTime { narrow: root.narrow-fields; example: root.timestamp-example; label: "Created"; enabled: root.can-created; mode <=> root.draft.created-mode; value <=> root.draft.created-text; edited => { root.edited(); } }
-                        MetadataTime { narrow: root.narrow-fields; example: root.timestamp-example; label: "Accessed"; enabled: root.can-accessed; mode <=> root.draft.accessed-mode; value <=> root.draft.accessed-text; edited => { root.edited(); } }
-                        Text { text: "Now is captured once when reviewing, for all chosen fields and files. An explicit offset distinguishes repeated daylight-saving hours."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
+                        Text { text: "Tick a timestamp to change it, then type its date and time or pick them. Up/Down arrows change the part under the cursor."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
+                        MetadataTime { narrow: root.narrow-times; label: "Modified"; enabled: root.can-modified; default: MetadataTimeCodec.modified-default; value <=> root.draft.modified; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-times; label: "Created"; enabled: root.can-created; default: MetadataTimeCodec.created-default; value <=> root.draft.created; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-times; label: "Accessed"; enabled: root.can-accessed; default: MetadataTimeCodec.accessed-default; value <=> root.draft.accessed; edited => { root.edited(); } }
+                        Text { text: "Times start from the current value. The UTC offset is used exactly as shown; around a daylight-saving change, choose the offset that matches the intended hour. Now uses the moment you review."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
                     }
                     if root.topic == 2 : VerticalLayout {
                         spacing: 12px; alignment: start;

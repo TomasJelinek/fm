@@ -159,6 +159,20 @@ impl LocaleService for LinuxFileSystem {
         modified(value)
     }
 
+    fn local_calendar(&self, value: SystemTime) -> Option<midnight_core::LocalCalendarTime> {
+        let calendar = local_tm(value)?;
+        Some(midnight_core::LocalCalendarTime {
+            year: calendar.tm_year.checked_add(1900)?,
+            month: u8::try_from(calendar.tm_mon + 1).ok()?,
+            day: u8::try_from(calendar.tm_mday).ok()?,
+            hour: u8::try_from(calendar.tm_hour).ok()?,
+            minute: u8::try_from(calendar.tm_min).ok()?,
+            // A leap second is shown as the last ordinary second.
+            second: u8::try_from(calendar.tm_sec.min(59)).ok()?,
+            offset_seconds: i32::try_from(calendar.tm_gmtoff).ok()?,
+        })
+    }
+
     fn format_archive_local_time(
         &self,
         value: midnight_core::ArchiveTimestamp,
@@ -209,6 +223,10 @@ impl LocaleService for LinuxFileSystem {
 }
 
 pub(crate) fn modified(time: SystemTime) -> Option<LocalizedDateTime> {
+    format_calendar(&local_tm(time)?)
+}
+
+fn local_tm(time: SystemTime) -> Option<libc::tm> {
     let seconds = match time.duration_since(UNIX_EPOCH) {
         Ok(value) => i128::from(value.as_secs()),
         Err(error) => {
@@ -224,7 +242,7 @@ pub(crate) fn modified(time: SystemTime) -> Option<LocalizedDateTime> {
     if unsafe { libc::localtime_r(&seconds, &mut calendar) }.is_null() {
         return None;
     }
-    format_calendar(&calendar)
+    Some(calendar)
 }
 
 fn format_calendar(calendar: &libc::tm) -> Option<LocalizedDateTime> {

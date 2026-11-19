@@ -287,12 +287,12 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
     ui::click_popup(&test.window, "Change Modified", AccessibleRole::Checkbox);
     ui::click_popup(&test.window, "Modified: Now", AccessibleRole::Button);
     ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
-    assert_eq!(drafts.borrow().last().unwrap().modified_mode, 2);
-    assert_eq!(drafts.borrow().last().unwrap().created_mode, 0);
+    assert_eq!(drafts.borrow().last().unwrap().modified.mode, 2);
+    assert_eq!(drafts.borrow().last().unwrap().created.mode, 0);
     ui::click_popup(&test.window, "Times", AccessibleRole::Button);
     ui::click_popup(&test.window, "Change Modified", AccessibleRole::Checkbox);
     ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
-    assert_eq!(drafts.borrow().last().unwrap().modified_mode, 0);
+    assert_eq!(drafts.borrow().last().unwrap().modified.mode, 0);
     ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
     assert!(
         drafts
@@ -345,7 +345,7 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
                 if tab == "Times" {
                     let explanation = ui::popup_item(
                         &test.window,
-                        "Now is captured once when reviewing, for all chosen fields and files. An explicit offset distinguishes repeated daylight-saving hours.",
+                        "Times start from the current value. The UTC offset is used exactly as shown; around a daylight-saving change, choose the offset that matches the intended hour. Now uses the moment you review.",
                         AccessibleRole::Text,
                     );
                     let status = ui::popup_item(
@@ -445,8 +445,6 @@ fn timestamp_fields_are_single_line_and_refresh_has_no_duplicate_action() {
     test.window.set_metadata_can_modified(true);
     test.window.set_metadata_can_created(true);
     test.window.set_metadata_can_accessed(true);
-    test.window
-        .set_metadata_timestamp_example("06. 11. 2026 12:30:00 +01:00".into());
     test.window.set_metadata_token("times:1".into());
     settle(&mut test);
     ui::click_popup(&test.window, "Times", AccessibleRole::Button);
@@ -458,23 +456,32 @@ fn timestamp_fields_are_single_line_and_refresh_has_no_duplicate_action() {
         test.resize(width, height);
         settle(&mut test);
         for label in ["Modified", "Created", "Accessed"] {
-            let field = ui::popup_item(
-                &test.window,
-                &format!("{label} timestamp"),
-                AccessibleRole::TextInput,
-            );
             let now = ui::popup_item(
                 &test.window,
                 &format!("{label}: Now"),
                 AccessibleRole::Button,
             );
-            // The accessible text input is inset in its single-line edit frame.
-            assert!(
-                field.geometry().height() <= now.geometry().height() + 1.0,
-                "{label} input must not stretch into a tall editor: {:?} vs {:?}",
-                field.geometry(),
-                now.geometry()
-            );
+            for part in ["date", "time", "UTC offset"] {
+                let field = ui::popup_item(
+                    &test.window,
+                    &format!("{label} {part}"),
+                    AccessibleRole::TextInput,
+                );
+                assert!(
+                    field.geometry().height() <= now.geometry().height() + 1.0,
+                    "{label} {part} must not stretch into a tall editor: {:?} vs {:?}",
+                    field.geometry(),
+                    now.geometry()
+                );
+                assert!(field.geometry().width() > 20.0, "{label} {part} is usable");
+            }
+            for picker in ["choose date", "choose time"] {
+                ui::popup_item(
+                    &test.window,
+                    &format!("{label}: {picker}"),
+                    AccessibleRole::Button,
+                );
+            }
         }
         let inner = WindowInner::from_pub(test.window.window());
         for popup in inner.active_popups().iter() {

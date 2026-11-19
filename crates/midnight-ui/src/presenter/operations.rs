@@ -576,7 +576,11 @@ impl Presenter {
                             title,
                             crate::error_presentation::issues(&progress.errors, partial),
                         );
-                    } else if !progress.message.is_empty() {
+                    } else if !progress.message.is_empty()
+                        // A clean metadata edit just closes; the refreshed panel shows it.
+                        && !(progress.kind == MutationKind::EditMetadata
+                            && progress.state == OperationState::Completed)
+                    {
                         if matches!(
                             progress.state,
                             OperationState::Failed | OperationState::CompletedWithErrors

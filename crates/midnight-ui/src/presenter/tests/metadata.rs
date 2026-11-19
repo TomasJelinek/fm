@@ -25,6 +25,7 @@ fn preview(revision: u64, patch: MetadataPatch) -> Event {
         patch,
         localized_times: Default::default(),
         time_input_format: None,
+        time_defaults: Default::default(),
         capabilities: MetadataCapabilities {
             rename: true,
             ..Default::default()
@@ -305,4 +306,60 @@ fn conflicts_from_unknown_or_completed_jobs_do_not_open_dialogs() {
     p.apply(Event::Operation(OperationEvent::MetadataConflict(conflict)));
     assert!(p.operations.metadata_conflicts.is_empty());
     assert!(p.metadata.id.is_none());
+}
+
+fn finished(state: OperationState, errors: Vec<FsError>) -> Event {
+    Event::Operation(OperationEvent::Progress(Arc::new(OperationProgress {
+        id: OperationId(1),
+        kind: MutationKind::EditMetadata,
+        state,
+        pause_requested: false,
+        paused: false,
+        total: 1,
+        completed: u64::from(errors.is_empty()),
+        discovery: Default::default(),
+        failed: u64::from(!errors.is_empty()),
+        processed_entries: 1,
+        throughput: Arc::default(),
+        current_path: None,
+        message: "1 examined; 1 changed; 0 skipped; 0 failed. Completed changes are retained."
+            .into(),
+        errors,
+        source_directory: test_root().join("metadata-editor"),
+        renamed_to: None,
+    })))
+}
+
+#[test]
+fn applied_times_close_without_a_summary_unless_something_needs_attention() {
+    let failure = FsError::from_io(
+        "set modified time",
+        &test_root().join("metadata-editor/Mixed.TXT"),
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+    );
+    for (state, errors, notice) in [
+        (OperationState::Completed, vec![], false),
+        (OperationState::CompletedWithErrors, vec![], true),
+        (OperationState::CompletedWithErrors, vec![failure], true),
+    ] {
+        let mut p = ready();
+        p.open_metadata(PaneId::Left, false, &|_| true);
+        p.apply(preview(0, MetadataPatch::default()));
+        let edit = MetadataPatch {
+            modified: TimeEdit::Set(std::time::UNIX_EPOCH),
+            ..Default::default()
+        };
+        p.preview_metadata("1", Ok(edit.clone()), &|_| true);
+        p.apply(preview(p.metadata.revision, edit));
+        let confirmed = std::cell::Cell::new(false);
+        p.confirm_metadata("1", &p.metadata.revision.to_string(), 0, &|command| {
+            confirmed.set(matches!(command, Command::ConfirmMetadata { .. }));
+            true
+        });
+        assert!(confirmed.get(), "{state:?}");
+        assert!(p.metadata.id.is_none(), "Apply closes the editor");
+        p.apply(finished(OperationState::Running, vec![]));
+        p.apply(finished(state, errors));
+        assert_eq!(p.desktop.notice.is_some(), notice, "{state:?}");
+    }
 }

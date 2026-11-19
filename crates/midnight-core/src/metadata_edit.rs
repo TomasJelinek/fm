@@ -127,6 +127,8 @@ pub struct MetadataPreview {
     /// Worker-captured locale text; absent entries retain an explicit UTC fallback.
     pub localized_times: std::collections::HashMap<SystemTime, crate::LocalizedDateTime>,
     pub time_input_format: Option<crate::DateTimeInputFormat>,
+    /// Worker-captured starting values for the time editors.
+    pub time_defaults: MetadataTimeDefaults,
     /// Capabilities common to all selected roots. Descendants are checked when discovered.
     pub capabilities: MetadataCapabilities,
     pub total: u64,
@@ -138,6 +140,16 @@ pub struct MetadataPreview {
     pub sample: Vec<MetadataPreviewRow>,
     /// At most 16 preparation issues.
     pub errors: Vec<FsError>,
+}
+
+/// Native local starting values for the time editors, captured on the preparation
+/// worker. A field value is present only when every captured root has the same time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MetadataTimeDefaults {
+    pub now: Option<crate::LocalCalendarTime>,
+    pub created: Option<crate::LocalCalendarTime>,
+    pub modified: Option<crate::LocalCalendarTime>,
+    pub accessed: Option<crate::LocalCalendarTime>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

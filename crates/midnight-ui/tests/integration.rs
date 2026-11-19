@@ -83,6 +83,7 @@ mod list_scroll;
 mod main_menu;
 mod metadata_editor;
 mod metadata_review;
+mod metadata_times;
 mod mouse;
 mod mutation_controls;
 mod native_controls;
