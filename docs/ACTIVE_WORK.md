@@ -40,6 +40,11 @@ Fixes on `main`:
   inside a PowerShell session.
 - Two *Format … as rustfmt does* commits: `cargo fmt --all` on the 21 files that
   CI's Format step reported up to `ec96710a`; no other change.
+- *Borrow the test root as a slice in the About licenses test*: past Format, CI's
+  Clippy step (`-D warnings`) rejected `&[root.clone()]` in `about_licenses.rs`
+  (`clippy::cloned_ref_to_slice_refs`). CI's Clippy command then passed here on
+  Windows and Linux; CI's run of `e9bab4ef` passed every other job, including both
+  release builds.
 - *Fix the viewer engine's source position and PDF integration tests*: the source
   position test took the first frame after `LineNumbers(false)` as the repaint, but
   under load that frame still carried the numbered pixels (4 of 16 runs failed under
