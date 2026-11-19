@@ -24,10 +24,14 @@ file; CI selects some of those by name (`--test native`, `--test pdf_native`,
 by its module-qualified name (`<file>::<test>`, derived from `module_path!()`, run
 with `--exact`). Targets without a test on any platform set `test = false`, so an
 unfiltered `cargo test` neither builds nor starts an empty harness for them: the
-`midnight-platform` library (`library_has_no_unit_tests` in its integration binary
-fails when a unit test is added) and the `midnight-elevated-listing` and
-`midnight-worker-probe` binaries, which integration tests still receive as
-`CARGO_BIN_EXE_<name>`.
+`midnight-platform` library and the `midnight-elevated-listing` and
+`midnight-worker-probe` binaries (the `midnight-worker-platform` integration tests
+still receive the probe as `CARGO_BIN_EXE_midnight-worker-probe`). A unit test added
+to one of them would never run, so a guard test fails on any test attribute in its
+sources: `library_has_no_unit_tests` in the platform integration binary, and
+`listing_binary_has_no_unit_tests` and `probe_binary_has_no_unit_tests` in the
+`midnight-elevation` and `midnight-worker-platform` library tests, which read only
+the binary's entry point and therefore also refuse a module file declared there.
 
 The `midnight-engine` library test executable re-runs itself for ten Copy seal
 tests (`copy_seal_tests.rs`, `copy_finish_seal_tests.rs` and
