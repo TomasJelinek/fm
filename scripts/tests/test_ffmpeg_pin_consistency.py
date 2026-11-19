@@ -24,8 +24,9 @@ def pinned():
 
 
 def libraries(text):
-    return set(re.findall(r"\b(?:avcodec|avformat|avutil|swscale)-\d+\.dll\b", text)) | set(
-        re.findall(r"\blib(?:avcodec|avformat|avutil|swscale)\.so\.\d+\b", text))
+    names = r"(?:avcodec|avformat|avutil|swscale|swresample)"
+    return set(re.findall(rf"\b{names}-\d+\.dll\b", text)) | set(
+        re.findall(rf"\blib{names}\.so\.\d+\b", text))
 
 
 class FfmpegPinConsistency(unittest.TestCase):
