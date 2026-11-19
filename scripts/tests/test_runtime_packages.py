@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 import unittest
 import zipfile
@@ -16,6 +17,26 @@ from test_worker_packages import packaging
 
 ROOT = Path(__file__).resolve().parents[2]
 CEF = '156.0.26+g8ea0c73+chromium-156.0.8078.88'
+# Access denied and sharing violation: a scanner can briefly hold a file in a directory
+# that was just written, which blocks renaming that directory on Windows.
+WINDOWS_BUSY_ERRORS = (5, 32)
+
+
+def rename(source, destination):
+    """Rename, retrying for up to 2 seconds while Windows reports the entry as busy."""
+    deadline = None
+    while True:
+        try:
+            source.rename(destination)
+            return
+        except OSError as error:
+            if getattr(error, 'winerror', None) not in WINDOWS_BUSY_ERRORS:
+                raise
+            now = time.monotonic()
+            deadline = deadline or now + 2.0
+            if now >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def write_file(root, name, content=None):
@@ -177,12 +198,12 @@ class RuntimePackages(unittest.TestCase):
                 with self.subTest(target=target, missing=relative):
                     original = source / relative
                     backup = self.root / 'removed'
-                    original.rename(backup)
+                    rename(original, backup)
                     try:
                         with self.assertRaises((OSError, ValueError)):
                             validate(source, target)
                     finally:
-                        backup.rename(original)
+                        rename(backup, original)
 
     def test_runtime_validation_cli_rejects_partial_modules_without_creating_outputs(self):
         source = self.root / 'runtime'
