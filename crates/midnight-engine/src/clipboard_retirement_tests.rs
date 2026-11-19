@@ -380,6 +380,9 @@ impl ClipboardSession for Released {
         false
     }
 }
+/// The worker runs on its own thread, so a saturated blocking pool cannot keep it
+/// from starting; a queued capture is still released off the caller at shutdown,
+/// whether the worker took it or the guarded inbox retires it.
 #[test]
 fn clipboard_worker_runs_on_a_named_thread_without_blocking_pool_capacity() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -417,6 +420,77 @@ fn clipboard_worker_runs_on_a_named_thread_without_blocking_pool_capacity() {
         name.expect("the worker must start while the blocking pool is busy")
             .as_deref(),
         Some("clipboard-test-0")
+    );
+    assert!(
+        matches!(
+            event,
+            Ok(Some(Event::DesktopActionFinished {
+                request: DesktopRequestId(713),
+                result: Ok(DesktopActionResult::ClipboardCopied),
+            }))
+        ),
+        "{event:?}"
+    );
+    assert!(
+        stopped.is_ok(),
+        "Controller drop must stop the worker thread"
+    );
+}
+
+/// Reports the name of the thread that opens the native session.
+struct NamedService(channel::Sender<Option<String>>);
+struct Released;
+impl ClipboardService for NamedService {
+    fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
+        let _ = self.0.send(thread::current().name().map(str::to_owned));
+        Ok(Box::new(Released))
+    }
+}
+impl ClipboardSession for Released {
+    fn copy_text(&mut self, _: &str) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn owns_clipboard(&self) -> bool {
+        false
+    }
+}
+#[test]
+fn clipboard_worker_runs_on_a_named_thread_without_blocking_pool_capacity() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    // The only blocking-pool thread stays occupied while the worker must start.
+    let (entered, started) = channel::channel();
+    let (release, gate) = channel::channel::<()>();
+    let blocker = runtime.spawn_blocking(move || {
+        let _ = entered.send(());
+        let _ = gate.recv();
+    });
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (named, names) = channel::channel();
+    let (outbox, mut events) = outbox();
+    let mut controller = Controller::testing(Some(Arc::new(NamedService(named))), outbox);
+    let mut tasks = JoinSet::new();
+    runtime.block_on(controller.copy(DesktopRequestId(713), "named".into(), &mut tasks));
+    let name = names.recv_timeout(Duration::from_secs(5));
+    let event = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_secs(5), events.recv()).await });
+    // Free the pool first, so a worker queued behind it cannot hang the cleanup.
+    let _ = release.send(());
+    drop(controller);
+    let stopped = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while tasks.join_next().await.is_some() {}
+        })
+        .await
+    });
+    runtime.block_on(blocker).unwrap();
+    assert_eq!(
+        name.expect("the worker must start while the blocking pool is busy")
+            .as_deref(),
+        Some("midnight-clipboard")
     );
     assert!(
         matches!(
