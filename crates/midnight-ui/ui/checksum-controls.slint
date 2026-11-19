@@ -6,11 +6,12 @@ import { WrappingCheckBox } from "wrapping-check-box.slint";
 export struct ChecksumDraft { md5: bool, sha1: bool, sha256: bool, sha512: bool, crc32: bool, recursive: bool }
 
 // Copy and export choose among algorithms from the captured run.
-export component ChecksumOutputPicker inherits HintedComboBox {
+export component ChecksumOutputPicker {
     in property <[string]> labels;
     in property <[int]> values;
     in-out property <int> algorithm;
-    model: root.labels;
+    in property <bool> enabled: root.values.length > 0;
+    in property <string> accessible-name: "Output algorithm";
     private property <int> selected-index: root.values.length == 0 ? -1 : root.values[0] == root.algorithm ? 0
         : root.values.length > 1 && root.values[1] == root.algorithm ? 1
         : root.values.length > 2 && root.values[2] == root.algorithm ? 2
@@ -18,20 +19,28 @@ export component ChecksumOutputPicker inherits HintedComboBox {
         : root.values.length > 4 && root.values[4] == root.algorithm ? 4 : -1;
     // ComboBox writes current-index on user selection and model reset. Restore
     // the shared algorithm explicitly; a one-way binding alone is overwritten.
-    current-index: root.selected-index;
-    changed selected-index => { root.current-index = root.selected-index; }
-    changed values => { root.current-index = root.selected-index; }
-    changed labels => { root.current-index = root.selected-index; }
-    selected(value) => {
-        if root.current-index >= 0 && root.current-index < root.values.length {
-            root.algorithm = root.values[root.current-index];
-        }
-    }
-    accessible-label: "Output algorithm";
-    hint: "Choose a calculated algorithm for copying or saving. This does not recalculate files.";
-    enabled: root.values.length > 0;
+    changed selected-index => { box.current-index = root.selected-index; }
+    changed values => { box.current-index = root.selected-index; }
+    changed labels => { box.current-index = root.selected-index; }
+    forward-focus: box;
     min-width: 0px; min-height: Theme.control-height;
     preferred-height: Theme.control-height; vertical-stretch: 0;
+    // Composition, not inheritance: a component that inherits the hinted ComboBox
+    // is compiled as a second copy of the ComboBox and of its popup.
+    box := HintedComboBox {
+        // Without a size the ComboBox takes its preferred one, centered.
+        width: 100%; height: 100%;
+        model: root.labels;
+        current-index: root.selected-index;
+        selected(value) => {
+            if self.current-index >= 0 && self.current-index < root.values.length {
+                root.algorithm = root.values[self.current-index];
+            }
+        }
+        accessible-label: root.accessible-name;
+        hint: "Choose a calculated algorithm for copying or saving. This does not recalculate files.";
+        enabled: root.enabled;
+    }
 }
 
 export component ChecksumOptions inherits VScrollView {

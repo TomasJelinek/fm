@@ -160,7 +160,7 @@ export component ChecksumWindow inherits ToolWindow {
                         Text { row: 0; col: 0; text: "Format"; color: Theme.secondary-text; vertical-alignment: center; }
                         ChecksumOutputPicker { labels: root.format-labels; values: root.output-values;
                             row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
-                            accessible-label: "Checksum file format";
+                            accessible-name: "Checksum file format";
                             algorithm <=> root.output-algorithm; enabled: !root.saving && !root.picker-busy && root.output-values.length > 0;
                             horizontal-stretch: 1; }
                     }
