@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+//! Linux-only worker policy tests, a module of the `worker_policy` test executable.
 use midnight_worker_platform::{CpuBudget, ExitStatus, ResourcePolicy};
 use rustix::process::{Resource, Rlimit, setrlimit};
 
@@ -29,11 +29,12 @@ fn no_additional_cpu_limit_preserves_inherited_hard_limits() {
         assert!(!worker.process.wait().unwrap());
         return;
     }
+    // The child runs only this test, selected by its module-qualified name; the CPU
+    // limit it sets stays in that process.
+    let module = module_path!().split_once("::").unwrap().1;
+    let name = format!("{module}::no_additional_cpu_limit_preserves_inherited_hard_limits");
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "no_additional_cpu_limit_preserves_inherited_hard_limits",
-        ])
+        .args(["--exact", name.as_str()])
         .env(CHILD, "1")
         .output()
         .unwrap();

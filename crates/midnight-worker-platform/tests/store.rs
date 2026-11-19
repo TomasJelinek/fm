@@ -1,5 +1,10 @@
 use midnight_worker_platform::store::PrivateStore;
 
+// A module of this executable, so Windows has no empty executable for it.
+#[cfg(target_os = "linux")]
+#[path = "linux/store.rs"]
+mod linux;
+
 fn directory() -> tempfile::TempDir {
     let root = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
         .unwrap_or_else(|| env!("CARGO_TARGET_TMPDIR").into());
