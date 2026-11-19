@@ -20,6 +20,51 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Post-merge validation integrated — 19 November 2026
+
+`codex/post-merge-validation-20261118` (`4d451bae`) was fast-forwarded into `main`.
+CI then needed these follow-ups; CI run 44611283273 at `3aab132f` passed every job
+on Windows and Linux, the first fully green run of `main` since 17 November. This
+establishes the CI item left open by the integration validation checkpoint below.
+
+- Build and lint: rustfmt on one file; the comparator's unit tests compile again
+  (the branch's merge of `origin/main` declared `extern crate self as
+  midnight_compare_ui` twice); two Clippy lints in `midnight-platform-windows`; the
+  archive reader test again seeks with a zero relative offset, which its `#[expect]`
+  and purpose require.
+- Stale tests: the FFmpeg pin test counts swresample; seven engine and UI tests
+  follow the contracts of `72d621f4` (a late cancellation after the last committed
+  root completes the job, discovery runs on a pause-interruptible child token,
+  panels show whole rows, copy errors split each path); the application source
+  search expects the whole-row page; the elevation trust test accepts either
+  protected-installation refusal (a temporary folder that standard users may change
+  is refused first on CI).
+- Races: engine copy tests copy from the newest frame, since a later position
+  refinement retires the input of earlier frames; restricted workers serialize and
+  briefly retry creating their per-user AppContainer profile, which failed once on a
+  fresh CI user with E_UNEXPECTED while workers started in parallel.
+- Rebuilds: a dav1d build directory configured before `vcs_version.h` became a
+  configure-time file is configured afresh (reconfiguring it in place deleted the
+  header and failed the image viewer build of every existing checkout); verified
+  with stale directories on Windows and Linux.
+
+`build.bat` completed end to end on the Windows development machine for the first
+time, with inputs this machine otherwise lacks: `MIDNIGHT_HTML_SDK_CONFIG` naming a
+web SDK bundle packaged by WSL's classic-zlib Python (its API crate matches the HTML
+viewer's pinned checksum), an MSVC FFmpeg 9.0.2 prefix with swresample from the
+branch's media work, the pinned FFmpeg source archive and libclang. It built all
+viewers including the native CEF HTML viewer, the three filesystems and the
+thumbnailers, deployed a private installation and passed its `--smoke-test`.
+
+Not established:
+
+- The AppContainer profile race could not be reproduced where the profile already
+  exists; the fix is defensive and one CI run has passed since.
+- The manual native CEF Office/HTML and qualified Source acceptance tests.
+- Copying in the instant between a find and its position refinement names a retired
+  frame and copies nothing; whether copying an unchanged selection should outlive
+  such a refinement is a viewer engine design decision.
+
 ### Post-merge validation — 19 November 2026
 
 The Windows application at `4a6ccf77` built with the locked dependency graph.
