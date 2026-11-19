@@ -57,12 +57,37 @@ export component OperationSpeedChart inherits Rectangle {
                     height: parent.height; background: (root.verification-phase ? Theme.pending-size : Theme.active-frame).with-alpha(0.16);
                 }
             }
-            for level in 3 : Rectangle {
-                x: 1px; y: parent.height * (level + 1) / 4;
+            // Grid lines are written out: a `for` is a generated component, even over a constant.
+            Rectangle {
+                x: 1px; y: parent.height * 1 / 4;
                 width: parent.width - 2px; height: 1px; background: Theme.frame.with-alpha(0.35);
             }
-            for column in 5 : Rectangle {
-                x: parent.width * (column + 1) / 6; y: 1px;
+            Rectangle {
+                x: 1px; y: parent.height * 2 / 4;
+                width: parent.width - 2px; height: 1px; background: Theme.frame.with-alpha(0.35);
+            }
+            Rectangle {
+                x: 1px; y: parent.height * 3 / 4;
+                width: parent.width - 2px; height: 1px; background: Theme.frame.with-alpha(0.35);
+            }
+            Rectangle {
+                x: parent.width * 1 / 6; y: 1px;
+                height: parent.height - 2px; width: 1px; background: Theme.frame.with-alpha(0.25);
+            }
+            Rectangle {
+                x: parent.width * 2 / 6; y: 1px;
+                height: parent.height - 2px; width: 1px; background: Theme.frame.with-alpha(0.25);
+            }
+            Rectangle {
+                x: parent.width * 3 / 6; y: 1px;
+                height: parent.height - 2px; width: 1px; background: Theme.frame.with-alpha(0.25);
+            }
+            Rectangle {
+                x: parent.width * 4 / 6; y: 1px;
+                height: parent.height - 2px; width: 1px; background: Theme.frame.with-alpha(0.25);
+            }
+            Rectangle {
+                x: parent.width * 5 / 6; y: 1px;
                 height: parent.height - 2px; width: 1px; background: Theme.frame.with-alpha(0.25);
             }
             if root.chart.has-samples : Path {

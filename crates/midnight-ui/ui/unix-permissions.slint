@@ -106,8 +106,16 @@ export component UnixPermissions inherits VerticalLayout {
     min-width: Theme.font-size * 20;
     HorizontalLayout {
         Rectangle { width: root.label-width; horizontal-stretch: 0; }
-        for title in ["Read", "Write", "Execute"]: Text {
-            text: title; color: Theme.text; font-size: Theme.font-size;
+        Text {
+            text: "Read"; color: Theme.text; font-size: Theme.font-size;
+            horizontal-alignment: center; min-width: Theme.font-size * 3.7; horizontal-stretch: 1;
+        }
+        Text {
+            text: "Write"; color: Theme.text; font-size: Theme.font-size;
+            horizontal-alignment: center; min-width: Theme.font-size * 3.7; horizontal-stretch: 1;
+        }
+        Text {
+            text: "Execute"; color: Theme.text; font-size: Theme.font-size;
             horizontal-alignment: center; min-width: Theme.font-size * 3.7; horizontal-stretch: 1;
         }
     }

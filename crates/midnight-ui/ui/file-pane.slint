@@ -642,20 +642,26 @@ export component FilePane inherits Rectangle {
                         }
                     }
                 }
-                for heading in [
-                    { title: "Size", column: 1 }, { title: "Modified", column: 2 },
-                    { title: "Time", column: 2 }
-                ] : FileColumnHeading {
-                    title: heading.title;
-                    sort-label: heading.title == "Time" ? "Modified time" : heading.title;
-                    width: heading.column == 1 ? root.size-column-width
-                        : heading.title == "Time" ? root.time-column-width : root.date-column-width;
-                    horizontal-stretch: 0;
-                    align-right: heading.column == 1;
-                    show-direction: heading.title != "Time";
-                    icons: root.action-icons; sorted: root.sort-column == heading.column;
+                FileColumnHeading {
+                    title: "Size"; sort-label: "Size";
+                    width: root.size-column-width; horizontal-stretch: 0; align-right: true;
+                    icons: root.action-icons; sorted: root.sort-column == 1;
                     descending: root.descending;
-                    activate => { root.activate(); root.sort(heading.column); }
+                    activate => { root.activate(); root.sort(1); }
+                }
+                FileColumnHeading {
+                    title: "Modified"; sort-label: "Modified";
+                    width: root.date-column-width; horizontal-stretch: 0;
+                    icons: root.action-icons; sorted: root.sort-column == 2;
+                    descending: root.descending;
+                    activate => { root.activate(); root.sort(2); }
+                }
+                FileColumnHeading {
+                    title: "Time"; sort-label: "Modified time";
+                    width: root.time-column-width; horizontal-stretch: 0; show-direction: false;
+                    icons: root.action-icons; sorted: root.sort-column == 2;
+                    descending: root.descending;
+                    activate => { root.activate(); root.sort(2); }
                 }
 
             }
