@@ -279,10 +279,15 @@ fn refresh(
         w.set_save_prompt(
             s.save_prompt
                 .as_ref()
-                .map_or_else(Default::default, |prompt| crate::shown_text(&prompt.message)),
+                .map_or_else(Default::default, |prompt| {
+                    crate::shown_text(&prompt.message)
+                }),
         );
         w.set_save_prompt_action(
-            if s.save_prompt.as_ref().is_some_and(|prompt| prompt.overwrite) {
+            if s.save_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.overwrite)
+            {
                 "Replace"
             } else {
                 "Save"

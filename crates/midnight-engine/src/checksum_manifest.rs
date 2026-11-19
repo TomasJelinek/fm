@@ -105,7 +105,9 @@ pub fn save_manifest(
                 "Manifest destination already exists.",
             ));
         }
-        let Some(pinned) = with_io(SAVE, cancel, path, || directory.prepare_target(name, cancel))?
+        let Some(pinned) = with_io(SAVE, cancel, path, || {
+            directory.prepare_target(name, cancel)
+        })?
         else {
             return Err(failure(
                 path,
@@ -198,7 +200,9 @@ pub fn save_manifest(
                 Err(error)
             }
             TransferPublication::RecoveryRequired {
-                recovery, mut error, ..
+                recovery,
+                mut error,
+                ..
             } => {
                 for item in recovery {
                     error
@@ -237,7 +241,9 @@ pub(crate) fn replace_with_empty_file(
     let directory = with_io(SAVE, cancel, parent, || {
         service.prepare_transfer_destination(parent, cancel)
     })?;
-    let target = with_io(SAVE, cancel, path, || directory.prepare_target(name, cancel))?;
+    let target = with_io(SAVE, cancel, path, || {
+        directory.prepare_target(name, cancel)
+    })?;
     if target
         .as_ref()
         .is_some_and(|target| target.entry().item.kind != EntryKind::File)
@@ -296,11 +302,14 @@ pub(crate) fn replace_with_empty_file(
             copy.publish(name, cancel)?
         };
         match publication {
-            TransferPublication::Published(path)
-            | TransferPublication::Replaced { path, .. } => Ok(path),
+            TransferPublication::Published(path) | TransferPublication::Replaced { path, .. } => {
+                Ok(path)
+            }
             TransferPublication::PublishedDurabilityUnconfirmed { error, .. } => Err(error),
             TransferPublication::RecoveryRequired {
-                recovery, mut error, ..
+                recovery,
+                mut error,
+                ..
             } => {
                 for item in recovery {
                     error

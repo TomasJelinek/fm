@@ -227,7 +227,7 @@ fn new_job(
         _captured_metadata: None,
         metadata_covered: vec![],
         replace_existing: None,
-            mutation_permit: None,
+        mutation_permit: None,
         preview: OperationPreview {
             id,
             kind,
