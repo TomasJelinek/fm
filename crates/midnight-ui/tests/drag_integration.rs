@@ -635,6 +635,11 @@ fn folder_targets_follow_actual_scrolled_cells_in_details_brief_and_thumbnail_mo
                 if position.y < top || position.y >= top + h.ui.window.get_right_list_height() {
                     continue;
                 }
+                // Panels show whole rows only. A cell whose row band the viewport edge
+                // clips is hidden, and its fragment is a pane-background drop target.
+                if !ui::root_item(&h.ui.window, &item.name, AccessibleRole::ListItem).is_visible() {
+                    continue;
+                }
                 h.ui.window
                     .window()
                     .dispatch_event(WindowEvent::PointerMoved { position });

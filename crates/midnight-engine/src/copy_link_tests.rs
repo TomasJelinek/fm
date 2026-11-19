@@ -1444,7 +1444,9 @@ fn cancel_before_link_publication_cleans_the_stage_and_keeps_the_source() {
 
 #[test]
 fn cancellation_after_actual_link_publication_keeps_the_publication_fact() {
-    let fixture = Fixture::new();
+    // A pending root keeps the cancellation observable: once every selected root
+    // has committed, a late cancellation leaves the job Completed.
+    let fixture = Fixture::with_two_roots();
     fixture
         .control
         .cancel_after_publish
@@ -1453,6 +1455,7 @@ fn cancellation_after_actual_link_publication_keeps_the_publication_fact() {
     finish(&mut job);
     let done = job.finish();
     assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+    assert_eq!((done.requested_roots, done.completed_roots), (2, 1));
     assert_eq!(done.files_completed, 1);
     assert_eq!(
         done.failed, 0,
@@ -1460,6 +1463,13 @@ fn cancellation_after_actual_link_publication_keeps_the_publication_fact() {
     );
     assert_eq!(done.source_files_removed, 0);
     assert_eq!(fixture.output(), Some(relative_representation()));
+    // The second root is never staged or published.
+    assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.control.publishes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture.control.output(&fixture.destination.join("second")),
+        None
+    );
 }
 
 #[test]

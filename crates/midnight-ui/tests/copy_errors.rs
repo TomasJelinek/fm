@@ -105,15 +105,16 @@ fn copy_error_retry_preserves_refused_token_and_jobs_resolve_restores_deferred_e
     h.ui.snapshot("copy-error-compact");
     h.ui.resize(1340, 820);
     assert!(h.ui.window.get_copy_is_failure());
+    // The decision shows each path's folder and file name on separate lines.
     assert!(
         h.ui.window
             .get_copy_body()
-            .contains("\n\nSource\nsource/資料.txt")
+            .contains("\n\nSource\nsource\n資料.txt")
     );
     assert!(
         h.ui.window
             .get_copy_body()
-            .contains("\n\nDestination\ndestination/資料.txt")
+            .contains("\n\nDestination\ndestination\n資料.txt")
     );
     h.ui.item("Error", AccessibleRole::Text);
     // The job's progress window stays visible beside its error decision.

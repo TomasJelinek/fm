@@ -43,6 +43,11 @@ impl Counts {
         })
     }
 }
+/// A later selected root that cancellation must leave unstarted.
+const PENDING: &str = "pending";
+fn source_object(path: &Path) -> [u8; 16] {
+    [if path.ends_with(PENDING) { 4 } else { 1 }; 16]
+}
 fn unsupported(path: &Path) -> FsError {
     error(
         path,
@@ -86,7 +91,7 @@ impl TransferService for Service {
         let entry = TransferEntry {
             identity: TransferIdentity {
                 device: 1,
-                object: [1; 16],
+                object: source_object(path),
             },
             item: MutationItem {
                 path: path.into(),
@@ -385,16 +390,20 @@ impl TransferDirectory for Directory {
     }
 }
 async fn run(kind: EntryKind, result: NativeResult) -> (Arc<CopyProgress>, Arc<Counts>) {
+    run_roots(kind, result, &["source"]).await
+}
+async fn run_roots(
+    kind: EntryKind,
+    result: NativeResult,
+    names: &[&str],
+) -> (Arc<CopyProgress>, Arc<Counts>) {
     let counts = Counts::new(kind, result);
     let root = std::env::current_dir().unwrap();
+    let sources = names.iter().map(|name| root.join(name)).collect::<Vec<_>>();
     let mut harness = Harness::new(Some(Arc::new(Service(counts.clone()))));
     harness
         .controller
-        .enqueue_move(request(
-            1,
-            &[root.join("source")],
-            &root.join("destination"),
-        ))
+        .enqueue_move(request(1, &sources, &root.join("destination")))
         .await;
     let done = harness.terminal(1).await;
     harness.close().await;
@@ -483,9 +492,22 @@ async fn native_directory_link_options_use_the_original_stub_identity() {
 
 #[tokio::test]
 async fn native_commit_is_retained_when_cancel_arrives_inside_native_call() {
-    let (done, counts) = run(EntryKind::File, NativeResult::CancelAfterCommit).await;
+    // A pending root keeps the cancellation observable: once every selected root
+    // has committed, a late cancellation leaves the job Completed.
+    let (done, counts) = run_roots(
+        EntryKind::File,
+        NativeResult::CancelAfterCommit,
+        &["source", PENDING],
+    )
+    .await;
     assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
     assert_eq!(done.native_entries_moved, 1);
+    assert_eq!((done.requested_roots, done.completed_roots), (2, 1));
+    assert_eq!(
+        counts.native.load(Ordering::SeqCst),
+        1,
+        "the pending root never starts"
+    );
     assert_no_content(&counts, &done);
 }
 #[tokio::test]
@@ -589,11 +611,13 @@ async fn stalled_native_move_keeps_capacity_and_reports_late_commit_after_cancel
     let _release = ReleaseOnDrop(counts.released.clone());
     let root = std::env::current_dir().unwrap();
     let mut harness = Harness::new(Some(Arc::new(Service(counts.clone()))));
+    // A pending root keeps the cancellation observable: once every selected root
+    // has committed, a late cancellation leaves the job Completed.
     harness
         .controller
         .enqueue_move(request(
             1,
-            &[root.join("source")],
+            &[root.join("source"), root.join(PENDING)],
             &root.join("destination"),
         ))
         .await;
@@ -626,6 +650,12 @@ async fn stalled_native_move_keeps_capacity_and_reports_late_commit_after_cancel
     harness.close().await;
     assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
     assert_eq!(done.native_entries_moved, 1);
+    assert_eq!((done.requested_roots, done.completed_roots), (2, 1));
+    assert_eq!(
+        counts.native.load(Ordering::SeqCst),
+        1,
+        "the pending root never starts"
+    );
     assert_eq!(done.throughput.items_per_second, 0.0);
     assert!(
         done.throughput

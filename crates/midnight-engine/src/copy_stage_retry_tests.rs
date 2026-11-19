@@ -13,6 +13,7 @@ struct Control {
     refuse_cleanup: AtomicBool,
     writes: AtomicUsize,
     cancel_discovery: AtomicBool,
+    discovery_entered: Notify,
 }
 struct Service {
     native: moves::CrossDeviceService,
@@ -28,7 +29,10 @@ impl TransferService for Service {
     ) -> Result<Box<dyn TransferSource>, FsError> {
         let source = self.native.prepare_transfer_source(path, cancel)?;
         if self.control.cancel_discovery.load(Ordering::SeqCst) {
-            Ok(Box::new(CancelDiscoverySource(source)))
+            Ok(Box::new(CancelDiscoverySource(
+                source,
+                self.control.clone(),
+            )))
         } else {
             Ok(source)
         }
@@ -58,7 +62,7 @@ impl TransferService for Service {
         self.prepare_transfer_destination(path, cancel)
     }
 }
-struct CancelDiscoverySource(Box<dyn TransferSource>);
+struct CancelDiscoverySource(Box<dyn TransferSource>, Arc<Control>);
 impl TransferSource for CancelDiscoverySource {
     fn entry(&self) -> &TransferEntry {
         self.0.entry()
@@ -89,7 +93,14 @@ impl TransferSource for CancelDiscoverySource {
         cancel: &Cancellation,
         _: &mut dyn FnMut(&MutationItem),
     ) -> Result<(), FsError> {
-        cancel.cancel();
+        // Discovery observes the job's cancellation through a pause-interruptible
+        // child token; cancelling that child would not cancel the job. Wait for the
+        // test to cancel the job, as a user would while discovery is running.
+        self.1.discovery_entered.notify_one();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !cancel.is_cancelled() && std::time::Instant::now() < deadline {
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
         Err(FsError::from_io(
             "fixture discovery",
             &self.entry().item.path,
@@ -672,9 +683,16 @@ async fn cancelled_discovery_retains_prepared_stage_cleanup_receipt() {
             metadata: TransferMetadataPolicy::RequireModifiedTime,
         })
         .await;
+    tokio::time::timeout(
+        Duration::from_secs(4),
+        fixture.control.discovery_entered.notified(),
+    )
+    .await
+    .expect("discovery never started");
+    harness.controller.cancel(OperationId(1));
     let done = harness.terminal(1).await;
     harness.close().await;
-    assert_eq!(done.state, CopyOperationState::Cancelled);
+    assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
     assert_eq!(fixture.control.created.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.control.writes.load(Ordering::SeqCst), 0);
     assert!(

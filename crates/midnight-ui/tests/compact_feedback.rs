@@ -156,15 +156,21 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                 );
             }
             let pane_bottom = window.get_left_details_top();
+            let list_height = window.get_left_list_height();
+            assert!(
+                (top + list_height - pane_bottom).abs() < 0.5,
+                "files fill the space above panel details, and success feedback must not consume height"
+            );
+            // Panels draw and hit whole rows only: a row band clipped by the details
+            // is pane background. The last whole row ends at most one row above them.
+            let row_height = theme.get_row_height();
+            let whole_rows = (list_height / row_height).floor();
             selected.set((-1, -1));
-            ui::click(&window, 100.0, pane_bottom - 3.0);
+            ui::click(&window, 100.0, top + whole_rows * row_height - 3.0);
             assert_eq!(
                 selected.get(),
-                (
-                    0,
-                    ((pane_bottom - 3.0 - top) / theme.get_row_height()) as i32
-                ),
-                "files fill the space above panel details, and success feedback must not consume height"
+                (0, whole_rows as i32 - 1),
+                "the last whole file row above panel details receives clicks"
             );
             // The function keys must paint within the advertised 22/40px band.
             let x = 30usize;
