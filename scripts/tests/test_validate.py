@@ -61,6 +61,146 @@ def ci_selections():
     return sorted(set(re.findall(SELECTION, workflow)))
 
 
+# Each plugin whose scripts/ci.* test commands validation runs: its directory, the value
+# of the step's $Plugin (validate.ps1) and $plugin (validate.sh), and the step body.
+PLUGIN_TESTS = (
+    ("midnight-viewer-basic", "basic", "viewerBody", "viewer_step"),
+    ("midnight-viewer-source", "source", "viewerBody", "viewer_step"),
+    ("midnight-viewer-markdown", "markdown", "viewerBody", "viewer_step"),
+    ("midnight-viewer-image", "viewer-image", "rasterBody", "raster_step"),
+    ("midnight-viewer-pdf", "viewer-pdf", "rasterBody", "raster_step"),
+    ("midnight-thumbnail-image", "thumbnail-image", "rasterBody", "raster_step"),
+)
+
+
+def words(text, separators=r"\s"):
+    """The words of a command or list; quoted strings and (...) groups stay whole."""
+    result, word, depth, quote = [], "", 0, None
+    for character in text:
+        if quote:
+            quote = None if character == quote else quote
+        elif character in "'\"":
+            quote = character
+        elif character in "()":
+            depth += 1 if character == "(" else -1
+        elif depth == 0 and re.fullmatch(separators, character):
+            if word:
+                result.append(word)
+            word = ""
+            continue
+        word += character
+    return result + [word] if word else result
+
+
+def unquote(word):
+    return word[1:-1] if len(word) > 1 and word[0] == word[-1] and word[0] in "'\"" else word
+
+
+def open_parentheses(text):
+    depth, quote = 0, None
+    for character in text:
+        if quote:
+            quote = None if character == quote else quote
+        elif character in "'\"":
+            quote = character
+        elif character in "()":
+            depth += 1 if character == "(" else -1
+    return depth
+
+
+def logical_lines(text, powershell):
+    """Lines joined across continuations and, in PowerShell, open parentheses."""
+    if powershell:
+        text = re.sub(r"<#.*?#>", "", text, flags=re.DOTALL)
+    lines, current = [], ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        current = f"{current} {line}" if current else line
+        if current.endswith(("\\", "`")):
+            current = current[:-1].rstrip()
+        elif not powershell or open_parentheses(current) <= 0:
+            lines.append(current)
+            current = ""
+    return lines + [current] if current else lines
+
+
+def plugin_test_commands(text, plugin, powershell):
+    """The arguments of each `cargo ... test` command in a script or step body: a sorted
+    tuple per run, with variables and expressions as <value>. Assignments of argument
+    lists are followed in order, those guarded by a plugin comparison only for that
+    plugin, and a command in a loop over projects counts once per project."""
+    if powershell:
+        # A loop over Cargo operations: its command lines are the test command's.
+        for variable, values in re.findall(r"foreach \(\$(\w+) in @\(([^)]*)\)\)", text):
+            if "'test'" in values:
+                text = re.sub(rf"\${variable}\b", "'test'", text)
+    lists, loops, commands = {}, {}, []
+    splat = r"@(\w+)" if powershell else r'"\$\{(\w+)\[@\]\}"'
+
+    def expand(items):
+        # A list defined elsewhere stays a splat; a test command must not use one.
+        expanded = []
+        for item in items:
+            match = re.fullmatch(splat, item)
+            expanded += lists[match.group(1)] if match and match.group(1) in lists else [item]
+        return expanded
+
+    def applies(left, operator, right):
+        # PowerShell: if ($Plugin -eq 'x') { ... }; bash: [[ $plugin != x ]] || ...
+        values = [plugin if value.lower() == "$plugin" else unquote(value) for value in (left, right)]
+        return (values[0] == values[1]) == (operator in ("-eq", "!="))
+
+    for line in logical_lines(text, powershell):
+        if powershell:
+            assignment = re.fullmatch(r"(?:if \((\S+) (-eq|-ne) (\S+)\) \{ )?\$(\w+) (\+?=) (@\(.*?)(?: \})?", line)
+            if assignment:
+                left, operator, right, name, how, value = assignment.groups()
+                if not left or applies(left, operator, right):
+                    items = []
+                    for term in words(value, r"[+]"):
+                        term = term.strip()
+                        items += (words(term[2:-1], r"[\s,]") if term.startswith("@(")
+                                  else lists.get(term[1:], [term]))
+                    lists[name] = (lists.get(name, []) if how == "+=" else []) + items
+                continue
+            loop = re.fullmatch(r"foreach \(\$(\w+) in (.+)\) \{", line)
+            if loop:
+                items = loop.group(2)
+                loops[loop.group(1)] = len(words(items[2:-1], r"[\s,]") if items.startswith("@(")
+                                           else lists.get(items[1:], [items]))
+                continue
+        else:
+            for assignment in re.finditer(r"(?<![\w$])([A-Za-z_]\w*)=\(([^()]*)\)", line):
+                guard = re.search(r"\[\[ (\$plugin) (!=|==) ([\w-]+) \]\] \|\|\s*$", line[:assignment.start()])
+                if not guard or applies(*guard.groups()):
+                    lists[assignment.group(1)] = words(assignment.group(2))
+            loop = re.fullmatch(r"for (\w+) in (.+); do", line)
+            if loop:
+                loops[loop.group(1)] = len(expand(words(loop.group(2))))
+                continue
+        command = re.fullmatch(r"(?:& ?)?cargo (.+)", line)
+        if not command:
+            continue
+        arguments = expand(words(command.group(1)))
+        values = [unquote(argument) for argument in arguments]
+        position = 0
+        while position < len(values) and values[position].startswith("-"):
+            position += 2 if values[position] == "--config" else 1
+        if position >= len(values) or values[position] != "test":
+            continue
+        unresolved = [argument for argument in arguments if re.fullmatch(splat, argument)]
+        if unresolved:
+            raise AssertionError(f"unknown argument list {unresolved} in: {line}")
+        normalized = tuple(sorted("<value>" if "$" in value or value.startswith("(") else value
+                                  for index, value in enumerate(values) if index != position))
+        runs = [count for variable, count in loops.items()
+                if any(re.search(rf"\${{?{variable}\b", argument) for argument in arguments)]
+        commands += [normalized] * (runs[-1] if runs else 1)
+    return commands
+
+
 class ValidationPlanTests(unittest.TestCase):
     def setUp(self):
         self.bash = (ROOT / "scripts/validate.sh").read_text(encoding="utf-8")
@@ -90,6 +230,21 @@ class ValidationPlanTests(unittest.TestCase):
                     continue  # Linux-only CI steps; validate.ps1 lists them as skipped.
                 with self.subTest(script=script, selection=selection):
                     self.assertIn(selection, listed)
+
+    def test_plugin_steps_run_the_test_commands_of_the_plugin_ci_scripts(self):
+        # Validation copies the test commands of plugins/*/scripts/ci.* (which also run the
+        # formatting and lint checks); a changed CI test command must be copied too.
+        for directory, plugin, powershell_body, bash_body in PLUGIN_TESTS:
+            for script, powershell, body in (
+                    ("ci.ps1", True, re.search(rf"^( *)\${powershell_body} = \{{\n(.*?)^\1\}}",
+                                               self.powershell, re.MULTILINE | re.DOTALL).group(2)),
+                    ("ci.sh", False, re.search(rf"^{bash_body}\(\) \{{\n(.*?)^\}}",
+                                               self.bash, re.MULTILINE | re.DOTALL).group(1))):
+                with self.subTest(plugin=directory, script=script):
+                    ci = (ROOT / "plugins" / directory / "scripts" / script).read_text(encoding="utf-8")
+                    expected = plugin_test_commands(ci, plugin, powershell)
+                    self.assertTrue(expected, f"no cargo test command found in {directory}/scripts/{script}")
+                    self.assertEqual(plugin_test_commands(body, plugin, powershell), expected)
 
     def test_validation_runs_tests_only(self):
         for script, text in (("validate.sh", self.bash), ("validate.ps1", self.powershell)):
