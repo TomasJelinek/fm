@@ -163,7 +163,13 @@ fn user_owned_installation_is_refused_with_an_actionable_message() {
         "{message}"
     );
     assert!(message.contains("Program Files"), "{message}");
-    assert!(message.contains("is not owned by SYSTEM"), "{message}");
+    // Which check refuses first depends on the temporary folder: one that standard users
+    // may change (as on CI runners) is refused before the helper's owner is checked.
+    assert!(
+        message.contains("is not owned by SYSTEM")
+            || message.contains("lets a non-administrative account change"),
+        "{message}"
+    );
     // The refused helper is not left pinned: it can be removed immediately.
     std::fs::remove_file(&helper).unwrap();
 }
