@@ -182,7 +182,9 @@ component ColorPreview inherits Rectangle {
     }
     // Same marks as an active panel row (file-entry.slint): side stripe, plus
     // an outline when the cursor is on a selected row.
-    if root.selected && root.cursor : Rectangle {
+    // Hidden instead of conditional: an `if` is one more generated component.
+    Rectangle {
+        visible: root.selected && root.cursor;
         x: 4px; y: 0px; width: parent.width - 4px; height: parent.height;
         background: transparent; border-width: 1px; border-color: Theme.cursor-edge;
     }

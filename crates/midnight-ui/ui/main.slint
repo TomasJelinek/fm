@@ -1514,8 +1514,12 @@ export component MainWindow inherits Window {
         y: max(4px, min(root.drag-y + 20px, root.height - self.height - 4px));
     }
     // Native owner-modal dialogs retain the main surface but gate its input.
-    if root.dialog-input-blocked: TouchArea {
-        width: root.width; height: root.height;
+    // Disabled instead of conditional (an `if` is one more generated component):
+    // a disabled area passes every event on. The explicit origin keeps it out
+    // of the window's size constraints.
+    TouchArea {
+        enabled: root.dialog-input-blocked;
+        x: 0px; y: 0px; width: root.width; height: root.height;
         scroll-event(event) => { accept }
     }
     operation-overlay := EmbeddedOperation { x: 0px; y: 0px; width: root.width; height: root.height; }

@@ -109,7 +109,9 @@ export component PanelSearch inherits Rectangle {
         receiver.clear-focus();
         if restore { receiver.focus(); }
     }
-    if root.active : Image {
+    // Hidden instead of conditional: an `if` is one more generated component.
+    Image {
+        visible: root.active;
         x: 7px; y: (parent.height - self.height) / 2;
         width: 16px; height: 16px;
         source: FallbackIcons.find; colorize: Theme.accent;

@@ -373,7 +373,9 @@ export component CompactPicker inherits Rectangle {
                         accessible-label: root.row-label(index);
                         accessible-enabled: root.row-enabled(index);
                         accessible-action-default => { root.commit(index); }
-                        if root.has-separator(index) : Rectangle {
+                        // Hidden instead of conditional: an `if` is one more generated component.
+                        Rectangle {
+                            visible: root.has-separator(index);
                             x: 8px; y: 1px; width: parent.width - 16px; height: 1px;
                             background: Theme.frame;
                         }

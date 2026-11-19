@@ -93,7 +93,10 @@ export component EmbeddedPanelFilter inherits Rectangle {
                     cancel => { if PanelFilterPresentation.help-token == "" { PanelFilterPresentation.dismiss(self.occurrence); } }
                 }
             }
-            if PanelFilterPresentation.help-token != "": TouchArea {
+            // Disabled instead of conditional (an `if` is one more generated
+            // component): a disabled area passes every event on.
+            TouchArea {
+                enabled: PanelFilterPresentation.help-token != "";
                 x: 0px; y: 0px;
                 width: filter-frame.body-width; height: filter-frame.body-height;
                 scroll-event(event) => { accept }

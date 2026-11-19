@@ -107,12 +107,17 @@ export component OperationSpeedChart inherits Rectangle {
                 commands: root.chart.verification; fill: transparent;
                 stroke: Theme.pending-size; stroke-width: 1.5px;
             }
-            if root.chart.single-sample : Rectangle {
+            // The two sample dots are hidden instead of conditional: an `if` is one
+            // more generated component. The curves above stay conditional: tests
+            // count the stroked paths in the chart's item tree.
+            Rectangle {
+                visible: root.chart.single-sample;
                 x: clamp((parent.width - 2px) * root.history-fraction * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
                 y: clamp(parent.height * root.chart.point-y / 100 - 2px, 2px, parent.height - 6px);
                 width: 4px; height: 4px; border-radius: 2px; background: root.verification-phase ? Theme.pending-size : Theme.active-frame;
             }
-            if root.chart.single-sample && !root.deletion && !root.chart.native-move && !root.verification-phase : Rectangle {
+            Rectangle {
+                visible: root.chart.single-sample && !root.deletion && !root.chart.native-move && !root.verification-phase;
                 x: clamp((parent.width - 2px) * root.history-fraction * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
                 y: clamp(parent.height * root.chart.verification-y / 100 - 2px, 2px, parent.height - 6px);
                 width: 4px; height: 4px; border-radius: 2px;

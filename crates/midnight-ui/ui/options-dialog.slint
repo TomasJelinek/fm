@@ -459,7 +459,10 @@ export component OptionsBody inherits Rectangle {
     }
     // Block input to the form during validation/write and before settings load,
     // keeping the footer and (during validation) the header's Cancel available.
-    if root.options-busy || !root.preferences-ready : TouchArea {
+    // Disabled instead of conditional (an `if` is one more generated component):
+    // a disabled area passes every event on.
+    TouchArea {
+        enabled: root.options-busy || !root.preferences-ready;
         y: header.absolute-position.y - root.absolute-position.y + header.height;
         width: root.width;
         height: max(0px, footer.absolute-position.y - root.absolute-position.y - self.y - 6px);

@@ -127,7 +127,9 @@ export component FindResults inherits FocusScope {
             accessible-item-selectable: true; accessible-item-selected: root.selected-row == index; accessible-item-index: index;
             accessible-action-default => { root.selected-row = index; root.focus(); }
             Columns { entry: row; duplicates: root.duplicates; }
-            if root.duplicates && row.group-start: Rectangle {
+            // Hidden instead of conditional: an `if` is one more generated component.
+            Rectangle {
+                visible: root.duplicates && row.group-start;
                 x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.frame;
             }
             TouchArea {
