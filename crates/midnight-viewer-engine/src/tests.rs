@@ -111,6 +111,32 @@ fn copied(session: &WindowSession) -> String {
     .expect("copied text")
 }
 
+/// Copies the selection that `shown` displays. A later frame, such as a position
+/// refinement after a find, retires the input of earlier frames; a refused copy is
+/// then sent again for the newest frame, which displays the same selection.
+#[track_caller]
+fn copy_from(session: &WindowSession, shown: &ViewerFrame) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut revision = shown.revision;
+    loop {
+        assert!(session.send(ViewerInput::Copy { frame: revision }));
+        let mut newest = revision;
+        let copied = await_output(session, Duration::from_millis(250), |output| match output {
+            ViewerOutput::CopyText(text) => Some(text),
+            ViewerOutput::Frame(frame) => {
+                newest = newest.max(frame.revision);
+                None
+            }
+            _ => None,
+        });
+        if let Some(text) = copied {
+            return text;
+        }
+        assert!(Instant::now() < deadline, "copied text");
+        revision = newest;
+    }
+}
+
 #[test]
 fn slow_ui_mailbox_retains_only_latest_frame_status_and_copy() {
     let mailbox = Mailbox::default();
@@ -638,10 +664,7 @@ fn native_whole_word_find_exhausts_substrings_and_keeps_real_row_prefix() {
             frame.accessible_text.contains("    α😀 target value")
                 && !frame.status.contains("Searching")
         });
-        assert!(session.send(ViewerInput::Copy {
-            frame: found.revision
-        }));
-        assert_eq!(copied(&session), "target");
+        assert_eq!(copy_from(&session, &found), "target");
         session.close();
     }
 }
