@@ -2797,11 +2797,10 @@ dependencies = [
  "midnight-core",
  "midnight-ui-input",
  "midnight-work-budget",
- "prettyplease",
+ "proc-macro2 1.0.107",
  "slint",
  "slint-build",
  "spin_on",
- "syn 2.0.119",
  "tokio",
 ]
 

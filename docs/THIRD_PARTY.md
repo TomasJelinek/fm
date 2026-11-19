@@ -113,18 +113,23 @@ counts and targeted row edits below remain historical. The current tables are:
 
 - [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **69**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **655**
-  package/version/source records, **537** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **654**
+  package/version/source records, **536** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
-The complete refresh adds twelve inventory records and removes none: six
+The 19 November AccessKit refresh added twelve inventory records: six
 selected AccessKit packages, three AT-SPI packages and three zbus support crates.
 Four `phf` 0.13.1 records already belonged to the PDF scope and now also belong to
 the application. The eighteen lockfile additions additionally contain Apple-only
 adapters that are not selected by these application targets. Existing rows retain
 their license/source/version declarations; current Find/tooltip, Media and
 work-budget direct-dependant edges are refreshed rather than new dependency pins.
+
+The subsequent integration reused the shared Slint writer for comparator bindings.
+This removed the app's last prettyplease dependency. The current tables use
+the refreshed Windows captures and the prior native Linux trees updated for that
+removed package, checked against the locked Linux-target metadata.
 
 The first generator attempt exposed older `midnight-plugin-api`/`midnight-plugin-sdk`
 0.1.0 releases in the independent Basic/conformance graphs. These are project

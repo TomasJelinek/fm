@@ -444,7 +444,10 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
             ));
         }
     }
-    if stored.version == 34 && stored.glyph_fitting.is_none() && stored.thumbnailer_associations.is_none() {
+    if stored.version == 34
+        && stored.glyph_fitting.is_none()
+        && stored.thumbnailer_associations.is_none()
+    {
         return Err(invalid("missing schema 34 preferences"));
     }
     let glyph_fitting = match (stored.version, stored.glyph_fitting.as_deref()) {

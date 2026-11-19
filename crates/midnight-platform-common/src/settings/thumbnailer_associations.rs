@@ -101,6 +101,18 @@ mod tests {
     }
 
     #[test]
+    fn glyph_fitting_and_thumbnailer_overrides_round_trip_together() {
+        let mut expected = preferences();
+        expected.glyph_fitting = midnight_core::GlyphFitting::Subpixel;
+        let encoded = encode_preferences(expected.clone()).unwrap();
+        let stored: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(stored["version"], 34);
+        assert_eq!(stored["glyph_fitting"], "subpixel");
+        assert_eq!(stored["thumbnailer_associations"]["empty.video"], json!([]));
+        assert_eq!(decode_preferences(&encoded).unwrap(), expected);
+    }
+
+    #[test]
     fn thumbnailer_schema_rejects_malformed_duplicate_and_wrong_version_maps() {
         let encoded = encode_preferences(preferences()).unwrap();
         let duplicate = std::str::from_utf8(&encoded).unwrap().replace(

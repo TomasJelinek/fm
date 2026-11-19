@@ -1,3 +1,9 @@
+#[path = "../midnight-ui-bindings/build/arms.rs"]
+mod arms;
+#[path = "../midnight-ui-bindings/build/partition.rs"]
+mod partition;
+#[path = "../midnight-ui-bindings/build/source.rs"]
+mod source;
 #[path = "../midnight-ui-bindings/build/tooltip.rs"]
 mod tooltip;
 

@@ -18,8 +18,7 @@ slint = { workspace = true, features = ["unstable-winit-030"] }
 slint-build.workspace = true
 i-slint-compiler = { version = "=1.18.1", default-features = false, features = ["rust"] }
 spin_on = "=0.1.1"
-prettyplease = "=0.2.37"
-syn = { version = "=2.0.119", features = ["full"] }
+proc-macro2 = "=1.0.107"
 
 [dev-dependencies]
 i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"] }
