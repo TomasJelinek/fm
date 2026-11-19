@@ -2,7 +2,9 @@
 """Run Cargo's workspace test targets with bounded successful integration artifacts.
 
 CI explicitly opts into retiring reported test executables/PDBs; sources, libraries,
-failed artifacts and unrelated output files are never cleanup candidates.
+failed artifacts and unrelated output files are never cleanup candidates. Local full
+validation (scripts/validate.*) runs the same gates with --keep-test-artifacts, which
+retires nothing, and --no-fail-fast, which runs every gate after a failure.
 """
 import argparse
 import json
@@ -279,28 +281,40 @@ def build_artifact(root, metadata, package_name, target, invoke=subprocess.run):
     return Path(executables.pop()), Path(package['manifest_path']).parent
 
 
-def execute(root, metadata, invoke=run_command, batch_size=DEFAULT_BATCH_SIZE):
-    target_root = output_root(root, metadata)
+def execute(root, metadata, invoke=run_command, batch_size=DEFAULT_BATCH_SIZE,
+            retire_artifacts=True, fail_fast=True):
+    """Run every gate; return the first failing Cargo exit status, or 0.
+
+    `retire_artifacts=False` keeps every executable (no target-directory requirement).
+    `fail_fast=False` adds Cargo's --no-fail-fast and continues with later gates.
+    """
+    target_root = output_root(root, metadata) if retire_artifacts else None
     serial = plan(metadata)
     gates = batch_integrations(serial, batch_size)
     feature_args = feature_arguments(metadata)
     print(f'Workspace gates: {len(gates)}; '
           f'integration names: {sum(gate["cleanup"] for gate in serial)}; '
           f'integration batch bound: {batch_size}', flush=True)
+    first_failure = 0
     for index, gate in enumerate(gates, 1):
         command = ['cargo', 'test', '--workspace', '--locked'] + feature_args + gate['args']
+        if not fail_fast:
+            command.append('--no-fail-fast')
         started = time.monotonic()
         code, artifacts = invoke(command, root, gate)
         finished = time.monotonic()
         print(f'Gate {index}/{len(gates)} Cargo exit {code}; '
               f'elapsed {finished - started:.3f}s', flush=True)
         if code:
-            return code  # Retain failed output for diagnosis; never skip to later targets.
-        if gate['cleanup']:
+            if fail_fast:
+                return code  # Retain failed output for diagnosis; never skip to later targets.
+            first_failure = first_failure or code
+            continue  # A failed gate's artifacts are never retired.
+        if gate['cleanup'] and retire_artifacts:
             retire(target_root, gate, artifacts)
             print(f'Gate {index}/{len(gates)} retirement '
                   f'{time.monotonic() - finished:.3f}s', flush=True)
-    return 0
+    return first_failure
 
 
 def apply_feature_tree(metadata, tree):
@@ -405,16 +419,27 @@ def main():
     if sys.argv[1:2] in (['artifact'], ['run']):
         return artifact_main(sys.argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--retire-successful-test-artifacts', action='store_true')
+    retention = parser.add_mutually_exclusive_group()
+    retention.add_argument('--retire-successful-test-artifacts', action='store_true',
+                           help='CI only (CI=true): delete each passing integration executable')
+    retention.add_argument('--keep-test-artifacts', action='store_true',
+                           help='Local validation: the same gates, retiring nothing')
+    parser.add_argument('--no-fail-fast', action='store_true',
+                        help='Run every gate and test target after a failure; '
+                             'exit with the first failing status')
     parser.add_argument('--integration-batch-size', type=int, choices=(1, 4, 8),
                         default=DEFAULT_BATCH_SIZE,
                         help='Maximum selected integrations per Cargo command, except atomic '
                              'same-name groups (default: %(default)s)')
     args = parser.parse_args()
-    if not args.retire_successful_test_artifacts or os.environ.get('CI', '').lower() != 'true':
-        parser.error('Requires CI=true and explicit --retire-successful-test-artifacts')
+    if not args.keep_test_artifacts and (not args.retire_successful_test_artifacts
+                                         or os.environ.get('CI', '').lower() != 'true'):
+        parser.error('Requires CI=true and explicit --retire-successful-test-artifacts, '
+                     'or --keep-test-artifacts')
     root = Path(__file__).resolve().parents[1]
-    return execute(root, load_metadata(root), batch_size=args.integration_batch_size)
+    return execute(root, load_metadata(root), batch_size=args.integration_batch_size,
+                   retire_artifacts=args.retire_successful_test_artifacts,
+                   fail_fast=not args.no_fail_fast)
 
 if __name__ == '__main__':
     try:
