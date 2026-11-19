@@ -39,7 +39,13 @@ try {
     & $python @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Public web API/SDK packaging failed' }
 } finally {
+    # PowerShell passes $null to a .NET string parameter as '', which PowerShell 7 on
+    # .NET 11 keeps as an empty variable: remove the homes that were unset instead.
     foreach ($name in $savedEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name])
+        if ($null -eq $savedEnvironment[$name]) {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        } else {
+            [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name])
+        }
     }
 }

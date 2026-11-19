@@ -107,9 +107,11 @@ foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerat
 $savedConsoleEncoding = $null
 
 function Restore-Environment {
+    # Remove added variables: SetEnvironmentVariable(name, $null) would leave them empty on
+    # PowerShell 7 with .NET 11, because PowerShell passes $null to a string parameter as ''.
     foreach ($variable in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
         if (-not $savedEnvironment.ContainsKey($variable)) {
-            [Environment]::SetEnvironmentVariable($variable, $null, 'Process')
+            Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
         }
     }
     foreach ($variable in $savedEnvironment.Keys) {
