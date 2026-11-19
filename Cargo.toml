@@ -108,6 +108,12 @@ opt-level = 3
 [profile.dev.package.generic-array]
 opt-level = 3
 
+# Panel, tree and Find name filters and comparator and editor rules match with regex.
+# Its unoptimized lazy DFA took 4.4 s for the 10,000-byte match of the comparator
+# budget test, 0.29 s at level 2: docs/verification/2026-11-18-test-speed-pass.md.
+[profile.dev.package.regex-automata]
+opt-level = 2
+
 # Viewer iteration keeps hot pixel/layout loops useful without release LTO.
 [profile.dev.package.midnight-viewer-render]
 opt-level = 2
