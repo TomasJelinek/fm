@@ -195,6 +195,7 @@ fn register(target: Target) -> Result<(), PlatformError> {
                 global.set_surface_width(size.width);
                 global.set_surface_height(size.height);
             }
+            global.set_scale(host.window().scale_factor());
             match event {
                 WindowEvent::PointerMoved { position }
                 | WindowEvent::PointerPressed { position, .. }

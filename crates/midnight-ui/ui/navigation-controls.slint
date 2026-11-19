@@ -29,6 +29,8 @@ export component NavigationButton inherits Rectangle {
     // Border while the button has no keyboard focus. Callers set this instead
     // of `border-color`, which would hide the keyboard focus indicator.
     in property <brush> rest-border: transparent;
+    out property <bool> hovered: area.has-hover;
+    out property <bool> focused: focus.has-focus && NavigationFocus.keyboard;
     callback clicked();
     callback middle-clicked();
     width: Theme.touch ? Theme.tool-width : 24px;
@@ -256,6 +258,9 @@ export component TabStrip inherits Rectangle {
                     }
                     close := NavigationButton {
                         x: parent.width - self.width;
+                        // Hidden until the pointer is over the tab or the button (or the
+                        // keyboard reaches it); touch has no hover, so it stays visible.
+                        opacity: Theme.touch || tab-area.has-hover || self.hovered || self.focused ? 1 : 0;
                         identity: tab.identity; model-revision: root.revision;
                         icon: FallbackIcons.close-tab;
                         native-icon: root.action-icons.close-tab;

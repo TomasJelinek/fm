@@ -124,6 +124,7 @@ component ActionButtonContent inherits HorizontalLayout {
     in property <bool> destructive;
     in property <bool> enabled;
     private property <bool> native-available: root.native-icon.width > 0 && root.native-icon.height > 0;
+    private property <bool> dim-native: root.fallback-icon == FallbackIcons.done || root.fallback-icon == FallbackIcons.close;
     private property <image> artwork: root.native-available ? root.native-icon : root.fallback-icon;
     private property <bool> has-icon: root.artwork.width > 0 && root.artwork.height > 0;
     private property <color> foreground: !root.enabled ? Theme.muted-text
@@ -137,7 +138,8 @@ component ActionButtonContent inherits HorizontalLayout {
         width: Theme.icon-size; height: Theme.icon-size;
         colorize: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback-icon))
             ? transparent : root.removal-icon && root.enabled ? Theme.error-text : root.foreground;
-        opacity: root.native-available && !root.enabled ? 0.45 : 1;
+        // Native theme artwork is saturated (green OK, red Cancel); soften it to sit in the palette.
+        opacity: root.native-available ? (!root.enabled ? 0.45 : root.dim-native ? (Theme.light ? 0.75 : 0.6) : 1) : 1;
         accessible-role: none;
     }
     if root.text != "": Text {

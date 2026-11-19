@@ -11,10 +11,11 @@ export component TipBody inherits Rectangle {
     in property <string> text;
     in property <length> width-limit: 560px;
     x: 0px; y: 0px;
-    width: min(root.width-limit, max(120px, content.preferred-width + 20px),
-        TooltipPlacement.max-room(TooltipPlacement.cursor-x, TooltipPlacement.surface-width, 14px));
-    height: min(content.preferred-height + 16px,
-        TooltipPlacement.max-room(TooltipPlacement.cursor-y, TooltipPlacement.surface-height, 18px));
+    // Whole device pixels keep the 1px frame crisp.
+    width: TooltipPlacement.snap(min(root.width-limit, max(120px, content.preferred-width + 20px),
+        TooltipPlacement.max-room(TooltipPlacement.cursor-x, TooltipPlacement.surface-width, 14px)));
+    height: TooltipPlacement.snap(min(content.preferred-height + 16px,
+        TooltipPlacement.max-room(TooltipPlacement.cursor-y, TooltipPlacement.surface-height, 18px)));
     clip: true;
     background: Theme.surface;
     border-color: Theme.active-frame;
