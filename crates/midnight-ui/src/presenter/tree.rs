@@ -965,6 +965,17 @@ impl Presenter {
                     .map(|row| (*row, pending.action))
             });
         }
+        // A renamed or created entry takes the cursor once this tree shows it.
+        let revealed = self.operations.settle.tree_reveal[pane.index()]
+            .as_ref()
+            .and_then(|target| view.index.directory.by_path.get(target))
+            .map(|entry| TreeRowId(entry.0))
+            .filter(|row| view.index.row_positions.contains_key(row));
+        if revealed.is_some() {
+            focused = revealed;
+            let old = self.operations.settle.tree_reveal[pane.index()].take();
+            self.retired.push(Box::new(old));
+        }
         p.cursor = focused
             .and_then(|id| view.index.row_positions.get(&id))
             .and_then(|position| view.rows.get(*position))
@@ -978,8 +989,11 @@ impl Presenter {
         {
             p.tree.search_insert = None;
         }
+        if revealed.is_some() && p.cursor.is_some() {
+            p.parent_cursor = false;
+        }
         p.parent_cursor |= p.cursor.is_none() && p.has_parent();
-        p.preserve_viewport = true;
+        p.preserve_viewport = revealed.is_none();
         p.rectangle_preview = None;
         // Preserve bounded pending intents across metadata/loading publications.
         // A changed layout can retain exact toggles; position/range gestures must

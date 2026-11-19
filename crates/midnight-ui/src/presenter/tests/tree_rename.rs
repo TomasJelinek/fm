@@ -191,3 +191,153 @@ fn menu_rename_uses_frozen_clicked_root_without_changing_child_marks_or_caret() 
         &selection
     ));
 }
+
+/// Revision `revision` of the tree in which `folder/child` is now `folder/renamed`.
+fn renamed_publication(root: TreeRootSnapshot, revision: u64) -> TreePublication {
+    let base = publication(root.clone(), revision, true, false);
+    let mut rows = base.view.rows.to_vec();
+    rows[1].id = TreeRowId(12);
+    rows[1].entry = Entry::new(
+        EntryId(12),
+        root.entries[0].path.join("renamed"),
+        EntryKind::Directory,
+    );
+    let view = Arc::new(
+        TreeProjection::new(root, base.view.stamp, TreeLayoutRevision(revision), rows).unwrap(),
+    );
+    let selection = Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![0]).unwrap());
+    TreePublication::new(view, SelectionRevision(0), selection).unwrap()
+}
+
+/// F2 in a tree holds panel input from its confirmation until the refreshed
+/// tree shows the new name, which then has the cursor; a failure never holds.
+#[test]
+fn tree_rename_holds_input_until_the_refreshed_tree_shows_and_focuses_the_new_name() {
+    for succeeded in [true, false] {
+        let (mut p, root) = setup();
+        let request = capture(&mut p);
+        p.apply_with_sender(reply(&request), &|_| true);
+        let id = p.operations.pending.expect("prepared tree rename");
+        let child = root.entries[0].path.join("child");
+        p.apply(Event::Operation(OperationEvent::Preview(Arc::new(
+            OperationPreview {
+                id,
+                kind: MutationKind::Rename,
+                files: 0,
+                folders: 1,
+                file_bytes: None,
+                sample: vec![MutationItem {
+                    path: child.clone(),
+                    kind: EntryKind::Directory,
+                    metadata: Default::default(),
+                }],
+            },
+        ))));
+        p.confirm_operation(&id.0.to_string(), "renamed".into(), &|_| true);
+        assert!(p.mutation_settling(), "input waits from the confirmation");
+
+        let mut progress = (*p.operations.progress[0]).clone();
+        let renamed = root.entries[0].path.join("renamed");
+        if succeeded {
+            progress.state = OperationState::Completed;
+            progress.completed = 1;
+            progress.renamed_to = Some(renamed.clone());
+        } else {
+            progress.state = OperationState::Failed;
+            progress.failed = 1;
+            progress.errors.push(FsError::from_io(
+                "Rename",
+                &child,
+                io::Error::from(io::ErrorKind::PermissionDenied),
+            ));
+        }
+        let sent = RefCell::new(Vec::new());
+        p.apply_with_sender(
+            Event::Operation(OperationEvent::Progress(Arc::new(progress))),
+            &|command| {
+                sent.borrow_mut().push(command);
+                true
+            },
+        );
+        let refresh = sent.borrow().iter().find_map(|command| match command {
+            Command::Tree(command) => match command.as_ref() {
+                TreeCommand::RefreshLoaded(request) => Some((request.view.stamp, request.request)),
+                _ => None,
+            },
+            _ => None,
+        });
+        let (stamp, refresh) = refresh.expect("the completion refreshes the tree at once");
+        if !succeeded {
+            assert!(!p.mutation_settling(), "a failure never holds input");
+            assert!(p.desktop.notice.is_some());
+            continue;
+        }
+        assert!(p.mutation_settling(), "input waits for the tree refresh");
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(renamed_publication(
+                root.clone(),
+                2,
+            )))),
+            &|_| true,
+        );
+        assert_eq!(
+            p.panes[0].cursor,
+            Some(EntryId(12)),
+            "the new name is focused"
+        );
+        assert!(!p.panes[0].parent_cursor);
+        assert!(
+            !p.panes[0].preserve_viewport,
+            "the new name is scrolled into view"
+        );
+        assert!(p.mutation_settling(), "until the refresh completes");
+        // The right panel lists the same folder flat; its re-read also shows the change.
+        let flat: Vec<_> = sent
+            .borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::Refresh {
+                    pane: PaneId::Right,
+                    navigation,
+                    ..
+                }
+                | Command::Navigate {
+                    pane: PaneId::Right,
+                    navigation,
+                    ..
+                } => Some(*navigation),
+                _ => None,
+            })
+            .collect();
+        let rows = p.panes[1].entries.to_vec();
+        for navigation in flat {
+            p.apply_with_sender(
+                Event::ListingFinished {
+                    pane: PaneId::Right,
+                    navigation,
+                    index: Arc::new(DirectoryIndex::from_entries(&rows)),
+                    entries: rows.clone().into(),
+                },
+                &|_| true,
+            );
+        }
+        assert!(p.mutation_settling(), "until the tree refresh completes");
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Refreshed {
+                stamp,
+                request: refresh,
+                result: Ok(()),
+            })),
+            &|_| true,
+        );
+        assert!(!p.mutation_settling());
+        assert!(
+            p.panes[0]
+                .tree_view()
+                .unwrap()
+                .rows
+                .iter()
+                .any(|row| row.entry.path == renamed)
+        );
+    }
+}

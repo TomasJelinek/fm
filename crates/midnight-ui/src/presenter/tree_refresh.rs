@@ -40,6 +40,45 @@ impl Pane {
 }
 
 impl Presenter {
+    /// Hold input until the tree refresh just queued for `pane` completes, when the
+    /// tree shows one of the `affected` folders.
+    pub(super) fn hold_tree_refresh(
+        &mut self,
+        pane: PaneId,
+        affected: &[PathBuf],
+        reveal: Option<PathBuf>,
+    ) {
+        let p = &self.panes[pane.index()];
+        let root = p.display_path();
+        if p.tree_view().is_none() || !affected.iter().any(|path| path.starts_with(root)) {
+            return;
+        }
+        let settle = &mut self.operations.settle;
+        settle.tree[pane.index()] = Some(p.tree.refresh.desired);
+        let old = mem::replace(&mut settle.tree_reveal[pane.index()], reveal);
+        self.retired.push(Box::new(old));
+    }
+
+    /// Release each tree hold once its refresh completed; after a flush, also one
+    /// whose refresh could not start now (it runs later without a hold).
+    pub(super) fn settle_tree_refreshes(&mut self, flushed: bool) {
+        for pane in [PaneId::Left, PaneId::Right] {
+            let p = &self.panes[pane.index()];
+            let settle = &mut self.operations.settle;
+            let Some(epoch) = settle.tree[pane.index()] else {
+                continue;
+            };
+            if p.tree_view().is_none()
+                || p.tree.refresh.completed >= epoch
+                || (flushed && p.tree.refresh.sent.is_none())
+            {
+                settle.tree[pane.index()] = None;
+                let old = settle.tree_reveal[pane.index()].take();
+                self.retired.push(Box::new(old));
+            }
+        }
+    }
+
     pub(super) fn request_native_tree_refresh(
         &mut self,
         pane: PaneId,
@@ -92,6 +131,7 @@ impl Presenter {
                 });
             }
         }
+        self.settle_tree_refreshes(true);
     }
 
     pub(super) fn tree_refresh_finished(
@@ -123,5 +163,6 @@ impl Presenter {
                 p.set_tree_error(&error, "Could not refresh the tree: ", &mut self.retired);
             }
         }
+        self.settle_tree_refreshes(false);
     }
 }

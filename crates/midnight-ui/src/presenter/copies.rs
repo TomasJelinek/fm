@@ -275,6 +275,8 @@ impl Presenter {
                 } else {
                     self.copies.backend_observed.insert(progress.id);
                 }
+                let mut tree_holds = Vec::new();
+                let mut affected = Vec::new();
                 if progress.state.is_terminal() {
                     // A completed transfer holds input until its panels show it.
                     let hold = matches!(
@@ -283,6 +285,9 @@ impl Presenter {
                     );
                     for pane in [PaneId::Left, PaneId::Right] {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
+                            if hold {
+                                tree_holds.push(pane);
+                            }
                             continue;
                         }
                         let shown = &self.panes[pane.index()];
@@ -340,7 +345,14 @@ impl Presenter {
                         }
                     }
                 }
+                if !tree_holds.is_empty() {
+                    affected.extend(progress.source_directories.iter().cloned());
+                    affected.push(progress.destination_directory.clone());
+                }
                 *old = progress;
+                for pane in tree_holds {
+                    self.hold_tree_refresh(pane, &affected, None);
+                }
                 self.trim_copy_history();
             }
         }

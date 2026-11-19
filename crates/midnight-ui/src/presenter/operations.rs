@@ -38,6 +38,10 @@ pub(crate) struct Settle {
     hold: [bool; 2],
     /// Per pane, the in-flight re-read that shows it.
     reads: [Option<NavigationId>; 2],
+    /// Per native tree pane, the refresh epoch that shows it.
+    pub(super) tree: [Option<u64>; 2],
+    /// Per native tree pane, the renamed or created entry to focus once published.
+    pub(super) tree_reveal: [Option<PathBuf>; 2],
 }
 
 impl OperationsState {
@@ -363,7 +367,9 @@ impl Presenter {
     /// Whether panel input waits for a file job's change to become visible.
     pub(crate) fn mutation_settling(&self) -> bool {
         let settle = &self.operations.settle;
-        settle.job.is_some() || settle.reads.iter().any(Option::is_some)
+        settle.job.is_some()
+            || settle.reads.iter().any(Option::is_some)
+            || settle.tree.iter().any(Option::is_some)
     }
 
     /// Stop waiting for `id`'s job (every wait without one); its re-reads still
@@ -554,6 +560,14 @@ impl Presenter {
                     );
                     for pane in [PaneId::Left, PaneId::Right] {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
+                            if hold {
+                                // A tree shows entries of loaded subfolders too.
+                                self.hold_tree_refresh(
+                                    pane,
+                                    std::slice::from_ref(&progress.source_directory),
+                                    progress.renamed_to.clone(),
+                                );
+                            }
                             continue;
                         }
                         self.queue_operation_refresh(
