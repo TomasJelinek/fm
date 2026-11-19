@@ -18,8 +18,17 @@ binary per crate avoids one link step, one executable and one cold process start
 per test file; select a former file with a module filter such as `shortcuts::`.
 `midnight-worker-platform` and `midnight-platform-windows` keep one binary per
 file because their tests change or inspect process-wide containment and terminal
-state. Crates with at most three integration files also keep one binary per
-file; CI selects some of those by name (`--test native`, `--test pdf_native`,
+state. In `midnight-worker-platform` a topic's Linux-only tests are the `linux`
+module of that topic's binary (`tests/linux/spool.rs` in `spool`, likewise `store`
+and `worker_policy`), so Windows does not build and start three binaries without a
+test; they change process attributes (the dumpable flag, the CPU limit) only in a
+re-executed child, and Linux workers start through `std::process::Command`. Its
+Windows-only files stay separate binaries: on Linux an empty executable starts in
+about 0.01 s, and `worker_policy_windows` starts its child with plain
+`std::process::Command` while Windows worker creation briefly makes pipe ends
+inheritable (`lock_process_creation`), so it must not share a process with
+`worker_policy`'s workers. Crates with at most three integration files also keep one
+binary per file; CI selects some of those by name (`--test native`, `--test pdf_native`,
 `--test worker`). A test that re-runs its own executable must select the child
 by its module-qualified name (`<file>::<test>`, derived from `module_path!()`, run
 with `--exact`). Targets without a test on any platform set `test = false`, so an
@@ -28,6 +37,25 @@ unfiltered `cargo test` neither builds nor starts an empty harness for them: the
 fails when a unit test is added) and the `midnight-elevated-listing` and
 `midnight-worker-probe` binaries, which integration tests still receive as
 `CARGO_BIN_EXE_<name>`.
+
+Some `midnight-engine` integration test files include library sources with
+`#[path]` to reach their `#[cfg(test)]` internals (checksums, retirement, file
+targets). `cfg(test)` holds there too, so each include also compiles and runs the
+unit tests that those sources declare: 162 of the library's unit tests run again in
+the `integration` executable. No `cfg` tells the library's test build from such an
+include, and declaring the test modules inside a macro would hide their files from
+`cargo fmt`, which follows no `mod` inside a macro call; a new `#[path]` include of a
+source with unit tests adds them again.
+
+On Windows with Microsoft Defender real-time protection, the first start of a newly
+linked test executable costs about 1.3 s plus 0.17 s per MB (0.8 to 2.2 s below 5 MB,
+17.6 s for the 108 MB `me` test executable), a later start 0.01 to 0.1 s. Most of the
+cost follows a new file content (a byte-identical copy of a known executable costs
+about a fifth), and it returns after some minutes without a start. A test run right
+after a build pays it once per new executable, so fewer and smaller executables save
+time even where they hold no test; Linux has no such cost. When comparing test times,
+compare runs in the same state (each executable newly linked, or each one started
+moments before) and say which ([test speed pass](../verification/2026-11-18-test-speed-pass.md)).
 
 The `midnight-engine` library test executable re-runs itself for ten Copy seal
 tests (`copy_seal_tests.rs`, `copy_finish_seal_tests.rs` and
