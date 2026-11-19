@@ -20,7 +20,11 @@ midnight-platform-linux = { path = "crates/midnight-platform-linux" }
 midnight-engine = { path = "crates/midnight-engine" }
 midnight-ui = { path = "crates/midnight-ui" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg-wgpu", "renderer-software", "compat-1-2"] }
+# "unstable-winit-030" and "unstable-wgpu-30" are what the application selects. Named
+# here, every member resolves the same Slint features, so a targeted `cargo test -p
+# midnight-ui` reuses the application build's Slint and generated bindings instead of
+# compiling its own. The other half is in crates/midnight-ui-input/Cargo.toml.
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg-wgpu", "renderer-software", "compat-1-2", "unstable-winit-030", "unstable-wgpu-30"] }
 slint-build = "=1.18.1"
 tempfile = "3"
 

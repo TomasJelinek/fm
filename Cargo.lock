@@ -2925,8 +2925,11 @@ name = "midnight-ui-input"
 version = "0.2.0"
 dependencies = [
  "i-slint-core",
+ "indexmap",
+ "lazy_static",
  "midnight-core",
  "slint",
+ "tracing-core",
 ]
 
 [[package]]
