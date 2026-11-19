@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+//! Linux-only store tests, a module of the `store` test executable.
 use midnight_worker_platform::store::PrivateStore;
 use std::os::unix::fs::{PermissionsExt, symlink};
 

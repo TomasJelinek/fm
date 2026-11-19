@@ -1,6 +1,12 @@
 use midnight_worker_platform::spool::{MAX_IO, PrivateSpoolDirectory, SpoolRoot};
 use std::{io, sync::Arc};
 
+// A module of this executable, so Windows has no empty executable for it. It changes
+// process attributes only in a re-executed child.
+#[cfg(target_os = "linux")]
+#[path = "linux/spool.rs"]
+mod linux;
+
 #[test]
 fn private_spool_requires_seal_and_supports_checked_random_reads() {
     let temporary = tempfile::tempdir().unwrap();

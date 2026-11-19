@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+//! Linux-only spool tests, a module of the `spool` test executable.
 use midnight_worker_platform::spool::PrivateSpoolDirectory;
 use rustix::process::{DumpableBehavior, geteuid, set_dumpable_behavior};
 use std::{
@@ -53,11 +53,12 @@ fn spool_root_owned_by_another_account_is_refused_by_the_owner_check() {
         assert_refused_by_the_owner_check(&foreign);
         return;
     }
+    // The child runs only this test, selected by its module-qualified name.
+    let module = module_path!().split_once("::").unwrap().1;
+    let name =
+        format!("{module}::spool_root_owned_by_another_account_is_refused_by_the_owner_check");
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "spool_root_owned_by_another_account_is_refused_by_the_owner_check",
-        ])
+        .args(["--exact", name.as_str()])
         .env(CHILD, "1")
         .output()
         .unwrap();

@@ -1,6 +1,12 @@
 use midnight_worker_platform::{CpuBudget, ResourcePolicy};
 use std::io::{BufRead, BufReader, Write};
 
+// A module of this executable, so Windows has no empty executable for it. It changes
+// the CPU limit only in a re-executed child.
+#[cfg(target_os = "linux")]
+#[path = "linux/worker_policy.rs"]
+mod linux;
+
 #[test]
 fn explicit_policies_preserve_file_network_and_process_containment() {
     let root = tempfile::tempdir().unwrap();
