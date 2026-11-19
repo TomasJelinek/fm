@@ -395,6 +395,7 @@ fn timing(poll: Duration) -> Timing {
         maximum: Duration::from_millis(70),
         poll,
         restart: Duration::from_secs(60),
+        cooldown: Duration::ZERO,
     }
 }
 
@@ -519,6 +520,76 @@ async fn a_native_burst_is_coalesced_and_later_bursts_still_refresh() {
             .iter()
             .all(|(start, end)| start == end)
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_that_keeps_changing_is_hinted_at_most_once_per_cooldown() {
+    let files = Arc::new(Files::default());
+    let native = Arc::new(Native::default());
+    let cooldown = Duration::from_millis(300);
+    let (_owner, controller, mut tasks, mut events) = controller_with(
+        files.clone(),
+        Some(native.clone()),
+        Timing {
+            cooldown,
+            ..timing(Duration::from_secs(60))
+        },
+        8,
+    );
+    controller.set_visible(files.visible(PaneId::Left, 4, "left"));
+    native.registrations(1).await;
+    // An isolated change is hinted once its burst settled.
+    let start = Instant::now();
+    native.fire(0);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(4)));
+    assert!(start.elapsed() < cooldown, "{:?}", start.elapsed());
+    // A writer that never pauses is hinted once per cooldown, not per burst.
+    let writer = {
+        let native = native.clone();
+        tokio::spawn(async move {
+            let end = Instant::now() + Duration::from_millis(1_200);
+            let mut last = Instant::now();
+            while Instant::now() < end {
+                last = Instant::now();
+                native.fire(0);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            last
+        })
+    };
+    let mut hinted = vec![Instant::now()];
+    // Until the writer stopped and no hint came for longer than a cooldown.
+    while !writer.is_finished()
+        || hinted
+            .last()
+            .is_some_and(|last| last.elapsed() < cooldown * 2)
+    {
+        if let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(20), events.recv()).await
+        {
+            assert!(matches!(event, Event::DirectoryChanged { .. }), "{event:?}");
+            hinted.push(Instant::now());
+        }
+    }
+    let last_change = writer.await.unwrap();
+    assert!(
+        *hinted.last().unwrap() > last_change,
+        "the last changes must still be hinted"
+    );
+    for pair in hinted.windows(2).skip(1) {
+        // Wakes are not exact: allow a few milliseconds early.
+        assert!(
+            pair[1] - pair[0] >= cooldown - Duration::from_millis(10),
+            "hints {:?} apart",
+            pair[1] - pair[0]
+        );
+    }
+    assert!(
+        (3..=7).contains(&hinted.len()),
+        "{} hints in 1.2 s",
+        hinted.len()
+    );
+    stop(&controller, &mut tasks).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -439,6 +439,18 @@ pub enum Command {
     Shutdown,
 }
 
+/// One step of `Event::ListingChanges`. Rows are positions in the listing as
+/// it is after the preceding steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowEdit {
+    /// `count` rows starting at `row` are gone.
+    Removed { row: usize, count: usize },
+    /// `count` new rows are inserted at `row`.
+    Added { row: usize, count: usize },
+    /// The entry at `row` kept its identity but shows other metadata.
+    Changed { row: usize },
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     RectangleSummary {
@@ -649,6 +661,17 @@ pub enum Event {
         pane: PaneId,
         navigation: NavigationId,
         entries: Vec<(EntryId, EntryMetadata)>,
+    },
+    /// Sent just before `ListingFinished` of a re-read of the folder whose
+    /// rows were `base`: applying `edits` in order to `base` gives that
+    /// listing's rows, and every other row keeps its entry (identity, path,
+    /// kind and metadata). Absent when the change cannot be described cheaply;
+    /// a consumer whose rows are not `base` ignores it.
+    ListingChanges {
+        pane: PaneId,
+        navigation: NavigationId,
+        base: Arc<[Entry]>,
+        edits: Arc<[RowEdit]>,
     },
     ListingFinished {
         pane: PaneId,

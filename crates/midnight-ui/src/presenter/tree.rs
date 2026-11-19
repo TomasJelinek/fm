@@ -74,10 +74,12 @@ impl Pane {
                 entry.id.0
             )
         } else {
+            // A background re-read keeps the shown rows' identities
+            // (`row_continuity`).
             format!(
                 "{}:{}:{}:entry:{}",
-                self.generation,
-                self.displayed_generation().0,
+                self.row_generation(),
+                self.row_displayed_generation().0,
                 self.search.view_revision,
                 entry.id.0
             )

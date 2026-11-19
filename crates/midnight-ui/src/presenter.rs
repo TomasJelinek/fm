@@ -17,6 +17,7 @@ mod copy_errors_tests;
 mod copy_selection;
 mod desktop;
 mod directory_link_tooltip;
+pub(crate) mod row_continuity;
 pub(crate) use desktop::IconPlace;
 pub use desktop::IconView;
 pub(crate) mod drag_drop;
@@ -143,6 +144,11 @@ struct Request {
     cursor_touched: bool,
     /// Refreshes and cached resorts stage privately behind the committed view.
     keep_rows: bool,
+    /// An automatic re-read of the shown folder (`Reload::Background`); it
+    /// shows no loading state (`row_continuity`).
+    background: bool,
+    /// The backend's row edits from the shown rows to this listing.
+    changes: Option<row_continuity::PendingChanges>,
 }
 
 /// The scan owns its original identities independently of listing/sort generations.
@@ -238,6 +244,10 @@ pub(crate) struct Pane {
     watch_status: Option<(WatchedView, WatchStatus)>,
     pub(crate) generation: u64,
     successful_generation: Option<NavigationId>,
+    /// Row identities kept across background re-reads (`row_continuity`).
+    rows_epoch: Option<row_continuity::RowsEpoch>,
+    /// The edits the last in-place commit made to the rows.
+    row_edits: Option<row_continuity::RowEdits>,
     committed_sort: SortSpec,
     pub(crate) search: search::SearchState,
 }
@@ -809,7 +819,10 @@ impl Presenter {
             wanted_cursor,
             cursor_touched: false,
             keep_rows,
+            background: mode == Reload::Background && keep_rows,
+            changes: None,
         });
+        p.rows_navigation_accepted(navigation, mode == Reload::Background && keep_rows);
         p.generation = navigation.0;
         p.loading = true;
         p.set_error("", &mut self.retired);
@@ -1189,6 +1202,9 @@ impl Presenter {
             | Event::MetadataBatch {
                 pane, navigation, ..
             }
+            | Event::ListingChanges {
+                pane, navigation, ..
+            }
             | Event::ListingFinished {
                 pane, navigation, ..
             }
@@ -1265,6 +1281,12 @@ impl Presenter {
             }
             Event::MetadataBatch { entries, .. } => {
                 p.metadata.extend(entries);
+            }
+            Event::ListingChanges { base, edits, .. } => {
+                // Reclaimed off the UI thread like the rows it may hold last.
+                if let Some(replaced) = p.listing_changes(base, edits) {
+                    self.retired.push(Box::new(replaced));
+                }
             }
             Event::ListingFinished { entries, index, .. } => {
                 self.retired.push(Box::new(p.network.take()));
@@ -1377,6 +1399,7 @@ impl Presenter {
                         note_new_folders(&mut p.size_scan_new_folders, &p.index, &index);
                     }
                 }
+                p.rows_committing(&request, &entries);
                 self.retired
                     .push(Box::new(mem::replace(&mut p.entries, entries)));
                 self.retired
@@ -1899,6 +1922,8 @@ impl Pane {
             watch_status: None,
             generation: 0,
             successful_generation: None,
+            rows_epoch: None,
+            row_edits: None,
             index: Arc::new(DirectoryIndex::from_entries(&[])),
             volume_paths: HashMap::new(),
             streaming_index: HashMap::new(),

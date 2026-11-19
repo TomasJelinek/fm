@@ -70,6 +70,7 @@ mod folder_presence;
 mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
+mod listing_refresh;
 #[cfg(all(test, windows))]
 #[path = "../tests/support/checksum_verify_links_windows.rs"]
 mod native_test_links;
@@ -1242,7 +1243,7 @@ impl EngineServices {
                             let continued_sizes = keep_scan.then(|| size_requests[pane.index()].as_ref().expect("validated scan").sizes.clone()).or(continued_entry_sizes);
                             if !keep_scan && let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
                             if let Some(old) = requests[pane.index()].take() { old.cancel(); }
-                            let source = {
+                            let (source, shown) = {
                                 let mut snapshots = snapshots.lock().unwrap_or_else(|error| error.into_inner());
                                 let state = &mut snapshots[pane.index()];
                                 let source = if resort {
@@ -1258,8 +1259,11 @@ impl EngineServices {
                                                 })
                                         })
                                 } else { None };
+                                // A re-read of the rows the UI shows (`listing_refresh`).
+                                let shown = refresh.then(|| state.visible.as_ref().filter(|visible| visible.path == path)
+                                    .map(|visible| visible.entries.clone())).flatten();
                                 state.pending = Some(navigation);
-                                source
+                                (source, shown)
                             };
                             let cancel = Cancellation::default();
                             let filesystem = self.filesystem.clone();
@@ -1288,7 +1292,7 @@ impl EngineServices {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
-                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream, navigation_fallback, watch });
+                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, shown, continued_sizes, selection_stream, navigation_fallback, watch });
                                 })).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
@@ -1437,6 +1441,9 @@ struct ListingTask {
     icons: mpsc::Sender<IconKey>,
     snapshots: Snapshots,
     source: Option<CommittedSnapshot>,
+    /// The rows the UI shows for `path`, listed again in place
+    /// (`listing_refresh`).
+    shown: Option<Arc<[Entry]>>,
     continued_sizes: Option<SharedSizes>,
     /// Told when the listing has read its first entry (`Reporter::listing_read`).
     watch: Option<watch::Reporter>,
@@ -1460,6 +1467,7 @@ fn list_directory(task: ListingTask) {
         icons,
         snapshots,
         source,
+        shown,
         continued_sizes,
         watch,
     } = task;
@@ -1478,9 +1486,16 @@ fn list_directory(task: ListingTask) {
                 entries: Arc::from(entries),
                 sizes: source.sizes,
             },
+            None,
         );
         return;
     }
+    // A re-read of shown rows streams no batches: the UI keeps its rows until
+    // the listing commits, and gets the change as row edits.
+    let shown = shown
+        .filter(|_| elevated.is_none())
+        .map(listing_refresh::Shown::new);
+    let quiet = shown.is_some();
     let mut icon_types = std::collections::HashSet::new();
     let mut entries = Vec::new();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
@@ -1494,14 +1509,19 @@ fn list_directory(task: ListingTask) {
         if let Some(watch) = watch.take() {
             watch.listing_read(pane, navigation);
         }
-        localize_metadata(&mut entry.metadata, locale.as_deref());
-        entries.push(entry.clone());
         if icon_types.len() < 128 {
             let key = IconKey::for_entry(&entry);
             if icon_types.insert(key.clone()) {
                 let _ = icons.try_send(key);
             }
         }
+        if quiet {
+            // Adoption localizes only entries whose metadata changed.
+            entries.push(entry);
+            return true;
+        }
+        localize_metadata(&mut entry.metadata, locale.as_deref());
+        entries.push(entry.clone());
         batch.push(entry);
         if batch.len() == BATCH_SIZE {
             selection_stream.append(pane, navigation, &path, &batch);
@@ -1580,7 +1600,9 @@ fn list_directory(task: ListingTask) {
         outbox.blocking_send(event, &cancel);
         return;
     }
-    selection_stream.append(pane, navigation, &path, &batch);
+    if !quiet {
+        selection_stream.append(pane, navigation, &path, &batch);
+    }
     if !batch.is_empty()
         && !outbox.blocking_send(
             Event::EntriesBatch {
@@ -1595,11 +1617,22 @@ fn list_directory(task: ListingTask) {
     }
 
     let mut metadata = Vec::with_capacity(BATCH_SIZE);
+    let mut adoption = listing_refresh::Adoption::default();
     for entry in &mut entries {
         if cancel.is_cancelled() {
             return;
         }
-        if elevated.is_some() || filesystem.listing_metadata_complete(entry) {
+        let complete = elevated.is_some() || filesystem.listing_metadata_complete(entry);
+        if let Some(shown) = &shown {
+            let value = if complete {
+                Some(entry.metadata.clone())
+            } else {
+                filesystem.entry_metadata(&entry.path).ok()
+            };
+            adoption.adopt(shown, entry, value, locale.as_deref());
+            continue;
+        }
+        if complete {
             continue;
         }
         // A file can disappear or become unreadable while the directory is open.
@@ -1637,6 +1670,10 @@ fn list_directory(task: ListingTask) {
     if cancel.is_cancelled() {
         return;
     }
+    let base = shown.and_then(|shown| adoption.finish(&mut entries).then(|| shown.into_rows()));
+    if quiet {
+        selection_stream.append(pane, navigation, &path, &entries);
+    }
     publish_listing(
         &outbox,
         &snapshots,
@@ -1650,9 +1687,14 @@ fn list_directory(task: ListingTask) {
             entries: Arc::from(entries),
             sizes: continued_sizes.unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
         },
+        base,
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the publication context of one listing task"
+)]
 fn publish_listing(
     outbox: &Outbox,
     snapshots: &Snapshots,
@@ -1661,6 +1703,9 @@ fn publish_listing(
     sort: SortSpec,
     cancel: &Cancellation,
     mut snapshot: CommittedSnapshot,
+    // The rows the UI shows for this folder, which the listing is described
+    // as edits of (`Event::ListingChanges`).
+    base: Option<Arc<[Entry]>>,
 ) {
     if cancel.is_cancelled() {
         return;
@@ -1704,6 +1749,16 @@ fn publish_listing(
     if cancel.is_cancelled() {
         return;
     }
+    let changes = base.and_then(|base| {
+        let edits = listing_refresh::row_edits(&base, &snapshot.entries)?;
+        Some((base, edits))
+    });
+    if let Some((base, edits)) = &changes
+        && edits.is_empty()
+    {
+        // Nothing the UI shows changed: it keeps the very same rows.
+        snapshot.entries = base.clone();
+    }
     let index = Arc::new(midnight_core::DirectoryIndex::from_entries(
         &snapshot.entries,
     ));
@@ -1731,6 +1786,20 @@ fn publish_listing(
         retired
     };
     drop(retired_root);
+    if let Some((base, edits)) = changes
+        && !edits.is_empty()
+        && !outbox.blocking_send(
+            Event::ListingChanges {
+                pane,
+                navigation,
+                base,
+                edits: edits.into(),
+            },
+            cancel,
+        )
+    {
+        return;
+    }
     outbox.blocking_send(
         Event::ListingFinished {
             pane,

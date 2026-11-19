@@ -932,6 +932,7 @@ fn link_watch_timing() -> Timing {
         maximum: Duration::ZERO,
         poll: Duration::ZERO,
         restart: Duration::ZERO,
+        cooldown: Duration::ZERO,
     }
 }
 

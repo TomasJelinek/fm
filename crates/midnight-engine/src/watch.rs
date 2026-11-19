@@ -77,18 +77,27 @@ struct Timing {
     quiet: Duration,
     maximum: Duration,
     poll: Duration,
+    /// The least time between two hints of a flat target whose folder keeps
+    /// changing; twice its last check when that took longer, up to four
+    /// times this.
+    /// Each hint makes the UI list the folder again; a folder a build keeps
+    /// writing is then listed at a steady rate, not again as soon as the
+    /// previous listing commits. Zero disables the limit.
+    cooldown: Duration,
     /// The least time between two restarts of a pane's worker; the first
     /// restart after a panic is immediate.
     restart: Duration,
 }
 
 /// Bursts settle after 150 ms of quiet, at most 500 ms after their first event;
-/// polling catches missed notifications every 15 s. A worker restarts at most
-/// once a minute after its first restart.
+/// a folder that keeps changing is hinted at most once a second; polling
+/// catches missed notifications every 15 s. A worker restarts at most once a
+/// minute after its first restart.
 const PRODUCTION_TIMING: Timing = Timing {
     quiet: Duration::from_millis(150),
     maximum: Duration::from_millis(500),
     poll: Duration::from_secs(15),
+    cooldown: Duration::from_secs(1),
     restart: Duration::from_secs(60),
 };
 
@@ -507,9 +516,29 @@ struct Target {
     _subscription: Option<Box<dyn WatchSubscription>>,
     debounce: Debouncer,
     poll_at: Instant,
+    /// When the last hint was sent; kept while the target watches listings
+    /// of its folder (`retarget`), so `Timing::cooldown` spans them.
+    hinted_at: Option<Instant>,
+    /// How long the last check read the folder.
+    probe_cost: Duration,
 }
 
 impl Target {
+    /// When the pending burst may be hinted: once it settled, and no sooner
+    /// than the cooldown after the previous hint.
+    fn hint_deadline(&self, timing: Timing) -> Option<Instant> {
+        let settled = self.debounce.deadline(timing.quiet, timing.maximum)?;
+        let cooldown = if timing.cooldown.is_zero() {
+            Duration::ZERO
+        } else {
+            (self.probe_cost * 2).clamp(timing.cooldown, timing.cooldown * 4)
+        };
+        Some(
+            self.hinted_at
+                .map_or(settled, |hinted| settled.max(hinted + cooldown)),
+        )
+    }
+
     /// A refresh/resort of the same directory keeps its change counter: the
     /// target stays subscribed from the dispatch until this acceptance, or
     /// until that listing fails (see `relisting` and `rearm`). A new native
@@ -635,6 +664,8 @@ impl Target {
             } else {
                 now
             },
+            hinted_at: None,
+            probe_cost: Duration::ZERO,
         };
         (target, status)
     }
@@ -825,6 +856,8 @@ fn register(
         _subscription: subscription,
         debounce: Debouncer::default(),
         poll_at: if check { now } else { now + worker.timing.poll },
+        hinted_at: None,
+        probe_cost: Duration::ZERO,
     };
     (target, status)
 }
@@ -1197,10 +1230,12 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
             // Recovery of unknown metadata is also a visible change. Baselines
             // stay until UI acceptance, so later checks repeat an ignored hint,
             // and a failed refresh once its target is re-armed (see `rearm`).
+            let started = Instant::now();
             let changed = match probe(worker.filesystem.as_ref(), &target.path, &target.cancel) {
                 Ok(current) => target.baseline != Some(current),
                 Err(()) => true,
             };
+            target.probe_cost = started.elapsed();
             supervision.completed();
             if !shared.is_current(target.revision) {
                 // Superseded: the check stays due, so rows a resort accepts
@@ -1221,19 +1256,23 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
             }
         }
         let now = Instant::now();
-        if target.debounce.take_due(now, timing.quiet, timing.maximum)
-            && !send_hint(shared, target, &worker.outbox)
+        if target
+            .hint_deadline(timing)
+            .is_some_and(|deadline| now >= deadline)
         {
-            if shared.is_current(target.revision) {
-                break;
+            target.debounce = Debouncer::default();
+            if !send_hint(shared, target, &worker.outbox) {
+                if shared.is_current(target.revision) {
+                    break;
+                }
+                // Supersession/shutdown may consume the wake in send_hint.
+                // Recheck control before parking for the old target's next poll.
+                continue;
             }
-            // Supersession/shutdown may consume the wake in send_hint. Recheck
-            // control before parking for the old target's next poll.
-            continue;
+            target.hinted_at = Some(now);
         }
         let deadline = target
-            .debounce
-            .deadline(timing.quiet, timing.maximum)
+            .hint_deadline(timing)
             .map_or(target.poll_at, |deadline| deadline.min(target.poll_at));
         supervision.park(Some(deadline.saturating_duration_since(Instant::now())));
     }

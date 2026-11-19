@@ -187,6 +187,7 @@ fn completed_listing_records_the_exact_index_before_waking_the_ui() {
             entries: root.entries,
             sizes: Arc::new(Mutex::new(HashMap::new())),
         },
+        None,
     );
     let Event::ListingFinished {
         pane,

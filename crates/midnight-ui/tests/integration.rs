@@ -26,6 +26,7 @@ mod archive_options;
 mod argument_lists;
 mod bottom_bar;
 mod bulk_selection;
+mod busy_folder_native;
 mod checksum_polish;
 mod checksum_windows;
 mod color_picker;

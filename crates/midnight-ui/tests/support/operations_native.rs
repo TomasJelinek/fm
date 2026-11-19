@@ -99,12 +99,31 @@ pub struct Harness {
     command_reclaim: command_reclaim::CommandReclaim,
     retire_queue: mpsc::Sender<reclaim::Retired>,
     committed: [Option<NavigationId>; 2],
+    /// Directory listings the Engine started per pane (`ListingStarted`).
+    pub listings: [usize; 2],
+    /// Watch hints the Engine sent per pane (`DirectoryChanged`).
+    pub hints: [usize; 2],
+    /// Row batches (`EntriesBatch`, `MetadataBatch`) the Engine sent per pane.
+    pub batches: [usize; 2],
+    /// Time from each listing's start to its finish, per pane.
+    pub listing_time: [Duration; 2],
+    listing_started: [Option<Instant>; 2],
     runtime: Option<Runtime>,
     engine: Option<JoinHandle<()>>,
 }
 
 impl Harness {
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// Like `new`, with the production native watcher installed and
+    /// `files` more files in the left folder, named `bulk-NNNNN.o`.
+    pub fn watched(files: usize) -> Self {
+        Self::build(Some(files))
+    }
+
+    fn build(watched: Option<usize>) -> Self {
         let parent = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -145,6 +164,9 @@ impl Harness {
         }
         fs::write(left.join("část 文档 🦀.txt"), "Owned Unicode source").unwrap();
         fs::write(left.join("nested/child.txt"), "Owned nested source").unwrap();
+        for index in 0..watched.unwrap_or(0) {
+            fs::write(left.join(format!("bulk-{index:05}.o")), index.to_le_bytes()).unwrap();
+        }
         fs::write(root.join("untouched-sentinel.txt"), "Must remain unchanged").unwrap();
         eprintln!("REAL UI FIXTURE: {}", root.display());
 
@@ -172,6 +194,9 @@ impl Harness {
             .configure_mutations()
             .unwrap()
             .install(service.clone());
+        if watched.is_some() {
+            engine.configure_watch().unwrap().install(service.clone());
+        }
         // As production does: Copy/Move conflicts need the audited slot.
         engine.configure_audited_locale().unwrap().install(service);
         engine
@@ -252,6 +277,11 @@ impl Harness {
             command_reclaim,
             retire_queue,
             committed: [None; 2],
+            listings: [0; 2],
+            hints: [0; 2],
+            batches: [0; 2],
+            listing_time: [Duration::ZERO; 2],
+            listing_started: [None; 2],
             runtime: Some(runtime),
             engine: Some(engine),
         };
@@ -390,6 +420,19 @@ impl Harness {
             Event::DragDrop(DragDropEvent::Finished { id, outcome }) => {
                 self.finished_drags.push((*id, *outcome));
             }
+            Event::ListingStarted { pane, .. } => {
+                self.listings[pane.index()] += 1;
+                self.listing_started[pane.index()] = Some(Instant::now());
+            }
+            Event::ListingFinished { pane, .. } => {
+                if let Some(start) = self.listing_started[pane.index()].take() {
+                    self.listing_time[pane.index()] += start.elapsed();
+                }
+            }
+            Event::EntriesBatch { pane, .. } | Event::MetadataBatch { pane, .. } => {
+                self.batches[pane.index()] += 1;
+            }
+            Event::DirectoryChanged { pane, .. } => self.hints[pane.index()] += 1,
             _ => {}
         }
         if let Event::DirectoryChanged { pane, navigation } = event {
@@ -464,6 +507,13 @@ impl Harness {
                 break;
             }
         }
+    }
+
+    /// Waits `duration` without taking an event or holding a claim.
+    pub fn idle(&self, duration: Duration) {
+        self.runtime.as_ref().unwrap().block_on(async {
+            tokio::time::sleep(duration).await;
+        });
     }
 
     #[track_caller]

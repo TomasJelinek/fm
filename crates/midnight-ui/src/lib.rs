@@ -146,10 +146,22 @@ struct RowStructure {
 }
 
 impl RowStructure {
+    /// Whether `edits` turn rows of this structure into rows of `next`: the
+    /// same view, whose plain rows changed from the edits' base to their result.
+    fn edited_into(self, next: Self, edits: &presenter::row_continuity::RowEdits) -> bool {
+        self.entries == edits.before
+            && next.entries == edits.after
+            && Self {
+                entries: next.entries,
+                length: next.length,
+                ..self
+            } == next
+    }
+
     fn from_pane(pane: &presenter::Pane) -> Self {
         Self {
-            navigation: pane.generation,
-            displayed: pane.displayed_generation(),
+            navigation: pane.row_generation(),
+            displayed: pane.row_displayed_generation(),
             entries: pane.rows().as_ptr() as usize,
             length: pane.display_len(),
             parent: pane.parent_offset(),
@@ -174,27 +186,56 @@ impl Rows {
     }
 
     fn refresh(&self, pane: &presenter::Pane, first: usize, end: usize, data_changed: bool) {
-        self.refresh_structure(RowStructure::from_pane(pane), first, end, data_changed);
+        self.refresh_structure(
+            RowStructure::from_pane(pane),
+            pane.row_edits(),
+            first,
+            end,
+            data_changed,
+        );
     }
 
     fn refresh_structure(
         &self,
         structure: RowStructure,
+        edits: Option<&presenter::row_continuity::RowEdits>,
         first: usize,
         end: usize,
         data_changed: bool,
     ) {
-        if self.structure.replace(structure) != structure {
-            // New identities or ordering deliberately invalidate an in-flight
-            // pointer gesture. Ordinary acknowledgments must keep delegates alive.
-            self.notify.reset();
-        } else if data_changed {
-            let length = structure.length + structure.parent;
-            // Rows are virtualized: offscreen delegates obtain fresh row_data
-            // when they enter the viewport. Never scan a complete listing here.
-            for row in first.min(length)..end.min(length) {
-                self.notify.row_changed(row);
+        let previous = self.structure.replace(structure);
+        if previous != structure {
+            if let Some(edits) = edits.filter(|edits| previous.edited_into(structure, edits)) {
+                // A background re-read changed a few rows: the others keep
+                // their delegates, so the panel does not refill.
+                for edit in edits.edits.iter() {
+                    match *edit {
+                        RowEdit::Removed { row, count } => {
+                            self.notify.row_removed(row + structure.parent, count);
+                        }
+                        RowEdit::Added { row, count } => {
+                            self.notify.row_added(row + structure.parent, count);
+                        }
+                        RowEdit::Changed { row } => self.notify.row_changed(row + structure.parent),
+                    }
+                }
+                self.notify_visible(structure, first, end);
+            } else {
+                // New identities or ordering deliberately invalidate an in-flight
+                // pointer gesture. Ordinary acknowledgments must keep delegates alive.
+                self.notify.reset();
             }
+        } else if data_changed {
+            self.notify_visible(structure, first, end);
+        }
+    }
+
+    fn notify_visible(&self, structure: RowStructure, first: usize, end: usize) {
+        let length = structure.length + structure.parent;
+        // Rows are virtualized: offscreen delegates obtain fresh row_data
+        // when they enter the viewport. Never scan a complete listing here.
+        for row in first.min(length)..end.min(length) {
+            self.notify.row_changed(row);
         }
     }
 }
@@ -212,8 +253,8 @@ impl Model for Rows {
             return Some(FileRow {
                 identity: format!(
                     "{}:{}:parent",
-                    pane.generation,
-                    pane.displayed_generation().0
+                    pane.row_generation(),
+                    pane.row_displayed_generation().0
                 )
                 .into(),
                 name: "..".into(),
@@ -634,7 +675,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     // Only a terminal backend result for this pane can finish this snapshot.
     let was_loading = [window.get_left_loading(), window.get_right_loading()];
     for (index, loading) in was_loading.into_iter().enumerate() {
-        if !loading && presenter.panes[index].loading {
+        if !loading && presenter.panes[index].loading_shown() {
             window.invoke_remember_navigation_viewport(index as i32);
         }
     }
@@ -733,7 +774,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_left_can_elevate(presenter.can_retry_directory_elevated(PaneId::Left));
             window.set_left_error(error);
             window.set_left_error_revision(p.error_revision().into());
-            window.set_left_loading(p.loading);
+            window.set_left_loading(p.loading_shown());
             window.set_left_cursor(p.cursor_index().map_or(-1, |i| i as i32));
             window.set_left_sort(column_index(p.sort.column));
             window.set_left_descending(p.sort.descending);
@@ -746,7 +787,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_right_can_elevate(presenter.can_retry_directory_elevated(PaneId::Right));
             window.set_right_error(error);
             window.set_right_error_revision(p.error_revision().into());
-            window.set_right_loading(p.loading);
+            window.set_right_loading(p.loading_shown());
             window.set_right_cursor(p.cursor_index().map_or(-1, |i| i as i32));
             window.set_right_sort(column_index(p.sort.column));
             window.set_right_descending(p.sort.descending);
@@ -875,7 +916,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     }
     for (index, loading) in was_loading.into_iter().enumerate() {
         let pane = &presenter.panes[index];
-        if loading && !pane.loading {
+        if loading && !pane.loading_shown() {
             window.invoke_finish_navigation_viewport(index as i32, !pane.error.is_empty());
         }
     }

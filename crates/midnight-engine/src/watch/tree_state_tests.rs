@@ -9,6 +9,7 @@ fn handle() -> Handle {
                 maximum: Duration::from_secs(3),
                 poll: Duration::from_secs(15),
                 restart: Duration::from_secs(60),
+                cooldown: Duration::ZERO,
             })))
         }),
     }

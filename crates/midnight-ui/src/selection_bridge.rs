@@ -173,8 +173,19 @@ fn repaint(window: &MainWindow, presenter: &Rc<RefCell<Presenter>>, pane: PaneId
         )
     };
     if let Some(rows) = model.as_any().downcast_ref::<Rows>() {
-        let structure = crate::RowStructure::from_pane(&presenter.borrow().panes[pane.index()]);
-        rows.refresh_structure(structure, first.max(0) as usize, end.max(0) as usize, true);
+        // Release the presenter before notifying: delegates read their rows.
+        let (structure, edits) = {
+            let presenter = presenter.borrow();
+            let pane = &presenter.panes[pane.index()];
+            (crate::RowStructure::from_pane(pane), pane.row_edits().cloned())
+        };
+        rows.refresh_structure(
+            structure,
+            edits.as_ref(),
+            first.max(0) as usize,
+            end.max(0) as usize,
+            true,
+        );
     }
 }
 impl Bridge {
