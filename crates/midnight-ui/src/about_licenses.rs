@@ -319,8 +319,11 @@ mod tests {
             "[package]\nname = \"demo\"\nauthors = [\"Ada <ada@example.org>\",\n \"Grace\"]\n",
         )
         .unwrap();
-        assert_eq!(find(&[root.clone()], "demo", "1.2.3"), Some(dir.clone()));
-        assert_eq!(find(&[root.clone()], "demo", "9"), None);
+        assert_eq!(
+            find(std::slice::from_ref(&root), "demo", "1.2.3"),
+            Some(dir.clone())
+        );
+        assert_eq!(find(std::slice::from_ref(&root), "demo", "9"), None);
         let detail = read_detail(&dir);
         assert!(
             detail.text.contains("──── LICENSE-MIT ────") && !detail.text.contains("not a notice")
