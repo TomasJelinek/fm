@@ -131,6 +131,8 @@ component ScrollBar {
 }
 
 // The SDK ScrollView's interface, including its deprecated viewport aliases.
+// VScrollView and HScrollView below, ScrollStrip (scroll-strip.slint) and the two
+// ListViews repeat its Flickable and bar bindings: change them together.
 export component ScrollView {
     in property <bool> enabled: true;
     out property <length> visible-width <=> flickable.width;

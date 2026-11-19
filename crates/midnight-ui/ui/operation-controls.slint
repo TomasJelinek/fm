@@ -251,7 +251,8 @@ export component OperationDialog inherits Rectangle {
                     horizontal-stretch: 1; min-width: 0px;
                     height: max(32px, Theme.control-height + (root.compact ? 12px : 0px), confirm-button.preferred-height);
                     primary-scroll := HScrollView {
-                        width: parent.width; height: parent.height;
+                        // Positioned, so that its minimum size stays out of the parent's layout info.
+                        x: 0px; y: 0px; width: parent.width; height: parent.height;
                         horizontal-scrollbar-policy: as-needed;
                         HorizontalLayout { alignment: end;
                             confirm-button := HintedActionButton {

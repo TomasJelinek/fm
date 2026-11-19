@@ -167,7 +167,8 @@ export component UserCommandOptions inherits VerticalLayout {
         }
         moved => { root.update-gesture(); }
       command-list := ListView {
-        width: parent.width; height: parent.height;
+        // Positioned, so that its minimum size stays out of the parent's layout info.
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
         horizontal-scrollbar-policy: always-off;
         changed visible-height => { root.reveal-selection(); }
         accessible-label: "Configured Custom Commands"; accessible-item-count: UserCommandSettingsView.rows.length;
