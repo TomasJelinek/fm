@@ -36,6 +36,7 @@ impl Mutations {
             operations::Services {
                 mutation: Some(Arc::new(midnight_platform::LocalFileSystem::new(None))),
                 locale: None,
+                transfer: None,
             },
             snapshots,
             Outbox {

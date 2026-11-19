@@ -688,6 +688,7 @@ impl EngineServices {
             operations::Services {
                 mutation: self.mutations,
                 locale: self.locale.clone(),
+                transfer: self.transfers.clone(),
             },
             snapshots.clone(),
             self.outbox.clone(),
@@ -1000,7 +1001,7 @@ impl EngineServices {
                         Some(Command::PrepareCapturedDelete(request)) => operations.prepare_captured_delete(request).await,
                         Some(Command::PrepareCapturedRename(request)) => operations.prepare_captured_rename(request).await,
                         Some(Command::PrepareCapturedMetadata(request)) => operations.prepare_captured_metadata(request).await,
-                        Some(Command::ConfirmOperation { id, new_name }) => operations.confirm(id, new_name).await,
+                        Some(Command::ConfirmOperation { id, new_name, replace_existing }) => operations.confirm_with(id, new_name, replace_existing).await,
                         Some(Command::CancelOperation(id)) => operations.cancel(id),
                         Some(Command::PreviewMetadata { id, revision, patch }) => operations.preview_metadata(id, revision, patch).await,
                         Some(Command::ConfirmMetadata { id, revision, conflicts }) => operations.confirm_metadata(id, revision, conflicts).await,

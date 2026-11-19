@@ -216,7 +216,8 @@ fn embedded_operation_old_occurrence_cannot_confirm_or_cancel_replacement() {
             h.commands.borrow().as_slice(),
             [Command::ConfirmOperation {
                 id: OperationId(12),
-                new_name: None
+                new_name: None,
+                ..
             }]
         ));
         assert!(!h.main.global::<OperationPresentation>().get_active());

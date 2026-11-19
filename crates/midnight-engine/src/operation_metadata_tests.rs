@@ -72,6 +72,7 @@ impl Harness {
             Services {
                 mutation: Some(Arc::new(LocalFileSystem::new(None))),
                 locale,
+                transfer: None,
             },
             snapshots,
             Outbox {

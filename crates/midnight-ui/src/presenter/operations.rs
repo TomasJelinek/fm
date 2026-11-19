@@ -15,6 +15,9 @@ pub(crate) struct OperationsState {
     pub(super) rename_deferred: std::collections::HashSet<(OperationId, u64)>,
     pub(super) rename_selected: Option<(OperationId, u64)>,
     pub(crate) unconfirmed: std::collections::HashSet<OperationId>,
+    /// A new empty file whose name the displayed folder already has: confirming the
+    /// same name again replaces that file.
+    pub(crate) replace_name: Option<(OperationId, String)>,
     pub(super) forgotten_through: u64,
     pub(crate) metadata_conflicts: Vec<Arc<MetadataConflict>>,
     pub(crate) metadata_results: HashMap<OperationId, Arc<MetadataResult>>,
@@ -250,6 +253,7 @@ impl Presenter {
             return;
         }
         let id = preview.id;
+        let mut replace_existing = false;
         let name = match preview.kind {
             MutationKind::EditMetadata => return,
             MutationKind::Delete(_) => None,
@@ -264,14 +268,58 @@ impl Presenter {
                 }
                 Some(name)
             }
-            MutationKind::CreateDirectory | MutationKind::CreateFile => Some(name),
+            MutationKind::CreateDirectory => Some(name),
+            MutationKind::CreateFile => {
+                if self.displayed_file_exists(id, &name) {
+                    if self.operations.replace_name.as_ref() != Some(&(id, name.clone())) {
+                        // Ask first: the dialog now offers Replace for this name.
+                        self.operations.replace_name = Some((id, name));
+                        return;
+                    }
+                    replace_existing = true;
+                }
+                Some(name)
+            }
         };
-        if send(Command::ConfirmOperation { id, new_name: name }) {
+        if send(Command::ConfirmOperation {
+            id,
+            new_name: name,
+            replace_existing,
+        }) {
+            self.operations.replace_name = None;
             self.operations.unconfirmed.remove(&id);
             self.operations.pending = None;
             self.operations.preview = None;
         }
     }
+    /// Whether the panel showing the operation's folder lists a file with this name. The
+    /// engine still creates exclusively, so a file that appeared since is reported, not replaced.
+    fn displayed_file_exists(&self, id: OperationId, name: &str) -> bool {
+        let Some(directory) = self
+            .operations
+            .progress
+            .iter()
+            .find(|progress| progress.id == id)
+            .map(|progress| progress.source_directory.clone())
+        else {
+            return false;
+        };
+        let same = |entry: &std::ffi::OsStr| {
+            if cfg!(windows) {
+                entry.to_string_lossy().to_lowercase() == name.to_lowercase()
+            } else {
+                entry == std::ffi::OsStr::new(name)
+            }
+        };
+        self.panes.iter().any(|pane| {
+            pane.display_path() == directory
+                && pane.entries.iter().any(|entry| {
+                    !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                        && entry.path.file_name().is_some_and(same)
+                })
+        })
+    }
+
     pub(crate) fn cancel_operation(&mut self, token: &str, send: &dyn Fn(Command) -> bool) {
         let Ok(id) = token
             .strip_prefix("rename-job:")

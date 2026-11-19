@@ -28,6 +28,8 @@ mod verify;
 #[path = "checksum_worker.rs"]
 mod worker;
 pub use manifest::save_manifest;
+#[allow(unused_imports)] // The checksum test crate includes this module without the engine.
+pub(crate) use manifest::replace_with_empty_file;
 
 type Key = (ChecksumJobId, ChecksumGeneration);
 type Registry = Arc<Mutex<HashMap<Key, Cancellation>>>;

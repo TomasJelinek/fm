@@ -316,7 +316,7 @@ fn native_operation_rename_retains_exact_target_text_and_caret_across_resize_and
         key(&child, "X");
         key(&child, Key::Return);
         assert!(matches!(h.commands.borrow().as_slice(),
-            [Command::ConfirmOperation {id: actual, new_name: Some(name)}]
+            [Command::ConfirmOperation {id: actual, new_name: Some(name), ..}]
             if *actual == id && name == "renamed 文档.txXt"));
         h.assert_closed(&child);
         h.main.global::<OperationPresentation>().invoke_confirm(
@@ -345,7 +345,7 @@ fn native_operation_create_rejects_empty_then_accepts_unicode_and_parent_segment
         assert_eq!(value(&child, label), name);
         key(&child, Key::Return);
         assert!(matches!(h.commands.borrow().as_slice(),
-            [Command::ConfirmOperation {id: actual, new_name: Some(actual_name)}]
+            [Command::ConfirmOperation {id: actual, new_name: Some(actual_name), ..}]
             if *actual == id && actual_name == name));
         h.assert_closed(&child);
     }
@@ -372,7 +372,7 @@ fn native_operation_delete_escape_close_and_focused_cancel_never_confirm() {
     let (id, child) = h.operation(PaneId::Right, 2);
     key(&child, Key::Return);
     assert!(matches!(h.commands.borrow().as_slice(),
-        [Command::ConfirmOperation {id: actual, new_name: None}] if *actual == id));
+        [Command::ConfirmOperation {id: actual, new_name: None, ..}] if *actual == id));
     h.assert_closed(&child);
 }
 
@@ -466,7 +466,7 @@ fn native_operation_rejected_confirmation_keeps_same_child_and_edited_name_for_r
     h.accepting.set(true);
     key(&child, Key::Return);
     assert!(matches!(h.commands.borrow().as_slice(),
-        [Command::ConfirmOperation {id: actual, new_name: Some(name)}]
+        [Command::ConfirmOperation {id: actual, new_name: Some(name), ..}]
         if *actual == id && name == "retry 文档.txt"));
     h.assert_closed(&child);
 }
@@ -839,7 +839,7 @@ fn trash_and_permanent_delete_share_modeless_progress_and_close_means_cancel() {
         key(&confirmation, Key::Return);
         h.assert_closed(&confirmation);
         assert!(matches!(h.commands.borrow().as_slice(),
-            [Command::ConfirmOperation { id: actual, new_name: None }] if *actual == id));
+            [Command::ConfirmOperation { id: actual, new_name: None, replace_existing: false }] if *actual == id));
         let children: Vec<_> = h
             .windows
             .borrow()

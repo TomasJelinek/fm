@@ -242,7 +242,8 @@ fn stale_confirmation_and_failed_enqueue_do_not_confirm_another_operation() {
             command,
             Command::ConfirmOperation {
                 id: OperationId(1),
-                new_name: Some(_)
+                new_name: Some(_),
+                ..
             }
         ));
         true
@@ -455,4 +456,51 @@ fn completed_with_errors_notice_names_completion_and_reveals_the_renamed_entry()
     let renamed = p.panes[0].path.join("renamed.txt");
     let (title, _) = renamed_with_issue(&mut p, OperationState::Failed, &renamed, refused);
     assert_eq!(title, "File operation failed");
+}
+
+#[test]
+fn a_new_empty_file_over_a_listed_file_asks_then_replaces() {
+    let mut p = ready();
+    let existing = p.panes[0]
+        .entries
+        .iter()
+        .find(|entry| entry.kind == EntryKind::File)
+        .expect("the fixture lists a file")
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    p.start_operation(PaneId::Left, MutationKind::CreateFile, &|_| true);
+    p.apply(Event::Operation(OperationEvent::Preview(Arc::new(
+        OperationPreview {
+            id: OperationId(1),
+            kind: MutationKind::CreateFile,
+            files: 0,
+            folders: 0,
+            file_bytes: None,
+            sample: vec![],
+        },
+    ))));
+    p.confirm_operation("1", existing.clone(), &|_| panic!("an existing name asks first"));
+    assert!(p.operations.preview.is_some(), "the dialog stays open");
+    assert_eq!(
+        p.operations.replace_name,
+        Some((OperationId(1), existing.clone()))
+    );
+    let sent = std::cell::RefCell::new(Vec::new());
+    p.confirm_operation("1", existing.clone(), &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(matches!(
+        sent.borrow().as_slice(),
+        [Command::ConfirmOperation {
+            id: OperationId(1),
+            new_name: Some(name),
+            replace_existing: true,
+        }] if *name == existing
+    ));
+    assert!(p.operations.preview.is_none());
+    assert!(p.operations.replace_name.is_none());
 }

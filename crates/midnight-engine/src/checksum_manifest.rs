@@ -219,6 +219,108 @@ pub fn save_manifest(
     saved
 }
 
+/// Replace an existing regular file with an empty one, or create it when absent, through
+/// verified staging and the platform's safe replacement. A confirmed Shift+F4 over an
+/// existing name uses this; the plain create path never replaces.
+pub(crate) fn replace_with_empty_file(
+    service: &dyn TransferService,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<std::path::PathBuf, FsError> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(failure(
+            path,
+            io::ErrorKind::InvalidInput,
+            "A new file needs a containing folder and a name.",
+        ));
+    };
+    let directory = with_io(SAVE, cancel, parent, || {
+        service.prepare_transfer_destination(parent, cancel)
+    })?;
+    let target = with_io(SAVE, cancel, path, || directory.prepare_target(name, cancel))?;
+    if target
+        .as_ref()
+        .is_some_and(|target| target.entry().item.kind != EntryKind::File)
+    {
+        return Err(failure(
+            path,
+            io::ErrorKind::InvalidInput,
+            "Only a file can be replaced with an empty file.",
+        ));
+    }
+    let source = Box::new(ManifestBytes {
+        entry: TransferEntry {
+            item: MutationItem {
+                path: path.to_owned(),
+                kind: EntryKind::File,
+                metadata: EntryMetadata {
+                    size: Some(0),
+                    ..EntryMetadata::default()
+                },
+            },
+            identity: TransferIdentity {
+                device: 0,
+                object: [0; 16],
+            },
+        },
+        bytes: Vec::new().into(),
+        offset: 0,
+    });
+    let stage = with_io(SAVE, cancel, path, || match &target {
+        Some(target) => {
+            let capabilities = directory.capabilities();
+            let policy = if capabilities.conditional_overwrite {
+                TransferReplacementPolicy::ConditionalIdentity
+            } else if capabilities.recoverable_replacement {
+                TransferReplacementPolicy::RecoverableCurrentEntry
+            } else {
+                return Err(failure(
+                    path,
+                    io::ErrorKind::Unsupported,
+                    "This filesystem does not support safely replacing a file.",
+                ));
+            };
+            directory.stage_file_preserving_target(name, target.clone(), policy, cancel)
+        }
+        None => directory.stage_file(cancel),
+    })?;
+    let mut copy = VerifiedFileCopy::new(source, stage)?;
+    let mut created = (|| {
+        while copy.phase() != CopyPhase::ReadyToPublish {
+            copy.step(cancel)?;
+        }
+        let publication = if let Some(target) = &target {
+            with_io(SAVE, cancel, path, || target.revalidate(cancel))?;
+            copy.publish_replace(name, cancel)?
+        } else {
+            copy.publish(name, cancel)?
+        };
+        match publication {
+            TransferPublication::Published(path)
+            | TransferPublication::Replaced { path, .. } => Ok(path),
+            TransferPublication::PublishedDurabilityUnconfirmed { error, .. } => Err(error),
+            TransferPublication::RecoveryRequired {
+                recovery, mut error, ..
+            } => {
+                for item in recovery {
+                    error
+                        .message
+                        .push_str(&format!("\nRecovery file: {}", item.path.display()));
+                }
+                Err(error)
+            }
+        }
+    })();
+    if let Err(ref mut primary) = created
+        && let Err(cleanup) = copy.cleanup()
+    {
+        primary
+            .message
+            .push_str(&format!(" Staging cleanup also failed: {cleanup}"));
+    }
+    created
+}
+
 pub(super) fn encode(
     run: &ChecksumRun,
     request: &ChecksumManifestRequest,

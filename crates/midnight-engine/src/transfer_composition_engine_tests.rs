@@ -219,6 +219,7 @@ async fn engine_rename_conflict_prompt_formats_both_entries_through_the_engine_l
         .send(Command::ConfirmOperation {
             id: OperationId(1),
             new_name: Some("existing.txt".into()),
+            replace_existing: false,
         })
         .await;
     let conflict = engine
