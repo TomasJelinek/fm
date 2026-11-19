@@ -49,11 +49,14 @@ fn source_search_reports_global_scalar_position_and_preserves_copy_after_prefere
     session
         .change_preferences(&ViewerPreferenceChange::LineNumbers(false))
         .unwrap();
+    // A frame sent before the preference reaches the plugin can still carry the
+    // numbered pixels; wait for the repaint without line numbers (or time out).
     let plain = frame(&session, |frame| {
-        frame.revision > found.revision && frame.status.starts_with("Ln 2001, Col 13")
+        frame.revision > found.revision
+            && frame.status.starts_with("Ln 2001, Col 13")
+            && frame.pixels != found.pixels
     });
     assert_eq!(plain.accessible_text, found.accessible_text);
-    assert!(plain.pixels != found.pixels);
     assert!(session.send(ViewerInput::Copy {
         frame: plain.revision
     }));
