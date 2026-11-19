@@ -118,19 +118,23 @@ component UserCommandStrip inherits Rectangle {
                 }
             }
         }
-        if root.overflowing: HintedActionButton {
-            x: bar.width; y: 0px; width: Theme.tool-width; height: parent.height;
-            min-width: 0px; fallback-icon: FallbackIcons.back; hint: "Scroll commands left";
-            accessible-label: "Scroll commands left";
-            enabled: bar.content-x < 0px;
-            clicked => { bar.content-x = min(0px, bar.content-x + max(40px, bar.visible-width * 0.6)); }
-        }
-        if root.overflowing: HintedActionButton {
-            x: bar.width + Theme.tool-width; y: 0px; width: Theme.tool-width; height: parent.height;
-            min-width: 0px; fallback-icon: FallbackIcons.forward; hint: "Scroll commands right";
-            accessible-label: "Scroll commands right";
-            enabled: bar.content-x > bar.visible-width - bar.content-width;
-            clicked => { bar.content-x = max(bar.visible-width - bar.content-width, bar.content-x - max(40px, bar.visible-width * 0.6)); }
+        // One conditional for both buttons instead of one each.
+        if root.overflowing: Rectangle {
+            x: bar.width; y: 0px; width: 2 * Theme.tool-width; height: parent.height;
+            HintedActionButton {
+                x: 0px; y: 0px; width: Theme.tool-width; height: parent.height;
+                min-width: 0px; fallback-icon: FallbackIcons.back; hint: "Scroll commands left";
+                accessible-label: "Scroll commands left";
+                enabled: bar.content-x < 0px;
+                clicked => { bar.content-x = min(0px, bar.content-x + max(40px, bar.visible-width * 0.6)); }
+            }
+            HintedActionButton {
+                x: Theme.tool-width; y: 0px; width: Theme.tool-width; height: parent.height;
+                min-width: 0px; fallback-icon: FallbackIcons.forward; hint: "Scroll commands right";
+                accessible-label: "Scroll commands right";
+                enabled: bar.content-x > bar.visible-width - bar.content-width;
+                clicked => { bar.content-x = max(bar.visible-width - bar.content-width, bar.content-x - max(40px, bar.visible-width * 0.6)); }
+            }
         }
     }
 }

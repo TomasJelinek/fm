@@ -190,13 +190,17 @@ export component OperationsBody inherits Rectangle {
                     hint: "Request cancellation of this job. Completed changes are retained.";
                     clicked => { root.cancel(root.selected.identity); }
                 }
-                if root.compact : FinishedJobButton {
-                    rows: root.rows;
-                    clear-finished(value) => { root.clear-finished(value); }
-                }
-                if root.compact : FinishedJobButton {
-                    rows: root.rows; without-errors: true;
-                    clear-finished(value) => { root.clear-finished(value); }
+                // One conditional, with the footer's spacing, instead of one per button.
+                if root.compact : HorizontalLayout {
+                    spacing: 8px;
+                    FinishedJobButton {
+                        rows: root.rows;
+                        clear-finished(value) => { root.clear-finished(value); }
+                    }
+                    FinishedJobButton {
+                        rows: root.rows; without-errors: true;
+                        clear-finished(value) => { root.clear-finished(value); }
+                    }
                 }
                 if root.selected.attention : HintedActionButton {
                     text: "Resolve"; hint: "Review the decision needed by this job.";

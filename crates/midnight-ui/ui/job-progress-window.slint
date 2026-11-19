@@ -156,14 +156,18 @@ export component JobProgressWindow inherits DialogWindow {
                     hint: "Pause or resume this operation at a safe file-operation checkpoint.";
                     clicked => { root.set-paused(!root.job.pause-requested); }
                 }
-                if !root.cancel-confirmation : HintedActionButton {
-                    text: root.details-visible ? "Fewer details" : "Details";
-                    hint: "Show operation counters, source, destination and diagnostics.";
-                    clicked => { root.details-visible = !root.details-visible; }
-                }
-                if !root.cancel-confirmation : HintedActionButton {
-                    text: "Jobs"; hint: "Open the session's job list.";
-                    clicked => { root.show-jobs(); }
+                // One conditional, with the footer's spacing, instead of one per button.
+                if !root.cancel-confirmation : HorizontalLayout {
+                    spacing: 8px;
+                    HintedActionButton {
+                        text: root.details-visible ? "Fewer details" : "Details";
+                        hint: "Show operation counters, source, destination and diagnostics.";
+                        clicked => { root.details-visible = !root.details-visible; }
+                    }
+                    HintedActionButton {
+                        text: "Jobs"; hint: "Open the session's job list.";
+                        clicked => { root.show-jobs(); }
+                    }
                 }
                 if !root.cancel-confirmation && !root.job.active : HintedActionButton {
                     text: "Copy details"; fallback-icon: FallbackIcons.copy;

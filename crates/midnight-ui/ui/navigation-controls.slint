@@ -289,16 +289,20 @@ export component TabStrip inherits Rectangle {
                 double-clicked => { if self.left-pressed { root.new-tab(); } }
             }
         }
-        if root.overflowing : NavigationButton {
-            icon: FallbackIcons.back; native-icon: root.action-icons.back;
-            hint: "Scroll tabs left"; enabled: tabs-scroll.content-x < -0.5px;
-            clicked => { root.scroll-tabs(-1); }
-        }
-        if root.overflowing : NavigationButton {
-            icon: FallbackIcons.forward; native-icon: root.action-icons.forward;
-            hint: "Scroll tabs right";
-            enabled: tabs-scroll.content-x > tabs-scroll.visible-width - tabs-scroll.content-width + 0.5px;
-            clicked => { root.scroll-tabs(1); }
+        // One conditional, with the strip's spacing, instead of one per button.
+        if root.overflowing : HorizontalLayout {
+            spacing: 2px;
+            NavigationButton {
+                icon: FallbackIcons.back; native-icon: root.action-icons.back;
+                hint: "Scroll tabs left"; enabled: tabs-scroll.content-x < -0.5px;
+                clicked => { root.scroll-tabs(-1); }
+            }
+            NavigationButton {
+                icon: FallbackIcons.forward; native-icon: root.action-icons.forward;
+                hint: "Scroll tabs right";
+                enabled: tabs-scroll.content-x > tabs-scroll.visible-width - tabs-scroll.content-width + 0.5px;
+                clicked => { root.scroll-tabs(1); }
+            }
         }
         NavigationButton {
             icon: FallbackIcons.tab-add; native-icon: root.action-icons.tab-add;

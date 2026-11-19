@@ -312,16 +312,20 @@ export component FindWindow inherits ToolWindow {
                 FindActionButton { text: root.show-details ? "Copy" : "Go to file";
                     fallback-icon: root.show-details ? FallbackIcons.copy : FallbackIcons.open-path; enabled: root.show-details || (root.selected-row >= 0 && root.selected-row < root.rows.length);
                     clicked => { if root.show-details { root.copy-details(); } else { root.reveal-selected(); } } }
-                if !root.show-details: FindActionButton { text: "View"; fallback-icon: FallbackIcons.view;
-                    enabled: root.selected-file; hint: root.view-hint;
-                    clicked => { root.act-selected(0); } }
-                if !root.show-details: FindActionButton { text: "Edit"; fallback-icon: FallbackIcons.edit;
-                    enabled: root.selected-file; hint: root.edit-hint;
-                    clicked => { root.act-selected(2); } }
-                if !root.show-details: FindActionButton { text: "Open"; fallback-icon: FallbackIcons.run;
-                    enabled: root.selected-row >= 0 && root.selected-row < root.rows.length;
-                    hint: "Open the selected file with its system association. This may run a program. Folders use Go to file.";
-                    clicked => { root.act-selected(3); } }
+                // One conditional, with the footer's spacing, instead of one per button.
+                if !root.show-details: HorizontalLayout {
+                    spacing: 8px;
+                    FindActionButton { text: "View"; fallback-icon: FallbackIcons.view;
+                        enabled: root.selected-file; hint: root.view-hint;
+                        clicked => { root.act-selected(0); } }
+                    FindActionButton { text: "Edit"; fallback-icon: FallbackIcons.edit;
+                        enabled: root.selected-file; hint: root.edit-hint;
+                        clicked => { root.act-selected(2); } }
+                    FindActionButton { text: "Open"; fallback-icon: FallbackIcons.run;
+                        enabled: root.selected-row >= 0 && root.selected-row < root.rows.length;
+                        hint: "Open the selected file with its system association. This may run a program. Folders use Go to file.";
+                        clicked => { root.act-selected(3); } }
+                }
                 FindActionButton { text: root.show-details ? "Query" : "Details"; fallback-icon: FallbackIcons.properties; clicked => { root.show-details = !root.show-details; } }
                 if root.width >= 600px: FindActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
             }

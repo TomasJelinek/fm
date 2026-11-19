@@ -114,8 +114,12 @@ export component CopyConflictDialog inherits Rectangle {
                 HorizontalLayout {
                     alignment: start; spacing: 8px; height: max(32px, Theme.control-height);
                     if root.can-retry : HintedActionButton { text: "Retry"; hint: "Retry the failed step after resolving the problem."; clicked => { root.decide(8, ""); } }
-                    if root.can-skip : HintedActionButton { text: "Skip"; hint: "Skip this failed item and continue this job."; clicked => { root.decide(0, ""); } }
-                    if root.can-skip : HintedActionButton { text: "Skip all this error type"; hint: "Skip later failures of this kind at this step in this job only. Name conflicts still need a separate decision."; clicked => { root.decide(9, ""); } }
+                    // One conditional, with the row's spacing, instead of one per button.
+                    if root.can-skip : HorizontalLayout {
+                        spacing: 8px;
+                        HintedActionButton { text: "Skip"; hint: "Skip this failed item and continue this job."; clicked => { root.decide(0, ""); } }
+                        HintedActionButton { text: "Skip all this error type"; hint: "Skip later failures of this kind at this step in this job only. Name conflicts still need a separate decision."; clicked => { root.decide(9, ""); } }
+                    }
                 }
             }
             HorizontalLayout {
