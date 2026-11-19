@@ -14,8 +14,8 @@ export { UserCommandRow }
 import { ShortcutHints } from "shortcut-hints.slint";
 export { ShortcutHints }
 import { HelpWindow } from "help-window.slint";
-import { AboutWindow } from "about-window.slint";
-export { HelpWindow, AboutWindow }
+import { AboutDialog } from "about-dialog.slint";
+export { HelpWindow }
 import { JobProgressWindow } from "job-progress-window.slint";
 export { JobProgressWindow }
 import { JobsWindow } from "jobs-window.slint";
@@ -95,7 +95,7 @@ export component MainWindow inherits Window {
     out property <bool> modal-overlay-open: filter-overlay.active || hot-paths-overlay.active
         || operation-overlay.active || file-list-overlay.active || notice-overlay.active;
     out property <bool> embedded-modal-open: root.modal-overlay-open
-        || root.options-open || root.comparison-open || root.metadata-token != "";
+        || root.options-open || root.about-open || root.comparison-open || root.metadata-token != "";
     changed embedded-modal-open => {
         if root.embedded-modal-open {
             root.drag-invalidate-targets();
@@ -104,7 +104,6 @@ export component MainWindow inherits Window {
         }
     }
     callback open-help-window();
-    callback open-about-window();
     callback open-notice-window();
     callback refresh-information-windows();
     callback close-information-windows();
@@ -702,7 +701,13 @@ export component MainWindow inherits Window {
         if menu == 0 { root.open-help-window(); } else if menu == 1 { user-menu.show(); }
         else { main-menu.show(); }
     }
-    public function show-about() { root.drag-invalidate-targets(); root.open-about-window(); }
+    in-out property <bool> about-open;
+    changed about-open => {
+        PopupFocus.update();
+        if root.about-open { about-popup.show(); } else { about-popup.close(); root.focus-files(); }
+        PopupFocus.update();
+    }
+    public function show-about() { if root.about-open { return; } root.drag-invalidate-targets(); root.about-open = true; }
     public function show-bookmarks(pane: int) {
         root.open-hot-paths-window(pane);
     }
@@ -1305,6 +1310,21 @@ export component MainWindow inherits Window {
                 confirm(policy) => { root.confirm-metadata(root.metadata-token, root.metadata-revision, policy); }
                 cancel => { root.cancel-metadata(root.metadata-token); }
                 dismiss-hints => { root.dismiss-metadata-hints(); }
+            }
+        }
+    }
+    // About lives inside the main window like the other embedded dialogs; no OS frame.
+    about-popup := PopupWindow {
+        close-policy: no-auto-close;
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        DialogFrame {
+            desired-width: 420px; desired-height: 280px;
+            dismiss-on-outside: true; dim: true;
+            dismiss => { root.about-open = false; }
+            AboutDialog {
+                application-version: root.application-version;
+                application-icon: root.icon; close-icon: root.action-icons.close;
+                close => { root.about-open = false; }
             }
         }
     }

@@ -12,7 +12,7 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_ui::{
-    AboutWindow, ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobsWindow, MainWindow,
+    ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobsWindow, MainWindow,
     NoticePresentation, Presenter, Theme,
 };
 use slint::{
@@ -60,7 +60,6 @@ fn native_client_fonts_match_main_default_and_explicit_application_family() {
             }
             check!(
                 HelpWindow,
-                AboutWindow,
                 JobsWindow,
                 DecisionWindow,
                 FindWindow,

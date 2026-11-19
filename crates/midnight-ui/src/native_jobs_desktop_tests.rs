@@ -49,7 +49,7 @@ fn native_jobs_close_preserves_work_and_background_decision_preserves_foreground
         .select()
         .unwrap();
     let main = crate::MainWindow::new().unwrap();
-    let other = crate::AboutWindow::new().unwrap();
+    let other = crate::HelpWindow::new().unwrap();
     main.window()
         .set_size(slint::LogicalSize::new(640.0, 480.0));
     let path = std::env::temp_dir().join("native-jobs-probe-no-io");

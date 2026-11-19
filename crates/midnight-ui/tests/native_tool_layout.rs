@@ -141,7 +141,10 @@ fn check_inside(window: &MinimalSoftwareWindow, item: &ItemRc, label: &str) {
 fn painted_icon(pixels: &[slint::Rgb8Pixel], name: &str) {
     let count = pixels
         .iter()
-        .filter(|pixel| pixel.r == 241 && pixel.g == 17 && pixel.b == 199)
+        // Icons are dimmed into the theme, so match the marker's magenta hue, not its exact value.
+        .filter(|pixel| {
+            i16::from(pixel.r) > i16::from(pixel.g) + 40 && i16::from(pixel.b) > i16::from(pixel.g) + 40
+        })
         .count();
     assert!(
         count >= 64,

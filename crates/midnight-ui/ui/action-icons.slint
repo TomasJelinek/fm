@@ -89,6 +89,19 @@ export global FallbackIcons {
     out property <image> exit: @image-url("icons/exit.svg");
     out property <image> sort-ascending: @image-url("icons/sort-ascending.svg");
     out property <image> sort-descending: @image-url("icons/sort-descending.svg");
+    // Every labelled button carries an icon, so a call site that names none gets the
+    // one its label implies. Labels with no common meaning stay icon-free.
+    pure public function for-label(label: string) -> image {
+        return label == "OK" || label == "Apply" || label == "Apply shortcut" || label == "Use color" || label == "Save" ? FallbackIcons.done
+            : label == "Cancel" || label == "Close" || label == "Remove" || label == "Cancel job" || label == "Cancel operation" ? FallbackIcons.close
+            : label == "Browse…" || label == "Browse image…" ? FallbackIcons.open-path
+            : label == "Open" ? FallbackIcons.run
+            : label == "Copy details" || label == "Copy as" ? FallbackIcons.copy
+            : label == "Add" || label == "Add current" ? FallbackIcons.tab-add
+            : label == "Reset" || label == "Retry" || label == "Retry with authorization" ? FallbackIcons.refresh
+            : label == "Skip" || label == "Skip all" || label == "Skip all this error type" ? FallbackIcons.forward
+            : label == "Delete" ? FallbackIcons.delete : @image-url("");
+    }
     pure public function is-colored(icon: image) -> bool {
         return icon == FallbackIcons.checksums || icon == FallbackIcons.compare-files || icon == FallbackIcons.compare-directories
             || icon == FallbackIcons.filter || icon == FallbackIcons.find || icon == FallbackIcons.bookmarks || icon == FallbackIcons.options
@@ -123,8 +136,9 @@ component ActionButtonContent inherits HorizontalLayout {
     in property <bool> destructive;
     in property <bool> enabled;
     private property <bool> native-available: root.native-icon.width > 0 && root.native-icon.height > 0;
-    private property <bool> dim-native: root.fallback-icon == FallbackIcons.done || root.fallback-icon == FallbackIcons.close;
-    private property <image> artwork: root.native-available ? root.native-icon : root.fallback-icon;
+    private property <image> fallback: root.fallback-icon.width > 0 ? root.fallback-icon : FallbackIcons.for-label(root.text);
+    private property <bool> colored: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback));
+    private property <image> artwork: root.native-available ? root.native-icon : root.fallback;
     private property <bool> has-icon: root.artwork.width > 0 && root.artwork.height > 0;
     private property <color> foreground: !root.enabled ? Theme.muted-text
         : root.destructive ? Theme.error-text : Theme.text;
@@ -135,10 +149,10 @@ component ActionButtonContent inherits HorizontalLayout {
     if root.has-icon: Image {
         source: root.artwork; image-fit: contain;
         width: Theme.icon-size; height: Theme.icon-size;
-        colorize: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback-icon))
-            ? transparent : root.removal-icon && root.enabled ? Theme.error-text : root.foreground;
-        // Native theme artwork is saturated (green OK, red Cancel); soften it to sit in the palette.
-        opacity: root.native-available ? (!root.enabled ? 0.45 : root.dim-native ? (Theme.light ? 0.75 : 0.6) : 1) : 1;
+        colorize: root.colored ? transparent : root.removal-icon && root.enabled ? Theme.error-text : root.foreground;
+        // Colored artwork (native or bundled) is saturated; every button softens it the
+        // same way so it sits in the theme's palette.
+        opacity: root.native-available && !root.enabled ? 0.45 : root.colored ? (Theme.light ? 0.75 : 0.6) : 1;
         accessible-role: none;
     }
     if root.text != "": Text {

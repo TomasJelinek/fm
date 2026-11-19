@@ -10,7 +10,7 @@ export component AboutDialog inherits Rectangle {
     in property <image> application-icon;
     in property <image> close-icon;
     callback close();
-    // Hosted only by the native AboutWindow: the system title bar moves it.
+    // Hosted by the main window's embedded dialog frame.
     background: Theme.surface;
     init => { close-button.focus(); }
     FocusScope {

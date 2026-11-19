@@ -1,6 +1,6 @@
 //! Modeless information tools and embedded blocking notices own presentation only.
 use crate::{
-    AboutWindow, HelpWindow, MainWindow, Presenter, ShortcutHints,
+    HelpWindow, MainWindow, Presenter, ShortcutHints,
     dialog_host::{
         CloseDisposition, DialogHost, DialogModality, DialogOwner, DialogSession, DialogSessions,
     },
@@ -35,7 +35,6 @@ struct InformationWindows {
     owner: DialogOwner,
     sessions: DialogSessions,
     help: Option<Record<HelpWindow>>,
-    about: Option<Record<AboutWindow>>,
     notice: Rc<notices::Context>,
     closing: bool,
 }
@@ -82,15 +81,6 @@ information_window!(
         self.set_shortcuts(main.global::<ShortcutHints>().invoke_help());
     }
 );
-information_window!(
-    AboutWindow,
-    about,
-    install_about,
-    fn initialize(&self, main: &MainWindow) {
-        self.set_application_version(main.get_application_version());
-        self.set_close_icon(main.get_action_icons().close);
-    }
-);
 pub(crate) fn install(
     main: &MainWindow,
     state: Rc<RefCell<Presenter>>,
@@ -101,7 +91,6 @@ pub(crate) fn install(
         owner,
         sessions: DialogSessions::default(),
         help: None,
-        about: None,
         notice: notices::install(main),
         closing: false,
     }));
@@ -133,7 +122,6 @@ pub(crate) fn install(
         }};
     }
     open_callback!(on_open_help_window, HelpWindow);
-    open_callback!(on_open_about_window, AboutWindow);
     {
         let weak = main.as_weak();
         let windows = windows.clone();
@@ -145,7 +133,6 @@ pub(crate) fn install(
             let notice = {
                 let mut windows = windows.borrow_mut();
                 refresh::<HelpWindow>(&main, &mut windows, &presenter);
-                refresh::<AboutWindow>(&main, &mut windows, &presenter);
                 windows.notice.clone()
             };
             drop(presenter);
@@ -160,7 +147,6 @@ pub(crate) fn install(
         if let Some(main) = weak.upgrade() {
             notices::close(&windows.notice, &main);
         }
-        close_record(windows.about.take(), false);
         close_record(windows.help.take(), false);
     });
 }
