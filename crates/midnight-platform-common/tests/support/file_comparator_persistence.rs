@@ -108,7 +108,7 @@ fn schema33_requires_comparators_and_both_historical_extensions() {
         .unwrap()
         .remove("archives");
     assert!(decode(&value).is_err());
-    for version in [0, 34, u32::MAX] {
+    for version in [0, 35, u32::MAX] {
         let mut value = document();
         value["version"] = version.into();
         assert!(decode(&value).is_err());

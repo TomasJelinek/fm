@@ -16,6 +16,7 @@ mod archive_preview_preferences;
 mod checksum_preferences;
 mod comparator_preferences;
 mod disk_concurrency_preferences;
+mod glyph_fitting_preferences;
 mod editor_preferences;
 mod file_comparators;
 mod filename_colors;

@@ -60,6 +60,7 @@ pub(super) struct EditedFields {
     pub(super) font_family: bool,
     pub(super) desktop_font_size: bool,
     pub(super) touch_font_size: bool,
+    pub(super) glyph_fitting: bool,
     pub(super) quick_search_filter: bool,
     pub(super) size_display: bool,
     pub(super) remember_command_history: bool,
@@ -326,6 +327,9 @@ impl Presenter {
                 if edited.touch_font_size {
                     loaded.touch_font_size = local.touch_font_size;
                 }
+                if edited.glyph_fitting {
+                    loaded.glyph_fitting = local.glyph_fitting;
+                }
                 if edited.quick_search_filter {
                     loaded.quick_search_filter = local.quick_search_filter;
                 }
@@ -584,6 +588,15 @@ impl Presenter {
         self.update_preferences(preferences, send);
     }
 
+    pub(crate) fn change_glyph_fitting(&mut self, index: i32, send: &dyn Fn(Command) -> bool) {
+        self.preferences.edited.glyph_fitting = true;
+        let preferences = UserPreferences {
+            glyph_fitting: midnight_core::GlyphFitting::from_index(index),
+            ..self.preferences.values.clone()
+        };
+        self.update_preferences(preferences, send);
+    }
+
     pub(crate) fn change_search_filter(&mut self, enabled: bool, send: &dyn Fn(Command) -> bool) {
         self.preferences.edited.quick_search_filter = true;
         let preferences = UserPreferences {
@@ -796,6 +809,7 @@ impl Presenter {
         edited.font_family |= preferences.font_family != previous.font_family;
         edited.desktop_font_size |= preferences.desktop_font_size != previous.desktop_font_size;
         edited.touch_font_size |= preferences.touch_font_size != previous.touch_font_size;
+        edited.glyph_fitting |= preferences.glyph_fitting != previous.glyph_fitting;
         let filter_changed = preferences.quick_search_filter != previous.quick_search_filter
             || preferences.panel_filters != previous.panel_filters;
         edited.quick_search_filter |=

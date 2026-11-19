@@ -24,6 +24,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.font_family.clone_from(&from.font_family);
     to.desktop_font_size = from.desktop_font_size;
     to.touch_font_size = from.touch_font_size;
+    to.glyph_fitting = from.glyph_fitting;
     to.file_list.destination = from.file_list.destination;
     to.file_list.append = from.file_list.append;
     to.quick_search_filter = from.quick_search_filter;

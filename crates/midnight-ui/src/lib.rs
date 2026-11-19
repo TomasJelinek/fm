@@ -1192,6 +1192,10 @@ pub fn install_with_owned(
         p.copy_panel_detail(pane(id), token.as_str(), s);
         let _ = w;
     });
+    callback!(on_glyph_fitting_changed, |w, p, s, index| {
+        p.change_glyph_fitting(index, s);
+        let _ = w;
+    });
     callback!(on_sizes_format_changed, |w, p, s, bytes| {
         p.change_size_display(bytes, s);
         let _ = w;

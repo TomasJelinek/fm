@@ -97,6 +97,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         density: UiDensity::Touch,
         windows_shell: WindowsShell::Cmd,
         font_family: "Stored 文档 e\u{301} 🧪".into(),
+        glyph_fitting: Default::default(),
         desktop_font_size: 18,
         touch_font_size: 23,
         quick_search_filter: true,

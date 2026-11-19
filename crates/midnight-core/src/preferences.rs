@@ -212,6 +212,46 @@ pub enum WindowsShell {
     Cmd,
 }
 
+/// How text is fitted to the pixel grid. The renderer reads it when its window
+/// is created, so a change applies after the next start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GlyphFitting {
+    /// Stems on whole pixel columns: the sharpest text.
+    #[default]
+    Fitted,
+    /// Whole-pixel glyphs without horizontal fitting: slightly softer.
+    Snapped,
+    /// Fractional glyph positions: the smoothest, softest text.
+    Subpixel,
+}
+
+impl GlyphFitting {
+    pub const ALL: [Self; 3] = [Self::Fitted, Self::Snapped, Self::Subpixel];
+
+    pub fn index(self) -> i32 {
+        Self::ALL.iter().position(|choice| *choice == self).unwrap_or(0) as i32
+    }
+
+    pub fn from_index(index: i32) -> Self {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
+            .unwrap_or_default()
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Fitted => "fitted",
+            Self::Snapped => "snapped",
+            Self::Subpixel => "subpixel",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.name() == name)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SizeDisplay {
     #[default]
@@ -286,6 +326,7 @@ pub struct UserPreferences {
     pub font_family: String,
     pub desktop_font_size: u16,
     pub touch_font_size: u16,
+    pub glyph_fitting: GlyphFitting,
     /// Show only matching names during panel type-to-search instead of jumping.
     pub quick_search_filter: bool,
     pub size_display: SizeDisplay,
@@ -349,6 +390,7 @@ impl Default for UserPreferences {
             font_family: String::new(),
             desktop_font_size: 12,
             touch_font_size: 15,
+            glyph_fitting: GlyphFitting::default(),
             quick_search_filter: false,
             size_display: SizeDisplay::default(),
             disk_io_concurrency: DiskIoConcurrency::default(),

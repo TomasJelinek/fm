@@ -436,7 +436,18 @@ fn run_window(
         wakeup_probe.map(idle_probe::Probe::new),
         main_events.clone(),
     );
-    if let Err(error) = window_backend::select(options.software, observer) {
+    // The renderer reads its text fitting before the first window, earlier than the
+    // asynchronous preference load. Probes and smoke runs keep the defaults and
+    // never read the user's profile.
+    let stored_fitting = if options.ui_smoke || wakeup_probe.is_some() {
+        midnight_core::GlyphFitting::default()
+    } else {
+        settings
+            .load_preferences()
+            .map(|preferences| preferences.glyph_fitting)
+            .unwrap_or_default()
+    };
+    if let Err(error) = window_backend::select(options.software, observer, stored_fitting) {
         return startup_recovery::native_failure(
             format!("Cannot initialize renderer: {error}"),
             may_retry,

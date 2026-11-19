@@ -73,6 +73,7 @@ export component OptionsBody inherits Rectangle {
     in-out property <bool> remember-command-history;
     in-out property <bool> copy-checksum-verification: true;
     in property <int> disk-io-concurrency-index;
+    in property <int> glyph-fitting-index;
     in property <bool> command-history-empty;
     in-out property <bool> thumbnails-enabled;
     in-out property <bool> thumbnails-network;
@@ -86,6 +87,7 @@ export component OptionsBody inherits Rectangle {
     callback remember-command-history-changed(bool);
     callback copy-verification-changed(bool);
     callback disk-io-concurrency-changed(bool, int);
+    callback glyph-fitting-changed(int);
     callback command-history-clear();
     callback thumbnail-options-changed(bool, bool, bool, int);
     callback thumbnail-size-changed(int);
@@ -413,6 +415,14 @@ export component OptionsBody inherits Rectangle {
                     current-index: root.touch-font-size - 8;
                     hint: "Base text size in logical pixels, from 8 to 32. Controls grow with text; screen scaling converts logical to physical pixels.";
                     selected(size) => { root.font-options-changed(root.font-index, root.desktop-font-size, size + 8, 2); }
+                }
+                OptionPicker {
+                    narrow: root.narrow;
+                    label: "Text rendering";
+                    model: ["Sharp (fitted)", "Balanced (snapped)", "Smooth (subpixel)"];
+                    current-index: root.glyph-fitting-index;
+                    hint: "How glyphs meet the pixel grid. Sharp puts stems on whole pixel columns; Smooth keeps fractional positions with more anti-aliasing. Takes effect after restarting Midnight Explorer. OK saves; Cancel discards changes.";
+                    selected(index) => { root.glyph-fitting-changed(index); }
                 }
             }
             }
