@@ -50,22 +50,23 @@ def is_link(metadata):
         getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def add_file(plan, source, relative, *, root=None):
+def add_file(plan, source, relative, *, root):
     """Read a notice: a regular file below its package root, reached without links.
 
-    The root is the crate's manifest directory, the shared notice tree or the plugin
-    directory (by default the file's own directory). Only the root is resolved, so links
-    above it, such as a linked CARGO_HOME or /home, and a root that is itself a link are
-    accepted. Every component below it is inspected without following links, so neither
-    a link nor '..' can substitute content from outside the package.
+    The caller names the root: the crate's manifest directory, the shared notice tree or
+    the plugin directory. Only the root is resolved, so links above it, such as a linked
+    CARGO_HOME or /home, and a root that is itself a link are accepted. Every component
+    below it must be a portable name and is inspected without following links, so neither
+    a link, '..' nor a drive or stream name can substitute content from outside the package.
     """
-    source = Path(source).absolute()
-    root = source.parent if root is None else Path(root).absolute()
+    source, root = Path(source).absolute(), Path(root).absolute()
     member = package_member(root, source)
     relative = Path(relative)
     if relative.is_absolute() or not relative.parts:
         raise ValueError(f"Invalid notice destination: {relative}")
-    for part in relative.parts:
+    # Check the walked names before any access: on Windows, joining a drive-qualified name
+    # such as 'D:x' re-anchors the path on that drive, and 'LICENSE:x' names a data stream.
+    for part in (*member.parts, *relative.parts):
         _release.portable_component(part)
     # Descend from the resolved root; an error names the link as the caller spelled it.
     path, given = root.resolve(strict=True), root

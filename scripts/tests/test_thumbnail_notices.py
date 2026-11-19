@@ -235,6 +235,26 @@ class ThumbnailNoticeTests(unittest.TestCase):
                     self.generate()
                 self.assertFalse(self.output.exists())
 
+    def test_add_file_requires_the_package_root(self):
+        # Only the caller knows where a package starts. A guessed root, such as the file's
+        # own directory, would let a link inside the package pass as one above it.
+        readme = self.root / "plugins/midnight-thumbnail-image/README.md"
+        with self.assertRaises(TypeError):
+            self.notices.add_file({}, readme, Path("README.md"))
+
+    def test_nonportable_names_below_a_package_root_are_rejected_before_access(self):
+        # add_file walks these names itself, whatever destination its caller chose. On
+        # Windows 'Z:outside' would re-anchor the walk on drive Z: and 'LICENSE:notes' would
+        # open a data stream of LICENSE.
+        package = self.package("names", files={"LICENSE": "Names terms\n"})
+        crate = Path(package["manifest_path"]).parent
+        (crate / "x").mkdir()
+        for member in (("x", "Z:outside", "LICENSE"), ("LICENSE:notes",)):
+            source = Path(os.sep.join((str(crate), *member)))
+            with self.subTest(member=member):
+                with self.assertRaisesRegex(ValueError, "Nonportable.*'(Z|LICENSE):"):
+                    self.notices.add_file({}, source, Path("README.md"), root=crate)
+
     def test_output_must_be_in_build_and_must_not_traverse_symlinks(self):
         with self.assertRaisesRegex(ValueError, "_build"):
             self.notices.generate_notices(self.metadata, self.root / "outside", repository=self.root)
