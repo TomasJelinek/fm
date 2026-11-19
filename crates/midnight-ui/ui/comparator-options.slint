@@ -4,7 +4,7 @@ import { ArgumentEditor } from "argument-editor.slint";
 import { ListHeader } from "list-header.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 import { Theme } from "theme.slint";
 
 // Presentation strings are never file identities, matcher input authority or shell syntax.
@@ -127,7 +127,7 @@ component ComparatorPriorityList inherits Rectangle {
                     enabled: root.enabled;
                     clicked => { root.select-row(index); }
                 }
-                Tooltip { TipBody { text: label; } }
+                Tip { text: label; }
             }
         }
     }

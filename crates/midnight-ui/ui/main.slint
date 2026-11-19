@@ -28,7 +28,7 @@ import { ScrollStrip } from "scroll-strip.slint";
 import { CommandMenuBody } from "command-menu.slint";
 import { MainMenuBody } from "main-menu.slint";
 import { Theme } from "theme.slint";
-import { TipBody, CompactPicker, TooltipPlacement } from "controls.slint";
+import { Tip, CompactPicker, TooltipPlacement } from "controls.slint";
 import { FileActionMenu } from "file-menu.slint";
 import { FileRow } from "file-models.slint";
 export { FileRow }
@@ -1028,7 +1028,7 @@ export component MainWindow inherits Window {
                     }
                     rail-touch := TouchArea { clicked => { root.activate(1 - root.active-pane); root.focus-files(); } }
                 }
-                Tooltip { TipBody { text: "Activate other panel\n" + (root.active-pane == 0 ? root.right-path : root.left-path); } }
+                Tip { text: "Activate other panel\n" + (root.active-pane == 0 ? root.right-path : root.left-path); }
             }
         }
         if root.user-commands.length > 0 && !root.compact-window: UserCommandToolbar {
@@ -1100,7 +1100,7 @@ export component MainWindow inherits Window {
                                     reject
                                 }
                             }
-                            Tooltip { TipBody { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; } }
+                            Tip { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; }
                         }
                     }
                     if cwd-scroll.content-x < -0.5px : Rectangle {
@@ -1157,14 +1157,14 @@ export component MainWindow inherits Window {
                             }
                             edited => { root.command-history-reset(); root.command-edited(self.text != ""); }
                         }
-                        Tooltip { TipBody { text: root.command-hint + "\nWorking folder: " + root.command-directory
+                        Tip { text: root.command-hint + "\nWorking folder: " + root.command-directory
                             + "\n" + ShortcutHints.hint("Run command", "command.execute")
                             + "\n" + ShortcutHints.hint("Return to files", "command.focus-files")
                             + "\n" + ShortcutHints.hint("Append focused filename", "command.insert-name")
                             + "\n" + ShortcutHints.hint("Append focused full path", "command.insert-full-path")
                             + "\n" + ShortcutHints.hint("Insert active panel path", "command.insert-path")
                             + "\n" + ShortcutHints.hint("Insert left panel path", "command.insert-left-path")
-                            + "\n" + ShortcutHints.hint("Insert right panel path", "command.insert-right-path"); } }
+                            + "\n" + ShortcutHints.hint("Insert right panel path", "command.insert-right-path"); }
                     }
                 }
                 command-history-picker := CompactPicker {
@@ -1216,7 +1216,7 @@ export component MainWindow inherits Window {
             color: Theme.secondary-text; font-size: Theme.hint-font;
             height: ceil(Theme.hint-font * 1.5 / 1px) * 1px; overflow: elide;
             accessible-label: root.desktop-status;
-            Tooltip { TipBody { text: root.desktop-status; } }
+            Tip { text: root.desktop-status; }
         }
       }
     }

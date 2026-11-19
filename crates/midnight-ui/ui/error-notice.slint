@@ -3,7 +3,7 @@ import { Theme } from "theme.slint";
 import { DialogText } from "dialog-text.slint";
 import { CloseButton } from "close-button.slint";
 import { NativeActionImage, FallbackIcons } from "action-icons.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 
 // Drawn locally: errors remain recognizable without an installed icon font or shell theme.
 export component ErrorGlyph inherits Rectangle {
@@ -125,7 +125,7 @@ export component ErrorNotice inherits Rectangle {
                     }
                 }
             }
-            Tooltip { TipBody { text: "Copy the complete error, including its path"; } }
+            Tip { text: "Copy the complete error, including its path"; }
         }
         if root.retry-enabled : Rectangle {
             x: root.padding-size + root.left-gutter + root.action-gap;
@@ -173,7 +173,7 @@ export component ErrorNotice inherits Rectangle {
                     }
                 }
             }
-            Tooltip { TipBody { text: "Retry reading this folder with an operating-system authorization prompt."; } }
+            Tip { text: "Retry reading this folder with an operating-system authorization prompt."; }
         }
         CloseButton {
             x: max(root.padding-size, root.width - root.padding-size - self.width); y: root.padding-size;

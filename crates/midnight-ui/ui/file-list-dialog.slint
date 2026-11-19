@@ -2,7 +2,7 @@ import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { TextEdit } from "std-widgets.slint";
 import { VScrollView } from "scroll-view.slint";
 import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
-import { CompactPicker, TipBody } from "controls.slint";
+import { CompactPicker, Tip } from "controls.slint";
 import { Theme } from "theme.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
@@ -146,7 +146,7 @@ export component FileListDialog inherits Rectangle {
                                         }
                                     }
                                 }
-                                Tooltip { TipBody { text: "One template is expanded for each selected item. Insert variables, tabs and line endings from the menu."; } }
+                                Tip { text: "One template is expanded for each selected item. Insert variables, tabs and line endings from the menu."; }
                             }
                             CompactPicker {
                                 model: root.template-history; label: ""; width: Theme.control-height;

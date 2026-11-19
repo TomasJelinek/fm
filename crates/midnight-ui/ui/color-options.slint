@@ -5,7 +5,7 @@ import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-input
 import { ListView } from "vlist-view.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 import { ListHeader } from "list-header.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 
@@ -100,7 +100,7 @@ component ColorPriorityList inherits Rectangle {
                     enabled: !ColorOptionsView.busy;
                     clicked => { root.select-rule(index); }
                 }
-                Tooltip { TipBody { text: label; } }
+                Tip { text: label; }
             }
         }
     }
