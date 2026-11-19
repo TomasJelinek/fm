@@ -373,7 +373,9 @@ export component ViewerWindow inherits Window {
                         : 2 * root.control-height + 3px) : root.control-height;
                 HorizontalLayout {
                     x: 0px; y: 0px; width: parent.width; height: parent.height;
-                    Text { visible: !root.compact-status; min-width: 0px; max-width: root.compact-status ? 0px : 1000000px; text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                    // Width comes only from what the buttons leave over: a longer status (for example
+                    // "Loading requested position…") must never push Find, Wrap or Aa sideways.
+                    Text { visible: !root.compact-status; min-width: 0px; preferred-width: 0px; max-width: root.compact-status ? 0px : 1000000px; text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                     if !root.media-visible && root.image-mode: GridLayout {
                         spacing: 3px;
                         // Long PDF page counts must not crowd the zoom actions at
