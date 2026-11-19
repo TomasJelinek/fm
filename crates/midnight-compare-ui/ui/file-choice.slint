@@ -2,6 +2,7 @@ import { ScrollView } from "std-widgets.slint";
 import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
 import { ThemedLineEdit } from "../../midnight-ui/ui/content-controls.slint";
 import { Theme } from "../../midnight-ui/ui/theme.slint";
+import { TipBody } from "../../midnight-ui/ui/controls.slint";
 
 component FileField inherits VerticalLayout {
     in property <string> label;
@@ -24,6 +25,7 @@ component FileField inherits VerticalLayout {
             horizontal-stretch: 1; min-width: 40px;
             accessible-label: root.label;
             accepted(value) => { root.submit(); }
+            Tooltip { TipBody { text: root.path; width-limit: 1000px; } }
         }
         ActionButton {
             font-size: root.font-size; control-height: root.control-height;

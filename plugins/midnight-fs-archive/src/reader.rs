@@ -76,7 +76,7 @@ mod tests {
             reader.read_exact(&mut bytes[..2]).unwrap();
             assert_eq!(&bytes[..2], b"bc");
         }
-        assert_eq!(reader.seek(SeekFrom::Current(0)).unwrap(), 3);
+        assert_eq!(reader.stream_position().unwrap(), 3);
         assert_eq!(reader.seek(SeekFrom::Start(3)).unwrap(), 3);
         reader.seek_relative(1).unwrap();
         reader.read_exact(&mut bytes[..2]).unwrap();

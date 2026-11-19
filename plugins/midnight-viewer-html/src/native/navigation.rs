@@ -170,7 +170,7 @@ pub(super) fn before_browse(
     };
     let current_main_url = bound
         .as_ref()
-        .and_then(|_| frame.as_deref())
+        .and(frame.as_deref())
         .map(|frame| CefString::from(&frame.url()).to_string());
     let facts = BrowseFacts {
         unmarked: true,

@@ -643,8 +643,15 @@ foreach ($kind in @('filesystems', 'thumbnailers')) {
     }
 }
 $videoLibraries = @('avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll')
-$videoPresent = $IncludeThumbnailers -and (Test-Path -LiteralPath (Join-Path $SourceDirectory 'thumbnailers/midnight-thumbnail-video.json'))
+$videoManifest = Join-Path $SourceDirectory 'thumbnailers/midnight-thumbnail-video.json'
+$videoPresent = $IncludeThumbnailers -and (Test-Path -LiteralPath $videoManifest -PathType Leaf)
 if ($videoPresent) {
+    Assert-PlainPath $videoManifest
+    if ((Get-Item -LiteralPath $videoManifest).Length -gt 16384) { throw 'Video manifest exceeds 16 KiB' }
+    $videoProfile = Get-Content -LiteralPath $videoManifest -Raw | ConvertFrom-Json
+    if ($videoProfile.id -ceq 'midnight-video' -and $videoProfile.version -ceq 'ffmpeg-9.0.2-playback-r3') {
+        $videoLibraries += @('swresample-7.dll', 'midnight-video-playback.exe')
+    }
     foreach ($name in $videoLibraries) {
         if (-not (Test-Path -LiteralPath (Join-Path $SourceDirectory "thumbnailers/$name") -PathType Leaf)) {
             throw "Incomplete video runtime: $name"

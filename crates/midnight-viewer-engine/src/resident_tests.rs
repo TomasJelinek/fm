@@ -2,7 +2,13 @@
 use super::*;
 use midnight_core::{DirectoryIndex, Entry, EntryId, EntryKind, GeneratedTextSource};
 use midnight_work_budget::resident::Owner;
-use std::{io, path::PathBuf, sync::Condvar, thread::ThreadId, time::Duration};
+use std::{
+    io,
+    path::PathBuf,
+    sync::{Condvar, mpsc},
+    thread::ThreadId,
+    time::Duration,
+};
 
 const WAIT: Duration = Duration::from_secs(5);
 

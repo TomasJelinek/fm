@@ -100,6 +100,7 @@ impl TransferService for Service {
         Ok(PreparedTransferMove {
             source: Box::new(Source {
                 entry: entry.clone(),
+                original: None,
                 counts: self.0.clone(),
             }),
             capture: Arc::new(Capture {
@@ -108,14 +109,65 @@ impl TransferService for Service {
             }),
         })
     }
+
+    fn prepare_move_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMoveEntry, FsError> {
+        if !links.materializes_directory_links() {
+            return self
+                .prepare_move_source(path, cancel)
+                .map(PreparedTransferMoveEntry::Ordinary);
+        }
+        assert_eq!(self.0.kind, EntryKind::DirectoryLink);
+        let original = TransferEntry {
+            identity: TransferIdentity {
+                device: 1,
+                object: [1; 16],
+            },
+            item: MutationItem {
+                path: path.into(),
+                kind: EntryKind::DirectoryLink,
+                metadata: EntryMetadata::default(),
+            },
+        };
+        let source = Source {
+            entry: TransferEntry {
+                identity: TransferIdentity {
+                    device: 9,
+                    object: [5; 16],
+                },
+                item: MutationItem {
+                    path: path.into(),
+                    kind: EntryKind::Directory,
+                    metadata: EntryMetadata::default(),
+                },
+            },
+            original: Some(original.identity),
+            counts: self.0.clone(),
+        };
+        Ok(PreparedTransferMoveEntry::DirectoryLink {
+            source: Box::new(source),
+            capture: Arc::new(LinkCapture(Capture {
+                entry: original,
+                counts: self.0.clone(),
+            })),
+        })
+    }
 }
 struct Source {
     entry: TransferEntry,
+    original: Option<TransferIdentity>,
     counts: Arc<Counts>,
 }
 impl TransferSource for Source {
     fn entry(&self) -> &TransferEntry {
         &self.entry
+    }
+    fn native_original_identity(&self) -> Option<TransferIdentity> {
+        self.original.or_else(|| self.native_identity())
     }
     fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
         Ok(())
@@ -224,6 +276,33 @@ impl TransferMoveCapture for Capture {
         }
     }
 }
+struct LinkCapture(Capture);
+
+impl TransferDirectoryLinkMoveCapture for LinkCapture {
+    fn entry(&self) -> &TransferEntry {
+        self.0.entry()
+    }
+
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.revalidate(cancel)
+    }
+
+    fn try_native_move(
+        &self,
+        destination: &dyn TransferDirectory,
+        name: &OsStr,
+        replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        cancel: &Cancellation,
+    ) -> Result<TransferNativeMoveOutcome, FsError> {
+        assert_eq!(self.entry().item.kind, EntryKind::DirectoryLink);
+        self.0.try_native_move(destination, name, replace, cancel)
+    }
+
+    fn remove_original(&self, _: &Cancellation) -> Result<TransferDirectoryLinkRemoval, FsError> {
+        panic!("native directory-link Move must not remove its original afterward");
+    }
+}
+
 struct Directory {
     path: PathBuf,
     counts: Arc<Counts>,
@@ -282,7 +361,7 @@ impl TransferDirectory for Directory {
                 },
                 item: MutationItem {
                     path: self.path.join(name),
-                    kind: EntryKind::File,
+                    kind: self.counts.kind,
                     metadata: EntryMetadata::default(),
                 },
             }))))
@@ -355,6 +434,53 @@ async fn native_directory_move_does_not_enumerate_descendants() {
     assert_eq!(counts.proof.load(Ordering::SeqCst), 0);
     assert_no_content(&counts, &done);
 }
+#[tokio::test]
+async fn native_directory_link_options_use_the_original_stub_identity() {
+    let root = std::env::current_dir().unwrap();
+    let parent = root.join("source-parent");
+    let source = parent.join("link");
+    for links in [
+        CopyLinkPolicy::FollowDirectoryContents,
+        CopyLinkPolicy::EmptyDirectories,
+    ] {
+        for same_entry in [false, true] {
+            let (destination, expected_moved, result) = if same_entry {
+                (parent.clone(), 0, NativeResult::SameEntry)
+            } else {
+                (root.join("destination"), 1, NativeResult::Moved)
+            };
+            let counts = Counts::new(EntryKind::DirectoryLink, result);
+            let mut harness = Harness::new(Some(Arc::new(Service(counts.clone()))));
+            harness
+                .controller
+                .enqueue_options(CopyOptionsRequest {
+                    input: CopyOptionsInput::Native(MetadataTransferRequest {
+                        input: MetadataTransferInput::Paths(request(
+                            1,
+                            std::slice::from_ref(&source),
+                            &destination,
+                        )),
+                        intent: TransferIntent::Move,
+                        metadata: TransferMetadataPolicy::ContentOnly,
+                    }),
+                    links,
+                })
+                .await;
+            let done = harness.terminal(1).await;
+            harness.close().await;
+            assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+            assert_eq!(done.native_entries_moved, expected_moved);
+            assert_eq!(done.requested_roots, 1);
+            assert_eq!(done.completed_roots, 1);
+            assert_eq!(done.discovery.scope, DiscoveryScope::SelectedRoots);
+            assert_eq!(done.discovery.state, DiscoveryState::Complete);
+            assert_eq!(counts.native.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.proof.load(Ordering::SeqCst), 0);
+            assert_no_content(&counts, &done);
+        }
+    }
+}
+
 #[tokio::test]
 async fn native_commit_is_retained_when_cancel_arrives_inside_native_call() {
     let (done, counts) = run(EntryKind::File, NativeResult::CancelAfterCommit).await;

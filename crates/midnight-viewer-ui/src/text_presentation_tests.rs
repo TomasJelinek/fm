@@ -8,6 +8,7 @@ pub(super) fn frame(revision: u64, sequence: u64, position: f64) -> ViewerOutput
         generation: 7,
         raster: None,
         raster_rebase: None,
+        media_control: None,
         position_sequence: [sequence, 0],
         revision,
         mode: 1,

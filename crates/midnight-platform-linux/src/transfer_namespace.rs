@@ -437,6 +437,7 @@ struct PinOptions {
     kind: EntryKind,
     source: bool,
     private: bool,
+    link_mount: Option<Arc<directory_links::MountAnchor>>,
 }
 
 pub(super) struct Pin {
@@ -448,6 +449,7 @@ pub(super) struct Pin {
     extent: TransferNamespaceExtent,
     source: bool,
     private: bool,
+    link_mount: OnceLock<Arc<directory_links::MountAnchor>>,
     state: Mutex<State>,
 }
 
@@ -464,6 +466,7 @@ impl Pin {
             kind,
             source,
             private,
+            link_mount,
         } = options;
         validate_name(name, parent_path)?;
         checked(cancel, parent_path)?;
@@ -486,34 +489,39 @@ impl Pin {
                 io::ErrorKind::AlreadyExists.into(),
             ));
         }
-        let pooled = match openat2(
-            CWD,
-            parent_path,
-            PATH_DIRECTORY,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS,
-        ) {
-            Ok(visible) => {
-                let visible = File::from(visible);
-                if identity(&visible, parent_path)? != identity(parent, parent_path)?
-                    || native_location::mount(&visible, parent_path)?
-                        != native_location::mount(parent, parent_path)?
+        let visible = match &link_mount {
+            Some(mount) => mount.reopen_namespace(parent_path)?,
+            None => match openat2(
+                CWD,
+                parent_path,
+                PATH_DIRECTORY,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            ) {
+                Ok(visible) => Some(File::from(visible)),
+                Err(rustix::io::Errno::LOOP) => None,
+                Err(rustix::io::Errno::NOTDIR)
+                    if std::fs::symlink_metadata(parent_path)
+                        .is_ok_and(|metadata| metadata.file_type().is_symlink()) =>
                 {
-                    return Err(invalid(
-                        parent_path,
-                        "namespace parent binding changed during capture",
-                    ));
+                    None
                 }
-                pooled_parent(parent, parent_path, cancel)?
-            }
-            Err(rustix::io::Errno::LOOP) => None,
-            Err(rustix::io::Errno::NOTDIR)
-                if std::fs::symlink_metadata(parent_path)
-                    .is_ok_and(|metadata| metadata.file_type().is_symlink()) =>
+                Err(e) => return Err(error(parent_path, e.into())),
+            },
+        };
+        let pooled = if let Some(visible) = visible {
+            if identity(&visible, parent_path)? != identity(parent, parent_path)?
+                || native_location::mount(&visible, parent_path)?
+                    != native_location::mount(parent, parent_path)?
             {
-                None
+                return Err(invalid(
+                    parent_path,
+                    "namespace parent binding changed during capture",
+                ));
             }
-            Err(e) => return Err(error(parent_path, e.into())),
+            pooled_parent(parent, parent_path, cancel)?
+        } else {
+            None
         };
         let parent_path = pooled.as_ref().map_or_else(
             || Arc::new(parent_path.to_owned()),
@@ -533,6 +541,7 @@ impl Pin {
             },
             source,
             private,
+            link_mount: link_mount.map_or_else(OnceLock::new, OnceLock::from),
             state: Mutex::new(State {
                 expected: witness,
                 failure: None,
@@ -561,16 +570,21 @@ impl TransferNamespacePin for Pin {
         let Some(parent) = &parent else {
             return Ok(TransferNamespaceProbe::Unknown);
         };
-        let visible = File::from(
-            openat2(
-                CWD,
-                self.parent_path.as_path(),
-                PATH_DIRECTORY,
-                Mode::empty(),
-                ResolveFlags::NO_SYMLINKS,
-            )
-            .map_err(|e| error(&self.parent_path, e.into()))?,
-        );
+        let visible = match self.link_mount.get() {
+            Some(mount) => mount
+                .reopen_namespace(&self.parent_path)?
+                .ok_or_else(|| invalid(&self.parent_path, "namespace parent became a symlink"))?,
+            None => File::from(
+                openat2(
+                    CWD,
+                    self.parent_path.as_path(),
+                    PATH_DIRECTORY,
+                    Mode::empty(),
+                    ResolveFlags::NO_SYMLINKS,
+                )
+                .map_err(|e| error(&self.parent_path, e.into()))?,
+            ),
+        };
         if identity(&visible, &self.parent_path)? != self.parent_identity
             || native_location::mount(&visible, &self.parent_path)? != Some(parent.key.chain[0].1)
             || parent_key(&parent.file, &self.parent_path, cancel)?.as_ref() != Some(&parent.key)
@@ -791,6 +805,7 @@ impl Bindings {
                 kind,
                 source,
                 private: false,
+                link_mount: None,
             },
             cancel,
         )
@@ -801,6 +816,7 @@ impl Bindings {
         parent: &Arc<File>,
         path: &Path,
         name: &OsStr,
+        link_mount: Option<&Arc<directory_links::MountAnchor>>,
         cancel: &Cancellation,
     ) -> Result<Arc<Pin>, FsError> {
         self.pin_with_kind(
@@ -811,6 +827,7 @@ impl Bindings {
                 kind: EntryKind::Directory,
                 source: false,
                 private: true,
+                link_mount: link_mount.cloned(),
             },
             cancel,
         )
@@ -834,6 +851,7 @@ impl Bindings {
                 kind: EntryKind::File,
                 source: false,
                 private: true,
+                link_mount: None,
             },
             cancel,
         )
@@ -867,6 +885,7 @@ impl Bindings {
         parent: &File,
         path: &Path,
         name: &OsStr,
+        link_mount: Option<&Arc<directory_links::MountAnchor>>,
         change: &mut Change<'_>,
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
@@ -970,6 +989,13 @@ impl Bindings {
             return Ok(());
         };
         for pin in affected.into_values() {
+            if let Some(mount) = link_mount
+                && pin.parent_path.as_path() == path
+            {
+                // Keep the exact observer Arc while constraining refreshes of this
+                // original link parent to the captured mount.
+                pin.link_mount.get_or_init(|| mount.clone());
+            }
             if !transaction.reserve_private_child(Some(pin), cancel)? {
                 return Err(error(&path.join(name), io::ErrorKind::WouldBlock.into()));
             }

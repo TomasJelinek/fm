@@ -130,7 +130,15 @@ fn apostrophes_in_json_comments_and_yaml_plain_scalars_stay_plain() {
 
     let code = "name: Don't fail\nquoted: 'it''s'\nlist: ['a', \"b\"]\nenabled: true\n";
     let styled = lex("x.yaml", code);
-    assert_eq!(strings(&styled), ["'it''s'", "'a'", "\"b\""], "{styled:?}");
+    // Plain YAML scalar strings have the same role as quoted scalar strings.
+    // The apostrophe must not split the scalar or consume the following keys.
+    assert_eq!(
+        strings(&styled),
+        ["Don't fail", "'it''s'", "'a'", "\"b\""],
+        "{styled:?}"
+    );
+    assert!(has(&styled, "quoted", STYLE_TYPE));
+    assert!(has(&styled, "enabled", STYLE_TYPE));
     assert!(has(&styled, "true", STYLE_KEYWORD));
 }
 

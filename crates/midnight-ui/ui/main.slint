@@ -29,7 +29,7 @@ import { MainMenuBody } from "main-menu.slint";
 import { Theme } from "theme.slint";
 import { TipBody, CompactPicker, TooltipPlacement } from "controls.slint";
 import { FileActionMenu } from "file-menu.slint";
-import { FileRow } from "file-models.slint";
+import { DirectoryLinkTooltip, FileRow } from "file-models.slint";
 export { FileRow }
 import { TabRow, BookmarkRow, PathPartRow, DetailRow } from "navigation-models.slint";
 import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
@@ -387,6 +387,9 @@ export component MainWindow inherits Window {
     out property <int> left-visible-row-start: left.visible-row-start;
     out property <string> left-hovered-row: left.hovered-row;
     out property <string> right-hovered-row: right.hovered-row;
+    in property <DirectoryLinkTooltip> directory-link-tooltip;
+    callback read-directory-link-target(int, string);
+    callback directory-link-hover-changed(int, string);
     out property <int> left-thumbnail-row-start: left.thumbnail-row-start;
     out property <int> left-thumbnail-row-end: left.thumbnail-row-end;
     out property <int> right-thumbnail-row-start: right.thumbnail-row-start;
@@ -396,8 +399,14 @@ export component MainWindow inherits Window {
     changed left-thumbnail-row-end => { root.presentation-changed(); }
     changed right-thumbnail-row-start => { root.presentation-changed(); }
     changed right-thumbnail-row-end => { root.presentation-changed(); }
-    changed left-hovered-row => { root.presentation-changed(); }
-    changed right-hovered-row => { root.presentation-changed(); }
+    changed left-hovered-row => {
+        root.directory-link-hover-changed(0, root.left-hovered-row);
+        root.presentation-changed();
+    }
+    changed right-hovered-row => {
+        root.directory-link-hover-changed(1, root.right-hovered-row);
+        root.presentation-changed();
+    }
     changed active-pane => { root.presentation-changed(); }
     changed panel-zoomed => { root.presentation-changed(); }
     out property <int> left-visible-row-end: left.visible-row-end;
@@ -419,6 +428,11 @@ export component MainWindow inherits Window {
     out property <length> right-list-content-x: right.list-content-x;
     out property <length> left-list-grid-width: left.list-grid-width;
     out property <length> right-list-grid-width: right.list-grid-width;
+    out property <length> left-list-row-offset-y: left.list-row-offset-y;
+    out property <length> right-list-row-offset-y: right.list-row-offset-y;
+    public function file-row-band-visible(pane: int, y: length) -> bool {
+        return pane == 0 ? left.row-band-visible-at(y) : right.row-band-visible-at(y);
+    }
     public function remember-navigation-viewport(pane: int) {
         if pane == 0 { left.remember-navigation-viewport(); }
         else { right.remember-navigation-viewport(); }
@@ -824,6 +838,9 @@ export component MainWindow inherits Window {
                 : clamp(self.usable * root.panel-ratio, self.minimum-pane, self.usable - self.minimum-pane);
             private property <length> right-width: self.usable - self.left-width;
             left := FilePane {
+                directory-link-tooltip: root.directory-link-tooltip;
+                read-directory-link-target(identity) => { root.read-directory-link-target(0, identity); }
+                retire-directory-link-hover => { root.directory-link-hover-changed(0, ""); }
                 minimal: root.compact-window;
                 can-target-selection: root.left-can-target-selection;
                 native-filesystem: root.left-native-filesystem;
@@ -866,7 +883,6 @@ export component MainWindow inherits Window {
                 bookmark-remove(id) => { root.bookmark-remove(id); }
                 bookmark-assign(id, slot) => { root.bookmark-assign(id, slot); }
                 pane-id: 0;
-                scroll-interaction-active: root.scroll-interaction-active;
                 active: root.active-pane == 0; rows: root.left-rows; volumes: root.volumes; volume-index: root.left-volume;
                 locations: root.left-locations;
                 volume-short-labels: root.volume-short-labels;
@@ -909,6 +925,9 @@ export component MainWindow inherits Window {
                 insert-path => { root.insert-path(0); } insert-name => { root.insert-name(); } drive-info => { root.drive-info(0); }
             }
             right := FilePane {
+                directory-link-tooltip: root.directory-link-tooltip;
+                read-directory-link-target(identity) => { root.read-directory-link-target(1, identity); }
+                retire-directory-link-hover => { root.directory-link-hover-changed(1, ""); }
                 minimal: root.compact-window;
                 can-target-selection: root.right-can-target-selection;
                 native-filesystem: root.right-native-filesystem;
@@ -951,7 +970,6 @@ export component MainWindow inherits Window {
                 bookmark-remove(id) => { root.bookmark-remove(id); }
                 bookmark-assign(id, slot) => { root.bookmark-assign(id, slot); }
                 pane-id: 1;
-                scroll-interaction-active: root.scroll-interaction-active;
                 active: root.active-pane == 1; rows: root.right-rows; volumes: root.volumes; volume-index: root.right-volume;
                 locations: root.right-locations;
                 volume-short-labels: root.volume-short-labels;

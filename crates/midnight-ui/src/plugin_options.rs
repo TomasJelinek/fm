@@ -14,6 +14,15 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .thumbnailer_plugin_selected()
             .map_or(-1, |index| index as i32),
     );
+    view.set_thumbnailer_settings_ready(presenter.thumbnailer_settings_ready());
+    // Preserve a refused value in the two-way binding for correction.
+    if !presenter.thumbnailer_extension_input_rejected() {
+        view.set_thumbnailer_extensions(presenter.thumbnailer_extension_text().into());
+    }
+    view.set_thumbnailer_extension_override(presenter.thumbnailer_extension_overridden());
+    view.set_thumbnailer_extension_error(crate::shown_text(
+        presenter.thumbnailer_extension_error(),
+    ));
     view.set_filesystem_error(crate::shown_text(&state.filesystem_error));
     view.set_filesystem_selected(
         presenter
@@ -26,13 +35,23 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .map_or(-1, |index| index as i32),
     );
     // Catalog errors and plugin statuses can name a package path.
-    view.set_error(crate::shown_text(
-        &[state.error.as_str(), state.association_error.as_str()]
-            .into_iter()
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    ));
+    view.set_error(crate::shown_text(&state.error));
+    view.set_extension_error(crate::shown_text(&state.association_error));
+    let feedback = presenter
+        .viewer_extension_feedback_revision()
+        .map(|revision| (0, revision))
+        .or_else(|| {
+            presenter
+                .thumbnailer_extension_feedback_revision()
+                .map(|revision| (3, revision))
+        });
+    if let Some((section, revision)) = feedback {
+        let feedback = revision.to_string();
+        if view.get_extension_feedback_revision() != feedback {
+            view.set_extension_feedback_section(section);
+            view.set_extension_feedback_revision(feedback.into());
+        }
+    }
     view.set_settings_ready(presenter.viewer_plugin_settings_ready());
     let disabled = &presenter.preferences.values.disabled_viewer_plugins;
     let startup = state.startup_disabled.as_deref().unwrap_or_default();
@@ -170,7 +189,6 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 "Image previews"
             }
             .into(),
-            description: format!("Extensions: {}", plugin.extensions.join("; ")).into(),
             status: crate::shown_text(&plugin.status),
             location: crate::shown_text(&plugin.location.to_string_lossy()),
             ..Default::default()
@@ -233,7 +251,9 @@ pub(crate) fn install(
             return;
         };
         let mut presenter = state.borrow_mut();
-        if presenter.save_viewer_extension_draft(sender.as_ref()) {
+        if presenter.save_viewer_extension_draft(sender.as_ref())
+            && presenter.stage_thumbnailer_extension_draft()
+        {
             presenter.request_viewer_plugins(sender.as_ref());
         }
         drop(presenter);
@@ -297,6 +317,22 @@ pub(crate) fn install(
                     presenter.select_thumbnailer_plugin(index)
                 });
             }
+        });
+    let weak = window.as_weak();
+    let state = presenter.clone();
+    window
+        .global::<ViewerPluginsView>()
+        .on_edit_thumbnailer_extensions(move |text| {
+            change(&weak, &state, |presenter| {
+                presenter.edit_thumbnailer_extensions(text.as_str())
+            });
+        });
+    let weak = window.as_weak();
+    let state = presenter.clone();
+    window
+        .global::<ViewerPluginsView>()
+        .on_reset_thumbnailer_extensions(move || {
+            change(&weak, &state, Presenter::reset_thumbnailer_extensions);
         });
     let weak = window.as_weak();
     let state = presenter.clone();

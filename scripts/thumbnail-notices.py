@@ -162,10 +162,13 @@ def main(argv=None, *, repository=ROOT):
     metadata = {}
     for plugin in PLUGINS:
         # Cargo writes UTF-8 JSON; Python before 3.15 would decode it in the ANSI code page.
-        result = subprocess.run(
-            ["cargo", "metadata", "--manifest-path", str(repository / "plugins" / plugin / "Cargo.toml"),
-             "--config", str(config), "--format-version", "1", "--locked", "--offline"],
-            cwd=repository, check=True, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+        command = ["cargo", "metadata", "--manifest-path",
+                   str(repository / "plugins" / plugin / "Cargo.toml"),
+                   "--config", str(config), "--format-version", "1", "--locked", "--offline"]
+        if plugin == "midnight-thumbnail-video":
+            command.extend(("--features", "playback-worker"))
+        result = subprocess.run(command, cwd=repository, check=True, stdout=subprocess.PIPE,
+                                text=True, encoding="utf-8")
         metadata[plugin] = json.loads(result.stdout)
     generate_notices(metadata, args.output, repository=repository)
 

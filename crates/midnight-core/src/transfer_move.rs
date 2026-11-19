@@ -6,7 +6,7 @@ use crate::{
     Cancellation, FsError, TransferDirectory, TransferEntry, TransferRecovery,
     TransferReplacementPolicy, TransferSource, TransferTarget,
 };
-use std::{ffi::OsStr, path::PathBuf, sync::Arc};
+use std::{ffi::OsStr, io, path::PathBuf, sync::Arc};
 
 /// A fresh revision of an already-held file, independent of its former name.
 /// Checks the provider's native revision without reopening a path. Timestamp
@@ -20,6 +20,111 @@ pub trait TransferReadGuard: Send {
 pub struct PreparedTransferMove {
     pub source: Box<dyn TransferSource>,
     pub capture: Arc<dyn TransferMoveCapture>,
+}
+
+/// A native Move entry can carry either ordinary authority or authority over the
+/// original directory link. The projected source of a link is always read-only.
+pub enum PreparedTransferMoveEntry {
+    Ordinary(PreparedTransferMove),
+    DirectoryLink {
+        source: Box<dyn TransferSource>,
+        capture: Arc<dyn TransferDirectoryLinkMoveCapture>,
+    },
+}
+
+impl PreparedTransferMoveEntry {
+    /// A read-only source. A deferred directory link supplies the selected
+    /// original as a descriptor until its copy projection is prepared.
+    pub fn source(&self) -> &dyn TransferSource {
+        match self {
+            Self::Ordinary(prepared) => &*prepared.source,
+            Self::DirectoryLink { source, .. } => &**source,
+        }
+    }
+
+    /// A deferred projection retains the original directory link's identity and
+    /// logical directory metadata. Its effective physical identity is unknown.
+    pub fn has_deferred_directory_link(&self) -> bool {
+        let Self::DirectoryLink { source, capture } = self else {
+            return false;
+        };
+        let original = capture.entry();
+        source.native_identity().is_none()
+            && source.native_original_identity() == Some(original.identity)
+            && source.entry().identity == original.identity
+            && source.entry().item.path == original.item.path
+            && source.entry().item.kind == crate::EntryKind::Directory
+            && original.item.kind == crate::EntryKind::DirectoryLink
+            && source.virtual_identity().is_none()
+    }
+}
+
+/// Qualified mutation authority over the retained original link. Its entry is the
+/// no-follow DirectoryLink at the selected logical path. Preparing it does not
+/// mutate either the link or its referent.
+pub trait TransferDirectoryLinkMoveCapture: Send + Sync {
+    /// Resolve the retained original into a read-only Copy source. Called at
+    /// copy fallback or when a consented merge requires pending-source geometry.
+    /// Establish the original binding and a qualified physical identity before
+    /// the returned source can enumerate or read.
+    fn prepare_copy_projection(
+        &self,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Err(FsError {
+            operation: "prepare Move link projection",
+            path: self.entry().item.path.clone(),
+            kind: io::ErrorKind::Unsupported,
+            message: "The directory link has no deferred Copy projection.".to_owned(),
+        })
+    }
+
+    /// Rename the retained link itself without opening or moving the referent.
+    /// Preserve the raw link representation, including destination-relative resolution
+    /// of a relative payload. Honor the supplied replacement policy and target pin
+    /// or refuse before mutation. None requires no replacement.
+    ///
+    /// Err, CrossDevice and Unsupported guarantee no namespace change. Report
+    /// a commit or recovery explicitly after any mutation, including late cancellation.
+    fn try_native_move(
+        &self,
+        _destination: &dyn TransferDirectory,
+        _name: &OsStr,
+        _replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        _cancel: &Cancellation,
+    ) -> Result<TransferNativeMoveOutcome, FsError> {
+        Ok(TransferNativeMoveOutcome::Unsupported)
+    }
+
+    fn entry(&self) -> &TransferEntry;
+
+    /// Verify the original link kind, identity, revision and parent binding.
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
+
+    /// Remove only the retained original link after its complete branch has
+    /// published. Recheck the no-follow original immediately before the operation.
+    /// Return Err only when the attempt leaves no committed removal or recovery
+    /// residue. Cleanup or recovery after a namespace change must be reported
+    /// explicitly. Drop never removes or moves the link.
+    fn remove_original(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferDirectoryLinkRemoval, FsError>;
+}
+
+/// Actual mutation facts after an attempted original-link removal.
+#[derive(Clone, Debug)]
+pub enum TransferDirectoryLinkRemoval {
+    Removed {
+        state: TransferSourceRemoval,
+        durability_confirmed: bool,
+        recovery: Vec<TransferRecovery>,
+        error: Option<FsError>,
+    },
+    RecoveryRequired {
+        recovery: Vec<TransferRecovery>,
+        error: FsError,
+    },
 }
 
 /// Retains one selected root or discovered child's native authority. Preparation performs no

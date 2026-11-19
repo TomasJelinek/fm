@@ -1,15 +1,19 @@
 //! Temporary source staging, no-replace restoration and exact empty-stage cleanup.
 use super::*;
 use midnight_core::{
-    PreparedTransferMove, TransferMoveCapture, TransferMoveCaptureOutcome, TransferRecovery,
-    TransferTarget,
+    PreparedTransferMove, PreparedTransferMoveEntry, TransferMoveCapture,
+    TransferMoveCaptureOutcome, TransferRecovery, TransferTarget,
 };
 use std::{
     ffi::{OsStr, OsString},
     fs::OpenOptions,
     os::windows::fs::OpenOptionsExt,
+    path::PathBuf,
     sync::Mutex,
 };
+use windows_sys::Wdk::Storage::FileSystem::FILE_OPEN;
+#[path = "transfer_move_directory_link.rs"]
+mod directory_link;
 #[path = "transfer_finalize.rs"]
 mod finalization;
 #[path = "transfer_native_move.rs"]
@@ -27,6 +31,23 @@ fn prepare_native(
     path: &Path,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
+    let (parent_file, parent_path, name) = open_root_location(path, cancel)?;
+    prepare_native_child(parent_file, parent_path, name, cancel)
+}
+
+pub(super) fn prepare_with_links(
+    path: &Path,
+    links: CopyLinkPolicy,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMoveEntry, FsError> {
+    let (parent_file, parent_path, name) = open_root_location(path, cancel)?;
+    prepare_child_with_links(parent_file, parent_path, name, None, links, cancel)
+}
+
+fn open_root_location<'a>(
+    path: &'a Path,
+    cancel: &Cancellation,
+) -> Result<(Arc<File>, PathBuf, &'a OsStr), FsError> {
     checked(cancel, path)?;
     validate_path(path, false)?;
     let parent_path = path
@@ -49,7 +70,72 @@ fn prepare_native(
             .open(parent_path)
             .map_err(|e| error(path, e))?,
     );
-    prepare_native_child(parent_file, parent_path.to_owned(), name, cancel)
+    Ok((parent_file, parent_path.to_owned(), name))
+}
+
+pub(super) fn prepare_child_with_links(
+    parent: Arc<File>,
+    parent_path: PathBuf,
+    name: &OsStr,
+    listed: Option<Native>,
+    policy: CopyLinkPolicy,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMoveEntry, FsError> {
+    let path = parent_path.join(name);
+    checked(cancel, &path)?;
+    validate_name(name).map_err(|e| error(&path, e))?;
+    let original = native::open_relative(
+        &parent,
+        name,
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        0,
+    )
+    .map_err(|e| error(&path, e))?;
+    let native = Native::query(&original).map_err(|e| error(&path, e))?;
+    let original_identity = identity(&original, &path)?;
+    if listed.is_some_and(|listed| listed.kind() != native.kind()) {
+        return Err(invalid(&path, "Move source changed after enumeration"));
+    }
+    if native.kind() == EntryKind::DirectoryLink {
+        if policy == CopyLinkPolicy::FollowDirectoryContents {
+            let proof = Arc::new(source_links::OriginalLink::capture(
+                &original,
+                &path,
+                native,
+                Some(original_identity),
+            )?);
+            let capture =
+                directory_link::prepare(parent, parent_path, name, proof.clone(), policy, cancel)?;
+            return Ok(PreparedTransferMoveEntry::DirectoryLink {
+                source: directory_link::deferred_source(original, proof),
+                capture,
+            });
+        }
+        let source = source::Source::open_with_links(
+            parent.clone(),
+            parent_path.clone(),
+            name,
+            policy,
+            cancel,
+        )?;
+        let proof = source
+            .original_link()
+            .filter(|proof| proof.entry.identity == original_identity)
+            .ok_or_else(|| invalid(&path, "original Move directory link changed"))?;
+        let capture = directory_link::prepare(parent, parent_path, name, proof, policy, cancel)?;
+        source.revalidate(cancel)?;
+        return Ok(PreparedTransferMoveEntry::DirectoryLink {
+            source: Box::new(source),
+            capture,
+        });
+    }
+    let ordinary = prepare_child_with_policy(parent, parent_path, name, policy, cancel)?;
+    if ordinary.capture.entry().identity != original_identity {
+        return Err(invalid(&path, "Move source changed while preparing"));
+    }
+    Ok(PreparedTransferMoveEntry::Ordinary(ordinary))
 }
 
 pub(super) fn prepare_child(
@@ -58,7 +144,24 @@ pub(super) fn prepare_child(
     name: &OsStr,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMove, FsError> {
-    let (source, capture) = prepare_native_child(parent_file, parent_path, name, cancel)?;
+    prepare_child_with_policy(
+        parent_file,
+        parent_path,
+        name,
+        CopyLinkPolicy::Reject,
+        cancel,
+    )
+}
+
+fn prepare_child_with_policy(
+    parent_file: Arc<File>,
+    parent_path: PathBuf,
+    name: &OsStr,
+    policy: CopyLinkPolicy,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMove, FsError> {
+    let (source, capture) =
+        prepare_native_child_with_policy(parent_file, parent_path, name, policy, cancel)?;
     Ok(PreparedTransferMove {
         source: Box::new(source),
         capture,
@@ -71,12 +174,29 @@ fn prepare_native_child(
     name: &OsStr,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
+    prepare_native_child_with_policy(
+        parent_file,
+        parent_path,
+        name,
+        CopyLinkPolicy::Reject,
+        cancel,
+    )
+}
+
+fn prepare_native_child_with_policy(
+    parent_file: Arc<File>,
+    parent_path: PathBuf,
+    name: &OsStr,
+    policy: CopyLinkPolicy,
+    cancel: &Cancellation,
+) -> Result<(source::Source, Arc<Capture>), FsError> {
     let path = parent_path.join(name);
     let parent = destination::Directory::from_file(
         parent_file.try_clone().map_err(|e| error(&path, e))?,
         parent_path.to_owned(),
     )?;
-    let source = source::Source::open_for_move(parent_file, parent_path.to_owned(), name, cancel)?;
+    let source =
+        source::Source::open_for_move(parent_file, parent_path.to_owned(), name, policy, cancel)?;
     let expected = parent
         .prepare_target(name, cancel)?
         .ok_or_else(|| invalid(&path, "Move source disappeared while preparing"))?;

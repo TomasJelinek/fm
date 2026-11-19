@@ -54,11 +54,7 @@ impl Harness {
         }
     }
 
-    /// Advance frames until wheel motion and idle snapping have finished: no
-    /// wheel timer, no interaction, and both offsets unchanged for longer than
-    /// PanelList's 80 ms idle delay (seven 16 ms frames), so a pending snap
-    /// would have moved them. `max` bounds only a failure; a fixed settle
-    /// length wastes frames, each refreshing two 1,000-row panes.
+    /// Bound the virtual frames needed for wheel motion to end and offsets to stabilize.
     fn settle(&self, max: usize) {
         const STABLE_FRAMES: usize = 7;
         let mut previous = (self.offset(0), self.offset(1));
@@ -188,7 +184,7 @@ fn harness() -> Harness {
 }
 
 #[test]
-fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle() {
+fn real_file_panes_keep_fractional_wheel_positions_during_model_refresh() {
     let h = harness();
     let left_x = h.window.get_left_list_left() + 100.0;
     let list_y = h.window.get_left_list_top() + 100.0;
@@ -221,7 +217,7 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
         );
         assert!(
             h.window.get_scroll_interaction_active(),
-            "no snapping during interpolation"
+            "drag targets track ongoing interpolation"
         );
         assert_eq!(h.offset(1), 0.0, "the other pane remains stationary");
         previous = offset;
@@ -244,11 +240,9 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
     );
     assert!(!h.window.get_scroll_interaction_active());
     h.settle(40);
-    let row = h.window.global::<Theme>().get_row_height();
-    let snapped = (-60.0 / row).round() * row;
     assert!(
-        (h.offset(0) - snapped).abs() < 0.01,
-        "resting position aligns to a row: expected {snapped}, actual {}, row {row}",
+        (h.offset(0) + 60.0).abs() < 0.01,
+        "the resting position preserves all pixels: {}",
         h.offset(0)
     );
     assert!(!h.timer.running(), "no perpetual animation timer");
@@ -260,7 +254,7 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
         "cross-pane movement cancels before the next frame"
     );
     h.advance(1);
-    assert!((h.offset(0) - snapped).abs() < 0.01);
+    assert!((h.offset(0) + 60.0).abs() < 0.01);
     assert_eq!(
         h.offset(1),
         0.0,
@@ -294,7 +288,7 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
     h.settle(60);
     assert!(
         h.offset(0) < -60.0,
-        "a discrete thumbnail notch must reach another band instead of snapping back"
+        "a discrete thumbnail notch keeps the band-sized input policy"
     );
     h.window.invoke_view_mode(0, 0);
     h.window.invoke_reveal_left();
@@ -386,11 +380,9 @@ fn file_panel_scrollbar_wheel_releases_explicit_cursor_reveal_and_keeps_panel_po
             "wheel does not move the selected file"
         );
         h.settle(40);
-        let row = h.window.global::<Theme>().get_row_height();
-        let snapped = ((initial + 60.0) / row).round() * row;
         assert!(
-            (h.offset(side) - snapped).abs() < 0.02,
-            "panel keeps its idle row alignment"
+            (h.offset(side) - initial - 60.0).abs() < 0.02,
+            "the scrollbar preserves the final pixel position"
         );
     }
 }

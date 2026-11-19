@@ -37,6 +37,7 @@ pub(super) struct Directory {
     path: PathBuf,
     identity: TransferIdentity,
     namespace: Arc<namespace::Bindings>,
+    link_mount: Option<Arc<directory_links::MountAnchor>>,
 }
 impl Directory {
     pub(in crate::transfer) fn namespace_reserve_file(
@@ -65,14 +66,28 @@ impl Directory {
         change: &mut namespace::Change<'_>,
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
-        self.namespace
-            .announce(&self.file, &self.path, name, change, cancel)
+        self.namespace.announce(
+            &self.file,
+            &self.path,
+            name,
+            self.link_mount.as_ref(),
+            change,
+            cancel,
+        )
     }
     pub(in crate::transfer) fn namespace_changed(&self, name: &OsStr) {
         self.namespace.changed(&self.file, &self.path, name);
     }
     pub(super) fn check_recovery_parent(&self, cancel: &Cancellation) -> Result<(), FsError> {
         self.check_protected_parent(cancel, RECOVERY_PARENT)
+    }
+
+    pub(super) fn with_link_source(
+        mut self,
+        original: &directory_links::OriginalLink,
+    ) -> Result<Self, FsError> {
+        self.link_mount = Some(original.parent_mount(&self.path, self.identity)?);
+        Ok(self)
     }
     /// Other users must be unable to replace or remove our names in this
     /// directory; see `crate::ownership::protected_parent` for the exact rule.
@@ -105,6 +120,7 @@ impl Directory {
             file,
             path,
             namespace,
+            link_mount: None,
         })
     }
 }
@@ -189,10 +205,13 @@ impl TransferDirectory for Directory {
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
-        let visible = File::from(
-            openat(CWD, &self.path, DIRECTORY, Mode::empty())
-                .map_err(|e| error(&self.path, e.into()))?,
-        );
+        let visible = match &self.link_mount {
+            Some(mount) => mount.reopen(&self.path, &self.path)?,
+            None => File::from(
+                openat(CWD, &self.path, DIRECTORY, Mode::empty())
+                    .map_err(|e| error(&self.path, e.into()))?,
+            ),
+        };
         if identity(&visible, &self.path)? != self.identity {
             return Err(invalid(&self.path, "destination directory changed"));
         }
@@ -495,6 +514,9 @@ impl Directory {
         )?;
         let path = self.path.join(name);
         self.namespace_announce(name, change, cancel)?;
+        if self.link_mount.is_some() {
+            self.check_recovery_parent(cancel)?;
+        }
         mkdirat(&*self.file, name, Mode::RWXU).map_err(|e| error(&path, e.into()))?;
         self.namespace_changed(name);
         let mut pinned = None;
@@ -522,11 +544,23 @@ impl Directory {
                     "Private staging requires a filesystem that stores owner-only permissions.",
                 ));
             }
-            Self::from_file(file, path.clone())
+            let mut directory = Self::from_file(file, path.clone())?;
+            if purpose == NewDirectory::Private {
+                directory.link_mount = self.link_mount.clone();
+            }
+            Ok(directory)
         })();
         adopted.map_err(|mut failure| {
             // Nothing was published into the refused directory this call created. The
             // refusal keeps its kind: a refused final-name folder is not retried.
+            if self.link_mount.is_some()
+                && let Err(cleanup) = self.check_recovery_parent(&Cancellation::default())
+            {
+                failure
+                    .message
+                    .push_str(&format!("\nThe empty new folder remains. {cleanup}"));
+                return failure;
+            }
             match crate::ownership::remove_refused_directory(&*self.file, name, pinned) {
                 Ok(()) => self.namespace_changed(name),
                 // Already gone: record the vacant name, or the turn's refresh of the

@@ -3,13 +3,15 @@ use super::*;
 
 impl Job {
     pub(super) fn try_native_move(&mut self, work: &mut EntryWork) -> Result<bool, FsError> {
+        let Some(identity) = work.removal.native_move_identity(work.native_identity()) else {
+            return Ok(false);
+        };
         let Some(move_work) = self.move_work.as_ref() else {
             return Ok(false);
         };
         if work.native_fallback || work.consent == Some(Consent::Merge) {
             return Ok(false);
         }
-        let capture = move_work.capture_for(work.entry())?;
         let replacement = if work.consent == Some(Consent::Replace) {
             let target = work.target.as_ref().expect("consented target pin");
             target.revalidate(&self.cancel)?;
@@ -22,13 +24,29 @@ impl Job {
         };
         let _permit = move_job::permit(&self.cancel, &work.entry().item.path)?;
         work.destination.revalidate(&self.cancel)?;
-        capture.revalidate(&self.cancel)?;
-        let outcome = capture.try_native_move(
-            work.destination.as_ref(),
-            &work.name,
-            replacement,
-            &self.cancel,
-        )?;
+        let outcome = match work.removal {
+            EntryRemoval::Ordinary => {
+                let capture = move_work.capture_for(work.entry())?;
+                capture.revalidate(&self.cancel)?;
+                capture.try_native_move(
+                    work.destination.as_ref(),
+                    &work.name,
+                    replacement,
+                    &self.cancel,
+                )?
+            }
+            EntryRemoval::DirectoryLink(original) => {
+                let capture = move_work.link_capture_for(original, &work.entry().item.path)?;
+                capture.revalidate(&self.cancel)?;
+                capture.try_native_move(
+                    work.destination.as_ref(),
+                    &work.name,
+                    replacement,
+                    &self.cancel,
+                )?
+            }
+            EntryRemoval::Copy => unreachable!("read-only entries have no native Move identity"),
+        };
         let (moved, recovery, failure) = match outcome {
             TransferNativeMoveOutcome::CrossDevice | TransferNativeMoveOutcome::Unsupported => {
                 work.native_fallback = true;
@@ -65,21 +83,18 @@ impl Job {
         // Armed: an unwinding native call must not destroy the remaining captures,
         // stages, proofs or finalizer; they are released only explicitly.
         let mut move_work = ownership::Armed::new(self.move_work.take().expect("Move authority"));
-        let completion = if moved {
+        if moved {
             self.progress.native_entries_moved += 1;
-            self.protected_roots.insert(work.entry().identity);
-            move_work.native_completed(work.entry(), self)
-        } else {
-            if failure.is_some() {
-                // Recovery may have moved/restored a source or displaced target.
-                // Reconcile the captured source parents even without publication.
-                move_work.record_parents(self, &work.entry().item.path);
-            }
-            move_work.discard(work.entry().identity)
-        };
+            self.protected_roots.insert(identity);
+        }
+        if moved || failure.is_some() {
+            // Reconcile the captured source parents after publication or recovery.
+            move_work.record_parents(self, &work.entry().item.path);
+        }
+        let completion = move_work.discard_entry(work.removal, work.entry().identity);
         self.move_work = Some(move_work.into_inner());
         for retained in recovery {
-            if !moved && retained.identity == Some(work.entry().identity) {
+            if !moved && retained.identity == Some(identity) {
                 self.progress.source_residual_count += 1;
                 if self.progress.source_residuals.len() < 16 {
                     self.progress.source_residuals.push(MoveSourceResidual {
@@ -103,6 +118,29 @@ impl Job {
     }
 
     pub(super) fn prepare_move_copy(&mut self, work: &mut EntryWork) -> Result<(), FsError> {
+        if let EntryRemoval::DirectoryLink(original) = work.removal
+            && work.native_identity().is_none()
+        {
+            let path = &work.entry().item.path;
+            let _permit = move_job::permit(&self.cancel, path)?;
+            let projection = self
+                .move_work
+                .as_mut()
+                .ok_or_else(|| {
+                    error(
+                        path,
+                        io::ErrorKind::InvalidInput,
+                        "Original directory link authority is missing.",
+                    )
+                })?
+                .take_link_projection(original, path, &self.cancel)?;
+            work.entry = projection.entry().clone();
+            work.native_identity = projection.native_identity();
+            work.source = Some(projection);
+        }
+        if work.removal != EntryRemoval::Ordinary {
+            return Ok(());
+        }
         let Some(move_work) = self.move_work.as_ref() else {
             return Ok(());
         };

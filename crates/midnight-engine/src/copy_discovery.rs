@@ -15,12 +15,13 @@ impl Job {
     pub(in crate::copy_operations) fn prepare_discovery(&mut self) {
         // Native rename must stay constant-time. Mixed batches use selected roots too
         // rather than disguise unscanned descendants or native moves as copied work.
-        let native_rename_candidate = self.move_work.is_some()
-            && self.roots.iter().any(|source| {
-                source
-                    .native_identity()
+        let native_rename_candidate = self.move_work.as_ref().is_some_and(|work| {
+            self.roots.iter().any(|source| {
+                work.entry_removal(&**source)
+                    .native_move_identity(source.native_identity())
                     .is_some_and(|identity| identity.device == self.destination.identity().device)
-            });
+            })
+        });
         let scope = if native_rename_candidate {
             DiscoveryScope::SelectedRoots
         } else {
@@ -39,15 +40,24 @@ impl Job {
         self.progress.discovery = discovery.clone();
         self.store_progress();
         let mut budget = work_budget::Budget::discovery();
+        let uses_directory_projection =
+            scope == DiscoveryScope::Recursive && self.links.materializes_directory_links();
         let mut published = Instant::now();
+        // Optional discovery runs inside an admitted blocking step. A pause
+        // interrupts it so the outer worker can release the slot and acknowledge.
+        let traversal = self.cancel.child_interrupted_by_pause();
         for source in &self.roots {
-            if !self.cancel.wait_if_paused() {
-                // Keep the owned Job on its normal finish path: preparation may already
-                // retain metadata stages or Move cleanup authority.
-                discovery.unavailable("Transfer discovery cancelled.");
+            if traversal.is_cancelled() {
+                discovery.unavailable(if self.cancel.is_cancelled() {
+                    "Transfer discovery cancelled."
+                } else {
+                    "Transfer discovery interrupted by pause."
+                });
                 break;
             }
+            let mut unprojected_link = false;
             let mut visit = |item: &MutationItem| {
+                unprojected_link |= uses_directory_projection && link_job::is_link_kind(item.kind);
                 discovery.observe(item);
                 budget.observe(item, self.verification);
                 if published.elapsed() >= DISCOVERY_PUBLISH_INTERVAL {
@@ -62,16 +72,27 @@ impl Job {
             };
             let result = if scope == DiscoveryScope::SelectedRoots {
                 source
-                    .revalidate(&self.cancel)
+                    .revalidate(&traversal)
                     .map(|()| visit(&source.entry().item))
             } else {
-                source.discover(&self.cancel, &mut visit)
+                source.discover(&traversal, &mut visit)
             };
             if let Err(failure) = result {
-                discovery.unavailable(&format!(
-                    "Metadata discovery unavailable: {}",
-                    failure.message
-                ));
+                if failure.kind == std::io::ErrorKind::Interrupted && self.cancel.pause_requested()
+                {
+                    discovery.unavailable("Transfer discovery interrupted by pause.");
+                } else {
+                    discovery.unavailable(&format!(
+                        "Metadata discovery unavailable: {}",
+                        failure.message
+                    ));
+                }
+                break;
+            }
+            if unprojected_link {
+                discovery.unavailable(
+                    "Recursive totals are unavailable for an unprojected source link.",
+                );
                 break;
             }
         }

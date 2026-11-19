@@ -86,11 +86,19 @@ fn fixture_directory(name: &str) -> std::path::PathBuf {
     let root = std::env::var_os("ME_COMPARE_POLISH_SCREENSHOTS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/native-dialogs")
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .unwrap()
+                .join("_build")
+                .join("qa")
+                .join("native-dialogs")
         });
     let directory = root.join(format!("{name}-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    directory
+    // The optional screenshot root may itself contain relative/dot components.
+    // Normalize only the fixture this test just created, never production source paths.
+    directory.canonicalize().unwrap()
 }
 
 fn wait_until(condition: impl Fn() -> bool) {
@@ -495,6 +503,48 @@ fn swipe_slider_and_font_chooser_keep_following_shared_state_after_user_changes(
 }
 
 #[test]
+fn hidden_find_bar_adds_no_layout_gap_to_image_comparison() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(support::TestPlatform(native.clone()))).unwrap();
+    let window = ComparatorWindow::new().unwrap();
+    window.set_ui_font_size(14.0);
+    window.set_left_name("left.png".into());
+    window.set_right_name("right.png".into());
+    window.set_image_mode(true);
+    window.show().unwrap();
+    for search_visible in [false, true] {
+        window.set_search_visible(search_visible);
+        draw(&native, &window, 1000, 700, "image-no-hidden-find-spacing");
+        let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+        let header = find(root.clone(), "left.png")
+            .unwrap()
+            .geometry()
+            .size
+            .height;
+        let modes = find(root.clone(), "Side by side")
+            .unwrap()
+            .geometry()
+            .size
+            .height;
+        let controls = find(root.clone(), "Fit").unwrap().geometry().size.height;
+        let result = find(root, "Comparison result")
+            .unwrap()
+            .geometry()
+            .size
+            .height;
+        // Five visible rows (paths, modes, controls, canvas, verdict) have four 5 px
+        // gaps and 6 px outer padding. A hidden Find row must add no sixth item.
+        let expected = 700.0 - 12.0 - 4.0 * 5.0 - header - modes - controls - result;
+        assert!(
+            (window.get_content_height() - expected).abs() < 1.0,
+            "canvas {} vs visible-row budget {expected}; header {header}, modes {modes}, controls {controls}, result {result}",
+            window.get_content_height()
+        );
+    }
+    window.hide().unwrap();
+}
+
+#[test]
 fn comparison_actions_fit_small_window_and_do_not_expand_across_normal_window() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(support::TestPlatform(native.clone()))).unwrap();
@@ -534,7 +584,7 @@ fn comparison_actions_fit_small_window_and_do_not_expand_across_normal_window() 
                 } else {
                     "Next difference"
                 },
-                "Close",
+                "Find in compared files (Ctrl+F)",
             ] {
                 let item = find(
                     ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
@@ -556,7 +606,7 @@ fn comparison_actions_fit_small_window_and_do_not_expand_across_normal_window() 
                         "{label} should fit its caption, not expand across the toolbar: {rect:?}"
                     );
                 }
-                if label == "Close" {
+                if label == "Find in compared files (Ctrl+F)" {
                     continue;
                 }
                 let position = slint::LogicalPosition::new(

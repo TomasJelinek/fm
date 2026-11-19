@@ -3,8 +3,8 @@
 use crate::mutation::{native, validate_name, validate_path};
 use crate::reparse::Native;
 use midnight_core::{
-    Cancellation, EntryKind, EntryMetadata, FsError, MutationItem, TransferDirectory,
-    TransferEntry, TransferIdentity, TransferService, TransferSource,
+    Cancellation, CopyLinkPolicy, EntryKind, EntryMetadata, FsError, MutationItem,
+    TransferDirectory, TransferEntry, TransferIdentity, TransferService, TransferSource,
 };
 use std::{fs::File, io, os::windows::fs::MetadataExt, path::Path, sync::Arc};
 use windows_sys::Win32::Storage::FileSystem::*;
@@ -19,6 +19,8 @@ mod move_source;
 mod namespace;
 #[path = "transfer_source.rs"]
 mod source;
+#[path = "transfer_source_links.rs"]
+mod source_links;
 #[path = "transfer_validation.rs"]
 mod validation;
 
@@ -121,11 +123,48 @@ impl TransferService for crate::WindowsFileSystem {
     ) -> Result<midnight_core::PreparedTransferMove, FsError> {
         move_source::prepare(path, cancel)
     }
+    fn prepare_move_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
+        match links {
+            CopyLinkPolicy::Reject => self
+                .prepare_move_source(path, cancel)
+                .map(midnight_core::PreparedTransferMoveEntry::Ordinary),
+            CopyLinkPolicy::FollowDirectoryContents | CopyLinkPolicy::EmptyDirectories => {
+                move_source::prepare_with_links(path, links, cancel)
+            }
+            CopyLinkPolicy::Preserve => Err(unsupported(
+                path,
+                "Move with preserved links is unsupported",
+            )),
+        }
+    }
     fn prepare_transfer_source(
         &self,
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.prepare_transfer_source_with_links(path, CopyLinkPolicy::Reject, cancel)
+    }
+    fn prepare_transfer_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        if links == CopyLinkPolicy::Preserve {
+            return Err(FsError::from_io(
+                "transfer capability",
+                path,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "link-preserving source preparation is unsupported",
+                ),
+            ));
+        }
         checked(cancel, path)?;
         validate_path(path, false)?;
         let parent_path = path
@@ -135,10 +174,11 @@ impl TransferService for crate::WindowsFileSystem {
             .file_name()
             .ok_or_else(|| invalid(path, "source needs a basename"))?;
         let parent = Arc::new(native::open_parent(parent_path).map_err(|e| error(path, e))?);
-        Ok(Box::new(source::Source::open(
+        Ok(Box::new(source::Source::open_with_links(
             parent,
             parent_path.to_owned(),
             name,
+            links,
             cancel,
         )?))
     }

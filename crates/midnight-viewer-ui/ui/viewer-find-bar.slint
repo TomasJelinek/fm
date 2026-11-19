@@ -1,0 +1,88 @@
+import { Theme } from "../../midnight-ui/ui/theme.slint";
+import { ActionButton, FallbackIcons } from "../../midnight-ui/ui/action-icons.slint";
+import { WrappingCheckBox } from "../../midnight-ui/ui/wrapping-check-box.slint";
+import { ThemedLineEdit } from "../../midnight-ui/ui/content-controls.slint";
+
+export component ViewerFindBar inherits Rectangle {
+    in property <length> font-size: Theme.font-size;
+    in property <length> control-height: Theme.control-height;
+    in property <bool> compact;
+    in property <bool> web-mode;
+    in property <bool> whole-words-available;
+    in-out property <string> query;
+    in-out property <bool> case-sensitive;
+    in-out property <bool> whole-words;
+    private property <bool> narrow: root.width < root.font-size * 26 + 230px;
+    private property <length> row-height: max(32px, root.control-height, root.font-size + 14px);
+    preferred-height: root.narrow ? root.row-height * 2 + 4px : root.row-height;
+    min-width: 0px; horizontal-stretch: 1; vertical-stretch: 0;
+    callback search(bool);
+    callback clear-query();
+    callback case-changed(bool);
+    public function focus-query() { search-edit.focus(); }
+
+    field := Rectangle {
+        x: 0px; y: 0px;
+        width: root.narrow ? root.width : max(80px, options.x - 4px);
+        height: root.row-height;
+        background: Theme.surface; border-radius: 4px;
+        border-color: search-edit.has-focus ? Theme.active-frame : Theme.frame;
+        border-width: search-edit.has-focus ? 2px : 1px;
+        search-edit := ThemedLineEdit {
+            x: 2px; y: 2px;
+            width: max(1px, parent.width - 4px - (root.query != "" ? clear-find.width : 0px));
+            height: max(1px, parent.height - 4px);
+            min-height: 0px; border-width: 0px; background: transparent;
+            font-size: root.font-size; control-height: root.control-height;
+            text <=> root.query; placeholder-text: "Find in file";
+            accessible-label: "Find in file";
+            accepted => { root.search(false); }
+            edited => { if self.text == "" { root.clear-query(); } }
+        }
+        clear-find := ActionButton {
+            visible: root.query != "";
+            x: parent.width - self.width - 2px; y: 2px;
+            width: root.row-height - 4px; height: parent.height - 4px;
+            min-height: 0px; minimum-control-height: 0px; vertical-padding: 0px;
+            control-height: 0px; compact: true; border-width: 0px;
+            background: transparent; fallback-icon: FallbackIcons.close;
+            accessible-label: "Clear find text";
+            clicked => { root.clear-query(); search-edit.focus(); }
+        }
+    }
+    options := HorizontalLayout {
+        x: root.narrow ? 0px : root.width - self.preferred-width;
+        y: root.narrow ? root.row-height + 4px : 0px;
+        width: root.narrow ? root.width : self.preferred-width;
+        height: root.row-height;
+        spacing: 4px;
+        WrappingCheckBox {
+            font-size: root.font-size; control-height: root.control-height;
+            text: "Aa"; checked <=> root.case-sensitive; accessible-name: "Case sensitive";
+            toggled => { root.case-changed(self.checked); }
+        }
+        WrappingCheckBox {
+            font-size: root.font-size; control-height: root.control-height;
+            text: "Whole words"; checked <=> root.whole-words; enabled: root.whole-words-available;
+            accessible-name: "Find whole words";
+            Tooltip { text: root.whole-words-available ? @markdown("Match complete words.")
+                : root.web-mode ? @markdown("Whole-word matching is not available in the HTML viewer.")
+                : @markdown("Whole-word matching is not available in binary view. Search matches source bytes."); }
+        }
+        if root.narrow: Rectangle { horizontal-stretch: 1; }
+        ActionButton {
+            font-size: root.font-size; control-height: root.control-height;
+            compact: root.narrow || root.compact; text: root.narrow ? "↑" : "Previous";
+            accessible-label: "Previous match";
+            Tooltip { text: @markdown("Previous match (Shift+F3)"); }
+            clicked => { root.search(true); }
+        }
+        ActionButton {
+            font-size: root.font-size; control-height: root.control-height;
+            compact: root.narrow || root.compact; text: root.narrow ? "↓" : "Next";
+            accessible-label: "Next match";
+            Tooltip { text: @markdown("Next match (F3)"); }
+            clicked => { root.search(false); }
+        }
+    }
+}

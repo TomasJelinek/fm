@@ -1,5 +1,12 @@
 //! Independent decoder. FFmpeg only sees the bounded public broker stream after worker lockdown.
 mod native;
+pub mod playback;
+#[doc(hidden)]
+pub mod playback_audio;
+pub mod playback_session;
+pub mod playback_wire;
+#[cfg(test)]
+mod video_selection_tests;
 use ffmpeg_next as ffmpeg;
 use midnight_thumbnail_sdk::{
     ReadSeek,
@@ -14,34 +21,100 @@ pub fn decode(request: &Request, source: &mut dyn ReadSeek) -> io::Result<Frame>
     {
         return Err(io::Error::other("Invalid video request"));
     }
-    // The minimal native runtime intentionally has no internal threading support. Tests may call
-    // this library concurrently; serialize them just as the one-request executable does naturally.
+    with_decoder(|| {
+        native::with_input(source, request.source_length, |input| {
+            thumbnail(input, request)
+        })
+    })
+}
+
+fn with_decoder<T>(decode: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    // The minimal runtime has no internal threading support. Each worker owns one decoder;
+    // serialize direct library consumers for both sampled and consecutive-frame entry points.
     static DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _decode = DECODE
         .lock()
         .map_err(|_| io::Error::other("Previous native decode panicked"))?;
     ffmpeg::init().map_err(io::Error::other)?;
-    native::with_input(source, request.source_length, |input| {
-        thumbnail(input, request)
-    })
+    decode()
 }
-fn thumbnail(input: &mut ffmpeg::format::context::Input, request: &Request) -> io::Result<Frame> {
-    let stream = input
-        .streams()
-        .best(ffmpeg::media::Type::Video)
-        .ok_or_else(|| io::Error::other("No video stream"))?;
-    let index = stream.index();
-    let time_base = stream.time_base();
-    let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
-        .map_err(io::Error::other)?;
-    if !matches!(
-        context.id(),
+
+struct Video {
+    index: usize,
+    time_base: ffmpeg::Rational,
+    decoder: ffmpeg::codec::decoder::Video,
+    rotation: i32,
+}
+
+fn supported_video_codec(codec: ffmpeg::codec::Id) -> bool {
+    matches!(
+        codec,
         ffmpeg::codec::Id::VP8
             | ffmpeg::codec::Id::VP9
             | ffmpeg::codec::Id::THEORA
             | ffmpeg::codec::Id::FFV1
             | ffmpeg::codec::Id::RAWVIDEO
-    ) {
+    )
+}
+
+fn eligible_video(
+    medium: ffmpeg::media::Type,
+    codec: ffmpeg::codec::Id,
+    disposition: ffmpeg::format::stream::Disposition,
+) -> bool {
+    medium == ffmpeg::media::Type::Video
+        && !disposition.contains(ffmpeg::format::stream::Disposition::ATTACHED_PIC)
+        && supported_video_codec(codec)
+}
+
+fn video_index(
+    preferred: Option<usize>,
+    tracks: impl Iterator<Item = (usize, bool)>,
+) -> Option<usize> {
+    let mut first = None;
+    for (index, eligible) in tracks {
+        if !eligible {
+            continue;
+        }
+        if Some(index) == preferred {
+            return Some(index);
+        }
+        if first.is_none() {
+            first = Some(index);
+        }
+    }
+    first
+}
+
+fn open_video(input: &mut ffmpeg::format::context::Input) -> io::Result<Video> {
+    let preferred = input
+        .streams()
+        .best(ffmpeg::media::Type::Video)
+        .map(|stream| stream.index());
+    let index = video_index(
+        preferred,
+        input.streams().map(|stream| {
+            let parameters = stream.parameters();
+            (
+                stream.index(),
+                eligible_video(parameters.medium(), parameters.id(), stream.disposition()),
+            )
+        }),
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "No supported non-attached video track",
+        )
+    })?;
+    let stream = input
+        .stream(index)
+        .ok_or_else(|| io::Error::other("Selected video stream is unavailable"))?;
+    let index = stream.index();
+    let time_base = stream.time_base();
+    let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+        .map_err(io::Error::other)?;
+    if !supported_video_codec(context.id()) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Video codec is outside the installed baseline",
@@ -53,13 +126,28 @@ fn thumbnail(input: &mut ffmpeg::format::context::Input, request: &Request) -> i
     }
     let mut context = context;
     native::limit_decoder(&mut context);
-    let mut decoder = context.decoder().video().map_err(io::Error::other)?;
+    let decoder = context.decoder().video().map_err(io::Error::other)?;
     if decoder.width() == 0
         || decoder.height() == 0
         || u64::from(decoder.width()) * u64::from(decoder.height()) > 32 * 1024 * 1024
     {
         return Err(io::Error::other("Video dimensions exceed decoder bound"));
     }
+    Ok(Video {
+        index,
+        time_base,
+        decoder,
+        rotation,
+    })
+}
+
+fn thumbnail(input: &mut ffmpeg::format::context::Input, request: &Request) -> io::Result<Frame> {
+    let Video {
+        index,
+        time_base,
+        mut decoder,
+        rotation,
+    } = open_video(input)?;
     // Every request is independently seekable and cacheable. Sample between 10% and 85%
     // of the duration, counted from the container's start time.
     let duration = input.duration().max(0);
@@ -111,7 +199,7 @@ fn thumbnail(input: &mut ffmpeg::format::context::Input, request: &Request) -> i
                 has_earlier = true;
                 continue;
             }
-            return pixels(&decoded, request, rotation);
+            return thumbnail_pixels(&decoded, request, rotation);
         }
         if ended {
             break;
@@ -120,13 +208,51 @@ fn thumbnail(input: &mut ffmpeg::format::context::Input, request: &Request) -> i
     // A header can overstate the decodable content (incomplete downloads), and sparse
     // keyframes can exhaust the packet budget: show the latest frame decoded instead.
     if has_earlier {
-        return pixels(&earlier, request, rotation);
+        return thumbnail_pixels(&earlier, request, rotation);
     }
     Err(io::Error::other(
         "No representative frame within decode budget",
     ))
 }
-fn pixels(decoded: &ffmpeg::frame::Video, request: &Request, rotation: i32) -> io::Result<Frame> {
+fn thumbnail_pixels(
+    decoded: &ffmpeg::frame::Video,
+    request: &Request,
+    rotation: i32,
+) -> io::Result<Frame> {
+    let pixels = pixels(decoded, request.width, request.height, rotation)?;
+    Ok(Frame {
+        id: request.id,
+        frame: request.frame,
+        width: pixels.width,
+        height: pixels.height,
+        rgba: pixels.rgba,
+    })
+}
+
+struct Pixels {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+fn output_length(width: u32, height: u32) -> io::Result<usize> {
+    let pixels = u64::from(width) * u64::from(height);
+    if width == 0 || height == 0 || width > 4096 || height > 4096 || pixels > 4 * 1024 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Video output exceeds the edge or pixel budget",
+        ));
+    }
+    Ok((pixels * 4) as usize)
+}
+
+fn pixels(
+    decoded: &ffmpeg::frame::Video,
+    bound_width: u32,
+    bound_height: u32,
+    rotation: i32,
+) -> io::Result<Pixels> {
+    output_length(bound_width, bound_height)?;
     if decoded.width() == 0
         || decoded.height() == 0
         || u64::from(decoded.width()) * u64::from(decoded.height()) > 32 * 1024 * 1024
@@ -134,9 +260,9 @@ fn pixels(decoded: &ffmpeg::frame::Video, request: &Request, rotation: i32) -> i
         return Err(io::Error::other("Decoded video dimensions exceed bound"));
     }
     let (bound_w, bound_h) = if rotation == 90 || rotation == 270 {
-        (request.height, request.width)
+        (bound_height, bound_width)
     } else {
-        (request.width, request.height)
+        (bound_width, bound_height)
     };
     let scale = (f64::from(bound_w) / f64::from(decoded.width()))
         .min(f64::from(bound_h) / f64::from(decoded.height()))
@@ -168,7 +294,7 @@ fn pixels(decoded: &ffmpeg::frame::Video, request: &Request, rotation: i32) -> i
     } else {
         height
     };
-    let mut rgba = vec![0; midnight_thumbnail_sdk::api::rgba_length(output_w, output_h)?];
+    let mut rgba = vec![0; output_length(output_w, output_h)?];
     let stride = resized.stride(0);
     let data = resized.data(0);
     for y in 0..height as usize {
@@ -208,9 +334,7 @@ fn pixels(decoded: &ffmpeg::frame::Video, request: &Request, rotation: i32) -> i
             }
         }
     }
-    Ok(Frame {
-        id: request.id,
-        frame: request.frame,
+    Ok(Pixels {
         width: output_w,
         height: output_h,
         rgba,

@@ -14,6 +14,7 @@ pub struct Destination {
     pub files: Mutex<HashMap<PathBuf, Vec<u8>>>,
     directories: Mutex<HashSet<PathBuf>>,
     pub readback: Mutex<usize>,
+    pub link_policies: Mutex<Vec<CopyLinkPolicy>>,
 }
 pub struct Transfer(pub Arc<Destination>);
 // This fixture's complete endpoint graph owns only paths, byte buffers and
@@ -76,6 +77,17 @@ impl TransferService for Transfer {
         _: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
         Ok(Box::new(source(path)))
+    }
+    fn prepare_transfer_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.0.link_policies.lock().unwrap().push(links);
+        // This ordinary fixture tree has no link entries, so both directory
+        // projections prepare the same files and directories.
+        self.prepare_transfer_source(path, cancel)
     }
     fn prepare_transfer_destination(
         &self,

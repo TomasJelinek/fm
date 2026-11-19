@@ -28,6 +28,8 @@ mod command_icons;
 mod editor;
 #[path = "desktop_find.rs"]
 mod find;
+#[path = "desktop_link_targets.rs"]
+mod link_targets;
 
 const ICON_CAPACITY: usize = DESKTOP_ICON_CAPACITY;
 const MAX_TERMINALS: usize = crate::user_command_runtime::MAX_PROCESSES;
@@ -62,6 +64,7 @@ pub(crate) struct Desktop {
     property_budget: Arc<Semaphore>,
     launch_budget: Arc<Semaphore>,
     context_requests: watch::Sender<u64>,
+    link_targets: watch::Sender<Option<link_targets::Lookup>>,
     terminal_slots: Arc<Semaphore>,
     open_budget: Arc<Semaphore>,
     open_slots: Arc<Semaphore>,
@@ -141,6 +144,15 @@ impl Desktop {
             location_icons,
             context_receiver,
         )));
+        let (link_targets, link_lookups) = watch::channel(None);
+        if let Some(desktop) = services.clone() {
+            tasks.spawn(scope.future(link_targets::run(
+                scope.clone(),
+                desktop,
+                outbox.clone(),
+                link_lookups,
+            )));
+        }
         let (children, child_receiver) = mpsc::channel(MAX_TERMINALS);
         tasks.spawn(reap_children(child_receiver, outbox.clone()));
         let result = Self {
@@ -156,6 +168,7 @@ impl Desktop {
             property_budget: Arc::new(Semaphore::new(1)),
             launch_budget: Arc::new(Semaphore::new(1)),
             context_requests,
+            link_targets,
             terminal_slots: Arc::new(Semaphore::new(MAX_TERMINALS)),
             open_budget: retirement.external.open_budget(),
             open_slots: Arc::new(Semaphore::new(MAX_OPEN_HELPERS)),
@@ -177,6 +190,26 @@ impl Desktop {
             let _ = result.icons.try_send(key);
         }
         result
+    }
+
+    pub(crate) fn read_directory_link_target(
+        &self,
+        request: DesktopRequestId,
+        pane: PaneId,
+        navigation: NavigationId,
+        path: PathBuf,
+        snapshots: &crate::Snapshots,
+    ) {
+        if self.services.is_none() || !link_targets::current(snapshots, pane, navigation, &path) {
+            return;
+        }
+        self.link_targets.send_replace(Some(link_targets::Lookup {
+            request,
+            pane,
+            navigation,
+            path,
+            snapshots: snapshots.clone(),
+        }));
     }
 
     pub(crate) fn command_icons(&self, generation: u64, targets: Vec<CommandIconTarget>) {

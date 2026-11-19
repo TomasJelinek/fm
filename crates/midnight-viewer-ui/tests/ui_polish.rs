@@ -2,11 +2,12 @@
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, window::WindowInner,
 };
-use midnight_viewer_ui::ViewerWindow;
+use midnight_core::{ShortcutContext, ShortcutMap};
+use midnight_viewer_ui::{MediaControlsState, ViewerWindow};
 use slint::{
     ComponentHandle,
     platform::{
-        Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
+        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
@@ -133,6 +134,265 @@ fn type_query(window: &ViewerWindow, text: &str) {
     window
         .window()
         .dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+}
+
+#[test]
+fn paused_video_preserves_aspect_and_refits_on_resize_without_another_frame() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    let color = [17, 190, 90, 255];
+    let source = color.repeat(80 * 160);
+    window.set_surface(slint::Image::from_rgba8_premultiplied(
+        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&source, 80, 160),
+    ));
+    window.set_media_controls(MediaControlsState {
+        session: "portrait-video".into(),
+        playing: false,
+        can_play_pause: true,
+        can_seek: true,
+        position: 0.25,
+        time: "0:15 / 1:00".into(),
+        status: "".into(),
+        error: "".into(),
+    });
+    window.show().unwrap();
+    draw(&native, &window, 900, 600, "portrait-video-initial");
+    // Match ordinary frame presentation, which stores an explicit raster viewport.
+    // Every later size below reuses exactly the same already decoded/paused image.
+    window.set_raster_viewport_width(window.get_content_width());
+    window.set_raster_viewport_height(window.get_content_height());
+    for (width, height) in [(900, 600), (360, 320), (1000, 700)] {
+        window.set_compact(width < 500);
+        draw(&native, &window, width, height, "paused-portrait-video-fit");
+        for label in ["Play", "Playback position", "Playback time"] {
+            let item = control(&window, label, width as f32, height as f32);
+            let geometry = item.geometry();
+            let position = item.map_to_native_window(geometry.origin);
+            assert!(
+                geometry.size.width > 0.0 && geometry.size.height > 0.0,
+                "visible {label}"
+            );
+            assert!(position.x >= 0.0 && position.y >= 0.0, "{label} origin");
+            assert!(
+                position.x + geometry.size.width <= width as f32,
+                "{label} width"
+            );
+            assert!(
+                position.y + geometry.size.height <= height as f32,
+                "{label} height"
+            );
+        }
+        let mut pixels = vec![slint::Rgb8Pixel::default(); (width * height) as usize];
+        window.window().request_redraw();
+        native.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, width as usize);
+        });
+        let mut bounds = [width, height, 0, 0];
+        for (index, pixel) in pixels.iter().enumerate() {
+            if [pixel.r, pixel.g, pixel.b] == color[..3] {
+                let x = index as u32 % width;
+                let y = index as u32 / width;
+                bounds = [
+                    bounds[0].min(x),
+                    bounds[1].min(y),
+                    bounds[2].max(x + 1),
+                    bounds[3].max(y + 1),
+                ];
+            }
+        }
+        assert!(
+            bounds[2] > bounds[0] && bounds[3] > bounds[1],
+            "paused frame must remain visible"
+        );
+        let actual = [
+            (bounds[2] - bounds[0]) as f32,
+            (bounds[3] - bounds[1]) as f32,
+        ];
+        let scale = (window.get_content_width() / 80.0).min(window.get_content_height() / 160.0);
+        assert!(
+            (actual[0] - 80.0 * scale).abs() < 2.0 && (actual[1] - 160.0 * scale).abs() < 2.0,
+            "portrait video was stretched/clipped at {width}x{height}: rendered {actual:?}, canvas {}x{}",
+            window.get_content_width(),
+            window.get_content_height()
+        );
+        let canvas = control(&window, "File content", width as f32, height as f32);
+        let rect = canvas.geometry();
+        let origin = canvas.map_to_native_window(rect.origin);
+        assert!(
+            ((bounds[0] + bounds[2]) as f32 / 2.0 - (origin.x + rect.size.width / 2.0)).abs() < 2.0
+        );
+        assert!(
+            ((bounds[1] + bounds[3]) as f32 / 2.0 - (origin.y + rect.size.height / 2.0)).abs()
+                < 2.0
+        );
+    }
+    // Returning to text keeps the existing fill contract and Find interaction.
+    window.set_media_controls(MediaControlsState::default());
+    window.set_image_mode(false);
+    window.invoke_focus_search();
+    type_query(&window, "needle");
+    assert_eq!(window.get_query(), "needle");
+    assert!(window.get_search_visible());
+    window.hide().unwrap();
+}
+
+#[test]
+fn video_controls_keep_file_navigation_shortcuts_in_content_context() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    let bindings = ShortcutMap::new(&[]).unwrap();
+    let actions = Rc::new(RefCell::new(Vec::new()));
+    let received = actions.clone();
+    window.on_input_key(move |event, widget_focused| {
+        let context = if widget_focused {
+            ShortcutContext::ViewerSearch
+        } else {
+            ShortcutContext::Viewer
+        };
+        let Some(chord) = midnight_ui_input::chord(&event) else {
+            return false;
+        };
+        let Some(action) = bindings.resolve(&chord, context) else {
+            return false;
+        };
+        received
+            .borrow_mut()
+            .push((chord.display(), action.id.clone()));
+        true
+    });
+    window.set_image_mode(true);
+    window.set_media_controls(MediaControlsState {
+        session: "video-keyboard-test".into(),
+        playing: true,
+        can_play_pause: true,
+        can_seek: true,
+        position: 0.25,
+        time: "0:15 / 1:00".into(),
+        status: "".into(),
+        error: "".into(),
+    });
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    draw(&native, &window, 900, 600, "video-keyboard");
+    for label in ["Pause", "Playback position"] {
+        let size = control(&window, label, 900.0, 600.0).geometry().size;
+        assert!(size.width > 0.0 && size.height > 0.0, "visible {label}");
+    }
+    window.invoke_focus_content();
+    assert!(window.get_content_focused());
+
+    for (key, alt) in [
+        (Key::Space, false),
+        (Key::RightArrow, true),
+        (Key::Backspace, false),
+        (Key::LeftArrow, true),
+    ] {
+        if alt {
+            window.window().dispatch_event(WindowEvent::KeyPressed {
+                text: Key::Alt.into(),
+            });
+        }
+        for event in [
+            WindowEvent::KeyPressed { text: key.into() },
+            WindowEvent::KeyReleased { text: key.into() },
+        ] {
+            window.window().dispatch_event(event);
+        }
+        if alt {
+            window.window().dispatch_event(WindowEvent::KeyReleased {
+                text: Key::Alt.into(),
+            });
+        }
+    }
+    let expected = [
+        ("Space", "viewer.next-file"),
+        ("Alt+Right", "viewer.next-file"),
+        ("Backspace", "viewer.previous-file"),
+        ("Alt+Left", "viewer.previous-file"),
+    ]
+    .map(|(chord, action)| (chord.to_owned(), action.to_owned()));
+    assert_eq!(actions.borrow().as_slice(), &expected);
+    window.hide().unwrap();
+}
+
+#[test]
+fn video_timeline_seeks_once_on_release_and_discards_a_replaced_session() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    let seeks = Rc::new(RefCell::new(Vec::new()));
+    let received = seeks.clone();
+    window.on_media_seek(move |session, fraction| {
+        received.borrow_mut().push((session, fraction));
+    });
+    window.set_image_mode(true);
+    let media = MediaControlsState {
+        session: "first-video".into(),
+        playing: false,
+        can_play_pause: true,
+        can_seek: true,
+        position: 0.15,
+        time: "0:09 / 1:00".into(),
+        status: "".into(),
+        error: "".into(),
+    };
+    window.set_media_controls(media.clone());
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    draw(&native, &window, 900, 600, "video-timeline");
+
+    let timeline = control(&window, "Playback position", 900.0, 600.0);
+    let rect = timeline.geometry();
+    let origin = timeline.map_to_native_window(rect.origin);
+    let pointer = |fraction: f32, down: Option<bool>| {
+        let position = slint::LogicalPosition::new(
+            origin.x + rect.size.width * fraction,
+            origin.y + rect.size.height / 2.0,
+        );
+        let button = PointerEventButton::Left;
+        let event = match down {
+            Some(true) => WindowEvent::PointerPressed { position, button },
+            Some(false) => WindowEvent::PointerReleased { position, button },
+            None => WindowEvent::PointerMoved { position },
+        };
+        window.window().dispatch_event(event);
+    };
+    pointer(0.35, None);
+    pointer(0.35, Some(true));
+    pointer(0.48, None);
+    pointer(0.75, None);
+    assert!(seeks.borrow().is_empty(), "drag only previews a seek");
+    pointer(0.75, Some(false));
+    {
+        let requests = seeks.borrow();
+        let [(session, fraction)] = requests.as_slice() else {
+            panic!("expected one seek on release, got {requests:?}");
+        };
+        assert_eq!(session.as_str(), "first-video");
+        assert!((0.72..=0.80).contains(fraction), "released at {fraction}");
+    }
+
+    pointer(0.35, None);
+    pointer(0.35, Some(true));
+    pointer(0.55, None);
+    window.set_media_controls(MediaControlsState {
+        session: "replacement-video".into(),
+        ..media
+    });
+    pointer(0.65, None);
+    pointer(0.65, Some(false));
+    assert_eq!(
+        seeks.borrow().len(),
+        1,
+        "releasing the old gesture after replacement sends no seek"
+    );
+    window.hide().unwrap();
 }
 
 #[test]
@@ -663,15 +923,6 @@ fn web_policy_widgets_require_backend_permission_for_pointer_actions() {
         for allowed in [false, true] {
             window.set_web_policy_change_allowed(allowed);
             for network in [false, true] {
-                window.set_web_network(network);
-                window.set_web_scripts(false);
-                draw(
-                    &native,
-                    &window,
-                    width,
-                    height,
-                    &format!("web-policy-allowed{allowed}-network{network}-font{font}"),
-                );
                 for (label, enabled) in [
                     ("Allow network for this document only", allowed),
                     (
@@ -679,6 +930,17 @@ fn web_policy_widgets_require_backend_permission_for_pointer_actions() {
                         allowed && network,
                     ),
                 ] {
+                    // Each control starts from the same backend policy. Clicking Online
+                    // updates its two-way network binding before the JavaScript case.
+                    window.set_web_network(network);
+                    window.set_web_scripts(false);
+                    draw(
+                        &native,
+                        &window,
+                        width,
+                        height,
+                        &format!("web-policy-allowed{allowed}-network{network}-font{font}"),
+                    );
                     let item = control(&window, label, width as f32, height as f32);
                     assert!(item.is_visible());
                     assert_eq!(
@@ -688,7 +950,14 @@ fn web_policy_widgets_require_backend_permission_for_pointer_actions() {
                     policies.borrow_mut().clear();
                     click_control(&window, item);
                     assert_eq!(policies.borrow().len(), usize::from(enabled));
-                    if !enabled {
+                    if enabled {
+                        let requested = if label == "Allow network for this document only" {
+                            (!network, false)
+                        } else {
+                            (network, true)
+                        };
+                        assert_eq!(policies.borrow().as_slice(), &[requested]);
+                    } else {
                         assert_eq!(window.get_web_network(), network);
                         assert!(!window.get_web_scripts());
                     }

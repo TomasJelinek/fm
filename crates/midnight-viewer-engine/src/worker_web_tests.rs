@@ -787,6 +787,7 @@ fn search() -> ViewerInput {
         query: "needle".into(),
         backwards: false,
         case_sensitive: false,
+        whole_words: false,
     }
 }
 

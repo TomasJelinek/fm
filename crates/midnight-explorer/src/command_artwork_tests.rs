@@ -80,12 +80,43 @@ fn pixels() -> Pixels {
 }
 
 #[test]
+fn changing_the_shared_route_during_decode_cancels_import_before_managed_storage() {
+    let native = Native::fixture();
+    let routing = Arc::new(Routing::default());
+    let decoder_routing = routing.clone();
+    let picker = Picker {
+        native: native.clone(),
+        routing: routing.clone(),
+        decode: Arc::new(move |_, associations, cancelled| {
+            assert!(associations.overrides.is_empty());
+            assert!(!cancelled());
+            assert!(decoder_routing.accept(Arc::new(ThumbnailerAssociations {
+                overrides: [("midnight-image".into(), Vec::new())].into(),
+            })));
+            assert!(cancelled());
+            Ok(pixels())
+        }),
+    };
+    assert!(
+        picker
+            .pick_path(
+                &request(PathPickerKind::CommandIconImage),
+                &Cancellation::default(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(native.stored.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn image_selection_returns_only_the_managed_copy_and_preserves_generic_pickers() {
     let native = Native::fixture();
     let source = native.source.clone();
     let picker = Picker {
         native: native.clone(),
-        decode: Arc::new(move |path, _| {
+        routing: Arc::default(),
+        decode: Arc::new(move |path, _, _| {
             assert_eq!(path, source);
             Ok(pixels())
         }),
@@ -118,7 +149,8 @@ fn cancelled_selection_or_decode_never_publishes_artwork() {
     Arc::get_mut(&mut native).unwrap().cancel_at_selection = true;
     let picker = Picker {
         native: native.clone(),
-        decode: Arc::new(|_, _| panic!("cancelled selection decoded")),
+        routing: Arc::default(),
+        decode: Arc::new(|_, _, _| panic!("cancelled selection decoded")),
     };
     assert!(
         picker
@@ -131,19 +163,19 @@ fn cancelled_selection_or_decode_never_publishes_artwork() {
     );
     assert_eq!(native.stored.load(Ordering::Relaxed), 0);
     let native = Native::fixture();
+    let cancel = Cancellation::default();
+    let decode_cancel = cancel.clone();
     let picker = Picker {
         native: native.clone(),
-        decode: Arc::new(|_, cancel| {
-            cancel.cancel();
+        routing: Arc::default(),
+        decode: Arc::new(move |_, _, _| {
+            decode_cancel.cancel();
             Ok(pixels())
         }),
     };
     assert!(
         picker
-            .pick_path(
-                &request(PathPickerKind::CommandIconImage),
-                &Cancellation::default()
-            )
+            .pick_path(&request(PathPickerKind::CommandIconImage), &cancel)
             .unwrap()
             .is_none()
     );
@@ -155,7 +187,8 @@ fn decode_and_storage_failures_never_fall_back_to_the_original_path() {
     let native = Native::fixture();
     let picker = Picker {
         native: native.clone(),
-        decode: Arc::new(|_, _| Err(io::ErrorKind::InvalidData.into())),
+        routing: Arc::default(),
+        decode: Arc::new(|_, _, _| Err(io::ErrorKind::InvalidData.into())),
     };
     assert!(
         picker
@@ -170,7 +203,8 @@ fn decode_and_storage_failures_never_fall_back_to_the_original_path() {
     Arc::get_mut(&mut native).unwrap().fail_store = true;
     let picker = Picker {
         native,
-        decode: Arc::new(|_, _| Ok(pixels())),
+        routing: Arc::default(),
+        decode: Arc::new(|_, _, _| Ok(pixels())),
     };
     assert!(
         picker
@@ -188,7 +222,8 @@ fn platform_resource_import_keeps_the_resource_chooser_and_publishes_a_copy() {
     Arc::get_mut(&mut native).unwrap().import_resource = true;
     let picker = Picker {
         native: native.clone(),
-        decode: Arc::new(|_, _| Ok(pixels())),
+        routing: Arc::default(),
+        decode: Arc::new(|_, _, _| Ok(pixels())),
     };
     let result = picker
         .pick_path(
@@ -205,7 +240,8 @@ fn platform_resource_import_keeps_the_resource_chooser_and_publishes_a_copy() {
     let native = Native::fixture();
     let picker = Picker {
         native: native.clone(),
-        decode: Arc::new(|_, _| panic!("already managed native resource decoded twice")),
+        routing: Arc::default(),
+        decode: Arc::new(|_, _, _| panic!("already managed native resource decoded twice")),
     };
     picker
         .pick_path(
@@ -229,7 +265,7 @@ fn artwork_import_discovers_thumbnailers_from_the_resolved_installation() {
             None,
         ),
     );
-    let picker = with_installation(native.clone(), filesystem, move || {
+    let picker = with_installation(native.clone(), filesystem, Arc::default(), move || {
         count.fetch_add(1, Ordering::Relaxed);
         Err(io::Error::other("registered runtime marker"))
     });

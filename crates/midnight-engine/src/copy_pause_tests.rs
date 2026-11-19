@@ -115,3 +115,90 @@ async fn in_flight_copy_is_not_falsely_acknowledged_and_cancel_cleans_paused_sta
     assert_eq!(fs::read(&source).unwrap().len(), 600_000);
     assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirmation_waits_for_a_safe_checkpoint_and_preserves_manual_pause() {
+    use CopyCancelConfirmationAction::{Begin, Confirm, Dismiss};
+
+    let temp = fixture();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::write(&source, vec![42; 600_000]).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let entered = Arc::new(Notify::new());
+    let released = Arc::new(AtomicBool::new(false));
+    let _release = ReleaseOnDrop(released.clone());
+    let mut h = Harness::new(Some(Arc::new(BlockingService {
+        inner: midnight_platform::LocalFileSystem::new(None),
+        entered: entered.clone(),
+        released: released.clone(),
+        prepared: Arc::new(AtomicUsize::new(0)),
+        read_before_block: false,
+    })));
+    let id = OperationId(1);
+    h.controller
+        .enqueue(request(1, std::slice::from_ref(&source), &destination))
+        .await;
+    tokio::time::timeout(Duration::from_secs(4), entered.notified())
+        .await
+        .unwrap();
+
+    h.controller.cancel_confirmation(id, 10, Begin).await;
+    h.controller.cancel_confirmation(id, 10, Confirm).await;
+    loop {
+        if let CopyEvent::Progress(progress) = h.next().await
+            && progress.pause_requested
+        {
+            assert!(!progress.paused);
+            assert_eq!(progress.cancel_confirmation_ready, None);
+            break;
+        }
+    }
+    assert!(
+        !h.controller.registry.lock().unwrap()[&id]
+            .cancel
+            .is_cancelled()
+    );
+    released.store(true, Ordering::Release);
+
+    loop {
+        if let CopyEvent::Progress(progress) = h.next().await
+            && progress.cancel_confirmation_ready == Some(10)
+        {
+            assert!(progress.paused);
+            assert!(progress.copied_bytes > 0);
+            break;
+        }
+    }
+    assert!(h.io.available_permits() > 0);
+
+    h.controller.set_paused(id, true).await;
+    h.controller.cancel_confirmation(id, 10, Dismiss).await;
+    h.controller.cancel_confirmation(id, 10, Begin).await;
+    assert!(
+        h.controller.registry.lock().unwrap()[&id]
+            .cancel
+            .is_paused()
+    );
+
+    h.controller.cancel_confirmation(id, 11, Begin).await;
+    h.controller.cancel_confirmation(id, 10, Dismiss).await;
+    h.controller.cancel_confirmation(id, 10, Confirm).await;
+    loop {
+        if let CopyEvent::Progress(progress) = h.next().await
+            && progress.cancel_confirmation_ready == Some(11)
+        {
+            assert!(progress.paused);
+            break;
+        }
+    }
+
+    h.controller.cancel_confirmation(id, 11, Confirm).await;
+    let done = h.terminal(1).await;
+    h.close().await;
+    assert_eq!(done.state, CopyOperationState::Cancelled);
+    assert!(!done.paused && !done.pause_requested);
+    assert_eq!(done.cancel_confirmation_ready, None);
+    assert_eq!(fs::read(&source).unwrap().len(), 600_000);
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+}

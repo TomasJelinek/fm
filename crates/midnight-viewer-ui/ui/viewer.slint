@@ -6,6 +6,9 @@ import { CompactPicker } from "../../midnight-ui/ui/controls.slint";
 import { ThemedLineEdit, ThemedSpinBox } from "../../midnight-ui/ui/content-controls.slint";
 
 import { PositionBar } from "viewer-position-bar.slint";
+import { ViewerFindBar } from "viewer-find-bar.slint";
+import { MediaControls, MediaControlsState } from "viewer-media-controls.slint";
+export { MediaControlsState }
 export struct ViewerRasterTile { image: image, x: float, y: float, width: float, height: float }
 
 export component ViewerWindow inherits Window {
@@ -14,6 +17,8 @@ export component ViewerWindow inherits Window {
     in property <bool> compact;
     in property <string> caption: "Viewer — Midnight Explorer";
     in property <string> status: "Opening…";
+    in property <MediaControlsState> media-controls;
+    private property <bool> media-visible: root.media-controls.session != "";
     in property <image> surface;
     in property <bool> tiled;
     in property <bool> retained-raster;
@@ -99,21 +104,27 @@ export component ViewerWindow inherits Window {
     private property <length> effective-ui-size: root.compact ? min(root.ui-font-size, 12px) : root.ui-font-size;
     private property <length> control-height: max(max(Theme.touch ? 40px : 28px, root.effective-ui-size + 14px),
         max(control-metrics.min-height, control-metrics.preferred-height));
+    private property <bool> compact-status: !root.media-visible
+        && root.compact && (root.image-mode || root.source-mode);
     private property <bool> stacked-image-footer:
-        root.image-mode && root.document-page > 0
+        !root.media-visible && root.image-mode && root.document-page > 0
         && (root.compact || root.width < root.effective-ui-size * 32 + 260px);
     private property <length> status-size: max(11px, root.effective-ui-size - 1px);
     control-metrics := Button { visible: false; text: "Aa"; }
     in-out property <bool> search-visible;
     in-out property <string> query;
     in-out property <bool> case-sensitive;
+    in-out property <bool> whole-words;
+    in property <bool> whole-words-available;
     out property <length> content-width: canvas.width;
     out property <length> content-height: canvas.height;
     out property <length> content-left: canvas.absolute-position.x;
     out property <length> content-top: canvas.absolute-position.y;
     out property <bool> content-focused: content-focus.has-focus;
+    callback media-toggle(string);
+    callback media-seek(string, float);
     callback input-key(KeyEvent, bool) -> bool;
-    callback scroll(float, float);
+    callback scroll(float, float) -> bool;
     // Scrollbar seeks: drag-seek(horizontal, position) arrives between
     // position-drag-began and position-drag-ended, which settles the position.
     callback position-drag-began(bool);
@@ -122,6 +133,7 @@ export component ViewerWindow inherits Window {
     callback select-point(float, float, bool);
     callback find();
     callback search(bool);
+    callback clear-search();
     callback change-mode(int);
     callback change-wrap(bool);
     callback change-case-sensitive(bool);
@@ -137,7 +149,9 @@ export component ViewerWindow inherits Window {
     callback web-policy(bool, bool);
     callback deliver-output();
     callback frame-presented();
-    public function focus-search() { root.search-visible = true; search-edit.focus(); }
+    public function focus-search() {
+        if !root.media-visible { root.search-visible = true; find-bar.focus-query(); }
+    }
     public function focus-content() { content-focus.focus(); }
     public function apply-palette(light: bool) {
         Theme.font-family = root.ui-font-family;
@@ -162,22 +176,19 @@ export component ViewerWindow inherits Window {
         VerticalLayout {
             padding: root.compact && root.document-layout >= 0 ? 4px : 6px;
             spacing: root.compact && root.document-layout >= 0 ? 2px : 4px;
-            HorizontalLayout {
-                spacing: 4px;
-                visible: root.search-visible && !root.image-mode;
-                height: root.search-visible && !root.image-mode ? max(30px, root.control-height) : 0px;
-                search-edit := ThemedLineEdit {
-                    font-size: root.effective-ui-size; control-height: root.control-height;
-                    text <=> root.query;
-                    placeholder-text: "Find in file";
-                    accepted => { root.search(false); }
-                }
-                WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Aa"; checked <=> root.case-sensitive; accessible-name: "Case sensitive";
-                    toggled => { root.change-case-sensitive(self.checked); } }
-                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "Previous"; clicked => { root.search(true); } }
-                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "Next"; clicked => { root.search(false); } }
+            find-bar := ViewerFindBar {
+                visible: !root.media-visible && root.search-visible && !root.image-mode;
+                height: self.visible ? self.preferred-height : 0px;
+                font-size: root.effective-ui-size; control-height: root.control-height;
+                compact: root.compact; web-mode: root.web-mode;
+                query <=> root.query; case-sensitive <=> root.case-sensitive;
+                whole-words <=> root.whole-words;
+                whole-words-available: root.whole-words-available;
+                search(backwards) => { root.search(backwards); }
+                clear-query => { root.clear-search(); }
+                case-changed(value) => { root.change-case-sensitive(value); }
             }
-            if root.web-mode: HorizontalLayout {
+            if !root.media-visible && root.web-mode: HorizontalLayout {
                     spacing: 4px; height: max(32px, root.control-height);
                     WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Online"; checked <=> root.web-network; enabled: root.web-policy-change-allowed; horizontal-stretch: 0;
                         accessible-name: "Allow network for this document only";
@@ -201,7 +212,7 @@ export component ViewerWindow inherits Window {
                         accessible-label: "Zoom HTML in";
                         clicked => { root.image-command(2); content-focus.focus(); } }
             }
-            if !root.image-mode && root.font-available && (root.typography-visible || root.markdown-mode || root.source-mode): HorizontalLayout {
+            if !root.media-visible && !root.image-mode && root.font-available && (root.typography-visible || root.markdown-mode || root.source-mode): HorizontalLayout {
                 spacing: 6px; height: max(32px, root.control-height);
                 if root.source-mode: WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height;
                     text: "Lines"; checked <=> root.line-numbers;
@@ -239,7 +250,7 @@ export component ViewerWindow inherits Window {
                     edited(value) => { root.change-font-size(value); } }
             }
             HorizontalLayout {
-                spacing: 2px;
+                spacing: root.media-visible ? 0px : 2px;
                 canvas := Rectangle {
                     horizontal-stretch: 1; vertical-stretch: 1; clip: true;
                     background: root.background-color;
@@ -248,11 +259,11 @@ export component ViewerWindow inherits Window {
                     accessible-value: root.accessible-text;
                     Image {
                         source: root.surface;
-                        x: root.image-mode ? (canvas.width - root.image-width) / 2 : -root.canvas-phase-x;
-                        y: root.image-mode ? (canvas.height - root.image-height) / 2 : -root.canvas-phase-y;
-                        width: root.image-mode ? root.image-width : root.raster-viewport-width;
-                        height: root.image-mode ? root.image-height : root.raster-viewport-height;
-                        image-fit: fill;
+                        x: root.media-visible ? 0px : root.image-mode ? (canvas.width - root.image-width) / 2 : -root.canvas-phase-x;
+                        y: root.media-visible ? 0px : root.image-mode ? (canvas.height - root.image-height) / 2 : -root.canvas-phase-y;
+                        width: root.media-visible ? canvas.width : root.image-mode ? root.image-width : root.raster-viewport-width;
+                        height: root.media-visible ? canvas.height : root.image-mode ? root.image-height : root.raster-viewport-height;
+                        image-fit: root.media-visible ? contain : fill;
                         visible: !root.tiled && !root.retained-raster;
                     }
                     if root.retained-raster: Rectangle {
@@ -289,55 +300,68 @@ export component ViewerWindow inherits Window {
                     TouchArea {
                         property <length> previous-x;
                         property <length> previous-y;
-                        mouse-cursor: root.image-mode ? (self.pressed ? MouseCursor.grabbing : MouseCursor.grab) : MouseCursor.text;
+                        mouse-cursor: root.media-visible ? MouseCursor.default
+                            : root.image-mode ? (self.pressed ? MouseCursor.grabbing : MouseCursor.grab) : MouseCursor.text;
                         pointer-event(event) => {
-                            if root.web-mode { return; }
+                            if root.web-mode && !root.media-visible { return; }
                             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                                 content-focus.focus();
+                                if root.media-visible { return; }
                                 self.previous-x = self.mouse-x;
                                 self.previous-y = self.mouse-y;
                                 if !root.image-mode { root.select-point(self.mouse-x / 1px, self.mouse-y / 1px, event.modifiers.shift); }
                             }
                         }
-                        moved => { if self.pressed && !root.web-mode {
+                        moved => { if self.pressed && !root.web-mode && !root.media-visible {
                             if root.image-mode {
                                 root.image-drag((self.mouse-x - self.previous-x) / 1px, (self.mouse-y - self.previous-y) / 1px);
                                 self.previous-x = self.mouse-x; self.previous-y = self.mouse-y;
                             } else { root.select-point(self.mouse-x / 1px, self.mouse-y / 1px, true); }
                         } }
                         scroll-event(event) => {
+                            if root.media-visible { return reject; }
                             if root.web-mode { return accept; }
                             if root.image-mode && event.modifiers.control {
                                 root.image-zoom(event.delta-y / 1px, self.mouse-x / 1px, self.mouse-y / 1px);
-                            } else { root.scroll(-event.delta-x / 1px, -event.delta-y / 1px); }
-                            accept
+                                return accept;
+                            }
+                            if root.scroll(-event.delta-x / 1px, -event.delta-y / 1px) { return accept; }
+                            reject
                         }
                     }
                 }
                 Rectangle {
                     // New page widths and Fit/1:1 keep one physical viewport.
                     // A newly necessary bar must not end a captured drag.
-                    min-width: 14px;
-                    max-width: 14px;
+                    min-width: root.media-visible ? 0px : 14px;
+                    max-width: self.min-width;
                     vbar := PositionBar { width: parent.width; height: parent.height;
                         context-key: root.position-context;
                         position: root.position; extent: root.vertical-extent; accent: root.accent;
-                        visible: root.vertical-extent < 1;
+                        visible: !root.media-visible && root.vertical-extent < 1;
                         seek(value) => { root.drag-seek(false, value); }
                         drag-started => { root.position-drag-began(false); }
                         drag-ended => { root.position-drag-ended(false); } }
                 }
             }
             HorizontalLayout {
-                height: 16px;
+                height: root.media-visible ? 0px : 16px;
                 PositionBar { horizontal: true; position: root.horizontal-position; extent: root.horizontal-extent;
                     context-key: root.position-context;
-                    visible: root.horizontal-extent < 1;
+                    visible: !root.media-visible && root.horizontal-extent < 1;
                     accent: root.accent; seek(value) => { root.drag-seek(true, value); }
                     drag-started => { root.position-drag-began(true); }
                     drag-ended => { root.position-drag-ended(true); } }
             }
-            if root.compact && (root.image-mode || root.source-mode): Text {
+            if root.media-visible : MediaControls {
+                state: root.media-controls;
+                compact: root.compact; accent: root.accent;
+                font-size: root.effective-ui-size; control-height: root.control-height;
+                status-size: root.status-size;
+                toggle(session) => { root.media-toggle(session); }
+                seek(session, position) => { root.media-seek(session, position); }
+            }
+            if root.compact-status : Text {
                 height: max(18px, root.status-size + 6px); text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text;
                 font-size: root.status-size; overflow: elide; vertical-alignment: center;
             }
@@ -349,8 +373,8 @@ export component ViewerWindow inherits Window {
                         : 2 * root.control-height + 3px) : root.control-height;
                 HorizontalLayout {
                     x: 0px; y: 0px; width: parent.width; height: parent.height;
-                    Text { visible: !(root.image-mode || root.source-mode) || !root.compact; min-width: 0px; max-width: (root.image-mode || root.source-mode) && root.compact ? 0px : 1000000px; text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                    if root.image-mode: GridLayout {
+                    Text { visible: !root.compact-status; min-width: 0px; max-width: root.compact-status ? 0px : 1000000px; text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                    if !root.media-visible && root.image-mode: GridLayout {
                         spacing: 3px;
                         // Long PDF page counts must not crowd the zoom actions at
                         // the minimum width, regardless of native font metrics.
@@ -444,19 +468,19 @@ export component ViewerWindow inherits Window {
                             }
                         }
                     }
-                    if !root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                    if !root.media-visible && !root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
                         text: "Find"; horizontal-stretch: 0;
                         clicked => { root.find(); }
                     }
-                    if !root.image-mode && !root.web-mode: WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Wrap"; checked <=> root.wrap-enabled; enabled: root.wrap-available;
+                    if !root.media-visible && !root.image-mode && !root.web-mode: WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Wrap"; checked <=> root.wrap-enabled; enabled: root.wrap-available;
                         accessible-name: "Word wrap";
                         toggled => { root.change-wrap(self.checked); content-focus.focus(); } }
-                    if !root.image-mode && root.font-available && !root.source-mode && !root.markdown-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                    if !root.media-visible && !root.image-mode && root.font-available && !root.source-mode && !root.markdown-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
                         text: "Aa"; min-width: 30px; max-width: 38px;
                         accessible-label: "Font and presentation";
                         clicked => { root.typography-visible = !root.typography-visible; }
                     }
-                    if !root.image-mode: CompactPicker { model: root.modes; current-index: root.mode-index;
+                    if !root.media-visible && !root.image-mode: CompactPicker { model: root.modes; current-index: root.mode-index;
                         font-size: root.effective-ui-size; control-height: root.control-height;
                         label: root.mode-index >= 0 && root.mode-index < root.modes.length
                             ? root.modes[root.mode-index] : "";

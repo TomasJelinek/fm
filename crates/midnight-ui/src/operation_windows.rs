@@ -164,12 +164,17 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
         Key::Copy(token) if ctx.windows.borrow().failed_copy.as_ref() == Some(token) => return,
         _ => {}
     }
-    match open(ctx, main, key.clone()) {
+    match open(ctx, main, p, key.clone()) {
         Ok(record) => ctx.windows.borrow_mut().record = Some(Rc::new(record)),
         Err(error) => failed(ctx, key, error.to_string()),
     }
 }
-fn open(ctx: &Rc<Context>, main: &MainWindow, key: Key) -> Result<Record, PlatformError> {
+fn open(
+    ctx: &Rc<Context>,
+    main: &MainWindow,
+    p: &Presenter,
+    key: Key,
+) -> Result<Record, PlatformError> {
     main.invoke_drag_invalidate_targets();
     let session = ctx.windows.borrow_mut().sessions.allocate()?;
     let token: SharedString = format!("{session:?}").into();
@@ -183,11 +188,19 @@ fn open(ctx: &Rc<Context>, main: &MainWindow, key: Key) -> Result<Record, Platfo
     window.set_policy("".into());
     window.set_wait_visible(false);
     window.set_wait_checked(false);
+    window.set_follow_directory_links_visible(false);
     window.set_option_enabled(true);
     window.set_option_checked(false);
     window.set_dangerous(false);
     match &key {
-        Key::Copy(_) => copy_draft_windows::initialize(&window, main),
+        Key::Copy(_) => copy_draft_windows::initialize(
+            &window,
+            main,
+            p.copies
+                .draft
+                .as_ref()
+                .is_some_and(|draft| draft.directory_link_options_available()),
+        ),
         Key::Operation(_) => {
             window.set_title_text(main.get_operation_title());
             window.set_kind(main.get_operation_kind());
@@ -294,12 +307,17 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
                 if !record.key.current(p) {
                     return false;
                 }
+                let window = main.global::<OperationPresentation>();
+                let follow_directory_links = window
+                    .get_follow_directory_links_visible()
+                    .then(|| window.get_follow_directory_links_checked());
                 *record.error.borrow_mut() = copy_draft_windows::confirm(
                     p,
                     token,
                     value.as_str(),
-                    main.global::<OperationPresentation>().get_option_checked(),
-                    main.global::<OperationPresentation>().get_wait_checked(),
+                    window.get_option_checked(),
+                    window.get_wait_checked(),
+                    follow_directory_links,
                     send,
                 );
                 !record.key.current(p)

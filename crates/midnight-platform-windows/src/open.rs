@@ -1,4 +1,4 @@
-//! Explicit desktop activation; called only by the backend's bounded native workers.
+//! Native desktop file integration on bounded backend workers.
 
 use crate::WindowsFileSystem;
 use midnight_core::{FsError, OpenEntryResult, OpenService, SystemLocation};
@@ -10,7 +10,7 @@ use std::{
         fs::{FileTypeExt, OpenOptionsExt},
         io::AsRawHandle,
     },
-    path::{Component, Path, Prefix},
+    path::{Component, Path, PathBuf, Prefix},
     ptr,
 };
 use windows_sys::Win32::{
@@ -41,6 +41,26 @@ impl OpenService for WindowsFileSystem {
 
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
         open_with(path, launch_association)
+    }
+
+    fn read_link_target(&self, link: &Path) -> Result<Option<PathBuf>, FsError> {
+        let lookup = || {
+            validate_path(link)?;
+            let raw = link.as_os_str().as_encoded_bytes();
+            if link
+                .file_name()
+                .is_none_or(|name| !raw.ends_with(name.as_encoded_bytes()))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "link lookup requires the exact path of a named entry",
+                ));
+            }
+            fs::read_link(link)
+        };
+        lookup()
+            .map(Some)
+            .map_err(|error| FsError::from_io("read link target", link, error))
     }
 
     fn directory_destination(&self, path: &Path) -> Result<std::path::PathBuf, FsError> {

@@ -8,6 +8,7 @@ fn stopped_service_rejects_new_work() {
     let service = Service::start(PathBuf::new(), PathBuf::new());
     service.stop();
     assert!(!service.set_view(View {
+        thumbnailer_associations: Default::default(),
         generation: 1,
         targets: Vec::new()
     }));

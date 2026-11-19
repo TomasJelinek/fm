@@ -10,7 +10,7 @@ mod modeless;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ParentItemTraversalMode},
-    items::{AccessibleRole, ComplexText, Flickable, SimpleText},
+    items::{AccessibleRole, ComplexText, Flickable, ImageItem, SimpleText},
     window::WindowInner,
 };
 use midnight_ui::{
@@ -107,6 +107,20 @@ fn form_property(
         .to_string()
 }
 
+fn contains_visible_image(item: ItemRc) -> bool {
+    if item.is_visible() && item.downcast::<ImageItem>().is_some() {
+        return true;
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if contains_visible_image(item) {
+            return true;
+        }
+    }
+    false
+}
+
 /// A control of a native window is visible inside it and every scroll viewport.
 fn inside(native: &MinimalSoftwareWindow, role: AccessibleRole, label: &str) -> ItemRc {
     let item = modeless::accessible_item(native, role, label)
@@ -181,6 +195,29 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
                 let expression =
                     form_inside(&host, AccessibleRole::TextInput, "File filter expression");
                 let clear = form_inside(&host, AccessibleRole::Button, "Clear filter expression");
+                let history = form_inside(&host, AccessibleRole::Combobox, "Filter history");
+                let edit_at = expression.map_to_native_window(expression.geometry().origin);
+                let clear_at = clear.map_to_native_window(clear.geometry().origin);
+                let history_at = history.map_to_native_window(history.geometry().origin);
+                assert!(
+                    (clear_at.x - edit_at.x - expression.geometry().width()).abs() <= 1.0
+                        && (history_at.x - clear_at.x - clear.geometry().width()).abs() <= 1.0,
+                    "expression, sole draft clear and history must form one contiguous row"
+                );
+                assert!(
+                    (history_at.y - edit_at.y).abs() <= 1.0
+                        && (clear_at.y - edit_at.y).abs() <= 1.0
+                        && (history.geometry().height() - expression.geometry().height()).abs()
+                            <= 1.0
+                        && (clear.geometry().height() - expression.geometry().height()).abs()
+                            <= 1.0,
+                    "expression, draft clear and history must have equal height and top"
+                );
+                assert!(
+                    !contains_visible_image(expression.clone()),
+                    "the focused expression must not add another inline clear icon"
+                );
+                assert!(history.geometry().width() <= history.geometry().height() + 1.0);
                 form_inside(&host, AccessibleRole::Checkbox, "Case sensitive");
                 for label in ["Help", "Show all", "OK", "Cancel"] {
                     form_inside(&host, AccessibleRole::Button, label);

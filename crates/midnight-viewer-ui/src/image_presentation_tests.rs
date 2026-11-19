@@ -92,7 +92,10 @@ pub(super) fn present(
                 revision,
                 generation: frame.generation,
                 minimum_frame_revision: (frame.image.is_none()
-                    && !matches!(frame.mode, VIEWER_MODE_IMAGE | VIEWER_MODE_HTML))
+                    && !matches!(
+                        frame.mode,
+                        VIEWER_MODE_IMAGE | VIEWER_MODE_HTML | VIEWER_MODE_VIDEO
+                    ))
                 .then_some(frame.revision),
             });
         }
@@ -177,6 +180,7 @@ pub(super) fn frame() -> ViewerFrame {
         generation: 1,
         raster: None,
         raster_rebase: None,
+        media_control: None,
         position_sequence: [0; 2],
         revision: 1,
         mode: VIEWER_MODE_IMAGE,
@@ -1590,6 +1594,9 @@ fn fixture_runtime_closes_a_retained_session_before_checked_shutdown() {
     // alive until hide. Release UI ownership without closing the actual session.
     open.window.hide().unwrap();
     let session = Rc::clone(&open.session);
+    // Exercise TestRuntime's retained-session cleanup independently of the
+    // normal manager guard, whose Drop closes every registered window.
+    manager.windows.borrow_mut().clear();
     drop((manager, open, service));
     assert!(weak_open.upgrade().is_none(), "OpenWindow still retained");
     assert!(
@@ -1617,6 +1624,9 @@ fn fixture_runtime_closes_a_retained_session_without_replacing_the_primary_panic
     // alive until hide. Release UI ownership without closing the actual session.
     open.window.hide().unwrap();
     let session = Rc::clone(&open.session);
+    // Leave the retained session live for TestRuntime to retire during unwind.
+    // An empty registry makes normal TestWindows cleanup a harmless no-op.
+    manager.windows.borrow_mut().clear();
     drop((manager, open, service));
     assert!(weak_open.upgrade().is_none(), "OpenWindow still retained");
     assert!(

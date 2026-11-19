@@ -2,8 +2,8 @@
 //! cleanup closes an owned inode and cannot unlink a substituted staging pathname.
 //! This is not an isolation boundary against root or another process of the same uid.
 use midnight_core::{
-    Cancellation, EntryKind, EntryMetadata, FsError, MutationItem, TransferDirectory,
-    TransferEntry, TransferIdentity, TransferService, TransferSource,
+    Cancellation, CopyLinkPolicy, EntryKind, EntryMetadata, FsError, MutationItem,
+    TransferDirectory, TransferEntry, TransferIdentity, TransferService, TransferSource,
 };
 use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat, openat2};
 use std::{
@@ -16,6 +16,11 @@ use std::{
 };
 #[path = "transfer_destination.rs"]
 mod destination;
+#[cfg(test)]
+#[path = "transfer_directory_link_tests.rs"]
+mod directory_link_tests;
+#[path = "transfer_directory_links.rs"]
+mod directory_links;
 #[cfg(test)]
 #[path = "transfer_drag_tests.rs"]
 mod drag_tests;
@@ -80,29 +85,43 @@ impl TransferService for crate::LinuxFileSystem {
     ) -> Result<midnight_core::PreparedTransferMove, FsError> {
         move_source::prepare(path, cancel)
     }
+    fn prepare_move_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
+        move_source::prepare_with_links(path, links, cancel)
+    }
     fn prepare_transfer_source(
         &self,
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
-        checked(cancel, path)?;
-        let path = absolute(path)?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| invalid(&path, "filesystem roots are not copy sources"))?;
-        let parent_path = path
-            .parent()
-            .ok_or_else(|| invalid(&path, "source needs a parent"))?;
-        let parent = Arc::new(File::from(
-            openat(CWD, parent_path, DIRECTORY, Mode::empty())
-                .map_err(|e| error(&path, e.into()))?,
-        ));
-        Ok(Box::new(source::Source::open_root(
-            parent,
-            parent_path.to_owned(),
-            name,
-            cancel,
-        )?))
+        prepare_copy_source(path, None, cancel)
+    }
+    fn prepare_transfer_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        let mode = match links {
+            CopyLinkPolicy::Reject => return self.prepare_transfer_source(path, cancel),
+            CopyLinkPolicy::Preserve => {
+                return Err(FsError::from_io(
+                    "transfer capability",
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "link-preserving source preparation is unsupported",
+                    ),
+                ));
+            }
+            CopyLinkPolicy::FollowDirectoryContents => directory_links::DirectoryLinkMode::Follow,
+            CopyLinkPolicy::EmptyDirectories => directory_links::DirectoryLinkMode::Empty,
+        };
+        prepare_copy_source(path, Some(directory_links::Traversal::new(mode)), cancel)
     }
     fn prepare_transfer_destination(
         &self,
@@ -118,6 +137,30 @@ impl TransferService for crate::LinuxFileSystem {
             directory, path,
         )?))
     }
+}
+fn prepare_copy_source(
+    path: &Path,
+    traversal: Option<directory_links::Traversal>,
+    cancel: &Cancellation,
+) -> Result<Box<dyn TransferSource>, FsError> {
+    checked(cancel, path)?;
+    let path = absolute(path)?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| invalid(&path, "filesystem roots are not copy sources"))?;
+    let parent_path = path
+        .parent()
+        .ok_or_else(|| invalid(&path, "source needs a parent"))?;
+    let parent = Arc::new(File::from(
+        openat(CWD, parent_path, DIRECTORY, Mode::empty()).map_err(|e| error(&path, e.into()))?,
+    ));
+    Ok(Box::new(source::Source::open_root(
+        parent,
+        parent_path.to_owned(),
+        name,
+        traversal,
+        cancel,
+    )?))
 }
 fn absolute(path: &Path) -> Result<PathBuf, FsError> {
     if !path.is_absolute()
@@ -159,6 +202,15 @@ fn identity_of(metadata: &std::fs::Metadata) -> TransferIdentity {
         device: metadata.dev(),
         object,
     }
+}
+fn revision_of(metadata: &std::fs::Metadata) -> (u64, i64, i64, i64, i64) {
+    (
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    )
 }
 fn kind_of(metadata: &std::fs::Metadata) -> EntryKind {
     if metadata.is_file() {

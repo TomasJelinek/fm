@@ -69,6 +69,90 @@ struct Registered {
     waiting: Arc<AtomicU64>,
     events: CopyOutbox,
 }
+#[derive(Default)]
+struct PauseRequests {
+    manual: bool,
+    latest_token: u64,
+    confirmation: Option<u64>,
+}
+
+/// Combines the controls for one admitted job under the same short lock.
+/// The job's own token remains the sole authority for checkpoints and cancellation.
+struct CopyPause {
+    cancel: Cancellation,
+    requests: Mutex<PauseRequests>,
+}
+
+impl CopyPause {
+    fn new(cancel: Cancellation) -> Self {
+        Self {
+            cancel,
+            requests: Mutex::default(),
+        }
+    }
+
+    fn set_manual(&self, paused: bool) {
+        let mut requests = self
+            .requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        requests.manual = paused;
+        self.apply_requests(&requests);
+    }
+
+    fn confirm(&self, token: u64, action: CopyCancelConfirmationAction) -> bool {
+        use CopyCancelConfirmationAction::{Begin, Confirm, Dismiss};
+
+        let mut requests = self
+            .requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.cancel.is_cancelled() {
+            return false;
+        }
+        match action {
+            Begin if token > requests.latest_token => {
+                requests.latest_token = token;
+                requests.confirmation = Some(token);
+            }
+            Dismiss if requests.confirmation == Some(token) => {
+                requests.confirmation = None;
+            }
+            Confirm if requests.confirmation == Some(token) && self.cancel.is_paused() => {
+                self.cancel.cancel();
+                requests.confirmation = None;
+            }
+            _ => return false,
+        }
+        self.apply_requests(&requests);
+        true
+    }
+
+    fn cancel(&self) {
+        let mut requests = self
+            .requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.cancel.cancel();
+        requests.confirmation = None;
+        self.apply_requests(&requests);
+    }
+
+    fn ready_confirmation(&self) -> Option<u64> {
+        let requests = self
+            .requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        requests.confirmation.filter(|_| self.cancel.is_paused())
+    }
+
+    fn apply_requests(&self, requests: &PauseRequests) {
+        self.cancel.set_pause_requested(
+            !self.cancel.is_cancelled() && (requests.manual || requests.confirmation.is_some()),
+        );
+    }
+}
+
 type Request = Owned<Input>;
 pub(crate) struct Admitted {
     request: Owned<submission::Submission>,
@@ -339,6 +423,7 @@ impl Controller {
             self.outbox.clone(),
             self.cancel.clone(),
             self.controls.clone(),
+            cancel.clone(),
         );
         let waiting = Arc::new(AtomicU64::new(0));
         let (decisions, decision_receiver) = mpsc::channel(8);
@@ -402,9 +487,34 @@ impl Controller {
             if job.cancel.is_cancelled() || progress.state.is_terminal() {
                 return;
             }
-            job.cancel.set_pause_requested(paused);
+            job.events.pause.set_manual(paused);
             progress.pause_requested = job.cancel.pause_requested();
             progress.paused = job.cancel.is_paused();
+            (progress.clone(), job.events.clone())
+        };
+        self.controls.changed();
+        publish(&events, progress).await;
+    }
+    pub(crate) async fn cancel_confirmation(
+        &self,
+        id: OperationId,
+        token: u64,
+        action: CopyCancelConfirmationAction,
+    ) {
+        let (progress, events) = {
+            let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(job) = registry.get(&id) else { return };
+            let mut progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
+            if progress.state.is_terminal() || !job.events.pause.confirm(token, action) {
+                return;
+            }
+            if job.cancel.is_cancelled() {
+                job.waiting.store(0, Ordering::Release);
+                mark_cancel_requested(&mut progress);
+            } else {
+                progress.pause_requested = job.cancel.pause_requested();
+                progress.paused = job.cancel.is_paused();
+            }
             (progress.clone(), job.events.clone())
         };
         self.controls.changed();
@@ -419,19 +529,14 @@ impl Controller {
     fn cancel_registered(&self, id: OperationId) {
         let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = registry.get(&id) {
-            job.cancel.cancel();
+            job.events.pause.cancel();
             job.waiting.store(0, Ordering::Release);
             let mut progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
             if progress.state == CopyOperationState::CancelRequested || progress.state.is_terminal()
             {
                 return;
             }
-            progress.pause_requested = false;
-            progress.paused = false;
-            progress.state = CopyOperationState::CancelRequested;
-            progress.wait_reason = None;
-            crate::operation_throughput::stop(&mut progress.throughput);
-            crate::operation_throughput::stop(&mut progress.verification_throughput);
+            mark_cancel_requested(&mut progress);
             if job
                 .events
                 .sender
@@ -447,6 +552,16 @@ impl Controller {
         self.controls.changed();
     }
 }
+fn mark_cancel_requested(progress: &mut CopyProgress) {
+    progress.pause_requested = false;
+    progress.paused = false;
+    progress.cancel_confirmation_ready = None;
+    progress.state = CopyOperationState::CancelRequested;
+    progress.wait_reason = None;
+    crate::operation_throughput::stop(&mut progress.throughput);
+    crate::operation_throughput::stop(&mut progress.verification_throughput);
+}
+
 impl Drop for Controller {
     fn drop(&mut self) {
         self.shutdown();
@@ -551,6 +666,11 @@ async fn run_accepted(
                     })
                 })
             };
+            if failure.is_none()
+                && let Some(roots) = request.command.normalize_copy_roots()
+            {
+                progress.requested_roots = roots;
+            }
             *request
                 .status
                 .lock()
@@ -684,10 +804,15 @@ fn publish_progress_tick(outbox: &CopyOutbox, status: &Status, sampled: Option<C
 /// Checked teardown stores it in the shared status earlier (`Completion::finish`), so
 /// late controls see a finished job; republishing that status here would deliver the
 /// terminal state twice.
-fn publish_intermediate(outbox: &CopyOutbox, progress: CopyProgress) {
+fn publish_intermediate(outbox: &CopyOutbox, mut progress: CopyProgress) {
     if progress.state.is_terminal() {
         return;
     }
+    // The regular cadence retries a ready token if the presentation queue is full.
+    progress.cancel_confirmation_ready = progress
+        .paused
+        .then(|| outbox.pause.ready_confirmation())
+        .flatten();
     if outbox
         .sender
         .try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
@@ -731,7 +856,20 @@ async fn execute_input(
             Some(throughput),
             Some(TransferWaitReason::EarlierTransfers),
         );
-        let finished = predecessors.wait(&cancel, &outbox.controls).await;
+        let finished = loop {
+            if !wait_for_pause(&cancel, &status, outbox, throughput, None).await {
+                break false;
+            }
+            if let Some(finished) = interruptible(
+                predecessors.wait(&cancel, &outbox.controls),
+                &cancel,
+                outbox,
+            )
+            .await
+            {
+                break finished;
+            }
+        };
         set_resource_wait(&status, Some(throughput), None);
         if !finished {
             return retire_input(request, cancelled(&status), &status).await;

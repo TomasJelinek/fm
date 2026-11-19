@@ -33,6 +33,14 @@ impl OpenWindow {
                 {
                     return;
                 }
+                // Until the first frame the UI cannot know whether a comparison is text.
+                // Find typed while an image decoder was starting must not fence out every
+                // image frame, whose Find state remains the default revision zero.
+                if frame.image {
+                    self.reset_find();
+                } else if frame.find.revision < self.find_revision.get() {
+                    return;
+                }
                 // Session admission must also fence unread and later old publications, including
                 // an old first frame whose generation this UI has never observed. An increment
                 // from the last rendered generation cannot establish that boundary on its own.
@@ -61,6 +69,7 @@ impl OpenWindow {
                 window.set_image_mode(frame.image);
                 window.set_position(frame.position as f32);
                 window.set_status(midnight_core::visible_name(&frame.status).as_ref().into());
+                window.set_search_summary(frame.find.message.as_str().into());
                 window.set_accessible_text(frame.accessible_text.as_str().into());
                 if let Some(layers) = &frame.layers {
                     self.surfaces.borrow_mut().present(
@@ -79,6 +88,7 @@ impl OpenWindow {
             }
             Output::Status(message) => {
                 window.set_identity_state(-1);
+                window.set_search_summary("".into());
                 window.set_status(midnight_core::visible_name(message).as_ref().into());
             }
             Output::ChooseFiles(choice) => self.show_file_choice(choice),

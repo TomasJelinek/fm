@@ -63,6 +63,14 @@ fn actual_comparator_window_exposes_three_modes_and_always_closes_on_escape() {
             .unwrap()
             .upgrade()
             .unwrap();
+        // Empty launch inputs deliberately stop the backend at its chooser. Wait for
+        // that initial output before presenting the image controls synthetically;
+        // otherwise the asynchronous chooser can hide the content being measured.
+        support::wait_for(&window, "present its initial chooser", || {
+            window.get_choosing_files()
+        });
+        window.set_choosing_files(false);
+        window.invoke_focus_content();
         native.set_size(slint::PhysicalSize::new(1000, 700));
         window.window().dispatch_event(WindowEvent::Resized {
             size: slint::LogicalSize::new(1000.0, 700.0),
@@ -78,7 +86,13 @@ fn actual_comparator_window_exposes_three_modes_and_always_closes_on_escape() {
             native.draw_if_needed(|renderer| {
                 renderer.render(&mut pixels, 1000);
             });
-            assert!(window.get_content_width() > 900.0 && window.get_content_height() > 550.0);
+            assert!(
+                window.get_content_width() > 900.0 && window.get_content_height() > 550.0,
+                "image canvas at mode {mode}: {}×{} (choosing={})",
+                window.get_content_width(),
+                window.get_content_height(),
+                window.get_choosing_files(),
+            );
         }
         window.set_compact(true);
         native.set_size(slint::PhysicalSize::new(320, 200));

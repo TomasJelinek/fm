@@ -47,6 +47,9 @@ impl Trace {
             rows: Vec::with_capacity(if enabled { 65536 } else { 0 }),
         })))
     }
+    pub fn enabled(&self) -> bool {
+        self.0.borrow().enabled
+    }
     pub fn bind(&self, window: slint::Weak<ViewerWindow>) {
         self.0.borrow_mut().window = Some(window);
     }

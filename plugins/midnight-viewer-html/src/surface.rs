@@ -15,6 +15,10 @@ pub struct Layers {
 }
 
 impl Layers {
+    pub(crate) fn popup_visible(&self) -> bool {
+        self.visible
+    }
+
     /// Publishes a converted view paint. Without a visible popup the pixels move
     /// straight into the returned frame and no base copy is retained; while a popup is
     /// visible the paint is kept as the composition base and the composed frame is
@@ -103,6 +107,7 @@ pub struct Surface {
     pub revision: u64,
     pub width: u32,
     pub height: u32,
+    view_paint: u64,
 }
 impl Surface {
     pub fn new(revision: u64, width: u32, height: u32) -> Result<Self, &'static str> {
@@ -119,11 +124,19 @@ impl Surface {
             revision,
             width,
             height,
+            view_paint: 0,
         })
     }
     pub fn resize(&mut self, revision: u64, width: u32, height: u32) -> Result<(), &'static str> {
         *self = Self::new(revision, width, height)?;
         Ok(())
+    }
+
+    /// Counts even view callbacks skipped after native geometry validation fails.
+    /// A sequence gap prevents using damage measured since an unqueued paint.
+    pub(crate) fn begin_view_paint(&mut self) -> Option<u64> {
+        self.view_paint = self.view_paint.checked_add(1)?;
+        Some(self.view_paint)
     }
     pub fn paint_cropped(
         &mut self,
@@ -154,10 +167,166 @@ impl Surface {
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .map(|p| [p[2], p[1], p[0], p[3]]),
+                    .map(bgra_to_rgba),
             );
         }
         Some(rgba.into_flattened())
+    }
+}
+
+/// Maximum metadata/work-plan size before using the whole-conversion path.
+pub(crate) const MAX_DAMAGE_RECTS: usize = 64;
+
+/// CEF damage in signed native-buffer pixels, before the viewport's DPI crop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DamageRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PatchRows {
+    source: usize,
+    target: usize,
+    bytes: usize,
+    rows: usize,
+}
+
+fn bgra_to_rgba(pixel: &[u8; 4]) -> [u8; 4] {
+    [pixel[2], pixel[1], pixel[0], pixel[3]]
+}
+
+impl Surface {
+    /// Patch an exclusive, immediately preceding RGBA viewport from a full CEF
+    /// BGRA paint. The caller proves document/slot ownership and base geometry;
+    /// this method checks revision, buffer geometry and every damage rectangle.
+    ///
+    /// False leaves every base byte untouched, permitting whole conversion.
+    /// At most 64 rectangles and half a viewport's summed clipped pixel area
+    /// are admitted; overlapping area counts repeatedly. No pixel buffer is
+    /// retained or allocated. Coordinates are native pixels, without scaling.
+    pub(crate) fn patch_cropped(
+        &self,
+        revision: u64,
+        width: u32,
+        height: u32,
+        bgra: &[u8],
+        damage: &[DamageRect],
+        rgba: &mut [u8],
+    ) -> bool {
+        if Self::new(self.revision, self.width, self.height).is_err()
+            || revision != self.revision
+            || width.checked_sub(self.width).is_none_or(|extra| extra > 16)
+            || height
+                .checked_sub(self.height)
+                .is_none_or(|extra| extra > 16)
+            || damage.is_empty()
+            || damage.len() > MAX_DAMAGE_RECTS
+        {
+            return false;
+        }
+        let Some(source_stride) = (width as usize).checked_mul(4) else {
+            return false;
+        };
+        let Some(target_stride) = (self.width as usize).checked_mul(4) else {
+            return false;
+        };
+        let Some(source_len) = source_stride.checked_mul(height as usize) else {
+            return false;
+        };
+        let Some(target_len) = target_stride.checked_mul(self.height as usize) else {
+            return false;
+        };
+        if bgra.len() != source_len || rgba.len() != target_len {
+            return false;
+        }
+        let mut patches = [PatchRows::default(); MAX_DAMAGE_RECTS];
+        let mut count = 0;
+        let mut area = 0_usize;
+        // Build a bounded plan before the first write, including all row ends.
+        for rect in damage {
+            if rect.width <= 0 || rect.height <= 0 {
+                return false;
+            }
+            let Some(right) = i64::from(rect.x).checked_add(i64::from(rect.width)) else {
+                return false;
+            };
+            let Some(bottom) = i64::from(rect.y).checked_add(i64::from(rect.height)) else {
+                return false;
+            };
+            let left = i64::from(rect.x).clamp(0, i64::from(self.width));
+            let top = i64::from(rect.y).clamp(0, i64::from(self.height));
+            let right = right.clamp(0, i64::from(self.width));
+            let bottom = bottom.clamp(0, i64::from(self.height));
+            if right <= left || bottom <= top {
+                continue;
+            }
+            // Clipping bounds these nonnegative values to valid surface sizes.
+            let columns = (right - left) as usize;
+            let rows = (bottom - top) as usize;
+            let Some(bytes) = columns.checked_mul(4) else {
+                return false;
+            };
+            let Some(next_area) = columns.checked_mul(rows).and_then(|a| area.checked_add(a))
+            else {
+                return false;
+            };
+            if next_area > target_len / 4 / 2 {
+                return false;
+            }
+            let offset = |stride: usize| {
+                (top as usize)
+                    .checked_mul(stride)?
+                    .checked_add((left as usize).checked_mul(4)?)
+            };
+            let Some(source) = offset(source_stride) else {
+                return false;
+            };
+            let Some(target) = offset(target_stride) else {
+                return false;
+            };
+            let end = |start: usize, stride: usize| {
+                rows.checked_sub(1)?
+                    .checked_mul(stride)?
+                    .checked_add(start)?
+                    .checked_add(bytes)
+            };
+            if end(source, source_stride).is_none_or(|end| end > source_len)
+                || end(target, target_stride).is_none_or(|end| end > target_len)
+            {
+                return false;
+            }
+            patches[count] = PatchRows {
+                source,
+                target,
+                bytes,
+                rows,
+            };
+            count += 1;
+            area = next_area;
+        }
+        if area == 0 {
+            return false;
+        }
+        // All indices, row ends and aggregate work are proven above; this pass
+        // has no rejection after any byte has been changed.
+        for patch in &patches[..count] {
+            for row in 0..patch.rows {
+                let source = patch.source + row * source_stride;
+                let target = patch.target + row * target_stride;
+                for (output, input) in rgba[target..target + patch.bytes]
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(bgra[source..source + patch.bytes].as_chunks::<4>().0)
+                {
+                    *output = bgra_to_rgba(input);
+                }
+            }
+        }
+        true
     }
 }
 

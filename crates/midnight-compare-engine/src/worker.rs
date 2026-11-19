@@ -419,6 +419,12 @@ fn compare(
         }
         #[cfg(test)]
         capture.turn();
+        let find_pending = if let Content::Text(text) = &mut content {
+            dirty |= text.find_turn(cancel)?;
+            text.find_pending()
+        } else {
+            false
+        };
         let requested = output.appearance();
         dirty |= requested.revision != painted_appearance;
         if dirty && output.is_current(generation) {
@@ -465,12 +471,16 @@ fn compare(
             && identity == IdentityVerdict::Pending
             && output.is_current(generation)
             && !output.frame_waiting(generation);
-        let first =
-            match InputPoll::after_turn(last_identity_turn, identity_ready).receive(receiver) {
-                Ok(message) => Some(message),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => break,
-            };
+        let poll = if find_pending {
+            InputPoll::NonBlocking
+        } else {
+            InputPoll::after_turn(last_identity_turn, identity_ready)
+        };
+        let first = match poll.receive(receiver) {
+            Ok(message) => Some(message),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         let remaining = crate::INPUT_QUEUE - usize::from(first.is_some());
         for message in first.into_iter().chain(receiver.try_iter().take(remaining)) {
             let Message::Input(command) = message else {
@@ -531,12 +541,26 @@ fn apply(
     if let Input::Resize(value, revision) = input {
         *geometry = bounded(value);
         *geometry_revision = revision;
-        if let Content::Images(images) = content {
-            images.invalidate();
+        match content {
+            Content::Images(images) => images.invalidate(),
+            Content::Text(text) => text.reveal_visible_find_on_resize(),
         }
         return true;
     }
     match (content, input) {
+        (Content::Text(text), Input::FindStep { delta, revision }) => {
+            text.advance_find(delta, revision);
+        }
+        (
+            Content::Text(text),
+            Input::Find {
+                query,
+                backwards,
+                revision,
+            },
+        ) => {
+            text.begin_find(query, backwards, revision);
+        }
         (Content::Text(text), Input::FontFamily(family)) => return text.change_font(&family),
         (Content::Text(text), Input::Scroll { x, y }) if x.is_finite() && y.is_finite() => {
             text.scroll_pixels(y);

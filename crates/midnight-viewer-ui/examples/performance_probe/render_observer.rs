@@ -503,6 +503,18 @@ pub struct Observer {
     pub native_proof: Option<NativeProof>,
 }
 
+// This is the custom handler's return boundary, before Slint handles the event.
+// The existing `redraw_end` remains the later event-loop-return boundary.
+struct HandlerSpan<'a> {
+    trace: &'a super::timeline::Trace,
+    end: &'static str,
+}
+impl Drop for HandlerSpan<'_> {
+    fn drop(&mut self) {
+        self.trace.record(self.end, 0.0);
+    }
+}
+
 impl Observer {
     fn finished(&mut self) {
         if let Some((window_id, started)) = self.drawing.take() {
@@ -534,6 +546,25 @@ impl CustomApplicationHandler for Observer {
         _: Option<&slint::Window>,
         event: &winit::event::WindowEvent,
     ) -> EventResult {
+        let trace = self.timeline.clone();
+        let _span = trace.enabled().then(|| {
+            // Stable metadata codes: other=0, wheel=1, redraw=2, cursor=3,
+            // occluded=4, focused=5, resized=6. No event Debug strings are logged.
+            let code = match event {
+                winit::event::WindowEvent::MouseWheel { .. } => 1.0,
+                winit::event::WindowEvent::RedrawRequested => 2.0,
+                winit::event::WindowEvent::CursorMoved { .. } => 3.0,
+                winit::event::WindowEvent::Occluded(_) => 4.0,
+                winit::event::WindowEvent::Focused(_) => 5.0,
+                winit::event::WindowEvent::Resized(_) => 6.0,
+                _ => 0.0,
+            };
+            trace.record("native_event_entry", code);
+            HandlerSpan {
+                trace: &trace,
+                end: "native_event_return",
+            }
+        });
         self.finished();
         let target = self.callback.borrow().as_ref().and_then(|callback| {
             callback
@@ -541,8 +572,39 @@ impl CustomApplicationHandler for Observer {
                 .upgrade()
                 .and_then(|window| window.window().with_winit_window(|native| native.id()))
         });
+        if trace.enabled() {
+            trace.record(
+                "native_target",
+                f64::from(u8::from(target == Some(window_id))),
+            );
+        }
         if target != Some(window_id) {
             return EventResult::Propagate;
+        }
+        if trace.enabled() {
+            if let winit::event::WindowEvent::Occluded(occluded) = event {
+                trace.record("native_occluded", f64::from(u8::from(*occluded)));
+            }
+            if matches!(
+                event,
+                winit::event::WindowEvent::RedrawRequested
+                    | winit::event::WindowEvent::Focused(_)
+                    | winit::event::WindowEvent::Resized(_)
+            ) && let Some(native) = native
+            {
+                trace.record(
+                    "native_visible",
+                    native
+                        .is_visible()
+                        .map_or(-1.0, |value| f64::from(u8::from(value))),
+                );
+                trace.record(
+                    "native_minimized",
+                    native
+                        .is_minimized()
+                        .map_or(-1.0, |value| f64::from(u8::from(value))),
+                );
+            }
         }
         if let Some(proof) = &self.native_proof {
             if matches!(
@@ -603,6 +665,14 @@ impl CustomApplicationHandler for Observer {
     }
 
     fn about_to_wait(&mut self, _: &winit::event_loop::ActiveEventLoop) -> EventResult {
+        let trace = self.timeline.clone();
+        let _span = trace.enabled().then(|| {
+            trace.record("about_to_wait_entry", 0.0);
+            HandlerSpan {
+                trace: &trace,
+                end: "about_to_wait_return",
+            }
+        });
         self.finished();
         EventResult::Propagate
     }

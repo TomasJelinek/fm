@@ -8,13 +8,16 @@ import { DialogFooter } from "dialog-footer.slint";
 import { SpeedChartData } from "operation-speed-chart.slint";
 
 export struct OperationRow {
-    identity: string, title: string, detail: string, summary: string, state: string,
+    identity: string, title: string, detail: string, progress-detail: string,
+    summary: string, state: string,
     cancellable: bool, attention: bool, failed: bool, active: bool,
     completed: bool, determinate: bool, progress: float, progress-label: string,
     pausable: bool, pause-requested: bool, paused: bool, discovering: bool,
     current-path: string, remaining: string, eta: string,
     waiting: bool, activity-label: string, verification-view: bool, file-progress-title: string,
-    file-determinate: bool, file-progress: float, file-progress-label: string, icon: image, kind: int, speed-chart: SpeedChartData
+    file-determinate: bool, file-progress: float, file-progress-label: string, icon: image, kind: int, speed-chart: SpeedChartData,
+    transfer-directory: string, transfer-name: string, transfer-totals: string, transfer-outcome: string,
+    transfer-speed-chart: SpeedChartData
 }
 
 export global JobsView {

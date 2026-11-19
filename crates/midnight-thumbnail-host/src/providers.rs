@@ -1,4 +1,5 @@
 //! Installed, trusted executable providers; media never chooses the executable or its arguments.
+use midnight_core::ThumbnailerAssociations;
 use serde::Deserialize;
 use std::{
     fs,
@@ -91,6 +92,22 @@ pub(crate) fn discover(executable: &Path) -> io::Result<Vec<Provider>> {
     Ok(providers)
 }
 
+/// Providers are the trusted catalog in provider-ID order.
+pub(crate) fn select<'a>(
+    providers: &'a [Provider],
+    associations: &ThumbnailerAssociations,
+    extension: &str,
+    image_only: bool,
+) -> Option<&'a Provider> {
+    providers.iter().find(|provider| {
+        (!image_only || !provider.manifest.video)
+            && associations
+                .effective_extensions(&provider.manifest.id, &provider.manifest.extensions)
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+    })
+}
+
 fn runtime_library(name: &str) -> bool {
     name.get(name.len().saturating_sub(4)..)
         .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".dll"))
@@ -110,6 +127,73 @@ fn identifier(value: &str, limit: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use midnight_core::ThumbnailerAssociations;
+
+    fn provider(id: &str, extensions: &[&str], video: bool) -> Provider {
+        Provider {
+            manifest: Manifest {
+                protocol: 1,
+                id: id.into(),
+                version: "1".into(),
+                executable: "worker".into(),
+                extensions: extensions
+                    .iter()
+                    .map(|extension| (*extension).into())
+                    .collect(),
+                video,
+            },
+            executable: PathBuf::from("worker"),
+        }
+    }
+
+    #[test]
+    fn thumbnailer_provider_resolution_observes_overrides_and_catalog_precedence() {
+        let providers = [
+            provider("a.image", &["jpg"], false),
+            provider("b.image", &["jpg"], false),
+        ];
+        let mut choices = ThumbnailerAssociations::default();
+        let pick = |choices: &ThumbnailerAssociations| {
+            select(&providers, choices, "JpG", false).map(|provider| provider.manifest.id.as_str())
+        };
+        assert_eq!(pick(&choices), Some("a.image"));
+        choices
+            .overrides
+            .insert("a.image".into(), vec!["bmp".into()]);
+        assert_eq!(pick(&choices), Some("b.image"));
+        choices.overrides.insert("b.image".into(), Vec::new());
+        assert_eq!(pick(&choices), None);
+        assert!(choices.reset("a.image"));
+        assert_eq!(pick(&choices), Some("a.image"));
+    }
+
+    #[test]
+    fn artwork_excludes_video_before_matching_the_effective_extension() {
+        let providers = [
+            provider("a.video", &["jpg"], true),
+            provider("b.image", &["png"], false),
+        ];
+        let choices = ThumbnailerAssociations {
+            overrides: [("b.image".into(), vec!["JPG".into()])].into(),
+        };
+        assert_eq!(
+            select(&providers, &choices, "jpg", false)
+                .unwrap()
+                .manifest
+                .id,
+            "a.video"
+        );
+        assert_eq!(
+            select(&providers, &choices, "jpg", true)
+                .unwrap()
+                .manifest
+                .id,
+            "b.image"
+        );
+        assert!(select(&providers, &choices, "png", true).is_none());
+    }
+
     #[test]
     fn windows_loader_case_variants_all_require_library_trust_validation() {
         for name in [

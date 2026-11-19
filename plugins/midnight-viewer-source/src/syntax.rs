@@ -10,6 +10,8 @@ mod common;
 mod cpp;
 #[path = "syntax_lua.rs"]
 mod lua;
+#[path = "syntax_usda.rs"]
+mod usda;
 #[path = "syntax_xml.rs"]
 mod xml;
 #[path = "syntax_yaml.rs"]
@@ -41,6 +43,7 @@ pub enum Language {
     Yaml,
     Xml,
     Lua,
+    Usda,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,6 +60,7 @@ enum Mode {
     Xml(xml::State),
     Lua(lua::State),
     Yaml(yaml::State),
+    Usda(usda::State),
 }
 
 /// An open string literal closed by `count` (1 or 3) `quote` bytes.
@@ -170,7 +174,8 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "yaml" | "yml" => Some(Yaml),
         "lua" => Some(Lua),
         "xml" | "xsd" | "xsl" | "xslt" | "xaml" | "csproj" | "fsproj" | "vbproj" | "vcxproj"
-        | "props" | "targets" | "resx" => Some(Xml),
+        | "props" | "targets" | "resx" | "manifest" => Some(Xml),
+        "usda" => Some(Usda),
         _ => None,
     };
     if found.is_some() {
@@ -249,6 +254,25 @@ pub(crate) fn stream(
         return None;
     }
     match language {
+        Language::Usda => {
+            let mut current = if let Mode::Usda(current) = state.mode {
+                current
+            } else {
+                usda::State::default()
+            };
+            let consumed = if final_chunk {
+                usda::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                usda::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == usda::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Usda(current)
+            };
+            Some(consumed)
+        }
         Language::Lua => {
             let mut current = if let Mode::Lua(current) = state.mode {
                 current
@@ -441,12 +465,12 @@ fn keyword_list(language: Language) -> &'static str {
             "select from where as join left right inner outer on group by order having limit offset insert into values update set delete create table drop alter index view distinct union all null true false and or not is like in exists case when then else end begin commit rollback"
         }
         Language::Yaml => "true false null True False Null TRUE FALSE NULL yes no on off",
-        Language::Xml | Language::Lua => "",
+        Language::Xml | Language::Lua | Language::Usda => "",
     }
 }
 
 fn keyword(language: Language, token: &str) -> bool {
-    const LANGUAGES: usize = Language::Lua as usize + 1;
+    const LANGUAGES: usize = Language::Usda as usize + 1;
     static TABLES: [OnceLock<Box<[&'static str]>>; LANGUAGES] =
         [const { OnceLock::new() }; LANGUAGES];
     let words = TABLES[language as usize].get_or_init(|| {

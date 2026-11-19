@@ -220,6 +220,7 @@ fn show(service: &Service, generation: u64, target: Target) -> io::Result<()> {
     require(
         service.set_view(View {
             generation,
+            thumbnailer_associations: Default::default(),
             targets: vec![target],
         }),
         "Thumbnail service refused the fixture view",
@@ -425,6 +426,7 @@ fn main() -> io::Result<()> {
     require(
         service.set_view(View {
             generation: 2,
+            thumbnailer_associations: Default::default(),
             targets: Vec::new(),
         }),
         "Empty view rejected",

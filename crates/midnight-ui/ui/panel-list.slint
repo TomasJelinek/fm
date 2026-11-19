@@ -5,123 +5,40 @@ import { ScrollView } from "std-widgets.slint";
 // Match the SDK ListView shell and export an alias to retain that optimization.
 component ListView inherits ScrollView {
     in property <length> row-height;
-    in property <bool> interaction-active;
     callback user-scrolled();
-    private property <bool> scroll-pending;
-    private property <bool> settling;
-    private property <length> last-scroll-position;
-    private property <length> settle-target;
 
-    function snap-target() -> length {
-        let bottom = min(0px, root.visible-height - root.content-height);
-        let position = clamp(root.content-y, bottom, 0px);
-        // Exact bounds can be partial rows. Preserve them without blank gaps.
-        return position == bottom || position == 0px ? position
-            : clamp(-round(-position / root.row-height) * root.row-height, bottom, 0px);
+    private property <int> first-complete-band: ceil(-root.content-y / root.row-height);
+    private property <int> past-complete-band: floor((root.visible-height - root.content-y) / root.row-height);
+
+    private property <bool> align-single-band: root.visible-height >= root.row-height
+        && root.visible-height < 2 * root.row-height;
+    // The band at the viewport midpoint is already materialized. It includes
+    // the first and last bands at the native scroll bounds and retains a fully
+    // revealed cursor band when one fits.
+    private property <int> compact-band: floor((root.visible-height / 2 - root.content-y) / root.row-height);
+    out property <length> row-content-y: root.align-single-band
+        ? -root.compact-band * root.row-height : root.content-y;
+    out property <length> row-y-shift: root.row-content-y - root.content-y;
+
+    pure public function band-visible(band: int) -> bool {
+        if root.align-single-band { return band == root.compact-band; }
+        // Use the native clip if even one row is taller than the pane.
+        return root.visible-height < root.row-height
+            || (band >= root.first-complete-band && band < root.past-complete-band);
     }
 
-    function wait-for-idle() {
-        root.last-scroll-position = root.content-y;
-        idle.start();
-        idle.restart();
-    }
-
-    // Imperative cursor reveals must take precedence over an old wheel gesture.
-    public function cancel-scroll-settle() {
+    // Explicit navigation can supersede in-flight native wheel or touch motion.
+    public function stop-scroll-motion() {
         let position = root.content-y;
-        idle.stop();
-        settled.stop();
-        root.scroll-pending = false;
-        root.settling = false;
         root.content-y = position;
     }
 
-    function reconsider-scroll-settle() {
-        if root.scroll-pending {
-            if root.settling {
-                // Virtualized rows can refine their content-height estimate
-                // during metadata refresh. An unchanged target must not restart
-                // the tween and its idle delay on every visible-row update.
-                if !root.interaction-active && root.row-height > 0px
-                    && abs(root.snap-target() - root.settle-target) < 0.01px {
-                    return;
-                }
-                let position = root.content-y;
-                root.settling = false;
-                settled.stop();
-                root.content-y = position;
-            }
-            root.wait-for-idle();
-        }
-    }
+    // Slint's physics binding intercepts plain writes. An immediate animation
+    // replaces that binding for explicit writes while native gestures keep
+    // their own physics animations.
+    animate content-y { duration: 0ms; }
 
-    // SDK physics writes content-y directly; retain its wheel animation and
-    // inertia. Only our final imperative assignment uses this short animation.
-    animate content-y { duration: root.settling ? 100ms : 0ms; easing: ease-out; }
-
-    scrolled => {
-        root.user-scrolled();
-        // The SDK has already replaced any previous animation with real input.
-        // Do not write content-y here, which would cancel native inertia.
-        settled.stop();
-        root.settling = false;
-        root.scroll-pending = true;
-        root.wait-for-idle();
-    }
-    changed content-y => {
-        if root.scroll-pending && !root.settling { root.wait-for-idle(); }
-    }
-    changed row-height => { root.reconsider-scroll-settle(); }
-    changed visible-height => { root.reconsider-scroll-settle(); }
-    changed content-height => { root.reconsider-scroll-settle(); }
-    changed interaction-active => { root.reconsider-scroll-settle(); }
-
-    idle := Timer {
-        interval: 80ms;
-        running: false;
-        triggered => {
-            self.stop();
-            if root.interaction-active {
-                return;
-            }
-            if root.row-height <= 0px || !root.scroll-pending { return; }
-            // Timers run before changed handlers in the SDK. A delayed frame
-            // can therefore expose fresh physics motion inside this callback.
-            if abs(root.content-y - root.last-scroll-position) >= 0.01px {
-                root.wait-for-idle();
-                return;
-            }
-            let target = root.snap-target();
-            if abs(target - root.content-y) < 0.01px {
-                root.scroll-pending = false;
-                return;
-            }
-            root.settle-target = target;
-            root.settling = true;
-            root.content-y = target;
-            settled.start();
-            settled.restart();
-        }
-    }
-    settled := Timer {
-        interval: 110ms;
-        running: false;
-        triggered => {
-            self.stop();
-            // Timers precede changed handlers: recheck input and geometry that
-            // may have changed in this same event-loop turn.
-            if root.interaction-active || root.row-height <= 0px
-                || abs(root.snap-target() - root.settle-target) >= 0.01px {
-                root.reconsider-scroll-settle();
-                return;
-            }
-            root.scroll-pending = false;
-            root.settling = false;
-            // ListView layout can write the viewport while rows change. Commit
-            // the exact target after the tween; cancellation stops this timer.
-            root.content-y = root.settle-target;
-        }
-    }
+    scrolled => { root.user-scrolled(); }
     accessible-role: list;
     accessible-orientation: vertical;
     @children

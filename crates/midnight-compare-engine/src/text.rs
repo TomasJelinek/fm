@@ -1,12 +1,15 @@
 use crate::{FontChoices, Frame, Palette, check_cancel, identity::DecodedText};
 use midnight_core::{ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
-use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
+use midnight_viewer_render::{TextOptions, TextPage, TextRenderer, Viewport};
 use similar::{DiffTag, TextDiff};
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
+
+#[path = "text_find.rs"]
+mod find;
 
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_LINES: usize = 100_000;
@@ -44,6 +47,7 @@ struct Row {
 }
 
 pub(crate) struct TextComparison {
+    find: find::TextFind,
     lines: [Vec<String>; 2],
     rows: Vec<Row>,
     differences: Vec<usize>,
@@ -59,6 +63,7 @@ pub(crate) struct TextComparison {
     /// Logical row height and fully visible rows of the last painted frame.
     row_height: f32,
     page_rows: usize,
+    painted_width: u32,
     decoded_identity: DecodedText,
     pub encodings: Option<[TextEncoding; 2]>,
 }
@@ -176,6 +181,7 @@ impl TextComparison {
             }
         }
         Ok(Self {
+            find: find::TextFind::default(),
             lines,
             rows,
             differences,
@@ -187,6 +193,7 @@ impl TextComparison {
             vertical_remainder: 0.0,
             row_height: 24.0,
             page_rows: 1,
+            painted_width: 0,
             decoded_identity: DecodedText::default(),
             encodings: None,
         })
@@ -209,6 +216,33 @@ impl TextComparison {
 
     pub fn identity_turn(&mut self) -> Option<bool> {
         self.decoded_identity.step(&self.lines)
+    }
+
+    pub fn find_pending(&self) -> bool {
+        self.find.pending()
+    }
+
+    /// Preserve a visible Find result across a resize. The current scroll positions,
+    /// rather than only the last frame's state, keep intentional manual scrolling intact.
+    pub fn reveal_visible_find_on_resize(&mut self) {
+        let Some(hit) = &self.find.selected else {
+            return;
+        };
+        let Some([left, right]) = self.find.horizontal_bounds else {
+            return;
+        };
+        let pane_width = if hit.side == 0 {
+            self.painted_width / 2
+        } else {
+            self.painted_width - self.painted_width / 2
+        };
+        if hit.row >= self.top
+            && hit.row < self.top.saturating_add(self.page_rows)
+            && right > f64::from(self.horizontal)
+            && left < f64::from(self.horizontal) + f64::from(pane_width)
+        {
+            self.find.reveal = true;
+        }
     }
 
     pub fn scroll(&mut self, rows: i64) {
@@ -284,6 +318,41 @@ impl TextComparison {
         let count = height.div_ceil(row_height).min(256) as usize;
         self.row_height = row_height as f32 / geometry.scale;
         self.page_rows = (height / row_height).max(1) as usize;
+        if self.find.reveal {
+            if let Some(hit) = &self.find.selected {
+                self.top = hit.row.saturating_sub(self.page_rows / 2);
+                self.vertical_remainder = 0.0;
+                let row = &self.rows[hit.row];
+                let (value, prefix) = self.formatted_line(hit.side, hit.line, row.changed);
+                let page = self
+                    .renderer
+                    .layout_with_options(
+                        &value,
+                        &TextOptions {
+                            family,
+                            literal_family: family != "monospace",
+                            size: appearance.font_size,
+                            scale: geometry.scale,
+                            foreground: palette.foreground,
+                            ..TextOptions::default()
+                        },
+                        &[],
+                    )
+                    .map_err(|error| format!("Cannot lay out Find result: {error:?}"))?;
+                let bounds =
+                    shaped_hit_bounds(&page, prefix + hit.range.start..prefix + hit.range.end)?;
+                self.find.horizontal_bounds = Some(bounds);
+                let pane_width = if hit.side == 0 {
+                    width / 2
+                } else {
+                    width - width / 2
+                };
+                self.horizontal =
+                    ((bounds[0] + bounds[1] - f64::from(pane_width)) / 2.0).max(0.0) as f32;
+            }
+            self.find.reveal = false;
+        }
+        self.painted_width = width;
         let mut accessible_text = String::new();
         for (visible, row) in self.rows.iter().skip(self.top).take(count).enumerate() {
             check_cancel(cancel)?;
@@ -294,29 +363,15 @@ impl TextComparison {
                 } else {
                     width - width / 2
                 };
-                let value = line
-                    .map(|index| {
-                        let text = &self.lines[side][index];
-                        let ending = if text.ends_with("\r\n") {
-                            "  [CRLF]"
-                        } else if text.ends_with('\n') {
-                            ""
-                        } else {
-                            "  [no newline]"
-                        };
-                        format!(
-                            "{:>6} {} {}{}",
-                            index + 1,
-                            if row.changed {
-                                if side == 0 { "−" } else { "+" }
-                            } else {
-                                " "
-                            },
-                            visible_controls(text.trim_end_matches(['\r', '\n'])),
-                            ending
-                        )
-                    })
+                let (value, prefix) = line
+                    .map(|index| self.formatted_line(side, index, row.changed))
                     .unwrap_or_default();
+                let selection = self
+                    .find
+                    .selected
+                    .as_ref()
+                    .filter(|hit| hit.row == self.top + visible && hit.side == side)
+                    .map(|hit| prefix + hit.range.start..prefix + hit.range.end);
                 accessible_text.push_str(&value);
                 accessible_text.push(if side == 0 { '\t' } else { '\n' });
                 let background = if row.changed {
@@ -349,6 +404,9 @@ impl TextComparison {
                     .renderer
                     .layout_with_options(&value, &options, &[])
                     .map_err(|error| format!("Cannot lay out comparison: {error:?}"))?;
+                if let Some(range) = &selection {
+                    self.find.horizontal_bounds = Some(shaped_hit_bounds(&page, range.clone())?);
+                }
                 let raster = self
                     .renderer
                     .rasterize(
@@ -360,7 +418,7 @@ impl TextComparison {
                             background,
                             selection_color: palette.selection,
                         },
-                        None,
+                        selection,
                     )
                     .map_err(|error| format!("Cannot render comparison: {error:?}"))?;
                 let y = visible as u32 * row_height;
@@ -379,6 +437,7 @@ impl TextComparison {
             self.rows.len()
         );
         Ok(Frame {
+            find: Arc::clone(&self.find.state),
             fonts: self.fonts.clone(),
             #[cfg(test)]
             text_family: Some(family.to_owned()),
@@ -409,6 +468,52 @@ impl TextComparison {
         fonts.selected = family.into();
         true
     }
+
+    fn formatted_line(&self, side: usize, index: usize, changed: bool) -> (String, usize) {
+        let text = &self.lines[side][index];
+        let ending = if text.ends_with("\r\n") {
+            "  [CRLF]"
+        } else if text.ends_with('\n') {
+            ""
+        } else {
+            "  [no newline]"
+        };
+        let marker = if changed {
+            if side == 0 { "−" } else { "+" }
+        } else {
+            " "
+        };
+        let prefix = format!("{:>6} {marker} ", index + 1);
+        let length = prefix.len();
+        (
+            format!(
+                "{prefix}{}{ending}",
+                visible_controls(text.trim_end_matches(['\r', '\n']))
+            ),
+            length,
+        )
+    }
+}
+
+fn shaped_hit_bounds(page: &TextPage, range: std::ops::Range<usize>) -> Result<[f64; 2], String> {
+    let rectangles = page
+        .selection_geometry(range.clone())
+        .map_err(|error| format!("Cannot position Find result: {error:?}"))?;
+    let bounds = rectangles
+        .iter()
+        .fold([f64::INFINITY, f64::NEG_INFINITY], |bounds, rect| {
+            [bounds[0].min(rect.x0), bounds[1].max(rect.x1)]
+        });
+    if bounds[0].is_finite() && bounds[1].is_finite() {
+        return Ok(bounds);
+    }
+    let start = page
+        .caret_geometry(range.start)
+        .map_err(|error| format!("Cannot position Find result: {error:?}"))?;
+    let end = page
+        .caret_geometry(range.end)
+        .map_err(|error| format!("Cannot position Find result: {error:?}"))?;
+    Ok([start.x0.min(end.x0), start.x0.max(end.x0)])
 }
 
 /// Text controls common in sources and logs: tab, line breaks, vertical tab, form feed

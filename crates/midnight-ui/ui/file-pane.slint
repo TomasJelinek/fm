@@ -9,7 +9,7 @@ import { PanelList } from "panel-list.slint";
 import { SelectionRectangle } from "selection-rectangle.slint";
 import { FileEntry } from "file-entry.slint";
 import { FileColumnHeading } from "file-column-heading.slint";
-import { FileRow, TreePress } from "file-models.slint";
+import { DirectoryLinkTooltip, FileRow, TreePress } from "file-models.slint";
 import { TabRow, BookmarkRow, PathPartRow, DetailRow, NavigationChoiceRow, LocationRow, LocationRole } from "navigation-models.slint";
 import { ActionIcons, FallbackIcons, NativeActionImage } from "action-icons.slint";
 import { TabStrip, NavigationButton } from "navigation-controls.slint";
@@ -65,6 +65,9 @@ export component FilePane inherits Rectangle {
     in property <int> view-mode;
     in property <int> thumbnail-size: 96;
     out property <string> hovered-row;
+    in property <DirectoryLinkTooltip> directory-link-tooltip;
+    callback read-directory-link-target(string);
+    callback retire-directory-link-hover();
     in property <string> view-mode-label;
     in property <string> sort-label;
     out property <int> view-columns: root.minimal || root.view-mode == 0 ? 1
@@ -165,7 +168,6 @@ export component FilePane inherits Rectangle {
         running: false;
         triggered => { self.stop(); root.loading-feedback = root.loading; }
     }
-    in property <bool> scroll-interaction-active;
     in property <int> cursor-index: -1;
     in property <int> sort-column;
     in property <bool> descending;
@@ -217,13 +219,14 @@ export component FilePane inherits Rectangle {
         root.controls-press-cancelled = false;
         root.tree-press = { active: false, cancelled: false };
         let local-x = x - list.absolute-position.x - list.content-x;
-        let local-y = y - list.absolute-position.y - list.content-y;
+        let local-y = y - list.absolute-position.y - list.row-content-y;
         if x >= list.absolute-position.x && x < list.absolute-position.x + list.visible-width
             && y >= list.absolute-position.y && y < list.absolute-position.y + list.visible-height
             && local-x >= 0px && local-x < root.list-grid-width && root.row-height > 0px {
             let column = floor(local-x / (root.list-grid-width / root.view-columns));
-            let index = root.source-row(floor(local-y / root.row-height), column);
-            if index >= 0 && index < root.rows.length {
+            let band = floor(local-y / root.row-height);
+            let index = root.source-row(band, column);
+            if list.band-visible(band) && index >= 0 && index < root.rows.length {
                 let item = root.rows[index];
                 root.tree-press = { active: true, cancelled: false, control: control, identity: item.identity,
                     disclosure: item.tree-disclosure, expanded: item.tree-expanded,
@@ -247,6 +250,10 @@ export component FilePane inherits Rectangle {
     out property <length> list-width: list.width;
     out property <length> list-content-y: list.content-y;
     out property <length> list-content-x: list.content-x;
+    out property <length> list-row-offset-y: list.row-content-y;
+    pure public function row-band-visible-at(y: length) -> bool {
+        return list.band-visible(floor((y - list.row-content-y) / root.row-height));
+    }
     // The pinned Fluent scrollbar is 14 logical px. Keep a separate 10px
     // background gutter available even when Details rows fill the viewport.
     out property <length> list-grid-width: max(0px, list.visible-width - 14px - 10px);
@@ -338,7 +345,7 @@ export component FilePane inherits Rectangle {
             root.navigation-viewport-context = root.search-context;
             root.navigation-viewport-query = root.search-query;
             root.cursor-reveal-active = false;
-            list.cancel-scroll-settle();
+            list.stop-scroll-motion();
             root.settle-navigation-viewport();
         }
     }
@@ -352,7 +359,7 @@ export component FilePane inherits Rectangle {
         root.navigation-viewport-valid = false;
         root.navigation-viewport-active = false;
         root.cursor-reveal-active = false;
-        list.cancel-scroll-settle();
+        list.stop-scroll-motion();
         list.content-y = clamp(list.content-y + delta * 1px,
             min(0px, list.visible-height - list.content-height), 0px);
     }
@@ -392,7 +399,7 @@ export component FilePane inherits Rectangle {
             root.settle-navigation-viewport();
             return;
         }
-        list.cancel-scroll-settle();
+        list.stop-scroll-motion();
         // Model reset precedes retained-repeater layout, and a newly appearing
         // scrollbar can shrink the viewport later. The SDK can also normalize
         // a large virtualized jump to a row boundary. Keep the latest explicit
@@ -685,8 +692,10 @@ export component FilePane inherits Rectangle {
             }
             list := PanelList {
                 row-height: root.row-height;
-                interaction-active: root.scroll-interaction-active || SelectionRectangle.pane == root.pane-id;
                 user-scrolled => {
+                    if root.directory-link-tooltip.row != "" && root.directory-link-tooltip.pane == root.pane-id {
+                        root.retire-directory-link-hover();
+                    }
                     root.cursor-reveal-active = false;
                     root.navigation-viewport-valid = false;
                     root.navigation-viewport-active = false;
@@ -696,9 +705,9 @@ export component FilePane inherits Rectangle {
                     height: root.row-height;
                     for column in root.repeated-columns : FileEntry {
                         private property <int> row-index: root.source-row(band, column);
-                        x: column * self.width; y: 0px;
+                        x: column * self.width; y: list.row-y-shift;
                         width: parent.width / root.view-columns; height: parent.height;
-                        visible: self.row-index < root.rows.length;
+                        visible: list.band-visible(band) && self.row-index < root.rows.length;
                         item: root.rows[self.row-index]; source-index: self.row-index;
                         drop-highlight: root.drop-highlight && root.drop-row == self.row-index;
                         active: root.active; view-mode: root.minimal ? 1 : root.view-mode;
@@ -710,6 +719,11 @@ export component FilePane inherits Rectangle {
                         size-column-width: root.size-column-width;
                         previous-click-identity: root.previous-click-identity;
                         remember-click(identity) => { root.previous-click-identity = identity; }
+                        link-tooltips-enabled: root.native-filesystem && !root.loading && !root.search-pending;
+                        link-target-text: root.directory-link-tooltip.pane == root.pane-id
+                            && root.directory-link-tooltip.row == self.item.identity
+                            && root.hovered-row == self.item.identity ? root.directory-link-tooltip.text : "";
+                        read-directory-link-target(identity) => { root.read-directory-link-target(identity); }
                         hover-changed(identity, hovered) => {
                             if hovered { root.hovered-row = identity; }
                             else if root.hovered-row == identity { root.hovered-row = ""; }

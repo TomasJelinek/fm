@@ -9,6 +9,19 @@ pub(super) enum LoadedPosition {
         anchor: u64,
         backwards: bool,
     },
+    ReloadViewport {
+        sequence: u64,
+        viewport: messages::Viewport,
+    },
+    Unavailable,
+}
+
+pub(super) enum SourcePosition {
+    Ready,
+    Reload {
+        sequence: u64,
+        viewport: messages::Viewport,
+    },
     Unavailable,
 }
 
@@ -43,22 +56,54 @@ impl Worker {
 
     fn loaded_position(&self, position: f64) -> Option<f32> {
         let page = self.page.as_ref()?;
+        if self.mode == viewer::MODE_SOURCE && !Self::has_source_edge(page, position) {
+            return None;
+        }
         let shaped = self.shaped.as_ref()?;
         let maximum =
             (crate::viewport::available_height(page, shaped, self.geometry.height as f32)
                 - self.geometry.height as f32)
                 .max(0.0);
+        if self.scroll_map.is_none()
+            && self.mode == viewer::MODE_SOURCE
+            && shaped.height() < self.geometry.height as f32
+        {
+            return self.source_short_byte_position(page, shaped, maximum, position);
+        }
+        let minimum = if self.mode == viewer::MODE_SOURCE {
+            crate::viewport::source_minimum_origin(page, shaped)?
+        } else {
+            0.0
+        };
+        if minimum > maximum {
+            return None;
+        }
         if let Some(map) = &self.scroll_map {
             return map
                 .inverse_near(
                     position,
                     f64::from(self.geometry.height),
-                    0.0,
+                    f64::from(minimum),
                     f64::from(maximum),
                     f64::from(self.origin[1]),
                 )
                 .map(|origin| origin as f32);
         }
+        self.byte_position(page, shaped, maximum, position)
+            .filter(|origin| *origin >= minimum)
+    }
+
+    fn has_source_edge(page: &Page, position: f64) -> bool {
+        (position > 0.0 || !page.before) && (position < 1.0 || !page.after)
+    }
+
+    fn byte_position(
+        &self,
+        page: &Page,
+        shaped: &TextPage,
+        maximum: f32,
+        position: f64,
+    ) -> Option<f32> {
         let height = f64::from(shaped.height().max(1.0));
         let (start, end) = if !page.before && !page.after {
             (0, self.length)
@@ -72,10 +117,6 @@ impl Worker {
         let visible = bytes * (f64::from(self.geometry.height) / height).min(1.0);
         let top = position.clamp(0.0, 1.0) * (self.length as f64 - visible).max(0.0);
         let origin = (top - start as f64) * height / bytes;
-        let maximum =
-            (crate::viewport::available_height(page, shaped, self.geometry.height as f32)
-                - self.geometry.height as f32)
-                .max(0.0);
         // A byte-limited single row can only represent whole source offsets.
         let rounding = if maximum == 0.0 {
             (4.0 * height / bytes).max(0.001)
@@ -86,9 +127,47 @@ impl Worker {
             .then(|| (origin as f32).clamp(0.0, maximum))
     }
 
+    /// A byte-limited packet shorter than the viewport has no row map. Keep
+    /// its explicit byte inverse, including inside enormous logical lines,
+    /// only when that inverse proves the requested camera is actually covered.
+    /// The caller must check source edge flags and have no row map.
+    fn source_short_byte_position(
+        &self,
+        page: &Page,
+        shaped: &TextPage,
+        maximum: f32,
+        position: f64,
+    ) -> Option<f32> {
+        if self.mode != viewer::MODE_SOURCE || shaped.height() >= self.geometry.height as f32 {
+            return None;
+        }
+        // The byte inverse tolerates scalar rounding. That tolerance cannot
+        // turn a clipped packet into authority for an actual file endpoint.
+        if (position == 0.0 && page.start != 0)
+            || (position == 1.0
+                && (page.end != self.length
+                    || page.anchors.last().is_none_or(|anchor| {
+                        anchor.source_offset != self.length
+                            || anchor.text_offset as usize != page.text.len()
+                    })))
+        {
+            return None;
+        }
+        self.byte_position(page, shaped, maximum, position)
+    }
+
     pub(super) fn seek_position(&mut self, sequence: u64, position: f64, output: &Mailbox) {
         if self.positions.has_pending() {
+            let cancel = self.mode == viewer::MODE_SOURCE && !self.positions.has_deferred();
             self.positions.defer(sequence, position);
+            if cancel {
+                self.position_page = None;
+                if let Some(id) = self.viewport_request
+                    && let Some(session) = &self.session
+                {
+                    session.cancel(id);
+                }
+            }
             // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN seek_deferred
             #[cfg(test)]
             {
@@ -155,12 +234,195 @@ impl Worker {
         let (anchor, backwards) = self.position_page_request(position);
         self.request_page_for(anchor, backwards, Some(sequence), output);
         if self.viewport_request.is_none() {
-            self.position_context(output);
-            self.dirty = true;
+            if self.mode == viewer::MODE_SOURCE {
+                self.source_position_unavailable(sequence, None, output);
+            } else {
+                self.position_context(output);
+                self.dirty = true;
+            }
         }
     }
 
-    fn position_page_request(&self, position: f64) -> (u64, bool) {
+    pub(super) fn retire_superseded_source_position(&mut self, id: u64, output: &Mailbox) -> bool {
+        if self.mode != viewer::MODE_SOURCE || self.viewport_request != Some(id) {
+            return false;
+        }
+        let Some((sequence, position)) = self.positions.retire_superseded(id) else {
+            return false;
+        };
+        self.position_page = None;
+        self.viewport_request = None;
+        self.motion.retire_viewport();
+        self.source_foreground_finished(id, false);
+        self.invalidate_source_target();
+        self.seek_position(sequence, position, output);
+        self.source_stationary_target();
+        true
+    }
+
+    pub(super) fn source_position_unavailable(
+        &mut self,
+        sequence: u64,
+        message: Option<String>,
+        output: &Mailbox,
+    ) {
+        self.positions.target = None;
+        self.motion.retire_viewport();
+        self.continuation = None;
+        self.invalidate_source_target();
+        self.source_stationary_target();
+        self.status = message.unwrap_or_else(|| "The requested viewport was not completed.".into());
+        self.dirty = true;
+        output.put(ViewerOutput::VerticalPositionUnavailable {
+            generation: self.positions.generation,
+            sequence,
+        });
+    }
+
+    pub(super) fn cancel_source_position_for_scroll(&mut self, output: &Mailbox) -> bool {
+        if self.mode != viewer::MODE_SOURCE {
+            return false;
+        }
+        let Some(id) = self.viewport_request else {
+            return false;
+        };
+        let crate::position_ack::Completion::Failed(sequence) = self.positions.complete(id, false)
+        else {
+            return false;
+        };
+        let deferred = self.positions.take_deferred();
+        if deferred.is_none()
+            && let Some(session) = &self.session
+        {
+            session.cancel(id);
+        }
+        self.viewport_request = None;
+        self.position_page = None;
+        self.source_foreground_finished(id, false);
+        let sequence = deferred.map_or(sequence, |(sequence, _)| sequence);
+        self.source_position_unavailable(sequence, Some(String::new()), output);
+        true
+    }
+
+    pub(super) fn resolve_source_position(
+        &mut self,
+        page: Page,
+        output: &Mailbox,
+    ) -> SourcePosition {
+        use crate::position_ack::{MissingEdge, SourceWindow};
+
+        let Some(target) = self.positions.target else {
+            return SourcePosition::Unavailable;
+        };
+        if !Self::has_source_edge(&page, target.position) {
+            return SourcePosition::Unavailable;
+        }
+        let Ok(shaped) = self.shape_page(&page) else {
+            return SourcePosition::Unavailable;
+        };
+        let height = self.geometry.height as f32;
+        let maximum = (crate::viewport::available_height(&page, &shaped, height) - height).max(0.0);
+        let map = scroll_map::build(&page, &shaped, self.length, true, self.geometry.height);
+        let minimum = crate::viewport::source_minimum_origin(&page, &shaped);
+        let coverage = minimum
+            .filter(|minimum| *minimum <= maximum)
+            .and_then(|minimum| {
+                let map = map.as_ref()?;
+                let (low, _) = map.metrics(f64::from(minimum), f64::from(height))?;
+                let (high, _) = map.metrics(f64::from(maximum), f64::from(height))?;
+                Some((low, high))
+            });
+        // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN candidate_coverage
+        #[cfg(test)]
+        if let Some((low, high)) = coverage
+            && observation::enabled(self)
+        {
+            observation::record(
+                self,
+                12,
+                0,
+                self.viewport_request,
+                observation::Extra {
+                    candidate: Some((page.start, page.end, low, high)),
+                    ..Default::default()
+                },
+            );
+        }
+        // SOURCE_COMPLETION_OBSERVATION_V2_END candidate_coverage
+        let interior = target.position > 0.0 && target.position < 1.0;
+        let origin = match (minimum, &map) {
+            (Some(minimum), Some(map))
+                if minimum <= maximum
+                    && (!interior
+                        || coverage.is_some_and(|(low, high)| {
+                            (low..=high).contains(&target.position)
+                        })) =>
+            {
+                map.inverse_near(
+                    target.position,
+                    f64::from(height),
+                    f64::from(minimum),
+                    f64::from(maximum),
+                    f64::from(minimum),
+                )
+                .map(|origin| origin as f32)
+            }
+            (_, None) if shaped.height() < height => {
+                self.source_short_byte_position(&page, &shaped, maximum, target.position)
+            }
+            (Some(minimum), None) => self
+                .byte_position(&page, &shaped, maximum, target.position)
+                .filter(|origin| *origin >= minimum),
+            _ => None,
+        };
+        if let Some(origin) = origin {
+            self.publish_page(page, shaped, Some((map, origin)), output);
+            return SourcePosition::Ready;
+        }
+        let leading_context = page.before && page.partial_line;
+        if !interior && !leading_context {
+            return SourcePosition::Unavailable;
+        }
+        let edge = match coverage {
+            Some((low, _)) if target.position < low => MissingEdge::Before,
+            Some((_, high)) if target.position > high => MissingEdge::After,
+            None if map.is_none() && shaped.height() < height => {
+                // The target camera must contain position * length. Use that
+                // to grow a short fragment after its byte inverse missed.
+                let pivot = target.position * self.length as f64;
+                if page.before && (!page.after || pivot < page.start as f64) {
+                    MissingEdge::Before
+                } else {
+                    MissingEdge::After
+                }
+            }
+            None if leading_context => MissingEdge::Before,
+            _ => return SourcePosition::Unavailable,
+        };
+
+        // Session validates the page revision. The matching request and position
+        // context own the recovery, including observations from prior reads.
+        let window = SourceWindow {
+            start: page.start,
+            end: page.end,
+            before: page.before,
+            after: page.after,
+        };
+        let Some(viewport) = self
+            .positions
+            .source
+            .as_mut()
+            .and_then(|source| source.reread(window, edge))
+        else {
+            return SourcePosition::Unavailable;
+        };
+        SourcePosition::Reload {
+            sequence: target.sequence,
+            viewport,
+        }
+    }
+
+    pub(super) fn position_page_request(&self, position: f64) -> (u64, bool) {
         let extent = self.position_metrics().map_or(0.0, |(_, extent)| extent);
         let (anchor, backwards) = navigation::scrollbar_viewport(position, self.length, extent);
         if backwards {
@@ -242,6 +504,48 @@ impl Worker {
         (anchor.saturating_sub(before), false)
     }
 
+    /// A missed Text edge needs more of the same window rather than another
+    /// equally short window shifted past context it already owns.
+    fn text_edge_correction(
+        &mut self,
+        target: crate::position_ack::Target,
+    ) -> Option<LoadedPosition> {
+        if self.mode != viewer::MODE_TEXT {
+            return None;
+        }
+        let page = self.page.as_ref()?;
+        let shaped = self.shaped.as_ref()?;
+        let height = self.geometry.height as f32;
+        let maximum = (crate::viewport::available_height(page, shaped, height) - height).max(0.0);
+        let map = self.scroll_map.as_ref()?;
+        let low = map.metrics(0.0, f64::from(height))?.0;
+        let high = map.metrics(f64::from(maximum), f64::from(height))?.0;
+        let (anchor, backwards, available) = if target.position < low {
+            (page.end, true, page.before)
+        } else if target.position > high {
+            (page.start, false, page.after)
+        } else {
+            return None;
+        };
+        if !available {
+            return None;
+        }
+        let mut viewport = self.page_viewport(anchor, backwards);
+        let lines = viewport.max_lines.saturating_mul(2).min(512);
+        if lines <= viewport.max_lines {
+            return None;
+        }
+        viewport.max_lines = lines;
+        self.positions.target = Some(crate::position_ack::Target {
+            corrected: true,
+            ..target
+        });
+        Some(LoadedPosition::ReloadViewport {
+            sequence: target.sequence,
+            viewport,
+        })
+    }
+
     /// A newly decoded fragment has its own byte-to-height estimate. Resolve the
     /// same absolute intent in that layout before acknowledging it, retaining a
     /// small prefix for density changes. At most one correction read is allowed.
@@ -295,6 +599,9 @@ impl Worker {
             }
             // SOURCE_COMPLETION_OBSERVATION_V2_END refine_corrected_uncovered
             return LoadedPosition::Unavailable;
+        }
+        if let Some(correction) = self.text_edge_correction(target) {
+            return correction;
         }
         let (anchor, backwards) = self.position_page_request(target.position);
         if self.page.as_ref().is_none_or(|page| {
@@ -365,7 +672,7 @@ pub(super) mod observation {
     use midnight_plugin_host::{EventKind, api::viewer};
     use std::io::Write;
 
-    /// Scalar protocol metadata only; internal Page does not retain revision/partial_line.
+    /// Incoming protocol metadata, including the revision not retained by Page.
     pub type Incoming = (u64, u64, u64, usize, usize, usize, bool, bool, bool);
 
     #[derive(Default)]
@@ -385,6 +692,7 @@ pub(super) mod observation {
         pub cancelled_request: Option<u64>,
         pub reset_done: Option<bool>,
         pub correction: Option<(u64, bool)>,
+        pub candidate: Option<(u64, u64, f64, f64)>,
     }
 
     impl Extra {
@@ -490,7 +798,7 @@ pub(super) mod observation {
                 "event={:?} incoming={:?} failure_code={:?} viewport={:?} calculation={:?} ",
                 "intent={:?} admitted={:?} admitted_id={:?} page_match={:?} page_applied={:?} ",
                 "completion={:?} completion_success={:?} cancelled_request={:?} ",
-                "reset_done={:?} correction={:?}"
+                "reset_done={:?} correction={:?} candidate={:?}"
             ),
             stage,
             reason,
@@ -533,6 +841,7 @@ pub(super) mod observation {
             extra.cancelled_request,
             extra.reset_done,
             extra.correction,
+            extra.candidate,
         );
     }
 }

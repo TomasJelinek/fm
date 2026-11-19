@@ -15,6 +15,7 @@ pub(crate) const INPUTS: usize = 64;
 pub(crate) enum Message {
     Input(ViewerInput),
     Position(Arc<PositionCell>),
+    Scroll(ScrollStep),
     Ready,
 }
 
@@ -23,8 +24,36 @@ impl Message {
         match self {
             Self::Input(input) => Some(input),
             Self::Position(position) => position.take(),
+            Self::Scroll(step) => Some(ViewerInput::Scroll {
+                x: step.delta[0],
+                y: step.delta[1],
+            }),
             Self::Ready => None,
         }
+    }
+}
+
+/// A credit lives with an admitted step until it is applied or its context ends.
+/// Its separate budget leaves room for a rebase reply even when motion is full.
+pub(crate) struct ScrollStep {
+    pub delta: [f32; 2],
+    _credit: Option<ScrollCredit>,
+}
+
+impl ScrollStep {
+    pub fn new(x: f32, y: f32) -> Self {
+        Self {
+            delta: [x, y],
+            _credit: None,
+        }
+    }
+}
+
+struct ScrollCredit(Arc<AtomicUsize>);
+
+impl Drop for ScrollCredit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -51,6 +80,7 @@ pub(crate) struct Wakes {
     pending: AtomicBool,
     /// User inputs admitted and not yet taken by the worker; at most `capacity`.
     inputs: AtomicUsize,
+    scrolls: Arc<AtomicUsize>,
     capacity: usize,
 }
 
@@ -73,6 +103,7 @@ impl Wakes {
             sender,
             pending: AtomicBool::new(false),
             inputs: AtomicUsize::new(0),
+            scrolls: Arc::new(AtomicUsize::new(0)),
             capacity,
         }
     }
@@ -81,6 +112,23 @@ impl Wakes {
     /// for the worker or the worker stopped. Returns whether it was queued.
     pub fn send_input(&self, message: Message) -> bool {
         debug_assert!(!matches!(message, Message::Ready));
+        let message = if let Message::Input(ViewerInput::Scroll { x, y }) = message {
+            if self
+                .scrolls
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < self.capacity).then_some(count + 1)
+                })
+                .is_err()
+            {
+                return false;
+            }
+            Message::Scroll(ScrollStep {
+                delta: [x, y],
+                _credit: Some(ScrollCredit(Arc::clone(&self.scrolls))),
+            })
+        } else {
+            message
+        };
         if self
             .inputs
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
@@ -258,6 +306,33 @@ mod tests {
 
     fn next_file() -> Message {
         Message::Input(ViewerInput::NextFile)
+    }
+
+    #[test]
+    fn taken_scrolls_stay_bounded_while_waiting_for_the_displayed_camera() {
+        let (wakes, receiver) = Wakes::channel();
+        let scroll = || Message::Input(ViewerInput::Scroll { x: 0.0, y: 28.0 });
+        let mut waiting = Vec::new();
+        for _ in 0..INPUTS {
+            assert!(wakes.send_input(scroll()));
+            waiting.push(receiver.try_recv().unwrap());
+            wakes.taken(1);
+        }
+        assert!(!wakes.send_input(scroll()));
+        assert!(wakes.send_input(Message::Input(ViewerInput::RasterRebase {
+            transition: 1,
+            origin: [0.0; 2],
+        })));
+        assert!(wakes.wake());
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            Message::Input(ViewerInput::RasterRebase { transition: 1, .. })
+        ));
+        assert!(matches!(receiver.try_recv().unwrap(), Message::Ready));
+        wakes.taken(1);
+        wakes.received();
+        drop(waiting.pop());
+        assert!(wakes.send_input(scroll()));
     }
 
     #[test]
@@ -488,6 +563,7 @@ mod tests {
                 query: "needle".into(),
                 backwards: false,
                 case_sensitive: false,
+                whole_words: false,
             },
             ViewerInput::Seek(0.8),
         ] {

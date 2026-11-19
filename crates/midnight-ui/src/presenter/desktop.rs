@@ -32,6 +32,7 @@ pub(crate) struct DesktopState {
     images: HashMap<IconKey, (Image, bool)>,
     image_order: VecDeque<IconKey>,
     pub(super) requests: HashSet<DesktopRequestId>,
+    pub(super) directory_link_hover: Option<super::directory_link_tooltip::LinkHover>,
     pub(super) system_location_requests: HashMap<DesktopRequestId, SystemLocation>,
     open_requests: HashMap<DesktopRequestId, (PaneId, NavigationId, PathBuf)>,
     open_directories: [Option<(NavigationId, PathBuf)>; 2],
@@ -113,6 +114,12 @@ impl DesktopState {
 impl Presenter {
     pub(super) fn apply_desktop(&mut self, event: Event) -> Option<Event> {
         match event {
+            Event::DirectoryLinkTargetRead {
+                request,
+                pane,
+                navigation,
+                target,
+            } => self.apply_directory_link_target(request, pane, navigation, target),
             Event::VolumeInformationLoaded(loaded) => self.volume_information_loaded(*loaded),
             Event::ViewerPluginsListed(result) => self.viewer_plugins_listed(result),
             Event::ComparatorCapabilitiesListed(snapshot) => {

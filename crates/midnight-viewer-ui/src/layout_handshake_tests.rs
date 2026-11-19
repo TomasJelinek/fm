@@ -127,6 +127,7 @@ fn assert_canvas(actual: [f32; 4], expected: [f32; 4]) {
 fn frame(generation: u64, revision: u64, mode: u16) -> ViewerOutput {
     ViewerOutput::Frame(Box::new(ViewerFrame {
         generation,
+        media_control: None,
         position_sequence: [0; 2],
         revision,
         mode,

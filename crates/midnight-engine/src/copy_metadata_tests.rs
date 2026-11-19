@@ -88,6 +88,53 @@ async fn required_modified_time_copy_and_move_share_queue_and_preserve_exact_tim
     }
 }
 #[tokio::test]
+async fn directory_link_options_preserve_required_modified_time_for_regular_copy() {
+    for links in [
+        CopyLinkPolicy::FollowDirectoryContents,
+        CopyLinkPolicy::EmptyDirectories,
+    ] {
+        let (_temp, parent) = protected_fixture();
+        let source = parent.join("source");
+        let destination = parent.join("destination");
+        let data = b"exact-time Copy still verifies content";
+        fs::write(&source, data).unwrap();
+        fs::create_dir(&destination).unwrap();
+        File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(expected()))
+            .unwrap();
+        let mut harness = Harness::native();
+        harness
+            .controller
+            .enqueue_options(CopyOptionsRequest {
+                input: CopyOptionsInput::Native(MetadataTransferRequest {
+                    input: MetadataTransferInput::Paths(request(
+                        1,
+                        std::slice::from_ref(&source),
+                        &destination,
+                    )),
+                    intent: TransferIntent::Copy,
+                    metadata: TransferMetadataPolicy::RequireModifiedTime,
+                }),
+                links,
+            })
+            .await;
+        let done = harness.terminal(1).await;
+        assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+        let copied = destination.join("source");
+        assert_eq!(
+            fs::metadata(&copied).unwrap().modified().unwrap(),
+            expected()
+        );
+        assert_eq!(fs::read(copied).unwrap().as_slice(), data);
+        assert_eq!(fs::read(source).unwrap().as_slice(), data);
+        harness.close().await;
+    }
+}
+
+#[tokio::test]
 async fn required_modified_time_mixed_batch_is_refused_before_any_publication_or_capture() {
     let (_temp, parent) = protected_fixture();
     let source = parent.join("source");

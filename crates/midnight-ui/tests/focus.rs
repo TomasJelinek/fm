@@ -105,6 +105,222 @@ fn complete(
     });
 }
 
+#[tokio::test]
+async fn alt_enter_sends_all_active_pane_marks_to_native_properties() {
+    use midnight_engine::Engine;
+    use midnight_platform::LocalFileSystem;
+    use std::{path::Path, sync::Mutex};
+    use tokio::sync::mpsc;
+
+    #[derive(Default)]
+    struct PropertiesProbe {
+        calls: Mutex<Vec<Vec<PathBuf>>>,
+    }
+
+    impl PropertyService for PropertiesProbe {
+        fn show_properties(&self, paths: &[PathBuf]) -> Result<bool, FsError> {
+            self.calls.lock().unwrap().push(paths.to_vec());
+            Ok(true)
+        }
+    }
+
+    impl IconService for PropertiesProbe {
+        fn load_icon(&self, _: &IconKey) -> Result<Option<IconPixels>, FsError> {
+            Ok(None)
+        }
+    }
+
+    impl LocationService for PropertiesProbe {
+        fn locations(&self) -> Result<Vec<NavigationLocation>, FsError> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl TerminalService for PropertiesProbe {
+        fn shell_flavor(&self) -> ShellFlavor {
+            ShellFlavor::Posix
+        }
+
+        fn launch_terminal(
+            &self,
+            _: &TerminalRequest,
+        ) -> Result<Box<dyn TerminalProcess>, FsError> {
+            panic!("Properties must not launch a terminal")
+        }
+    }
+
+    impl OpenService for PropertiesProbe {
+        fn open_entry(&self, _: &Path) -> Result<OpenEntryResult, FsError> {
+            panic!("Properties must not activate the focused entry")
+        }
+    }
+
+    let (ui, _) = owned_windows::bare_with_clock(Rc::new(Cell::new(Duration::ZERO)));
+    let window = &ui.window;
+    let root = std::env::current_dir().unwrap();
+    let left = root.join("left");
+    let right = root.join("right");
+    let first = right.join("a 調査 e\u{301}.txt");
+    let caret = right.join("m unmarked folder");
+    let last = right.join("z 文档 🧪.txt");
+    let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right)));
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let record = sent.clone();
+    let begin = owned_commands::install(
+        window,
+        presenter.clone(),
+        Rc::new(move |command| {
+            record.borrow_mut().push(command);
+            true
+        }),
+    );
+    owned_commands::run(&presenter, &begin, |presenter, send| {
+        presenter.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), send);
+    });
+    complete(
+        &presenter,
+        &sent,
+        PaneId::Left,
+        vec![Entry::new(
+            EntryId(92),
+            left.join("other.txt"),
+            EntryKind::File,
+        )],
+    );
+    complete(
+        &presenter,
+        &sent,
+        PaneId::Right,
+        vec![
+            Entry::new(EntryId(92), first.clone(), EntryKind::File),
+            Entry::new(EntryId(13), caret.clone(), EntryKind::Directory),
+            Entry::new(EntryId(170), last.clone(), EntryKind::File),
+        ],
+    );
+    midnight_ui::refresh(window, &presenter.borrow());
+    window.invoke_activate(1);
+    window.invoke_focus_files();
+
+    let row_for = |path: &Path| {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        window
+            .get_right_rows()
+            .iter()
+            .position(|row| row.name.as_str() == name)
+            .expect("fixture path appears in the right pane") as i32
+    };
+    window.invoke_row_click(1, row_for(&last), true, false);
+    selection::acknowledge(&presenter, &sent, PaneId::Right, &[last.as_path()]);
+    window.invoke_row_click(1, row_for(&first), true, false);
+    let acknowledged = selection::acknowledge(
+        &presenter,
+        &sent,
+        PaneId::Right,
+        &[first.as_path(), last.as_path()],
+    );
+    let caret_row = row_for(&caret);
+    window.invoke_row_click(1, caret_row, false, false);
+    midnight_ui::refresh(window, &presenter.borrow());
+
+    let check_pane = || {
+        assert_eq!(window.get_active_pane(), 1);
+        assert_eq!(window.get_focused_pane(), 1);
+        assert_eq!(window.get_right_cursor(), caret_row);
+        let marked_names: Vec<_> = window
+            .get_right_rows()
+            .iter()
+            .filter(|row| row.selected)
+            .map(|row| row.name.to_string())
+            .collect();
+        assert_eq!(
+            marked_names,
+            [first.as_path(), last.as_path()].map(|path| path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap())
+        );
+    };
+    check_pane();
+
+    sent.borrow_mut().clear();
+    ui::chord(window, &[Key::Alt], Key::Return);
+    assert_eq!(
+        sent.borrow().len(),
+        1,
+        "Alt+Enter must only request Properties"
+    );
+    let command = sent.borrow_mut().pop().unwrap();
+    let Command::ShowSelectionProperties {
+        request,
+        selection,
+        view,
+        fallback,
+    } = &command
+    else {
+        panic!("Alt+Enter must send the captured selection");
+    };
+    let request = *request;
+    let index = acknowledged.view.as_ref().unwrap();
+    assert!(Arc::ptr_eq(view, index));
+    assert!(Arc::ptr_eq(selection.basis(), index));
+    assert_eq!(selection.len(), 2);
+    assert!(selection.contains_path(&first));
+    assert!(selection.contains_path(&last));
+    assert_eq!(fallback.as_ref(), Some(&caret));
+    check_pane();
+
+    // Forward the command from the actual shortcut. The probe replaces only the native
+    // desktop service so the engine still resolves the captured selection on its workers.
+    let properties = Arc::new(PropertiesProbe::default());
+    let (outbox, mut events) = mpsc::channel(8);
+    let mut engine = Engine::new(
+        Engine::lifetime().unwrap(),
+        Arc::new(LocalFileSystem::new(None)),
+        outbox,
+    );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(properties.clone());
+    let (commands, receiver) = engine.command_channel(8).unwrap();
+    let engine = tokio::spawn(engine.run(receiver));
+    commands.send(command).await.unwrap();
+    let finished = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.expect("Engine stopped before Properties");
+            if matches!(&event, Event::DesktopActionFinished { request: actual, .. } if *actual == request) {
+                break event;
+            }
+        }
+    })
+    .await;
+    commands.send(Command::Shutdown).await.unwrap();
+    drop(events);
+    tokio::time::timeout(Duration::from_secs(5), engine)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let event = finished.expect("Engine did not finish Properties");
+    assert!(matches!(
+        &event,
+        Event::DesktopActionFinished {
+            result: Ok(DesktopActionResult::PropertiesOpened),
+            ..
+        }
+    ));
+    assert_eq!(
+        *properties.calls.lock().unwrap(),
+        [vec![first.clone(), last.clone()]]
+    );
+    owned_commands::run(&presenter, &begin, |presenter, send| {
+        presenter.apply_with_sender(event, send);
+    });
+    midnight_ui::refresh(window, &presenter.borrow());
+    check_pane();
+}
+
 #[test]
 fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     let time = Rc::new(Cell::new(Duration::ZERO));

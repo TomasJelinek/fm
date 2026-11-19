@@ -1,7 +1,8 @@
 //! PDF input/publication regressions using the shared Worker fixture.
 use super::*;
+use crate::image_worker::DocumentRaster;
 use midnight_core::{DocumentLayout, ViewerFrame};
-use midnight_image_viewer_host::{Frame, Metadata};
+use midnight_image_viewer_host::Metadata;
 
 fn document_worker(
     viewport: [u32; 2],
@@ -77,10 +78,10 @@ fn publish_document(worker: &mut Worker, output: &Mailbox) -> ViewerFrame {
     let (size, _) = image.geometry.as_ref().unwrap().raster_geometry();
     image.document_frame = Some((
         image.revision,
-        Frame {
+        DocumentRaster {
             width: size[0],
             height: size[1],
-            rgba: vec![255; size[0] as usize * size[1] as usize * 4],
+            rgba: vec![255; size[0] as usize * size[1] as usize * 4].into(),
         },
     ));
     worker.paint_image(output).unwrap();

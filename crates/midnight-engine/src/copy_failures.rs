@@ -192,7 +192,8 @@ impl Job {
                             parent.retain_source = true;
                         }
                         if let Some(work) = self.move_work.as_mut()
-                            && let Err(error) = work.discard(frame.source.entry().identity)
+                            && let Err(error) =
+                                work.discard_entry(frame.removal, frame.source.entry().identity)
                         {
                             self.record(error);
                         }

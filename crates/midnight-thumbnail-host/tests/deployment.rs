@@ -41,6 +41,7 @@ fn service() -> (Service, tempfile::TempDir) {
 fn video_view() -> View {
     let source: Arc<dyn Source> = Arc::new(Bytes(avi::video()));
     View {
+        thumbnailer_associations: Default::default(),
         generation: 1,
         targets: vec![Target {
             token: 1,

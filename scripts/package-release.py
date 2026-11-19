@@ -441,6 +441,20 @@ def copy_thumbnail_packages(stage, source, target, *, require_media=False, valid
     # independent thumbnail workers are free to use a different implementation.
     ffmpeg = ("avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") if target.endswith("windows-msvc") else (
         "libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10")
+    playback_name = ("midnight-video-playback.exe" if target.endswith("windows-msvc")
+                     else "midnight-video-playback")
+    playback = source / worker_executable(playback_name, target)
+    has_playback_profile = any(
+        provider["id"] == "midnight-video"
+        and provider["version"] == "ffmpeg-9.0.2-playback-r3"
+        for provider in providers)
+    if has_playback_profile or playback in files:
+        resampler = ("swresample-7.dll" if target.endswith("windows-msvc")
+                     else "libswresample.so.7")
+        if not has_playback_profile or playback not in files or source / resampler not in files:
+            raise ValueError("Video playback requires the matching worker and shared FFmpeg profile")
+        ffmpeg += (resampler,)
+        executables.add(playback)
     if (any(provider["id"] == "midnight-video" for provider in providers)
             or any(source / name in files for name in ffmpeg)):
         required = [source / name for name in ffmpeg]

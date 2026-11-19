@@ -18,6 +18,7 @@ mod checksums;
 mod editor_rules;
 mod file_comparators;
 mod file_list;
+mod thumbnailer_associations;
 mod user_commands;
 mod viewer_associations;
 mod viewers;
@@ -41,7 +42,7 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 33;
+const CURRENT_PREFERENCES_VERSION: u32 = 34;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,6 +54,12 @@ struct StoredPreferences {
         skip_serializing_if = "Option::is_none"
     )]
     file_comparators: Option<file_comparators::StoredFileComparators>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    thumbnailer_associations: Option<thumbnailer_associations::StoredAssociations>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -411,7 +418,7 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
         return Err(invalid("unsupported preferences version"));
     }
     // Two independently published version-31 schemas added different fields.
-    // Their shapes identify the legacy branch; versions 32 and 33 require both.
+    // Their shapes identify the legacy branch. Versions 32 and later require both.
     let archive_preview_present = stored
         .previews
         .as_ref()
@@ -421,7 +428,10 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
         stored.disk_io_concurrency.is_some(),
         archive_preview_present,
     ) {
-        (1..=30, false, false) | (31, true, false) | (31, false, true) | (32..=33, true, true) => {}
+        (1..=30, false, false)
+        | (31, true, false)
+        | (31, false, true)
+        | (32..=CURRENT_PREFERENCES_VERSION, true, true) => {}
         _ => {
             return Err(invalid(
                 "missing or unexpected versioned preference extensions",
@@ -793,6 +803,10 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
         thumbnails_enabled,
         thumbnails_network,
         thumbnails_archives,
+        thumbnailer_associations: thumbnailer_associations::decode(
+            stored.version,
+            stored.thumbnailer_associations,
+        )?,
         thumbnail_size,
         shortcuts,
         panel_filters,
@@ -862,10 +876,12 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let disk_choices = preferences.disk_io_concurrency != DiskIoConcurrency::Automatic;
     let archive_preview_choices = !preferences.thumbnails_archives;
     let comparator_choices = !preferences.file_comparators.rules.is_empty();
+    let thumbnailer_choices = !preferences.thumbnailer_associations.overrides.is_empty();
+    let comparator_fields = comparator_choices || thumbnailer_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
-        || comparator_choices
+        || comparator_fields
         || !preferences.editor.rules.is_empty()
         || !preferences.panel_filter_history.is_empty();
     let verification_choices =
@@ -921,8 +937,13 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
-        file_comparators: comparator_choices.then(|| preferences.file_comparators.into()),
-        disk_io_concurrency: (disk_choices || archive_preview_choices || comparator_choices)
+        file_comparators: comparator_fields.then(|| preferences.file_comparators.into()),
+        thumbnailer_associations: thumbnailer_choices.then(|| {
+            thumbnailer_associations::StoredAssociations(
+                preferences.thumbnailer_associations.overrides.clone(),
+            )
+        }),
+        disk_io_concurrency: (disk_choices || archive_preview_choices || comparator_fields)
             .then_some(match preferences.disk_io_concurrency {
                 DiskIoConcurrency::Automatic => StoredDiskIoConcurrency::Automatic {},
                 DiskIoConcurrency::Manual(limit) => StoredDiskIoConcurrency::Manual { limit },
@@ -962,7 +983,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if comparator_choices {
+        version: if thumbnailer_choices {
+            34
+        } else if comparator_choices {
             33
         } else if archive_preview_choices {
             32
@@ -1020,7 +1043,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         previews: store_previews.then_some(StoredPreviews {
             enabled: preferences.thumbnails_enabled,
             network: preferences.thumbnails_network,
-            archives: (archive_preview_choices || comparator_choices)
+            archives: (archive_preview_choices || comparator_fields)
                 .then_some(preferences.thumbnails_archives),
         }),
         disabled_viewer_plugins: Some(preferences.disabled_viewer_plugins),
@@ -1133,7 +1156,11 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         }
         .into(),
     };
-    let mut bytes = serde_json::to_vec(&stored).map_err(invalid)?;
+    let mut bytes = serde_json::to_vec_pretty(&stored).map_err(invalid)?;
+    if bytes.len() >= MAX_PREFERENCES_BYTES {
+        // Keep near-limit settings savable within the same bound, including the final newline.
+        bytes = serde_json::to_vec(&stored).map_err(invalid)?;
+    }
     bytes.push(b'\n');
     if bytes.len() > MAX_PREFERENCES_BYTES {
         return Err(invalid("preferences exceed 4 MiB"));
@@ -1262,6 +1289,56 @@ mod tests {
     use super::*;
     use midnight_core::{PreferenceTheme, UiDensity};
     use std::fs::{self, OpenOptions};
+
+    #[test]
+    fn preferences_json_uses_multiline_indented_utf8() {
+        let preferences = UserPreferences {
+            bookmarks: vec![Bookmark {
+                network: None,
+                archive: None,
+                id: BookmarkId(1),
+                name: "資料".into(),
+                path: std::env::temp_dir().join("資料"),
+                slot: None,
+            }],
+            ..Default::default()
+        };
+        let encoded = encode_preferences(preferences.clone()).unwrap();
+        let json = std::str::from_utf8(&encoded).unwrap();
+        assert!(json.starts_with("{\n  \"version\": "));
+        assert!(json.contains("\n      \"name\": \"資料\""));
+        assert!(json.ends_with("\n}\n"));
+        assert_eq!(decode_preferences(&encoded).unwrap(), preferences);
+    }
+
+    #[test]
+    fn preferences_json_fits_a_readable_legacy_document_near_the_size_limit() {
+        let path = std::env::temp_dir().join("x");
+        let preferences = UserPreferences {
+            bookmarks: vec![Bookmark {
+                network: None,
+                archive: None,
+                id: BookmarkId(1),
+                name: "Large".into(),
+                path: path.clone(),
+                slot: None,
+            }],
+            ..Default::default()
+        };
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&encode_preferences(preferences).unwrap()).unwrap();
+        let initial_size = serde_json::to_vec(&stored).unwrap().len();
+        let suffix = "x".repeat(MAX_PREFERENCES_BYTES - initial_size - 1);
+        stored["bookmarks"][0]["path"] =
+            serde_json::Value::String(format!("{}{suffix}", path.to_str().unwrap()));
+
+        let original = serde_json::to_vec(&stored).unwrap();
+        assert_eq!(original.len() + 1, MAX_PREFERENCES_BYTES);
+        let preferences = decode_preferences(&original).unwrap();
+        let encoded = encode_preferences(preferences.clone()).unwrap();
+        assert!(encoded.len() <= MAX_PREFERENCES_BYTES);
+        assert_eq!(decode_preferences(&encoded).unwrap(), preferences);
+    }
 
     #[test]
     fn stored_duplicate_hot_paths_merge_without_losing_settings_or_native_path() {

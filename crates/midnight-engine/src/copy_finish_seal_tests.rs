@@ -239,6 +239,7 @@ impl Fixture {
         ));
         job.move_work = Some(MoveWork {
             captures: vec![Arc::new(capture)],
+            link_captures: HashMap::new(),
             metadata_policy: TransferMetadataPolicy::ContentOnly,
             stages: HashMap::new(),
             proofs: Vec::new(),

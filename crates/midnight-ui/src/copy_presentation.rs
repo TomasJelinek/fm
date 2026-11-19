@@ -37,7 +37,7 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
     };
     window.set_copy_draft_policy(policy.into());
     window.set_copy_draft_body(shown_text(&format!(
-        "{}\n\nFrom\n{}",
+        "{}\nFrom: {}",
         draft.summary, draft.source
     )));
     // The destination field edits the raw path that the dialog confirms.
@@ -156,13 +156,22 @@ fn refresh_failure(window: &MainWindow, failure: &CopyFailure) {
     window.set_copy_can_merge(false);
     window.set_copy_source_details("".into());
     window.set_copy_target_details("".into());
-    window.set_copy_body(shown_text(&failure_details(failure)));
+    window.set_copy_body(shown_text(&format_failure(failure, append_split_path)));
     window.set_copy_name("".into());
     window.set_copy_token(token);
     window.invoke_show_copy_conflict();
 }
 
 pub(crate) fn failure_details(failure: &CopyFailure) -> String {
+    format_failure(failure, |detail, heading, path| {
+        detail.push_str(&format!("\n\n{heading}\n{}", path.display()));
+    })
+}
+
+fn format_failure(
+    failure: &CopyFailure,
+    append_path: impl Fn(&mut String, &str, &std::path::Path),
+) -> String {
     let stage = match failure.stage {
         CopyErrorStage::Preparing => "Preparing the transfer",
         CopyErrorStage::Reading => "Reading the source",
@@ -177,23 +186,45 @@ pub(crate) fn failure_details(failure: &CopyFailure) -> String {
     };
     let mut detail = format!("{stage}\n\n{}", failure.error.message);
     if let Some(source) = &failure.source {
-        detail.push_str(&format!("\n\nSource\n{}", source.display()));
+        append_path(&mut detail, "Source", source);
     }
-    detail.push_str(&format!(
-        "\n\nDestination\n{}",
-        failure.destination.display()
-    ));
+    append_path(&mut detail, "Destination", &failure.destination);
     if !failure.error.path.as_os_str().is_empty()
         && failure.error.path != failure.destination
         && failure.source.as_ref() != Some(&failure.error.path)
     {
-        detail.push_str(&format!(
-            "\n\nReported path\n{}",
-            failure.error.path.display()
-        ));
+        append_path(&mut detail, "Reported path", &failure.error.path);
     }
     detail.push_str(&format!("\n\nOperation: {}", failure.error.operation));
     detail
+}
+
+pub(super) fn path_parts(path: &std::path::Path) -> (SharedString, SharedString) {
+    let Some(name) = path.file_name() else {
+        return (
+            path.to_string_lossy().as_ref().into(),
+            SharedString::default(),
+        );
+    };
+    let directory = path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .to_string_lossy();
+    (
+        directory.as_ref().into(),
+        name.to_string_lossy().as_ref().into(),
+    )
+}
+
+fn append_split_path(detail: &mut String, heading: &str, path: &std::path::Path) {
+    let (directory, name) = path_parts(path);
+    detail.push_str(&format!("\n\n{heading}"));
+    if !directory.is_empty() {
+        detail.push_str(&format!("\n{directory}"));
+    }
+    if !name.is_empty() {
+        detail.push_str(&format!("\n{name}"));
+    }
 }
 
 fn describe(item: &MutationItem, locale: &NumberLocale) -> String {
@@ -258,6 +289,17 @@ mod tests {
         assert!(detail.contains(&format!("\n\nDestination\n{destination}")));
         assert!(detail.contains("\n\nReported path\nprivate/staging"));
         assert!(detail.contains("\n\nAccess denied\n\n"));
+        let display = format_failure(&failure, append_split_path);
+        let source_directory = std::path::Path::new(&source).parent().unwrap();
+        let target_directory = std::path::Path::new(&destination).parent().unwrap();
+        assert!(display.contains(&format!(
+            "Source\n{}\nsource.txt",
+            source_directory.display()
+        )));
+        assert!(display.contains(&format!(
+            "Destination\n{}\n資料.txt",
+            target_directory.display()
+        )));
     }
     #[test]
     fn conflict_details_distinguish_types_unknowns_and_explicit_precise_utc() {

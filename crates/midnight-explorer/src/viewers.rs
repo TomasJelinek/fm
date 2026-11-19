@@ -1,4 +1,6 @@
-use midnight_core::{Command, PaneId, ViewerAppearance, ViewerAssociations, ViewerLaunch};
+#[cfg(test)]
+use midnight_core::ViewerAppearance;
+use midnight_core::{Command, PaneId, ViewerAssociations, ViewerLaunch};
 use midnight_ui::{MainWindow, Presenter, Theme};
 use midnight_viewer_ui::{ViewerWindows, WindowPlacement};
 use slint::ComponentHandle;

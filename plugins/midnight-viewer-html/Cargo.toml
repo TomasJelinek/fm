@@ -16,6 +16,8 @@ default = ["native-cef"]
 native-cef = ["dep:cef"]
 # Metadata-only profiling; never enabled in the shipped provider.
 diagnostic-timing = []
+# Fixed compositor-path experiment; never enabled in the shipped provider.
+diagnostic-software-compositing = ["diagnostic-timing"]
 
 [dependencies]
 cef = { version = "=156.4.0", default-features = false, features = ["sandbox"], optional = true }

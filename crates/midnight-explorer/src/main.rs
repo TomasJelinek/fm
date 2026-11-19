@@ -495,6 +495,11 @@ fn run_window(
     let scope_refusals = refusals.clone();
     let command_reclaim = command_reclaim::CommandReclaim::new(retire_queue.clone())
         .observe_refusals(Rc::new(move || scope_refusals.refused()));
+    let thumbnail_routing = Arc::new(thumbnails::Routing::default());
+    let routing_commands = Rc::new(thumbnails::RoutingCommands::new(
+        thumbnail_routing.clone(),
+        midnight_core::PathPickerService::command_icon_resource_requires_import(local.as_ref()),
+    ));
     let mut engine = Engine::with_shared_native_filesystem(
         engine_lifetime,
         shared_native,
@@ -523,6 +528,7 @@ fn run_window(
         .install(command_artwork::installed(
             local.clone(),
             filesystem.clone(),
+            thumbnail_routing.clone(),
         ));
     engine
         .configure_audited_transfers()
@@ -579,20 +585,28 @@ fn run_window(
         .map_err(|error| error.to_string())?;
     let comparator_backend =
         comparator_external::Backend::new(&engine, commands.clone(), filesystem.clone());
-    let begin_owned = command_reclaim.factory(commands.clone());
+    let begin_owned = routing_commands.track_owned(command_reclaim.factory(commands.clone()));
     let control_commands = commands.clone();
     let control_refusals = refusals.clone();
+    let control_routing = routing_commands.clone();
     let control_send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |command| {
         // Captured owners and listing acknowledgements use an owned scope.
         // This fallback receives only provider-free controls and metadata.
-        match control_commands.try_send(command) {
-            Ok(()) => true,
-            Err(error) => {
-                drop(error.into_inner());
-                control_refusals.refused();
-                false
-            }
+        let sent = control_routing.dispatch(
+            command,
+            |command| match control_commands.try_send(command) {
+                Ok(()) => true,
+                Err(error) => {
+                    drop(error.into_inner());
+                    false
+                }
+            },
+            drop,
+        );
+        if !sent {
+            control_refusals.refused();
         }
+        sent
     });
     // Dropped when the engine returns or unwinds; a hidden startup then stops waiting.
     let (engine_stopped, engine_stop) = tokio::sync::oneshot::channel::<()>();
@@ -680,6 +694,7 @@ fn run_window(
         let start = Instant::now();
         let mut changed = false;
         let mut preferences_applied = false;
+        let mut thumbnail_routes_changed = false;
         let mut can_drain = ui_reclaim.flush();
         {
             let mut events = ui_receiver.borrow_mut();
@@ -691,9 +706,13 @@ fn run_window(
                     midnight_ui::with_owned_commands(&state, &ui_begin_owned, |p, send| {
                         // Claim precedes the ownership-bearing dequeue, including
                         // stale events and immediate follow-up capture submissions.
-                        let Ok(event) = events.try_recv() else {
+                        let Ok(mut event) = events.try_recv() else {
                             return false;
                         };
+                        if routing_commands.apply(&mut event) {
+                            p.clear_thumbnail_images();
+                            thumbnail_routes_changed = true;
+                        }
                         preferences_applied |= matches!(&event, Event::PreferencesLoaded(_));
                         let size_only = matches!(
                             &event,
@@ -733,6 +752,9 @@ fn run_window(
             midnight_ui::refresh(&window, &state.borrow());
             pending_sizes.painted();
             let _ = retry_pass::sync_visible(&state, &ui_begin_owned, &ui_visible_sync);
+        }
+        if thumbnail_routes_changed {
+            thumbnails::wake_pulse();
         }
         if preferences_applied {
             if let Some(loaded) = loaded_settings.get() {
@@ -843,6 +865,7 @@ fn run_window(
         presenter.clone(),
         filesystem.clone(),
         control_send.clone(),
+        thumbnail_routing,
     );
     let comparators = comparator::install(
         &window,

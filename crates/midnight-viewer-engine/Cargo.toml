@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+midnight-media-host = { path = "../midnight-media-host" }
+midnight-media-output = { path = "../midnight-media-output" }
 midnight-core.workspace = true
 midnight-office-preview = { path = "../midnight-office-preview" }
 midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
@@ -15,6 +17,8 @@ midnight-image-viewer-host = { path = "../midnight-image-viewer-host" }
 midnight-viewer-render = { path = "../midnight-viewer-render" }
 midnight-work-budget = { path = "../midnight-work-budget", features = ["resident-workers"] }
 tokio.workspace = true
+unicode-segmentation = "=1.13.3"
+unicase = "=2.10.0"
 
 [dev-dependencies]
 tempfile.workspace = true

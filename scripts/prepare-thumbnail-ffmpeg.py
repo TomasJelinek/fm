@@ -29,11 +29,11 @@ BASELINE_OPTIONS = (
     '--disable-everything', '--disable-autodetect', '--disable-programs', '--disable-doc',
     '--disable-debug', '--enable-shared', '--disable-static', '--enable-pic',
     '--disable-gpl', '--disable-nonfree', '--disable-version3', '--disable-network',
-    '--disable-protocols', '--disable-avdevice', '--disable-avfilter', '--disable-swresample',
+    '--disable-protocols', '--disable-avdevice', '--disable-avfilter', '--enable-swresample',
     '--disable-hwaccels', '--disable-pthreads', '--disable-w32threads', '--disable-x86asm',
     '--enable-avcodec', '--enable-avformat', '--enable-avutil', '--enable-swscale',
-    '--enable-decoder=vp8,vp9,theora,ffv1,rawvideo',
-    '--enable-demuxer=matroska,avi,ogg', '--enable-parser=vp8,vp9',
+    '--enable-decoder=vp8,vp9,theora,ffv1,rawvideo,opus',
+    '--enable-demuxer=matroska,avi,ogg,mov', '--enable-parser=vp8,vp9',
 )
 
 
@@ -183,9 +183,9 @@ def extract_source(archive, destination):
 def runtime_names(platform_name):
     if platform_name == 'win32':
         return ['bin/avcodec-63.dll', 'bin/avformat-63.dll', 'bin/avutil-61.dll',
-                'bin/swscale-10.dll']
+                'bin/swscale-10.dll', 'bin/swresample-7.dll']
     return ['lib/libavcodec.so.63', 'lib/libavformat.so.63', 'lib/libavutil.so.61',
-            'lib/libswscale.so.10']
+            'lib/libswscale.so.10', 'lib/libswresample.so.7']
 
 
 def runtime_file(prefix, name):
@@ -220,18 +220,22 @@ def validate_prefix(value, platform_name):
             raise ValueError('FFmpeg must disable CONFIG_' + feature)
     components = (notices / 'config_components.h').read_text(encoding='utf-8')
     # The pinned configure selects the VP3 implementation for the Theora decoder.
-    # The worker's independent codec whitelist still accepts only the five public codecs.
+    # The pinned Opus decoder selects its internal CELT/SILK/MDCT helpers.
+    # Keep internal helpers distinct from externally usable codec components.
     approved = {name + '_DECODER'
-                for name in ('VP8', 'VP9', 'THEORA', 'VP3', 'FFV1', 'RAWVIDEO')}
-    approved.update(name + '_DEMUXER' for name in ('MATROSKA', 'AVI', 'OGG'))
+                for name in ('VP8', 'VP9', 'THEORA', 'VP3', 'FFV1', 'RAWVIDEO', 'OPUS')}
+    approved.update(name + '_DEMUXER' for name in ('MATROSKA', 'AVI', 'OGG', 'MOV'))
     approved.update(('VP8_PARSER', 'VP9_PARSER'))
-    for feature in re.findall(r'^#define CONFIG_(\w+) 1$', components, re.MULTILINE):
+    enabled = set(re.findall(r'^#define CONFIG_(\w+) 1$', components, re.MULTILINE))
+    for feature in sorted(enabled):
         if (feature.endswith(('_DECODER', '_DEMUXER', '_PARSER', '_ENCODER', '_MUXER',
                               '_PROTOCOL', '_FILTER', '_INDEV', '_OUTDEV', '_HWACCEL'))
                 and feature not in approved):
             raise ValueError('Unapproved FFmpeg component: ' + feature)
+    if not {'MOV_DEMUXER', 'OPUS_DECODER'}.issubset(enabled):
+        raise ValueError('FFmpeg is missing required MOV or Opus playback support')
     paths.extend(runtime_file(prefix, name) for name in runtime_names(platform_name))
-    for name in ('avcodec', 'avformat', 'avutil', 'swscale'):
+    for name in ('avcodec', 'avformat', 'avutil', 'swscale', 'swresample'):
         paths.append(regular_file(prefix / 'include' / ('lib' + name) / (name + '.h')))
         if platform_name == 'win32':
             paths.append(regular_file(prefix / 'lib' / (name + '.lib')))

@@ -87,7 +87,35 @@ impl Mailbox {
             ));
             outputs.insert(after_layout, palette);
         }
+        if let Some(failure) = outputs
+            .iter()
+            .position(|output| matches!(output, ViewerOutput::VerticalPositionUnavailable { .. }))
+            && let Some(frame) = outputs[..failure]
+                .iter()
+                .position(|output| matches!(output, ViewerOutput::Frame(_)))
+        {
+            let failure = outputs.remove(failure);
+            outputs.insert(frame, failure);
+        }
         outputs
+    }
+
+    /// Fence pending frames and controls when a video seek or file switch is accepted.
+    pub(crate) fn discard_pending_video(&self) {
+        let retired: Vec<_> = {
+            let mut pending = self
+                .output
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            pending
+                .extract_if(.., |output| {
+                    matches!(output, ViewerOutput::MediaSnapshot(_))
+                        || matches!(output, ViewerOutput::Frame(frame)
+                        if frame.mode == midnight_core::VIEWER_MODE_VIDEO)
+                })
+                .collect()
+        };
+        drop(retired);
     }
 
     pub(crate) fn put(&self, output: ViewerOutput) {
@@ -107,6 +135,38 @@ impl Mailbox {
         {
             drop(pending);
             drop(output);
+            return;
+        }
+        if let ViewerOutput::VerticalPositionUnavailable {
+            generation,
+            sequence,
+        } = &output
+            && pending.iter().any(|old| matches!(old,
+                ViewerOutput::VerticalPositionUnavailable { generation: old_generation, sequence: old_sequence }
+                    if (*old_generation, *old_sequence) >= (*generation, *sequence)))
+        {
+            drop(pending);
+            self.wake();
+            return;
+        }
+        if let ViewerOutput::MediaSnapshot(snapshot) = &output
+            && pending.iter().any(|old| {
+                matches!(old, ViewerOutput::MediaSnapshot(previous)
+                    if (previous.session, previous.revision) >= (snapshot.session, snapshot.revision))
+            })
+        {
+            drop(pending);
+            self.wake();
+            return;
+        }
+        if let ViewerOutput::MediaRetired { session } = &output
+            && pending.iter().any(|old| {
+                matches!(old, ViewerOutput::MediaRetired { session: previous }
+                    if previous >= session)
+            })
+        {
+            drop(pending);
+            self.wake();
             return;
         }
         let mut retired = Vec::new();
@@ -131,8 +191,20 @@ impl Mailbox {
                 ViewerOutput::WebState { .. } => {
                     matches!(pending[index], ViewerOutput::WebState { .. })
                 }
+                ViewerOutput::MediaSnapshot(_) => {
+                    matches!(pending[index], ViewerOutput::MediaSnapshot(_))
+                }
+                ViewerOutput::MediaRetired { .. } => {
+                    matches!(pending[index], ViewerOutput::MediaRetired { .. })
+                }
                 ViewerOutput::LayoutSelected { .. } => {
                     matches!(pending[index], ViewerOutput::LayoutSelected { .. })
+                }
+                ViewerOutput::VerticalPositionUnavailable { .. } => {
+                    matches!(
+                        pending[index],
+                        ViewerOutput::VerticalPositionUnavailable { .. }
+                    )
                 }
                 ViewerOutput::Closed => true,
                 ViewerOutput::WebShortcut(_) => false,
@@ -150,6 +222,8 @@ impl Mailbox {
         );
         let layout = matches!(output, ViewerOutput::LayoutSelected { .. });
         let palette = matches!(output, ViewerOutput::PaletteApplied { .. });
+        let failure = matches!(output, ViewerOutput::VerticalPositionUnavailable { .. });
+        let media_retired = matches!(output, ViewerOutput::MediaRetired { .. });
         let reserved = usize::from(
             !frame
                 && !pending
@@ -175,7 +249,20 @@ impl Mailbox {
                     .iter()
                     .any(|old| matches!(old, ViewerOutput::PaletteApplied { .. })),
         );
-        if pending.len() < 8 - reserved {
+        // Coalesced position failures and media retirement each have their own
+        // slot: neither ordinary output nor one another can lose these fences.
+        let occupied = pending.len()
+            - usize::from(
+                pending
+                    .iter()
+                    .any(|old| matches!(old, ViewerOutput::VerticalPositionUnavailable { .. })),
+            )
+            - usize::from(
+                pending
+                    .iter()
+                    .any(|old| matches!(old, ViewerOutput::MediaRetired { .. })),
+            );
+        if failure || media_retired || occupied < 8 - reserved {
             match &output {
                 ViewerOutput::Frame(_) => self.finish_open(Ok(())),
                 ViewerOutput::ImageUnavailable { message, .. } => {
@@ -329,6 +416,7 @@ mod layout_tests {
     fn frame() -> ViewerOutput {
         ViewerOutput::Frame(Box::new(ViewerFrame {
             generation: 7,
+            media_control: None,
             position_sequence: [0; 2],
             revision: 1,
             mode: VIEWER_MODE_HTML,
@@ -350,6 +438,220 @@ mod layout_tests {
             caption: "HTML fixture".into(),
             status: "Offline".into(),
         }))
+    }
+
+    #[test]
+    fn media_retirement_survives_saturation_discard_and_coalesces_to_latest_session() {
+        for retire_first in [false, true] {
+            let mailbox = Mailbox::with_layout();
+            let retire = |session| ViewerOutput::MediaRetired {
+                session: midnight_core::MediaSessionId(session),
+            };
+            if retire_first {
+                mailbox.put(retire(3));
+            }
+            for _ in 0..100 {
+                mailbox.put(ViewerOutput::WebShortcut(HostShortcut::Find));
+            }
+            mailbox.put(ViewerOutput::LayoutSelected {
+                token: 19,
+                mode: VIEWER_MODE_HTML,
+                content_generation: 9,
+            });
+            mailbox.put(ViewerOutput::PaletteApplied {
+                revision: 5,
+                generation: 9,
+                minimum_frame_revision: Some(1),
+            });
+            mailbox.put(ViewerOutput::RasterRebase {
+                surface: ViewerSurfaceId(3),
+                transition: 41,
+            });
+            mailbox.put(frame());
+            mailbox.put(ViewerOutput::VerticalPositionUnavailable {
+                generation: 9,
+                sequence: 12,
+            });
+            for session in [3, 7, 5, 7] {
+                mailbox.put(retire(session));
+            }
+            mailbox.discard_pending_video();
+            let outputs = mailbox.take();
+            assert_eq!(
+                outputs.len(),
+                10,
+                "ordinary eight plus two reserved controls"
+            );
+            assert!(matches!(outputs[0], ViewerOutput::LayoutSelected { .. }));
+            assert_eq!(
+                outputs
+                    .iter()
+                    .filter(|output| matches!(output, ViewerOutput::MediaRetired { .. }))
+                    .count(),
+                1
+            );
+            assert!(outputs.iter().any(|output| matches!(
+                output, ViewerOutput::MediaRetired { session } if session.0 == 7
+            )));
+            assert!(outputs.iter().any(|output| matches!(
+                output,
+                ViewerOutput::VerticalPositionUnavailable { sequence: 12, .. }
+            )));
+            assert_eq!(
+                outputs
+                    .iter()
+                    .filter(|output| matches!(output, ViewerOutput::WebShortcut(_)))
+                    .count(),
+                4
+            );
+            mailbox.put(retire(9));
+            mailbox.put(ViewerOutput::Closed);
+            mailbox.put(retire(10));
+            assert!(matches!(mailbox.take().as_slice(), [ViewerOutput::Closed]));
+        }
+    }
+
+    #[test]
+    fn video_state_coalesces_and_seek_or_navigation_retires_its_pending_pixels() {
+        let mailbox = Mailbox::default();
+        let state = |generation, revision, playing| {
+            let mut snapshot =
+                crate::video_actor::opening(midnight_core::MediaSessionId(generation));
+            snapshot.revision = revision;
+            snapshot.playing = playing;
+            ViewerOutput::MediaSnapshot(snapshot)
+        };
+        mailbox.put(state(2, 1, true));
+        mailbox.put(state(1, 3, true));
+        mailbox.put(state(2, 3, false));
+        mailbox.put(state(2, 2, true));
+        assert!(matches!(
+            mailbox.take().as_slice(),
+            [ViewerOutput::MediaSnapshot(snapshot)]
+                if snapshot.session.0 == 2 && snapshot.revision == 3 && !snapshot.playing
+        ));
+        let ViewerOutput::Frame(mut pixels) = frame() else {
+            unreachable!()
+        };
+        pixels.mode = midnight_core::VIEWER_MODE_VIDEO;
+        pixels.media_control = Some(midnight_core::MediaControlId(0));
+        mailbox.put(ViewerOutput::Frame(pixels));
+        mailbox.put(state(2, 4, false));
+        mailbox.put(ViewerOutput::Status("seeking".into()));
+        mailbox.discard_pending_video();
+        assert!(matches!(
+            mailbox.take().as_slice(),
+            [ViewerOutput::Status(_)]
+        ));
+    }
+
+    #[test]
+    fn vertical_position_failure_coalesces_before_the_frame_without_spending_its_capacity() {
+        for failure_first in [false, true] {
+            let mailbox = Mailbox::with_layout();
+            if failure_first {
+                mailbox.put(ViewerOutput::VerticalPositionUnavailable {
+                    generation: 7,
+                    sequence: 8,
+                });
+            }
+            for _ in 0..100 {
+                mailbox.put(ViewerOutput::WebShortcut(HostShortcut::Find));
+            }
+            mailbox.put(ViewerOutput::LayoutSelected {
+                token: 19,
+                mode: VIEWER_MODE_HTML,
+                content_generation: 7,
+            });
+            mailbox.put(ViewerOutput::PaletteApplied {
+                revision: 5,
+                generation: 7,
+                minimum_frame_revision: Some(1),
+            });
+            mailbox.put(ViewerOutput::RasterRebase {
+                surface: ViewerSurfaceId(3),
+                transition: 41,
+            });
+            mailbox.put(frame());
+            for (generation, sequence) in [(7, 12), (6, 99), (7, 11), (7, 12)] {
+                mailbox.put(ViewerOutput::VerticalPositionUnavailable {
+                    generation,
+                    sequence,
+                });
+            }
+
+            let outputs = mailbox.take();
+            assert_eq!(outputs.len(), 9);
+            assert_eq!(
+                outputs
+                    .iter()
+                    .filter(|output| matches!(
+                        output,
+                        ViewerOutput::WebShortcut(HostShortcut::Find)
+                    ))
+                    .count(),
+                4
+            );
+            assert!(matches!(
+                outputs[0],
+                ViewerOutput::LayoutSelected { token: 19, .. }
+            ));
+            assert!(matches!(
+                outputs[1],
+                ViewerOutput::PaletteApplied { revision: 5, .. }
+            ));
+            assert!(matches!(
+                outputs[6],
+                ViewerOutput::RasterRebase { transition: 41, .. }
+            ));
+            assert!(matches!(
+                outputs[7],
+                ViewerOutput::VerticalPositionUnavailable {
+                    generation: 7,
+                    sequence: 12
+                }
+            ));
+            assert!(matches!(outputs[8], ViewerOutput::Frame(_)));
+        }
+    }
+
+    #[test]
+    fn vertical_position_failure_duplicate_can_retry_a_rejected_wake() {
+        let mailbox = Mailbox::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        mailbox.notify_on_ready(Arc::new(move || {
+            observed.fetch_add(1, Ordering::Relaxed) != 0
+        }));
+        for expected_calls in 1..=2 {
+            mailbox.put(ViewerOutput::VerticalPositionUnavailable {
+                generation: 7,
+                sequence: 8,
+            });
+            assert_eq!(calls.load(Ordering::Relaxed), expected_calls);
+        }
+        assert!(matches!(
+            mailbox.take().as_slice(),
+            [ViewerOutput::VerticalPositionUnavailable {
+                generation: 7,
+                sequence: 8
+            }]
+        ));
+    }
+
+    #[test]
+    fn closed_retires_the_pending_vertical_position_failure_and_fences_late_failure() {
+        let mailbox = Mailbox::default();
+        mailbox.put(ViewerOutput::VerticalPositionUnavailable {
+            generation: 7,
+            sequence: 8,
+        });
+        mailbox.put(ViewerOutput::Closed);
+        mailbox.put(ViewerOutput::VerticalPositionUnavailable {
+            generation: 7,
+            sequence: 9,
+        });
+        assert!(matches!(mailbox.take().as_slice(), [ViewerOutput::Closed]));
     }
 
     #[test]

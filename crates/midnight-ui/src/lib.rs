@@ -100,6 +100,7 @@ mod thumbnail_content;
 mod thumbnail_presentation;
 mod thumbnail_refresh;
 pub use thumbnail_refresh::refresh_thumbnail_rows;
+mod directory_link_tooltip;
 mod metadata_column_presentation;
 mod time_presentation;
 mod tool_window_failure;
@@ -865,6 +866,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.invoke_finish_navigation_viewport(index as i32, !pane.error.is_empty());
         }
     }
+    directory_link_tooltip::refresh(window, presenter);
     tooltip::synchronize(window);
     // Every refresh path ends here, including callback handlers; hosts only wake work.
     window.invoke_presentation_changed();
@@ -998,6 +1000,7 @@ pub fn install_with_owned(
     hot_path_windows::install(window, presenter.clone(), send.clone());
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
+    directory_link_tooltip::install(window, presenter.clone(), send.clone());
     scroll_input::install(window);
     shell_bridge::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     operation_windows::install(window, presenter.clone(), send.clone(), begin_owned.clone());

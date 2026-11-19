@@ -187,6 +187,11 @@ pub enum Command {
     DecideCopy(crate::CopyDecision),
     DecideRename(crate::CopyDecision),
     CancelCopy(crate::OperationId),
+    CopyCancelConfirmation {
+        id: crate::OperationId,
+        token: u64,
+        action: crate::CopyCancelConfirmationAction,
+    },
     SetCopyPaused {
         id: crate::OperationId,
         paused: bool,
@@ -362,6 +367,14 @@ pub enum Command {
     /// Directory-only activation must never invoke a host file association,
     /// including when the captured link has since been replaced with a file.
     ResolveDirectoryLink {
+        request: DesktopRequestId,
+        pane: PaneId,
+        navigation: NavigationId,
+        path: PathBuf,
+    },
+    /// Read the stored target of the exact native directory-link row under the pointer.
+    /// The caller scopes the token to the row, view revision and active tab.
+    ReadDirectoryLinkTarget {
         request: DesktopRequestId,
         pane: PaneId,
         navigation: NavigationId,
@@ -603,6 +616,12 @@ pub enum Event {
     DesktopActionFinished {
         request: DesktopRequestId,
         result: Result<DesktopActionResult, FsError>,
+    },
+    DirectoryLinkTargetRead {
+        request: DesktopRequestId,
+        pane: PaneId,
+        navigation: NavigationId,
+        target: Option<PathBuf>,
     },
     VolumesUpdated(Vec<Volume>),
     VolumeDetailsUpdated {

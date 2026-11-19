@@ -609,10 +609,10 @@ mod tests {
         assert_eq!(plan.slices[0].viewport.origin_y, 678.0);
         view.complete_document(
             active,
-            Some(midnight_image_viewer_host::Frame {
+            Some(DocumentRaster {
                 width: 1,
                 height: 1,
-                rgba: vec![0; 4],
+                rgba: vec![0; 4].into(),
             }),
         );
         assert_eq!(

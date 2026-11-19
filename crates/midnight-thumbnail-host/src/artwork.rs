@@ -1,5 +1,6 @@
 //! Explicit custom-command artwork uses the installed restricted image worker.
 use crate::{decode, providers};
+use midnight_core::ThumbnailerAssociations;
 use midnight_thumbnail_api::{Frame, Request};
 use std::{io, path::Path, time::Duration};
 
@@ -9,17 +10,14 @@ pub fn decode_image(
     executable: &Path,
     source: &dyn decode::Source,
     extension: &str,
+    associations: &ThumbnailerAssociations,
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<Frame> {
     if cancelled() {
         return Err(io::ErrorKind::Interrupted.into());
     }
-    let provider = providers::discover(executable)?
-        .into_iter()
-        .find(|provider| {
-            !provider.manifest.video
-                && provider.manifest.extensions.iter().any(|suffix| suffix.eq_ignore_ascii_case(extension))
-        })
+    let catalog = providers::discover(executable)?;
+    let provider = providers::select(&catalog, associations, extension, true)
         .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,
             "No installed image thumbnailer supports this artwork. Install an image thumbnailer or choose another image format."))?;
     decode::decode_cooperative(

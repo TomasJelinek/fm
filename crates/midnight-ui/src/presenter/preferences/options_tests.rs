@@ -8,6 +8,81 @@ fn loaded() -> Presenter {
 }
 
 #[test]
+fn thumbnailer_associations_publish_only_after_an_accepted_options_save() {
+    let root = std::env::temp_dir().join("thumbnailer-options-bookmark");
+    let mut p = Presenter::new(root.clone(), root.clone());
+    p.preferences_loaded(Ok(UserPreferences::default()));
+    let defaults = vec!["png".to_owned()];
+    p.thumbnailer_plugins_listed(Ok(vec![ThumbnailerPluginInfo {
+        id: "image.worker".into(),
+        name: "Image worker".into(),
+        version: "1".into(),
+        extensions: defaults.clone(),
+        video: false,
+        location: root.join("worker"),
+        status: String::new(),
+    }]));
+    p.begin_options();
+    p.edit_thumbnailer_extensions("");
+    assert!(p.stage_thumbnailer_extension_draft());
+    assert_eq!(p.thumbnailer_extension_text(), "");
+
+    let commands = RefCell::new(Vec::new());
+    assert!(
+        p.add_bookmark(PaneId::Left, "During Options".into(), Some(1), &|command| {
+            commands.borrow_mut().push(command);
+            true
+        })
+    );
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].1.bookmarks[0].name, "During Options");
+    assert_eq!(
+        writes[0]
+            .1
+            .thumbnailer_associations
+            .effective_extensions("image.worker", &defaults),
+        defaults.as_slice(),
+    );
+
+    p.cancel_options(&|_| true);
+    assert_eq!(p.thumbnailer_extension_text(), "png");
+    assert!(!p.thumbnailer_extension_overridden());
+    p.preferences_saved(writes[0].0, Ok(()));
+
+    commands.borrow_mut().clear();
+    p.begin_options();
+    p.edit_thumbnailer_extensions("");
+    p.accept_options(&|command| {
+        commands.borrow_mut().push(command);
+        true
+    });
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes.len(), 1);
+    assert!(
+        writes[0]
+            .1
+            .thumbnailer_associations
+            .effective_extensions("image.worker", &defaults)
+            .is_empty()
+    );
+    assert_eq!(
+        p.accepted_thumbnailer_associations()
+            .unwrap()
+            .effective_extensions("image.worker", &defaults),
+        defaults.as_slice(),
+    );
+
+    p.preferences_saved(writes[0].0, Ok(()));
+    assert!(
+        p.accepted_thumbnailer_associations()
+            .unwrap()
+            .effective_extensions("image.worker", &defaults)
+            .is_empty()
+    );
+}
+
+#[test]
 fn disk_io_automatic_and_manual_boundaries_are_staged_until_ok() {
     for (automatic, maximum, expected) in [
         (true, 0, DiskIoConcurrency::Automatic),

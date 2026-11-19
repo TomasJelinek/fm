@@ -1,5 +1,8 @@
 #[path = "support/file_conflicts.rs"]
 mod conflicts;
+#[allow(dead_code)]
+#[path = "support/modeless.rs"]
+mod modeless;
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
 #[path = "support/owned_windows.rs"]
@@ -10,7 +13,7 @@ mod selection;
 mod ui;
 
 use i_slint_core::{
-    accessibility::AccessibilityAction,
+    accessibility::{AccessibilityAction, AccessibleStringProperty},
     items::AccessibleRole,
     window::{WindowInner, WindowKind},
 };
@@ -209,6 +212,15 @@ fn clipboard_shortcuts_follow_actual_file_focus_and_leave_text_editors_native() 
 
 #[test]
 fn native_cut_paste_requires_move_confirmation_before_shared_queue_admission() {
+    clipboard_move(true);
+}
+
+#[test]
+fn unchecked_clipboard_move_enqueues_empty_directories() {
+    clipboard_move(false);
+}
+
+fn clipboard_move(follow_directory_links: bool) {
     let mut h = Harness::new();
     ui::click(&h.ui.window, h.row(1).x, h.row(1).y);
     ui::chord(&h.ui.window, &[Key::Control], "x");
@@ -256,18 +268,59 @@ fn native_cut_paste_requires_move_confirmation_before_shared_queue_admission() {
     );
     assert!(h.commands.borrow().iter().all(|command| !matches!(
         command,
-        Command::EnqueueCopy(_) | Command::EnqueueMove(_) | Command::EnqueueClipboardMove(_)
+        Command::EnqueueCopy(_)
+            | Command::EnqueueMove(_)
+            | Command::EnqueueClipboardMove(_)
+            | Command::EnqueueCopyWithOptions(_)
     )));
+    let native = h.windows.borrow()[0].clone();
+    let links = modeless::accessible_popup_item(
+        &native,
+        AccessibleRole::Checkbox,
+        "Follow directory links",
+    )
+    .expect("explicit clipboard Move exposes the directory-link choice");
+    assert_eq!(
+        links
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "true"
+    );
+    if !follow_directory_links {
+        links.accessible_action(&AccessibilityAction::Default);
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .unwrap(),
+            "false"
+        );
+    }
     owned_windows::child_key(&h.windows, Key::Return);
     h.draw();
     let commands = h.commands.borrow();
-    let request = commands
+    let options = commands
         .iter()
         .find_map(|command| match command {
-            Command::EnqueueClipboardMove(request) => Some(request),
+            Command::EnqueueCopyWithOptions(options) => Some(options),
             _ => None,
         })
         .expect("explicit Enter must admit the captured clipboard Move");
+    assert_eq!(
+        options.links,
+        if follow_directory_links {
+            CopyLinkPolicy::FollowDirectoryContents
+        } else {
+            CopyLinkPolicy::EmptyDirectories
+        }
+    );
+    let CopyOptionsInput::Native(request) = &options.input else {
+        panic!("clipboard Move requires its native request");
+    };
+    assert_eq!(request.intent, TransferIntent::Move);
+    assert_eq!(request.metadata, TransferMetadataPolicy::ContentOnly);
+    let MetadataTransferInput::Clipboard(request) = &request.input else {
+        panic!("clipboard Move must preserve its captured clipboard");
+    };
     assert_eq!(request.clipboard.paths, vec![h.base.join("a.txt")]);
     assert_eq!(request.destination, h.base);
     assert!(h.ui.window.get_copy_draft_token().is_empty());

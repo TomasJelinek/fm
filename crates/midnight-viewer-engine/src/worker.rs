@@ -1,11 +1,19 @@
-use crate::{Mailbox, navigation, page::Page};
+use crate::{
+    Mailbox,
+    input_queue::ScrollStep,
+    navigation,
+    page::Page,
+    video_actor::{VideoUpdate, VideoView},
+};
 use midnight_core::*;
+use midnight_media_host::video_installation::{VIDEO_PROVIDER_ID, VideoInstallation};
 use midnight_plugin_host::{
     EventKind, OPEN_REQUEST_ID, Runtime, Session,
     api::{messages, viewer},
 };
 use midnight_viewer_render::{TextOptions, TextPage, TextRenderer, Viewport};
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         Arc,
@@ -37,6 +45,8 @@ fn visible_rows(page: &TextPage, origin: f32, geometry: ViewerGeometry) -> (usiz
 
 #[path = "worker_loop.rs"]
 mod event_loop;
+#[path = "worker_find.rs"]
+mod find;
 #[path = "worker_image.rs"]
 mod image;
 #[path = "worker_layout.rs"]
@@ -61,6 +71,88 @@ mod text;
 #[path = "worker_web.rs"]
 mod web;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MotionOwner {
+    Viewport(u64),
+    Rebase(u64),
+}
+
+/// Owns relative input during a bounded read or displayed-camera handoff.
+/// A candidate page retains its request ID when the motion belongs to a rebase.
+#[derive(Default)]
+struct RelativeMotion {
+    owner: Option<MotionOwner>,
+    steps: VecDeque<ScrollStep>,
+    page: Option<(u64, Page)>,
+}
+
+impl RelativeMotion {
+    fn adopt(&mut self, owner: MotionOwner) {
+        if self.owner != Some(owner) {
+            *self = Self {
+                owner: Some(owner),
+                ..Self::default()
+            };
+        }
+    }
+
+    fn defer(&mut self, owner: MotionOwner, step: ScrollStep) {
+        self.adopt(owner);
+        self.steps.push_back(step);
+    }
+
+    fn stage_page(&mut self, id: u64, page: Page) {
+        if !matches!(self.owner, Some(MotionOwner::Rebase(_))) {
+            self.adopt(MotionOwner::Viewport(id));
+        }
+        self.page = Some((id, page));
+    }
+
+    fn begin_rebase(&mut self, request: Option<u64>, transition: u64) {
+        if request.map(MotionOwner::Viewport) != self.owner {
+            *self = Self::default();
+        }
+        self.owner = Some(MotionOwner::Rebase(transition));
+    }
+
+    fn take_page(&mut self, id: u64) -> Option<Page> {
+        if self
+            .page
+            .as_ref()
+            .is_some_and(|(request, _)| *request == id)
+        {
+            self.page.take().map(|(_, page)| page)
+        } else {
+            None
+        }
+    }
+
+    fn retire_viewport(&mut self) {
+        self.page = None;
+        if matches!(self.owner, Some(MotionOwner::Viewport(_))) {
+            *self = Self::default();
+        }
+    }
+
+    fn retire(&mut self, owner: MotionOwner) {
+        if self.owner == Some(owner) {
+            *self = Self::default();
+        }
+    }
+
+    fn take_steps(&mut self, owner: MotionOwner) -> VecDeque<ScrollStep> {
+        if self.owner == Some(owner) {
+            std::mem::take(self).steps
+        } else {
+            VecDeque::new()
+        }
+    }
+
+    fn is_idle(&self) -> bool {
+        self.owner.is_none()
+    }
+}
+
 struct Worker {
     wake: Arc<dyn Fn() -> bool + Send + Sync>,
     window_closed: Arc<AtomicBool>,
@@ -80,6 +172,10 @@ struct Worker {
     image_ids: Arc<std::sync::atomic::AtomicU64>,
     image: Option<crate::image_view::ImageView>,
     closing_image: Option<crate::image_worker::ImageWorker>,
+    video_installation: Option<VideoInstallation>,
+    video: Option<VideoView>,
+    closing_video: Option<VideoView>,
+    video_retirement_error: Option<String>,
     /// Native paths or provider labels of the bounded navigation order.
     files: Arc<[PathBuf]>,
     current: usize,
@@ -130,7 +226,7 @@ struct Worker {
     wrap: bool,
     land_at_bottom: bool,
     continuation: Option<crate::viewport::Continuation>,
-    queued_scroll: [f32; 2],
+    motion: RelativeMotion,
     caption: String,
     status: String,
     dirty: bool,
@@ -192,7 +288,17 @@ pub(crate) fn run(
         .transpose()?;
     let (preference_revision, preferences) = preference_state.snapshot();
     let mut disabled_plugins = launch.disabled_plugins.to_vec();
-    // Ambiguous identities are disabled on both transports before any code loads.
+    let video_installation = if launch.basic
+        || launch.generated.is_some()
+        || disabled_plugins.iter().any(|id| id == VIDEO_PROVIDER_ID)
+    {
+        None
+    } else {
+        midnight_plugin_host::installed_executable()
+            .ok()
+            .and_then(|executable| VideoInstallation::discover(&executable).ok())
+    };
+    // Ambiguous identities are disabled across transports before any code loads.
     let mut identities = std::collections::HashMap::new();
     for id in runtime
         .catalog()
@@ -202,6 +308,9 @@ pub(crate) fn run(
         .chain(web.iter().map(|provider| &provider.id))
     {
         *identities.entry(id.clone()).or_insert(0usize) += 1;
+    }
+    if video_installation.is_some() {
+        *identities.entry(VIDEO_PROVIDER_ID.to_owned()).or_insert(0) += 1;
     }
     disabled_plugins.extend(
         identities
@@ -230,6 +339,10 @@ pub(crate) fn run(
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
+        video_installation,
+        video: None,
+        closing_video: None,
+        video_retirement_error: None,
         files: order.files,
         current: order.current,
         captured: Some((order.current, order.focused)),
@@ -273,7 +386,7 @@ pub(crate) fn run(
         wrap: preferences.wrap,
         land_at_bottom: false,
         continuation: None,
-        queued_scroll: [0.0; 2],
+        motion: RelativeMotion::default(),
         caption: String::new(),
         status: String::new(),
         dirty: false,
@@ -318,12 +431,19 @@ pub(crate) fn run(
         worker.sync_palette(output);
         worker.resume_open(output);
         worker.drain_session(output);
-        worker.announce_content_palette(output);
+        if worker.video.is_some() {
+            worker.acknowledge_palette(output, None);
+        } else {
+            worker.announce_content_palette(output);
+        }
         worker.poll_image(output);
         worker.poll_web(output);
+        worker.poll_video(output);
         if worker.dirty {
             worker.dirty = false;
-            if let Err(error) = worker.paint(output) {
+            if worker.mode != VIEWER_MODE_VIDEO
+                && let Err(error) = worker.paint(output)
+            {
                 worker.error(error, output);
             }
         }
@@ -335,12 +455,13 @@ pub(crate) fn run(
     if let Some(session) = worker.session.take() {
         session.close();
     }
+    let video_cleanup = worker.finish_video();
     let web_cleanup = worker.finish_web();
     output.put(ViewerOutput::Closed);
     let raster_budget = worker.raster_budget.clone();
     drop(worker);
     raster_budget.reap();
-    web_cleanup
+    video_cleanup.and(web_cleanup)
 }
 
 fn bounded_geometry(mut geometry: ViewerGeometry) -> ViewerGeometry {
@@ -440,12 +561,13 @@ impl Worker {
                 self.frames.invalidate();
                 self.dirty = true;
             }
-        } else if previous.wrap != self.preferences.wrap
-            || previous.line_numbers != self.preferences.line_numbers
-            || previous.text_font != self.preferences.text_font
-            || previous.source_font != self.preferences.source_font
-            || previous.markdown_font != self.preferences.markdown_font
-            || previous.markdown_preset != self.preferences.markdown_preset
+        } else if self.mode != VIEWER_MODE_VIDEO
+            && (previous.wrap != self.preferences.wrap
+                || previous.line_numbers != self.preferences.line_numbers
+                || previous.text_font != self.preferences.text_font
+                || previous.source_font != self.preferences.source_font
+                || previous.markdown_font != self.preferences.markdown_font
+                || previous.markdown_preset != self.preferences.markdown_preset)
         {
             self.position_context(output);
             self.reflow(output);
@@ -464,6 +586,14 @@ impl Worker {
     }
 
     fn open(&mut self, output: &Mailbox) {
+        if self.video.is_some() || self.mode == VIEWER_MODE_VIDEO {
+            output.discard_pending_video();
+        }
+        if let Some(video) = &self.video {
+            output.put(ViewerOutput::MediaRetired {
+                session: video.session_id(),
+            });
+        }
         self.invalidate_layout();
         self.close_source_target();
         self.cancel_locate();
@@ -476,10 +606,23 @@ impl Worker {
         self.text = Default::default();
         self.selection = None;
         self.continuation = None;
-        self.queued_scroll = [0.0; 2];
+        self.motion = RelativeMotion::default();
         self.frames.invalidate();
         // Start capture while the previous session retires.
         self.request_capture();
+        match self.retire_video() {
+            Ok(true) => {}
+            Ok(false) => {
+                self.pending_open = true;
+                self.status("Closing previous video…".into(), output);
+                return;
+            }
+            Err(error) => {
+                self.pending_open = false;
+                self.error(error, output);
+                return;
+            }
+        }
         match self.retire_web() {
             Ok(true) => {}
             Ok(false) => {
@@ -537,7 +680,7 @@ impl Worker {
         self.anchor = 0;
         self.viewport_request = None;
         self.continuation = None;
-        self.queued_scroll = [0.0; 2];
+        self.motion = RelativeMotion::default();
         self.search_request = None;
         self.search_cursor = Default::default();
         self.found = None;
@@ -565,23 +708,37 @@ impl Worker {
         position: Option<u64>,
         output: &Mailbox,
     ) {
+        let viewport = self.page_viewport(anchor, backwards);
+        self.request_viewport(viewport, position, output);
+    }
+
+    fn request_viewport(
+        &mut self,
+        viewport: messages::Viewport,
+        position: Option<u64>,
+        output: &Mailbox,
+    ) {
         self.invalidate_source_target();
         self.cancel_locate();
         self.position_page = None;
+        let source_position = self.mode == viewer::MODE_SOURCE && position.is_some();
+        if source_position {
+            // An absolute seek replaces the owner of any deferred relative input.
+            self.motion = RelativeMotion::default();
+        } else {
+            self.motion.retire_viewport();
+        }
         if position.is_none() && self.positions.has_pending() {
             self.position_context(output);
         }
-        let viewport = self.page_viewport(anchor, backwards);
         // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN admission_viewport
         #[cfg(test)]
-        let observation_viewport = position::observation::enabled(self).then(|| {
-            (
-                viewport.source_anchor,
-                viewport.backwards,
-                viewport.max_bytes,
-                viewport.max_lines,
-            )
-        });
+        let observation_viewport = position::observation::enabled(self).then_some((
+            viewport.source_anchor,
+            viewport.backwards,
+            viewport.max_bytes,
+            viewport.max_lines,
+        ));
         // SOURCE_COMPLETION_OBSERVATION_V2_END admission_viewport
         self.continuation = None;
         let Some(session) = &self.session else {
@@ -622,18 +779,34 @@ impl Worker {
             }
             // SOURCE_COMPLETION_OBSERVATION_V2_END admission_cancel_previous
         }
-        let _ = scroll_trace::begin("request", anchor);
+        let _ = scroll_trace::begin("request", viewport.source_anchor);
         match session.viewport(viewport.clone()) {
             Ok(id) => {
                 self.viewport_request = Some(id);
-                self.source_requested(id, viewport);
                 if let Some(sequence) = position {
                     self.positions.requested(id, sequence);
+                    if self.mode == viewer::MODE_SOURCE
+                        && self.positions.source.is_none()
+                        && self
+                            .positions
+                            .target
+                            .is_some_and(|target| target.sequence == sequence)
+                    {
+                        self.positions.source =
+                            Some(crate::position_ack::SourceRecovery::new(viewport.clone()));
+                    }
                 }
-                self.land_at_bottom = backwards;
-                self.anchor = anchor;
+                if self.positions.source.is_none() {
+                    self.land_at_bottom = viewport.backwards;
+                    self.anchor = viewport.source_anchor;
+                }
+                self.source_requested(id, viewport);
             }
-            Err(error) => self.error(error.to_string(), output),
+            Err(error) if !source_position => {
+                self.search_cursor.cancel_candidate();
+                self.error(error.to_string(), output);
+            }
+            Err(_) => {}
         }
         // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN admission_result
         #[cfg(test)]
@@ -704,6 +877,15 @@ impl Worker {
     }
 
     fn input(&mut self, input: ViewerInput, output: &Mailbox) {
+        self.apply_input(input, None, output);
+    }
+
+    fn admitted_scroll(&mut self, step: ScrollStep, output: &Mailbox) {
+        let [x, y] = step.delta;
+        self.apply_input(ViewerInput::Scroll { x, y }, Some(step), output);
+    }
+
+    fn apply_input(&mut self, input: ViewerInput, step: Option<ScrollStep>, output: &Mailbox) {
         if matches!(input, ViewerInput::Close) {
             self.close_source_target();
             self.layout.close();
@@ -741,10 +923,13 @@ impl Worker {
             self.invalidate_source_target();
             self.raster.enabled = enabled;
             self.source_viewport_parameters_changed();
-            if self.web.is_none() && self.image.is_none() {
+            if self.mode != VIEWER_MODE_VIDEO && self.web.is_none() && self.image.is_none() {
                 self.reset_raster_context();
                 self.dirty = true;
             }
+            return;
+        }
+        if self.mode == VIEWER_MODE_VIDEO && self.video_input(&input, output) {
             return;
         }
         if self.web.is_some() && self.web_input(&input, output) {
@@ -775,6 +960,7 @@ impl Worker {
                 {
                     return;
                 }
+                self.interrupt_find();
                 self.invalidate_source_target();
                 if horizontal {
                     self.reset_raster_context();
@@ -787,6 +973,7 @@ impl Worker {
                 }
             }
             ViewerInput::Resize(geometry) => {
+                self.interrupt_find();
                 self.position_context(output);
                 self.frames.invalidate();
                 self.image_size = [geometry.width.max(1), geometry.height.max(1)];
@@ -823,98 +1010,16 @@ impl Worker {
                 self.source_viewport_parameters_changed();
             }
             ViewerInput::Scroll { x, y } if x.is_finite() && y.is_finite() => {
-                self.invalidate_source_target();
-                self.cancel_raster_rebase();
-                if self.retained_active() {
-                    self.reset_raster_context();
-                }
-                if self.positions.has_pending() {
-                    self.position_context(output);
-                }
-                if x != 0.0 {
-                    self.positions.horizontal = None;
-                }
-                // A continuation owns the requested source-relative camera until
-                // its reply arrives. Even a reversal that fits the old fragment
-                // belongs after that movement, rather than to the obsolete page.
-                if self.viewport_request.is_some() && self.continuation.is_some() {
-                    self.queued_scroll[0] = (self.queued_scroll[0] + x).clamp(-1e7, 1e7);
-                    self.queued_scroll[1] = (self.queued_scroll[1] + y).clamp(-1e7, 1e7);
-                    return;
-                }
-                let fallback = self.raster.enabled && !self.retained_active();
-                let y = if fallback {
-                    let pending = std::mem::take(&mut self.raster.fallback_scroll);
-                    y + if y != 0.0 && pending.signum() != y.signum() {
-                        0.0
-                    } else {
-                        pending
-                    }
-                } else {
-                    y
-                };
-                if let Some(page) = &self.page {
-                    let height = self.shaped.as_ref().map_or(0.0, |p| {
-                        if fallback {
-                            crate::viewport::available_height(page, p, self.geometry.height as f32)
-                        } else {
-                            p.height()
-                        }
-                    });
-                    let max_y = (height - self.geometry.height as f32).max(0.0);
-                    let next = self.origin[1] + y;
-                    let continuation = self.shaped.as_ref().and_then(|shaped| {
-                        crate::viewport::Continuation::capture(
-                            page,
-                            shaped,
-                            self.geometry,
-                            [self.origin[0] + x, self.origin[1]],
-                            y,
-                        )
-                    });
-                    let continuation = continuation.filter(|next| {
-                        let progresses = if next.backwards {
-                            next.anchor < page.end
-                        } else {
-                            next.anchor > page.start
-                        };
-                        if fallback && !progresses {
-                            // Keep sub-row wheel distance without repeatedly
-                            // fetching the same byte-limited fragment.
-                            self.raster.fallback_scroll = (self.origin[1] + y
-                                - (self.origin[1] + y).clamp(0.0, max_y))
-                            .clamp(-1e7, 1e7);
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                    if let Some(continuation) = continuation {
-                        if self.viewport_request.is_some() {
-                            self.queued_scroll[0] = (self.queued_scroll[0] + x).clamp(-1e7, 1e7);
-                            self.queued_scroll[1] = (self.queued_scroll[1] + y).clamp(-1e7, 1e7);
-                        } else {
-                            self.request_page(continuation.anchor, continuation.backwards, output);
-                            self.continuation = Some(continuation);
-                        }
-                    } else {
-                        self.frames.invalidate();
-                        self.origin[1] = next.clamp(0.0, max_y);
-                        let max_x = self
-                            .shaped
-                            .as_ref()
-                            .map_or(0.0, |p| (p.width() - self.text_width()).max(0.0));
-                        self.origin[0] = (self.origin[0] + x).clamp(0.0, max_x);
-                        self.dirty = true;
-                    }
-                }
+                self.scroll(step.unwrap_or_else(|| ScrollStep::new(x, y)), output);
             }
             ViewerInput::Seek(position) => {
+                self.interrupt_find();
                 self.position_context(output);
                 let (anchor, backwards) = navigation::viewport(position, self.length);
                 self.request_page(anchor, backwards, output)
             }
             ViewerInput::Pan(position) if position.is_finite() => {
+                self.interrupt_find();
                 self.position_context(output);
                 self.frames.invalidate();
                 let maximum = self
@@ -944,30 +1049,8 @@ impl Worker {
                 query,
                 backwards,
                 case_sensitive,
-            } => {
-                self.position_context(output);
-                let Some(session) = &self.session else {
-                    return;
-                };
-                if let Some(previous) = self.search_request.take() {
-                    session.cancel(previous);
-                }
-                match session.search(messages::Search {
-                    source_anchor: self
-                        .search_cursor
-                        .begin(&query, case_sensitive, backwards, self.anchor)
-                        .min(self.length),
-                    query,
-                    backwards,
-                    case_sensitive,
-                }) {
-                    Ok(id) => {
-                        self.search_request = Some(id);
-                        self.status(SEARCHING.into(), output);
-                    }
-                    Err(error) => self.error(error.to_string(), output),
-                }
-            }
+                whole_words,
+            } => self.start_find(query, backwards, case_sensitive, whole_words, output),
             ViewerInput::Select {
                 frame,
                 x,
@@ -1020,6 +1103,109 @@ impl Worker {
         self.source_stationary_target();
     }
 
+    fn scroll(&mut self, mut step: ScrollStep, output: &Mailbox) {
+        self.interrupt_find();
+        self.invalidate_source_target();
+        if let Some(transition) = self.pending_raster_rebase() {
+            self.motion.defer(MotionOwner::Rebase(transition), step);
+            return;
+        }
+        // A continuation owns motion even when the new step fits the old page.
+        if let Some(id) = self.viewport_request
+            && (self.continuation.is_some() || self.motion.owner == Some(MotionOwner::Viewport(id)))
+        {
+            self.motion.defer(MotionOwner::Viewport(id), step);
+            return;
+        }
+        if self.retained_active() {
+            self.reset_raster_for_scroll();
+        }
+        if self.positions.has_pending() && !self.cancel_source_position_for_scroll(output) {
+            self.position_context(output);
+        }
+        let [x, y] = step.delta;
+        if x != 0.0 {
+            self.positions.horizontal = None;
+        }
+        let fallback = self.raster.enabled && !self.retained_active();
+        let y = if fallback {
+            let pending = std::mem::take(&mut self.raster.fallback_scroll);
+            y + if y != 0.0 && pending.signum() != y.signum() {
+                0.0
+            } else {
+                pending
+            }
+        } else {
+            y
+        };
+        if let Some(page) = &self.page {
+            let height = self.shaped.as_ref().map_or(0.0, |p| {
+                if fallback {
+                    crate::viewport::available_height(page, p, self.geometry.height as f32)
+                } else {
+                    p.height()
+                }
+            });
+            let max_y = (height - self.geometry.height as f32).max(0.0);
+            let next = self.origin[1] + y;
+            let continuation = self.shaped.as_ref().and_then(|shaped| {
+                crate::viewport::Continuation::capture(
+                    page,
+                    shaped,
+                    self.geometry,
+                    [self.origin[0] + x, self.origin[1]],
+                    y,
+                )
+            });
+            let continuation = continuation.filter(|continuation| {
+                let progresses = if continuation.backwards {
+                    continuation.anchor < page.end
+                } else {
+                    continuation.anchor > page.start
+                };
+                if fallback && !progresses {
+                    // Keep sub-row wheel distance without repeatedly fetching
+                    // the same byte-limited fragment.
+                    self.raster.fallback_scroll = (next - next.clamp(0.0, max_y)).clamp(-1e7, 1e7);
+                    false
+                } else {
+                    true
+                }
+            });
+            if let Some(continuation) = continuation {
+                if let Some(id) = self.viewport_request {
+                    step.delta[1] = y;
+                    self.motion.defer(MotionOwner::Viewport(id), step);
+                    return;
+                }
+                self.request_page(continuation.anchor, continuation.backwards, output);
+                if self.viewport_request.is_some() || self.session.is_none() {
+                    self.continuation = Some(continuation);
+                }
+            } else {
+                self.frames.invalidate();
+                self.origin[1] = next.clamp(0.0, max_y);
+                let max_x = self
+                    .shaped
+                    .as_ref()
+                    .map_or(0.0, |p| (p.width() - self.text_width()).max(0.0));
+                self.origin[0] = (self.origin[0] + x).clamp(0.0, max_x);
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn resume_motion(&mut self, owner: MotionOwner, output: &Mailbox) {
+        let steps = self.motion.take_steps(owner);
+        if steps.is_empty() {
+            return;
+        }
+        for step in steps {
+            self.scroll(step, output);
+        }
+        self.source_stationary_target();
+    }
+
     fn event(&mut self, id: u64, event: EventKind, output: &Mailbox) {
         // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN event_entry
         #[cfg(test)]
@@ -1060,6 +1246,13 @@ impl Worker {
             );
         }
         // SOURCE_COMPLETION_OBSERVATION_V2_END event_normal_route
+        if matches!(
+            &event,
+            EventKind::Completed | EventKind::Cancelled | EventKind::Failed(_)
+        ) && self.retire_superseded_source_position(id, output)
+        {
+            return;
+        }
         match event {
             EventKind::TextPosition(position) => self.located(id, &position),
             EventKind::Failed(failure)
@@ -1095,11 +1288,8 @@ impl Worker {
                 self.received_page(id, Page::document(page, &self.appearance), output);
             }
             EventKind::SearchMatch(found) if self.search_request == Some(id) => {
-                self.anchor = found.source.offset;
-                self.search_cursor.found(found.source.offset);
-                self.found = Some(found.source.clone());
-                self.status(format!("Match at byte {}", found.source.offset), output);
-                self.request_page(found.source.offset, false, output);
+                self.search_request = None;
+                self.found_match(found.source, output);
             }
             EventKind::Failed(failure) if self.reports_failure(id) => {
                 // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN native_failed
@@ -1119,7 +1309,21 @@ impl Worker {
                 }
                 // SOURCE_COMPLETION_OBSERVATION_V2_END native_failed
                 if self.viewport_request == Some(id) {
-                    self.viewport_failed(id, &failure.message, output);
+                    self.search_cursor.cancel_candidate();
+                    if let crate::position_ack::Completion::Failed(sequence) =
+                        self.retire_failed_viewport(id, &failure.message, output)
+                    {
+                        if self.mode == viewer::MODE_SOURCE {
+                            self.source_position_unavailable(
+                                sequence,
+                                Some(failure.message),
+                                output,
+                            );
+                            return;
+                        }
+                        self.position_context(output);
+                        self.dirty = true;
+                    }
                 }
                 if self.search_request == Some(id) {
                     self.search_request = None;
@@ -1127,6 +1331,15 @@ impl Worker {
                 self.error(failure.message, output);
             }
             EventKind::Completed | EventKind::Cancelled => {
+                if self.viewport_request == Some(id) && self.search_cursor.candidate.is_some() {
+                    // A context page either advances to a new request or settles its candidate.
+                    // Terminal-without-page must not leave Find permanently marked as searching.
+                    self.search_cursor.cancel_candidate();
+                    self.error(
+                        "The requested Find context was not completed.".into(),
+                        output,
+                    );
+                }
                 if self
                     .text
                     .locate_request
@@ -1164,49 +1377,90 @@ impl Worker {
                         )
                     });
                     // SOURCE_COMPLETION_OBSERVATION_V2_END terminal_page_preconditions
+                    let mut source_reread = None;
+                    let source_position =
+                        self.mode == viewer::MODE_SOURCE && self.positions.has_pending();
                     let mut completed = matches!(event, EventKind::Completed);
                     if self.positions.has_pending() {
+                        let page = self.position_page.take();
                         completed = completed
-                            && self.position_page.take().is_some_and(|(page_id, page)| {
-                                page_id == id && self.set_page(page, output)
+                            && page.is_some_and(|(page_id, page)| {
+                                if page_id != id {
+                                    return false;
+                                }
+                                if self.positions.source.is_none() {
+                                    return self.set_page(page, output);
+                                }
+                                match self.resolve_source_position(page, output) {
+                                    position::SourcePosition::Ready => true,
+                                    position::SourcePosition::Reload { sequence, viewport } => {
+                                        source_reread = Some((sequence, viewport));
+                                        false
+                                    }
+                                    position::SourcePosition::Unavailable => false,
+                                }
                             });
+                    } else {
+                        if let Some(page) = self.motion.take_page(id) {
+                            completed = completed && self.set_page(page, output);
+                        } else if self.continuation.is_some() {
+                            completed = false;
+                        }
+                        self.continuation = None;
                     }
                     // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN terminal_page_decision
                     #[cfg(test)]
-                    if position::observation::enabled(self) {
-                        if let Some((pending, staged_id, terminal_completed)) = observation_page {
-                            let page_match = staged_id.map(|page_id| page_id == id);
-                            let reason = if !terminal_completed {
-                                1
-                            } else if pending && staged_id.is_none() {
-                                2
-                            } else if pending && page_match == Some(false) {
-                                3
-                            } else if pending && !completed {
-                                4
-                            } else {
-                                0
-                            };
-                            position::observation::record(
-                                self,
-                                7,
-                                reason,
-                                Some(id),
-                                position::observation::Extra {
-                                    page_match,
-                                    page_applied: (terminal_completed
-                                        && pending
-                                        && page_match == Some(true))
-                                    .then_some(completed),
-                                    ..position::observation::Extra::event(&event)
-                                },
-                            );
-                        }
+                    if position::observation::enabled(self)
+                        && let Some((pending, staged_id, terminal_completed)) = observation_page
+                    {
+                        let page_match = staged_id.map(|page_id| page_id == id);
+                        let reason = if !terminal_completed {
+                            1
+                        } else if pending && staged_id.is_none() {
+                            2
+                        } else if pending && page_match == Some(false) {
+                            3
+                        } else if pending && !completed {
+                            4
+                        } else {
+                            0
+                        };
+                        position::observation::record(
+                            self,
+                            7,
+                            reason,
+                            Some(id),
+                            position::observation::Extra {
+                                page_match,
+                                page_applied: (terminal_completed
+                                    && pending
+                                    && page_match == Some(true))
+                                .then_some(completed),
+                                ..position::observation::Extra::event(&event)
+                            },
+                        );
                     }
                     // SOURCE_COMPLETION_OBSERVATION_V2_END terminal_page_decision
-                    if completed && self.positions.has_pending() {
+                    if let Some((sequence, viewport)) = source_reread {
+                        self.viewport_request = None;
+                        self.source_foreground_finished(id, false);
+                        self.request_viewport(viewport, Some(sequence), output);
+                        if self.viewport_request.is_some() {
+                            return;
+                        }
+                    }
+                    if completed && self.positions.has_pending() && self.positions.source.is_none()
+                    {
                         match self.refine_position() {
                             position::LoadedPosition::Ready => {}
+                            position::LoadedPosition::ReloadViewport { sequence, viewport } => {
+                                self.viewport_request = None;
+                                self.request_viewport(viewport, Some(sequence), output);
+                                if self.viewport_request.is_some() {
+                                    return;
+                                }
+                                completed = false;
+                            }
                             position::LoadedPosition::Reload {
                                 sequence,
                                 anchor,
@@ -1272,7 +1526,7 @@ impl Worker {
                                 completion: Some(match &acknowledgement {
                                     crate::position_ack::Completion::Unrelated => 0,
                                     crate::position_ack::Completion::Ready => 1,
-                                    crate::position_ack::Completion::Failed => 2,
+                                    crate::position_ack::Completion::Failed(_) => 2,
                                 }),
                                 ..position::observation::Extra::event(&event)
                             },
@@ -1282,11 +1536,18 @@ impl Worker {
                     let raster_failed = self
                         .abort_raster_refill("The requested text page was not completed.", output);
                     self.viewport_request = None;
+                    if !completed {
+                        self.search_cursor.waiting = None;
+                    }
                     self.source_foreground_finished(id, completed);
                     self.finish_raster_rebase(completed, output);
                     match acknowledgement {
                         crate::position_ack::Completion::Ready => self.dirty = true,
-                        crate::position_ack::Completion::Failed => {
+                        crate::position_ack::Completion::Failed(sequence) => {
+                            if source_position {
+                                self.source_position_unavailable(sequence, None, output);
+                                return;
+                            }
                             self.position_context(output);
                             self.dirty = true;
                             self.error("The requested viewport was not completed.".into(), output);
@@ -1298,15 +1559,22 @@ impl Worker {
                     {
                         self.seek_position(sequence, position, output);
                     }
-                    let [x, y] = std::mem::replace(&mut self.queued_scroll, [0.0; 2]);
-                    if matches!(event, EventKind::Completed) && (x != 0.0 || y != 0.0) {
-                        self.input(ViewerInput::Scroll { x, y }, output);
+                    let viewport_motion = MotionOwner::Viewport(id);
+                    if !source_position && completed {
+                        self.resume_motion(viewport_motion, output);
+                    } else {
+                        self.motion.retire(viewport_motion);
                     }
-                    if matches!(event, EventKind::Completed)
-                        && self.retained_active()
-                        && !raster_failed
-                    {
+                    if completed && self.retained_active() && !raster_failed {
                         self.resume_raster_target(output);
+                    }
+                    if self.viewport_request.is_none()
+                        && let Some(found) = self.search_cursor.waiting.take()
+                    {
+                        self.continuation = None;
+                        self.motion = RelativeMotion::default();
+                        self.position_context(output);
+                        self.found_match(found, output);
                     }
                 }
                 if self.search_request == Some(id) {
@@ -1325,18 +1593,30 @@ impl Worker {
     /// The viewport request `id` ended without a page: drop its raster handoff or refill
     /// and fail the scrollbar position it was serving.
     fn viewport_failed(&mut self, id: u64, message: &str, output: &Mailbox) {
-        self.abort_raster_rebase(message, output);
-        self.abort_raster_refill(message, output);
-        self.position_page = None;
-        let failed = self.positions.complete(id, false) == crate::position_ack::Completion::Failed;
-        self.viewport_request = None;
-        self.source_foreground_finished(id, false);
-        if failed {
+        if matches!(
+            self.retire_failed_viewport(id, message, output),
+            crate::position_ack::Completion::Failed(_),
+        ) {
             self.position_context(output);
             self.dirty = true;
         }
-        self.queued_scroll = [0.0; 2];
+    }
+
+    fn retire_failed_viewport(
+        &mut self,
+        id: u64,
+        message: &str,
+        output: &Mailbox,
+    ) -> crate::position_ack::Completion {
+        self.abort_raster_rebase(message, output);
+        self.abort_raster_refill(message, output);
+        self.position_page = None;
+        let completion = self.positions.complete(id, false);
+        self.viewport_request = None;
+        self.source_foreground_finished(id, false);
+        self.motion.retire_viewport();
         self.continuation = None;
+        completion
     }
 
     fn wrap_available(&self) -> bool {
@@ -1344,22 +1624,21 @@ impl Worker {
     }
 
     fn received_page(&mut self, id: u64, page: Page, output: &Mailbox) {
+        if self.search_cursor.candidate.is_some() && self.find_page(&page, output) {
+            return;
+        }
         if self.positions.has_pending() {
+            if self.mode == viewer::MODE_SOURCE && self.positions.has_deferred() {
+                return;
+            }
             self.position_page = Some((id, page));
             self.positions.loaded(id);
+        } else if self.continuation.is_some()
+            || self.motion.owner == Some(MotionOwner::Viewport(id))
+        {
+            self.motion.stage_page(id, page);
         } else {
-            let continuing = self.continuation.is_some();
-            if self.set_page(page, output) && continuing {
-                // A TextPage can precede its terminal event. Apply the latest
-                // wheel intent before publishing this first replacement frame.
-                let [x, y] = std::mem::replace(&mut self.queued_scroll, [0.0; 2]);
-                if x != 0.0 || y != 0.0 {
-                    self.input(ViewerInput::Scroll { x, y }, output);
-                }
-                if self.retained_active() {
-                    self.resume_raster_target(output);
-                }
-            }
+            self.set_page(page, output);
         }
     }
 
@@ -1428,6 +1707,34 @@ impl Worker {
     }
 
     fn set_page(&mut self, page: Page, output: &Mailbox) -> bool {
+        match self.shape_page(&page) {
+            Ok(shaped) => {
+                self.publish_page(page, shaped, None, output);
+                true
+            }
+            Err(error) => {
+                self.frames.invalidate();
+                self.anchor = page.start;
+                self.error(format!("Cannot lay out this page: {error:?}"), output);
+                false
+            }
+        }
+    }
+
+    fn shape_page(&mut self, page: &Page) -> Result<TextPage, midnight_viewer_render::LayoutError> {
+        let started = scroll_trace::begin("layout", page.start);
+        let layout = self.layout_page(page);
+        scroll_trace::end("layout", started);
+        layout
+    }
+
+    fn publish_page(
+        &mut self,
+        page: Page,
+        shaped: TextPage,
+        resolved_position: Option<(Option<ViewerScrollMap>, f32)>,
+        output: &Mailbox,
+    ) {
         let continuing_layout = self.continuation.is_some();
         let raster_continuing = self.raster.continuing.take();
         let same_raster_context = !matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
@@ -1438,81 +1745,83 @@ impl Worker {
         self.frames.invalidate();
         let requested_anchor = self.anchor;
         self.anchor = page.start;
-        let started = scroll_trace::begin("layout", page.start);
-        let layout = self.layout_page(&page);
-        scroll_trace::end("layout", started);
-        match layout {
-            Ok(shaped) => {
-                let restored = self
-                    .continuation
-                    .take()
-                    .and_then(|continuation| continuation.restore(&page, &shaped));
-                self.origin = restored.unwrap_or([
-                    0.0,
-                    if self.land_at_bottom {
-                        (shaped.height() - self.geometry.height as f32).max(0.0)
-                    } else if self.mode == viewer::MODE_DOCUMENT && requested_anchor > page.start {
-                        // Semantic pages keep complete paragraphs/tables around
-                        // a request. Place its source anchor, not the block start,
-                        // at the viewport edge without changing line wrapping.
-                        page.anchors
-                            .iter()
-                            .find(|anchor| anchor.source_offset >= requested_anchor)
-                            .and_then(|anchor| {
-                                shaped.caret_geometry(anchor.text_offset as usize).ok()
-                            })
-                            .map_or(0.0, |caret| caret.y0 as f32)
-                    } else {
-                        0.0
-                    },
-                ]);
-                let raster_local = self.origin;
-                self.selection = self.found.as_ref().and_then(|found| {
-                    let first = page
-                        .anchors
+        let restored = self
+            .continuation
+            .take()
+            .and_then(|continuation| continuation.restore(&page, &shaped));
+        self.origin = if let Some((_, origin)) = &resolved_position {
+            [0.0, *origin]
+        } else {
+            restored.unwrap_or([
+                0.0,
+                if self.land_at_bottom {
+                    (shaped.height() - self.geometry.height as f32).max(0.0)
+                } else if self.mode == viewer::MODE_DOCUMENT && requested_anchor > page.start {
+                    // Semantic pages keep complete paragraphs/tables around
+                    // a request. Place its source anchor, not the block start,
+                    // at the viewport edge without changing line wrapping.
+                    page.anchors
                         .iter()
-                        .find(|a| a.source_offset == found.offset)?;
-                    let last = page
-                        .anchors
-                        .iter()
-                        .find(|a| a.source_offset == found.offset + found.length)?;
-                    Some((first.text_offset as usize, last.text_offset as usize))
-                });
-                self.scroll_map = scroll_map::build(
-                    &page,
-                    &shaped,
-                    self.length,
-                    !continuing_layout,
-                    self.geometry.height,
-                );
-                self.shaped = Some(shaped);
-                self.apply_horizontal_position();
-                self.clamp_origin();
-                let previous = self
-                    .page
-                    .as_ref()
-                    .filter(|_| self.mode == viewer::MODE_SOURCE);
-                self.text.page(previous, &page);
-                self.page = Some(page);
-                if let Some(id) = self.viewport_request {
-                    self.source_page_loaded(id);
-                }
-                self.raster_loaded_with_handoff(
-                    raster_continuing,
-                    restored,
-                    raster_local,
-                    same_raster_context,
-                    output,
-                );
-                self.dirty = true;
-                self.status = String::new();
-                true
-            }
-            Err(error) => {
-                self.raster.continuing = raster_continuing;
-                self.error(format!("Cannot lay out this page: {error:?}"), output);
-                false
-            }
+                        .find(|anchor| anchor.source_offset >= requested_anchor)
+                        .and_then(|anchor| shaped.caret_geometry(anchor.text_offset as usize).ok())
+                        .map_or(0.0, |caret| caret.y0 as f32)
+                } else {
+                    0.0
+                },
+            ])
+        };
+        let raster_local = self.origin;
+        self.selection = self.found.as_ref().and_then(|found| {
+            let first = page
+                .anchors
+                .iter()
+                .find(|a| a.source_offset == found.offset)?;
+            let last = page
+                .anchors
+                .iter()
+                .find(|a| a.source_offset == found.offset + found.length)?;
+            Some((first.text_offset as usize, last.text_offset as usize))
+        });
+        self.scroll_map = if let Some((map, _)) = resolved_position {
+            map
+        } else {
+            scroll_map::build(
+                &page,
+                &shaped,
+                self.length,
+                !continuing_layout,
+                self.geometry.height,
+            )
+        };
+        self.shaped = Some(shaped);
+        self.apply_horizontal_position();
+        if self.search_cursor.reveal {
+            self.search_cursor.reveal = false;
+            self.center_find();
+        }
+        self.clamp_origin();
+        let previous = self
+            .page
+            .as_ref()
+            .filter(|_| self.mode == viewer::MODE_SOURCE);
+        self.text.page(previous, &page);
+        self.page = Some(page);
+        if let Some(id) = self.viewport_request {
+            self.source_page_loaded(id);
+        }
+        self.raster_loaded_with_handoff(
+            raster_continuing,
+            restored,
+            raster_local,
+            same_raster_context,
+            continuing_layout,
+            output,
+        );
+        self.dirty = true;
+        if self.status != SEARCHING
+            || (self.search_request.is_none() && self.search_cursor.waiting.is_none())
+        {
+            self.status.clear();
         }
     }
 
@@ -1614,6 +1923,7 @@ impl Worker {
         });
         let frame = Box::new(ViewerFrame {
             generation: self.positions.generation,
+            media_control: None,
             position_sequence: self.positions.acknowledged,
             revision,
             mode: self.mode,

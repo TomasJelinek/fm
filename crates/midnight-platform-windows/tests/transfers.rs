@@ -4,6 +4,9 @@ use midnight_platform_common::transfer::{CopyPhase, VerifiedFileCopy};
 use midnight_platform_windows::WindowsFileSystem;
 use std::{ffi::OsStr, fs, path::Path};
 
+#[path = "transfers/link_projection.rs"]
+mod link_projection;
+
 fn fixture() -> tempfile::TempDir {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

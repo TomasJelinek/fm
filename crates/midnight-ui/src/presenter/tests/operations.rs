@@ -251,6 +251,25 @@ fn stale_confirmation_and_failed_enqueue_do_not_confirm_another_operation() {
 }
 
 #[test]
+fn delete_waiting_for_a_native_listing_reports_the_refusal() {
+    let mut p = ready();
+    let path = test_root().join("other-folder");
+    begin(&mut p, PaneId::Left, path.to_str().unwrap());
+    assert!(p.visible_directory(PaneId::Left).is_none());
+
+    p.start_operation(
+        PaneId::Left,
+        MutationKind::Delete(DeleteMode::Trash),
+        &|_| panic!("Delete must wait for the current directory snapshot"),
+    );
+    assert!(!p.has_live_operations());
+    let (title, message) = p.desktop.notice.as_ref().expect("Delete refusal");
+    assert_eq!(title, "Delete unavailable");
+    assert!(message.contains("file list"));
+    assert!(p.desktop.notice_error);
+}
+
+#[test]
 fn jobs_cancelled_delete_confirmation_is_hidden_until_worker_retires_and_never_becomes_history() {
     for before_preview in [true, false] {
         let mut p = ready();

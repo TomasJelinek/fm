@@ -19,6 +19,7 @@ pub(crate) type PickerOwner = fn(&slint::Window) -> PathPickerOwner;
 
 impl OpenWindow {
     pub(crate) fn show_file_choice(&self, choice: &FileChoice) {
+        self.reset_find();
         self.external_outcome.set(choice.external_outcome);
         self.comparison_requested.set(false);
         self.window.set_identity_state(-1);

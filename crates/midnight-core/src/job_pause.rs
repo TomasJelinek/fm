@@ -11,7 +11,7 @@ use std::{
 
 #[derive(Debug, Default)]
 pub(super) struct State {
-    requested: AtomicBool,
+    requested: Arc<AtomicBool>,
     acknowledged: AtomicBool,
 }
 impl Cancellation {
@@ -24,6 +24,19 @@ impl Cancellation {
         child.pauses = pauses.into();
         child
     }
+    /// Interrupt optional preparation for a requested pause while retaining
+    /// ordinary cancellation. This child never acknowledges the job's pause.
+    pub fn child_interrupted_by_pause(&self) -> Self {
+        let mut parents = Vec::with_capacity(self.parents.len() + self.pauses.len() + 1);
+        parents.push(self.local.clone());
+        parents.extend(self.parents.iter().cloned());
+        parents.extend(self.pauses.iter().map(|pause| pause.requested.clone()));
+        Self {
+            parents: parents.into(),
+            ..Self::default()
+        }
+    }
+
     /// Request a stop at the next safe worker checkpoint, or release that stop.
     /// This never waits for native I/O and never revokes cancellation.
     pub fn set_pause_requested(&self, requested: bool) {
@@ -86,6 +99,22 @@ mod tests {
             thread::yield_now();
         }
     }
+    #[test]
+    fn optional_preparation_can_stop_for_pause_without_acknowledging_the_job() {
+        let job = Cancellation::default().pausable_child();
+        let preparation = job.child_interrupted_by_pause();
+        assert!(preparation.wait_if_paused());
+        job.set_pause_requested(true);
+        assert!(preparation.is_cancelled());
+        assert!(!preparation.wait_if_paused());
+        assert!(!job.is_paused());
+        assert!(!job.is_cancelled());
+        job.set_pause_requested(false);
+        assert!(preparation.wait_if_paused());
+        job.cancel();
+        assert!(preparation.is_cancelled());
+    }
+
     #[test]
     fn job_pause_is_acknowledged_only_at_checkpoint_and_resume_preserves_cancel() {
         let parent = Cancellation::default();

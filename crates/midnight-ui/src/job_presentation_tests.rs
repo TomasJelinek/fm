@@ -1,5 +1,5 @@
 use super::*;
-use midnight_core::{TransferRemainingWork, TransferWaitReason};
+use midnight_core::{CopyClosureReceipt, TransferRemainingWork, TransferWaitReason};
 use std::{io, path::PathBuf, sync::Arc};
 
 fn progress(id: u64) -> CopyProgress {
@@ -22,6 +22,143 @@ fn progress(id: u64) -> CopyProgress {
             TransferIntent::Copy,
         )
     }
+}
+
+#[test]
+fn transfer_overview_uses_discovered_totals_and_separate_current_path_parts() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(23);
+    let directory = PathBuf::from("資料").join("long folder");
+    value.current_path = Some(directory.join("報告.txt"));
+    value.discovery = OperationDiscovery {
+        state: DiscoveryState::Scanning,
+        scope: DiscoveryScope::Recursive,
+        files: 8,
+        bytes: Some(840),
+        ..Default::default()
+    };
+    value.completed_bytes = 200;
+    value.current_file_copied = 90;
+    value.files_completed = 2;
+
+    let scanning = copy(&p, &value);
+    assert!(!scanning.determinate);
+    assert!(scanning.transfer_totals.is_empty());
+    assert_eq!(
+        scanning.transfer_directory,
+        directory.to_string_lossy().as_ref()
+    );
+    assert_eq!(scanning.transfer_name, "報告.txt");
+
+    value.discovery.state = DiscoveryState::Complete;
+    value.phase = CopyOperationPhase::Verifying;
+    value.verification_pass_id = 1;
+    value.current_file_size = Some(90);
+    value.current_file_verified = 9;
+    let verifying = copy(&p, &value);
+    assert_eq!(verifying.transfer_totals, "Files: 2 / 8 · Bytes: 200 / 840");
+    assert_eq!(verifying.progress_label, "34% complete");
+    assert_eq!(verifying.file_progress, 0.1);
+
+    value.phase = CopyOperationPhase::Publishing;
+    let publishing = copy(&p, &value);
+    assert_eq!(publishing.state, "Copying");
+    assert_eq!(publishing.progress, verifying.progress);
+
+    value.intent = TransferIntent::Move;
+    value.completed_roots = 2;
+    value.discovery = OperationDiscovery {
+        state: DiscoveryState::Complete,
+        scope: DiscoveryScope::SelectedRoots,
+        files: 1,
+        directories: 2,
+        ..Default::default()
+    };
+    let moved = copy(&p, &value);
+    assert_eq!(moved.transfer_totals, "Selected items: 2 / 3");
+    assert_eq!(moved.progress_label, "66% complete");
+}
+
+#[test]
+fn cancelled_and_warning_transfers_show_their_outcome_and_retained_issues() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(27);
+    value.requested_roots = 4;
+    value.completed_roots = 1;
+    value.discovery.state = DiscoveryState::Unavailable;
+    value.state = CopyOperationState::Cancelled;
+    value.skipped = 1;
+    value.failed = 3;
+    value.closure = Some(CopyClosureReceipt {
+        unfinished_roots: 3,
+        uncommitted_files: None,
+        uncommitted_bytes: None,
+        omitted_error_details: 2,
+    });
+    let residual = PathBuf::from("target").join("partial");
+    value.errors.push(FsError::from_io(
+        "cleanup",
+        &residual,
+        std::io::Error::other("Temporary file removal failed"),
+    ));
+    let cancelled = copy(&p, &value);
+    assert!(
+        cancelled
+            .transfer_outcome
+            .contains("Selected items completed: 1")
+    );
+    assert!(cancelled.transfer_outcome.contains("Not completed: 3"));
+    assert!(
+        cancelled
+            .transfer_outcome
+            .contains("Temporary file removal failed")
+    );
+    assert!(
+        cancelled
+            .transfer_outcome
+            .contains(residual.to_string_lossy().as_ref())
+    );
+    assert!(
+        cancelled
+            .detail
+            .contains(residual.to_string_lossy().as_ref())
+    );
+
+    assert!(cancelled.transfer_outcome.contains("2 more error details"));
+    assert!(!cancelled.transfer_outcome.contains("Files published"));
+    assert!(!cancelled.transfer_outcome.contains("Bytes published"));
+
+    value.state = CopyOperationState::Completed;
+    value.failed = 0;
+    value.errors.clear();
+    value.discovery = OperationDiscovery {
+        state: DiscoveryState::Complete,
+        scope: DiscoveryScope::Recursive,
+        files: 4,
+        bytes: Some(375),
+        ..Default::default()
+    };
+    value.completed_bytes = 250;
+    value.closure = Some(CopyClosureReceipt {
+        unfinished_roots: 3,
+        uncommitted_files: Some(2),
+        uncommitted_bytes: Some(125),
+        omitted_error_details: 0,
+    });
+    let warning = copy(&p, &value);
+    assert_eq!(warning.state, "Completed with warnings");
+    assert!(warning.transfer_outcome.contains("Skipped: 1"));
+    assert!(
+        warning
+            .transfer_outcome
+            .contains("Files published: 2 · Not published: 2")
+    );
+    assert!(
+        warning
+            .transfer_outcome
+            .contains("Bytes published: 250 · Not published: 125")
+    );
+    assert!(!warning.transfer_outcome.contains("more error details"));
 }
 
 #[test]
@@ -336,6 +473,152 @@ fn delete_details_mark_selected_root_scope_and_unknown_bytes_explicitly() {
     let row = mutation(&p, &value);
     assert!(!row.detail.contains("Discovered totals"));
     assert!(row.detail.contains("Directory metadata could not be read."));
+}
+
+#[test]
+fn delete_progress_distinguishes_waiting_scanning_and_control_states() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let mut progress = OperationProgress {
+        id: OperationId(41),
+        kind: MutationKind::Delete(DeleteMode::Permanent),
+        state: OperationState::Queued,
+        pause_requested: false,
+        paused: false,
+        total: 3,
+        completed: 0,
+        failed: 0,
+        processed_entries: 0,
+        current_path: None,
+        source_directory: "source".into(),
+        renamed_to: None,
+        message: String::new(),
+        errors: vec![],
+        throughput: Arc::default(),
+        discovery: OperationDiscovery::default(),
+    };
+    let row = |p: &Presenter| {
+        let mut jobs = rows(p);
+        assert_eq!(jobs.len(), 1);
+        let row = jobs.pop().unwrap();
+        assert_eq!(row.identity, "41");
+        row
+    };
+    let update = |p: &mut Presenter, progress: &OperationProgress| {
+        p.apply(Event::Operation(OperationEvent::Progress(Arc::new(
+            progress.clone(),
+        ))));
+        row(p)
+    };
+
+    let queued = update(&mut p, &progress);
+    assert_eq!(queued.state, "Queued");
+    assert_eq!(queued.progress_label, "Queued — waiting to start");
+    assert_eq!(queued.activity_label, "Queued — waiting to start");
+    assert!(queued.active && queued.waiting);
+    assert!(!queued.discovering && !queued.determinate && queued.eta.is_empty());
+
+    progress.state = OperationState::Running;
+    let starting = update(&mut p, &progress);
+    assert_eq!(starting.progress_label, "Preparing");
+    assert!(!starting.waiting && !starting.discovering);
+
+    progress.discovery = OperationDiscovery {
+        state: DiscoveryState::Scanning,
+        files: 3,
+        directories: 2,
+        bytes: Some(900),
+        ..Default::default()
+    };
+    let scanning = update(&mut p, &progress);
+    assert_eq!(scanning.progress_label, "Discovering: 5 items (900 B)");
+    assert_eq!(scanning.activity_label, "Discovering items...");
+    assert!(scanning.discovering && !scanning.waiting);
+    assert!(!scanning.determinate && scanning.eta.is_empty());
+
+    p.set_job_paused("41", true, &|command| {
+        matches!(
+            command,
+            Command::SetOperationPaused {
+                id: OperationId(41),
+                paused: true
+            }
+        )
+    });
+    let pausing = row(&p);
+    assert_eq!(pausing.progress_label, "Pausing...");
+    assert!(pausing.pause_requested && !pausing.paused && !pausing.discovering);
+    progress.pause_requested = true;
+    progress.paused = true;
+    let paused = update(&mut p, &progress);
+    assert_eq!(paused.activity_label, "Paused");
+    assert!(paused.paused && !paused.discovering && paused.eta.is_empty());
+
+    p.set_job_paused("41", false, &|command| {
+        matches!(
+            command,
+            Command::SetOperationPaused {
+                id: OperationId(41),
+                paused: false
+            }
+        )
+    });
+    let resuming = row(&p);
+    assert_eq!(resuming.activity_label, "Resuming...");
+    assert!(resuming.paused && !resuming.pause_requested && !resuming.discovering);
+
+    p.cancel_operation("41", &|command| {
+        matches!(command, Command::CancelOperation(OperationId(41)))
+    });
+    for cancelling in [row(&p), update(&mut p, &progress)] {
+        assert_eq!(cancelling.state, "Cancelling");
+        assert_eq!(cancelling.progress_label, "Cancelling...");
+        assert_eq!(cancelling.activity_label, "Cancelling...");
+        assert!(cancelling.active && !cancelling.cancellable);
+        assert!(!cancelling.discovering && !cancelling.waiting && cancelling.eta.is_empty());
+        assert!(!cancelling.paused && !cancelling.pause_requested);
+    }
+
+    let mut cleanup = progress.clone();
+    cleanup.state = OperationState::CancelRequested;
+    cleanup.current_path = Some("source/cleanup-資料.txt".into());
+    cleanup.completed = 1;
+    cleanup.failed = 1;
+    cleanup.processed_entries = 2;
+    cleanup.discovery.state = DiscoveryState::Complete;
+    cleanup.discovery.scope = DiscoveryScope::Recursive;
+    cleanup.errors.push(FsError::from_io(
+        "delete cleanup",
+        std::path::Path::new("source/cleanup-資料.txt"),
+        io::Error::new(io::ErrorKind::PermissionDenied, "Cleanup access denied"),
+    ));
+    let refreshed = update(&mut p, &cleanup);
+    assert_eq!(refreshed.state, "Cancelling");
+    assert_eq!(refreshed.current_path, "source/cleanup-資料.txt");
+    assert_eq!(refreshed.summary, "1 / 3 targets · 1 errors");
+    assert!(refreshed.detail.contains("2 entries processed"));
+    assert!(refreshed.detail.contains("Cleanup access denied"));
+    assert!(refreshed.active && refreshed.failed && !refreshed.cancellable);
+
+    for stale in [OperationState::Running, OperationState::Queued] {
+        progress.state = stale;
+        let displayed = update(&mut p, &progress);
+        assert_eq!(displayed.state, refreshed.state);
+        assert_eq!(displayed.current_path, refreshed.current_path);
+        assert_eq!(displayed.summary, refreshed.summary);
+        assert_eq!(displayed.detail, refreshed.detail);
+    }
+
+    cleanup.state = OperationState::Cancelled;
+    cleanup.current_path = None;
+    cleanup.completed = 2;
+    cleanup.processed_entries = 3;
+    let cancelled = update(&mut p, &cleanup);
+    assert_eq!(cancelled.state, "Cancelled");
+    assert_eq!(cancelled.progress_label, "3 items completed");
+    assert!(cancelled.current_path.is_empty());
+    assert_eq!(cancelled.activity_label, "Cancelled");
+    assert!(!cancelled.active && !cancelled.discovering && !cancelled.waiting);
+    assert!(!cancelled.paused && !cancelled.pause_requested && cancelled.eta.is_empty());
 }
 
 #[test]

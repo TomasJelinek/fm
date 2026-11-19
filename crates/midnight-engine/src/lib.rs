@@ -1021,6 +1021,8 @@ impl EngineServices {
                             | Command::EnqueueCapturedTransfer(_)) => unreachable!("Copy requires its guarded envelope"),
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
                         Some(Command::CancelCopy(id)) => copies.cancel(id),
+                        Some(Command::CopyCancelConfirmation { id, token, action }) =>
+                            copies.cancel_confirmation(id, token, action).await,
                         Some(Command::SetCopyPaused { id, paused }) => copies.set_paused(id, paused).await,
                         Some(Command::SetOperationPaused { id, paused }) => operations.set_paused(id, paused).await,
                         Some(Command::AttachDragDrop { host, targets }) => drag_drop.attach(host, targets, &mut resident_tasks).await,
@@ -1127,6 +1129,9 @@ impl EngineServices {
                         }
                         Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, false, &mut tasks).await,
                         Some(Command::ResolveDirectoryLink { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, true, &mut tasks).await,
+                        Some(Command::ReadDirectoryLinkTarget { request, pane, navigation, path }) => {
+                            desktop.read_directory_link_target(request, pane, navigation, path, &snapshots);
+                        }
                         Some(Command::ArchiveSizes(command)) => archive_sizes.submit(command).await,
                         Some(Command::ComputeFolderSizes { pane, navigation, scan, selection }) => {
                             // Retrying an accepted command must not falsely finish

@@ -700,7 +700,7 @@ fn the_first_comparison_paints_in_the_preferred_family_while_the_scan_runs() {
     let checked = checks.clone();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (_owner, spawner) = crate::resident_test_support::workers();
-    let (service, deliver) = held_scan(text_service(&runtime, spawner), &Arc::default());
+    let (service, deliver) = held_scan(text_service(&runtime, spawner.clone()), &Arc::default());
     let service = service.with_font_check(move |candidates, _| {
         checked.lock().unwrap().push(
             candidates
@@ -745,7 +745,7 @@ fn a_missing_preferred_family_falls_back_to_consolas_then_monospace_before_the_c
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (_owner, spawner) = crate::resident_test_support::workers();
     for (installed, painted) in [(Some("Consolas"), "Consolas"), (None, "monospace")] {
-        let (service, release) = held_scan(text_service(&runtime, spawner), &Arc::default());
+        let (service, release) = held_scan(text_service(&runtime, spawner.clone()), &Arc::default());
         let service = service.with_font_check(move |candidates, _| {
             installed
                 .filter(|family| candidates.contains(family))
@@ -769,7 +769,7 @@ fn no_worker_turn_while_the_catalog_is_pending() {
     let turns = Arc::new(AtomicUsize::new(0));
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (_owner, spawner) = crate::resident_test_support::workers();
-    let (service, deliver) = held_scan(text_service(&runtime, spawner), &Arc::default());
+    let (service, deliver) = held_scan(text_service(&runtime, spawner.clone()), &Arc::default());
     let service = service
         .with_font_check(|_, _| None)
         .with_turn_counter(turns.clone());

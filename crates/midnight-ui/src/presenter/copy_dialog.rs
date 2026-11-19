@@ -1,5 +1,6 @@
 //! A copy draft retains shared identities; only backend admission expands selected paths.
 use super::*;
+use midnight_core::{CopyLinkPolicy, CopyOptionsInput, CopyOptionsRequest};
 
 #[derive(Clone)]
 pub(super) struct CopyContext {
@@ -47,12 +48,15 @@ mod owned_draft_tests {
         let drops = Arc::new(AtomicUsize::new(0));
         p.copies.draft = Some(CopyDraft {
             token: "copy-draft:1".into(),
-            input: CopyDraftInput::Tree(TreeTransferCapture {
-                intent: TransferIntent::Copy,
-                root_count: 1,
-                metadata_available: false,
-                sources: Arc::new(Sources(drops.clone())),
-            }),
+            input: CopyDraftInput::Tree {
+                capture: TreeTransferCapture {
+                    intent: TransferIntent::Copy,
+                    root_count: 1,
+                    metadata_available: false,
+                    sources: Arc::new(Sources(drops.clone())),
+                },
+                directory_links_available: true,
+            },
             source: "source".into(),
             destination: path,
             summary: "one item".into(),
@@ -233,6 +237,17 @@ pub(crate) struct CopyDraft {
 }
 
 impl CopyDraft {
+    pub(crate) fn directory_link_options_available(&self) -> bool {
+        match &self.input {
+            CopyDraftInput::Archive(_) => false,
+            CopyDraftInput::Tree {
+                directory_links_available,
+                ..
+            } => *directory_links_available,
+            CopyDraftInput::Native(_) | CopyDraftInput::Clipboard(_) => true,
+        }
+    }
+
     /// Cached facts only; unknown native kinds still require backend preflight.
     pub(crate) fn metadata_available(&self) -> bool {
         if !(1..=64).contains(&self.input.roots()) {
@@ -252,7 +267,7 @@ impl CopyDraft {
             }
             CopyDraftInput::Clipboard(_) => true,
             CopyDraftInput::Archive(_) => false,
-            CopyDraftInput::Tree(capture) => capture.metadata_available,
+            CopyDraftInput::Tree { capture, .. } => capture.metadata_available,
         }
     }
 }
@@ -262,7 +277,27 @@ pub(super) enum CopyDraftInput {
     Native(SelectedFiles),
     Archive(Box<ArchiveCopyRequest>),
     Clipboard(Arc<FileClipboard>),
-    Tree(TreeTransferCapture),
+    Tree {
+        capture: TreeTransferCapture,
+        directory_links_available: bool,
+    },
+}
+
+struct DraftTransferOptions {
+    metadata: TransferMetadataPolicy,
+    verification: TransferVerification,
+    start_policy: TransferStartPolicy,
+    links: Option<CopyLinkPolicy>,
+}
+
+fn native_options(request: MetadataTransferRequest, links: Option<CopyLinkPolicy>) -> Command {
+    match links {
+        Some(links) => Command::EnqueueCopyWithOptions(Box::new(CopyOptionsRequest {
+            input: CopyOptionsInput::Native(request),
+            links,
+        })),
+        None => Command::EnqueueTransferWithMetadata(Box::new(request)),
+    }
 }
 
 impl CopyDraftInput {
@@ -277,7 +312,7 @@ impl CopyDraftInput {
                 .len()
                 .max(usize::from(files.fallback.is_some())),
             Self::Clipboard(files) => files.paths.len(),
-            Self::Tree(capture) => capture.root_count,
+            Self::Tree { capture, .. } => capture.root_count,
         }
     }
 
@@ -286,19 +321,32 @@ impl CopyDraftInput {
         id: OperationId,
         destination: PathBuf,
         intent: TransferIntent,
-        metadata: TransferMetadataPolicy,
-        verification: TransferVerification,
-        start_policy: TransferStartPolicy,
+        options: DraftTransferOptions,
     ) -> Command {
+        let DraftTransferOptions {
+            metadata,
+            verification,
+            start_policy,
+            links,
+        } = options;
         match self {
-            Self::Tree(capture) => Command::EnqueueCapturedTransfer(CapturedTransferRequest {
-                start_policy,
-                verification,
-                id,
-                sources: capture.sources,
-                destination,
-                metadata,
-            }),
+            Self::Tree { capture, .. } => {
+                let request = CapturedTransferRequest {
+                    start_policy,
+                    verification,
+                    id,
+                    sources: capture.sources,
+                    destination,
+                    metadata,
+                };
+                match links {
+                    Some(links) => Command::EnqueueCopyWithOptions(Box::new(CopyOptionsRequest {
+                        input: CopyOptionsInput::Captured(request),
+                        links,
+                    })),
+                    None => Command::EnqueueCapturedTransfer(request),
+                }
+            }
             Self::Native(files) => {
                 let request = SelectedCopyRequest {
                     start_policy,
@@ -307,12 +355,15 @@ impl CopyDraftInput {
                     files,
                     destination,
                 };
-                if metadata == TransferMetadataPolicy::RequireModifiedTime {
-                    Command::EnqueueTransferWithMetadata(Box::new(MetadataTransferRequest {
-                        input: MetadataTransferInput::Selected(request),
-                        intent,
-                        metadata,
-                    }))
+                if links.is_some() || metadata == TransferMetadataPolicy::RequireModifiedTime {
+                    native_options(
+                        MetadataTransferRequest {
+                            input: MetadataTransferInput::Selected(request),
+                            intent,
+                            metadata,
+                        },
+                        links,
+                    )
                 } else if intent == TransferIntent::Move {
                     Command::EnqueueSelectedMove(request)
                 } else {
@@ -334,12 +385,15 @@ impl CopyDraftInput {
                     clipboard,
                     destination,
                 };
-                if metadata == TransferMetadataPolicy::RequireModifiedTime {
-                    Command::EnqueueTransferWithMetadata(Box::new(MetadataTransferRequest {
-                        input: MetadataTransferInput::Clipboard(request),
-                        intent,
-                        metadata,
-                    }))
+                if links.is_some() || metadata == TransferMetadataPolicy::RequireModifiedTime {
+                    native_options(
+                        MetadataTransferRequest {
+                            input: MetadataTransferInput::Clipboard(request),
+                            intent,
+                            metadata,
+                        },
+                        links,
+                    )
                 } else {
                     Command::EnqueueClipboardMove(request)
                 }
@@ -454,7 +508,7 @@ impl Presenter {
     }
 
     /// Test shorthand: confirm with `metadata`, starting at once. The Copy/Move form
-    /// confirms through [`Self::confirm_copy_dialog_options`].
+    /// confirms through [`Self::confirm_copy_dialog_with_directory_links`].
     #[cfg(test)]
     pub(crate) fn confirm_copy_dialog_metadata(
         &mut self,
@@ -472,12 +526,32 @@ impl Presenter {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn confirm_copy_dialog_options(
         &mut self,
         token: &str,
         destination: &str,
         metadata: TransferMetadataPolicy,
         start_policy: TransferStartPolicy,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        self.confirm_copy_dialog_with_directory_links(
+            token,
+            destination,
+            metadata,
+            start_policy,
+            None,
+            send,
+        );
+    }
+
+    pub(crate) fn confirm_copy_dialog_with_directory_links(
+        &mut self,
+        token: &str,
+        destination: &str,
+        metadata: TransferMetadataPolicy,
+        start_policy: TransferStartPolicy,
+        links: Option<CopyLinkPolicy>,
         send: &dyn Fn(Command) -> bool,
     ) {
         if !self.owned_command_scope_available() {
@@ -514,7 +588,7 @@ impl Presenter {
             return;
         }
         let intent = draft.intent;
-        if let CopyDraftInput::Tree(capture) = &draft.input
+        if let CopyDraftInput::Tree { capture, .. } = &draft.input
             && (capture.intent != intent || capture.sources.intent() != intent)
         {
             draft.error = "The operation cannot change after its sources are captured.".into();
@@ -524,15 +598,21 @@ impl Presenter {
             draft.error = "These captured items support Copy only.".into();
             return;
         }
+        let links = links.filter(|_| draft.directory_link_options_available());
         let input = draft.input.clone();
         let roots = input.roots() as u64;
         let target = destination.clone();
-        let verification = self.transfer_verification();
+        let options = DraftTransferOptions {
+            metadata,
+            verification: self.transfer_verification(),
+            start_policy,
+            links,
+        };
         if self.submit_transfer(
             destination,
             roots,
             intent,
-            move |id| input.command(id, target, intent, metadata, verification, start_policy),
+            move |id| input.command(id, target, intent, options),
             send,
         ) {
             self.retire_copy_draft();

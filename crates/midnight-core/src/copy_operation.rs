@@ -85,6 +85,14 @@ impl CopyOperationState {
     }
 }
 
+/// Token-scoped actions for a temporary native Copy or Move pause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyCancelConfirmationAction {
+    Begin,
+    Dismiss,
+    Confirm,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyOperationPhase {
     Planning,
@@ -124,6 +132,18 @@ pub struct TransferRemainingWork {
     pub verification_bytes: u64,
 }
 
+/// Final accounting attached to the immutable snapshot that owns the committed
+/// totals and bounded diagnostics. Unknown or root-only file totals stay absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CopyClosureReceipt {
+    pub unfinished_roots: u64,
+    /// Discovered files without a committed publication, including failed, skipped
+    /// and unattempted files.
+    pub uncommitted_files: Option<u64>,
+    pub uncommitted_bytes: Option<u64>,
+    pub omitted_error_details: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct CopyProgress {
     pub id: OperationId,
@@ -136,6 +156,9 @@ pub struct CopyProgress {
     /// A request is acknowledged only at a safe backend checkpoint.
     pub pause_requested: bool,
     pub paused: bool,
+    /// The active token once the worker is at a safe checkpoint. A dialog can
+    /// open only for its own token. Terminal snapshots always clear it.
+    pub cancel_confirmation_ready: Option<u64>,
     pub phase: CopyOperationPhase,
     pub requested_roots: u64,
     /// Successfully published selected roots (a directory includes its complete subtree).
@@ -200,6 +223,8 @@ pub struct CopyProgress {
     pub message: String,
     /// At most 16 details. `failed` retains the complete error count.
     pub errors: Vec<FsError>,
+    /// Present on terminal cancellation, partial completion or recorded issues.
+    pub closure: Option<CopyClosureReceipt>,
 }
 
 impl CopyProgress {
@@ -219,6 +244,7 @@ impl CopyProgress {
             wait_reason: None,
             pause_requested: false,
             paused: false,
+            cancel_confirmation_ready: None,
             phase: CopyOperationPhase::Planning,
             requested_roots,
             completed_roots: 0,
@@ -254,6 +280,7 @@ impl CopyProgress {
             destination_directory: destination,
             message: String::new(),
             errors: vec![],
+            closure: None,
         }
     }
 }

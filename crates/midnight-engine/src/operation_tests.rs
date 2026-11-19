@@ -29,6 +29,7 @@ mod tree_rename;
 #[derive(Default)]
 struct Calls {
     prepared: AtomicUsize,
+    prepare_failure: Mutex<Option<FsError>>,
     renamed: Mutex<Vec<(PathBuf, String)>>,
     created: Mutex<Vec<PathBuf>>,
     directories: Mutex<Vec<(PathBuf, PathBuf)>>,
@@ -76,8 +77,20 @@ impl MutationService for FakeService {
             calls: self.0.clone(),
         }))
     }
-    fn prepare(&self, path: &Path, _: &Cancellation) -> Result<Arc<dyn PreparedMutation>, FsError> {
+    fn prepare(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn PreparedMutation>, FsError> {
         self.0.prepared.fetch_add(1, Ordering::Relaxed);
+        let failure = self.0.prepare_failure.lock().unwrap().take();
+        if let Some(error) = failure {
+            self.0.entered.notify_one();
+            while self.0.blocked.load(Ordering::Acquire) && !cancel.is_cancelled() {
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
+            return Err(error);
+        }
         Ok(Arc::new(FakeTarget {
             item: MutationItem {
                 path: path.into(),
@@ -221,6 +234,15 @@ impl Harness {
             EntryKind::File,
         )]
         .into();
+        Self::in_directory(kind, service, path, entries)
+    }
+
+    fn in_directory(
+        kind: MutationKind,
+        service: Option<Arc<dyn MutationService>>,
+        path: PathBuf,
+        entries: Arc<[Entry]>,
+    ) -> Self {
         let source = VisibleDirectory {
             pane: PaneId::Left,
             navigation: NavigationId(1),
@@ -375,6 +397,61 @@ async fn cancelled_job_retains_its_budget_until_backend_cleanup_finishes() {
         "Native resources still occupy the bounded job slot"
     );
     assert_eq!(h.finished().await.state, OperationState::Cancelled);
+}
+
+#[tokio::test]
+async fn delete_preparation_interruption_requires_a_cancel_request_to_be_cancelled() {
+    for cancel_requested in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join(".claude");
+        std::fs::create_dir(&target).unwrap();
+        let payload = target.join("fixture.txt");
+        std::fs::write(&payload, b"keep this file").unwrap();
+        let mut h = Harness::in_directory(
+            MutationKind::Delete(DeleteMode::Trash),
+            None,
+            directory.path().to_owned(),
+            Arc::from([Entry::new(EntryId(7), target.clone(), EntryKind::Directory)]),
+        );
+        *h.calls.prepare_failure.lock().unwrap() = Some(FsError::from_io(
+            "prepare delete",
+            &target,
+            std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "fixture preparation was interrupted",
+            ),
+        ));
+        h.calls.blocked.store(cancel_requested, Ordering::Release);
+
+        h.controller.prepare(h.request.clone()).await;
+        if cancel_requested {
+            tokio::time::timeout(Duration::from_secs(2), h.calls.entered.notified())
+                .await
+                .unwrap();
+            h.controller.cancel(h.request.id);
+        }
+        let progress = h.finished().await;
+        let expected = if cancel_requested {
+            OperationState::Cancelled
+        } else {
+            OperationState::Failed
+        };
+        assert_eq!(progress.state, expected);
+        assert_eq!(
+            (progress.completed, progress.failed),
+            (0, u64::from(!cancel_requested))
+        );
+        assert_eq!(progress.errors.len(), 1);
+        assert_eq!(progress.errors[0].kind, std::io::ErrorKind::Interrupted);
+        assert!(progress.message.contains(".claude"));
+        assert!(
+            progress
+                .message
+                .contains("fixture preparation was interrupted")
+        );
+        assert!(h.calls.deleted.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read(payload).unwrap(), b"keep this file");
+    }
 }
 
 #[tokio::test]

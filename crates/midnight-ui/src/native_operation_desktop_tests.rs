@@ -104,6 +104,7 @@ fn embedded_operation_keeps_main_enabled_and_native_close_cancels_without_mutati
                     | Command::EnqueueClipboardMove(_)
                     | Command::EnqueueCapturedTransfer(_)
                     | Command::EnqueueTransferWithMetadata(_)
+                    | Command::EnqueueCopyWithOptions(_)
                     | Command::EnqueueArchiveCopy(_)
             ) {
                 unexpected.set(true);

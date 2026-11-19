@@ -58,11 +58,11 @@ retain their distribution's licenses. Rust bindings do not relicense native
 libraries. See the separate native/runtime section of the [inventory](THIRD_PARTY.md).
 
 **Required media workers:** standard builds include the independent image/video
-thumbnailers. `image` 0.25.10 is MIT OR Apache-2.0. The pinned FFmpeg 9.0.2 shared
+thumbnailers and the installed video playback worker. `image` 0.25.10 is MIT OR Apache-2.0. The pinned FFmpeg 9.0.2 shared
 runtime uses LGPL-2.1-or-later with GPL, nonfree, version3, networking and external
-autodetection disabled. Only the approved VP8/VP9/Theora/FFV1/rawvideo decoders
-and Matroska/WebM, AVI and Ogg demuxers are enabled; making the workers required
-does not expand that codec set. Matching source, build configuration and notices
+autodetection disabled. The profile enables approved VP8, VP9, Theora, FFV1 and rawvideo video decoders,
+Opus audio, and the Matroska/WebM, AVI, Ogg and MOV/MP4 demuxers. The two video
+workers use the same shared libraries, including libswresample for stereo PCM. Matching source, build configuration and notices
 must accompany the replaceable shared libraries. `ffmpeg-next` 9.0.0 and
 `ffmpeg-sys-next` 9.0.1 use WTFPL; preserve their pinned declarations and the
 missing-upstream-license provenance recorded in the inventory. No paid decoder

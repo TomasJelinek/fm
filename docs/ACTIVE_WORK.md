@@ -1,9 +1,10 @@
-# Active work and requirements evidence — 18 November 2026
+# Active work and requirements evidence — 19 November 2026
 
 <a id="active-work-and-requirements-evidence--13-november-2026"></a>
 <a id="active-work-and-requirements-evidence--15-november-2026"></a>
 <a id="active-work-and-requirements-evidence--16-november-2026"></a>
 <a id="active-work-and-requirements-evidence--17-november-2026"></a>
+<a id="active-work-and-requirements-evidence--18-november-2026"></a>
 
 This is the current implementation/acceptance ledger alongside
 [Feature status](FEATURE_STATUS.md) and the preserved
@@ -18,6 +19,615 @@ code or a green subset into complete qualification.
 **ACTIVE — explicitly resumed by the user on 15 November 2026:** implement all
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
+
+### Media follow-up — 19 November 2026
+
+The reviewed 64-file Media overlay is integrated. After EOF/empty-stream fixes,
+the Media host passes 34 cases. Media output passes all six cases, including
+the actual silence-only default Windows endpoint. The earlier native failure
+was traced to an incorrectly rejected zero latency; negative latency, zero
+frequency and overflow remain rejected. Engine passes seven video cases and
+one retirement-mailbox case. Media UI has 10 distinct passing cases across
+controls, aspect/resize, navigation and final four-case synchronization; default
+physical Ctrl+F is blocked while media is active and opens Find after retirement.
+Earlier fixture failures and overlapping runs retain their historical scope.
+Backend two-package and integrated eight-package all-target strict Clippy pass;
+Python tooling retains 14 passes and 18 skips.
+
+The matching r3 worker consolidates 45 functional passes with both helpers'
+five-DLL closures checked. A separate trusted restricted-worker SDK scenario
+decodes VP9/Opus: 82 video/131,328 PCM frames before seek and 52 video/83,328 PCM
+frames afterward, reaching EOF both times, advancing the seek epoch and
+confirming retirement. Loaded DLL paths/hashes match; the owned C-drive package
+was removed with a 28-file D-drive mirror retained. The native profile's 54
+warnings still leave it unqualified. Whole-app F3, audio through F3, native MP4
+and Linux remain open.
+
+Viewer routing passes 12 cases, including video/process-index and user policy
+coverage. The plug-in Options replay now passes all 17 cases; root visually
+reviewed all seven bundled viewers and the keyboard-revealed last row of an
+expanded 20-row catalog above the pinned Rescan action. Earlier fixture and
+compilation failures remain retained.
+
+Root reviewed/applied the 17-file typed media frame fence, verifying every
+preimage and proposed hash. Its real prepared-batch RED reproduced stale frame
+11 replacing frame 10 after a newer seek. The final direct UI/image replay
+passes 31 cases and producer/routing replay passes eight; these groups overlap
+earlier evidence and are not added to it. They cover missing/future controls,
+rapid/refused seeks, replay, later Play/Pause preserving the sole preview and
+session retirement. Two existing Runtime fixtures were repaired without
+weakening live/closed-session or primary-panic checks. Four-package all-target
+strict Clippy with `--no-deps` and warnings denied also passes.
+
+Four earlier completed HTML controls superseded the pending diagnostic status: short
+profile OFF/ON, OFF/BASIC without a notifier, software/DX12 OFF and Vulkan/DX12
+OFF. That single-backend same-binary Vulkan/DX12 control measured maximum
+publication→draw of 18.398 versus 562.788 ms and burst changed-draw gaps of
+68.391 versus 528.250 ms. Both opens confirmed WGPU and their single-backend
+masks. Earlier opening/path failures remain retained. BASIC also recorded a
+766.157 ms redraw span without a notifier; publication delays remain on the
+other backends. These results support a renderer-path contribution on this
+machine, not an exclusive cause, physical-display timing or general speedup.
+Protected-runtime guards and cleanup passed, with sampled compiler counts zero.
+The Windows VULKAN | DX12 default now passes its policy RED→GREEN regression:
+one parent case covers 12 backend/debug-validation subprocess configurations,
+preserving explicit overrides and indirect-call validation. This supplies DX12
+availability fallback, not device-failure/runtime retry. The newer same-binary
+combined-default OFF timing and separate ON identity controls both pass. OFF
+wheel publication→draw max is 18.909 ms, but first/reopen draw still takes
+2125.929/1792.499 ms and upstream publication delay reaches a real 498.268 ms.
+ON directly observes Vulkan in both opens; its notifier makes it timing-ineligible
+and does not prove OFF's adapter selection. The measured host/probe source
+`6ad6008b…` and binary `5caa539e…` precede the later frame fence; they do not
+identify current HTML provider source. These controls executed the fixed
+baseline runtime `MEHtmlProbe-96673981` and its 803,328-byte provider
+`9159cf31…9d669`; candidate `MEHtmlProbe-e1593972` was guarded, not executed
+in those controls.
+Thus the opening/upstream figures do not qualify the current HTML provider.
+The linked follow-up records full baseline provenance and its execution receipt.
+Runtime/ACL/cleanup guards pass;
+all sampled compiler counts were zero.
+
+A subsequent single OFF control executes the current candidate provider
+`4a1bdd…3787`, with all 49 source pins, three SDK pins and the CEF archive/receipt
+matched to its normal non-diagnostic configuration. It retains host `5caa539e…`,
+so it is not the latest whole-app binary. First/reopen draw takes
+1589.258/1165.933 ms; wheel input→publication median/max is 46.866/538.527 ms,
+while publication→draw max is 18.768 ms. All 24 burst inputs arrive. This
+reproduces the upstream tail with the current provider; one control establishes
+neither a general speedup nor its cause. Runtime/ACL/cleanup guards pass.
+
+The five-sample font microprobe measures a 1.861 ms first constructor and
+approximately 0.3 ms subsequent constructors; first layout is 90.959 ms then
+approximately 0.6 ms. Its 2862.328 ms enclosing process interval includes
+unattributed time outside those measurements. One process with potentially warm
+OS/font caches is not whole-viewer opening evidence; no lazy-font refactor was
+made. The first current-source diagnostic provider/BASIC run localizes two
+slow wheels after fast dispatch/command return and before the next paint, while
+host timers continue. It separately retains large opening UI-delivery gaps.
+The later sparse diagnostic observes a 507.466 ms wheel→paint-entry interval
+despite 34 short recurring CEF pumps, maximum start gap 16.692 ms and maximum
+completed-pump duration 0.355 ms. All 12 isolated wheels have complete groups; nine burst
+wheels lack their own group under latest-wheel coalescing and are not claimed
+as individual paint acknowledgments. Same-thread CEF ownership rules out an
+ordinary cross-thread surface-lock wait; the Chromium compositor/capture path
+remains unresolved. Standalone diagnostic/model tests pass 19 cases; the full
+native diagnostic strict Clippy replay and build also pass. Earlier lint
+failure remains retained. Both runs restored the reserved QA runtime and
+checked retirement/guards, with NTFS ChangeTime changes recorded separately.
+These are localization results, not a production fix or speedup. The earlier
+env-toggle revision passed 20 standalone tests, diagnostic native-provider
+Clippy/build and the default cfg-off check, but its configured A/B was **never
+staged or run**: the Windows worker environment allowlist (lines 162–173) and
+Linux `env_clear` strip that private variable. The
+[Build stop receipt](../../../_build/qa/html-cef-compositing-control-20261119-034838-0eb1b8a0/unexecuted-env-control-stop.json)
+retains that integration failure; it is not a valid native control.
+
+The replacement [compile-feature handoff](../_build/qa/html-pump-aggregates-20261119/software-compositing-feature/handoff.json)
+freezes four source files with 19 standalone tests passed. Strict builds and
+one native two-feature comparison now pass the actual global-switch gates
+A `0/0` / B `1/1` for both opens; accepted configuration is not GPU-status proof.
+The [completed A/B handoff](../../../_build/qa/html-cef-compositing-feature-20261119-040645-8d214e09/handoff.json)
+retains long B1 draw/burst gaps and Root's rejection of a production software-
+compositing default as an unjustified net regression. B1's approximately 0.1 ms
+odd-round publications precede native wheel delivery and cannot be credited as
+input responses. Its provider cap leaves three late burst wheels uncovered;
+protected runtime restoration passes, while owned-D residue cleanup is recorded
+separately. No SDK/environment boundary or production default changed.
+
+The corrected HTML QA probe passes its meaningful RED→GREEN sequence
+(5 failures/1 positive pass, then all 9 passed) and example check/build with zero
+diagnostics. Native-wheel ordering gates both publication and redraw credit;
+quiet periods include observed changed-redraw return. It has no native timing
+rerun, and historical timings are not retroactively corrected or pixel ACKs.
+The separate [three-arm raster pass](../_build/qa/raster-replacement-native-20261119-007e387d/handoff.json)
+succeeds once per mode with two warmups/twelve measured serials, identical
+1377×477 raster/DPI geometry, no notifier/CEF/input and zero drops. Even unchanged
+image+request-redraw retains a 398.195 ms observer remainder; precreated/fresh
+maxima are 401.841/374.680 ms. This operational control neither identifies a
+cause nor establishes a speedup or actual selected GPU adapter.
+
+The current native Windows filesystem ABI/SDK gate passes 150 cases with two
+ignored and no failures. It uses the fresh 862,208-byte DLL `2200e210…972cbdc`
+and its verified source closure, rather than the stale packaged DLL. This is a
+headless boundary check; it does not establish installed trust-catalog/F3 acceptance.
+
+The current-source app build, including the frame fence and fixture repairs,
+now succeeds. Root verified the resulting `me.exe` exists and recorded its
+hash in the linked follow-up. The earlier F3r2 attempt failed before the F3 key: eleven
+correct-desktop UIA queries return no rows. Host/native-filesystem runtime paths
+qualify; playback does not. All owned processes/desktop/child are retired and
+protected guards pass. The actual `1fa0c8d8…` compiled-feature audit confirms
+Slint accessibility was disabled. The corrected QA app build now passes with
+zero diagnostics: 116,560,896 bytes, SHA-256 `27dd0c65…b2f1898`. Actual compiler
+artifacts confirm five required Slint/Parley features and four Windows AccessKit
+packages. Dependencies/notices and all 46 capture-pair inventories are verified;
+no normal-runtime promotion is claimed.
+
+The [first accessibility/capture canary](../_build/qa/accessibility-feature-20261119/native-preparation/runs/native-ax-20261119-r1/result.json)
+passes once in 8.36 seconds under the normal nonadministrator owner. It uses a
+private desktop, Winit/software and a synthetic 100,000-row model: raw UIA count
+43→43, correct plain Value/Text, password `IsPassword`/bullets with no queried
+private-use sentinels, and 57 unique rows per phase (19 visible, envelope 232;
+76 cold calls then 57/57, rows 0–99,998). Recorded activation barriers read zero
+rows. Both owned processes exit 0 and retire; desktop/thread desktop/DPI restore.
+`WM_PRINTCLIENT` API success still yields nine black pixels and fails; owned-
+client GetDC/BitBlt matches RGB17/83/149 at all nine points at 216 DPI/2.25 in the
+180×135 canary. Root reviewed the crop. This is not default-WGPU/display or F3
+playback proof. Check/full-feature build/strict Clippy pass; two owned variant
+continuations were canceled, not semantic failures. Concurrent Clippy and cold
+font/window startup preclude CPU/latency/memory/speedup claims. Independent Perf
+review finds no scoped dispatch blocker while retaining preactivation work and
+broader measurement limits. R3v2 later stops staging before writes because the
+old reserved runtime is missing; no R3 native run occurs. Old reserved-root
+absences predate R4 and are not attributed to our cleanup.
+
+The [fresh R4 outcome](../_build/qa/media-playback-r3/r4-rebased/handoff.json)
+is **failed filename-viewer detection**, not a demonstrated production routing
+defect. Initial new-36-file staging passes; a pre-native guard then detects an
+extra local SID-1001 RX ACE on 47 objects plus ChangeTime changes, with stable
+payload identities/hashes and unknown cause. After explicit user authorization,
+a D-only observed-state baseline preserves the original record without changing
+C ACLs. The actual `27dd0c65…`/verified-native-filesystem run reports
+`Normal F3 did not open exact file: None`, zero qualified video observations and
+no playback-worker proof. Source review finds an unchecked focus result,
+no post-click View-enabled confirmation and no unmatched-window inventory;
+filename-only matching can miss a generic error viewer because initial errors
+may publish Status without a caption-bearing Frame. Actual viewer/error state
+is therefore unknown; the later R5/R6 outcomes below establish no production
+routing fix.
+
+The host exits normally with no helper remaining, and desktop/thread desktop/DPI
+restore. After a transient code-use cleanup stop, fresh users/processes are
+empty and unchanged Verify/Cleanup pass. Exactly 36 new leaves and empty
+directories/root are removed; `MEF3-20261119-27dd0c65` is absent. Home ACL, old-root
+absences, actual known preferences and integrity checks pass; nine audited
+ChangeTime deltas preclude an all-timestamps-unchanged claim. Prior scoped
+build/inventory/Clippy/canary passes remain valid. Playback/A/V, installed F3,
+MP4, Linux, normal-runtime promotion and general performance remain unqualified.
+The [R5 diagnostic](../_build/qa/media-playback-r3/f3-diagnostic-r5/handoff.json)
+confirms focus but stops on a compound desktop-inventory assertion before click,
+F3 or UIA queries. Missing Win32 detail leaves its cause unresolved; cleanup,
+three payload audits, Home/preferences and old-root absences pass. API calibration
+finds an owned STATIC window, but an extra-window assertion leaves full enumeration
+false; this is not a whole-preflight pass. R6 fails Stage with **zero native runs**
+on copy metadata/known SID-1001 RX delta. Its later exact, nonrecursive cleanup
+removes **15 leaves + five empty directories + root**, with no existing ACL,
+Home or preference change. F3 playback remains unqualified.
+
+The later [R7 attempt](../_build/qa/media-playback-r3/f3-current-981b8583-r7/r7-final-handoff.json)
+uses the normal `981b8583…` build and sends F3 once. A generic Viewer exposes Play,
+position and `0:00 / 0:08`, but the filename/content gate times out; no pixels or
+playback actions qualify. A separate real regression then proves VIDEO's valid
+`palette=None` acknowledgment was rejecting its paused first frame despite ready
+controls. The [VIDEO palette-gate fix](../_build/qa/current-video-palette-gate-20261119-r1/final-handoff.json)
+adds the authored-pixel exemption: **1 behavioral RED → 24/0 selected GREEN** in
+eight serial software processes, followed by affected strict Clippy and a normal
+app build, both exit 0. That preserved app is `442d307b…e51f42`,
+116,562,432 bytes, `profile.test=false`.
+
+The [R8 follow-up](../_build/qa/media-playback-r3/f3-current-442d307b-r8/r8-final-handoff.json)
+reaches the exact AVI filename caption and visible `Video` label, then **fails**
+because QA still searches for `File content` instead of the observed unnamed
+Image. No capture or playback action is reached. The process observer also skips
+a raw `\\?\C:\…` playback-worker candidate under its literal root filter; that is
+neither accepted loaded-code proof nor evidence of worker absence. R8 establishes
+no additional production defect. Both R7/R8 pass strict Stage/Verify/exact Cleanup:
+owned C roots are absent, normal hosts exit 0, helpers retire and desktop/DPI
+restore. The later [R9 attempt](../_build/qa/media-playback-r3/f3-current-442d307b-r9/r9-final-handoff.json)
+qualifies the authored first frame (frame 0, 289 samples) and actual host/restricted-
+worker/five-FFmpeg-DLL loaded-code proof. Playback progression still **fails**:
+all four captures remain frame 0 while UIA reaches Pause/position `0.097509176`.
+UIA state is not repaint/decoder-progress proof. Strict cleanup passes and the
+owned root is absent.
+
+The [VIDEO resize-fence regression](../_build/qa/current-video-resize-gate-20261119-r1/final-handoff.json)
+then reproduces frame **10 instead of 11** after a status-row canvas resize.
+The VIDEO-only correction preserves its media session during image-style scaling;
+Text/Source still require newer position generations. **22/0/0 exact selected
+cases** pass in 22 serial software processes, followed by strict Clippy with zero
+diagnostics and a normal app build. The current preserved app is `2f5f7f25…17dc7`,
+116,562,944 bytes, `profile.test=false`.
+
+The first actual [R10 native session](../_build/qa/media-playback-r3/f3-current-2f5f7f25-r10/r10-final-handoff.json)
+**passes scoped silent-AVI F3 verification** after an earlier pre-Stage resource
+stop. Its 25 authored-pixel observations show initial 0, Play 4→9 in 0.844 s,
+paused/resized 15, seek 19, near-end 44→47, EOF 47 and replay 0; malformed AVI
+shows a decoding error. Actual host/NativeFS/restricted-worker/five-DLL proof
+passes without observer errors. Strict Stage/Verify/exact Cleanup pass, the C
+root is absent, the host exits 0 and helpers/desktop/DPI retire or restore.
+Root reviewed three downsampled PNG copies with originals unchanged, including
+changed color/timeline and fitting resized layout. This is one software-rendered,
+private-desktop run with the current normal app and a minimal 36-file runtime:
+audio/device clock, physical display, full catalog, MP4/Linux, normal-runtime
+promotion and general performance remain unqualified. Later Source/Office and
+HTML outcomes below retain separate functional, staging and cleanup boundaries.
+
+[The Media follow-up record](verification/2026-11-19-media-follow-up.md) preserves
+receipts, failures and limits. Full suites, packaged execution and all 54
+retained requirements remain open; neither overall completion nor a main merge
+is claimed.
+
+### Parallel viewer verification — 19 November 2026
+
+The retained read-only ancestry check found original `ecf9374e` in work-branch
+base `544b48db` and then-main `22fe65fa` through the earlier integration. That
+historical ancestry does not establish functional acceptance or identify today's
+main. Commit/push of this branch is the requested closing step; no main merge
+or normal-runtime promotion is authorized.
+The [first immutable parallel handoff](../_build/qa/parallel-verification-20261119-build-handoff.json)
+retains the earlier Source pixel failures; the later renderer correction below
+is a new evidence epoch, not a rewrite of that failed aggregate.
+
+| Selected boundary | Verified current result |
+| --- | --- |
+| [Core/platform filename colors](../_build/qa/current-core-colors-20261119-r1/filename-colors-result.json) | **27/0**; PDF split/custom palette migration. |
+| [Independent Source](../_build/qa/current-source-20261119-r1/tests-result.json) | Original **94 passed/1 failed** retained; test-only `1bd9…` YAML oracle correction passes its exact case, with direct YAML groups **4/0 + 4/0**. Production lexer unchanged; no fresh all-95 replay. |
+| [Office host adaptation](../_build/qa/current-engine-office-green-20261119-r1/selected-results.json) | Three behavioral RED failures → **29/0**; one separate service case covers all six real first-content formats. Generator-owned links become document-relative at the correct page depth; canonical OfficeTarget IDs and private-document policy remain unchanged. The later six-format native initial-content review below passes its authored fixtures; Find and full fidelity remain open. |
+| [Engine Source boundaries](../_build/qa/current-engine-office-green-20261119-r1/selected-results.json) | Acknowledgment **13/0**, syntax **20/0**, continuity **8/0**. Earlier position **29 passed/2 failed/1 ignored** retained; both failed CPU-camera/gutter cases now pass in the targeted renderer-correction epoch below. |
+| [PDF/document engine boundaries](../_build/qa/current-engine-office-green-20261119-r1/selected-results.json) | Continuous PDF **7/0**, document view **9/0**, document render **6/0**; selected host checks, not native decoder/workflow acceptance. |
+| [Archive](../_build/qa/current-archive-20261119-r1/selected-results.json) | Reader **8/0**, streaming **7/0**, archives **14/0**: **29 selected functional passes**. Direct user-ZIP probe below is separate. |
+| [HTML navigation routing](../_build/qa/current-html-navigation-red-20261119-r1/green-result.json) | Stale-fixture RED **4/4** → fixture-only `d035…` **8/0**, with old-root/lookalike refusals retained. Policy unchanged; three existing warnings remain, not a strict Clippy pass. |
+| [Unified software UI](../_build/qa/current-unified-ui-20261119-r1/selected-ui-results.json) | **10/0** selected comparison/PDF/options/workflow/theme cases, plus **1/0** existing theme-selection test. Each theme check's 52 internal palette/density combinations are not 52 unit passes. App feature match is 14/14. |
+
+Root viewed three PNG copies converted from retained PPMs: compact PDF/font32,
+Onion comparison/font32 and compact green identical-text result. Original PPMs
+remain unchanged; Build viewed two retained theme BMPs. These are scoped software
+renders. Cargo TEST emitted the `me` **test harness** (`profile.test=true`), not a
+new normal `me.exe` or a native app result.
+
+The [requested ZIP probe](../_build/qa/current-archive-20261119-r1/userzip-probe/result.json)
+reads `C:/Users/tjelinek/Downloads/salamander-main(1).zip`, **20,096,167 bytes**,
+SHA-256 `e882a11e…4f3b92`. Direct debug plug-in open/list observations are
+**50.3369 / 1.7479 ms**. The selected member's SHA-256 matches independent Python
+ZIP decoding and input identity/hash remain unchanged. UI compilation was
+concurrent: this is not an isolated speedup, application path, installed worker
+or IPC qualification.
+
+The [direct annotation RED](../_build/qa/current-renderer-annotation-red-20261119-r1/attempt2/red-result.json)
+reproduces the fractional-camera pixel mismatch. The accepted correction carries
+annotation camera/label origin separately as `f64`, preserving the old body
+viewport path. [Targeted GREEN](../_build/qa/current-renderer-annotation-green-20261119-r1/tests-result.json)
+passes **70/0**: renderer library 24, the two failed host cases, related raster 41
+and gutter 3. Full renderer integration passes **48/0 with 3 ignored**. These are
+**118 functional passes at that production-code epoch**, not full-suite/native
+acceptance. The original strict-Clippy test-only chunk-iterator failure remains;
+`9bfd…` changes only that test iteration, with production hashes unchanged.
+Final render/engine strict Clippy passes (`--lib --tests --no-deps -D warnings`),
+and exactly **3 annotation tests** replay after the style fix—not all 118 again.
+
+Root's latest whitespace and 2,742-file source-size checks pass. The separate
+[normal app/HTML-probe build](../_build/qa/current-app-and-html-probe-20261119-r1/artifacts.json)
+passes with `profile.test=false` for app `981b8583…` and probe `17bd4731…`.
+The VIDEO palette fix passes 24 selected cases and builds normal app `442d307b…`;
+R9 qualifies first-frame/loaded-code proof but fails playback progression. The
+subsequent VIDEO resize fix passes 22 exact selected cases, affected strict Clippy
+and normal app build `2f5f7f25…`; neither phase rebuilds HTML probe `17bd4731…`.
+R10 passes the scoped silent-AVI/native pixel and loaded-code workflow above.
+Earlier groups retain their epochs and are not summed with repeated coverage.
+
+The pre-fix [Source R4](../_build/qa/source-r4-launch-20261119-r1/final-handoff.json)
+retains its C++ `0.82` rapid/reference failure and separate ChangeTime guard
+failure/independent cleanup pass. The [first correction replay](../_build/qa/current-source-leading-context-green-20261119-r1/green-attempt-handoff.json)
+remains **79 passed/4 failed across 83 unique cases**. The later host fix preserves
+`partial_line`, recovers bounded prefix context and covers short-byte fallback,
+real endpoints and corrected UTF-16 fixture geometry. After a retained private-
+helper compile failure and minimal visibility fix, the [current replay](../_build/qa/current-source-leading-context-green-20261119-r3/green-attempt-handoff.json)
+passes **87 unique cases**, strict Engine Clippy and the unchanged 370-input guard.
+[Native R5](../_build/qa/source-current-leading-context-native-20261119-r5/actual-native-result.json)
+passes C++ `0.82` cold/warm exact pixels, then **fails overall 0/1** at C++ `0.43`
+warm syntax. The [scalar diagnosis](../_build/qa/source-r5-failure-diagnosis/scalar-diagnosis.json)
+finds legitimately zero highlighted tokens and correct endpoint metrics, not a
+production defect. The QA-only pinned-target neutral oracle has [4 rendered
+checks/strict Clippy passing](../_build/qa/current-source-oracle-neutral-20261119-r1/green-attempt-handoff.json);
+three overlap the 87 and are not added. Exact pixels and all other positive
+chroma checks remain required. [R6](../_build/qa/source-current-leading-context-native-20261119-r6/actual-native-result.json)
+completes five destinations (all three C++ and two Lua), then fails Lua `0.999`
+plain-Text calibration acknowledgment after 45 s; YAML is unreached. A real Text
+coverage failure, not a mode-oracle defect, drives the narrow mapped-edge fix:
+retain the opposite anchor and grow once within the existing request budget.
+A [meaningful RED](../_build/qa/text-eof-correction-red-20261119-r1/red-attempt-handoff.json)
+precedes [91-case GREEN](../_build/qa/text-eof-correction-green-20261119-r1/green-attempt-handoff.json);
+the latter passes strict Engine Clippy with 371 inputs unchanged. Those **91 unique passes**
+include the earlier 87, the fourth oracle and three Text cases; they are not
+added together. [Actual native R7](../_build/qa/source-current-leading-context-native-20261119-r7/actual-native-result.json)
+then **passes 1/0/0**, completing **all nine destinations** (three each C++/Lua/
+YAML), including Lua `0.999` Text calibration. Stage, native guards, owned EOF,
+lease release, Restart Manager and exact cleanup pass; the root is absent.
+This qualifies the scoped CPU viewport/syntax/recovery corpus with the recorded
+2f/SDK authority, not normal F3, gutter/retained-state or performance acceptance.
+
+The [Source/Office session](../_build/qa/f3-source-office-launch-20261119-r1/final-handoff.json)
+retains **2/8** automated passes and Root's [eight-crop review](../_build/qa/f3-source-office-2f-e25-20261119-r1/runs/run/visual-review-initial/root-visual-review.json):
+Lua/YAML colors and all six authored Office initial markers are visible before
+Find/navigation, with XLSX A1 wrapping over two visual rows. Initial-content
+acceptance covers those software/private-desktop fixtures; Find/full fidelity
+remain open. [Office Find R3](../_build/qa/f3-office-find-primary-2f-e25-20261119-r3/actual-handoff.json)
+stops on first DOCX ownership query (`WinError 5`) before content/query/input:
+**0/6**, five unattempted, no captures. App exits 0 and desktop/DPI restore.
+The controller conflates window ownership with process lifetime; exact failing
+API is unknown. [Safe recovery R4](../_build/qa/office-r3-safe-recovery-20261119-r4/actual-handoff.json)
+now passes overlapping 750 leases, final critical/strict-original checks,
+owned-controller EOF, all lease releases, zero Restart Manager users across 566
+files and exact 566-leaf cleanup. The root is absent, independently checked by
+Root. This cleanup does not qualify Find; no UI retry or product defect is claimed.
+
+HTML probe `d5cc2128…` retains its [light checks](../_build/qa/current-html-validation-light-20261119-r1/final-handoff.json),
+[guarded build](../_build/qa/current-html-validation-cached-build-20261119-r1/final-handoff.json)
+and failed package-level **13/14** feature gate. Actual compiler/runtime unit
+review permits only new functional/phase attribution, not whole-app/generated-UI
+or timing parity. The earlier Stage failure is retained. [Leased R3](../_build/qa/html-primary-leased-d5cc-a0-20261119-r3/actual-handoff.json)
+fails WGPU device creation before HTML. The separate [software R4 control](../_build/qa/html-primary-leased-software-d5cc-a0-20261119-r4/actual-handoff.json)
+**passes once**: both opens, all **36 wheels** (12 isolated/24 burst), two CEF CSV
+EOFs and `provider.validate` **421,519/503,338 microseconds**. These are validation
+phases, excluding browser startup/draw/retirement. Actual software renderer and
+unchanged A0 CEF mode 0 are recorded; foreign compiler context precludes idle/
+performance claims. All 548 critical-file checks, native EOF, lease release,
+Restart Manager and cleanup pass; the owned root is absent. Continuous primary
+read leases qualify these QA C copies' content, identity and security; ChangeTime
+is diagnostic with unknown cause. D originals retain strict ChangeTime checks.
+Old failures are not rebased and application loader policy is unchanged. HTML
+hardware/speedup qualification remains open.
+
+The [final normal app build](../_build/qa/current-final-app-20261119-r2/build-handoff.json)
+now passes after the Text fix: `5b8b6c76…`, **116,569,088 bytes**,
+`profile.test=false`, Cargo/source-guard exit 0, 14 feature unions matching and
+cached main Slint bindings. It supersedes `6894ceb4…`. Compile and scoped runtime
+evidence do not establish fresh full-GUI/full-suite acceptance or normal-runtime
+promotion. Root's closing scope
+is to commit and push `codex/post-merge-validation-20261118`, then stop; no merge
+to main is authorized. Broader acceptance and remote CI retain their earlier
+limits, and overlapping epochs are not summed.
+
+### Find and panel follow-up — 18 November 2026
+
+Work remains on `codex/post-merge-validation-20261118`, based on `544b48db`,
+with no current-batch commit, merge or push recorded. Comparator Engine Find
+passed 9 cases, including the prior 8 and a new immutable-snapshot case; the
+three comparator UI Find cases also passed again. Viewer Engine Find passed 19,
+including a replay after lint-fixture changes; cursor 4, real Basic/Source 1 and resident
+lifecycle 6; comparator/viewer UI library checks passed 14. Final filter polish
+passed all five affected cases. Main UI consolidates 25 unique cases (5 latest
+filter passes and 20 retained unaffected passes), not a repeated full target.
+The focused filter capture shows one clear X before the history arrow.
+
+Earlier comparator replays fixed keyboard/Esc, hidden Find spacing and resize.
+Root then found actual tooltip text overflowing a tiny popup despite the earlier
+origin assertion. The corrected containment test failed, then the shared-adapter
+and weak post-event anchor fix passed compilation and all 12 exact affected
+runtime cases, including both headers' popup and text bounds. Main UI's four
+tooltip cases also passed after helper extraction; these overlapping results are
+not added to the 25-case consolidation. The real Source 20,000-line position,
+Copy and preferences case passed. The dependency inventory records unchanged
+615 resolved identities with the existing pinned compiler/helper selections.
+
+Root reviewed Keyboard, selection-marker and normal/narrow Find captures.
+The four-run native HTML ABBA measurements were mixed and establish no overall
+speed claim. The timeline example passed three tests and built successfully,
+but pinned Slint adds flush/submission work when its notifier is installed and
+`AfterRendering` precedes surface presentation. The same-binary trace-OFF→ON
+native control has a lease and no completed result at this checkpoint.
+Strict all-target Clippy for six targeted packages now passes with warnings
+denied; prior diagnosed failures remain recorded. Root verified source-size
+checks for 2,708 files and diff whitespace. The 64-file Media overlay remains
+unapplied while Architect refreshes its worker preimage.
+[The follow-up record](verification/2026-11-18-find-and-panel-follow-up.md)
+retains the evidence chain and limits. Windows software tests and recorded
+Properties arguments do not qualify an OS property sheet, the full suite,
+packaged app, Linux or all 54 retained requirements. The overall goal remains
+open.
+
+### Screenshot follow-up — 18 November 2026
+
+The follow-up checkout is based on published `main` at `544b48db`. The
+warning-free local Explorer `cargo check --tests` below covers compilation.
+GitHub Actions run `44363264736` on that same commit completed with five failed
+plug-in jobs. The two archive jobs stopped on the current-position seek lint.
+Both Source jobs failed an assertion in `checkpoint_peak`. The Windows image
+viewer step exited 1 and its cause remains under Build review.
+[CI run](https://github.com/TomasJelinek/fm/actions/runs/44363264736) ·
+[Archive Windows](https://github.com/TomasJelinek/fm/actions/runs/44363264736/job/135010552908) ·
+[Archive Linux](https://github.com/TomasJelinek/fm/actions/runs/44363264736/job/135010553060) ·
+[Source Windows](https://github.com/TomasJelinek/fm/actions/runs/44363264736/job/135010780889) ·
+[Source Linux](https://github.com/TomasJelinek/fm/actions/runs/44363264736/job/135010780905) ·
+[Image Windows](https://github.com/TomasJelinek/fm/actions/runs/44363264736/job/135010553148)
+
+The screenshots are layout and interaction references. The new backlog records
+readable settings JSON, the silent Delete report, panel and shortcut polish,
+editable plug-in associations, FFmpeg playback and thumbnails, `.manifest` and
+`.usda` highlighting, the reported HTML file, and the full Copy/Move workflow.
+The checks below now include a locked `.claude` reproduction and native
+first-open and reopen smoke runs on the reported HTML file. Comparable HTML
+timings and scrolling latency measurements are still pending. Verification for
+the screenshot follow-up remains open alongside all 54 retained requirements.
+[Screenshot follow-up backlog](IMPLEMENTATION_BACKLOG.md#screenshot-follow-up--18-november-2026)
+
+- **Settings JSON.** New saves normally use two-space indentation and a final
+  newline. When indentation and the newline would exceed 4 MiB, the writer falls
+  back to compact JSON and enforces the same bound. The initial two-test run
+  reproduced the formatting failure, with the near-limit compatibility case
+  passing. The corrected run of
+  `cargo test -p midnight-platform-common --lib settings::tests:: --locked --offline --jobs 1`
+  recorded 21 passed, 0 failed and 101 filtered out. Formatting takes effect on
+  save. Verification used fixture preferences and left the user's settings file
+  alone. [Settings writer](../crates/midnight-platform-common/src/settings.rs) ·
+  [Initial run](../_build/settings-json-red/cargo.log) ·
+  [Corrected run](../_build/settings-json-green/cargo.log)
+- **Windows settings replay.** On the composed follow-up source,
+  `cargo test -p midnight-platform-common --lib settings:: --locked --offline --jobs 1`
+  passed 49 tests with 0 failures and 76 filtered out. The replay covered schema
+  34 and legacy defaults, compatibility with the required comparator field,
+  malformed and duplicate overrides, indented UTF-8 JSON, the size-bounded
+  fallback, and atomic writes. The 49-test result includes the formatting and
+  near-limit cases from the earlier settings check.
+  [Replay log](../_build/thumbnailer-settings-schema34/cargo.log)
+- **Windows Thumbnailer backend dispatch.** On the composed follow-up source,
+  `cargo test -p midnight-thumbnail-host --lib providers::tests:: --locked --offline --jobs 1`
+  passed 3 tests with 0 failures and 39 filtered out. The cases verified stable
+  provider precedence, accepted extension overrides, disabling a provider with
+  an empty override, restoring its defaults with Reset, image-only artwork
+  filtering, and the existing Windows library trust check. The initial compile
+  hit a borrow lifetime error in the test closure. The replay corrected that
+  closure and exercised the same production resolver.
+  [Initial compile log](../_build/thumbnailer-host-associations/cargo.log) ·
+  [Replay log](../_build/thumbnailer-host-associations-recheck/cargo.log)
+
+- **Source now in the follow-up.** Panel smooth scrolling, the inset tab close
+  control and directional file Move icon are in the checkout. Delete has an
+  interruption classification change and a native fixture with a locked handle.
+  Copy/Move has presentation V2, a cancel-confirmation pause token and a terminal
+  receipt. Windows multi-file Properties and backend lookup of the stored link
+  target are also present. The focused transfer and Properties tests are in
+  progress. Stored link target behavior still needs qualification. Thumbnailer
+  still needs end-to-end qualification, including Options and video formats.
+- **Viewer source.** Options has the full Viewer list and editable extension
+  associations. The seven-file Source change covers XML `.manifest` and USDA
+  highlighting. The two-file HTML timing probe targets the reported local file.
+  Extension persistence and routing, syntax highlighting, FFmpeg playback and
+  broader thumbnail format coverage still need execution evidence.
+- **Early Windows compile and isolated runtime.** The first Engine compile
+  exited 101 on two stale test interfaces. The repaired compile produced Engine
+  and UI test artifacts with zero compiler diagnostics. Four Engine tests
+  passed, including the fixture that distinguishes a preparation interruption
+  from explicit cancellation. Three UI library tests passed. Both verified
+  Engine fixture repairs are now in the follow-up source.
+  [First compile](../_build/qa/follow-up-win-v2/engine-compile-result.json) ·
+  [Repaired compile](../_build/qa/follow-up-win-v2/engine-recheck/compile-result.json) ·
+  [Engine runtime](../_build/qa/follow-up-win-v2/engine-recheck/runtime/engine-repaired/result.json) ·
+  [UI library runtime](../_build/qa/follow-up-win-v2/engine-recheck/runtime/ui-lib/result.json)
+- **Early UI integration.** Three Delete and confirmation cases plus drag
+  feedback passed. The cursor-reveal test failed to cancel native motion, and
+  the tab close geometry assertion failed. The original wrapper also counted
+  a render filename lookup error against one passing Delete test. The corrected
+  receipt verified the original captures and records four passes and two test
+  failures. Root visually reviewed the 700×500 and 350×300 Delete renders.
+  [Original wrapper result](../_build/qa/follow-up-win-v2/engine-recheck/runtime/ui-integration/result.json) ·
+  [Verified runtime and renders](../_build/qa/follow-up-win-v2/engine-recheck/runtime/ui-integration/verified-runtime-and-renders.json)
+- **Windows panel replay.** The isolated `panel-runtime-fix` run passed both
+  formerly failing integration selectors with zero failures. The cases cover
+  fractional scrolling, whole rows and cancellation of native motion on cursor
+  reveal, plus tab close geometry and file-focus shortcuts. The production
+  fixes are integrated into the follow-up source.
+  [Panel replay](../_build/qa/follow-up-win-v2/panel-runtime-fix/run-20261118-195547-285/runtime/panel-runtime/result.json)
+- **Windows locked `.claude` Delete.** The first run exited 101. The fixed
+  integration run passed the exact locked-directory test on a disposable
+  `.claude` fixture. Delete reported an error while the handle was held, then
+  succeeded on retry after release.
+  [First run](../_build/qa/follow-up-win-v2/locked-delete-v1/result.json) ·
+  [Fixed run](../_build/qa/follow-up-win-v2/locked-directory-fix/run-20261118-203000-164/runtime/locked-directory/result.json)
+- **Combined Windows Explorer compile.** On the exact pinned follow-up snapshot
+  of 4,145 files based on `544b48db`, `cargo check --tests` exited 0 with zero
+  warnings or errors. This receipt covers compilation. Focused transfer and
+  Properties runtime results are pending.
+  [Combined compile receipt](../_build/qa/explorer-combined-win-v1/check-v2/check-result.json)
+- **Windows HTML package and native report smoke.** The separate package passed
+  32 tests with zero failures across surface (9), output (16) and Find (7), with
+  one surface case ignored. In separate native smoke sessions at 640×320, the
+  baseline and candidate both drew the exact reported file on first open and on
+  reopen in the same process. Both runs also received all 24 posted wheel events.
+  The smoke sessions establish correctness in those runs. Compiler activity
+  during both sessions makes their timings non-comparable.
+  [Package tests](../_build/qa/html-dirty-paint-win-v1/verified-native-tests-result.json) ·
+  [Native smoke receipt](../_build/qa/html-native-probe-win-v1/verified-smokes.json)
+
+### Published main and follow-up evidence — 18 November 2026
+
+The published merge `cf8138e4` was followed by three repair commits spanning
+six files. `origin/main` fast-forwarded to `544b48db`, and Root verified that
+remote head. This follow-up checkout now has the same base. Its ref and index
+advanced after all six repair files already matched the published bytes. The
+27 remaining worktree paths and prior sealed evidence retain their own scope.
+
+On the original merge, Cargo PID `33712` exited 101 with `build-finished: false`,
+524 artifact events and clean input guards. The two Slint errors were
+`Unknown property checked in ActionButton` at `viewer.slint:394` and `:403`.
+The 54 retained requirements remain the acceptance scope. Package and product
+qualification remain open. [Merged check receipt](../_build/merge-main-20261118/_build/merge-explorer-check-v1/result.json) ·
+[Original diagnostics](../_build/merge-main-20261118/_build/merge-explorer-check-v1/cargo.stderr.log)
+
+- **Warm Explorer check.** The one-file PDF fix in local `48db5ec6` cleared the
+  binding errors. Viewer and main bindings generated successfully. The check
+  still exited 101 with `build-finished: false` after 535 artifact events. Two
+  comparator callers still used `try_reserve_nowait`. Commit `45ede585` changed
+  only those callers to `try_reserve`. A memory check at
+  18:41:30 local reported 617,222,144 physical bytes available and 5,410,189,312
+  bytes of commit headroom. After fresh admission, the warmed check of `45ede585`
+  launched as Cargo PID `42872` at 18:43:39 local. It cleared the reservation
+  errors and exited 101 with `build-finished: false` after 541 artifact events.
+  Explorer test compilation reported two `Result` assertions at
+  `comparator_external_native_tests.rs:809` and a preferences error-type mismatch
+  at `viewers.rs:407`. Engine compilation also reported four unused actor helper
+  warnings. The fourth warm check, on exact `544b48db`, qualified. Cargo exited
+  0 with `build-finished: true`, 542 artifact events and zero errors or warnings.
+  The dev-profile check finished in 39.60 seconds. `cargo check` ran zero tests.
+  Runtime and executable qualification remain open.
+  [PDF warm check result](../_build/merge-main-20261118/_build/merge-explorer-pdf-recheck-v1/result.json) ·
+  [Comparator recheck result](../_build/merge-main-20261118/_build/merge-explorer-retirement-recheck-v1/result.json) ·
+  [Qualified fourth check](../_build/merge-main-20261118/_build/merge-explorer-test-api-recheck-v1/result.json)
+- **HTML native Find.** H2 finished with 0 passed, 1 failed, 0 ignored and test
+  exit 101 in 25.84 seconds. Both offline and online captured HTML roots passed
+  Find, Copy and paint checks. The loopback page responded once over HTTP, then
+  an identical initial Find received no new callback after event 35. Pinned CEF
+  forwards `findNext` to Chromium. Chromium returns early for an unchanged,
+  unaborted session when the caller requests no next match. That explains why
+  this repeat can leave the caller waiting. The observer retained 630 bytes of
+  Chromium log. Cache errors coexisted with successful paints. The two-file
+  Find repair is source-ready. The original native case remains unrun on that
+  candidate. [H2 handoff](../_build/verification/viewer-refresh-20261117/build/office-html-short-profile-h2-collector-v2/handoff.json) ·
+  [H2 trace](../_build/verification/viewer-refresh-20261117/build/office-html-short-profile-h2-collector-v2/observation-handoff.json) ·
+  [Chromium 156.0.8078.88 FindTabHelper](https://github.com/chromium/chromium/blob/156.0.8078.88/components/find_in_page/find_tab_helper.cc#L36-L63) ·
+  [CEF 8ea0c73 BrowserHostBase](https://github.com/chromiumembedded/cef/blob/8ea0c73/libcef/browser/browser_host_base.cc#L610-L611)
+- **Source coverage v2.** The paired Engine coverage and UI position-unavailable
+  packets are source-ready after rebasing, with the original C++ fixture preserved
+  byte for byte. Independent review found two retained rebase motion ownership
+  paths that need correction before validation. The relative handoff covers source
+  only. The wider corpus failure below remains the latest verified runtime result.
+  [Earlier Engine source receipt](../_build/verification/viewer-refresh-20261117/viewer/source-coverage-recovery-v2/source-ready.json) ·
+  [Earlier UI source receipt](../_build/verification/viewer-refresh-20261117/ui/source-position-unavailable-v1/source-ready.json)
+- **Delete progress.** The isolated compile exited 0 with zero warnings or
+  errors and produced two test artifacts, `midnight_ui` and `native_job_windows`.
+  The presenter case and the software window case for the cancelling Close action
+  passed in the first run. Earlier attempts at the third case stopped before
+  launch at the memory or app identity checks. Root then ran the final close
+  confirmation case on the same sealed artifact. It exited 0 with one pass,
+  zero failures or ignores, and clean source and artifact guards. That one
+  precompiled software case used a resource gate of 2 GiB physical memory and
+  8 GiB commit headroom. The two receipts together cover three distinct software
+  cases on the earlier private artifact. The follow-up checkout contains the
+  four Delete polish files and the separate software regression test from
+  packet `f799a7fd`, plus the two-file freshness follow-up that prevents
+  a buffered snapshot from undoing accepted cancellation. The combined visual
+  check and new cleanup path remain pending. Native desktop validation remains
+  open.
+  [Compile receipt](../_build/verification/viewer-refresh-20261117/build/delete-progress-state-v2-build-prep/resume-compile-1/compile-result.json) ·
+  [Two passes and memory stop](../_build/verification/viewer-refresh-20261117/build/delete-progress-state-v2-build-prep/runtime-three-1/result.json) ·
+  [Standalone attempt 1](../_build/verification/viewer-refresh-20261117/build/delete-progress-state-v2-build-prep/runtime-final-one-1/result.json) ·
+  [Standalone attempt 2](../_build/verification/viewer-refresh-20261117/build/delete-progress-state-v2-build-prep/runtime-final-one-2/result.json) ·
+  [Observation-only preflight](../_build/verification/viewer-refresh-20261117/build/delete-progress-state-v2-build-prep/runtime-final-one-3/result.json) ·
+  [Final case pass](../_build/verification/viewer-refresh-20261117/build/delete-progress-state-v2-build-prep/runtime-final-one-root/result.json) ·
+  [Delete polish source packet](../_build/verification/viewer-refresh-20261117/ui/delete-cancelling-polish-v1/source-ready.json)
+- **Archive performance.** The direct-plugin ZIP measurements below apply to
+  their dated runs. End-to-end performance validation remains open.
 
 ### Deep code review — 18 November 2026
 

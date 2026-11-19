@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 
 fn progress(state: CopyOperationState) -> CopyProgress {
     let mut progress =
@@ -59,10 +60,11 @@ async fn a_blocked_initial_delivery_does_not_require_work_to_wait_or_overtake_it
         event_state(receiver.recv().await.unwrap()),
         CopyOperationState::Queued
     );
-    assert_eq!(
-        event_state(receiver.recv().await.unwrap()),
-        CopyOperationState::Completed
-    );
+    let Some(Event::Copy(CopyEvent::Progress(completed))) = receiver.recv().await else {
+        panic!("expected terminal progress");
+    };
+    assert_eq!(completed.state, CopyOperationState::Completed);
+    assert_eq!(completed.closure, None);
     delivery.await.unwrap();
 }
 
@@ -251,4 +253,105 @@ async fn stale_progress_is_refused_while_terminal_delivery_is_blocked() {
     );
     delivery.await.unwrap();
     assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_delivery_attaches_closure_totals_and_keeps_exact_recovery_details() {
+    let (sender, mut receiver) = mpsc::channel(2);
+    let outbox = CopyOutbox::pending(Outbox {
+        sender,
+        wakeup: Arc::new(|| {}),
+    });
+    let (terminal, finished) = oneshot::channel();
+    let delivery = tokio::spawn(outbox.deliver(progress(CopyOperationState::Queued), finished));
+    let Some(Event::Copy(CopyEvent::Progress(initial))) = receiver.recv().await else {
+        panic!("expected initial progress");
+    };
+    assert_eq!(initial.closure, None);
+
+    let mut finished = progress(CopyOperationState::Cancelled);
+    finished.intent = TransferIntent::Move;
+    finished.requested_roots = 3;
+    finished.completed_roots = 1;
+    finished.files_completed = 2;
+    finished.completed_bytes = 24;
+    finished.skipped = 1;
+    finished.failed = 3;
+    let residual = PathBuf::from("target").join("recovery");
+    finished.recovery_count = 1;
+    finished.recovery_paths.push(residual.clone());
+    finished.errors.push(FsError::from_io(
+        "recover original",
+        &residual,
+        io::Error::other("keep this recovery object"),
+    ));
+    finished.discovery = OperationDiscovery::scanning(DiscoveryScope::Recursive);
+    for index in 0..5 {
+        finished.discovery.observe(&MutationItem {
+            path: PathBuf::from(format!("file-{index}")),
+            kind: EntryKind::File,
+            metadata: EntryMetadata {
+                size: Some(12),
+                ..EntryMetadata::default()
+            },
+        });
+    }
+    finished.discovery.finish();
+
+    terminal.send(finished).unwrap();
+    let Some(Event::Copy(CopyEvent::Progress(finished))) = receiver.recv().await else {
+        panic!("expected terminal progress");
+    };
+    assert_eq!(finished.state, CopyOperationState::Cancelled);
+    assert_eq!(
+        (finished.files_completed, finished.completed_bytes),
+        (2, 24)
+    );
+    assert_eq!((finished.failed, finished.skipped), (3, 1));
+    assert_eq!(finished.recovery_paths, [residual]);
+    assert_eq!(
+        finished.closure,
+        Some(CopyClosureReceipt {
+            unfinished_roots: 2,
+            uncommitted_files: Some(3),
+            uncommitted_bytes: Some(36),
+            omitted_error_details: 2,
+        })
+    );
+    delivery.await.unwrap();
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_closure_keeps_file_totals_unknown_for_root_only_discovery() {
+    let (sender, mut receiver) = mpsc::channel(2);
+    let outbox = CopyOutbox::pending(Outbox {
+        sender,
+        wakeup: Arc::new(|| {}),
+    });
+    let (terminal, finished) = oneshot::channel();
+    let delivery = tokio::spawn(outbox.deliver(progress(CopyOperationState::Queued), finished));
+    assert_eq!(
+        event_state(receiver.recv().await.unwrap()),
+        CopyOperationState::Queued
+    );
+
+    let mut finished = progress(CopyOperationState::CompletedWithErrors);
+    finished.discovery = OperationDiscovery::scanning(DiscoveryScope::SelectedRoots);
+    finished.discovery.finish();
+    finished.skipped = 1;
+    terminal.send(finished).unwrap();
+    let Some(Event::Copy(CopyEvent::Progress(finished))) = receiver.recv().await else {
+        panic!("expected terminal progress");
+    };
+    assert_eq!(
+        finished.closure,
+        Some(CopyClosureReceipt {
+            unfinished_roots: 1,
+            uncommitted_files: None,
+            uncommitted_bytes: None,
+            omitted_error_details: 0,
+        })
+    );
+    delivery.await.unwrap();
 }

@@ -1,11 +1,13 @@
 import { Button as NativeButton, Palette } from "std-widgets.slint";
 import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
-import { CompactPicker } from "../../midnight-ui/ui/controls.slint";
+import { CompactPicker, TipBody, TooltipPlacement } from "../../midnight-ui/ui/controls.slint";
 import { ThemedSlider } from "../../midnight-ui/ui/content-controls.slint";
 import { Theme } from "../../midnight-ui/ui/theme.slint";
 import { FileChoiceForm } from "file-choice.slint";
 import { PathText } from "../../midnight-ui/ui/path-text.slint";
 import { ImageComparison } from "image-comparison.slint";
+import { CompareFindBar } from "compare-find-bar.slint";
+export { TooltipPlacement }
 
 component FontChoice inherits CompactPicker {
     accessible-name: "Text comparison font";
@@ -90,6 +92,20 @@ export component ComparatorWindow inherits Window {
     in-out property <color> background-color: Theme.pane-background;
     in-out property <color> accent: Theme.accent;
     in property <bool> image-mode;
+    in-out property <bool> search-visible;
+    in-out property <string> query;
+    in-out property <bool> case-sensitive;
+    in-out property <bool> whole-words;
+    in property <string> search-summary;
+    callback search(bool);
+    callback search-edited();
+    callback search-options-changed();
+    callback clear-search();
+    private property <int> search-focus-request;
+    public function focus-search() {
+        root.search-visible = true;
+        root.search-focus-request += 1;
+    }
     in property <[string]> font-families: ["Loading fonts…"];
     in property <bool> fonts-ready;
     // The picker emits choices without writing to this binding.
@@ -159,8 +175,14 @@ export component ComparatorWindow inherits Window {
             padding: 6px; spacing: 5px;
             HorizontalLayout {
                 height: max(28px, root.effective-ui-size + 8px); spacing: 12px;
-                PathText { text: root.left-name; foreground: root.foreground; horizontal-stretch: 1; }
-                PathText { text: root.right-name; foreground: root.foreground; horizontal-stretch: 1; }
+                PathText {
+                    text: root.left-name; foreground: root.foreground; horizontal-stretch: 1;
+                    Tooltip { TipBody { text: root.left-name; width-limit: 1000px; } }
+                }
+                PathText {
+                    text: root.right-name; foreground: root.foreground; horizontal-stretch: 1;
+                    Tooltip { TipBody { text: root.right-name; width-limit: 1000px; } }
+                }
             }
             HorizontalLayout {
                 height: root.control-height; spacing: 5px;
@@ -182,7 +204,13 @@ export component ComparatorWindow inherits Window {
                     selected(index) => { root.change-font(index); content.focus(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; min-width: root.compact ? 45px : 0px; max-width: root.compact ? 45px : 1000000px; text: "Close"; clicked => { root.close-comparator(); } }
+                if !root.image-mode: ActionButton {
+                    font-size: root.effective-ui-size; control-height: root.control-height;
+                    compact: root.compact; horizontal-stretch: 0; text: "Find…";
+                    accessible-label: "Find in compared files (Ctrl+F)";
+                    clicked => { root.focus-search(); }
+                }
+                if root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; min-width: root.compact ? 45px : 0px; max-width: root.compact ? 45px : 1000000px; text: "Close"; clicked => { root.close-comparator(); } }
             }
             if root.image-mode: HorizontalLayout {
                 height: root.control-height; spacing: 6px;
@@ -201,7 +229,7 @@ export component ComparatorWindow inherits Window {
                 }
                 Text { min-width: 34px; text: root.mode == 0 ? "" : round(root.amount * 100) + "%"; color: root.foreground; vertical-alignment: center; horizontal-alignment: right; }
             }
-            if !root.image-mode && root.compact: HorizontalLayout {
+            if !root.image-mode && root.compact && !root.search-visible: HorizontalLayout {
                 height: root.control-height;
                 FontChoice {
                     font-size: root.effective-ui-size; control-height: root.control-height;
@@ -210,6 +238,18 @@ export component ComparatorWindow inherits Window {
                     selected(index) => { root.change-font(index); content.focus(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
+            }
+            if root.search-visible && !root.image-mode: CompareFindBar {
+                height: 2 * root.control-height + 4px;
+                focus-request: root.search-focus-request;
+                font-size: root.effective-ui-size; control-height: root.control-height;
+                compact: root.compact;
+                query <=> root.query; case-sensitive <=> root.case-sensitive;
+                whole-words <=> root.whole-words; summary: root.search-summary;
+                search(backwards) => { root.search(backwards); }
+                edited => { root.search-edited(); }
+                options-changed => { root.search-options-changed(); }
+                clear => { root.clear-search(); }
             }
             HorizontalLayout {
                 spacing: 4px;

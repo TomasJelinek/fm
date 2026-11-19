@@ -85,6 +85,11 @@ impl Document {
             self.output.emit(self.header, kind);
         }
     }
+    fn emit_view_frame(&self, frame: api::Frame, paint: u64) {
+        if self.active.load(Ordering::Acquire) {
+            self.output.emit_view_frame(self.header, frame, paint);
+        }
+    }
     fn error(&self, message: &str) {
         self.emit(api::EventKind::Error {
             code: api::ErrorCode::Runtime,
@@ -135,6 +140,8 @@ pub(super) struct BrowserInstance {
 }
 
 fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, String> {
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::reset_window();
     let api::CommandKind::Open {
         source,
         viewport,
@@ -212,6 +219,8 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
 }
 
 fn close(instance: BrowserInstance) -> Result<(), &'static str> {
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::reset_window();
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(
         crate::trace::Event::Closing,
@@ -357,6 +366,23 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
     }
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(crate::trace::Event::Initialized, 0, 0);
+    #[cfg(feature = "diagnostic-timing")]
+    {
+        // Inspect the read-only global command line after CEF applied App hooks.
+        // Unknown is distinct from false; QA must reject unknown or mismatched arms.
+        let actual_switch = command_line_get_global()
+            .filter(|command_line| command_line.is_valid() != 0)
+            .map_or(2, |command_line| {
+                u64::from(
+                    command_line.has_switch(Some(&CefString::from("disable-gpu-compositing"))) != 0,
+                )
+            });
+        crate::trace::record(
+            crate::trace::Event::CompositingConfigured,
+            u64::from(cfg!(feature = "diagnostic-software-compositing")),
+            actual_switch,
+        );
+    }
     let (tx, rx) = mpsc::sync_channel::<api::Command>(64);
     let (output, mut events) = crate::output::channel();
     let writer_output = output.clone();
@@ -439,9 +465,17 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
             }
         }
         if let Some(current) = session.instance.as_ref() {
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::navigation_start();
             navigation::drive(current);
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::navigation_end();
         }
+        #[cfg(feature = "diagnostic-timing")]
+        crate::trace::pump_start();
         do_message_loop_work();
+        #[cfg(feature = "diagnostic-timing")]
+        crate::trace::pump_end();
         #[cfg(feature = "diagnostic-timing")]
         if let Some(header) = last_command {
             crate::trace::record(

@@ -525,6 +525,143 @@ mod palette_tests {
     use super::*;
 
     #[test]
+    fn paused_video_first_pixels_and_caption_survive_real_none_palette_ack() {
+        use midnight_core::{
+            MediaControlId, MediaPhase, MediaSessionId, MediaSnapshot, VIEWER_MODE_VIDEO,
+        };
+        use std::rc::Rc;
+
+        let (_runtime, manager, open, service) = crate::image_presentation_tests::open();
+        open.timer.stop();
+        *open.input.borrow_mut() = Rc::new(|_| true);
+        let mut appearance = crate::image_presentation_tests::opening_appearance();
+        appearance.background = [17, 23, 31, 255];
+        open.palette
+            .restore_palette(&open.session, &appearance)
+            .unwrap();
+        let revision = open.session.palette_revision();
+        let session = MediaSessionId(7);
+        crate::present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::LayoutSelected {
+                token: 1,
+                mode: VIEWER_MODE_VIDEO,
+                content_generation: session.0,
+            }],
+        );
+        assert!(!open.layout.borrow().pending_ack);
+        let video = |number, generation, control| {
+            let ViewerOutput::Frame(mut frame) =
+                crate::text_presentation_tests::frame(number, 0, 0.0)
+            else {
+                unreachable!()
+            };
+            frame.generation = generation;
+            frame.mode = VIEWER_MODE_VIDEO;
+            frame.modes = vec![VIEWER_MODE_VIDEO];
+            frame.media_control = control;
+            frame.wrap_available = false;
+            frame.vertical_extent = 1.0;
+            frame.accessible_text = Arc::from("Video");
+            frame.caption = "paused-first-frame.avi — Midnight Explorer".into();
+            frame.pixels = Arc::from([17, 83, 149, 255].repeat(4));
+            frame
+        };
+        let frame = video(10, session.0, Some(MediaControlId(0)));
+        assert!(!open.closed.get() && frame.revision > open.frame.get());
+        assert!(open.layout.borrow().accepts_frame(&frame));
+        assert!(
+            open.media_controls
+                .accepts_frame(session, frame.media_control)
+        );
+        assert!(open.text_position.borrow().accepts_frame(
+            frame.generation,
+            frame.position_sequence,
+            [frame.position, frame.horizontal_position]
+        ));
+        assert!(crate::raster_rebase::allows(&open, frame.raster_rebase));
+        let mut cache = Cache::default();
+        let batch = palette_batch(
+            vec![
+                ViewerOutput::PaletteApplied {
+                    revision,
+                    generation: session.0,
+                    minimum_frame_revision: None,
+                },
+                ViewerOutput::Frame(frame),
+                ViewerOutput::MediaSnapshot(MediaSnapshot {
+                    session,
+                    control: MediaControlId(0),
+                    revision: 2,
+                    position: Duration::ZERO,
+                    duration: Some(Duration::from_secs(8)),
+                    seekable: true,
+                    playing: false,
+                    phase: MediaPhase::Paused,
+                }),
+            ],
+            &mut cache,
+            &open.palette,
+        );
+        crate::pixel_delivery::deliver_batch(&open, &service, &|_| {}, batch);
+        assert!(open.window.get_media_controls().can_play_pause);
+        assert_eq!(open.window.get_media_controls().time, "0:00 / 0:08");
+        assert_eq!(
+            open.frame.get(),
+            10,
+            "ready metadata must not hide the paused first frame"
+        );
+        assert_eq!(
+            open.prepared_pixels
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .body
+                .as_bytes(),
+            [17, 83, 149, 255].repeat(4)
+        );
+        let size = open.window.get_surface().size();
+        assert_eq!((size.width, size.height), (2, 2));
+        assert_eq!(
+            open.window.get_caption(),
+            "paused-first-frame.avi — Midnight Explorer"
+        );
+        assert_eq!(open.window.get_accessible_text(), "Video");
+        for frame in [
+            video(11, session.0, None),
+            video(12, session.0, Some(MediaControlId(1))),
+            video(13, session.0 + 1, Some(MediaControlId(0))),
+        ] {
+            let batch = palette_batch(vec![ViewerOutput::Frame(frame)], &mut cache, &open.palette);
+            crate::pixel_delivery::deliver_batch(&open, &service, &|_| {}, batch);
+            assert_eq!(
+                open.frame.get(),
+                10,
+                "missing, future and foreign controls remain fenced"
+            );
+        }
+        assert!(open.media_controls.retire(session));
+        let batch = palette_batch(
+            vec![ViewerOutput::Frame(video(
+                14,
+                session.0,
+                Some(MediaControlId(0)),
+            ))],
+            &mut cache,
+            &open.palette,
+        );
+        crate::pixel_delivery::deliver_batch(&open, &service, &|_| {}, batch);
+        assert_eq!(
+            open.frame.get(),
+            10,
+            "retired media cannot replace accepted pixels"
+        );
+        manager.close_all();
+    }
+
+    #[test]
     fn preparation_saves_split_palette_fence_and_retires_pending_pixels_without_losing_controls() {
         let palette = crate::appearance::PaletteGate::default();
         let mut appearance = midnight_core::ViewerAppearance {

@@ -1,8 +1,8 @@
 //! Temporary source staging, no-replace restoration and empty-stage-only cleanup.
 use super::*;
 use midnight_core::{
-    PreparedTransferMove, TransferMoveCapture, TransferMoveCaptureOutcome, TransferRecovery,
-    TransferTarget,
+    PreparedTransferMove, PreparedTransferMoveEntry, TransferMoveCapture,
+    TransferMoveCaptureOutcome, TransferRecovery, TransferTarget,
 };
 use rustix::fs::{RenameFlags, renameat_with};
 use std::{ffi::OsString, sync::Mutex};
@@ -11,6 +11,8 @@ mod finalization;
 #[allow(unsafe_code)]
 #[path = "transfer_lease.rs"]
 mod lease;
+#[path = "transfer_directory_link_move.rs"]
+mod link_capture;
 #[path = "transfer_native_move.rs"]
 mod native;
 
@@ -33,10 +35,51 @@ pub(super) fn prepare(path: &Path, cancel: &Cancellation) -> Result<PreparedTran
     })
 }
 
+pub(super) fn prepare_with_links(
+    path: &Path,
+    links: CopyLinkPolicy,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMoveEntry, FsError> {
+    let mode = match links {
+        CopyLinkPolicy::Reject => {
+            return prepare(path, cancel).map(PreparedTransferMoveEntry::Ordinary);
+        }
+        CopyLinkPolicy::Preserve => {
+            return Err(FsError::from_io(
+                "transfer capability",
+                path,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Move with directory links is unsupported",
+                ),
+            ));
+        }
+        CopyLinkPolicy::FollowDirectoryContents => directory_links::DirectoryLinkMode::Follow,
+        CopyLinkPolicy::EmptyDirectories => directory_links::DirectoryLinkMode::Empty,
+    };
+    let (parent_file, parent_path, name) = move_parent(path, cancel)?;
+    prepare_child_with_links(
+        parent_file,
+        parent_path,
+        &name,
+        None,
+        directory_links::Traversal::new(mode),
+        cancel,
+    )
+}
+
 fn prepare_native(
     path: &Path,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
+    let (parent_file, parent_path, name) = move_parent(path, cancel)?;
+    prepare_native_child(parent_file, parent_path, &name, None, cancel)
+}
+
+fn move_parent(
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<(Arc<File>, PathBuf, OsString), FsError> {
     checked(cancel, path)?;
     let path = absolute(path)?;
     let parent_path = path
@@ -48,7 +91,7 @@ fn prepare_native(
     let parent_file = Arc::new(File::from(
         openat(CWD, parent_path, DIRECTORY, Mode::empty()).map_err(|e| error(&path, e.into()))?,
     ));
-    prepare_native_child(parent_file, parent_path.to_owned(), name, None, cancel)
+    Ok((parent_file, parent_path.to_owned(), name.to_owned()))
 }
 
 /// `namespace` is the parent directory's bindings, shared by all of its children.
@@ -67,6 +110,36 @@ pub(super) fn prepare_child(
     })
 }
 
+pub(super) fn prepare_child_with_links(
+    parent_file: Arc<File>,
+    parent_path: PathBuf,
+    name: &OsStr,
+    namespace: Option<Arc<namespace::Bindings>>,
+    traversal: directory_links::Traversal,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMoveEntry, FsError> {
+    let (source, parent) = prepare_candidate(
+        parent_file,
+        parent_path,
+        name,
+        namespace,
+        Some(traversal),
+        cancel,
+    )?;
+    if let Some(original) = source.original_link() {
+        let capture = Arc::new(link_capture::Capture::prepare(original, parent, cancel)?);
+        return Ok(PreparedTransferMoveEntry::DirectoryLink {
+            source: Box::new(source),
+            capture,
+        });
+    }
+    let (source, capture) = prepare_ordinary(source, parent, name, cancel)?;
+    Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+        source: Box::new(source),
+        capture,
+    }))
+}
+
 fn prepare_native_child(
     parent_file: Arc<File>,
     parent_path: PathBuf,
@@ -74,6 +147,19 @@ fn prepare_native_child(
     namespace: Option<Arc<namespace::Bindings>>,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
+    let (source, parent) =
+        prepare_candidate(parent_file, parent_path, name, namespace, None, cancel)?;
+    prepare_ordinary(source, parent, name, cancel)
+}
+
+fn prepare_candidate(
+    parent_file: Arc<File>,
+    parent_path: PathBuf,
+    name: &OsStr,
+    namespace: Option<Arc<namespace::Bindings>>,
+    traversal: Option<directory_links::Traversal>,
+    cancel: &Cancellation,
+) -> Result<(source::Source, destination::Directory), FsError> {
     let path = parent_path.join(name);
     // The parent directory and the source share one computation of its bindings.
     let namespace = match namespace {
@@ -86,27 +172,40 @@ fn prepare_native_child(
         Some(namespace.clone()),
     )?;
     native::qualify(&parent)?;
-    parent.check_recovery_parent(cancel)?;
-    rustix::fs::accessat(parent.native_file(), ".",
+    let check_parent = |parent: &destination::Directory| {
+        parent.check_recovery_parent(cancel)?;
+        rustix::fs::accessat(parent.native_file(), ".",
         rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK, rustix::fs::AtFlags::EACCESS)
-        .map_err(|failure| unsupported(&path,
-            &format!("The source parent cannot create temporary staging: {failure}. Choose Copy to retain the source; no fallback is performed.")))?;
-    let mut source = source::Source::open_move_with(
+            .map_err(|failure| unsupported(&path,
+                &format!("The source parent cannot create temporary staging: {failure}. Choose Copy to retain the source; no fallback is performed.")))
+    };
+    let projects_links = traversal.is_some();
+    if !projects_links {
+        check_parent(&parent)?;
+    }
+    let source = source::Source::open_below(
         parent_file,
         parent_path.to_owned(),
         name,
         Some(namespace),
+        traversal,
         cancel,
     )?;
-    source.enable_move();
+    let original_link = source.original_link();
+    let parent = match &original_link {
+        Some(original) => parent.with_link_source(original)?,
+        None => parent,
+    };
+    if projects_links {
+        check_parent(&parent)?;
+    }
     let parent_metadata = parent
         .native_file()
         .metadata()
         .map_err(|e| error(&path, e))?;
-    let source_metadata = source
-        .native_file()
-        .metadata()
-        .map_err(|e| error(&path, e))?;
+    let original_file =
+        original_link.map_or_else(|| source.native_file(), |original| original.native_file());
+    let source_metadata = original_file.metadata().map_err(|e| error(&path, e))?;
     let caller = rustix::process::geteuid().as_raw();
     if parent_metadata.mode() & 0o1000 != 0
         && caller != 0
@@ -118,12 +217,23 @@ fn prepare_native_child(
             "The sticky source parent does not permit this identity to relocate the source. Choose Copy to retain it; no fallback is performed.",
         ));
     }
+    Ok((source, parent))
+}
+
+fn prepare_ordinary(
+    mut source: source::Source,
+    parent: destination::Directory,
+    name: &OsStr,
+    cancel: &Cancellation,
+) -> Result<(source::Source, Arc<Capture>), FsError> {
+    let path = &source.entry().item.path;
     let expected = parent
         .prepare_target(name, cancel)?
-        .ok_or_else(|| invalid(&path, "Move source disappeared while preparing"))?;
+        .ok_or_else(|| invalid(path, "Move source disappeared while preparing"))?;
     if expected.entry().identity != source.entry().identity {
-        return Err(invalid(&path, "Move source changed while preparing"));
+        return Err(invalid(path, "Move source changed while preparing"));
     }
+    source.enable_move();
     let capture = Arc::new(Capture {
         entry: expected.entry().clone(),
         expected,
@@ -341,6 +451,7 @@ impl Capture {
             self.parent.native_file(),
             self.parent.path(),
             &self.name,
+            None,
             change,
             cancel,
         )?;
@@ -397,6 +508,7 @@ impl Capture {
             self.parent.native_file(),
             self.parent.path(),
             &self.name,
+            None,
             change,
             &cleanup,
         )?;
@@ -447,6 +559,7 @@ impl Capture {
             self.parent.native_file(),
             self.parent.path(),
             &self.name,
+            None,
             change,
             cancel,
         )?;

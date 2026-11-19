@@ -12,6 +12,7 @@ use std::{
 };
 
 pub(crate) struct Images {
+    find: Arc<crate::FindState>,
     sessions: [ImageSession; 2],
     cache: LayoutCache,
     pub mode: ImageMode,
@@ -63,6 +64,7 @@ impl Images {
         let right = ImageSession::open(providers[1], source(1), cancel, Duration::from_secs(15))
             .map_err(|error| format!("Right image: {error}"))?;
         Ok(Self {
+            find: Arc::default(),
             sessions: [left, right],
             cache: LayoutCache::default(),
             mode: ImageMode::SideBySide,
@@ -144,6 +146,7 @@ impl Images {
             self.scale * 100.0
         );
         Ok(Frame {
+            find: Arc::clone(&self.find),
             fonts: None,
             #[cfg(test)]
             text_family: None,

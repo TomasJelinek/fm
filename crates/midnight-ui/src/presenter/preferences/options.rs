@@ -5,6 +5,14 @@ use super::*;
 #[path = "options_tests.rs"]
 mod tests;
 
+const PLUGINS_TOPIC: i32 = 5;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PluginExtensionPanel {
+    Viewer,
+    Thumbnailer,
+}
+
 #[derive(Default)]
 pub(crate) struct State {
     pub(crate) open: bool,
@@ -12,6 +20,7 @@ pub(crate) struct State {
     pub(crate) saving: bool,
     pub(crate) error_topic: Option<i32>,
     pub(crate) feedback_revision: u64,
+    plugin_extension_panel: Option<PluginExtensionPanel>,
     pub(super) baseline: Option<Box<UserPreferences>>,
     commit_revision: Option<PreferencesRevision>,
 }
@@ -44,6 +53,8 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.disabled_viewer_plugins
         .clone_from(&from.disabled_viewer_plugins);
     to.viewer_associations.clone_from(&from.viewer_associations);
+    to.thumbnailer_associations
+        .clone_from(&from.thumbnailer_associations);
     to.archive_association_overrides
         .clone_from(&from.archive_association_overrides);
     to.archive_custom_extensions
@@ -93,6 +104,7 @@ impl Presenter {
         self.discard_editor_draft();
         self.discard_comparator_draft();
         self.discard_viewer_association_draft();
+        self.discard_thumbnailer_association_draft();
         self.cancel_color_draft();
         self.cancel_user_command_setting();
         self.keyboard.editor.candidate = None;
@@ -122,6 +134,7 @@ impl Presenter {
         self.discard_editor_draft();
         self.discard_comparator_draft();
         self.discard_viewer_association_draft();
+        self.discard_thumbnailer_association_draft();
         self.cancel_color_draft();
         self.keyboard.editor.candidate = None;
         self.keyboard.error.clear();
@@ -174,6 +187,35 @@ impl Presenter {
             self.preferences.options.feedback_revision.saturating_add(1);
     }
 
+    /// Runtime routing uses the accepted map while Options has a pending draft or save.
+    pub fn accepted_thumbnailer_associations(&self) -> Option<Arc<ThumbnailerAssociations>> {
+        if !self.editor_preferences_ready() {
+            return None;
+        }
+        let preferences = self
+            .preferences
+            .options
+            .baseline
+            .as_deref()
+            .unwrap_or(&self.preferences.values);
+        Some(preferences.thumbnailer_associations.clone())
+    }
+
+    pub(crate) fn viewer_extension_feedback_revision(&self) -> Option<u64> {
+        self.plugin_extension_feedback_revision(PluginExtensionPanel::Viewer)
+    }
+
+    pub(crate) fn thumbnailer_extension_feedback_revision(&self) -> Option<u64> {
+        self.plugin_extension_feedback_revision(PluginExtensionPanel::Thumbnailer)
+    }
+
+    fn plugin_extension_feedback_revision(&self, panel: PluginExtensionPanel) -> Option<u64> {
+        let options = &self.preferences.options;
+        (options.error_topic == Some(PLUGINS_TOPIC)
+            && options.plugin_extension_panel == Some(panel))
+        .then_some(options.feedback_revision)
+    }
+
     pub(crate) fn accept_options(&mut self, send: &dyn Fn(Command) -> bool) {
         if !self.preferences.options.open
             || !self.window_geometry_ready()
@@ -184,8 +226,17 @@ impl Presenter {
             return;
         }
         self.preferences.options.error_topic = None;
-        if !self.save_viewer_extension_draft(send) {
-            self.options_error_on(5);
+        self.preferences.options.plugin_extension_panel = None;
+        let extension_error = if !self.save_viewer_extension_draft(send) {
+            Some(PluginExtensionPanel::Viewer)
+        } else if !self.stage_thumbnailer_extension_draft() {
+            Some(PluginExtensionPanel::Thumbnailer)
+        } else {
+            None
+        };
+        if let Some(panel) = extension_error {
+            self.preferences.options.plugin_extension_panel = Some(panel);
+            self.options_error_on(PLUGINS_TOPIC);
             return;
         }
         if self.editor.dirty {

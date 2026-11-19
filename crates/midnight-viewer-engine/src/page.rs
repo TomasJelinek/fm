@@ -31,6 +31,8 @@ pub(crate) struct Page {
     pub end: u64,
     pub before: bool,
     pub after: bool,
+    /// The provider may have cropped either logical edge of this text packet.
+    pub partial_line: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +139,7 @@ impl Page {
             end: page.source.offset.saturating_add(page.source.length),
             before: page.has_before,
             after: page.has_after,
+            partial_line: page.partial_line,
         }
     }
 
@@ -187,6 +190,7 @@ impl Page {
             end: page.source.offset + page.source.length,
             before: page.has_before,
             after: page.has_after,
+            partial_line: false,
         }
     }
 
@@ -278,6 +282,7 @@ impl Page {
             end: page.source.offset + page.source.length,
             before: page.has_before,
             after: page.has_after,
+            partial_line: false,
         }
     }
 

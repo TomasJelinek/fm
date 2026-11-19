@@ -121,14 +121,21 @@ fn high_contrast_selection_marks(test: &ui::TestUi) {
     for (label, focused) in [("README.md", true), ("Selected without focus.txt", false)] {
         let row = ui::root_item(&test.window, label, AccessibleRole::ListItem);
         let origin = row.map_to_native_window(row.geometry().origin);
-        let stripe = test.pixel(origin.x + 1.0, origin.y + 5.0);
+        let marker = test.pixel(origin.x + 5.0, origin.y + row.geometry().height() / 2.0);
         let top = test.pixel(origin.x + 8.0, origin.y);
         let edge = theme.get_selected_edge();
         assert_eq!(
-            (stripe.r, stripe.g, stripe.b),
+            (marker.r, marker.g, marker.b),
             (edge.red(), edge.green(), edge.blue())
         );
-        // A selected cursor adds an outline to the selected row's side stripe.
+        // The square's lower/upper gap is absent from an ordinary caret stroke.
+        let gap = test.pixel(origin.x + 5.0, origin.y + 3.0);
+        let fill = theme.get_selected_background();
+        assert_eq!(
+            (gap.r, gap.g, gap.b),
+            (fill.red(), fill.green(), fill.blue())
+        );
+        // A selected cursor adds an outline around the marked row.
         // Focus and selection remain distinct without recognizing hue.
         let expected = if focused {
             theme.get_cursor_edge()

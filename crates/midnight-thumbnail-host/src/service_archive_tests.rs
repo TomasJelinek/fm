@@ -121,6 +121,7 @@ fn cancelled_shared_archive_reads_retain_both_real_worker_slots_until_they_drain
     let input = Shared::new();
     input.signal(|mailbox| {
         mailbox.next = Some(View {
+            thumbnailer_associations: Default::default(),
             generation: 1,
             targets: vec![target(mount.clone(), 1), target(mount.clone(), 2)],
         });
@@ -174,6 +175,7 @@ fn cancelled_shared_archive_reads_retain_both_real_worker_slots_until_they_drain
     assert_eq!(first, [1, 2]);
     input.signal(|mailbox| {
         mailbox.next = Some(View {
+            thumbnailer_associations: Default::default(),
             generation: 2,
             targets: vec![target(mount.clone(), 3)],
         });

@@ -108,7 +108,7 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
         }
         api::CommandKind::Wheel(wheel) => {
             #[cfg(feature = "diagnostic-timing")]
-            crate::trace::record(crate::trace::Event::Wheel, command.header.sequence, 0);
+            crate::trace::wheel(command.header.document, command.header.sequence);
             let mut event = mouse(wheel.x, wheel.y, wheel.modifiers, scale);
             event.modifiers |= doc.mouse_buttons.load(Ordering::Acquire) as u32;
             let Ok(mut remainder) = doc.wheel_remainder.lock() else { return; };
@@ -169,8 +169,9 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
 }
 
 pub(super) fn dispatch_find(doc: &Document, host: &BrowserHost) {
-    let find = doc.finding.lock().ok().and_then(|mut q| q.start());
-    if let Some(find) = find {
+    let action = doc.finding.lock().ok().and_then(|mut q| q.start());
+    if let Some(action) = action {
+        let find = action.find;
         if find.query.is_empty() {
             host.stop_finding(1);
             let sequence = doc
@@ -187,6 +188,11 @@ pub(super) fn dispatch_find(doc: &Document, host: &BrowserHost) {
                 }));
             }
             return;
+        }
+        if action.restart {
+            // An unchanged initial search is otherwise suppressed by Chromium.
+            // Stop its session, then ask native Find for a new real result.
+            host.stop_finding(1);
         }
         host.find(
             Some(&CefString::from(find.query.as_str())),

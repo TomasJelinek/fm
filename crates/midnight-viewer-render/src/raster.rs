@@ -118,6 +118,42 @@ impl TextRenderer {
         )
     }
 
+    /// Blend an annotation at `annotation_position` relative to `camera_origin`.
+    /// Both vectors use physical pixels. Their subtraction stays in f64 through
+    /// clipping and glyph phase selection, so integer guard translations preserve
+    /// the same pixels. This neither clears the target nor reshapes the page or
+    /// paints its backgrounds. Invalid geometry fails before painting any pixels.
+    pub fn paint_annotation_at_into(
+        &mut self,
+        page: &TextPage,
+        target: &mut RasterMut<'_>,
+        camera_origin: [f32; 2],
+        annotation_position: [f32; 2],
+    ) -> Result<(), LayoutError> {
+        if camera_origin
+            .iter()
+            .chain(&annotation_position)
+            .any(|value| !value.is_finite())
+        {
+            return Err(LayoutError::InvalidGeometry);
+        }
+        let origin = std::array::from_fn(|axis| {
+            f64::from(camera_origin[axis]) - f64::from(annotation_position[axis])
+        });
+        let viewport = Viewport {
+            width: target.width,
+            height: target.height,
+            origin: origin.map(|value| value as f32),
+            background: [0; 4],
+            selection_color: [0; 4],
+        };
+        let (bytes, _) = validate(page, viewport, None)?;
+        if target.rgba.len() != bytes {
+            return Err(LayoutError::InvalidGeometry);
+        }
+        self.glyphs.paint_annotation(page, viewport, origin, target)
+    }
+
     pub fn rasterize(
         &mut self,
         page: &TextPage,
@@ -266,16 +302,20 @@ impl RasterMut<'_> {
         }
     }
     pub(crate) fn fill(&mut self, rect: Rect, origin: [f32; 2], color: [u8; 4]) {
-        let x0 = stable_pixel(rect.x0 - f64::from(origin[0]))
+        self.fill_at_origin(rect, origin.map(f64::from), color);
+    }
+
+    pub(crate) fn fill_at_origin(&mut self, rect: Rect, origin: [f64; 2], color: [u8; 4]) {
+        let x0 = stable_pixel(rect.x0 - origin[0])
             .floor()
             .clamp(0.0, f64::from(self.width)) as usize;
-        let x1 = stable_pixel(rect.x1 - f64::from(origin[0]))
+        let x1 = stable_pixel(rect.x1 - origin[0])
             .ceil()
             .clamp(0.0, f64::from(self.width)) as usize;
-        let y0 = stable_pixel(rect.y0 - f64::from(origin[1]))
+        let y0 = stable_pixel(rect.y0 - origin[1])
             .floor()
             .clamp(0.0, f64::from(self.height)) as usize;
-        let y1 = stable_pixel(rect.y1 - f64::from(origin[1]))
+        let y1 = stable_pixel(rect.y1 - origin[1])
             .ceil()
             .clamp(0.0, f64::from(self.height)) as usize;
         let color = premultiply(color);
@@ -354,3 +394,7 @@ fn trace_phase(phase: &str, started: &mut Option<std::time::Instant>) {
 #[cfg(test)]
 #[path = "raster_fill_tests.rs"]
 mod fill_tests;
+
+#[cfg(test)]
+#[path = "annotation_tests.rs"]
+mod annotation_tests;

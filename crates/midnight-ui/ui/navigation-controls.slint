@@ -18,6 +18,7 @@ export global NavigationFocus {
 export component NavigationButton inherits Rectangle {
     in property <image> icon;
     in property <image> native-icon;
+    in property <length> icon-size: 16px;
     in property <string> label;
     in property <string> hint;
     in property <string> identity;
@@ -46,7 +47,7 @@ export component NavigationButton inherits Rectangle {
         visible: root.label == "";
         native-icon: root.native-icon; fallback-icon: root.icon;
         action-enabled: root.enabled;
-        width: 16px; height: 16px;
+        width: root.icon-size; height: root.icon-size;
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
     }
     Text {
@@ -213,7 +214,7 @@ export component TabStrip inherits Rectangle {
                     accessible-action-default => { root.selected(tab.identity); }
                     forward-focus: tab-focus;
                     caption := Text {
-                        x: 8px; width: parent.width - close.width - 12px; height: parent.height;
+                        x: 8px; width: max(0px, close.x - self.x - 4px); height: parent.height;
                         text: tab.label; color: Theme.text; font-size: Theme.font-size;
                         vertical-alignment: center; overflow: elide;
                     }
@@ -257,7 +258,11 @@ export component TabStrip inherits Rectangle {
                         }
                     }
                     close := NavigationButton {
-                        x: parent.width - self.width;
+                        x: parent.width - self.width - 3px;
+                        y: (parent.height - self.height) / 2;
+                        width: Theme.touch ? max(24px, self.height) : min(20px, self.height);
+                        height: parent.height - 6px;
+                        icon-size: 12px;
                         identity: tab.identity; model-revision: root.revision;
                         icon: FallbackIcons.close-tab;
                         native-icon: root.action-icons.close-tab;

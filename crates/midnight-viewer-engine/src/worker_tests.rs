@@ -12,6 +12,9 @@ mod event_loop;
 #[path = "worker_position_tests.rs"]
 mod position;
 
+#[path = "worker_text_position_tests.rs"]
+mod text_position;
+
 #[path = "worker_pdf_continuous_tests.rs"]
 mod pdf_continuous;
 
@@ -149,6 +152,10 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
+        video_installation: None,
+        video: None,
+        closing_video: None,
+        video_retirement_error: None,
         files: Arc::from([]),
         current: 0,
         captured: None,
@@ -196,7 +203,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         wrap: false,
         land_at_bottom: false,
         continuation: None,
-        queued_scroll: [0.0; 2],
+        motion: RelativeMotion::default(),
         caption: String::new(),
         status: String::new(),
         dirty: false,
@@ -464,6 +471,7 @@ fn text_page(text: String) -> Page {
         style_size: 14.0,
         before: true,
         after: true,
+        partial_line: false,
     }
 }
 
@@ -490,7 +498,7 @@ fn consecutive_frames_of_one_page_share_its_accessible_text() {
     }
 }
 
-fn decoded_page(text: &str) -> viewer::TextPage {
+pub(super) fn decoded_page(text: &str) -> viewer::TextPage {
     viewer::TextPage {
         revision: 1,
         source: viewer::SourceRange {
@@ -932,6 +940,7 @@ fn no_match_search_publishes_new_context_and_next_scrollbar_input_is_accepted() 
             query: "missing".into(),
             backwards: false,
             case_sensitive: false,
+            whole_words: false,
         },
         &output,
     );

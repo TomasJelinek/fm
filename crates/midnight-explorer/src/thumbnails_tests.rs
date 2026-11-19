@@ -1,5 +1,123 @@
 //! Exercise the real timer, presenter-backed models and Slint redraw together.
 use super::*;
+
+fn image_routes(extensions: &[&str]) -> Arc<midnight_core::ThumbnailerAssociations> {
+    Arc::new(midnight_core::ThumbnailerAssociations {
+        overrides: [(
+            "midnight-image".into(),
+            extensions.iter().map(|value| (*value).into()).collect(),
+        )]
+        .into(),
+    })
+}
+
+#[test]
+fn the_exact_accepted_save_routes_thumbnails_when_a_newer_draft_fails() {
+    use midnight_core::{AcceptedPreferences, FileComparatorSnapshot, UserPreferences};
+
+    let routing = Arc::new(Routing::default());
+    let commands = RoutingCommands::new(routing.clone(), false);
+    let default_generation = routing.snapshot().generation;
+    let loaded = image_routes(&["png"]);
+    assert!(commands.apply(&mut Event::PreferencesLoaded(Ok(Box::new(
+        AcceptedPreferences {
+            preferences: UserPreferences {
+                thumbnailer_associations: loaded.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    )))));
+    assert_eq!(routing.snapshot().generation, default_generation + 1);
+
+    let earlier = image_routes(&[]);
+    let newer = image_routes(&["jpg"]);
+    for (revision, associations) in [(7, earlier.clone()), (8, newer)] {
+        assert!(commands.dispatch(
+            Command::SavePreferences {
+                revision: PreferencesRevision(revision),
+                preferences: Box::new(UserPreferences {
+                    thumbnailer_associations: associations,
+                    ..Default::default()
+                }),
+            },
+            |_| true,
+            |_| panic!("receipt capacity should be available"),
+        ));
+    }
+    assert_eq!(routing.snapshot().associations, loaded);
+    assert!(commands.apply(&mut Event::PreferencesSaved {
+        revision: PreferencesRevision(7),
+        result: Ok(FileComparatorSnapshot::default()),
+    }));
+    let installed = routing.snapshot();
+    assert_eq!(installed.associations, earlier);
+    assert!(
+        !commands.apply(&mut Event::PreferencesSaved {
+            revision: PreferencesRevision(8),
+            result: Err(midnight_core::FsError::from_io(
+                "save options",
+                std::path::Path::new("preferences"),
+                std::io::ErrorKind::PermissionDenied.into(),
+            )
+            .into()),
+        })
+    );
+    assert!(!commands.apply(&mut Event::PreferencesSaved {
+        revision: PreferencesRevision(8),
+        result: Ok(FileComparatorSnapshot::default()),
+    }));
+    assert_eq!(routing.snapshot().generation, installed.generation);
+    assert_eq!(routing.snapshot().associations, installed.associations);
+}
+
+#[test]
+fn a_late_artwork_result_retires_at_binding_while_the_generic_picker_is_untouched() {
+    use midnight_core::{DesktopRequestId, PathPickerKind, PathPickerRequest};
+
+    let routing = Arc::new(Routing::default());
+    let commands = RoutingCommands::new(routing.clone(), false);
+    let image = DesktopRequestId(31);
+    let generic = DesktopRequestId(32);
+    for (request, kind) in [
+        (image, PathPickerKind::CommandIconImage),
+        (generic, PathPickerKind::File),
+    ] {
+        assert!(commands.dispatch(
+            Command::PickPath {
+                request,
+                input: PathPickerRequest {
+                    kind,
+                    title: "Choose artwork".into(),
+                    initial_directory: None,
+                    owner: Default::default(),
+                },
+            },
+            |_| true,
+            |_| panic!("receipt capacity should be available"),
+        ));
+    }
+    assert!(routing.accept(image_routes(&[])));
+    let path = std::env::current_dir().unwrap().join("managed.png");
+    let mut artwork = Event::PathPicked {
+        request: image,
+        result: Ok(Some(path.clone())),
+    };
+    assert!(!commands.apply(&mut artwork));
+    assert!(matches!(
+        artwork,
+        Event::PathPicked {
+            result: Ok(None),
+            ..
+        }
+    ));
+    let mut generic = Event::PathPicked {
+        request: generic,
+        result: Ok(Some(path.clone())),
+    };
+    assert!(!commands.apply(&mut generic));
+    assert!(matches!(generic, Event::PathPicked { result: Ok(Some(value)), .. } if value == path));
+}
 use midnight_core::{
     AcceptedPreferences, Command, DirectoryIndex, Entry, EntryId, EntryKind, Event,
     FileComparatorSnapshot, PaneId, PanelViewMode, UserCommand, UserCommandId,
@@ -17,6 +135,56 @@ impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
         Ok(self.0.clone())
     }
+}
+
+#[test]
+fn a_new_route_resubmits_an_identical_view_with_fresh_tokens_and_no_old_retries() {
+    let ui = ThumbnailUi::new([1, 1], 96);
+    let routing = Arc::new(Routing::default());
+    let installed = Arc::new(
+        midnight_native_filesystem_host::InstalledProvider::from_installation(
+            ui.roots[0].join("absent-native-provider"),
+            None,
+        ),
+    );
+    let controller = install_service_with_routing(
+        &ui.window,
+        ui.presenter.clone(),
+        Rc::new(Service::start(PathBuf::new(), PathBuf::new())),
+        content::Factory::installed(installed),
+        Rc::new(|_| true),
+        Arc::new(|_| false),
+        routing.clone(),
+    );
+    let bridge = BRIDGE.with(|bridge| bridge.borrow().upgrade()).unwrap();
+    let mut bridge = bridge.borrow_mut();
+    bridge.pulse();
+    let old_epoch = bridge.epoch.get();
+    let rows = bridge.deliveries.previous.clone();
+    let (identity, old_token) = bridge
+        .tokens
+        .iter()
+        .next()
+        .map(|(identity, token)| (identity.clone(), *token))
+        .expect("the visible image receives a token");
+    bridge.deliveries.record(
+        Work {
+            generation: old_epoch,
+            token: old_token,
+            edge: 96,
+            frame: 0,
+        },
+        0,
+    );
+    assert!(routing.accept(image_routes(&[])));
+    bridge.pulse();
+    assert_eq!(bridge.epoch.get(), old_epoch + 1);
+    assert_eq!(bridge.deliveries.previous, rows);
+    assert_ne!(bridge.tokens.get(&identity), Some(&old_token));
+    assert!(bridge.tokens.contains_key(&identity));
+    assert!(bridge.deliveries.rejected.is_empty());
+    drop(bridge);
+    controller.stop();
 }
 
 pub(super) struct ThumbnailUi {
@@ -372,6 +540,7 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
     pulse();
     assert!(service.set_view(View {
         generation: 1,
+        thumbnailer_associations: Arc::default(),
         targets: Vec::new()
     }));
     // Discovery waits for preview demand; clearing the cache is such a request.

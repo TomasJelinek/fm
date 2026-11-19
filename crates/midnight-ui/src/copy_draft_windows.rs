@@ -1,8 +1,12 @@
 //! Copy/Move adapter: backend captures stay in Presenter, edits stay in the form.
 use crate::{MainWindow, OperationPresentation, Presenter};
-use midnight_core::{Command, TransferMetadataPolicy, TransferStartPolicy};
+use midnight_core::{Command, CopyLinkPolicy, TransferMetadataPolicy, TransferStartPolicy};
 
-pub(super) fn initialize(window: &OperationPresentation<'_>, main: &MainWindow) {
+pub(super) fn initialize(
+    window: &OperationPresentation<'_>,
+    main: &MainWindow,
+    directory_links_available: bool,
+) {
     let title = if main.get_copy_draft_move() {
         "Move"
     } else {
@@ -14,6 +18,8 @@ pub(super) fn initialize(window: &OperationPresentation<'_>, main: &MainWindow) 
     window.set_policy(main.get_copy_draft_policy());
     window.set_wait_visible(true);
     window.set_wait_checked(false);
+    window.set_follow_directory_links_visible(directory_links_available);
+    window.set_follow_directory_links_checked(true);
     window.set_has_name(true);
     window.set_initial_name(main.get_copy_draft_destination());
     window.set_selection_end(main.get_copy_draft_selection_end());
@@ -32,10 +38,11 @@ pub(super) fn confirm(
     destination: &str,
     preserve_time: bool,
     wait_for_earlier: bool,
+    follow_directory_links: Option<bool>,
     send: &dyn Fn(Command) -> bool,
 ) -> String {
     let generation = p.desktop.notice_generation;
-    p.confirm_copy_dialog_options(
+    p.confirm_copy_dialog_with_directory_links(
         token,
         destination,
         if preserve_time {
@@ -48,6 +55,13 @@ pub(super) fn confirm(
         } else {
             TransferStartPolicy::Immediate
         },
+        follow_directory_links.map(|follow| {
+            if follow {
+                CopyLinkPolicy::FollowDirectoryContents
+            } else {
+                CopyLinkPolicy::EmptyDirectories
+            }
+        }),
         send,
     );
     // This synchronous call is the only writer under the Presenter borrow.

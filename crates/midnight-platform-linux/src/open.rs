@@ -1,4 +1,4 @@
-//! Explicit desktop activation; called only by the backend's bounded native workers.
+//! Native desktop file integration on bounded backend workers.
 
 use crate::LinuxFileSystem;
 use midnight_core::{FsError, OpenEntryResult, OpenService, SystemLocation, TerminalProcess};
@@ -9,7 +9,7 @@ use std::{
         ffi::OsStrExt,
         fs::{MetadataExt, PermissionsExt},
     },
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -131,6 +131,26 @@ impl OpenService for LinuxFileSystem {
             let child = command.spawn()?;
             Ok(Some(Box::new(child)))
         })
+    }
+
+    fn read_link_target(&self, link: &Path) -> Result<Option<PathBuf>, FsError> {
+        let lookup = || {
+            validate_path(link)?;
+            let raw = link.as_os_str().as_encoded_bytes();
+            if link
+                .file_name()
+                .is_none_or(|name| !raw.ends_with(name.as_encoded_bytes()))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "link lookup requires the exact path of a named entry",
+                ));
+            }
+            fs::read_link(link)
+        };
+        lookup()
+            .map(Some)
+            .map_err(|error| FsError::from_io("read link target", link, error))
     }
 }
 
@@ -287,8 +307,29 @@ mod tests {
             ffi::{OsStrExt, OsStringExt},
             fs::symlink,
         },
-        path::PathBuf,
     };
+
+    #[test]
+    fn tooltip_reads_the_stored_relative_target_of_a_dangling_directory_link() {
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/link-targets");
+        fs::create_dir_all(&fixture_root).unwrap();
+        let fixture = tempfile::tempdir_in(&fixture_root).unwrap();
+        let links = fixture.path().join("links");
+        fs::create_dir(&links).unwrap();
+        let name = OsString::from_vec(b"directory_\xff".to_vec());
+        let target = fixture.path().join(&name);
+        let stored = Path::new("..").join(&name);
+        let link = links.join("alias_e\u{301}");
+        fs::create_dir(&target).unwrap();
+        symlink(&stored, &link).unwrap();
+        fs::remove_dir(&target).unwrap();
+
+        assert_eq!(
+            LinuxFileSystem::new(None).read_link_target(&link).unwrap(),
+            Some(stored)
+        );
+    }
 
     #[test]
     fn native_association_uses_trusted_executable_and_literal_absolute_argument() {

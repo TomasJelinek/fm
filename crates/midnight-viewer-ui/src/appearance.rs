@@ -172,8 +172,13 @@ impl PaletteGate {
     }
 
     pub fn allows(&self, frame: &ViewerFrame) -> bool {
-        // Browser author content and original image/PDF pixels own their colors.
-        if frame.image.is_some() || matches!(frame.mode, VIEWER_MODE_IMAGE | VIEWER_MODE_HTML) {
+        // Browser content and original image/PDF/video pixels own their colors.
+        if frame.image.is_some()
+            || matches!(
+                frame.mode,
+                VIEWER_MODE_IMAGE | VIEWER_MODE_HTML | VIEWER_MODE_VIDEO
+            )
+        {
             return true;
         }
         let state = self.state();

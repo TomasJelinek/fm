@@ -127,6 +127,10 @@ fn mutation_artwork(kind: MutationKind) -> (ActionIcon, i32) {
 
 fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
     let meter = meter::deletion(progress, &p.number_locale);
+    let deletion = matches!(progress.kind, MutationKind::Delete(_));
+    let active = !progress.state.is_terminal();
+    let cancellable = active && progress.state != OperationState::CancelRequested;
+    let show_pause = !deletion || cancellable;
     let state = match progress.state {
         OperationState::Preparing => "Preparing",
         OperationState::AwaitingConfirmation => "Awaiting confirmation",
@@ -145,15 +149,25 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         .get(&progress.id)
         .map(|result| metadata_presentation::result_detail(result))
         .unwrap_or_default();
-    let mut detail = format!(
-        "{}\n{state}\n\n{}",
-        operation_presentation::title(progress.kind),
-        operation_detail::detail(progress, &metadata, &p.number_locale)
-    );
-    append_discovery(&mut detail, &progress.discovery, &p.number_locale);
-    if !progress.message.is_empty() {
-        detail.push_str(&format!("\n\n{}", progress.message));
+    let title = operation_presentation::title(progress.kind);
+    let mut body = operation_detail::detail(progress, &metadata, &p.number_locale);
+    append_discovery(&mut body, &progress.discovery, &p.number_locale);
+    let mut detail = format!("{title}\n{state}\n\n{body}");
+    let message = &progress.message;
+    if !message.is_empty() {
+        detail.push_str("\n\n");
+        detail.push_str(message);
     }
+    // The progress window already gives cancellation its own status line.
+    let progress_detail = if deletion && progress.state == OperationState::CancelRequested {
+        if !message.is_empty() && message.trim_end_matches(['.', '…']) != state {
+            body.push_str("\n\n");
+            body.push_str(message);
+        }
+        body.into()
+    } else {
+        SharedString::default()
+    };
     OperationRow {
         identity: if progress.kind == MutationKind::Rename {
             format!("rename-job:{}", progress.id.0).into()
@@ -162,7 +176,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         } else {
             progress.id.0.to_string().into()
         },
-        title: operation_presentation::title(progress.kind).into(),
+        title: title.into(),
         state: state.into(),
         summary: format!(
             "{} / {} targets · {} errors",
@@ -172,8 +186,8 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         )
         .into(),
         detail: detail.into(),
-        cancellable: !progress.state.is_terminal()
-            && progress.state != OperationState::CancelRequested,
+        progress_detail,
+        cancellable,
         attention: mutation_attention(p, progress.id),
         failed: progress.failed > 0
             || !progress.errors.is_empty()
@@ -181,13 +195,11 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
                 progress.state,
                 OperationState::Failed | OperationState::CompletedWithErrors
             ),
-        active: !progress.state.is_terminal(),
+        active,
         completed: progress.state == OperationState::Completed,
-        pausable: matches!(progress.kind, MutationKind::Delete(_))
-            && !progress.state.is_terminal()
-            && progress.state != OperationState::CancelRequested,
-        pause_requested: progress.pause_requested,
-        paused: progress.paused,
+        pausable: deletion && cancellable,
+        pause_requested: show_pause && progress.pause_requested,
+        paused: show_pause && progress.paused,
         discovering: meter.discovering,
         current_path: progress
             .current_path
@@ -203,12 +215,21 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         file_progress_label: SharedString::default(),
         file_progress_title: SharedString::default(),
         verification_view: false,
-        waiting: false,
-        activity_label: SharedString::default(),
+        waiting: meter.waiting,
+        activity_label: if deletion && !active {
+            state.into()
+        } else {
+            meter.activity_label.into()
+        },
         determinate: meter.determinate,
         progress: meter.fraction,
         icon: p.desktop.image(&IconKey::action(icon)),
-        speed_chart: if matches!(progress.kind, MutationKind::Delete(_)) {
+        transfer_directory: Default::default(),
+        transfer_name: Default::default(),
+        transfer_totals: Default::default(),
+        transfer_outcome: Default::default(),
+        transfer_speed_chart: Default::default(),
+        speed_chart: if deletion {
             p.job_charts
                 .get(progress.id, true, &progress.throughput, &p.number_locale)
         } else {
@@ -243,7 +264,13 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
                         "Verifying size and samples"
                     }
                 }
-                CopyOperationPhase::Publishing => "Finishing",
+                CopyOperationPhase::Publishing => {
+                    if moving {
+                        "Moving"
+                    } else {
+                        "Copying"
+                    }
+                }
                 CopyOperationPhase::ValidatingBeforeMove => "Checking before Move",
                 CopyOperationPhase::CapturingSources => "Preparing source removal",
                 CopyOperationPhase::ValidatingAfterMove => "Checking before source removal",
@@ -251,6 +278,9 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             S::WaitingForDecision => "Needs a decision",
             S::CancelRequested => "Cancelling",
             S::Cancelled => "Cancelled",
+            S::Completed if progress.closure.is_some() || progress.skipped > 0 => {
+                "Completed with warnings"
+            }
             S::Completed => "Completed",
             S::CompletedWithErrors => "Completed with errors",
             S::Failed => "Failed",
@@ -297,21 +327,7 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
                     .format_u64(progress.source_removal_durability_unconfirmed)
             ));
         }
-        for recovery in &progress.source_residuals {
-            detail.push_str(&format!(
-                "\n\nOriginal source\n{}\nTemporary location\n{}\n{}",
-                recovery.source.display(),
-                recovery.temporary.path.display(),
-                if recovery.matched_source {
-                    "Source restoration failed; original retained here"
-                } else {
-                    "Temporary cleanup failed; inspect this location"
-                }
-            ));
-        }
-        if progress.source_residual_count > progress.source_residuals.len() as u64 {
-            detail.push_str("\nAdditional temporary source locations need attention.");
-        }
+        append_move_residuals(&mut detail, progress);
     }
     if let Some(path) = &progress.current_path {
         detail.push_str(&format!("\n\nCurrent source\n{}", path.display()));
@@ -337,22 +353,48 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         detail.push_str("\n\nWaiting for your decision\n\n");
         detail.push_str(&copy_presentation::failure_details(failure));
     }
-    append_recovery(&mut detail, progress, p);
+    append_recovery(&mut detail, progress, &p.number_locale);
+    let failed = (progress.state.is_terminal()
+        && (progress.source_residual_count > 0
+            || progress.source_removal_durability_unconfirmed > 0))
+        || failure.is_some()
+        || progress.failed > 0
+        || !progress.errors.is_empty()
+        || matches!(progress.state, S::Failed | S::CompletedWithErrors);
+    let transfer_outcome = if progress.state.is_terminal()
+        && (progress.state != S::Completed
+            || failed
+            || progress.closure.is_some()
+            || progress.skipped > 0)
+    {
+        let counts = copy_completion_counts(progress, &p.number_locale);
+        if progress.closure.is_some() {
+            detail.push_str("\n\n");
+            detail.push_str(&counts);
+            append_omitted_errors(&mut detail, progress, &p.number_locale);
+        }
+        copy_outcome(counts, progress, &p.number_locale).into()
+    } else {
+        SharedString::default()
+    };
+    let (transfer_directory, transfer_name) = progress
+        .current_path
+        .as_deref()
+        .map(copy_presentation::path_parts)
+        .unwrap_or_default();
+    let transfer_speed_chart =
+        p.job_charts
+            .get(progress.id, false, &progress.throughput, &p.number_locale);
     OperationRow {
         identity: format!("copy-job:{}", progress.id.0).into(),
         title: title.into(),
         state: state.into(),
         summary: summary.clone().into(),
         detail: detail.into(),
+        progress_detail: SharedString::default(),
         cancellable: !progress.state.is_terminal() && progress.state != S::CancelRequested,
         attention: copy_attention(p, progress.id),
-        failed: (progress.state.is_terminal()
-            && (progress.source_residual_count > 0
-                || progress.source_removal_durability_unconfirmed > 0))
-            || failure.is_some()
-            || progress.failed > 0
-            || !progress.errors.is_empty()
-            || matches!(progress.state, S::Failed | S::CompletedWithErrors),
+        failed,
         active: !progress.state.is_terminal(),
         completed: progress.state == S::Completed,
         pausable: !progress.state.is_terminal() && progress.state != S::CancelRequested,
@@ -381,6 +423,10 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             .desktop
             .image(&IconKey::action(copy_artwork(progress.intent))),
         kind: 0,
+        transfer_directory,
+        transfer_name,
+        transfer_totals: meter.totals,
+        transfer_outcome,
         speed_chart: if !progress.state.is_terminal()
             && progress.phase == CopyOperationPhase::Verifying
         {
@@ -397,9 +443,9 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
                 Default::default()
             }
         } else {
-            p.job_charts
-                .get(progress.id, false, &progress.throughput, &p.number_locale)
+            transfer_speed_chart.clone()
         },
+        transfer_speed_chart,
     }
 }
 
@@ -421,7 +467,13 @@ fn copy_activity(progress: &CopyProgress, discovering: bool) -> &'static str {
             CopyOperationPhase::Copying => "Copying...",
             CopyOperationPhase::Syncing => "Saving...",
             CopyOperationPhase::Verifying => "Verifying current file...",
-            CopyOperationPhase::Publishing => "Finishing...",
+            CopyOperationPhase::Publishing => {
+                if progress.intent == TransferIntent::Move {
+                    "Moving..."
+                } else {
+                    "Copying..."
+                }
+            }
             CopyOperationPhase::ValidatingBeforeMove | CopyOperationPhase::ValidatingAfterMove => {
                 "Checking Move..."
             }
@@ -431,13 +483,109 @@ fn copy_activity(progress: &CopyProgress, discovering: bool) -> &'static str {
     }
 }
 
-fn append_recovery(detail: &mut String, progress: &CopyProgress, p: &Presenter) {
+fn copy_completion_counts(progress: &CopyProgress, locale: &NumberLocale) -> String {
+    let mut summary = format!(
+        "Selected items completed: {}",
+        locale.format_u64(progress.completed_roots)
+    );
+    if let Some(receipt) = progress.closure {
+        summary.push_str(&format!(
+            " · Not completed: {}",
+            locale.format_u64(receipt.unfinished_roots)
+        ));
+    }
+    if progress.skipped > 0 {
+        summary.push_str(&format!(
+            " · Skipped: {}",
+            locale.format_u64(progress.skipped)
+        ));
+    }
+    if progress.failed > 0 {
+        summary.push_str(&format!(
+            " · Errors: {}",
+            locale.format_u64(progress.failed)
+        ));
+    }
+    if let Some(receipt) = progress.closure {
+        if let Some(files) = receipt.uncommitted_files {
+            summary.push_str(&format!(
+                "\nFiles published: {} · Not published: {}",
+                locale.format_u64(progress.files_completed),
+                locale.format_u64(files)
+            ));
+        }
+        if let Some(bytes) = receipt.uncommitted_bytes {
+            summary.push_str(&format!(
+                "\nBytes published: {} · Not published: {}",
+                locale.format_u64(progress.completed_bytes),
+                locale.format_u64(bytes)
+            ));
+        }
+    }
+    summary
+}
+
+fn copy_outcome(mut summary: String, progress: &CopyProgress, locale: &NumberLocale) -> String {
+    if !progress.message.is_empty() {
+        summary.push_str(&format!("\n\n{}", progress.message));
+    }
+    if progress.source_delete_pending > 0 {
+        summary.push_str(&format!(
+            "\n\nSource removals accepted by Windows: {}. Open handles may delay storage release.",
+            locale.format_u64(progress.source_delete_pending)
+        ));
+    }
+    if progress.source_removal_durability_unconfirmed > 0 {
+        summary.push_str(&format!(
+            "\n\nSource changes without a confirmed durability flush: {}",
+            locale.format_u64(progress.source_removal_durability_unconfirmed)
+        ));
+    }
+    append_move_residuals(&mut summary, progress);
+    append_recovery(&mut summary, progress, locale);
+    error_presentation::append_issues(&mut summary, &progress.errors);
+    append_omitted_errors(&mut summary, progress, locale);
+    summary
+}
+
+fn append_omitted_errors(text: &mut String, progress: &CopyProgress, locale: &NumberLocale) {
+    if let Some(receipt) = progress.closure {
+        match receipt.omitted_error_details {
+            0 => {}
+            1 => text.push_str("\n\n1 more error detail was not retained."),
+            count => text.push_str(&format!(
+                "\n\n{} more error details were not retained.",
+                locale.format_u64(count)
+            )),
+        }
+    }
+}
+
+fn append_move_residuals(detail: &mut String, progress: &CopyProgress) {
+    for recovery in &progress.source_residuals {
+        detail.push_str(&format!(
+            "\n\nOriginal source\n{}\nTemporary location\n{}\n{}",
+            recovery.source.display(),
+            recovery.temporary.path.display(),
+            if recovery.matched_source {
+                "Source restoration failed; original retained here"
+            } else {
+                "Temporary cleanup failed; inspect this location"
+            }
+        ));
+    }
+    if progress.source_residual_count > progress.source_residuals.len() as u64 {
+        detail.push_str("\nAdditional temporary source locations need attention.");
+    }
+}
+
+fn append_recovery(detail: &mut String, progress: &CopyProgress, locale: &NumberLocale) {
     if progress.recovery_count == 0 {
         return;
     }
     detail.push_str(&format!(
         "\n\n{} recovery files retained",
-        p.number_locale.format_u64(progress.recovery_count)
+        locale.format_u64(progress.recovery_count)
     ));
     for path in &progress.recovery_paths {
         detail.push_str(&format!("\n{}", path.display()));

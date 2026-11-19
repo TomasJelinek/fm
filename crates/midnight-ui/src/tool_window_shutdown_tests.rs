@@ -1,8 +1,8 @@
 //! Exit waits for live work, then closes every tool window with the main window.
 use crate::test_harness::Harness;
 use midnight_core::{
-    CopyEvent, CopyOperationState, CopyProgress, Event, OperationId, TransferIntent,
-    UserPreferences,
+    CopyClosureReceipt, CopyEvent, CopyOperationState, CopyProgress, Event, OperationId,
+    TransferIntent, UserPreferences,
 };
 use slint::{ComponentHandle, platform::WindowAdapter};
 use std::sync::Arc;
@@ -10,6 +10,12 @@ use std::sync::Arc;
 fn copy(state: CopyOperationState) -> Arc<CopyProgress> {
     Arc::new(CopyProgress {
         state,
+        closure: (state == CopyOperationState::Cancelled).then_some(CopyClosureReceipt {
+            unfinished_roots: 1,
+            uncommitted_files: None,
+            uncommitted_bytes: None,
+            omitted_error_details: 0,
+        }),
         ..CopyProgress::queued(
             OperationId(7),
             std::env::temp_dir().join("exit-destination"),

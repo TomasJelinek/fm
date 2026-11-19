@@ -27,6 +27,8 @@ pub(crate) struct ViewerPluginsState {
     pub(crate) thumbnailer_error: String,
     pub(crate) thumbnailers_pending: bool,
     pub(crate) thumbnailer_selected_id: String,
+    pub(super) thumbnailer_extension_draft:
+        Option<super::thumbnailer_associations::ThumbnailerExtensionDraft>,
     pub(crate) error: String,
     pub(crate) pending: bool,
     pub(crate) startup_disabled: Option<Arc<[String]>>,
@@ -114,6 +116,7 @@ impl Presenter {
             &mut self.viewer_plugins.thumbnailers,
             catalog,
         )));
+        self.thumbnailer_catalog_replaced();
         self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
     }
 
@@ -126,10 +129,17 @@ impl Presenter {
     }
 
     pub(crate) fn select_thumbnailer_plugin(&mut self, index: usize) {
-        if let Some(plugin) = self.viewer_plugins.thumbnailers.get(index) {
-            self.viewer_plugins.thumbnailer_selected_id = plugin.id.clone();
-            self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
+        let Some(plugin) = self.viewer_plugins.thumbnailers.get(index) else {
+            return;
+        };
+        let id = plugin.id.clone();
+        if self.thumbnailer_plugin_selected() != Some(index)
+            && !self.stage_thumbnailer_extension_draft()
+        {
+            return;
         }
+        self.viewer_plugins.thumbnailer_selected_id = id;
+        self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
     }
 
     pub(super) fn filesystem_plugins_listed(

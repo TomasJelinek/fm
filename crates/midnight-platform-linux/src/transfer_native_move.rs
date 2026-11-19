@@ -46,131 +46,257 @@ fn execute(
     sync: impl FnOnce(&Capture, &destination::Directory, &destination::Directory) -> Result<(), FsError>,
 ) -> Result<TransferNativeMoveOutcome, FsError> {
     namespace::change(cancel, |mut change| {
-        execute_in(
-            capture,
+        let mut retained = capture.native.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(outcome) = retained.as_ref() {
+            return Ok(outcome.clone());
+        }
+        let result = execute_in(
+            MoveSource::Ordinary(capture),
             (destination, name),
             replace,
             cancel,
             hooks,
-            sync,
+            |stage, target| sync(capture, stage, target),
+            &mut change,
+        )?;
+        if terminal(&result) {
+            *retained = Some(result.clone());
+        }
+        Ok(result)
+    })
+}
+
+pub(super) fn attempt_link(
+    original: &directory_links::OriginalLink,
+    parent: &destination::Directory,
+    destination: &dyn TransferDirectory,
+    name: &OsStr,
+    replace: Replacement,
+    cancel: &Cancellation,
+) -> Result<TransferNativeMoveOutcome, FsError> {
+    namespace::change(cancel, |mut change| {
+        execute_in(
+            MoveSource::Link { original, parent },
+            (destination, name),
+            replace,
+            cancel,
+            (|| {}, || {}),
+            |stage, target| sync_locations(parent, stage, target),
             &mut change,
         )
     })
 }
 
+pub(super) fn terminal(outcome: &TransferNativeMoveOutcome) -> bool {
+    matches!(
+        outcome,
+        TransferNativeMoveOutcome::Moved { .. }
+            | TransferNativeMoveOutcome::RecoveryRequired { .. }
+    )
+}
+
+#[derive(Clone, Copy)]
+enum MoveSource<'a> {
+    Ordinary(&'a Capture),
+    Link {
+        original: &'a directory_links::OriginalLink,
+        parent: &'a destination::Directory,
+    },
+}
+
+impl<'a> MoveSource<'a> {
+    fn entry(self) -> &'a TransferEntry {
+        match self {
+            Self::Ordinary(capture) => &capture.entry,
+            Self::Link { original, .. } => original.entry(),
+        }
+    }
+
+    fn parent(self) -> &'a destination::Directory {
+        match self {
+            Self::Ordinary(capture) => &capture.parent,
+            Self::Link { parent, .. } => parent,
+        }
+    }
+
+    fn name(self) -> &'a OsStr {
+        match self {
+            Self::Ordinary(capture) => &capture.name,
+            Self::Link { original, .. } => original.name(),
+        }
+    }
+
+    fn is_link(self) -> bool {
+        matches!(self, Self::Link { .. })
+    }
+
+    fn revalidate(self, cancel: &Cancellation) -> Result<(), FsError> {
+        match self {
+            Self::Ordinary(capture) => capture.revalidate(cancel),
+            Self::Link { original, parent } => {
+                original.qualify_removal()?;
+                parent.check_recovery_parent(cancel)?;
+                original.verify_original(cancel)
+            }
+        }
+    }
+
+    fn check_link_stage(
+        self,
+        stage: &destination::Directory,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        if self.is_link() {
+            self.parent().check_recovery_parent(cancel)?;
+            stage.check_recovery_parent(cancel)?;
+        }
+        Ok(())
+    }
+
+    fn verify_link(
+        self,
+        parent: &destination::Directory,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        if let Self::Link { original, .. } = self {
+            original.verify_relocated(
+                parent.native_file(),
+                name,
+                &parent.path().join(name),
+                cancel,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn sync_restored_names(self, stage: &destination::Directory) -> Result<(), FsError> {
+        stage
+            .native_file()
+            .sync_all()
+            .and_then(|()| self.parent().native_file().sync_all())
+            .map_err(|failure| error(&self.entry().item.path, failure))
+    }
+}
+
 fn execute_in(
-    capture: &Capture,
+    source: MoveSource<'_>,
     (destination, name): (&dyn TransferDirectory, &OsStr),
     replace: Replacement,
     cancel: &Cancellation,
     hooks: (impl FnOnce(), impl FnOnce()),
-    sync: impl FnOnce(&Capture, &destination::Directory, &destination::Directory) -> Result<(), FsError>,
+    sync: impl FnOnce(&destination::Directory, &destination::Directory) -> Result<(), FsError>,
     change: &mut namespace::Change<'_>,
 ) -> Result<TransferNativeMoveOutcome, FsError> {
     let (before_capture, before_publish) = hooks;
-    let mut retained = capture.native.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(outcome) = retained.as_ref() {
-        return Ok(outcome.clone());
-    }
+    let entry = source.entry();
+    let parent = source.parent();
+    let original_name = source.name();
     validate_name(name, destination.path())?;
-    capture.revalidate(cancel)?;
-    if capture
-        .state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .outcome
-        .is_some()
+    source.revalidate(cancel)?;
+    if let MoveSource::Ordinary(capture) = source
+        && capture
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .outcome
+            .is_some()
     {
         return Err(invalid(
-            &capture.entry.item.path,
+            &entry.item.path,
             "source already entered verified Move staging",
         ));
     }
-    let target = bind_destination(destination, cancel)?;
-    if target.identity() == capture.parent.identity() && name == capture.name {
+    let target = bind_destination(destination, source, cancel)?;
+    if target.identity() == parent.identity() && name == original_name {
         return Ok(TransferNativeMoveOutcome::SameEntry);
     }
-    if capture.entry.identity.device != target.identity().device
-        || different_mount(
-            capture.parent.native_file(),
-            target.native_file(),
-            target.path(),
-        )?
+    if entry.identity.device != target.identity().device
+        || different_mount(parent.native_file(), target.native_file(), target.path())?
     {
         return Ok(TransferNativeMoveOutcome::CrossDevice);
     }
     qualify(&target)?;
     target.check_recovery_parent(cancel)?;
-    if capture.entry.item.kind == EntryKind::Directory {
-        target.reject_source_ancestor(capture.entry.identity, cancel)?;
+    if source.is_link() && replace.is_some() {
+        return Err(unsupported(
+            &target.path().join(name),
+            "native directory link Move requires a vacant destination name",
+        ));
     }
-    let replaced = validate_target(capture, &target, name, replace.as_ref(), cancel)?;
-    capture.revalidate(cancel)?;
+    if entry.item.kind == EntryKind::Directory {
+        target.reject_source_ancestor(entry.identity, cancel)?;
+    }
+    let replaced = validate_target(entry, &target, name, replace.as_ref(), cancel)?;
+    source.revalidate(cancel)?;
     before_capture();
-    checked(cancel, &capture.entry.item.path)?;
-    // Collect both original sides before the first private-directory creation.
-    // The reserved private subtree covers capture, publication and restoration
-    // slots and the stage's removal for the remainder of this one transaction.
-    capture.namespace.announce(
-        capture.parent.native_file(),
-        capture.parent.path(),
-        &capture.name,
-        change,
-        cancel,
-    )?;
+    checked(cancel, &entry.item.path)?;
+    parent.namespace_announce(original_name, change, cancel)?;
     target.namespace_announce(name, change, cancel)?;
-    let stage = capture.parent.source_stage_in(cancel, change)?;
-    let captured = renameat_with(
-        capture.parent.native_file(),
-        &capture.name,
-        stage.native_file(),
-        &capture.name,
-        RenameFlags::NOREPLACE,
-    );
-    if let Err(failure) = captured {
-        let failure = error(&capture.entry.item.path, failure.into());
-        return match capture.parent.remove_empty_stage_in(stage, change) {
-            Ok(()) => Err(failure),
-            Err(cleanup) => {
-                let outcome = TransferNativeMoveOutcome::RecoveryRequired {
+    let stage = match parent.source_stage_in(cancel, change) {
+        Ok(stage) => stage,
+        Err(mut failure) => {
+            if source.is_link()
+                && let Some(receipt) = link_capture::stage_creation_receipt(parent, &mut failure)
+            {
+                return Ok(TransferNativeMoveOutcome::RecoveryRequired {
                     destination: None,
-                    recovery: vec![],
-                    error: combined(failure, "empty staging cleanup", cleanup),
-                };
-                *retained = Some(outcome.clone());
-                Ok(outcome)
+                    recovery: vec![receipt],
+                    error: failure,
+                });
             }
+            return Err(failure);
+        }
+    };
+    let captured = (|| {
+        if source.is_link() {
+            source.revalidate(cancel)?;
+            stage.check_recovery_parent(cancel)?;
+        }
+        renameat_with(
+            parent.native_file(),
+            original_name,
+            stage.native_file(),
+            original_name,
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(|failure| error(&entry.item.path, failure.into()))
+    })();
+    if let Err(failure) = captured {
+        let mut recovery = Vec::new();
+        return match clean_stage(source, stage, change, &mut recovery) {
+            Ok(()) => Err(failure),
+            Err(cleanup) => Ok(TransferNativeMoveOutcome::RecoveryRequired {
+                destination: None,
+                recovery,
+                error: combined(failure, "empty staging cleanup", cleanup),
+            }),
         };
     }
-    capture.namespace.changed(
-        capture.parent.native_file(),
-        capture.parent.path(),
-        &capture.name,
-    );
-    stage.namespace_changed(&capture.name);
-    // Once captured, neither cancellation nor any error may authorize copy fallback.
+    parent.namespace_changed(original_name);
+    stage.namespace_changed(original_name);
+    // Once captured, every refusal is a terminal namespace fact.
     let validated = (|| {
-        let actual = stage.inspect(&capture.name, &Cancellation::default())?;
-        if actual.as_ref().map(|entry| entry.identity) != Some(capture.entry.identity) {
+        let actual = stage.inspect(original_name, &Cancellation::default())?;
+        if actual.as_ref().map(|entry| entry.identity) != Some(entry.identity) {
             return Err(invalid(
-                &capture.entry.item.path,
+                &entry.item.path,
                 "a different source was captured; its bytes were retained",
             ));
         }
         target.revalidate(cancel)?;
-        validate_target(capture, &target, name, replace.as_ref(), cancel)?;
-        checked(cancel, &capture.entry.item.path)
+        validate_target(entry, &target, name, replace.as_ref(), cancel)?;
+        checked(cancel, &entry.item.path)
     })();
     if let Err(error) = validated {
-        let outcome = restore(capture, stage, error, change);
-        *retained = Some(outcome.clone());
-        return Ok(outcome);
+        return Ok(restore(source, stage, error, change));
     }
     before_publish();
-    if let Err(error) = checked(cancel, &capture.entry.item.path) {
-        let outcome = restore(capture, stage, error, change);
-        *retained = Some(outcome.clone());
-        return Ok(outcome);
+    let ready = checked(cancel, &entry.item.path)
+        .and_then(|()| source.check_link_stage(&stage, cancel))
+        .and_then(|()| source.verify_link(&stage, original_name, cancel));
+    if let Err(error) = ready {
+        return Ok(restore(source, stage, error, change));
     }
     let flags = if replaced.is_some() {
         RenameFlags::EXCHANGE
@@ -179,31 +305,40 @@ fn execute_in(
     };
     if let Err(failure) = renameat_with(
         stage.native_file(),
-        &capture.name,
+        original_name,
         target.native_file(),
         name,
         flags,
     ) {
-        let outcome = restore(
-            capture,
+        return Ok(restore(
+            source,
             stage,
             error(&target.path().join(name), failure.into()),
             change,
-        );
-        *retained = Some(outcome.clone());
-        return Ok(outcome);
+        ));
     }
-    stage.namespace_changed(&capture.name);
+    stage.namespace_changed(original_name);
     target.namespace_changed(name);
-    let outcome = committed(capture, &target, name, stage, replaced, sync, change);
-    *retained = Some(outcome.clone());
-    Ok(outcome)
+    Ok(committed(
+        source, &target, name, stage, replaced, sync, change,
+    ))
 }
 
 fn bind_destination(
     expected: &dyn TransferDirectory,
+    source: MoveSource<'_>,
     cancel: &Cancellation,
 ) -> Result<destination::Directory, FsError> {
+    if let MoveSource::Link { parent, .. } = source
+        && expected.path() == parent.path()
+    {
+        if expected.identity() != parent.identity() {
+            return Err(invalid(expected.path(), "pinned Move destination changed"));
+        }
+        // The requested destination is the same retained, mount-checked parent.
+        parent.revalidate(cancel)?;
+        return Ok(parent.clone());
+    }
     expected.revalidate(cancel)?;
     let file = File::from(
         openat(
@@ -242,7 +377,7 @@ pub(super) fn qualify(directory: &destination::Directory) -> Result<(), FsError>
 }
 
 fn validate_target(
-    capture: &Capture,
+    source: &TransferEntry,
     target: &destination::Directory,
     name: &OsStr,
     replace: Option<&(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
@@ -262,11 +397,11 @@ fn validate_target(
     match (current, replace) {
         (None, None) => Ok(None),
         (Some(current), Some((expected, TransferReplacementPolicy::RecoverableCurrentEntry))) => {
-            if capture.entry.item.kind != EntryKind::File
+            if source.item.kind != EntryKind::File
                 || current.entry().item.kind != EntryKind::File
                 || expected.entry().item.path != path
                 || current.entry().identity != expected.entry().identity
-                || current.entry().identity == capture.entry.identity
+                || current.entry().identity == source.identity
             {
                 return Err(conflict());
             }
@@ -308,43 +443,55 @@ fn receipt(stage: &destination::Directory, name: &OsStr) -> TransferRecovery {
 }
 
 fn restore(
-    capture: &Capture,
+    source: MoveSource<'_>,
     stage: destination::Directory,
     mut failure: FsError,
     change: &mut namespace::Change<'_>,
 ) -> TransferNativeMoveOutcome {
-    let recovery = match renameat_with(
-        stage.native_file(),
-        &capture.name,
-        capture.parent.native_file(),
-        &capture.name,
-        RenameFlags::NOREPLACE,
-    ) {
+    let parent = source.parent();
+    let name = source.name();
+    let mut recovery = Vec::new();
+    let restored = (|| -> Result<(), String> {
+        if source.is_link() {
+            source
+                .check_link_stage(&stage, &Cancellation::default())
+                .map_err(|failure| failure.to_string())?;
+        }
+        renameat_with(
+            stage.native_file(),
+            name,
+            parent.native_file(),
+            name,
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(|failure| failure.to_string())
+    })();
+    match restored {
         Ok(()) => {
-            capture.namespace.changed(
-                capture.parent.native_file(),
-                capture.parent.path(),
-                &capture.name,
-            );
-            stage.namespace_changed(&capture.name);
+            parent.namespace_changed(name);
+            stage.namespace_changed(name);
             failure
                 .message
                 .push_str("; source name restored without replacement");
-            if let Err(sync) = capture.sync_names(&stage) {
+            if let Err(sync) = source.sync_restored_names(&stage) {
                 failure = combined(failure, "restored-name durability", sync);
             }
-            if let Err(cleanup) = capture.parent.remove_empty_stage_in(stage, change) {
+            if let Err(cleanup) = clean_stage(source, stage, change, &mut recovery) {
                 failure = combined(failure, "empty staging cleanup", cleanup);
             }
-            vec![]
         }
         Err(restore) => {
             failure.message.push_str(&format!(
                 "; restoration refused without replacement: {restore}"
             ));
-            vec![receipt(&stage, &capture.name)]
+            recovery.push(receipt(&stage, name));
+            if source.is_link()
+                && let Err(sync) = source.sync_restored_names(&stage)
+            {
+                failure = combined(failure, "recovery durability", sync);
+            }
         }
-    };
+    }
     TransferNativeMoveOutcome::RecoveryRequired {
         destination: None,
         recovery,
@@ -353,25 +500,25 @@ fn restore(
 }
 
 fn committed(
-    capture: &Capture,
+    source: MoveSource<'_>,
     target: &destination::Directory,
     name: &OsStr,
     stage: destination::Directory,
     replaced: Option<(TransferIdentity, destination::recovery::Revision)>,
-    sync: impl FnOnce(&Capture, &destination::Directory, &destination::Directory) -> Result<(), FsError>,
+    sync: impl FnOnce(&destination::Directory, &destination::Directory) -> Result<(), FsError>,
     change: &mut namespace::Change<'_>,
 ) -> TransferNativeMoveOutcome {
     let path = target.path().join(name);
     let cleanup = Cancellation::default();
     let published = target.inspect(name, &cleanup);
-    let destination = published
+    let observed_identity = published
         .as_ref()
         .ok()
         .and_then(|entry| entry.as_ref())
-        .filter(|entry| entry.identity == capture.entry.identity)
-        .map(|_| path.clone());
-    let recovery = replaced
-        .map(|_| receipt(&stage, &capture.name))
+        .map(|entry| entry.identity);
+    let destination = (observed_identity == Some(source.entry().identity)).then(|| path.clone());
+    let mut recovery = replaced
+        .map(|_| receipt(&stage, source.name()))
         .into_iter()
         .collect::<Vec<_>>();
     let checked = (|| {
@@ -383,11 +530,12 @@ fn committed(
                 )
             }));
         }
+        source.verify_link(target, name, &cleanup)?;
         if let Some((expected, revision)) = replaced {
             let file = File::from(
                 openat2(
                     stage.native_file(),
-                    &capture.name,
+                    source.name(),
                     OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                     Mode::empty(),
                     RESOLVE,
@@ -406,16 +554,33 @@ fn committed(
         }
         Ok(())
     })();
-    if let Err(error) = checked {
+    if let Err(mut error) = checked {
+        if source.is_link() {
+            recovery.push(TransferRecovery {
+                path,
+                identity: observed_identity,
+            });
+            if let Err(failure) = sync(&stage, target) {
+                error = combined(error, "publication durability", failure);
+            }
+            if let Err(failure) = clean_stage(source, stage, change, &mut recovery) {
+                error = combined(error, "empty staging cleanup", failure);
+            }
+            return TransferNativeMoveOutcome::RecoveryRequired {
+                destination: None,
+                recovery,
+                error,
+            };
+        }
         return TransferNativeMoveOutcome::RecoveryRequired {
             destination,
             recovery,
             error,
         };
     }
-    let mut failure = sync(capture, &stage, target).err();
+    let mut failure = sync(&stage, target).err();
     if replaced.is_none()
-        && let Err(cleanup) = capture.parent.remove_empty_stage_in(stage, change)
+        && let Err(cleanup) = clean_stage(source, stage, change, &mut recovery)
     {
         failure = Some(match failure {
             Some(error) => combined(error, "empty staging cleanup", cleanup),
@@ -436,12 +601,42 @@ fn committed(
     }
 }
 
+fn clean_stage(
+    source: MoveSource<'_>,
+    stage: destination::Directory,
+    change: &mut namespace::Change<'_>,
+    recovery: &mut Vec<TransferRecovery>,
+) -> Result<(), FsError> {
+    if !source.is_link() {
+        return source.parent().remove_empty_stage_in(stage, change);
+    }
+    match source.parent().remove_empty_stage_checked(stage, change) {
+        Ok(()) => Ok(()),
+        Err(destination::recovery::StageRemovalError::Unsynced(error)) => Err(error),
+        Err(destination::recovery::StageRemovalError::Retained(error, stage)) => {
+            recovery.push(TransferRecovery {
+                path: stage.path().to_owned(),
+                identity: Some(stage.identity()),
+            });
+            Err(error)
+        }
+    }
+}
+
 fn sync_native(
     capture: &Capture,
     stage: &destination::Directory,
     target: &destination::Directory,
 ) -> Result<(), FsError> {
-    sync_each([stage, &capture.parent, target], |directory| {
+    sync_locations(&capture.parent, stage, target)
+}
+
+fn sync_locations(
+    parent: &destination::Directory,
+    stage: &destination::Directory,
+    target: &destination::Directory,
+) -> Result<(), FsError> {
+    sync_each([stage, parent, target], |directory| {
         directory
             .native_file()
             .sync_all()

@@ -32,6 +32,12 @@ export struct FileRow {
     background: color,
 }
 
+export struct DirectoryLinkTooltip {
+    pane: int,
+    row: string,
+    text: string,
+}
+
 // Captured before Flickable can defer a native touch's child pointer-down.
 export struct TreePress {
     active: bool,

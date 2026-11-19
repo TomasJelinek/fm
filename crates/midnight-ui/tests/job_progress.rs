@@ -34,6 +34,16 @@ fn progress_meter_is_visible_even_with_unknown_totals_and_current_file_has_its_o
         "Overall progress",
         AccessibleRole::ProgressIndicator,
     );
+    assert!(
+        ui::find_popup_item(
+            &test.window,
+            "Current file written",
+            AccessibleRole::ProgressIndicator
+        )
+        .is_none()
+    );
+    ui::click_popup(&test.window, "Details", AccessibleRole::Button);
+    test.draw();
     ui::popup_item(
         &test.window,
         "Current file written",
@@ -49,7 +59,7 @@ fn progress_meter_is_visible_even_with_unknown_totals_and_current_file_has_its_o
 }
 
 #[test]
-fn verification_reuses_the_file_counter_and_shows_a_fresh_percentage_axis() {
+fn verification_keeps_the_aggregate_chart_and_exposes_readback_in_details() {
     let mut test = ui::TestUi::new();
     let mut row = job("copy-job:22", "Copy");
     row.active = true;
@@ -69,7 +79,19 @@ fn verification_reuses_the_file_counter_and_shows_a_fresh_percentage_axis() {
         has_samples: true,
         ..Default::default()
     };
+    row.transfer_speed_chart = SpeedChartData {
+        primary: "M 0 20 L 1000 40".into(),
+        verification: "M 0 100 L 1000 50".into(),
+        has_samples: true,
+        ..Default::default()
+    };
     test.window.set_job(row);
+    test.draw();
+    assert!(
+        ui::find_popup_item(&test.window, "Verification speed", AccessibleRole::Groupbox).is_none()
+    );
+    ui::click_popup(&test.window, "Details", AccessibleRole::Button);
+    test.draw();
     for (density, font) in [(0, 13), (1, 32)] {
         test.window
             .invoke_apply_preferences(3, density, "".into(), font, font);
@@ -78,6 +100,13 @@ fn verification_reuses_the_file_counter_and_shows_a_fresh_percentage_axis() {
             let chart =
                 ui::popup_item(&test.window, "Verification speed", AccessibleRole::Groupbox);
             assert_eq!(check_history_width(&chart), 1, "readback has one curve");
+            let aggregate =
+                ui::popup_item(&test.window, "Transfer speed", AccessibleRole::Groupbox);
+            assert_eq!(
+                check_history_width(&aggregate),
+                2,
+                "the whole-transfer history remains visible"
+            );
             let overall = ui::popup_item(
                 &test.window,
                 "Overall progress",
@@ -91,7 +120,7 @@ fn verification_reuses_the_file_counter_and_shows_a_fresh_percentage_axis() {
             );
             let file = ui::popup_item(
                 &test.window,
-                "Current file verification",
+                "Current file verification progress",
                 AccessibleRole::ProgressIndicator,
             );
             assert_eq!(
@@ -146,9 +175,12 @@ fn speed_chart_resizes_with_jobs_and_keeps_actions_visible_in_all_themes() {
     copy.progress = 0.5;
     copy.progress_label = "50% complete".into();
     copy.current_path = "D:\\Source\\資料\\example.zip".into();
+    copy.transfer_directory = "D:\\Source\\資料".into();
+    copy.transfer_name = "example.zip".into();
+    copy.transfer_totals = "Files: 6 / 18 · Bytes: 900 / 1800".into();
     copy.eta = "About 3 min".into();
     copy.remaining = "Items remaining: 12 (620 MiB)".into();
-    copy.speed_chart = SpeedChartData {
+    copy.transfer_speed_chart = SpeedChartData {
         area: "M 0 100 L 0 80 L 150 40 L 300 65 L 450 20 L 600 55 L 750 35 L 1000 30 L 1000 100 Z"
             .into(),
         primary: "M 0 80 L 150 40 L 300 65 L 450 20 L 600 55 L 750 35 L 1000 30".into(),
@@ -162,6 +194,23 @@ fn speed_chart_resizes_with_jobs_and_keeps_actions_visible_in_all_themes() {
         ..Default::default()
     };
     test.window.set_job(copy);
+    test.draw();
+    for label in [
+        "D:\\Source\\資料",
+        "example.zip",
+        "Files: 6 / 18 · Bytes: 900 / 1800",
+        "Time remaining: About 3 min",
+    ] {
+        ui::popup_item(&test.window, label, AccessibleRole::Text);
+    }
+    assert!(
+        ui::find_popup_item(
+            &test.window,
+            "Items remaining: 12 (620 MiB)",
+            AccessibleRole::Text
+        )
+        .is_none()
+    );
     for theme in [0, 1, 2, 21, 22] {
         test.window
             .invoke_apply_preferences(theme, 0, "".into(), 11, 15);
@@ -266,7 +315,7 @@ fn cancel_question_keeps_both_actions_visible_and_continue_focused_at_compact_si
     let confirmed = Rc::new(Cell::new(0));
     let count = confirmed.clone();
     test.window
-        .on_confirm_cancel(move || count.set(count.get() + 1));
+        .on_confirm_cancel(move |_| count.set(count.get() + 1));
     for (theme, density) in [(0, 0), (1, 0), (21, 1), (22, 1)] {
         test.window
             .invoke_apply_preferences(theme, density, "".into(), 11, 15);

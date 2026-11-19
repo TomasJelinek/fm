@@ -47,7 +47,8 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
             ''.join(f'#define CONFIG_{feature} 0\n' for feature in module.DISABLED_FEATURES),
             encoding='utf-8')
         (notices / 'config_components.h').write_text(
-            '#define CONFIG_RAWVIDEO_DECODER 1\n#define CONFIG_AVI_DEMUXER 1\n',
+            '#define CONFIG_RAWVIDEO_DECODER 1\n#define CONFIG_AVI_DEMUXER 1\n'
+            '#define CONFIG_OPUS_DECODER 1\n#define CONFIG_MOV_DEMUXER 1\n',
             encoding='utf-8')
         for name in ('COPYING.LGPLv2.1', 'LICENSE.md', 'config.mak'):
             (notices / name).write_text('Pinned source notice\n', encoding='utf-8')
@@ -55,7 +56,7 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
             path = prefix / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'Runtime fixture')
-        for name in ('avcodec', 'avformat', 'avutil', 'swscale'):
+        for name in ('avcodec', 'avformat', 'avutil', 'swscale', 'swresample'):
             path = prefix / 'include' / ('lib' + name) / (name + '.h')
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('/* Header fixture */', encoding='utf-8')
@@ -109,6 +110,19 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
             '#define CONFIG_H264_DECODER 1\n')
         with self.assertRaisesRegex(ValueError, 'H264_DECODER'):
             module.validate_prefix(prefix, 'linux')
+
+    def test_mov_and_opus_are_required_by_the_playback_profile(self):
+        module = self.module()
+        prefix = self.prefix(module, 'win32')
+        module.validate_prefix(prefix, 'win32')
+        config = prefix / 'share/midnight-ffmpeg/config_components.h'
+        for feature in ('MOV_DEMUXER', 'OPUS_DECODER'):
+            recorded = config.read_text(encoding='utf-8')
+            config.write_text(recorded.replace('CONFIG_' + feature + ' 1',
+                                               'CONFIG_' + feature + ' 0'), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'missing required'):
+                module.validate_prefix(prefix, 'win32')
+            config.write_text(recorded, encoding='utf-8')
 
     def test_unapproved_build_option_is_rejected(self):
         module = self.module()

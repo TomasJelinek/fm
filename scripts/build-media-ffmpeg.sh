@@ -22,10 +22,10 @@ arguments=(
     --disable-debug --enable-shared --disable-static --enable-pic
     --disable-gpl --disable-nonfree --disable-version3
     --disable-network --disable-protocols --disable-avdevice --disable-avfilter
-    --disable-swresample --disable-hwaccels --disable-pthreads --disable-w32threads
+    --disable-hwaccels --disable-pthreads --disable-w32threads
     --disable-x86asm --enable-avcodec --enable-avformat --enable-avutil --enable-swscale
-    --enable-decoder=vp8,vp9,theora,ffv1,rawvideo
-    --enable-demuxer=matroska,avi,ogg --enable-parser=vp8,vp9
+    --enable-swresample --enable-decoder=vp8,vp9,theora,ffv1,rawvideo,opus
+    --enable-demuxer=matroska,avi,ogg,mov --enable-parser=vp8,vp9
 )
 case "$platform" in
     linux) ;;

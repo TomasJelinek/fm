@@ -7,6 +7,8 @@ pub(crate) struct CopiesState {
     pub(crate) draft: Option<copy_dialog::CopyDraft>,
     pub(super) tree_pending: Option<tree_copy::Pending>,
     pub(crate) progress: Vec<Arc<CopyProgress>>,
+    // Only live worker snapshots, excluding optimistic submission/drop rows.
+    backend_observed: HashSet<OperationId>,
     pub(crate) conflicts: Vec<Arc<CopyConflict>>,
     pub(crate) failures: Vec<Arc<CopyFailure>>,
     pub(super) decision_versions: HashMap<OperationId, u64>,
@@ -15,6 +17,10 @@ pub(crate) struct CopiesState {
 }
 
 impl Presenter {
+    pub(crate) fn copy_control_available(&self, id: OperationId) -> bool {
+        self.copies.backend_observed.contains(&id)
+    }
+
     pub(crate) fn start_copy(
         &mut self,
         clipboard: FileClipboard,
@@ -218,7 +224,9 @@ impl Presenter {
             // Cancellation owns presentation until the terminal cleanup event.
             progress.paused = false;
             progress.pause_requested = false;
+            progress.cancel_confirmation_ready = None;
             progress.wait_reason = None;
+            self.copies.backend_observed.remove(&id);
         }
     }
 
@@ -256,6 +264,7 @@ impl Presenter {
                 if progress.state.is_terminal()
                     || progress.state == CopyOperationState::CancelRequested
                 {
+                    self.copies.backend_observed.remove(&progress.id);
                     self.copies.conflicts.retain(|c| c.id != progress.id);
                     self.copies
                         .failures
@@ -263,6 +272,8 @@ impl Presenter {
                     self.copies
                         .deferred_decisions
                         .retain(|(id, _)| *id != progress.id);
+                } else {
+                    self.copies.backend_observed.insert(progress.id);
                 }
                 if progress.state.is_terminal() {
                     for pane in [PaneId::Left, PaneId::Right] {

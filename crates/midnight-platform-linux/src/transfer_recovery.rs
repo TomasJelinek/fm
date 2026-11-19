@@ -254,6 +254,7 @@ fn create_named_directory(
                 &directory.file,
                 &directory.path,
                 &name,
+                directory.link_mount.as_ref(),
                 cancel,
             ) {
                 Ok(pin) => pin,
@@ -337,6 +338,9 @@ impl Directory {
             // own, is announced again.
             if !change.created_here(stage.identity) {
                 self.namespace_announce(&name, change, &cleanup)?;
+            }
+            if self.link_mount.is_some() {
+                self.check_recovery_parent(&cleanup)?;
             }
             rustix::fs::unlinkat(&*self.file, &name, AtFlags::REMOVEDIR)
                 .map_err(|e| error(&stage.path, e.into()))?;

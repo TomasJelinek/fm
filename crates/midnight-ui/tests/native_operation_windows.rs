@@ -395,10 +395,21 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
             );
             key(&child, Key::Return);
             let commands = h.commands.borrow();
-            let request = match commands.as_slice() {
-                [Command::EnqueueSelectedCopy(request)] if !moving => request,
-                [Command::EnqueueSelectedMove(request)] if moving => request,
-                _ => panic!("the frozen intent must enqueue exactly once"),
+            let [Command::EnqueueCopyWithOptions(options)] = commands.as_slice() else {
+                panic!("the frozen options must enqueue exactly once");
+            };
+            assert_eq!(options.links, CopyLinkPolicy::FollowDirectoryContents);
+            let CopyOptionsInput::Native(request) = &options.input else {
+                panic!("the dialog must keep its native selection");
+            };
+            let intent = if moving {
+                TransferIntent::Move
+            } else {
+                TransferIntent::Copy
+            };
+            assert_eq!(request.intent, intent);
+            let MetadataTransferInput::Selected(request) = &request.input else {
+                panic!("the dialog must keep its selected sources");
             };
             assert_eq!(request.destination, destination);
             assert_eq!(
@@ -408,8 +419,8 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
             let id = request.id;
             drop(commands);
             h.assert_closed(&child);
-            // This synthetic sink has no terminal progress reply. Escape asks
-            // before the distinct modeless progress child cancels its exact job.
+            // The modeless child may get Escape before the first actual progress
+            // event. The fixture supplies registration and checkpoint snapshots.
             assert!(
                 !h.main.get_operations_visible(),
                 "progress is independent from Jobs"
@@ -436,12 +447,57 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
             h.commands.borrow_mut().clear();
             key(&jobs[0], Key::Escape);
             assert!(jobs[0].window().is_visible());
-            assert!(h.commands.borrow().is_empty(), "Escape must only ask");
+            assert!(
+                h.commands.borrow().is_empty(),
+                "the queued placeholder is not registered"
+            );
+            let apply = |progress: CopyProgress| {
+                owned_commands::run(&h.state, &h.begin, |presenter, send| {
+                    presenter.apply_with_sender(
+                        Event::Copy(CopyEvent::Progress(Arc::new(progress))),
+                        send,
+                    );
+                });
+                refresh(&h.main, &h.state.borrow());
+            };
+            let mut progress = CopyProgress::queued(id, destination, 1, intent);
+            progress.state = CopyOperationState::Running;
+            apply(progress.clone());
+            let token = match h.commands.borrow().as_slice() {
+                [
+                    Command::CopyCancelConfirmation {
+                        id: actual,
+                        token,
+                        action: CopyCancelConfirmationAction::Begin,
+                    },
+                ] if *actual == id => *token,
+                other => panic!("registration must start the exact hold: {other:?}"),
+            };
+            h.commands.borrow_mut().clear();
+            progress.pause_requested = true;
+            progress.paused = true;
+            progress.cancel_confirmation_ready = Some(token);
+            apply(progress.clone());
             modeless::draw(&jobs[0], 720, 500, "transfer-cancel-question");
             assert_visible(&jobs[0], "Continue", AccessibleRole::Button);
             modeless::click(&jobs[0], "Cancel operation");
             assert!(matches!(h.commands.borrow().as_slice(),
-                [Command::CancelCopy(actual)] if *actual == id));
+                [Command::CopyCancelConfirmation { id: actual, token: confirmed, action: CopyCancelConfirmationAction::Confirm }]
+                if *actual == id && *confirmed == token));
+            progress.state = CopyOperationState::Cancelled;
+            progress.pause_requested = false;
+            progress.paused = false;
+            progress.cancel_confirmation_ready = None;
+            progress.closure = Some(CopyClosureReceipt {
+                unfinished_roots: 1,
+                uncommitted_files: None,
+                uncommitted_bytes: None,
+                omitted_error_details: 0,
+            });
+            apply(progress);
+            assert!(jobs[0].window().is_visible());
+            modeless::draw(&jobs[0], 720, 500, "transfer-cancelled");
+            key(&jobs[0], Key::Escape);
             assert!(!jobs[0].window().is_visible());
             assert!(!h.main.get_operations_visible());
             assert!(

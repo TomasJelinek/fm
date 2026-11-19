@@ -34,6 +34,43 @@ The existing release notice collector retains all their upstream license and
 copyright files under `licenses/<crate>-<version>/`. No new package version,
 mandatory fee, subscription or royalty is introduced.
 
+The application now enables Slint 1.18.1's existing `accessibility` feature in
+its normal workspace declaration. Resolution adds eighteen exact package pins,
+with no removed or upgraded package. The Windows application graph selects
+`accesskit` 0.24.1, `accesskit_consumer` 0.38.0, `accesskit_windows` 0.34.0 and
+`accesskit_winit` 0.33.2; Linux/AT-SPI and Apple adapters in the lockfile do not
+establish runtime qualification on those platforms. The actual resolved source
+archives, checksums, manifests and `.cargo_vcs_info.json` records were checked.
+All eight AccessKit packages use the **Apache-2.0** alternative; the other ten
+added packages retain their inspected free MIT or MIT/Apache declarations.
+The published AccessKit archives omit standalone license texts. Version-specific
+[supplements](../packaging/licenses/accesskit-0.24.1/SOURCE.md) retain the exact
+upstream Apache, MIT and Chromium BSD notices from each recorded commit, including
+source URLs and SHA-256 hashes. Pass `packaging/licenses` to the existing release
+collector's `--license-overrides`. The unchanged collector passes for the exact
+eighteen-addition notice scope and for the **325-package Windows application
+normal/build selection**, including the real pinned Rust standard-library
+copyright file; all 637 copied crate-notice files were compared with their
+sources. The first full-app attempt failed on eleven pre-existing packages whose
+archives also omit root licenses. Their version-specific supplements now retain
+matching-commit texts and provenance: clipboard-win uses BSL-1.0;
+gl_generator, khronos_api, profiling and spirv use Apache-2.0; Lyon's four crates,
+rspolib and taffy use MIT. The original alternative notices remain intact.
+`khronos_api` additionally retains the exact pinned ANGLE BSD license and the
+original Khronos/EGL/WebGL copyright/permission comments, rather than treating
+all embedded definitions as Apache-only. The failed baseline remains recorded;
+notice staging is not a packaged executable or runtime qualification.
+
+The scoped RustSec review of the eighteen added package names finds no advisory
+files at database commit
+[`472a4c9a785030434f15d7da84964d60fbe789ab`](https://github.com/RustSec/advisory-db/tree/472a4c9a785030434f15d7da84964d60fbe789ab).
+It includes withdrawn/informational entries in that search and is **not** a
+full-lock or newly enabled-feature vulnerability scan or proof of safety.
+The full forty-six-pair native-host inventory refresh and generator `--check`
+now pass, with the retained capture provenance below. No paid branch, new fee,
+application/SDK license change or accessibility runtime qualification is implied
+by these dependency and notice checks.
+
 The directory authorization helper adds a project-owned crate and reuses the pinned
 `getrandom` 0.3.4 (MIT OR Apache-2.0), `windows-sys` 0.61.2 (MIT OR Apache-2.0),
 and `libc` 0.2 (MIT OR Apache-2.0) dependencies already present in the inventory.
@@ -65,20 +102,41 @@ references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppu
 [pinned provenance, adaptation notes and retained license texts](THEME_PROVENANCE.md).
 Release packages carry that record and `licenses/themes/` alongside library notices.
 
-Inventory captured on 12 November 2026 from the checked-in lockfiles and actual
-Cargo selections for Windows x64 and Linux x86-64, plus Darwin x86-64/arm64
-captures for the independent native macOS filesystem package only. The targeted
-17 November removals described in this file (`fs2`/`winapi`, Windows `notify`)
-and the 18 November recheck below describe the pre-merge inventories. The counts
-below describe the checked-in tables. The final merge dependency graph still
-needs a matching inventory and notice check:
+Inventory regenerated and checked on **19 November 2026** from all **46 fresh
+metadata/tree pairs** and frozen manifests/lockfiles: 22 native Windows x64,
+22 native Linux x86-64 captures under existing WSL Ubuntu 24.04, and the two
+explicit Darwin cross-target exceptions for the independent native macOS
+filesystem package only. Rust/Cargo 1.99.1 and the existing immutable SDK bundles
+were used; captures, command/host receipts and hashes are retained under
+`_build/qa/accessibility-feature-20261119/`. The earlier 12/17/18 November
+counts and targeted row edits below remain historical. The current tables are:
 
 - [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **66**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **643**
-  package/version/source records, **525** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **655**
+  package/version/source records, **537** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
+
+The complete refresh adds twelve inventory records and removes none: six
+selected AccessKit packages, three AT-SPI packages and three zbus support crates.
+Four `phf` 0.13.1 records already belonged to the PDF scope and now also belong to
+the application. The eighteen lockfile additions additionally contain Apple-only
+adapters that are not selected by these application targets. Existing rows retain
+their license/source/version declarations; current Find/tooltip, Media and
+work-budget direct-dependant edges are refreshed rather than new dependency pins.
+
+The first generator attempt exposed older `midnight-plugin-api`/`midnight-plugin-sdk`
+0.1.0 releases in the independent Basic/conformance graphs. These are project
+code, not unknown-license third parties. The narrow generator repair recognizes
+historical versions only for an actual non-vendored workspace-member name from
+the **exact** approved registry
+`registry+https://midnight-explorer.invalid/api-index`; it still traverses their
+external dependencies and preserves existing identity handling. Historical versions
+from crates.io, foreign registries or URL-suffix lookalikes remain external, as do
+name lookalikes and vendored members. The meaningful regression fails before the correction; all
+**12 focused inventory tests** then pass, including those negatives. No license
+is invented or assigned to first-party SDK code.
 
 The twenty-three workspaces cover the application, public viewer/filesystem/thumbnail/image/web
 APIs and worker SDK, six independent viewer plugins, archive/image/video plugins,
@@ -182,6 +240,23 @@ were inspected; MIT is the selected branch, and no optional features or addition
 packages are enabled. Release notice generation already retains this package's
 copyright and license files. The direct-dependant inventory includes both crates.
 
+Viewer whole-word Find and text-comparison Find also reuse `unicase` 2.10.0
+and `unicode-segmentation` 1.13.3 directly in `midnight-viewer-engine` and
+`midnight-compare-engine`. The exact cached manifests and MIT license files were
+inspected. Both use the existing MIT alternative without optional features;
+there are no additional resolved packages, paid components or changed application
+license. Existing distribution notice collection retains their license files.
+
+Comparator tooltip compilation reuses the existing host adapter and its exact
+`i-slint-compiler` 1.18.1 (`rust`), `spin_on` 0.1.1, `prettyplease` 0.2.37 and
+`syn` 2.0.119 (`full`) build dependencies. Its geometry tests also directly use
+`i-slint-core` 1.18.1 (`std`). These match the existing host selections. The cached
+manifests and selected license texts were checked: Slint keeps the royalty-free
+desktop alternative and its existing attribution, while the other three use MIT.
+All 615 resolved package/version/source/checksum identities match the branch base;
+only direct-dependant edges changed. Existing notice collection and the AboutSlint
+attribution remain applicable. These helpers stay in the application, outside the
+released plug-in API/SDK.
 The native filesystem host adds only project-owned API dependencies and new
 dependants of already pinned serde, toml and test-only tempfile. The application
 graphs were recaptured on Windows and Linux on 8 November; other workspace
@@ -373,12 +448,12 @@ It introduces no third-party version, mandatory fee, application-license change
 or public plugin API/SDK dependency. First-party crates remain excluded from
 third-party package counts.
 
-Build owns generation of the `midnight-work-budget` → `tokio` lockfile edge after
-the coordinated source lease. Current generated direct/complete/CSV rows remain
-unchanged for this private proposal. After integration, regenerate them from
-coherent target-filtered captures: Tokio gains `midnight-work-budget` as a direct
-declarer; verify the resolved feature union and package counts rather than
-claiming this private review refreshed the full graph. Preserve existing notices.
+The private proposal originally left the generated rows unchanged. The
+19 November full capture/regeneration now records `midnight-work-budget` as a
+Tokio direct declarer, alongside the integrated Find/tooltip and Media edges.
+Package/source/license declarations are unchanged for those existing records;
+retain their existing notices. The private proposal's earlier review alone did
+not establish a full graph refresh.
 
 Upstream maintenance and the RustSec Tokio package record were reviewed on
 17 November 2026. Version 1.54.1 is within the patched ranges of
@@ -417,7 +492,7 @@ This table is a guide; the linked inventories above contain every selected crate
 | ruzstd 0.9.1 / twox-hash 2.1.5 | Zstandard decoding and frame checksums | MIT |
 | tar 0.4.46 / flate2 1.1.10 and 1.1.11 | TAR/GZIP archive decoding, host Office DEFLATE, SDK packaging and image codec dependencies | MIT OR Apache-2.0 |
 | blake3 1.8.7 | Thumbnail cache identities and integrity records | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
-| ffmpeg-next 9.0.0 / ffmpeg-sys-next 9.0.1 | Required isolated video thumbnail decoder bindings | WTFPL |
+| ffmpeg-next 9.0.0 / ffmpeg-sys-next 9.0.1 | Required isolated video thumbnail and playback decoder bindings with software scaling and resampling | WTFPL |
 | bindgen 0.73.2 | Build-time native video bindings | BSD-3-Clause |
 | regex 1.13.1 | Matching and the source viewer's custom lexer | MIT OR Apache-2.0 |
 | pulldown-cmark 0.13.6 | Markdown parsing | MIT |
@@ -512,7 +587,7 @@ versions, transitive dependencies and graphics drivers vary by installation.
 
 | Component | Use | Upstream license family / provenance |
 | --- | --- | --- |
-| FFmpeg 9.0.2 shared libraries | Required isolated video thumbnails; pinned source/build, not linked into the main executable | LGPL-2.1-or-later in the supplied configuration: GPL, nonfree, version3 and network disabled. Matching source, configuration and notices accompany the four runtime libraries |
+| FFmpeg 9.0.2 shared libraries | Shared by the isolated video thumbnail and playback workers | LGPL-2.1-or-later in the supplied configuration: GPL, nonfree, version3 and network disabled. Matching source, configuration and notices accompany the five runtime libraries |
 | LLVM/libclang 18.1.1 wheel or system development package (Ubuntu 18.1.3 in this Debug build) | Build-time video binding generation, not shipped as application runtime | Apache-2.0 WITH LLVM-exception; retained upstream license or distribution copyright files |
 | GnuPG system package (2.4.4 in this build container) | Build-time FFmpeg detached-signature verification in an isolated keyring; not bundled with ME | GPL-3.0-or-later; retain distribution package notices when redistributing the build environment |
 | Fontconfig | Linux font discovery; direct ELF import | Permissive MIT/X11-style notices; distribution copyright file |
@@ -555,6 +630,13 @@ configuration needed to rebuild its shared libraries. `ffmpeg-sys-next` 9.0.1
 declares WTFPL but its published source has no LICENSE file; distribution retains
 the canonical WTFPL text, the pinned declaration and provenance rather than
 claiming an upstream bundled license file exists.
+
+The native playback output leaf uses Windows bindings 0.62.2 under MIT OR Apache-2.0.
+The enabled Windows binding features are Media Audio, COM Structured Storage and
+Variant, with their inherited features. Linux uses libloading 0.8.9 under ISC to
+open a supported absolute system libasound.so.2. System ALSA retains the distribution
+license and is not shipped as part of the application. FFmpeg targets stay isolated
+from native output, and the worker SDK stays at its existing 0.2.0 pin.
 
 ## Regenerating the inventory
 
@@ -644,10 +726,24 @@ API/SDK crates, and writes deterministic Markdown/CSV. Explicitly marked vendore
 third-party workspace members remain included. Recapture after every dependency
 or feature change. `--check` verifies tables against the supplied captures; it
 does not prove that those captures are current. Current source hashes are not
-used as a substitute for capture provenance. All forty-six pairs were last captured
-together on 18 November 2026 (native Windows and native Linux hosts, plus the two
-macOS cross-target pairs), for the `--check` described above; those captures were
-not kept. A complete current input set is required for regeneration.
+used as a substitute for capture provenance. The 18 November inputs were not
+retained. The complete **19 November** input set is now retained in
+`_build/qa/accessibility-feature-20261119/inventory-captures/`, together with the
+[92-artifact/native-host verification](../_build/qa/accessibility-feature-20261119/license-inventory/capture-verification.json)
+and [successful generation/check commands](../_build/qa/accessibility-feature-20261119/license-inventory/regeneration-results.json).
+All original manifest and lock hashes pass before/after capture. SDK configuration
+files are QA-only registry-path projections of the existing exact bundles;
+shared configs, dependencies and lockfiles were not edited by capture.
+
+The nested D checkout makes the excluded renderer test package discover an outer
+workspace. Only that scope uses an exact QA copy of the vendored package and
+lockfile, appending `[workspace]` with explicit `resolver = "2"`, matching the
+edition-2021 standalone policy. All original source hashes and the copied lock
+remain unchanged; parsed dependency/feature tables match, and both captured
+renderer roots select exactly `wgpu`. The projected manifest is explicitly **not
+byte-identical** to the original. The native macOS exception still selects only
+`libc` as a third party, with no added build/procedural-macro dependency. These
+metadata-only captures compile no code and establish no native runtime result.
 
 The generator emits package/license/scope records, not enabled-feature columns.
 Retain the affected package's `resolve.nodes[].features` with each metadata

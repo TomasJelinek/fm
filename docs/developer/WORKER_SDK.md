@@ -72,11 +72,11 @@ window shows Slint's `AboutSlint` attribution but covers it, so a click does not
 its link, which Slint's winit backend would start with the `webbrowser` crate's
 `std::process::Command::spawn` on the UI thread.
 
-The optional FFmpeg provider requires ReadAndExecute access for that fixed
-worker SID on exactly `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll` and
-`swscale-10.dll`. Deployment adds only those explicit file ACEs. It grants no
-directory-wide, inherited or write access and no networking capability. Code
-and all ancestors still pass installation trust checks. Private deployment
+The installed FFmpeg workers share ReadAndExecute access for that fixed worker
+SID on `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, `swscale-10.dll`
+and `swresample-7.dll`. Deployment includes a file-specific grant for
+`midnight-video-playback.exe`. Package file and ancestor trust checks still
+apply, and media bytes enter the restricted apps through the captured read broker. Private deployment
 does not change checkout or ancestor permissions.
 
 Linux x86-64 and AArch64 startup closes descriptors above stderr, sets

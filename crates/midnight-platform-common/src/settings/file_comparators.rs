@@ -47,7 +47,7 @@ pub(super) fn decode(
 ) -> io::Result<FileComparatorPreferences> {
     match (version, stored) {
         (1..=32, None) => Ok(FileComparatorPreferences::default()),
-        (33, Some(stored)) => {
+        (33.., Some(stored)) => {
             let rules = stored
                 .rules
                 .into_iter()

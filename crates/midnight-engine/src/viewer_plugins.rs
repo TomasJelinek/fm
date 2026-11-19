@@ -215,6 +215,23 @@ fn catalog(executable: &Path) -> Result<Vec<ViewerPluginInfo>, String> {
         status: "Available".into(),
         location: provider.package_dir().to_path_buf(),
     }));
+    if let Ok(video) =
+        midnight_media_host::video_installation::VideoInstallation::discover(executable)
+    {
+        rows.push(ViewerPluginInfo {
+            extensions: video.extensions().to_vec(),
+            fallback: false,
+            id: midnight_media_host::video_installation::VIDEO_PROVIDER_ID.into(),
+            name: viewer_plugin_name(
+                midnight_media_host::video_installation::VIDEO_PROVIDER_ID,
+                Some("Video"),
+            ),
+            description: "Plays videos with FFmpeg.".into(),
+            version: midnight_media_host::video_installation::VIDEO_RUNTIME_PROFILE.into(),
+            status: "Available".into(),
+            location: directory.join("thumbnailers"),
+        });
+    }
     let mut counts = std::collections::HashMap::new();
     for row in &rows {
         *counts.entry(row.id.clone()).or_insert(0_usize) += 1;

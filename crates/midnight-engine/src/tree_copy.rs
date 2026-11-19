@@ -218,6 +218,11 @@ impl CapturedTransferSources for Sources {
             });
         }
         if self.intent == TransferIntent::Move {
+            if links.materializes_directory_links() {
+                return self
+                    .prepare_move_entries(service, links, cancel)
+                    .map(PreparedCapturedTransfer::MoveWithDirectoryLinks);
+            }
             return self
                 .prepare_move(service, cancel)
                 .map(PreparedCapturedTransfer::Move);
@@ -314,6 +319,23 @@ impl Sources {
         service: &dyn TransferService,
         cancel: &Cancellation,
     ) -> Result<VecDeque<PreparedTransferMove>, FsError> {
+        self.prepare_move_entries(service, CopyLinkPolicy::Reject, cancel)?
+            .into_iter()
+            .map(|prepared| match prepared {
+                PreparedTransferMoveEntry::Ordinary(prepared) => Ok(prepared),
+                PreparedTransferMoveEntry::DirectoryLink { .. } => Err(failure(
+                    "Legacy Tree Move cannot carry directory link authority.",
+                )),
+            })
+            .collect()
+    }
+
+    fn prepare_move_entries(
+        &self,
+        service: &dyn TransferService,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<VecDeque<PreparedTransferMoveEntry>, FsError> {
         // Preflight every retained provider before any native source is opened.
         let mut paths = Vec::new();
         for target in &self.lease.capture.targets {
@@ -338,24 +360,33 @@ impl Sources {
         crate::copy_operations::check_move_bounds(Path::new(""), paths.iter().copied())?;
         let mut roots = VecDeque::new();
         for (target, path) in self.lease.capture.targets.iter().zip(paths) {
-            let prepared = service.prepare_move_source(path, cancel)?;
-            if prepared.source.entry().item.path != path
-                || prepared.source.native_identity() != Some(prepared.source.entry().identity)
-                || prepared.capture.entry().item.path != path
+            let prepared = if links == CopyLinkPolicy::Reject {
+                PreparedTransferMoveEntry::Ordinary(service.prepare_move_source(path, cancel)?)
+            } else {
+                service.prepare_move_source_with_links(path, links, cancel)?
+            };
+            let source = prepared.source();
+            let capture_entry = match &prepared {
+                PreparedTransferMoveEntry::Ordinary(prepared) => prepared.capture.entry(),
+                PreparedTransferMoveEntry::DirectoryLink { capture, .. } => capture.entry(),
+            };
+            if source.entry().item.path != path
+                || (source.native_identity() != Some(source.entry().identity)
+                    && !prepared.has_deferred_directory_link())
+                || capture_entry.item.path != path
             {
                 return Err(failure("Provider returned a different native Move source."));
             }
-            roots.push_back(PreparedTransferMove {
-                source: Box::new(LeasedSource {
-                    source: Authority::Native(NativeAuthority(Some(prepared.source))),
+            roots.push_back(lease_move_entry(prepared, &self.lease, |source| {
+                Box::new(LeasedSource {
+                    source: Authority::Native(NativeAuthority(Some(source))),
                     lease: self.lease.clone(),
                     occurrence: Some(TreeCopyOccurrence {
                         stamp: self.lease.capture.view.stamp,
                         row: target.row,
                     }),
-                }),
-                capture: leased_capture(prepared.capture, &self.lease),
-            });
+                })
+            }));
         }
         Ok(roots)
     }
@@ -502,6 +533,9 @@ impl TransferSource for LeasedSource {
     fn native_identity(&self) -> Option<TransferIdentity> {
         self.source.native_identity()
     }
+    fn native_original_identity(&self) -> Option<TransferIdentity> {
+        self.source.native_original_identity()
+    }
     fn virtual_identity(&self) -> Option<VirtualEntryId> {
         self.source.virtual_identity()
     }
@@ -535,6 +569,22 @@ impl TransferSource for LeasedSource {
             })
         })
     }
+    fn next_move_child_with_links(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<PreparedTransferMoveEntry>, FsError> {
+        if links == CopyLinkPolicy::Reject {
+            return self
+                .next_move_child(cancel)
+                .map(|child| child.map(PreparedTransferMoveEntry::Ordinary));
+        }
+        self.source
+            .next_move_child_with_links(links, cancel)
+            .map(|child| {
+                child.map(|entry| lease_move_entry(entry, &self.lease, |source| self.child(source)))
+            })
+    }
     fn prepare_modified_time(
         &self,
         cancel: &Cancellation,
@@ -566,6 +616,76 @@ impl TransferSource for LeasedSource {
         self.source
             .next_child(cancel)
             .map(|child| child.map(|source| self.child(source)))
+    }
+}
+
+fn lease_move_entry(
+    prepared: PreparedTransferMoveEntry,
+    lease: &LeaseReference,
+    wrap_source: impl FnOnce(Box<dyn TransferSource>) -> Box<dyn TransferSource>,
+) -> PreparedTransferMoveEntry {
+    match prepared {
+        PreparedTransferMoveEntry::Ordinary(prepared) => {
+            PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+                source: wrap_source(prepared.source),
+                capture: leased_capture(prepared.capture, lease),
+            })
+        }
+        PreparedTransferMoveEntry::DirectoryLink { source, capture } => {
+            PreparedTransferMoveEntry::DirectoryLink {
+                source: wrap_source(source),
+                capture: Arc::new(LeasedDirectoryLinkCapture {
+                    inner: NativeAuthority(Some(capture)),
+                    _lease: lease.clone(),
+                }),
+            }
+        }
+    }
+}
+
+// Close native authority before its retained provider registration.
+struct LeasedDirectoryLinkCapture {
+    inner: NativeAuthority<Arc<dyn TransferDirectoryLinkMoveCapture>>,
+    _lease: LeaseReference,
+}
+
+impl TransferDirectoryLinkMoveCapture for LeasedDirectoryLinkCapture {
+    fn prepare_copy_projection(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        let source = self.inner.prepare_copy_projection(cancel)?;
+        Ok(Box::new(LeasedSource {
+            source: Authority::Native(NativeAuthority(Some(source))),
+            lease: self._lease.clone(),
+            occurrence: None,
+        }))
+    }
+
+    fn try_native_move(
+        &self,
+        destination: &dyn TransferDirectory,
+        name: &OsStr,
+        replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        cancel: &Cancellation,
+    ) -> Result<TransferNativeMoveOutcome, FsError> {
+        self.inner
+            .try_native_move(destination, name, replace, cancel)
+    }
+
+    fn entry(&self) -> &TransferEntry {
+        self.inner.entry()
+    }
+
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.inner.revalidate(cancel)
+    }
+
+    fn remove_original(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferDirectoryLinkRemoval, FsError> {
+        self.inner.remove_original(cancel)
     }
 }
 

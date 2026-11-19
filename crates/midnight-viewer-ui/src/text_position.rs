@@ -68,6 +68,19 @@ impl TextPosition {
         true
     }
 
+    /// Settle the exact failed vertical seek without advancing its acknowledgement.
+    pub fn vertical_unavailable(&mut self, generation: u64, sequence: u64, displayed: f64) -> bool {
+        if self.generation != Some(generation)
+            || self.desired[0].map(|wanted| wanted.sequence) != Some(sequence)
+        {
+            return false;
+        }
+        self.authoritative[0] = displayed;
+        self.desired[0] = None;
+        self.queued[0] = false;
+        true
+    }
+
     pub fn request(&mut self, horizontal: bool, position: f64) -> Option<Target> {
         let generation = self.generation?;
         if !position.is_finite() {
@@ -250,5 +263,153 @@ mod tests {
         assert!(!state.frame(7, [last.sequence, 0], [0.8, 0.0]));
         assert!(state.frame(7, [last.sequence, horizontal.sequence], [0.801, 0.701]));
         assert_eq!(state.positions(), [0.801, 0.701]);
+    }
+}
+
+#[cfg(test)]
+mod receiver_tests {
+    use crate::{
+        OpenWindow, Service, ViewerInput, ViewerOutput, flush_position, image_presentation_tests,
+        pixel_delivery, pixel_preparation, text_presentation_tests,
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    fn source_frame(revision: u64, sequence: u64, position: f64) -> ViewerOutput {
+        let ViewerOutput::Frame(mut frame) =
+            text_presentation_tests::frame(revision, sequence, position)
+        else {
+            unreachable!()
+        };
+        frame.mode = 2;
+        frame.modes = vec![2, 1];
+        ViewerOutput::Frame(frame)
+    }
+
+    fn unavailable(generation: u64, sequence: u64) -> ViewerOutput {
+        ViewerOutput::VerticalPositionUnavailable {
+            generation,
+            sequence,
+        }
+    }
+
+    fn deliver(open: &OpenWindow, service: &Service, outputs: Vec<ViewerOutput>) {
+        let pixels = outputs
+            .iter()
+            .find_map(|output| match output {
+                ViewerOutput::Frame(frame) => Some(pixel_preparation::prepare(frame)),
+                _ => None,
+            })
+            .unwrap_or(Ok(None));
+        pixel_delivery::deliver_batch(
+            open,
+            service,
+            &|_| panic!("position updates cannot copy content"),
+            pixel_preparation::PreparedBatch { outputs, pixels },
+        );
+    }
+
+    #[test]
+    fn unavailable_vertical_reconciles_displayed_thumb_and_keeps_horizontal_retry() {
+        let (_runtime, manager, open, service) = image_presentation_tests::open();
+        open.timer.stop();
+        image_presentation_tests::present(
+            &open,
+            &service,
+            &|_| {},
+            vec![source_frame(10, 0, 0.25)],
+        );
+        let submitted = Rc::new(RefCell::new(Vec::new()));
+        let capture = submitted.clone();
+        *open.input.borrow_mut() = Rc::new(move |input| {
+            let accepted = !matches!(
+                &input,
+                ViewerInput::Position {
+                    horizontal: true,
+                    ..
+                }
+            );
+            capture.borrow_mut().push(input);
+            accepted
+        });
+        let window = &open.window;
+        // A retained camera can advance the displayed position between worker frames.
+        window.set_displayed_position(0.3125);
+        image_presentation_tests::drag_seek(window, false, 0.625);
+        image_presentation_tests::drag_seek(window, false, 0.875);
+        image_presentation_tests::drag_seek(window, true, 0.5);
+        deliver(
+            &open,
+            &service,
+            vec![unavailable(7, 1), unavailable(7, 3), unavailable(6, 2)],
+        );
+        assert_eq!(window.get_vertical_thumb_position(), 0.875);
+        assert_eq!(window.get_horizontal_position(), 0.5);
+        assert!(window.get_position_pending());
+
+        deliver(&open, &service, vec![unavailable(7, 2)]);
+        assert_eq!(window.get_vertical_thumb_position(), 0.3125);
+        assert_eq!(window.get_displayed_position(), 0.3125);
+        assert_eq!(window.get_horizontal_position(), 0.5);
+        assert!(window.get_position_pending());
+        assert_eq!(open.frame.get(), 10);
+
+        submitted.borrow_mut().clear();
+        flush_position(&open);
+        assert!(matches!(
+            submitted.borrow().as_slice(),
+            [ViewerInput::Position {
+                generation: 7,
+                sequence: 3,
+                horizontal: true,
+                position: 0.5,
+            }]
+        ));
+        manager.close_all();
+    }
+
+    #[test]
+    fn unavailable_vertical_precedes_frame_admission_and_ignores_retired_intent() {
+        let (_runtime, manager, open, service) = image_presentation_tests::open();
+        open.timer.stop();
+        *open.input.borrow_mut() = Rc::new(|_| true);
+        image_presentation_tests::present(
+            &open,
+            &service,
+            &|_| {},
+            vec![source_frame(10, 0, 0.25)],
+        );
+        let window = &open.window;
+
+        image_presentation_tests::drag_seek(window, false, 0.875);
+        deliver(&open, &service, vec![source_frame(11, 0, 0.375)]);
+        assert_eq!(open.frame.get(), 10);
+        deliver(
+            &open,
+            &service,
+            vec![unavailable(7, 1), source_frame(11, 0, 0.375)],
+        );
+        assert_eq!(open.frame.get(), 11);
+        assert_eq!(window.get_displayed_position(), 0.375);
+        assert_eq!(window.get_vertical_thumb_position(), 0.375);
+        assert!(!window.get_position_pending());
+
+        image_presentation_tests::drag_seek(window, false, 0.625);
+        deliver(&open, &service, vec![source_frame(12, 2, 0.625)]);
+        assert!(!window.get_position_pending());
+        window.set_displayed_position(0.75);
+        deliver(&open, &service, vec![unavailable(7, 2)]);
+        assert_eq!(window.get_vertical_thumb_position(), 0.625);
+        assert!(!window.get_position_pending());
+
+        image_presentation_tests::drag_seek(window, false, 0.875);
+        window.invoke_change_mode(1);
+        assert!(!open.text_position.borrow().context_available());
+        let previous = (window.get_position(), window.get_position_pending());
+        deliver(&open, &service, vec![unavailable(7, 3)]);
+        assert_eq!(
+            (window.get_position(), window.get_position_pending()),
+            previous
+        );
+        manager.close_all();
     }
 }

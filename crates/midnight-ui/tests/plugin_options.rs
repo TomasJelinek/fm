@@ -5,8 +5,8 @@ mod ui;
 
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},
-    item_tree::ItemRc,
-    items::{AccessibleRole, TextCursorAffinity, TextInput},
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    items::{AccessibleRole, Flickable, TextCursorAffinity, TextInput},
     window::{WindowInner, WindowKind},
 };
 use midnight_core::{
@@ -411,13 +411,16 @@ fn invalid_extension_draft_blocks_ok_and_corrected_multiline_text_saves_once() {
     assert!(h.saves().is_empty());
     assert!(ui::has_popup(&h.ui.window));
     assert_eq!(h.ui.window.get_options_topic_index(), 5);
-    assert!(
-        !h.ui
-            .window
-            .global::<ViewerPluginsView>()
-            .get_error()
-            .is_empty()
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    let error = view.get_extension_error();
+    assert!(error.contains("Use literal extensions"), "{error}");
+    assert_eq!(
+        view.get_extensions(),
+        "rs; ../bad",
+        "invalid input stays available for correction"
     );
+    let feedback = ui::popup_item(&h.ui.window, error.as_str(), AccessibleRole::Text);
+    assert_inside_viewports(&feedback);
     render::snapshot(&h.ui, "viewer-associations-invalid");
     h.edit(".RS; *.rs\n rust, 日本語");
     h.click("OK", AccessibleRole::Button);
@@ -480,15 +483,36 @@ fn thumbnailer_catalog_shows_details_and_retains_selection_by_identity() {
     let video = view.get_thumbnailer_rows().row_data(1).unwrap();
     assert_eq!(video.id, "midnight-video");
     assert_eq!(video.status, "Installed");
-    assert_eq!(video.description, "Extensions: webm");
+    assert_eq!(view.get_thumbnailer_extensions(), "webm");
+    assert!(view.get_thumbnailer_settings_ready());
+    let extensions = ui::popup_item(
+        &h.ui.window,
+        "Thumbnailer extensions",
+        AccessibleRole::TextInput,
+    );
+    assert_eq!(
+        extensions
+            .accessible_string_property(AccessibleStringProperty::Enabled)
+            .as_deref(),
+        Some("true")
+    );
     assert!(video.kind.contains("animated"));
     assert!(video.location.ends_with("video"));
-    assert!(!video.configurable);
     assert!(
         h.sent.borrow().is_empty(),
         "selection must not start a worker or save settings"
     );
     render::snapshot(&h.ui, "plugin-thumbnailers");
+
+    extensions.accessible_action(&AccessibilityAction::SetValue(".WEBM; *.mp4".into()));
+    h.settle();
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(view.get_thumbnailer_extensions(), ".WEBM; *.mp4");
+    assert!(view.get_thumbnailer_extension_override());
+    assert!(
+        h.sent.borrow().is_empty(),
+        "editing the draft cannot start workers or save"
+    );
 
     let mut reordered = thumbnailers();
     reordered.reverse();
@@ -497,12 +521,42 @@ fn thumbnailer_catalog_shows_details_and_retains_selection_by_identity() {
         .apply(Event::ThumbnailerPluginsListed(Ok(reordered)));
     refresh(&h.ui.window, &h.presenter.borrow());
     h.settle();
+    let view = h.ui.window.global::<ViewerPluginsView>();
     assert_eq!(
         h.ui.window
             .global::<ViewerPluginsView>()
             .get_thumbnailer_selected(),
         0
     );
+    assert_eq!(
+        view.get_thumbnailer_rows().row_data(0).unwrap().id,
+        "midnight-video"
+    );
+    assert_eq!(
+        view.get_thumbnailer_extensions(),
+        ".WEBM; *.mp4",
+        "reordering retains the selected provider's unfinished draft"
+    );
+    let reset = ui::popup_item(
+        &h.ui.window,
+        "Reset thumbnailer extensions",
+        AccessibleRole::Button,
+    );
+    assert_eq!(
+        reset
+            .accessible_string_property(AccessibleStringProperty::Enabled)
+            .as_deref(),
+        Some("true")
+    );
+    h.click("Reset thumbnailer extensions", AccessibleRole::Button);
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(view.get_thumbnailer_extensions(), "webm");
+    assert!(!view.get_thumbnailer_extension_override());
+    assert!(
+        h.sent.borrow().is_empty(),
+        "selection, rescan and Reset remain Options previews"
+    );
+    assert!(h.saves().is_empty());
 }
 
 #[test]
@@ -556,30 +610,14 @@ fn thumbnailer_discovery_failure_is_visible_and_refresh_waits_for_all_catalogs()
 }
 
 #[test]
-fn all_six_installed_viewers_fit_without_catalog_scrolling_at_normal_sizes() {
+fn all_seven_installed_viewers_fit_without_catalog_scrolling_at_normal_sizes() {
     let mut h = Harness::new();
-    let names = [
-        "Text and binary viewer",
-        "Source viewer",
-        "Markdown viewer",
-        "Image viewer",
-        "PDF viewer",
-        "HTML viewer",
-    ];
-    h.ui.window
-        .global::<ViewerPluginsView>()
-        .set_rows(ModelRc::new(VecModel::from(
-            names
-                .iter()
-                .map(|name| ViewerPluginRow {
-                    name: (*name).into(),
-                    version: "1".into(),
-                    enabled: true,
-                    configurable: true,
-                    ..Default::default()
-                })
-                .collect::<Vec<_>>(),
-        )));
+    let catalog = complete_viewer_catalog(0);
+    let names: Vec<_> = catalog.iter().map(|plugin| plugin.name.clone()).collect();
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ViewerPluginsListed(Ok(catalog)));
+    refresh(&h.ui.window, &h.presenter.borrow());
     for (density, font) in [(0, 12), (0, 18), (1, 15)] {
         h.ui.window.invoke_apply_preferences(1, density);
         h.ui.window.invoke_apply_fonts("".into(), font, font);
@@ -590,7 +628,7 @@ fn all_six_installed_viewers_fit_without_catalog_scrolling_at_normal_sizes() {
         let top = list.map_to_native_window(list.geometry().origin).y;
         let bottom = top + list.geometry().size.height;
         let footer_top = refresh.map_to_native_window(refresh.geometry().origin).y;
-        for name in names {
+        for name in &names {
             let row = ui::popup_item(
                 &h.ui.window,
                 &format!("{name} · 1"),
@@ -606,9 +644,153 @@ fn all_six_installed_viewers_fit_without_catalog_scrolling_at_normal_sizes() {
                 row_bottom < footer_top,
                 "{name} must remain above the pinned rescan action"
             );
+            assert_inside_viewports(&row);
         }
-        render::snapshot(&h.ui, &format!("six-viewers-{density}-{font}"));
+        assert_eq!(
+            h.ui.window
+                .global::<ViewerPluginsView>()
+                .get_rows()
+                .row_count(),
+            7
+        );
+        render::snapshot(&h.ui, &format!("seven-viewers-{density}-{font}"));
     }
+}
+
+fn complete_viewer_catalog(additional: usize) -> Vec<ViewerPluginInfo> {
+    let bundled = [
+        ("basic", "Text and binary viewer", vec![]),
+        ("source", "Source viewer", vec!["rs"]),
+        ("markdown", "Markdown viewer", vec!["md"]),
+        ("image", "Image viewer", vec!["png"]),
+        ("pdf", "PDF viewer", vec!["pdf"]),
+        ("html", "HTML viewer", vec!["html"]),
+        ("video", "Video viewer", vec!["mp4", "webm"]),
+    ];
+    let mut catalog: Vec<_> = bundled
+        .into_iter()
+        .map(|(id, name, extensions)| ViewerPluginInfo {
+            id: format!("midnight.viewer.{id}"),
+            name: name.into(),
+            description: String::new(),
+            version: "1".into(),
+            status: "Available".into(),
+            location: if id == "video" {
+                "thumbnailers"
+            } else {
+                "viewers"
+            }
+            .into(),
+            fallback: id == "basic",
+            extensions: extensions.into_iter().map(str::to_owned).collect(),
+        })
+        .collect();
+    catalog.extend((0..additional).map(|index| ViewerPluginInfo {
+        id: format!("vendor.viewer.extra{index}"),
+        name: format!("Extra {index} viewer"),
+        description: String::new(),
+        version: "1".into(),
+        status: "Available".into(),
+        location: "viewers".into(),
+        fallback: false,
+        extensions: vec![format!("extra{index}")],
+    }));
+    catalog
+}
+
+fn viewport_ancestors(item: &ItemRc) -> Vec<ItemRc> {
+    let mut viewports = Vec::new();
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(item) = parent {
+        parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+        if item.downcast::<Flickable>().is_some() {
+            viewports.push(item);
+        }
+    }
+    viewports
+}
+
+fn assert_inside_viewports(item: &ItemRc) {
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    for viewport in viewport_ancestors(item) {
+        let clip = viewport.geometry();
+        let corner = viewport.map_to_native_window(clip.origin);
+        assert!(
+            origin.x >= corner.x - 1.0
+                && origin.y >= corner.y - 1.0
+                && origin.x + rect.width() <= corner.x + clip.width() + 1.0
+                && origin.y + rect.height() <= corner.y + clip.height() + 1.0,
+            "row {origin:?} / {:?} is clipped by {corner:?} / {:?}",
+            rect.size,
+            clip.size
+        );
+    }
+}
+
+#[test]
+fn expanded_viewer_catalog_uses_page_scroll_and_reveals_the_last_keyboard_selection() {
+    let mut h = Harness::new();
+    let catalog = complete_viewer_catalog(13);
+    let count = catalog.len();
+    let last_name = format!("{} · 1", catalog.last().unwrap().name);
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ViewerPluginsListed(Ok(catalog)));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    h.ui.window.invoke_apply_fonts("".into(), 18, 18);
+    h.ui.resize(960, 650);
+    h.settle();
+    let list = ui::popup_item(&h.ui.window, "Viewer priority", AccessibleRole::List);
+    let first = ui::popup_item(
+        &h.ui.window,
+        "Text and binary viewer · 1",
+        AccessibleRole::ListItem,
+    );
+    let row_height = first.geometry().height();
+    assert!(
+        (list.geometry().height() - row_height * count as f32 - 2.0).abs() <= 1.0,
+        "the catalog allocates all {count} rows, without an inner visible-row cap"
+    );
+    first.accessible_action(&AccessibilityAction::Default);
+    h.settle();
+    ui::key(&h.ui.window, Key::End);
+    h.settle();
+    assert_eq!(
+        h.ui.window.global::<ViewerPluginsView>().get_selected(),
+        count as i32 - 1
+    );
+    let last = ui::popup_item(&h.ui.window, &last_name, AccessibleRole::ListItem);
+    let viewports = viewport_ancestors(&last);
+    assert!(
+        viewports.len() >= 2,
+        "catalog and page viewports must be distinct"
+    );
+    let inner = viewports[0].downcast::<Flickable>().unwrap();
+    assert!(
+        inner.as_pin_ref().content_y().get().abs() < 0.01,
+        "the catalog must not scroll internally"
+    );
+    assert!(
+        viewports[1..].iter().any(|item| item
+            .downcast::<Flickable>()
+            .unwrap()
+            .as_pin_ref()
+            .content_y()
+            .get()
+            < -1.0),
+        "keyboard selection must scroll the enclosing page"
+    );
+    assert_inside_viewports(&last);
+    let refresh = ui::popup_item(&h.ui.window, "Rescan all plugins", AccessibleRole::Button);
+    assert_inside_viewports(&refresh);
+    let last_bottom =
+        last.map_to_native_window(last.geometry().origin).y + last.geometry().height();
+    assert!(
+        last_bottom < refresh.map_to_native_window(refresh.geometry().origin).y,
+        "the revealed row must not overlap the pinned rescan action"
+    );
+    render::snapshot(&h.ui, "expanded-viewers-last-selected");
 }
 
 fn package(

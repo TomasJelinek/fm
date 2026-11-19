@@ -195,6 +195,7 @@ fn actual_thumbnail_service_decodes_image_and_video_from_native_plugin() {
         .collect();
     assert!(service.set_view(service::View {
         generation: 1,
+        thumbnailer_associations: Default::default(),
         targets
     }));
     let deadline = Instant::now() + Duration::from_secs(30);

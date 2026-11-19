@@ -26,7 +26,11 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     for row in &mut rows {
         make_shown(&mut row.title);
         make_shown(&mut row.detail);
+        make_shown(&mut row.progress_detail);
         make_shown(&mut row.current_path);
+        make_shown(&mut row.transfer_directory);
+        make_shown(&mut row.transfer_name);
+        make_shown(&mut row.transfer_outcome);
         make_shown(&mut row.file_progress_title);
     }
     // Copy/Move/Run often have no native icon; an absent image never equals

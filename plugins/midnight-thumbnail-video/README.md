@@ -1,16 +1,18 @@
-# Video thumbnail provider
+# FFmpeg thumbnail and playback workers
 
-Independent executable provider. It consumes only the versioned public thumbnail
-SDK and the host's read-only broker stream; it never receives a media pathname.
+The normal package installs the thumbnail executable and the video playback
+executable together. Both use the public worker SDK and a host-owned read-only
+capture. F3 opens the Video viewer using the configured filename associations.
 
-The initial supported codec set is **VP8, VP9, Theora, FFV1 and raw video** in
-Matroska/WebM, AVI and Ogg containers. This is intentionally an explicit deployment
-allowlist. H.264/H.265, MPEG-4, AV1, audio, network URLs and playlists are not enabled
-by this baseline. A different codec set requires its own licensing/security review.
+The shared runtime enables **VP8, VP9, Theora, FFV1 and raw video** in
+Matroska/WebM, AVI, Ogg and MOV/MP4 containers. Playback also supports Opus audio.
+Container labels indicate which files can be tried. Playback still requires
+an eligible video stream. Contained files with an unavailable audio codec play
+with a visible audio notice.
 
 Native target: **FFmpeg 9.0.2**, dynamically linked under LGPL-2.1-or-later.
 Rust wrapper target: **ffmpeg-next 9.0.0**, WTFPL, default features disabled;
-only `codec`, `format` and `software-scaling` are enabled. Do not substitute a
+it enables `codec`, `format`, `software-scaling` and `software-resampling`. Do not substitute a
 generic full FFmpeg distribution or enable GPL/nonfree features.
 
 Build the verified source with `scripts/build-media-ffmpeg.sh`. It deliberately
@@ -51,10 +53,11 @@ Primary sources checked 6 November 2026:
 - [FFmpeg license terms](https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/LICENSE.md)
 - [ffmpeg-next 9.0.0 manifest and features](https://github.com/zmwangx/rust-ffmpeg/blob/v9.0.0/Cargo.toml)
 
-FFmpeg 9.0.2 was built natively for Windows MSVC and Linux x86-64 from the verified
-source. Both targets pass real sampled AVI decoding through their restricted
-helper process, plus malformed/playlist rejection tests. Windows private
-installation additionally passes provider discovery and decoding with only the
-four explicit runtime-file ReadAndExecute grants. See the repository's
-`docs/verification/2026-11-06-thumbnail-progress.md` for exact qualification and
-the remaining main-application release checks.
+The earlier thumbnail profile passed sampled AVI decoding through restricted
+workers on Windows MSVC and Linux x86-64. The playback profile requires fresh
+native qualification on both targets. Test an eligible VP9 and Opus MP4 through
+both installed executables, then check playback, pause, seek, source revocation,
+EOF and retirement through F3. Bind the run to the single installed FFmpeg
+library set and the package manifest.
+
+[FFmpeg license and configuration guidance](https://ffmpeg.org/legal.html)

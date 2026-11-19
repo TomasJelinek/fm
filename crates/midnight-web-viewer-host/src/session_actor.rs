@@ -459,7 +459,32 @@ pub(super) fn run(
     viewport: api::Viewport,
     shared: &Shared,
 ) -> Result<End, String> {
-    provider.validate().map_err(|error| error.to_string())?;
+    #[cfg(debug_assertions)]
+    let validation_trace = {
+        use std::sync::OnceLock;
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        static VALIDATION: AtomicU64 = AtomicU64::new(1);
+        ENABLED
+            .get_or_init(|| {
+                std::env::var_os("MIDNIGHT_VIEWER_OPEN_TRACE").is_some_and(|value| value == "1")
+            })
+            .then(|| (VALIDATION.fetch_add(1, Ordering::Relaxed), Instant::now()))
+    };
+    let validation = provider.validate();
+    #[cfg(debug_assertions)]
+    let validation_trace = validation_trace.map(|(ordinal, started)| (ordinal, started.elapsed()));
+    #[cfg(debug_assertions)]
+    if let Some((ordinal, elapsed)) = validation_trace {
+        let stderr = io::stderr();
+        let _ = writeln!(
+            stderr.lock(),
+            "web_viewer_open validation={} phase=provider_validate elapsed_us={} success={}",
+            ordinal,
+            elapsed.as_micros(),
+            u8::from(validation.is_ok()),
+        );
+    }
+    validation.map_err(|error| error.to_string())?;
     let browser =
         midnight_worker_platform::browser::spawn_with_host_shortcuts(&provider.executable)
             .map_err(|error| format!("Chromium startup: {error}"))?;

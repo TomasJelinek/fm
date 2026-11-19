@@ -28,12 +28,13 @@ no host-source, other-plugin, Slint, filesystem-open or network dependency.
 | SQL | sql |
 | YAML | yaml, yml |
 | Lua | lua |
-| XML / XAML / MSBuild projects and resources | xml, xsd, xsl, xslt, xaml, csproj, fsproj, vbproj, vcxproj, props, targets, resx |
+| XML / XAML / MSBuild projects, resources and Windows manifests | xml, xsd, xsl, xslt, xaml, csproj, fsproj, vbproj, vcxproj, props, targets, resx, manifest |
+| Universal Scene Description ASCII (USDA) | usda |
 
 Extension recognition is ASCII case insensitive. Extensionless Python, shell
 Node and Lua scripts are recognized from their first shebang line after Open.
 Host routing must choose this package before a shebang can be inspected; the
-manifest does not claim every extensionless file. The 20 profiles have fixtures
+manifest does not claim every extensionless file. The 21 profiles have fixtures
 checking their actual lexical styles (JSON has no comments). These are lexical profiles, not compiler grammars: interpolation,
 heredocs, JSX markup, macro expansion and language-specific semantic analysis
 are not promised. Unknown names remain plain text.
@@ -45,6 +46,21 @@ complete-line checkpoints; ordinary mixed content stays plain. This is colouring
 not XML validation: DTDs are inert text, references are never expanded, and no
 external resources are read. Declaration nesting is bounded to 16. XML defaults
 do not claim HTML or SVG. Saved per-plugin extension overrides remain in control.
+
+Windows `.manifest` files use that same XML lexer. USDA has its own finite
+streaming lexer for prim/edit keywords, Sdf value types, schema names after prim
+specifiers, decimal/exponent/non-finite numbers, quoted and triple-quoted strings,
+asset literals, angle-bracket scene paths and hash/slash/block comments. Triple
+asset delimiters and their escapes follow the
+[OpenUSD text grammar](https://github.com/PixarAnimationStudios/OpenUSD/blob/v26.11/pxr/usd/sdf/textFileFormatParser.h);
+assets stay single-line, while triple-quoted strings retain multiline state.
+Unknown namespace identifiers stay plain. Long literals, comments, names and
+numbers retain finite Copy state, with at most 32 UTF-8 bytes of ambiguous suffix
+left to the caller. Existing checkpoints and optional preparation recover that
+state for distant windows. No USD document, layer, asset or scene is parsed,
+evaluated or loaded. `.usd`, `.usdc` and `.usdz` are not claimed. Default extension
+advertisements do not replace an explicit saved per-plugin extension override,
+including an empty override; explicit Text mode remains unhighlighted.
 
 Lua highlights keywords, numbers, short strings and comments, and matched-level
 long bracket strings/comments. Short-string escaped newlines and `\z` whitespace
@@ -102,7 +118,7 @@ Preparation uses at most one 16 KiB positional read at a time, at most 64 servic
 replies and 256 KiB delivered bytes per quantum (including short replies), and
 at most 64 KiB decoded text per turn. Its frontier excludes incomplete encoded
 units and unconsumed lexical suffixes. A fixed raw tail handles one-byte replies;
-huge identifiers, raw strings, Lua brackets, YAML keys/blocks and XML names/entities
+huge identifiers, raw strings, Lua brackets, YAML keys/blocks, XML names/entities and USDA literals
 use streaming state/counters instead of token or line buffers. Token roles that
 depend on distant terminators are resolved by bounded background lookahead before
 readiness, with at most two small role hints. The complete retained syntax index,

@@ -132,29 +132,39 @@ fn dismiss_native_notice(windows: &NativeWindows) {
 
 #[test]
 fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard() {
-    destination_editor(Key::F5, false, false, true, false);
+    destination_editor(Key::F5, false, false, true, false, true);
 }
 #[test]
 fn f6_move_confirmation_consumes_enter_escape_and_busy_queue_without_using_clipboard() {
-    destination_editor(Key::F6, true, false, true, false);
+    destination_editor(Key::F6, true, false, true, false, true);
 }
 #[test]
 fn exact_modified_time_copy_requires_explicit_option_and_survives_queue_refusal() {
-    destination_editor(Key::F5, false, true, true, true);
+    destination_editor(Key::F5, false, true, true, true, true);
 }
 #[test]
 fn exact_modified_time_move_requires_explicit_option_and_survives_queue_refusal() {
-    destination_editor(Key::F6, true, true, true, true);
+    destination_editor(Key::F6, true, true, true, true, true);
 }
 
 #[test]
 fn quick_copy_policy_is_bound_to_the_committed_verification_setting() {
-    destination_editor(Key::F5, false, false, false, true);
+    destination_editor(Key::F5, false, false, false, true, true);
 }
 
 #[test]
 fn quick_move_policy_is_conditional_on_copying_being_needed() {
-    destination_editor(Key::F6, true, false, false, true);
+    destination_editor(Key::F6, true, false, false, true, true);
+}
+
+#[test]
+fn unchecked_directory_links_enqueue_empty_directories_for_copy() {
+    destination_editor(Key::F5, false, false, true, true, false);
+}
+
+#[test]
+fn unchecked_directory_links_enqueue_empty_directories_for_move() {
+    destination_editor(Key::F6, true, false, true, true, false);
 }
 
 #[test]
@@ -263,6 +273,10 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     ui.draw();
     assert!(!ui.window.get_copy_draft_token().is_empty());
     let child = draft_child(&windows);
+    assert!(
+        accessible_item(&child, AccessibleRole::Checkbox, "Follow directory links")
+            .is_none_or(|item| !item.is_visible())
+    );
     let option = accessible_item(
         &child,
         AccessibleRole::Checkbox,
@@ -309,6 +323,7 @@ fn destination_editor(
     preserve: bool,
     checksums: bool,
     wait_for_earlier: bool,
+    follow_directory_links: bool,
 ) {
     let (mut ui, windows) = multi_window_ui();
     let base = std::env::temp_dir().join("copy dialog 文档");
@@ -413,12 +428,28 @@ fn destination_editor(
         "Wait for other operations to finish",
     )
     .expect("Copy and Move both expose the wait option");
+    let links = accessible_item(&child, AccessibleRole::Checkbox, "Follow directory links")
+        .expect("Copy and Move both expose the link option");
+    assert_eq!(
+        links
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "true"
+    );
     assert_eq!(
         wait.accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
         "false"
     );
     input::key(&child, Key::Tab);
+    input::key(&child, Key::Tab);
+    input::key(&child, Key::Space);
+    assert_eq!(
+        links
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "false"
+    );
     input::key(&child, Key::Tab);
     input::key(&child, Key::Space);
     assert_eq!(
@@ -472,6 +503,21 @@ fn destination_editor(
         "false",
         "every new draft must start unchecked",
     );
+    let links =
+        accessible_item(&child, AccessibleRole::Checkbox, "Follow directory links").unwrap();
+    assert_eq!(
+        links
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "true",
+        "new drafts default to following directory links"
+    );
+    if !follow_directory_links {
+        input::click(&child, &links);
+        let editor =
+            accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
+        input::click(&child, &editor);
+    }
     if wait_for_earlier {
         input::click(&child, &wait);
         let editor =
@@ -498,11 +544,11 @@ fn destination_editor(
         );
     }
     let destination = base.join("another target");
-    // Both directions include both checkboxes and stay within the modal form.
+    // Both directions include the three checkboxes and stay within the modal form.
     let inner = i_slint_core::window::WindowInner::from_pub(child.window());
     let editor = inner.focus_item.borrow().upgrade().unwrap();
     for reverse in [false, true] {
-        for _ in 0..5 {
+        for _ in 0..6 {
             if reverse {
                 input::chord(&child, &[Key::Shift], Key::Tab);
             } else {
@@ -540,6 +586,17 @@ fn destination_editor(
         if wait_for_earlier { "true" } else { "false" },
         "rejected admission must preserve the chosen wait policy"
     );
+    assert_eq!(
+        links
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        if follow_directory_links {
+            "true"
+        } else {
+            "false"
+        },
+        "rejected admission must preserve the chosen link policy"
+    );
     let error = ui.window.get_copy_draft_error();
     assert!(!error.is_empty());
     assert!(
@@ -571,49 +628,45 @@ fn destination_editor(
     } else {
         TransferStartPolicy::Immediate
     };
-    let command = if preserve {
-        let Command::EnqueueTransferWithMetadata(request) = &queued[0] else {
-            panic!("An explicitly checked option must enqueue a required-metadata transfer");
-        };
-        assert_eq!(
-            request.metadata,
+    let [Command::EnqueueCopyWithOptions(options)] = queued.as_slice() else {
+        panic!("the dialog must submit its typed options exactly once");
+    };
+    assert_eq!(
+        options.links,
+        if follow_directory_links {
+            CopyLinkPolicy::FollowDirectoryContents
+        } else {
+            CopyLinkPolicy::EmptyDirectories
+        }
+    );
+    let CopyOptionsInput::Native(request) = &options.input else {
+        panic!("the dialog must retain the native selection");
+    };
+    assert_eq!(
+        request.metadata,
+        if preserve {
             TransferMetadataPolicy::RequireModifiedTime
-        );
-        assert_eq!(
-            request.intent,
-            if moving {
-                TransferIntent::Move
-            } else {
-                TransferIntent::Copy
-            }
-        );
-        let MetadataTransferInput::Selected(request) = &request.input else {
-            panic!("The captured selection must remain shared");
-        };
-        assert_eq!(request.start_policy, expected_start);
-        assert_eq!(request.destination, destination);
-        assert_eq!(
-            request.files.fallback.as_ref(),
-            Some(&base.join("file.txt"))
-        );
-        None
-    } else {
-        Some(&queued[0])
+        } else {
+            TransferMetadataPolicy::ContentOnly
+        }
+    );
+    assert_eq!(
+        request.intent,
+        if moving {
+            TransferIntent::Move
+        } else {
+            TransferIntent::Copy
+        }
+    );
+    let MetadataTransferInput::Selected(request) = &request.input else {
+        panic!("the captured selection must remain shared");
     };
-    let request = match command {
-        Some(Command::EnqueueSelectedCopy(request)) if !moving => Some(request),
-        Some(Command::EnqueueSelectedMove(request)) if moving => Some(request),
-        None => None,
-        _ => panic!("The unchecked default must enqueue the existing content-only request"),
-    };
-    if let Some(request) = request {
-        assert_eq!(request.start_policy, expected_start);
-        assert_eq!(request.destination, destination);
-        assert_eq!(
-            request.files.fallback.as_ref(),
-            Some(&base.join("file.txt"))
-        );
-    }
+    assert_eq!(request.start_policy, expected_start);
+    assert_eq!(request.destination, destination);
+    assert_eq!(
+        request.files.fallback.as_ref(),
+        Some(&base.join("file.txt"))
+    );
     ui.window.hide().unwrap();
 }
 
@@ -992,6 +1045,25 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
             .unwrap(),
         "true"
     );
+    input::key(&test.native, Key::Tab);
+    compact_settle(&mut test);
+    let links = compact_item(&test, AccessibleRole::Checkbox, "Follow directory links");
+    compact_assert_focus(&test, &links);
+    compact_assert_visible(
+        &test,
+        &links,
+        true,
+        "keyboard directory-link checkbox indicator",
+    );
+    assert_eq!(
+        links
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "true"
+    );
+    input::chord(&test.native, &[Key::Shift], Key::Tab);
+    compact_settle(&mut test);
+    compact_assert_focus(&test, &option);
     refresh(&test.window, &state.borrow());
     compact_settle(&mut test);
     test.resize(390, 300);
@@ -1026,7 +1098,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     edited.insert(caret, 'X');
     compact_assert_edit(&input, &edited, caret + 1);
     compact_fixed_controls(&test, action);
-    for _ in 0..4 {
+    for _ in 0..5 {
         input::key(&test.native, Key::Tab);
         compact_settle(&mut test);
     }
@@ -1039,10 +1111,14 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     compact_settle(&mut test);
     assert!(test.window.get_copy_draft_token().is_empty());
     let queued = commands.borrow();
-    let [Command::EnqueueTransferWithMetadata(request)] = queued.as_slice() else {
+    let [Command::EnqueueCopyWithOptions(options)] = queued.as_slice() else {
         panic!(
             "metadata confirmation must admit exactly one captured {action} request: {queued:?}"
         );
+    };
+    assert_eq!(options.links, CopyLinkPolicy::FollowDirectoryContents);
+    let CopyOptionsInput::Native(request) = &options.input else {
+        panic!("metadata confirmation changed its native source");
     };
     assert_eq!(
         request.metadata,

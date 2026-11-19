@@ -242,7 +242,7 @@ impl Worker {
             && self.continuation.is_none()
             && self.raster.continuing.is_none()
             && !self.raster_rebase_waiting()
-            && self.queued_scroll == [0.0; 2]
+            && self.motion.is_idle()
             && self.page.is_some()
             && self.shaped.is_some()
     }
@@ -591,6 +591,8 @@ impl Worker {
             selected.and_then(|(start, end)| text_at(&page, start).zip(text_at(&page, end)));
         if (self.selection.is_none() || selection.is_some())
             && let Ok((shaped, origin)) = self.source_restyle_layout(&page, &view)
+            && crate::viewport::source_minimum_origin(&page, &shaped)
+                .is_some_and(|minimum| origin[1] >= minimum)
         {
             self.cancel_locate();
             self.text.page(self.page.as_ref(), &page);
@@ -599,8 +601,9 @@ impl Worker {
         }
 
         // The selection can span most of the old bounded page while the style
-        // packet covers only its view. Replace exactly the verified style
-        // interval, retaining text/anchors and the original selection indices.
+        // packet covers only its view or lacks its leading logical context.
+        // Replace exactly the verified style interval, retaining the previous
+        // text/anchors, line context and original selection indices.
         let previous = self.page.as_ref().ok_or_else(RestyleError::uncorrelated)?;
         let roles = replace_overlap(&previous.roles, &page.roles, &overlap)?;
         let styles = replace_overlap(&previous.styles, &page.styles, &overlap)?;

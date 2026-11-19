@@ -13,6 +13,8 @@ export global OperationPresentation {
     in-out property <string> policy;
     in-out property <bool> wait-visible;
     in-out property <bool> wait-checked;
+    in-out property <bool> follow-directory-links-visible;
+    in-out property <bool> follow-directory-links-checked: true;
     in-out property <string> initial-name;
     in-out property <string> input-label;
     in-out property <int> selection-end;
@@ -70,6 +72,8 @@ export component EmbeddedOperation inherits Rectangle {
                 policy: OperationPresentation.policy;
                 wait-visible: OperationPresentation.wait-visible;
                 wait-checked <=> OperationPresentation.wait-checked;
+                follow-directory-links-visible: OperationPresentation.follow-directory-links-visible && self.current;
+                follow-directory-links-checked <=> OperationPresentation.follow-directory-links-checked;
                 initial-name: OperationPresentation.initial-name;
                 input-label: OperationPresentation.input-label;
                 selection-end: OperationPresentation.selection-end;

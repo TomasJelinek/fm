@@ -53,11 +53,11 @@ pub trait CapturedTransferSources: std::fmt::Debug + Send + Sync {
         service: &dyn TransferService,
         cancel: &Cancellation,
     ) -> Result<PreparedCapturedTransfer, FsError>;
-    /// Optional explicit link-preserving Copy capture. Reject delegates exactly
-    /// to legacy preparation; unimplemented Preserve fails before opening roots.
-    /// Implementations retain the policy and original raw occurrence/pins through
-    /// recursive children and retry, never recapturing a link's browsed referent.
-    /// Preserve with a Move intent must be rejected before preparation or writes.
+    /// Prepare captured sources with an explicit copy-side link policy. Reject uses
+    /// legacy preparation. Unimplemented policies fail before opening roots.
+    /// Keep the exact original occurrence and its retained pins through recursion
+    /// and retry. A browsed referent does not grant authority for the selected link.
+    /// Preserve is available only for Copy.
     fn prepare_with_links(
         &self,
         service: &dyn TransferService,
@@ -74,6 +74,16 @@ pub trait CapturedTransferSources: std::fmt::Debug + Send + Sync {
                     "link-preserving captured preparation is unsupported",
                 ),
             )),
+            CopyLinkPolicy::FollowDirectoryContents | CopyLinkPolicy::EmptyDirectories => {
+                Err(FsError::from_io(
+                    "prepare captured transfer",
+                    std::path::Path::new(""),
+                    std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "captured directory link preparation is unsupported",
+                    ),
+                ))
+            }
         }
     }
 }
@@ -82,6 +92,7 @@ pub trait CapturedTransferSources: std::fmt::Debug + Send + Sync {
 pub enum PreparedCapturedTransfer {
     Copy(VecDeque<Box<dyn TransferSource>>),
     Move(VecDeque<PreparedTransferMove>),
+    MoveWithDirectoryLinks(VecDeque<crate::PreparedTransferMoveEntry>),
 }
 
 /// Retire sources on a backend worker when dismissing or rejecting this result.

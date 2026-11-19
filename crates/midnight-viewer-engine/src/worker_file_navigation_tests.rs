@@ -3,6 +3,58 @@ use super::*;
 const ORDER: [&str; 3] = ["third.rs", "first.md", "second.txt"];
 
 #[test]
+fn failed_replacement_capture_retires_video_before_any_new_layout() {
+    let (mut worker, output) = worker();
+    captured_order(&mut worker, &["first.mp4", "second.txt"]);
+    worker.mode = VIEWER_MODE_VIDEO;
+    worker.video = Some(crate::video_actor::VideoView::finished_for_test(
+        MediaSessionId(7),
+    ));
+    worker.input(ViewerInput::NextFile, &output);
+    assert_eq!(worker.current, 1);
+    assert!(worker.video.is_none());
+    let events = output.take();
+    assert!(events.iter().any(|event| matches!(
+        event, ViewerOutput::MediaRetired { session } if *session == MediaSessionId(7)
+    )));
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, ViewerOutput::LayoutSelected { .. }))
+    );
+    assert_eq!(
+        serve_capture(&mut worker, &output, Err("Access denied".into())),
+        1
+    );
+    let events = output.take();
+    assert!(events.iter().all(|event| !matches!(
+        event,
+        ViewerOutput::LayoutSelected { .. } | ViewerOutput::MediaRetired { .. }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event, ViewerOutput::Status(message) if message == "Access denied"
+    )));
+}
+
+#[test]
+fn navigation_without_an_admitted_neighbor_does_not_retire_video() {
+    let (mut worker, output) = worker();
+    worker.mode = VIEWER_MODE_VIDEO;
+    worker.video = Some(crate::video_actor::VideoView::finished_for_test(
+        MediaSessionId(7),
+    ));
+    assert!(worker.files.is_empty());
+    for input in [ViewerInput::NextFile, ViewerInput::PreviousFile] {
+        worker.input(input, &output);
+        assert_eq!(
+            worker.video.as_ref().unwrap().session_id(),
+            MediaSessionId(7)
+        );
+        assert!(output.take().is_empty());
+    }
+}
+
+#[test]
 fn previous_and_next_file_wrap_in_captured_order_and_reset_mode() {
     let (mut worker, output) = worker();
     captured_order(&mut worker, &ORDER);

@@ -129,6 +129,33 @@ The settings codec and persistence contract are described in
 and presentation updates. Source reads/indexing remain in the independent plugin;
 text shaping, rasterization and annotation preparation remain on backend workers.
 
+## Video canvas and playback
+
+Video uses an author-pixel canvas, closer to image presentation than text reflow.
+The active media surface fits the current frame to the live canvas with aspect
+ratio preserved and unused space around the centered frame. App palette changes
+style the chrome and canvas background; they neither recolor video pixels nor
+make their delivery wait for a text-palette acknowledgement.
+
+Playback has dedicated, session-bound Play/Pause controls, a seek timeline,
+position/duration text and pending/error feedback. The active media layout hides
+text Find, typography and scrollbars. Timeline seeks use media controls rather
+than text scroll positions; seek and replay frames retain their media-session and
+applied-control fences.
+
+Resizing the canvas, including a playback status row appearing or collapsing,
+preserves the existing `MediaSessionId` and its generation. An admitted video
+resize cancels the text scroll-position gate; it must not wait for a newer text
+generation before accepting advancing video frames. Layout and media-control
+checks still apply. Text and Source resize keep their distinct newer-generation
+requirement. Image zoom/camera and retained image tiles keep their existing
+presentation paths; this video fitting contract does not change them.
+
+Current scoped native verification covers silent synthetic-AVI Play/Pause,
+paused resize, seek, EOF and replay. It does not qualify audio, full codec
+coverage, Linux or performance. See the [media verification checkpoint](../verification/2026-11-19-media-follow-up.md)
+for source identities, receipts and remaining acceptance.
+
 ## Find (in development)
 
 The new visible **Find** button opens the existing search field through the same

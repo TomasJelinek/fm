@@ -449,6 +449,7 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
         query: "row 0200".into(),
         backwards: false,
         case_sensitive: true,
+        whole_words: false,
     }));
     let found = wait_frame(&session, "Source exact search progress", |frame| {
         frame.mode == 2 && frame.status.starts_with("Ln 200, Col ")

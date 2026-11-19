@@ -6,12 +6,25 @@ use crate::{
 };
 use std::{ffi::OsStr, fmt, path::Path};
 
-/// Immutable per-Copy choice. Legacy requests and each new draft reject links.
+/// Immutable link policy for the copy side of a transfer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CopyLinkPolicy {
+    /// Legacy preparation rejects links.
     #[default]
     Reject,
+    /// Stage and verify the exact supported link representation as a leaf.
     Preserve,
+    /// Materialize each qualified directory link as a directory with verified contents.
+    FollowDirectoryContents,
+    /// Materialize each qualified directory link as an empty ordinary directory.
+    EmptyDirectories,
+}
+
+impl CopyLinkPolicy {
+    /// Whether the source must project supported directory links as ordinary directories.
+    pub fn materializes_directory_links(self) -> bool {
+        matches!(self, Self::FollowDirectoryContents | Self::EmptyDirectories)
+    }
 }
 
 /// Reuses the existing intent, verification and required-metadata inputs.
@@ -21,8 +34,9 @@ pub enum CopyOptionsInput {
     Captured(CapturedTransferRequest),
 }
 
-/// One explicit options request; Preserve with Move or required modified time
-/// must be refused before preparation or writes. Admission freezes this policy.
+/// Explicit options frozen at admission. Preserve requires content-only Copy.
+/// Directory materialization applies when contents are copied. Move requires
+/// independent authority over the original link to finalize a materialized branch.
 #[derive(Clone, Debug)]
 pub struct CopyOptionsRequest {
     pub input: CopyOptionsInput,
@@ -444,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn default_service_reject_delegates_but_preserve_never_opens_legacy_source() {
+    fn default_service_reject_delegates_but_explicit_link_options_fail_closed() {
         let service = LegacyService::default();
         let cancel = Cancellation::default();
         let path = Path::new("captured-link");
@@ -452,16 +466,22 @@ mod tests {
             .prepare_transfer_source_with_links(path, CopyLinkPolicy::Reject, &cancel)
             .unwrap();
         assert_eq!(service.calls.load(Ordering::Relaxed), 1);
-        let error = service
-            .prepare_transfer_source_with_links(path, CopyLinkPolicy::Preserve, &cancel)
-            .err()
-            .unwrap();
-        assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
+        for policy in [
+            CopyLinkPolicy::Preserve,
+            CopyLinkPolicy::FollowDirectoryContents,
+            CopyLinkPolicy::EmptyDirectories,
+        ] {
+            let error = service
+                .prepare_transfer_source_with_links(path, policy, &cancel)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
+        }
         assert_eq!(service.calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn default_capture_reject_delegates_but_preserve_never_prepares_legacy_roots() {
+    fn default_capture_reject_delegates_but_explicit_link_options_fail_closed() {
         let sources = LegacyCaptured::default();
         let service = LegacyService::default();
         let cancel = Cancellation::default();
@@ -469,11 +489,17 @@ mod tests {
             .prepare_with_links(&service, CopyLinkPolicy::Reject, &cancel)
             .unwrap();
         assert_eq!(sources.calls.load(Ordering::Relaxed), 1);
-        let error = sources
-            .prepare_with_links(&service, CopyLinkPolicy::Preserve, &cancel)
-            .err()
-            .unwrap();
-        assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
+        for policy in [
+            CopyLinkPolicy::Preserve,
+            CopyLinkPolicy::FollowDirectoryContents,
+            CopyLinkPolicy::EmptyDirectories,
+        ] {
+            let error = sources
+                .prepare_with_links(&service, policy, &cancel)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
+        }
         assert_eq!(sources.calls.load(Ordering::Relaxed), 1);
         assert_eq!(service.calls.load(Ordering::Relaxed), 0);
     }

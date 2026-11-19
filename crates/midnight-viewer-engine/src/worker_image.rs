@@ -242,6 +242,7 @@ impl Worker {
         };
         output.put(ViewerOutput::Frame(Box::new(ViewerFrame {
             generation: self.positions.generation,
+            media_control: None,
             position_sequence: [0; 2],
             revision,
             mode: VIEWER_MODE_IMAGE,

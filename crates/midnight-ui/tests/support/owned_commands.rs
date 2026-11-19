@@ -146,6 +146,7 @@ impl OwnedCommandScope for FixtureScope {
             Command::SavePreferences { preferences, .. } => self.retire(Box::new((
                 preferences.user_commands.clone(),
                 preferences.viewer_associations.clone(),
+                preferences.thumbnailer_associations.clone(),
                 preferences.filename_colors.clone(),
             ))),
             Command::PaneCommitted(source) => self.retire(Box::new(source.entries.clone())),
@@ -209,6 +210,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::DecideCopy(_)
             | Command::DecideRename(_)
             | Command::CancelCopy(_)
+            | Command::CopyCancelConfirmation { .. }
             | Command::SetCopyPaused { .. }
             | Command::SetOperationPaused { .. }
             | Command::DetachDragDrop { .. }
@@ -233,6 +235,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::ShowProperties { .. }
             | Command::OpenEntry { .. }
             | Command::ResolveDirectoryLink { .. }
+            | Command::ReadDirectoryLinkTarget { .. }
             | Command::ComputeEntrySize { .. }
             | Command::CancelFolderSizes { .. }
             | Command::RetryDirectoryWithElevation { .. }

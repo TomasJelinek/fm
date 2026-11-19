@@ -1,0 +1,80 @@
+import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
+import { ThemedLineEdit } from "../../midnight-ui/ui/content-controls.slint";
+import { WrappingCheckBox } from "../../midnight-ui/ui/wrapping-check-box.slint";
+import { Theme } from "../../midnight-ui/ui/theme.slint";
+
+export component CompareFindBar inherits VerticalLayout {
+    in property <length> font-size: Theme.font-size;
+    in property <length> control-height: Theme.control-height;
+    in property <bool> compact;
+    in property <int> focus-request;
+    in-out property <string> query;
+    in-out property <bool> case-sensitive;
+    in-out property <bool> whole-words;
+    in property <string> summary;
+    callback search(bool);
+    callback edited();
+    callback options-changed();
+    callback clear();
+    public function focus-query() { edit.focus-value(); edit.select-all(); }
+    init => { root.focus-query(); }
+    changed focus-request => { root.focus-query(); }
+    spacing: 4px;
+    HorizontalLayout {
+        spacing: 4px; height: root.control-height;
+        edit := ThemedLineEdit {
+            font-size: root.font-size; control-height: root.control-height;
+            text <=> root.query; placeholder-text: "Find in both files";
+            accessible-label: "Find in compared files";
+            accepted => { root.search(false); }
+            edited => { root.edited(); }
+            key-pressed(event) => {
+                if event.text == Key.Return {
+                    root.search(event.modifiers.shift); return accept;
+                }
+                reject
+            }
+        }
+        ActionButton {
+            font-size: root.font-size; control-height: root.control-height;
+            compact: true; text: "×"; accessible-label: "Clear Find";
+            min-width: root.control-height; max-width: root.control-height;
+            enabled: root.query != "";
+            clicked => { root.query = ""; root.clear(); edit.focus-value(); }
+        }
+        ActionButton {
+            font-size: root.font-size; control-height: root.control-height;
+            compact: root.compact; text: root.compact ? "‹" : "Previous";
+            accessible-label: "Previous match (Shift+F3)";
+            horizontal-stretch: 0; enabled: root.query != "";
+            clicked => { root.search(true); }
+        }
+        ActionButton {
+            font-size: root.font-size; control-height: root.control-height;
+            compact: root.compact; text: root.compact ? "›" : "Next";
+            accessible-label: "Next match (F3)";
+            horizontal-stretch: 0; enabled: root.query != "";
+            clicked => { root.search(false); }
+        }
+    }
+    HorizontalLayout {
+        spacing: 10px; height: root.control-height;
+        WrappingCheckBox {
+            font-size: root.font-size; control-height: root.control-height;
+            text: "Aa"; accessible-name: "Case sensitive";
+            checked <=> root.case-sensitive; horizontal-stretch: 0;
+            toggled => { root.options-changed(); }
+        }
+        WrappingCheckBox {
+            font-size: root.font-size; control-height: root.control-height;
+            text: "Whole words"; checked <=> root.whole-words;
+            horizontal-stretch: 0;
+            toggled => { root.options-changed(); }
+        }
+        Text {
+            text: root.summary; color: Theme.text; font-size: root.font-size;
+            vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+            accessible-role: text; accessible-label: "Find result"; accessible-value: root.summary;
+        }
+    }
+}

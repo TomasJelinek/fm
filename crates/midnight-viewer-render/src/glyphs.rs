@@ -179,13 +179,24 @@ impl GlyphPainter {
         view: Viewport,
         raster: &mut RasterMut<'_>,
     ) -> Result<(), LayoutError> {
-        self.paint_traced(page, view, raster, &mut timing::Trace::new())
+        self.paint_traced(page, view, None, raster, &mut timing::Trace::new())
+    }
+
+    pub(crate) fn paint_annotation(
+        &mut self,
+        page: &TextPage,
+        view: Viewport,
+        origin: [f64; 2],
+        raster: &mut RasterMut<'_>,
+    ) -> Result<(), LayoutError> {
+        self.paint_traced(page, view, Some(origin), raster, &mut timing::Trace::new())
     }
 
     fn paint_traced(
         &mut self,
         page: &TextPage,
         view: Viewport,
+        precise_origin: Option<[f64; 2]>,
         raster: &mut RasterMut<'_>,
         trace: &mut timing::Trace,
     ) -> Result<(), LayoutError> {
@@ -197,18 +208,45 @@ impl GlyphPainter {
         // once per guard refill; only parts, lines and glyphs that can reach it run.
         let top = view.origin[1];
         let bottom = top + view.height as f32;
+        let origin = precise_origin.unwrap_or_else(|| view.origin.map(f64::from));
+        let precise_bounds = precise_origin.map(|origin| {
+            [
+                origin[0],
+                origin[1],
+                origin[0] + f64::from(view.width),
+                origin[1] + f64::from(view.height),
+            ]
+        });
         if let Some(grid) = &page.composite {
             for rect in &grid.borders {
-                raster.fill(*rect, view.origin, grid.border_color);
+                raster.fill_at_origin(*rect, origin, grid.border_color);
             }
             for part in &grid.parts {
                 // Marks stacked above a cell's first line reach beyond its box.
                 let reach = part.page.vertical_reach();
-                if culled && (part.origin[1] + reach[1] < top || part.origin[1] + reach[0] > bottom)
+                if culled
+                    && match precise_bounds {
+                        Some(bounds) => {
+                            f64::from(part.origin[1]) + f64::from(reach[1]) < bounds[1]
+                                || f64::from(part.origin[1]) + f64::from(reach[0]) > bounds[3]
+                        }
+                        None => {
+                            part.origin[1] + reach[1] < top || part.origin[1] + reach[0] > bottom
+                        }
+                    }
                 {
                     continue;
                 }
-                self.paint_traced(&part.page, view.translated(part.origin), raster, trace)?;
+                let translated = precise_origin.map(|origin| {
+                    std::array::from_fn(|axis| origin[axis] - f64::from(part.origin[axis]))
+                });
+                self.paint_traced(
+                    &part.page,
+                    view.translated(part.origin),
+                    translated,
+                    raster,
+                    trace,
+                )?;
             }
             return Ok(());
         }
@@ -219,7 +257,12 @@ impl GlyphPainter {
                 && page
                     .line_bounds
                     .get(index)
-                    .is_some_and(|bounds| bounds[1] < top || bounds[0] > bottom)
+                    .is_some_and(|bounds| match precise_bounds {
+                        Some(clip) => {
+                            f64::from(bounds[1]) < clip[1] || f64::from(bounds[0]) > clip[3]
+                        }
+                        None => bounds[1] < top || bounds[0] > bottom,
+                    })
             {
                 continue;
             }
@@ -233,20 +276,31 @@ impl GlyphPainter {
                     run.font_size() * INK_EM_VERTICAL,
                 ];
                 if culled
-                    && (glyph_run.offset() + glyph_run.advance() + reach[0] < left
-                        || glyph_run.offset() - reach[0] > right)
+                    && match precise_bounds {
+                        Some(bounds) => {
+                            f64::from(glyph_run.offset())
+                                + f64::from(glyph_run.advance())
+                                + f64::from(reach[0])
+                                < bounds[0]
+                                || f64::from(glyph_run.offset()) - f64::from(reach[0]) > bounds[2]
+                        }
+                        None => {
+                            glyph_run.offset() + glyph_run.advance() + reach[0] < left
+                                || glyph_run.offset() - reach[0] > right
+                        }
+                    }
                 {
                     continue;
                 }
                 for (y, height, brush) in decorations(&glyph_run) {
-                    raster.fill(
+                    raster.fill_at_origin(
                         crate::Rect {
                             x0: f64::from(glyph_run.offset()),
                             y0: f64::from(y),
                             x1: f64::from(glyph_run.offset() + glyph_run.advance()),
                             y1: f64::from(y + height),
                         },
-                        view.origin,
+                        origin,
                         brush,
                     );
                 }
@@ -264,18 +318,28 @@ impl GlyphPainter {
                 let synthesis = run.synthesis();
                 for glyph in glyph_run.positioned_glyphs() {
                     if culled
-                        && (glyph.x + reach[0] < left
-                            || glyph.x - reach[0] > right
-                            || glyph.y + reach[1] < top
-                            || glyph.y - reach[1] > bottom)
+                        && match precise_bounds {
+                            Some(bounds) => {
+                                f64::from(glyph.x) + f64::from(reach[0]) < bounds[0]
+                                    || f64::from(glyph.x) - f64::from(reach[0]) > bounds[2]
+                                    || f64::from(glyph.y) + f64::from(reach[1]) < bounds[1]
+                                    || f64::from(glyph.y) - f64::from(reach[1]) > bounds[3]
+                            }
+                            None => {
+                                glyph.x + reach[0] < left
+                                    || glyph.x - reach[0] > right
+                                    || glyph.y + reach[1] < top
+                                    || glyph.y - reach[1] > bottom
+                            }
+                        }
                     {
                         continue;
                     }
                     let id = u16::try_from(glyph.id).map_err(|_| LayoutError::InvalidFont)?;
                     // Raster phase belongs to the final screen position. A
                     // source-page rebase must not change an overlapping glyph.
-                    let x = stable_pixel(f64::from(glyph.x) - f64::from(view.origin[0]));
-                    let y = stable_pixel(f64::from(glyph.y) - f64::from(view.origin[1]));
+                    let x = stable_pixel(f64::from(glyph.x) - origin[0]);
+                    let y = stable_pixel(f64::from(glyph.y) - origin[1]);
                     let fraction = [(x - x.floor()) as f32, (y - y.floor()) as f32];
                     let key = GlyphKey {
                         font: font_id,

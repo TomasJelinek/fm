@@ -107,14 +107,18 @@ impl Presenter {
         if self.operations.closing {
             return;
         }
-        if self.visible_directory(pane).is_none() {
-            return;
-        }
         let p = &self.panes[pane.index()];
-        if p.search_view_waiting() {
+        let deleting = matches!(kind, MutationKind::Delete(_));
+        if self.visible_directory(pane).is_none() || p.search_view_waiting() {
+            if deleting {
+                self.desktop.report(
+                    "Delete unavailable",
+                    "Wait for the file list to finish updating, then try again.".into(),
+                );
+            }
             return;
         }
-        if matches!(kind, MutationKind::Delete(_)) && p.selection_revision > p.selection_resolved {
+        if deleting && p.selection_revision > p.selection_resolved {
             self.desktop.report(
                 "Selection is updating",
                 "Wait for the selection to finish, then try again.".into(),
@@ -458,7 +462,15 @@ impl Presenter {
                     .iter_mut()
                     .find(|old| old.id == progress.id)
                 {
-                    if !old.state.is_terminal() {
+                    // A buffered Delete snapshot cannot undo accepted cancellation.
+                    // Workers can still refresh the details while cancellation is pending.
+                    let cancelling_delete = matches!(old.kind, MutationKind::Delete(_))
+                        && old.state == OperationState::CancelRequested;
+                    if !old.state.is_terminal()
+                        && (!cancelling_delete
+                            || progress.state == OperationState::CancelRequested
+                            || progress.state.is_terminal())
+                    {
                         *old = progress;
                     }
                 } else {

@@ -33,10 +33,10 @@ impl DecisionWaiter<'_> {
         self.outbox.send(Event::Copy(event)).await;
         let cancel = self.cancel;
         loop {
-            if cancel.is_cancelled() {
+            if !wait_for_pause(cancel, self.status, self.outbox, self.throughput, None).await {
                 break;
             }
-            // A decision or an announced cancellation wakes this wait; nothing polls.
+            // Decisions and newly requested controls both wake this wait.
             tokio::select! {
                 decision = self.decisions.recv() => match decision {
                     Some(decision) => {
@@ -53,7 +53,7 @@ impl DecisionWaiter<'_> {
                     }
                     None => { cancel.cancel(); break; }
                 },
-                () = self.outbox.controls.until(|| cancel.is_cancelled()) => {},
+                () = self.outbox.controls.until(|| cancel.is_cancelled() || cancel.pause_requested()) => {},
             }
         }
         self.waiting.store(0, Ordering::Release);

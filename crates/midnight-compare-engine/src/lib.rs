@@ -131,6 +131,17 @@ pub enum Input {
     DifferenceEdge {
         last: bool,
     },
+    /// Literal search over both decoded text panes, executed incrementally on the worker.
+    Find {
+        query: FindQuery,
+        backwards: bool,
+        revision: u64,
+    },
+    /// Relative match navigation for the accepted query, accumulated while it is scanning.
+    FindStep {
+        delta: i64,
+        revision: u64,
+    },
     FontFamily(String),
     Mode(ImageMode),
     Zoom(f64),
@@ -142,6 +153,8 @@ pub enum Input {
 }
 
 pub struct Frame {
+    /// Immutable worker snapshot shared by paints until Find state changes.
+    pub find: Arc<FindState>,
     pub fonts: Option<FontChoices>,
     /// Tests only: the family a text frame was painted in.
     #[cfg(test)]
@@ -159,6 +172,26 @@ pub struct Frame {
     pub status: String,
     pub image: bool,
     pub position: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FindQuery {
+    pub text: String,
+    pub case_sensitive: bool,
+    pub whole_words: bool,
+}
+
+/// Search presentation belongs to the same comparison generation as its containing frame.
+#[derive(Clone, Debug, Default)]
+pub struct FindState {
+    pub revision: u64,
+    pub searching: bool,
+    pub matches: usize,
+    /// One-based ordinal across both panes. Zero denotes no selected match.
+    pub active: usize,
+    pub side: usize,
+    pub line: usize,
+    pub message: String,
 }
 
 pub use midnight_image_viewer_host::Frame as RasterFrame;

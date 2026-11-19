@@ -5,6 +5,7 @@ use crate::{
     providers::{self, Provider},
     scheduler::{Item, Scheduler, Work},
 };
+use midnight_core::ThumbnailerAssociations;
 use midnight_thumbnail_api::{Frame, Request};
 use std::{
     collections::{HashMap, VecDeque},
@@ -114,7 +115,9 @@ pub struct Target {
     pub capture: Capture,
 }
 pub struct View {
+    /// Change generation when the source identities or accepted routing change.
     pub generation: u64,
+    pub thumbnailer_associations: Arc<ThumbnailerAssociations>,
     pub targets: Vec<Target>,
 }
 pub struct Ready {
@@ -471,13 +474,12 @@ fn run(
             targets.clear();
             let mut items = Vec::new();
             for mut target in view.targets {
-                let Some(provider) = providers.iter().find(|provider| {
-                    provider
-                        .manifest
-                        .extensions
-                        .iter()
-                        .any(|extension| extension.eq_ignore_ascii_case(&target.extension))
-                }) else {
+                let Some(provider) = providers::select(
+                    &providers,
+                    &view.thumbnailer_associations,
+                    &target.extension,
+                    false,
+                ) else {
                     continue;
                 };
                 target.capture = captures

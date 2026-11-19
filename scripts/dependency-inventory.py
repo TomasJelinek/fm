@@ -14,6 +14,8 @@ from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parent.parent
+# Matches the approved project registry in .cargo/config.toml, without mirrors.
+PROJECT_REGISTRY_SOURCE = "registry+https://midnight-explorer.invalid/api-index"
 SCOPES = {
     "app": "Cargo.toml",
     "renderer-tests": "vendor/femtovg/Cargo.toml",
@@ -64,6 +66,7 @@ def inventory(captures, selections=None):
                 raise ValueError(f"Missing workspace member: {member}")
             if not vendored(packages[member]):
                 owned.add(identity(packages[member]))
+    owned_names = {name for name, _ in owned}
     records = {}
     for (scope, target), metadata in sorted(captures.items()):
         packages = {item["id"]: item for item in metadata["packages"]}
@@ -94,7 +97,11 @@ def inventory(captures, selections=None):
             if selections is not None and identity(package) not in selections[scope, target]:
                 continue
             pending.extend(edge["pkg"] for edge in nodes[key]["deps"])
-            if identity(package) in owned:
+            if identity(package) in owned or (
+                    package["name"] in owned_names
+                    and package.get("source") == PROJECT_REGISTRY_SOURCE):
+                # Released project SDK versions remain first-party. Their third-party
+                # dependencies were queued above and still enter the inventory.
                 continue
             source = package.get("source") or "local path dependency"
             record_key = (*identity(package), source)

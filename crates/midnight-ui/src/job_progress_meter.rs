@@ -10,9 +10,12 @@ pub(super) struct Meter {
     pub determinate: bool,
     pub fraction: f32,
     pub label: SharedString,
+    pub totals: SharedString,
     pub remaining: SharedString,
     pub eta: SharedString,
     pub discovering: bool,
+    pub waiting: bool,
+    pub activity_label: &'static str,
 }
 
 pub(super) fn copy_waiting_label(p: &CopyProgress) -> Option<&'static str> {
@@ -68,18 +71,17 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
     let total = p.discovery.entries();
     let recursive = p.discovery.scope == DiscoveryScope::Recursive;
     let completed = if recursive {
-        let files = if p.intent == midnight_core::TransferIntent::Move {
-            p.source_files_removed
-        } else {
-            p.files_completed
-        };
-        files.checked_add(p.completed_directories)
+        copy_items_completed(p)
     } else {
         Some(p.completed_roots)
     };
     let known = p.discovery.state == DiscoveryState::Complete && p.skipped == 0 && p.failed == 0;
     let bytes = recursive.then_some(p.discovery.bytes).flatten();
-    let live_bytes = p.completed_bytes.checked_add(p.current_file_copied);
+    let live_bytes = if p.state.is_terminal() {
+        Some(p.completed_bytes)
+    } else {
+        p.completed_bytes.checked_add(p.current_file_copied)
+    };
     let work = if let Some(total) = bytes.filter(|total| *total > 0) {
         live_bytes.map(|done| (done, total))
     } else {
@@ -89,10 +91,48 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
         &p.discovery,
         completed,
         known.then_some(work).flatten(),
-        p.state == CopyOperationState::Completed,
+        p.state == CopyOperationState::Completed && p.skipped == 0,
         p.state.is_terminal(),
         locale,
     );
+    if p.discovery.state == DiscoveryState::Complete {
+        let mut totals = if recursive {
+            let done = copy_files_completed(p);
+            if done <= p.discovery.files {
+                format!(
+                    "Files: {} / {}",
+                    locale.format_u64(done),
+                    locale.format_u64(p.discovery.files)
+                )
+            } else {
+                format!("Files completed: {}", locale.format_u64(done))
+            }
+        } else if let Some(total) = total.filter(|total| p.completed_roots <= *total) {
+            format!(
+                "Selected items: {} / {}",
+                locale.format_u64(p.completed_roots),
+                locale.format_u64(total)
+            )
+        } else {
+            format!(
+                "Selected items completed: {}",
+                locale.format_u64(p.completed_roots)
+            )
+        };
+        if recursive {
+            let done = p.completed_bytes;
+            if let Some(total) = bytes.filter(|total| done <= *total) {
+                totals.push_str(&format!(
+                    " · Bytes: {} / {}",
+                    locale.format_u64(done),
+                    locale.format_u64(total)
+                ));
+            } else {
+                totals.push_str(&format!(" · Bytes completed: {}", locale.format_u64(done)));
+            }
+        }
+        meter.totals = totals.into();
+    }
     if let Some(label) = status {
         meter.discovering = false;
         meter.label = label.into();
@@ -134,6 +174,18 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
     meter
 }
 
+fn copy_files_completed(p: &CopyProgress) -> u64 {
+    if p.intent == midnight_core::TransferIntent::Move {
+        p.source_files_removed
+    } else {
+        p.files_completed
+    }
+}
+
+fn copy_items_completed(p: &CopyProgress) -> Option<u64> {
+    copy_files_completed(p).checked_add(p.completed_directories)
+}
+
 pub(super) fn deletion(p: &OperationProgress, locale: &NumberLocale) -> Meter {
     if !matches!(p.kind, midnight_core::MutationKind::Delete(_)) {
         return meter(
@@ -166,7 +218,30 @@ pub(super) fn deletion(p: &OperationProgress, locale: &NumberLocale) -> Meter {
         p.state.is_terminal(),
         locale,
     );
-    if known && !p.pause_requested && !p.paused && p.state == OperationState::Running {
+    use OperationState as S;
+    let status = match p.state {
+        S::CancelRequested => Some("Cancelling..."),
+        state if state.is_terminal() => None,
+        _ if p.paused && p.pause_requested => Some("Paused"),
+        _ if p.paused => Some("Resuming..."),
+        _ if p.pause_requested => Some("Pausing..."),
+        S::Queued => Some("Queued — waiting to start"),
+        S::AwaitingConfirmation => Some("Awaiting confirmation"),
+        S::Preparing => Some("Preparing"),
+        S::Running if p.discovery.state == DiscoveryState::NotStarted => Some("Preparing"),
+        _ => None,
+    };
+    meter.waiting = matches!(p.state, S::Queued | S::AwaitingConfirmation);
+    if let Some(label) = status {
+        meter.discovering = false;
+        meter.label = label.into();
+        meter.activity_label = label;
+    } else if meter.discovering {
+        meter.activity_label = "Discovering items...";
+    } else if p.state == S::Running && !meter.determinate {
+        meter.activity_label = "Deleting items...";
+    }
+    if known && status.is_none() && p.state == S::Running {
         meter.eta = eta(
             estimate_seconds(
                 p.discovery.entries().unwrap_or(0).saturating_sub(completed) as f64,

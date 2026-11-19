@@ -8,6 +8,7 @@ use std::sync::{
 fn frame(revision: u64) -> ViewerFrame {
     ViewerFrame {
         generation: 1,
+        media_control: None,
         position_sequence: [0; 2],
         revision,
         mode: 1,

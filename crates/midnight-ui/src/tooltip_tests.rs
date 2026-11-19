@@ -254,3 +254,175 @@ fn actual_find_hint_is_offset_and_clamped_to_the_find_host() {
     );
     find.hide().unwrap();
 }
+
+#[test]
+fn hovering_a_folder_link_lazily_reads_its_native_target() {
+    use midnight_core::{Command, DirectoryIndex, Entry, EntryId, EntryKind, Event, PaneId};
+    use std::path::PathBuf;
+
+    fn named_row(item: ItemRc, label: &str) -> Option<ItemRc> {
+        if item.accessible_role() == AccessibleRole::ListItem
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value.as_str() == label)
+        {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(row) = named_row(item, label) {
+                return Some(row);
+            }
+        }
+        None
+    }
+
+    let (natives, time) = setup();
+    let window = MainWindow::new().unwrap();
+    let native = natives.borrow()[0].clone();
+    let root = std::env::temp_dir().join("midnight-link-tooltip-ui");
+    let path = root.join("hovered link");
+    let pane = PaneId::Left;
+    let presenter = Rc::new(RefCell::new(crate::Presenter::new(root.clone(), root)));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let send = {
+        let commands = commands.clone();
+        Rc::new(move |command| {
+            commands.borrow_mut().push(command);
+            true
+        })
+    };
+    crate::install(&window, presenter.clone(), send);
+    let navigation = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Navigate {
+                pane: target,
+                navigation,
+                ..
+            }
+            | Command::Refresh {
+                pane: target,
+                navigation,
+                ..
+            } if *target == pane => Some(*navigation),
+            _ => None,
+        })
+        .unwrap();
+    commands.borrow_mut().clear();
+    let entries = vec![
+        Entry::new(EntryId(17), path.clone(), EntryKind::DirectoryLink),
+        Entry::new(
+            EntryId(19),
+            path.with_file_name("ordinary"),
+            EntryKind::Directory,
+        ),
+    ];
+    presenter.borrow_mut().apply(Event::ListingFinished {
+        pane,
+        navigation,
+        index: std::sync::Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries: entries.into(),
+    });
+    window.show().unwrap();
+    resize(window.window(), &native, 1_000., 660.);
+    crate::refresh(&window, &presenter.borrow());
+    assert!(
+        !window.get_left_loading(),
+        "the install-triggered listing must finish before hover"
+    );
+    let pixels = RefCell::new(vec![slint::Rgb8Pixel::default(); 1_000 * 660]);
+    let draw = || {
+        slint::platform::update_timers_and_animations();
+        native.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels.borrow_mut(), 1_000);
+        });
+    };
+    draw();
+    let move_to = |label| {
+        let row = named_row(
+            ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
+            label,
+        )
+        .unwrap();
+        let bounds = row.geometry();
+        let origin = row.map_to_native_window(bounds.origin);
+        eprintln!("link hover target={label} origin={origin:?} bounds={bounds:?}");
+        window.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(
+                origin.x + (bounds.size.width / 2.).min(110.),
+                origin.y + bounds.size.height / 2.,
+            ),
+        });
+    };
+    let lookups = || {
+        commands
+            .borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::ReadDirectoryLinkTarget {
+                    request,
+                    pane,
+                    navigation,
+                    path,
+                } => Some((*request, *pane, *navigation, path.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(lookups().is_empty());
+    move_to("hovered link · Folder link");
+    time.set(Duration::from_millis(100));
+    draw();
+    assert!(
+        hovered_tooltip_areas(ItemRc::new_root(
+            WindowInner::from_pub(window.window()).component()
+        )) > 0,
+        "the completed native directory-link row must receive tooltip hover"
+    );
+    assert!(lookups().is_empty());
+    time.set(Duration::from_millis(600));
+    draw();
+    time.set(Duration::from_millis(601));
+    draw();
+    assert!(
+        WindowInner::from_pub(window.window())
+            .active_popups()
+            .iter()
+            .any(|popup| matches!(popup.window_kind, WindowKind::ToolTip)),
+        "the native read is tied to an embedded tooltip"
+    );
+    let lookups_after_hover = lookups();
+    let [(request, actual_pane, actual_navigation, actual_path)] = lookups_after_hover.as_slice()
+    else {
+        panic!("expected one delayed link lookup, got {lookups_after_hover:?}")
+    };
+    let request = *request;
+    assert_eq!(
+        (*actual_pane, *actual_navigation, actual_path),
+        (pane, navigation, &path)
+    );
+
+    presenter
+        .borrow_mut()
+        .apply(Event::DirectoryLinkTargetRead {
+            request,
+            pane,
+            navigation,
+            target: Some(PathBuf::from("../stored target")),
+        });
+    crate::refresh(&window, &presenter.borrow());
+    assert_eq!(
+        window.get_directory_link_tooltip().text.as_str(),
+        "Link target\n../stored target"
+    );
+
+    move_to("ordinary");
+    time.set(Duration::from_millis(1_250));
+    draw();
+    assert_eq!(lookups().len(), 1);
+    assert!(window.get_directory_link_tooltip().row.is_empty());
+    window.hide().unwrap();
+}

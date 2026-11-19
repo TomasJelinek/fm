@@ -112,6 +112,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         thumbnails_enabled: true,
         thumbnails_network: false,
         thumbnails_archives: true,
+        thumbnailer_associations: Arc::default(),
         thumbnail_size: 192,
         shortcuts: vec![],
         panel_filters: Default::default(),
@@ -146,6 +147,10 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
             comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
+            if let Command::ListComparatorCapabilities { disabled_plugins } = command {
+                assert!(disabled_plugins.is_empty());
+                return true;
+            }
             let Command::SavePreferences {
                 revision,
                 preferences,

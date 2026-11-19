@@ -1,8 +1,21 @@
 {
   "protocol": 1,
   "id": "midnight-video",
-  "version": "ffmpeg-9.0.2-baseline-r2",
+  "version": "ffmpeg-9.0.2-playback-r3",
   "executable": "midnight-thumbnail-video",
-  "extensions": ["webm", "mkv", "avi", "ogg", "ogv"],
+  "extensions": [
+    "webm",
+    "mkv",
+    "avi",
+    "ogg",
+    "ogv",
+    "mp4",
+    "m4v",
+    "mov",
+    "qt",
+    "3gp",
+    "3g2",
+    "mk3d"
+  ],
   "video": true
 }

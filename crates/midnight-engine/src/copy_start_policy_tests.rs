@@ -43,10 +43,10 @@ fn clipboard(policy: TransferStartPolicy) -> ClipboardMoveRequest {
 }
 
 #[derive(Debug)]
-struct Capture;
+struct Capture(TransferIntent);
 impl CapturedTransferSources for Capture {
     fn intent(&self) -> TransferIntent {
-        TransferIntent::Copy
+        self.0
     }
     fn root_count(&self) -> usize {
         1
@@ -69,7 +69,7 @@ fn captured(policy: TransferStartPolicy) -> CapturedTransferRequest {
         start_policy: policy,
         verification: native.verification,
         id: native.id,
-        sources: Arc::new(Capture),
+        sources: Arc::new(Capture(TransferIntent::Copy)),
         destination: native.destination,
         metadata: TransferMetadataPolicy::ContentOnly,
     }
@@ -147,6 +147,47 @@ fn move_metadata_and_link_options_preserve_the_nested_policy() {
         links: CopyLinkPolicy::Reject,
     });
     assert_eq!(input.start_policy, policy);
+}
+
+#[test]
+fn directory_link_move_options_reach_native_preparation_and_legacy_captures_refuse() {
+    let start = TransferStartPolicy::WaitForEarlier;
+    for links in [
+        CopyLinkPolicy::FollowDirectoryContents,
+        CopyLinkPolicy::EmptyDirectories,
+    ] {
+        for metadata in [
+            TransferMetadataPolicy::ContentOnly,
+            TransferMetadataPolicy::RequireModifiedTime,
+        ] {
+            let mut captured = captured(start);
+            captured.sources = Arc::new(Capture(TransferIntent::Move));
+            captured.metadata = metadata;
+            for input in [
+                CopyOptionsInput::Native(MetadataTransferRequest {
+                    input: MetadataTransferInput::Paths(paths(start)),
+                    intent: TransferIntent::Move,
+                    metadata,
+                }),
+                CopyOptionsInput::Captured(captured),
+            ] {
+                let is_captured = matches!(&input, CopyOptionsInput::Captured(_));
+                let mut input = CopyInput::options(CopyOptionsRequest { input, links });
+                input.initialize_captured_intent();
+                input.validate().unwrap();
+                assert_eq!(input.clone().links, links);
+                if metadata == TransferMetadataPolicy::ContentOnly {
+                    let service = midnight_platform::LocalFileSystem::new(None);
+                    let resolved = input.resolve(&service, &Cancellation::default());
+                    if is_captured {
+                        assert_eq!(resolved.err().unwrap().kind, io::ErrorKind::Unsupported);
+                    } else {
+                        assert!(matches!(resolved.unwrap(), Resolved::NativeMove(_)));
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

@@ -163,6 +163,22 @@ fn metadata_id(request: &MetadataTransferRequest) -> OperationId {
         MetadataTransferInput::Clipboard(request) => request.id,
     }
 }
+/// Exact modified-time preflight accepts only native regular files. It keeps
+/// the ordinary no-follow source route even when the request carries a
+/// directory-only option.
+pub(super) fn source_link_policy(
+    links: CopyLinkPolicy,
+    metadata: TransferMetadataPolicy,
+) -> CopyLinkPolicy {
+    if links.materializes_directory_links()
+        && metadata == TransferMetadataPolicy::RequireModifiedTime
+    {
+        CopyLinkPolicy::Reject
+    } else {
+        links
+    }
+}
+
 fn options_id(request: &CopyOptionsRequest) -> OperationId {
     match &request.input {
         CopyOptionsInput::Native(request) => metadata_id(request),
@@ -216,6 +232,36 @@ impl CopyInput {
             self.intent = sources.intent();
         }
     }
+    /// Reconcile the requested count with the existing native Copy de-duplication.
+    /// Call only after validation so repeated paths cannot bypass the input bound.
+    pub(super) fn normalize_copy_roots(&mut self) -> Option<u64> {
+        if self.intent != TransferIntent::Copy {
+            return None;
+        }
+        let files = match &self.sources {
+            Sources::Paths(files) => files,
+            Sources::SharedPaths(files) => files.as_ref(),
+            _ => return None,
+        };
+        let mut seen = std::collections::HashSet::with_capacity(files.paths.len());
+        if files.paths.iter().all(|path| seen.insert(path)) {
+            return None;
+        }
+        seen.clear();
+        let paths: Vec<_> = files
+            .paths
+            .iter()
+            .filter(|path| seen.insert(*path))
+            .cloned()
+            .collect();
+        let count = paths.len() as u64;
+        self.sources = Sources::Paths(FileClipboard {
+            paths,
+            intent: files.intent,
+        });
+        Some(count)
+    }
+
     pub(super) fn native_children_are_audited(&mut self) -> bool {
         if let Some(checked) = self.audited_native_children {
             return checked;
@@ -344,6 +390,7 @@ impl CopyInput {
         cancel: &Cancellation,
     ) -> Result<Resolved, FsError> {
         self.validate()?;
+        let links = source_link_policy(self.links, self.metadata);
         let clipboard = match self.sources {
             Sources::Captured(sources) => {
                 if self.metadata != TransferMetadataPolicy::ContentOnly
@@ -363,7 +410,7 @@ impl CopyInput {
                         "Captured transfer intent changed.",
                     ));
                 }
-                let prepared = sources.prepare_with_links(service, self.links, cancel)?;
+                let prepared = sources.prepare_with_links(service, links, cancel)?;
                 let count = match &prepared {
                     PreparedCapturedTransfer::Copy(roots)
                         if self.intent == TransferIntent::Copy =>
@@ -371,7 +418,14 @@ impl CopyInput {
                         roots.len()
                     }
                     PreparedCapturedTransfer::Move(roots)
-                        if self.intent == TransferIntent::Move =>
+                        if self.intent == TransferIntent::Move
+                            && !links.materializes_directory_links() =>
+                    {
+                        roots.len()
+                    }
+                    PreparedCapturedTransfer::MoveWithDirectoryLinks(roots)
+                        if self.intent == TransferIntent::Move
+                            && links.materializes_directory_links() =>
                     {
                         roots.len()
                     }

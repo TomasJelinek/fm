@@ -31,6 +31,7 @@ enum Phase {
 
 pub(super) struct MoveWork {
     captures: Vec<Arc<dyn TransferMoveCapture>>,
+    link_captures: HashMap<TransferIdentity, LinkAuthority>,
     pub(super) metadata_policy: TransferMetadataPolicy,
     pub(super) stages: HashMap<TransferIdentity, Box<dyn StagedTransferFile>>,
     pub(super) proofs: Vec<VerifiedFileProof>,
@@ -43,6 +44,22 @@ pub(super) struct MoveWork {
     refresh_parents: Vec<std::path::PathBuf>,
     failed_phase: Option<Phase>,
     retryable_failure: bool,
+}
+
+struct LinkAuthority {
+    projection: Option<Box<dyn TransferSource>>,
+    selected_parents: Option<Arc<[Arc<dyn TransferDirectory>]>>,
+    capture: Arc<dyn TransferDirectoryLinkMoveCapture>,
+}
+
+impl LinkAuthority {
+    fn new(capture: Arc<dyn TransferDirectoryLinkMoveCapture>) -> Self {
+        Self {
+            projection: None,
+            selected_parents: None,
+            capture,
+        }
+    }
 }
 
 pub(super) fn prepare(
@@ -113,13 +130,31 @@ pub(super) fn prepare_with_metadata(
     status: Status,
     metadata: TransferMetadataPolicy,
 ) -> Result<Job, FsError> {
+    prepare_with_options(
+        request,
+        service,
+        cancel,
+        status,
+        metadata,
+        CopyLinkPolicy::Reject,
+    )
+}
+
+pub(super) fn prepare_with_options(
+    request: CopyRequest,
+    service: &dyn TransferService,
+    cancel: Cancellation,
+    status: Status,
+    metadata: TransferMetadataPolicy,
+    links: CopyLinkPolicy,
+) -> Result<Job, FsError> {
     check_bounds(&request)?;
+    let links = move_links(&request.destination, metadata, links)?;
     let permit = permit(&cancel, &request.destination)?;
     let mut prepared_roots = VecDeque::new();
     for path in &request.clipboard.paths {
-        let prepared = service.prepare_move_source(path, &cancel)?;
-        if prepared.source.entry().item.path != *path || prepared.capture.entry().item.path != *path
-        {
+        let prepared = service.prepare_move_source_with_links(path, links, &cancel)?;
+        if prepared.source().entry().item.path != *path {
             return Err(unsupported(
                 path,
                 "Provider returned a different Move source.",
@@ -134,6 +169,7 @@ pub(super) fn prepare_with_metadata(
         cancel,
         status,
         metadata,
+        links,
     )?);
     job.set_verification(request.verification);
     drop(permit);
@@ -148,6 +184,30 @@ pub(super) fn prepare_sources(
     status: Status,
     metadata: TransferMetadataPolicy,
 ) -> Result<Job, FsError> {
+    prepare_entries(
+        destination_path,
+        prepared_roots
+            .into_iter()
+            .map(PreparedTransferMoveEntry::Ordinary)
+            .collect(),
+        service,
+        cancel,
+        status,
+        metadata,
+        CopyLinkPolicy::Reject,
+    )
+}
+
+pub(super) fn prepare_entries(
+    destination_path: std::path::PathBuf,
+    prepared_roots: VecDeque<PreparedTransferMoveEntry>,
+    service: &dyn TransferService,
+    cancel: Cancellation,
+    status: Status,
+    metadata: TransferMetadataPolicy,
+    links: CopyLinkPolicy,
+) -> Result<Job, FsError> {
+    let links = move_links(&destination_path, metadata, links)?;
     let permit = permit(&cancel, &destination_path)?;
     let job = ownership::Armed::new(prepare_sources_inner(
         destination_path,
@@ -156,28 +216,42 @@ pub(super) fn prepare_sources(
         cancel,
         status,
         metadata,
+        links,
     )?);
     drop(permit);
     Ok(job.into_inner())
 }
+
+fn move_links(
+    destination: &Path,
+    metadata: TransferMetadataPolicy,
+    links: CopyLinkPolicy,
+) -> Result<CopyLinkPolicy, FsError> {
+    if links == CopyLinkPolicy::Preserve {
+        return Err(unsupported(destination, "Link preservation requires Copy."));
+    }
+    Ok(input::source_link_policy(links, metadata))
+}
+
 fn prepare_sources_inner(
     destination_path: std::path::PathBuf,
-    prepared_roots: VecDeque<PreparedTransferMove>,
+    prepared_roots: VecDeque<PreparedTransferMoveEntry>,
     service: &dyn TransferService,
     cancel: Cancellation,
     status: Status,
     metadata: TransferMetadataPolicy,
+    links: CopyLinkPolicy,
 ) -> Result<Job, FsError> {
     check_root_bounds(
         &destination_path,
         prepared_roots
             .iter()
-            .map(|root| root.source.entry().item.path.as_path()),
+            .map(|root| root.source().entry().item.path.as_path()),
     )?;
     let admitted = prepared_roots.len();
     let refresh_parents = prepared_roots
         .iter()
-        .filter_map(|root| root.source.entry().item.path.parent().map(Path::to_owned))
+        .filter_map(|root| root.source().entry().item.path.parent().map(Path::to_owned))
         .collect();
     let destination = service.prepare_move_destination(&destination_path, &cancel)?;
     if destination.path() != destination_path {
@@ -188,50 +262,81 @@ fn prepare_sources_inner(
     }
     let mut roots = VecDeque::new();
     let mut captures = Vec::new();
+    let mut link_captures = HashMap::new();
     let mut identities = HashSet::new();
     for prepared in prepared_roots {
-        let path = prepared.source.entry().item.path.clone();
-        let source = prepared.source.entry();
-        if source.item.path != path
-            || !matches!(source.item.kind, EntryKind::File | EntryKind::Directory)
-            || (source.item.kind == EntryKind::File && source.item.metadata.size.is_none())
-            || prepared.source.native_identity() != Some(source.identity)
-            || prepared.capture.entry().item.kind != source.item.kind
-            || prepared.capture.entry().item.metadata != source.item.metadata
-            || prepared.capture.entry().identity != source.identity
-            || prepared.capture.entry().item.path != path
-        {
-            return Err(unsupported(
-                &path,
-                "Move requires native ordinary files or directories with matching mutation authority. Links, special and virtual sources are unsupported.",
-            ));
-        }
-        if !identities.insert(source.identity) {
+        let path = prepared.source().entry().item.path.clone();
+        let deferred = prepared.has_deferred_directory_link();
+        let (source, original) = match prepared {
+            PreparedTransferMoveEntry::Ordinary(prepared) => {
+                let entry = prepared.source.entry();
+                if !matches!(entry.item.kind, EntryKind::File | EntryKind::Directory)
+                    || (entry.item.kind == EntryKind::File && entry.item.metadata.size.is_none())
+                    || prepared.source.native_identity() != Some(entry.identity)
+                    || !same_move_entry(prepared.capture.entry(), entry)
+                {
+                    return Err(unsupported(
+                        &path,
+                        "Move requires native ordinary files or directories with matching mutation authority. Links, special and virtual sources are unsupported.",
+                    ));
+                }
+                let original = entry.identity;
+                prepared.capture.revalidate(&cancel)?;
+                captures.push(prepared.capture);
+                (prepared.source, original)
+            }
+            PreparedTransferMoveEntry::DirectoryLink { source, capture } => {
+                if !links.materializes_directory_links() {
+                    return Err(unsupported(
+                        &path,
+                        "Directory link Move requires an explicit policy.",
+                    ));
+                }
+                let original = validate_link_source(&*source, &*capture, deferred, &cancel)?;
+                link_captures.insert(original, LinkAuthority::new(capture));
+                (source, original)
+            }
+        };
+        if !identities.insert(original) {
             return Err(unsupported(
                 &path,
                 "The same native source appears more than once. All source names were retained.",
             ));
         }
-        prepared.capture.revalidate(&cancel)?;
-        if source.item.kind == EntryKind::Directory {
-            destination.reject_source_ancestor(source.identity, &cancel)?;
+        let entry = source.entry();
+        if entry.item.kind == EntryKind::Directory
+            && let Some(identity) = source.native_identity()
+        {
+            destination.reject_source_ancestor(identity, &cancel)?;
         }
         if metadata == TransferMetadataPolicy::RequireModifiedTime
-            && source.item.kind != EntryKind::File
+            && entry.item.kind != EntryKind::File
         {
             return Err(unsupported(
                 &path,
                 "Required modified time accepts native regular files only.",
             ));
         }
-        roots.push_back(prepared.source);
-        captures.push(prepared.capture);
+        roots.push_back(source);
     }
-    reject_nested_roots(&roots, service, &cancel)?;
+    let selected_parents = reject_nested_roots(&roots, service, &cancel)?;
+    if !selected_parents.is_empty() {
+        let selected_parents: Arc<[_]> = selected_parents.into();
+        for source in &roots {
+            if source.native_identity().is_none()
+                && let Some(original) = source.native_original_identity()
+                && let Some(link) = link_captures.get_mut(&original)
+            {
+                link.selected_parents = Some(selected_parents.clone());
+            }
+        }
+    }
     let mut job = ownership::Armed::new(Job::from_sources(destination, roots, cancel, status));
     job.progress.intent = TransferIntent::Move;
+    job.links = links;
     job.move_work = Some(MoveWork {
         captures,
+        link_captures,
         metadata_policy: metadata,
         stages: HashMap::new(),
         proofs: vec![],
@@ -248,6 +353,38 @@ fn prepare_sources_inner(
     Ok(job.into_inner())
 }
 
+fn same_move_entry(actual: &TransferEntry, expected: &TransferEntry) -> bool {
+    actual.identity == expected.identity
+        && actual.item.kind == expected.item.kind
+        && actual.item.path == expected.item.path
+        && actual.item.metadata == expected.item.metadata
+}
+
+fn validate_link_source(
+    source: &dyn TransferSource,
+    capture: &dyn TransferDirectoryLinkMoveCapture,
+    deferred: bool,
+    cancel: &Cancellation,
+) -> Result<TransferIdentity, FsError> {
+    let projected = source.entry();
+    let original = capture.entry();
+    if projected.item.kind != EntryKind::Directory
+        || (!deferred && source.native_identity() != Some(projected.identity))
+        || original.item.kind != EntryKind::DirectoryLink
+        || source.native_original_identity() != Some(original.identity)
+        || projected.item.path != original.item.path
+        || source.virtual_identity().is_some()
+    {
+        return Err(unsupported(
+            &projected.item.path,
+            "Directory link Move requires both the read-only projection and matching original link authority.",
+        ));
+    }
+    source.revalidate(cancel)?;
+    capture.revalidate(cancel)?;
+    Ok(original.identity)
+}
+
 /// Refuse a selected directory that is an ancestor of any selected root's parent.
 /// Identity-based ancestry includes aliases/case variants, not just path prefixes.
 /// Selected roots usually share one parent: open and check each parent once.
@@ -255,13 +392,17 @@ fn reject_nested_roots(
     roots: &VecDeque<Box<dyn TransferSource>>,
     service: &dyn TransferService,
     cancel: &Cancellation,
-) -> Result<(), FsError> {
+) -> Result<Vec<Arc<dyn TransferDirectory>>, FsError> {
     if !roots
         .iter()
         .any(|source| source.entry().item.kind == EntryKind::Directory)
     {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let retain_parents = roots
+        .iter()
+        .any(|source| source.native_identity().is_none());
+    let mut retained = Vec::new();
     let mut checked = HashSet::new();
     for source in roots {
         let parent =
@@ -279,15 +420,112 @@ fn reject_nested_roots(
             ));
         }
         for other in roots {
-            if other.entry().item.kind == EntryKind::Directory {
-                directory.reject_source_ancestor(other.entry().identity, cancel)?;
+            if other.entry().item.kind == EntryKind::Directory
+                && let Some(identity) = other.native_identity()
+            {
+                directory.reject_source_ancestor(identity, cancel)?;
             }
         }
+        if retain_parents {
+            retained.push(directory);
+        }
     }
-    Ok(())
+    Ok(retained)
+}
+
+pub(super) fn proof_path_bytes(path: &Path) -> usize {
+    path.as_os_str()
+        .as_encoded_bytes()
+        .len()
+        .saturating_mul(32)
+        .saturating_add(8192)
 }
 
 impl MoveWork {
+    pub(super) fn entry_removal(&self, source: &dyn TransferSource) -> EntryRemoval {
+        source
+            .native_original_identity()
+            .filter(|identity| self.link_captures.contains_key(identity))
+            .map_or(EntryRemoval::Ordinary, EntryRemoval::DirectoryLink)
+    }
+
+    pub(super) fn admit_entry(
+        &mut self,
+        prepared: PreparedTransferMoveEntry,
+        parent: &Path,
+        cancel: &Cancellation,
+    ) -> Result<(Box<dyn TransferSource>, EntryRemoval), FsError> {
+        let deferred = prepared.has_deferred_directory_link();
+        match prepared {
+            PreparedTransferMoveEntry::Ordinary(prepared) => self
+                .admit_child(prepared, parent, cancel)
+                .map(|source| (source, EntryRemoval::Ordinary)),
+            PreparedTransferMoveEntry::DirectoryLink { source, capture } => {
+                let path = &source.entry().item.path;
+                self.check_child_budget(path, 0)?;
+                let original = validate_link_source(&*source, &*capture, deferred, cancel)?;
+                if path.parent() != Some(parent)
+                    || self.link_captures.contains_key(&original)
+                    || self
+                        .captures
+                        .iter()
+                        .any(|capture| capture.entry().identity == original)
+                {
+                    return Err(unsupported(
+                        path,
+                        "Directory link Move overlaps an active original or has a different parent.",
+                    ));
+                }
+                self.link_captures
+                    .insert(original, LinkAuthority::new(capture));
+                self.admitted += 1;
+                Ok((source, EntryRemoval::DirectoryLink(original)))
+            }
+        }
+    }
+
+    pub(super) fn admit_projected_child(
+        &mut self,
+        child: &dyn TransferSource,
+        parent: &Path,
+        active_projection_bytes: usize,
+    ) -> Result<(), FsError> {
+        let path = &child.entry().item.path;
+        self.check_child_budget(path, active_projection_bytes)?;
+        if path.parent() != Some(parent) || path.file_name().is_none() {
+            return Err(unsupported(
+                path,
+                "The projected child has a different parent.",
+            ));
+        }
+        self.admitted += 1;
+        Ok(())
+    }
+
+    fn check_child_budget(
+        &self,
+        path: &Path,
+        active_projection_bytes: usize,
+    ) -> Result<(), FsError> {
+        let retained_bytes = self
+            .captures
+            .iter()
+            .map(|capture| capture.entry())
+            .chain(self.link_captures.values().map(|link| link.capture.entry()))
+            .fold(active_projection_bytes, |total, entry| {
+                total.saturating_add(proof_path_bytes(&entry.item.path))
+            });
+        if self.admitted >= MAX_MOVE_ENTRIES
+            || retained_bytes.saturating_add(proof_path_bytes(path)) > MAX_PROOF_PATH_BYTES
+        {
+            return Err(unsupported(
+                path,
+                "Recursive Move reached its entry or active-path budget; completed moves remain.",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn capture_for(
         &self,
         entry: &TransferEntry,
@@ -298,14 +536,71 @@ impl MoveWork {
             .cloned()
             .ok_or_else(|| unsupported(&entry.item.path, "Move source authority missing."))
     }
-    pub(super) fn native_completed(
+    pub(super) fn link_capture_for(
+        &self,
+        original: TransferIdentity,
+        path: &Path,
+    ) -> Result<&dyn TransferDirectoryLinkMoveCapture, FsError> {
+        self.link_captures
+            .get(&original)
+            .map(|link| link.capture.as_ref())
+            .ok_or_else(|| unsupported(path, "Original directory link authority is missing."))
+    }
+
+    fn qualify_link_projection(
         &mut self,
-        entry: &TransferEntry,
-        job: &mut Job,
-    ) -> Result<(), FsError> {
-        self.discard(entry.identity)?;
-        self.record_parents(job, &entry.item.path);
-        Ok(())
+        original: TransferIdentity,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<TransferIdentity, FsError> {
+        let link = self
+            .link_captures
+            .get_mut(&original)
+            .ok_or_else(|| unsupported(path, "Original directory link authority is missing."))?;
+        if link.projection.is_none() {
+            link.capture.revalidate(cancel)?;
+            link.projection = Some(link.capture.prepare_copy_projection(cancel)?);
+        }
+        let projection = link
+            .projection
+            .as_ref()
+            .expect("retained directory link projection");
+        validate_link_source(projection.as_ref(), link.capture.as_ref(), false, cancel)?;
+        let identity = projection.entry().identity;
+        if let Some(parents) = &link.selected_parents {
+            for parent in parents.iter() {
+                parent.reject_source_ancestor(identity, cancel)?;
+            }
+        }
+        Ok(identity)
+    }
+
+    pub(super) fn pending_link_identity(
+        &mut self,
+        source: &dyn TransferSource,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferIdentity>, FsError> {
+        let EntryRemoval::DirectoryLink(original) = self.entry_removal(source) else {
+            return Ok(None);
+        };
+        self.qualify_link_projection(original, &source.entry().item.path, cancel)
+            .map(Some)
+    }
+
+    pub(super) fn take_link_projection(
+        &mut self,
+        original: TransferIdentity,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.qualify_link_projection(original, path, cancel)?;
+        Ok(self
+            .link_captures
+            .get_mut(&original)
+            .expect("qualified directory link")
+            .projection
+            .take()
+            .expect("retained directory link projection"))
     }
     pub(super) fn record_parents(&self, job: &mut Job, path: &Path) {
         // Reserve the bounded refresh list for selected-root parents first.
@@ -334,39 +629,7 @@ impl MoveWork {
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
         let entry = prepared.source.entry();
-        if self.admitted >= MAX_MOVE_ENTRIES
-            || self
-                .captures
-                .iter()
-                .map(|capture| {
-                    capture
-                        .entry()
-                        .item
-                        .path
-                        .as_os_str()
-                        .as_encoded_bytes()
-                        .len()
-                        .saturating_mul(32)
-                        .saturating_add(8192)
-                })
-                .sum::<usize>()
-                .saturating_add(
-                    entry
-                        .item
-                        .path
-                        .as_os_str()
-                        .as_encoded_bytes()
-                        .len()
-                        .saturating_mul(32)
-                        .saturating_add(8192),
-                )
-                > MAX_PROOF_PATH_BYTES
-        {
-            return Err(unsupported(
-                &entry.item.path,
-                "Recursive Move reached its entry or active-path budget; completed moves remain.",
-            ));
-        }
+        self.check_child_budget(&entry.item.path, 0)?;
         if entry.item.path.parent() != Some(parent)
             || entry.item.path.file_name().is_none()
             || prepared.source.native_identity() != Some(entry.identity)
@@ -377,6 +640,7 @@ impl MoveWork {
                 .captures
                 .iter()
                 .any(|capture| capture.entry().identity == entry.identity)
+            || self.link_captures.contains_key(&entry.identity)
         {
             return Err(unsupported(
                 &entry.item.path,
@@ -397,6 +661,64 @@ impl MoveWork {
         }
         Ok(())
     }
+    pub(super) fn discard_entry(
+        &mut self,
+        removal: EntryRemoval,
+        identity: TransferIdentity,
+    ) -> Result<(), FsError> {
+        match removal {
+            EntryRemoval::Copy => Ok(()),
+            EntryRemoval::Ordinary => self.discard(identity),
+            EntryRemoval::DirectoryLink(original) => {
+                self.link_captures.remove(&original);
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn remove_materialized_link(
+        &mut self,
+        original: TransferIdentity,
+        entry: &TransferEntry,
+        job: &mut Job,
+    ) -> Result<(), FsError> {
+        let capture = self.link_capture_for(original, &entry.item.path)?;
+        let _permit = permit(&job.cancel, &entry.item.path)?;
+        capture.revalidate(&job.cancel)?;
+        let outcome = capture.remove_original(&job.cancel)?;
+        self.link_captures.remove(&original);
+        let (recovery, failure) = match outcome {
+            TransferDirectoryLinkRemoval::Removed {
+                state,
+                durability_confirmed,
+                recovery,
+                error,
+            } => {
+                if state == TransferSourceRemoval::DeletePending {
+                    job.progress.source_delete_pending += 1;
+                }
+                if !durability_confirmed {
+                    job.progress.source_removal_durability_unconfirmed += 1;
+                }
+                self.record_parents(job, &entry.item.path);
+                (recovery, error)
+            }
+            TransferDirectoryLinkRemoval::RecoveryRequired { recovery, error } => {
+                self.record_parents(job, &entry.item.path);
+                (recovery, Some(error))
+            }
+        };
+        for item in recovery {
+            let matched = item.identity == Some(original);
+            record_source(job, entry.item.path.clone(), item, matched);
+        }
+        if let Some(failure) = failure {
+            job.record_cleanup_error(failure);
+            job.halt = true;
+        }
+        Ok(())
+    }
+
     pub(super) fn remove_directory(
         &mut self,
         entry: &TransferEntry,
@@ -694,6 +1016,11 @@ impl MoveWork {
         }
         drop(proofs.into_inner());
         drop(self.finalizer.take());
+        let mut links = ownership::Armed::new(self.link_captures.drain());
+        for (_, capture) in links.by_ref() {
+            drop(capture);
+        }
+        drop(links.into_inner());
         let mut tickets = ownership::Armed::new(VecDeque::new());
         let mut captures = ownership::Armed::new(self.captures.drain(..));
         for capture in captures.by_ref() {

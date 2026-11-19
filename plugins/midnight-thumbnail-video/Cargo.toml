@@ -7,9 +7,18 @@ publish = false
 
 [workspace]
 
+[features]
+playback-worker = ["dep:midnight-worker-sdk"]
+
+[[bin]]
+name = "midnight-video-playback"
+path = "src/bin/midnight-video-playback.rs"
+required-features = ["playback-worker"]
+
 [dependencies]
 midnight-thumbnail-sdk = { version = "=0.2.0", registry = "midnight" }
-ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+midnight-worker-sdk = { version = "=0.2.0", registry = "midnight", optional = true }
+ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "format", "software-scaling", "software-resampling"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

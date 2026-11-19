@@ -1,11 +1,12 @@
 use crate::WindowsFileSystem;
+#[path = "desktop_properties.rs"]
+mod properties;
 #[path = "user_command_cwd.rs"]
 mod user_command_cwd;
 use crate::terminal_process::{self, LaunchSpec};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use midnight_core::{
-    FsError, PropertyService, ShellFlavor, TerminalMode, TerminalProcess, TerminalRequest,
-    TerminalService,
+    FsError, ShellFlavor, TerminalMode, TerminalProcess, TerminalRequest, TerminalService,
 };
 use std::{
     ffi::OsString,
@@ -17,16 +18,10 @@ use std::{
 use windows_sys::{
     Win32::{
         System::{
-            Com::{
-                COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree,
-                CoUninitialize,
-            },
+            Com::{COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize},
             SystemInformation::GetSystemDirectoryW,
         },
-        UI::Shell::{
-            FOLDERID_ProgramFiles, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath, SHOP_FILEPATH,
-            SHObjectProperties,
-        },
+        UI::Shell::{FOLDERID_ProgramFiles, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath},
     },
     core::GUID,
 };
@@ -331,42 +326,6 @@ pub(crate) fn system_directory() -> io::Result<PathBuf> {
     }
 }
 
-fn property_path(paths: &[PathBuf]) -> Option<Vec<u16>> {
-    let [path] = paths else {
-        return None;
-    };
-    if !path.is_absolute() {
-        return None;
-    }
-    let mut wide: Vec<_> = path.as_os_str().encode_wide().collect();
-    if wide.contains(&0) {
-        return None;
-    }
-    wide.push(0);
-    Some(wide)
-}
-
-impl PropertyService for WindowsFileSystem {
-    fn show_properties(&self, paths: &[PathBuf]) -> Result<bool, FsError> {
-        let Some(wide) = property_path(paths) else {
-            return Ok(false);
-        };
-        // Invoke only the native Properties command, on its own STA worker scope.
-        let Some(_com) = ComGuard::initialize(COINIT_APARTMENTTHREADED as u32) else {
-            return Ok(false);
-        };
-        // SAFETY: a live NUL-terminated Unicode path, no owner, and optional default page.
-        Ok(unsafe {
-            SHObjectProperties(
-                ptr::null_mut(),
-                SHOP_FILEPATH as u32,
-                wide.as_ptr(),
-                ptr::null(),
-            )
-        } != 0)
-    }
-}
-
 pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut raw = ptr::null_mut();
     // SAFETY: id and output are valid; OS allocates a NUL-terminated Unicode string.
@@ -397,6 +356,7 @@ pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED;
 
     #[test]
     fn command_prompt_terminal_never_receives_a_verbatim_or_device_cwd() {
@@ -455,7 +415,7 @@ mod tests {
         .unwrap();
     }
     use base64::{Engine, engine::general_purpose::STANDARD};
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, path::PathBuf};
+    use std::{ffi::OsStr, path::PathBuf};
 
     #[test]
     fn empty_terminal_launch_has_only_interactive_shell_arguments() {
@@ -541,18 +501,6 @@ mod tests {
         let expected: Vec<_> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
         assert_eq!(decoded, expected);
         assert_eq!(args.len(), 5);
-    }
-
-    #[test]
-    fn properties_preserve_long_unicode_path_and_refuse_multi_selection_or_nul() {
-        let path = PathBuf::from(format!("C:\\{}\\文档👩🏽‍💻.txt", "segment\\".repeat(80)));
-        let native = property_path(std::slice::from_ref(&path)).unwrap();
-        let mut expected: Vec<u16> = path.as_os_str().encode_wide().collect();
-        expected.push(0);
-        assert_eq!(native, expected);
-        assert!(property_path(&[path.clone(), path]).is_none());
-        assert!(property_path(&[PathBuf::from("C:\\bad\0.txt")]).is_none());
-        assert!(property_path(&[PathBuf::from("relative.txt")]).is_none());
     }
 
     #[test]

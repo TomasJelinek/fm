@@ -110,7 +110,7 @@ pub(super) fn attempt_with(
     Ok(outcome)
 }
 
-fn pin_destination(
+pub(super) fn pin_destination(
     target: &dyn TransferDirectory,
     cancel: &Cancellation,
 ) -> Result<destination::Directory, FsError> {
@@ -132,7 +132,7 @@ fn pin_destination(
     destination::Directory::from_file(file, path.to_owned())
 }
 
-fn exact_alias(
+pub(super) fn exact_alias(
     directory: &destination::Directory,
     source: &File,
     name: &OsStr,
@@ -172,7 +172,7 @@ fn exact_alias(
     native::has_exact_child_name(&held, name, cancel).map_err(|e| error(directory.path(), e))
 }
 
-fn collision(path: &Path, message: &str) -> FsError {
+pub(super) fn collision(path: &Path, message: &str) -> FsError {
     error(path, io::Error::new(io::ErrorKind::AlreadyExists, message))
 }
 

@@ -306,7 +306,12 @@ fn backspace_after_opening_captures_only_neighbors_of_a_large_folder() {
         .enable_all()
         .build()
         .unwrap();
-    let service = crate::Service::with_native_capture(runtime.handle().clone(), source);
+    let (resident_owner, resident) = midnight_work_budget::resident::Owner::start(
+        "viewer-capture-neighbors",
+        crate::RESIDENT_WORKERS,
+    )
+    .unwrap();
+    let service = crate::Service::with_native_capture(runtime.handle().clone(), resident, source);
     *service.runtime.lock().unwrap() = Some(Arc::new(
         midnight_plugin_host::Runtime::discover(root.path()).unwrap(),
     ));
@@ -353,6 +358,15 @@ fn backspace_after_opening_captures_only_neighbors_of_a_large_folder() {
     session.close();
     // The service owns the image-spare backend task; release it before runtime shutdown.
     drop(service);
+    runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            resident_owner.shutdown(runtime.handle()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    });
     runtime.shutdown_timeout(Duration::from_secs(5));
 }
 

@@ -15,10 +15,25 @@ pub(crate) const CONTROL_CAPACITY: usize = 256;
 /// capability (the host keeps at most 2048), so a conforming host cannot fill it.
 pub(crate) const RELEASE_CAPACITY: usize = 4096;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ViewPaint {
+    pub session: u64,
+    pub document: u64,
+    pub viewport_revision: u64,
+    pub width: u32,
+    pub height: u32,
+    pub serial: u64,
+}
+
+pub(crate) struct PendingFrame {
+    event: api::Event,
+    view: Option<ViewPaint>,
+}
+
 pub(crate) struct Output {
     controls: mpsc::SyncSender<api::Event>,
     wake: mpsc::SyncSender<()>,
-    pub(crate) frame: Mutex<Option<api::Event>>,
+    pub(crate) frame: Mutex<Option<PendingFrame>>,
     state: Mutex<Option<api::Event>>,
     releases: Mutex<VecDeque<api::Event>>,
     pub(crate) failed: AtomicBool,
@@ -52,8 +67,51 @@ pub(crate) fn channel() -> (Arc<Output>, Receiver) {
 fn take(slot: &Mutex<Option<api::Event>>) -> Option<api::Event> {
     slot.lock().ok().and_then(|mut value| value.take())
 }
+fn take_frame(slot: &Mutex<Option<PendingFrame>>) -> Option<api::Event> {
+    slot.lock()
+        .ok()
+        .and_then(|mut value| value.take())
+        .map(|pending| pending.event)
+}
 impl Output {
     pub(crate) fn emit(&self, header: api::Header, kind: api::EventKind) {
+        self.emit_inner(header, kind, None);
+    }
+    pub(crate) fn emit_view_frame(&self, header: api::Header, frame: api::Frame, serial: u64) {
+        let view = ViewPaint {
+            session: header.session,
+            document: header.document,
+            viewport_revision: frame.viewport_revision,
+            width: frame.width,
+            height: frame.height,
+            serial,
+        };
+        self.emit_inner(header, api::EventKind::Frame(frame), Some(view));
+    }
+    /// Reclaims only the still-pending, uncomposited view paint with this identity.
+    /// The patch must leave the bytes unchanged when it returns `false`.
+    pub(crate) fn take_view_pixels(
+        &self,
+        previous: ViewPaint,
+        patch: impl FnOnce(&mut [u8]) -> bool,
+    ) -> Option<Vec<u8>> {
+        let mut slot = self.frame.lock().ok()?;
+        let pending = slot.as_mut()?;
+        if pending.view != Some(previous) {
+            return None;
+        }
+        let api::EventKind::Frame(frame) = &mut pending.event.kind else {
+            return None;
+        };
+        if !patch(&mut frame.rgba) {
+            return None;
+        }
+        let api::EventKind::Frame(frame) = slot.take()?.event.kind else {
+            return None;
+        };
+        Some(frame.rgba)
+    }
+    fn emit_inner(&self, header: api::Header, kind: api::EventKind, view: Option<ViewPaint>) {
         // Provider events are validated before queueing (without copying frame pixels),
         // so the writer can only fail on a broken pipe. An out-of-budget event becomes a
         // bounded error instead of terminating the transport.
@@ -77,7 +135,7 @@ impl Output {
                         event.header.document,
                         0,
                     );
-                    *frame = Some(event);
+                    *frame = Some(PendingFrame { event, view });
                 }
             }
             // Only the newest title/loading/zoom state matters; a title-changing script
@@ -110,10 +168,11 @@ impl Output {
     }
     /// Drops the presentation of a retired document (its paint and state).
     pub(crate) fn discard_presentation(&self) {
-        for slot in [&self.frame, &self.state] {
-            if let Ok(mut value) = slot.lock() {
-                *value = None;
-            }
+        if let Ok(mut value) = self.frame.lock() {
+            *value = None;
+        }
+        if let Ok(mut value) = self.state.lock() {
+            *value = None;
         }
     }
     /// Lets the reader return `None` once everything queued has been written. The
@@ -129,7 +188,7 @@ impl Receiver {
             // Resource/state traffic must not starve an already painted viewport.
             if self.consecutive_controls >= 8 {
                 self.consecutive_controls = 0;
-                if let Some(frame) = take(&output.frame) {
+                if let Some(frame) = take_frame(&output.frame) {
                     return Some(frame);
                 }
             }
@@ -152,7 +211,7 @@ impl Receiver {
                 self.consecutive_controls += 1;
                 return Some(event);
             }
-            if let Some(frame) = take(&output.frame) {
+            if let Some(frame) = take_frame(&output.frame) {
                 self.consecutive_controls = 0;
                 return Some(frame);
             }

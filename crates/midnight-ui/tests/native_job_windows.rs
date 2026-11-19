@@ -73,6 +73,7 @@ impl Harness {
                     Command::DecideCopy(_)
                         | Command::ResolveMetadataConflict { .. }
                         | Command::CancelCopy(_)
+                        | Command::CopyCancelConfirmation { .. }
                         | Command::CancelOperation(_)
                         | Command::SetCopyPaused { .. }
                         | Command::SetOperationPaused { .. }
@@ -134,6 +135,40 @@ impl Harness {
         );
         progress.state = CopyOperationState::Completed;
         self.apply(Event::Copy(CopyEvent::Progress(Arc::new(progress))));
+    }
+    fn confirmation_token(&self, id: u64) -> u64 {
+        self.commands
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::CopyCancelConfirmation {
+                    id: target,
+                    token,
+                    action: CopyCancelConfirmationAction::Begin,
+                } if target.0 == id => Some(*token),
+                _ => None,
+            })
+            .expect("confirmation should request the hold for this job")
+    }
+    fn copy_progress(
+        &self,
+        id: u64,
+        intent: TransferIntent,
+        state: CopyOperationState,
+        ready: Option<u64>,
+    ) {
+        let mut progress = CopyProgress::queued(OperationId(id), "destination".into(), 1, intent);
+        progress.state = state;
+        progress.cancel_confirmation_ready = ready;
+        progress.paused = ready.is_some();
+        progress.pause_requested = ready.is_some();
+        self.apply(Event::Copy(CopyEvent::Progress(Arc::new(progress))));
+    }
+    fn acknowledge_confirmation(&self, id: u64, intent: TransferIntent) -> u64 {
+        let token = self.confirmation_token(id);
+        self.copy_progress(id, intent, CopyOperationState::Running, Some(token));
+        token
     }
     fn failure(&self, id: u64, version: u64) {
         self.apply(Event::Copy(CopyEvent::Failure(Arc::new(CopyFailure {
@@ -830,29 +865,52 @@ fn native_jobs_clear_actions_preserve_active_work_and_repair_selected_details() 
 fn independent_progress_windows_route_exact_jobs_and_manual_reopen_does_not_autoclose() {
     let h = Harness::new();
     h.start(1);
+    h.copy_progress(1, TransferIntent::Copy, CopyOperationState::Running, None);
     let first = h.children(1).remove(0);
     h.start(2);
+    h.copy_progress(2, TransferIntent::Copy, CopyOperationState::Running, None);
     let second = h.children(2).pop().unwrap();
     h.commands.borrow_mut().clear();
     modeless::click(&first, "Cancel operation");
+    let first_token = h.acknowledge_confirmation(1, TransferIntent::Copy);
     h.children(2);
-    assert!(h.commands.borrow().is_empty());
+    h.commands.borrow_mut().clear();
     modeless::click(&first, "Cancel operation");
-    h.children(1);
+    h.children(2);
     assert!(matches!(
         h.commands.borrow().as_slice(),
-        [Command::CancelCopy(OperationId(1))]
+        [Command::CopyCancelConfirmation {
+            id: OperationId(1), token, action: CopyCancelConfirmationAction::Confirm,
+        }] if *token == first_token
     ));
+    h.copy_progress(
+        1,
+        TransferIntent::Copy,
+        CopyOperationState::CancelRequested,
+        None,
+    );
+    input::key(&first, Key::Escape);
+    h.children(1);
     h.commands.borrow_mut().clear();
     input::key(&second, Key::Escape);
+    let second_token = h.acknowledge_confirmation(2, TransferIntent::Copy);
     h.children(1);
-    assert!(h.commands.borrow().is_empty());
+    h.commands.borrow_mut().clear();
     modeless::click(&second, "Cancel operation");
-    h.children(0);
+    h.children(1);
     assert!(matches!(
         h.commands.borrow().as_slice(),
-        [Command::CancelCopy(OperationId(2))]
+        [Command::CopyCancelConfirmation {
+            id: OperationId(2), token, action: CopyCancelConfirmationAction::Confirm,
+        }] if *token == second_token
     ));
+    h.copy_progress(
+        2,
+        TransferIntent::Copy,
+        CopyOperationState::CancelRequested,
+        None,
+    );
+    input::key(&second, Key::Escape);
     h.commands.borrow_mut().clear();
     refresh(&h.main, &h.state.borrow());
     h.children(0);
@@ -881,13 +939,16 @@ fn independent_progress_windows_route_exact_jobs_and_manual_reopen_does_not_auto
 fn progress_close_retains_window_if_cancellation_cannot_be_admitted() {
     let h = Harness::new();
     h.start(1);
+    h.copy_progress(1, TransferIntent::Copy, CopyOperationState::Running, None);
     let progress = h.children(1).remove(0);
     h.commands.borrow_mut().clear();
-    h.refuse.set(true);
     progress
         .window()
         .dispatch_event(WindowEvent::CloseRequested);
+    let confirmation = h.acknowledge_confirmation(1, TransferIntent::Copy);
     h.children(1);
+    h.commands.borrow_mut().clear();
+    h.refuse.set(true);
     assert!(h.commands.borrow().is_empty());
     assert!(h.main.get_operations().row_data(0).unwrap().cancellable);
     modeless::click(&progress, "Cancel operation");
@@ -902,17 +963,50 @@ fn progress_close_retains_window_if_cancellation_cannot_be_admitted() {
     .expect("rejected cancellation must retain the retryable question");
     h.refuse.set(false);
     modeless::click(&progress, "Cancel operation");
-    h.children(0);
+    h.children(1);
     assert!(matches!(
         h.commands.borrow().as_slice(),
-        [Command::CancelCopy(OperationId(1))]
+        [Command::CopyCancelConfirmation {
+            id: OperationId(1), token, action: CopyCancelConfirmationAction::Confirm,
+        }] if *token == confirmation
     ));
+    h.copy_progress(
+        1,
+        TransferIntent::Copy,
+        CopyOperationState::CancelRequested,
+        None,
+    );
     let row = h.main.get_operations().row_data(0).unwrap();
     assert_eq!(row.state, "Cancelling");
     assert!(
         !row.cancellable,
         "accepted cancellation remains visible in the ledger"
     );
+    let mut cancelled = CopyProgress::queued(
+        OperationId(1),
+        "destination".into(),
+        1,
+        TransferIntent::Copy,
+    );
+    cancelled.state = CopyOperationState::Cancelled;
+    cancelled.closure = Some(CopyClosureReceipt {
+        unfinished_roots: 1,
+        uncommitted_files: None,
+        uncommitted_bytes: None,
+        omitted_error_details: 0,
+    });
+    h.apply(Event::Copy(CopyEvent::Progress(Arc::new(cancelled))));
+    h.children(1);
+    assert!(
+        modeless::accessible_item(
+            &progress,
+            i_slint_core::items::AccessibleRole::Text,
+            "Selected items completed: 0 · Not completed: 1"
+        )
+        .is_some()
+    );
+    input::key(&progress, Key::Return);
+    h.children(0);
 }
 
 #[test]

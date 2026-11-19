@@ -40,12 +40,17 @@ fn source_search_reports_global_scalar_position_and_preserves_copy_after_prefere
     assert!(session.send(ViewerInput::Search {
         query: "row 02001".into(),
         backwards: false,
-        case_sensitive: true
+        case_sensitive: true,
+        whole_words: false,
     }));
     let found = frame(&session, |frame| {
         frame.status.starts_with("Ln 2001, Col 13")
     });
-    assert!(found.accessible_text.starts_with("row 02001"));
+    assert!(found.accessible_text.contains("// row 02001"));
+    assert!(
+        !found.accessible_text.starts_with("row 02001"),
+        "Find discarded its logical row prefix"
+    );
     session
         .change_preferences(&ViewerPreferenceChange::LineNumbers(false))
         .unwrap();

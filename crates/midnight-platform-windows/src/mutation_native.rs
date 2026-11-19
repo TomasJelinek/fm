@@ -194,19 +194,13 @@ pub(crate) fn reopen(file: &File, access: u32, share: u32) -> io::Result<File> {
     open_relative(file, OsStr::new(""), access, share, FILE_OPEN, 0)
 }
 
-/// Reopens a filter-backed file's content (see `reparse::reopen_content`): like
-/// `ReOpenFile`, the empty name relative to `pinned` reopens the same object, here
-/// without `FILE_OPEN_REPARSE_POINT` so the owning filter supplies the data. Unlike
-/// `ReOpenFile`, which rejects the `SECURITY_IDENTIFICATION` flag value, the open
-/// carries an identification-level quality of service (see [`open_identifying`]).
+/// Reopen this pinned filter-backed file for mediated content access. The empty name
+/// keeps the open associated with the retained object. Identification-level quality
+/// of service prevents impersonation if a concurrent reparse replacement reaches a pipe.
 pub(crate) fn reopen_mediated(pinned: &File, access: u32, share: u32) -> io::Result<File> {
     open_identifying(pinned, OsStr::new(""), access, share)
 }
 
-/// Opens a non-directory relative to `parent` and follows its reparse points, with an
-/// identification-level security quality of service: should the open reach a named pipe
-/// (a reparse point replaced by a symbolic link to one), its server can identify this
-/// process but never impersonate it.
 fn open_identifying(parent: &File, name: &OsStr, access: u32, share: u32) -> io::Result<File> {
     let quality = SECURITY_QUALITY_OF_SERVICE {
         Length: size_of::<SECURITY_QUALITY_OF_SERVICE>() as u32,
@@ -281,11 +275,9 @@ fn create_relative(
     let mut status = IO_STATUS_BLOCK::default();
     // SAFETY: parent is live; counted UTF-16 name, attributes (and the optional quality of
     // service they point to), result and status outlive the synchronous NtCreateFile call.
-    // No caller uses a replace/truncate disposition. Every caller but `open_identifying`
-    // (the filter-mediated reopen of the empty name) opens the final reparse point
-    // directly; callers accept only one validated basename or the empty name of the parent
-    // object itself. Synchronous I/O requires SYNCHRONIZE, which CreateFileW and
-    // ReOpenFile add implicitly.
+    // No caller uses a replace/truncate disposition. Only the filter-mediated reopen follows
+    // its final reparse point through an empty name. Synchronous I/O requires SYNCHRONIZE,
+    // which CreateFileW and ReOpenFile add implicitly.
     let code = unsafe {
         NtCreateFile(
             &mut result,

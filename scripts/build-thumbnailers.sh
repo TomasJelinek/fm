@@ -45,7 +45,9 @@ for name in "${plugins[@]}"; do
     arguments=(build --manifest-path "$repository/plugins/$name/Cargo.toml" --config "$api_config" --locked --offline)
     [[ $profile == debug ]] || arguments+=(--release)
     if [[ $name == midnight-thumbnail-video ]]; then
+        arguments+=(--features playback-worker)
         RUSTFLAGS='-C link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN' cargo "${arguments[@]}"
+        cp "$CARGO_TARGET_DIR/$profile/midnight-video-playback" "$package/midnight-video-playback"
     else
         env -u PKG_CONFIG_SYSROOT_DIR cargo "${arguments[@]}"
     fi
@@ -62,7 +64,7 @@ for name in "${plugins[@]}"; do
         exit 2
     fi
 done
-for name in libavcodec.so.63 libavformat.so.63 libavutil.so.61 libswscale.so.10; do
+for name in libavcodec.so.63 libavformat.so.63 libavutil.so.61 libswscale.so.10 libswresample.so.7; do
     cp -L "$FFMPEG_DIR/lib/$name" "$package/$name"
 done
 mkdir -p "$package/notices/ffmpeg-9.0.2"

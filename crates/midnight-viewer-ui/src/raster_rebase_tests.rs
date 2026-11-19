@@ -79,6 +79,135 @@ fn advance(open: &OpenWindow, ms: u64) {
     raster_motion::step(open);
 }
 
+fn source_frame(open: &OpenWindow, revision: u64, surface: u64, ack: Option<u64>) -> ViewerOutput {
+    let ViewerOutput::Frame(mut frame) = frame(open, revision, surface, ack) else {
+        unreachable!()
+    };
+    frame.mode = 2;
+    frame.modes = vec![2];
+    ViewerOutput::Frame(frame)
+}
+
+#[test]
+fn refused_raw_wheel_and_keys_resume_in_order_after_presented_rebase() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    present(&open, &service, source_frame(&open, 10, 0, None));
+    let credit = Rc::new(Cell::new(0u32));
+    let available = credit.clone();
+    let accepted = Rc::new(RefCell::new(Vec::new()));
+    let captured = accepted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        if matches!(&input, ViewerInput::Scroll { .. }) {
+            let Some(left) = available.get().checked_sub(1) else {
+                return false;
+            };
+            available.set(left);
+        }
+        captured.borrow_mut().push(input);
+        true
+    });
+
+    assert!(open.window.invoke_scroll(1.25, 7.5));
+    assert!(dispatch_key(&open, "viewer.up"));
+    present(&open, &service, source_frame(&open, 11, 90, None));
+    rebase(&open, &service, 1);
+    assert!(
+        accepted
+            .borrow()
+            .iter()
+            .any(|input| { matches!(input, ViewerInput::RasterRebase { transition: 1, .. }) })
+    );
+    assert!(!open.raster_redraw.running());
+
+    credit.set(1);
+    assert!(open.window.invoke_scroll(-2.0, -0.5));
+    assert!(dispatch_key(&open, "viewer.down"));
+    present(&open, &service, source_frame(&open, 12, 91, Some(2)));
+    let ViewerOutput::Frame(mut failed) = source_frame(&open, 13, 91, Some(1)) else {
+        unreachable!()
+    };
+    failed.pixels = vec![0; 4].into();
+    present(&open, &service, ViewerOutput::Frame(failed));
+    advance(&open, 8);
+    assert_eq!(open.frame.get(), 11);
+    assert!(scroll_y(&accepted).is_empty());
+
+    present(&open, &service, source_frame(&open, 14, 91, Some(1)));
+    assert_eq!(open.frame.get(), 14);
+    assert!(open.raster_redraw.running());
+    let scale = open.window.window().scale_factor();
+    let deltas = [[1.25, 7.5], [0.0, -28.0], [-2.0, -0.5], [0.0, 28.0]];
+    let accepted_scrolls = || {
+        accepted
+            .borrow()
+            .iter()
+            .filter_map(|input| match input {
+                ViewerInput::Scroll { x, y } => Some([*x, *y]),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    for count in 1..=deltas.len() {
+        credit.set(1);
+        advance(&open, 8);
+        advance(&open, 8);
+        let expected: Vec<_> = deltas[..count]
+            .iter()
+            .map(|delta| delta.map(|value| value * scale))
+            .collect();
+        assert_eq!(accepted_scrolls(), expected);
+    }
+    assert!(dispatch_key(&open, "viewer.left"));
+    credit.set(1);
+    advance(&open, 8);
+    assert_eq!(accepted_scrolls().last(), Some(&[-40.0 * scale, 0.0]));
+    assert_eq!(accepted_scrolls().len(), 5);
+    manager.close_all();
+}
+
+#[test]
+fn raw_scroll_capacity_and_accepted_file_change_bound_pending_input() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    present(&open, &service, source_frame(&open, 10, 0, None));
+    let accept = Rc::new(Cell::new(false));
+    let ready = accept.clone();
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let captured = received.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        if !ready.get() {
+            return false;
+        }
+        captured.borrow_mut().push(input);
+        true
+    });
+    assert!(dispatch_key(&open, "viewer.down"));
+    assert!(!dispatch_key(&open, "viewer.next-file"));
+    accept.set(true);
+    advance(&open, 8);
+    assert_eq!(
+        scroll_y(&received),
+        [28.0 * open.window.window().scale_factor()]
+    );
+
+    accept.set(false);
+    for _ in 0..64 {
+        assert!(dispatch_key(&open, "viewer.down"));
+    }
+    assert!(!dispatch_key(&open, "viewer.up"));
+    assert!(!open.window.invoke_scroll(0.0, -0.75));
+    accept.set(true);
+    assert!(dispatch_key(&open, "viewer.next-file"));
+    advance(&open, 8);
+    assert_eq!(scroll_y(&received).len(), 1);
+    assert!(matches!(
+        received.borrow().last(),
+        Some(ViewerInput::NextFile)
+    ));
+    manager.close_all();
+}
+
 #[test]
 fn raster_rebase_to_legacy_replies_with_displayed_camera_and_resumes_only_remaining_coast() {
     let (_runtime, manager, open, service) = image_presentation_tests::open();

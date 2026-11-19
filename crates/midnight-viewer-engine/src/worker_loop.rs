@@ -19,6 +19,7 @@ impl Worker {
             .then_some(RETRY)
             .into_iter()
             .chain(deadline.map(|at| at.saturating_duration_since(std::time::Instant::now())))
+            .chain(self.video.as_ref().and_then(VideoView::delay))
             .min()
     }
 
@@ -36,6 +37,7 @@ impl Worker {
                 .closing_image
                 .as_ref()
                 .is_none_or(crate::image_worker::ImageWorker::finished)
+            && self.closing_video.as_ref().is_none_or(VideoView::finished)
     }
 
     /// Apply one bounded batch of channel messages. Only the last of consecutive resizes
@@ -66,6 +68,8 @@ impl Worker {
             }
             if matches!(message, Message::Ready) {
                 wakes.received();
+            } else if let Message::Scroll(step) = message {
+                self.admitted_scroll(step, output);
             } else if !superseded && let Some(input) = message.into_input() {
                 self.input(input, output);
             }
@@ -127,6 +131,146 @@ impl Worker {
         }
     }
 
+    pub(super) fn video_input(&mut self, input: &ViewerInput, output: &Mailbox) -> bool {
+        match input {
+            ViewerInput::NextFile | ViewerInput::PreviousFile | ViewerInput::Mode(_) => false,
+            ViewerInput::Resize(geometry) => {
+                self.geometry = bounded_geometry(*geometry);
+                self.image_size = [geometry.width.max(1), geometry.height.max(1)];
+                true
+            }
+            ViewerInput::MediaControl(control) => {
+                let Some(video) = &mut self.video else {
+                    return true;
+                };
+                match video.apply_control(*control) {
+                    Ok(true) => {
+                        if matches!(control.action, MediaAction::Seek(_)) {
+                            output.discard_pending_video();
+                        }
+                        self.poll_video(output);
+                    }
+                    Ok(false) => {}
+                    Err(error) => self.fail_video(error, output),
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
+    fn cancel_video(&mut self) {
+        if let Some(mut video) = self.video.take() {
+            video.cancel();
+            self.closing_video = Some(video);
+        }
+    }
+
+    pub(super) fn retire_video(&mut self) -> Result<bool, String> {
+        self.cancel_video();
+        if self
+            .closing_video
+            .as_ref()
+            .is_some_and(|video| !video.finished())
+        {
+            return Ok(false);
+        }
+        self.finish_video().map(|()| true)
+    }
+
+    pub(super) fn finish_video(&mut self) -> Result<(), String> {
+        self.cancel_video();
+        if let Some(video) = self.closing_video.take()
+            && let Err(error) = video.finish()
+        {
+            self.video_retirement_error.get_or_insert(error);
+        }
+        self.video_retirement_error.clone().map_or(Ok(()), Err)
+    }
+
+    pub(super) fn poll_video(&mut self, output: &Mailbox) {
+        let Some(video) = &mut self.video else {
+            if !self.pending_open
+                && self.closing_video.as_ref().is_some_and(VideoView::finished)
+                && let Err(error) = self.finish_video()
+            {
+                self.error(error, output);
+            }
+            return;
+        };
+        let result = match video.poll() {
+            Ok(Some(update)) => self.publish_video(update, output),
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            self.fail_video(error, output);
+        }
+    }
+
+    fn fail_video(&mut self, error: String, output: &Mailbox) {
+        let snapshot = self.video.as_mut().map(|video| video.fail(error.clone()));
+        output.discard_pending_video();
+        self.error(error, output);
+        if let Some(snapshot) = snapshot {
+            output.put(ViewerOutput::MediaSnapshot(snapshot));
+        }
+    }
+
+    pub(super) fn publish_video(
+        &mut self,
+        update: VideoUpdate,
+        output: &Mailbox,
+    ) -> Result<(), String> {
+        let VideoUpdate {
+            frame,
+            snapshot,
+            notice,
+        } = update;
+        if let Some(notice) = notice {
+            self.status(notice, output);
+        } else if frame.is_some() && self.status == "Opening…" {
+            self.status(String::new(), output);
+        }
+        let generation = snapshot.session.0;
+        if let Some(mut frame) = frame {
+            for pixel in frame.rgba.as_chunks_mut::<4>().0 {
+                let alpha = u16::from(pixel[3]);
+                if alpha != 255 {
+                    for channel in &mut pixel[..3] {
+                        *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+                    }
+                }
+            }
+            output.put(ViewerOutput::Frame(Box::new(ViewerFrame {
+                generation,
+                media_control: Some(snapshot.control),
+                position_sequence: [0; 2],
+                revision: self.frames.painted()?,
+                mode: VIEWER_MODE_VIDEO,
+                modes: vec![VIEWER_MODE_VIDEO],
+                wrap_enabled: false,
+                wrap_available: false,
+                image: None,
+                raster: None,
+                raster_rebase: None,
+                width: frame.width,
+                height: frame.height,
+                pixels: frame.rgba.into(),
+                tiles: None,
+                accessible_text: Arc::from("Video"),
+                position: 0.0,
+                vertical_extent: 1.0,
+                horizontal_position: 0.0,
+                horizontal_extent: 1.0,
+                caption: self.caption.clone(),
+                status: self.status.clone(),
+            })));
+        }
+        output.put(ViewerOutput::MediaSnapshot(snapshot));
+        Ok(())
+    }
+
     /// Whether a Failed event with this ID is shown as the viewer's error.
     pub(super) fn reports_failure(&self, id: u64) -> bool {
         id == OPEN_REQUEST_ID
@@ -181,8 +325,9 @@ impl Worker {
             self.viewport_failed(id, &message, output);
         }
         self.search_request = None;
+        self.search_cursor.cancel_candidate();
         self.text.locate_request = None;
-        self.queued_scroll = [0.0; 2];
+        self.motion = RelativeMotion::default();
         self.continuation = None;
         self.position_context(output);
         self.error(message, output);

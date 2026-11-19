@@ -34,6 +34,10 @@ export global ViewerPluginsView {
     in property <[ViewerPluginRow]> thumbnailer-rows;
     in property <int> thumbnailer-selected: -1;
     in property <string> thumbnailer-error;
+    in property <bool> thumbnailer-settings-ready;
+    in-out property <string> thumbnailer-extensions;
+    in property <bool> thumbnailer-extension-override;
+    in property <string> thumbnailer-extension-error;
     in property <bool> pending;
     in property <bool> settings-ready;
     in property <bool> restart-needed;
@@ -43,6 +47,9 @@ export global ViewerPluginsView {
     // input detaches a one-way binding, and the editor outlives selection changes.
     in-out property <string> extensions;
     in property <bool> extension-override;
+    in property <string> extension-error;
+    in property <int> extension-feedback-section: -1;
+    in property <string> extension-feedback-revision;
     in property <bool> can-move-up;
     in property <bool> can-move-down;
     callback refresh();
@@ -51,6 +58,8 @@ export global ViewerPluginsView {
     callback select-filesystem(int);
     callback select-archive(int);
     callback select-thumbnailer(int);
+    callback edit-thumbnailer-extensions(string);
+    callback reset-thumbnailer-extensions();
     callback edit-extensions(string);
     callback reset-extensions();
     callback move(int);
@@ -64,9 +73,11 @@ component PluginCatalogList inherits Rectangle {
     in property <string> label;
     callback selected-row(int);
     callback toggled(string, bool);
+    callback reveal-row(length, length);
     private property <length> row-height: Theme.control-height + 2px;
     private property <int> count: root.rows.length;
-    height: root.row-height * max(1, min(root.visible-rows, root.rows.length)) + 2px;
+    // All viewer rows share the page's scroll area.
+    height: root.row-height * max(1, root.viewer-controls ? root.count : min(root.visible-rows, root.count)) + 2px;
     background: Theme.pane-background; border-width: 1px;
     border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
     clip: true; forward-focus: focus;
@@ -76,6 +87,10 @@ component PluginCatalogList inherits Rectangle {
     function reveal() {
         if root.selected < 0 { return; }
         let top = root.selected * root.row-height;
+        if root.viewer-controls {
+            root.reveal-row(root.absolute-position.y + 1px + top, root.row-height);
+            return;
+        }
         if top < -list.content-y { list.content-y = -top; }
         else if top + root.row-height > -list.content-y + list.visible-height {
             list.content-y = min(0px, list.visible-height - top - root.row-height);
@@ -96,6 +111,7 @@ component PluginCatalogList inherits Rectangle {
         list := ListView {
             x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
             horizontal-scrollbar-policy: always-off;
+            vertical-scrollbar-policy: root.viewer-controls ? ScrollBarPolicy.always-off : ScrollBarPolicy.as-needed;
             changed visible-height => { root.reveal(); }
             for plugin[index] in root.rows : Rectangle {
                 width: list.visible-width; height: root.row-height;
@@ -134,7 +150,7 @@ component PluginCatalogList inherits Rectangle {
     }
 }
 
-component ReadOnlyPluginCatalog inherits VerticalLayout {
+component PluginCatalog inherits VerticalLayout {
     in property <[ViewerPluginRow]> rows;
     in property <int> selected: -1;
     in property <int> visible-rows: 8;
@@ -150,6 +166,7 @@ component ReadOnlyPluginCatalog inherits VerticalLayout {
         label: root.label;
         selected-row(index) => { root.selected-row(index); }
     }
+    @children
     if root.selected >= 0 : VerticalLayout {
         spacing: 6px; alignment: start;
         Text {
@@ -177,11 +194,79 @@ component ReadOnlyPluginCatalog inherits VerticalLayout {
     }
 }
 
+component PluginExtensionEditor inherits VerticalLayout {
+    in-out property <string> extensions;
+    in property <bool> thumbnailer;
+    in property <bool> settings-ready;
+    in property <bool> extension-override;
+    in property <string> error;
+    in property <string> feedback-revision;
+    in property <length> page-extent;
+    callback edited(string);
+    callback reset();
+    callback reveal(length, length);
+    spacing: 6px; alignment: start;
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: "Associated extensions"; color: Theme.strong-text; font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1; }
+        HintedActionButton {
+            text: "Reset";
+            accessible-label: root.thumbnailer ? "Reset thumbnailer extensions" : "Reset viewer extensions";
+            enabled: root.extension-override && root.settings-ready;
+            hint: root.thumbnailer ? "Restore this thumbnailer's extensions from its installed manifest."
+                : "Restore this viewer's extensions from its installed manifest.";
+            clicked => { root.reset(); }
+        }
+    }
+    extension-editor := LineEdit {
+        text <=> root.extensions; min-width: 0px;
+        accessible-label: root.thumbnailer ? "Thumbnailer extensions" : "Viewer extensions";
+        enabled: root.settings-ready;
+        edited => { root.edited(self.text); }
+        Tooltip { TipBody {
+            text: root.thumbnailer ? "An empty list disables this thumbnailer's extension matches. Select OK to save."
+                : "Separate extensions with spaces, commas or semicolons. Enter rs, .rs or *.rs. An empty list removes specific matches. Select OK to save.";
+        } }
+    }
+    if root.error != "" : Text {
+        private property <string> feedback: root.feedback-revision;
+        private property <length> page-extent: root.page-extent;
+        text: root.error;
+        accessible-role: text; accessible-label: self.text;
+        color: Theme.error-text; font-size: Theme.small-font; wrap: word-wrap;
+        init => { self.reveal(); }
+        changed feedback => { self.reveal(); }
+        changed height => { self.reveal(); }
+        changed page-extent => { self.reveal(); }
+        function reveal() {
+            let top = extension-editor.absolute-position.y;
+            root.reveal(top, self.absolute-position.y + self.height - top);
+        }
+    }
+}
+
 export component PluginOptions inherits Rectangle {
     in property <length> available-height: 580px;
     private property <int> section;
+    private property <string> extension-feedback-revision: ViewerPluginsView.extension-feedback-revision;
     private property <bool> compact-tabs: root.width < max(440px, Theme.font-size * 32);
     callback open-archive-associations();
+    changed extension-feedback-revision => {
+        if ViewerPluginsView.extension-feedback-section >= 0 {
+            root.section = ViewerPluginsView.extension-feedback-section;
+        }
+    }
+    function reveal-in-page(top: length, height: length) {
+        let viewport-height = plugin-scroll.visible-height;
+        if viewport-height <= 0px || height <= 0px { return; }
+        let y = top - plugin-scroll.absolute-position.y;
+        let bottom = y + min(height, viewport-height);
+        let shift = y < 0px ? -y : min(0px, viewport-height - bottom);
+        if shift != 0px {
+            plugin-scroll.content-y = clamp(plugin-scroll.content-y + shift,
+                min(0px, viewport-height - plugin-scroll.content-height), 0px);
+        }
+    }
     // Give the installed catalog the space it needs first. Details share the
     // page's scrolling area; they must not reserve hundreds of empty pixels.
     private property <int> visible-rows: max(2, floor(
@@ -191,7 +276,7 @@ export component PluginOptions inherits Rectangle {
     VerticalLayout {
         x: 0px; y: 0px; width: root.width; height: root.height;
         spacing: 8px;
-    ScrollView {
+    plugin-scroll := ScrollView {
         min-height: 0px; vertical-stretch: 1;
         horizontal-scrollbar-policy: always-off;
         content-width: self.visible-width;
@@ -218,28 +303,25 @@ export component PluginOptions inherits Rectangle {
         }
         PluginCatalogList {
             rows: ViewerPluginsView.rows; selected: ViewerPluginsView.selected;
-            visible-rows: root.visible-rows; viewer-controls: true; label: "Viewer priority";
+            viewer-controls: true; label: "Viewer priority";
             selected-row(index) => { ViewerPluginsView.select(index); }
             toggled(id, enabled) => { ViewerPluginsView.toggle(id, enabled); }
+            reveal-row(top, height) => {
+                if ViewerPluginsView.extension-error == "" { root.reveal-in-page(top, height); }
+            }
         }
         if ViewerPluginsView.selected >= 0 : VerticalLayout {
             spacing: 6px; alignment: start;
-            HorizontalLayout {
-                spacing: 6px;
-                Text { text: "Extensions"; color: Theme.strong-text; font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1; }
-                HintedActionButton {
-                    text: "Reset"; accessible-label: "Reset viewer extensions";
-                    enabled: ViewerPluginsView.extension-override && ViewerPluginsView.settings-ready && root.selected.configurable;
-                    hint: "Restore this viewer's extensions from its installed manifest.";
-                    clicked => { ViewerPluginsView.reset-extensions(); }
-                }
-            }
-            LineEdit {
-                text <=> ViewerPluginsView.extensions; min-width: 0px;
-                accessible-label: "Viewer extensions";
-                enabled: root.selected.configurable && ViewerPluginsView.settings-ready;
-                edited => { ViewerPluginsView.edit-extensions(self.text); }
-                Tooltip { TipBody { text: "Extensions separated by spaces, commas or semicolons: rs, .rs or *.rs. Use Home/End or the arrow keys to move through long lists. Empty removes specific matches. Changes are saved with OK."; } }
+            PluginExtensionEditor {
+                extensions <=> ViewerPluginsView.extensions;
+                settings-ready: root.selected.configurable && ViewerPluginsView.settings-ready;
+                extension-override: ViewerPluginsView.extension-override;
+                error: ViewerPluginsView.extension-error;
+                feedback-revision: root.extension-feedback-revision;
+                page-extent: plugin-scroll.content-height;
+                edited(text) => { ViewerPluginsView.edit-extensions(text); }
+                reset => { ViewerPluginsView.reset-extensions(); }
+                reveal(top, height) => { root.reveal-in-page(top, height); }
             }
             if root.selected.fallback : Text {
                 text: "This viewer remains the fallback for unassociated files.";
@@ -260,7 +342,7 @@ export component PluginOptions inherits Rectangle {
             color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
         }
     }
-    if root.section == 1 : ReadOnlyPluginCatalog {
+    if root.section == 1 : PluginCatalog {
         rows: ViewerPluginsView.filesystem-rows; selected: ViewerPluginsView.filesystem-selected;
         visible-rows: root.visible-rows; label: "Filesystem plugins";
         error: ViewerPluginsView.filesystem-error;
@@ -269,7 +351,7 @@ export component PluginOptions inherits Rectangle {
     }
     if root.section == 2 : VerticalLayout {
         spacing: 8px; alignment: start;
-        ReadOnlyPluginCatalog {
+        PluginCatalog {
             rows: ViewerPluginsView.archive-rows; selected: ViewerPluginsView.archive-selected;
             visible-rows: root.visible-rows; label: "Archive plugins";
             error: ViewerPluginsView.filesystem-error;
@@ -291,12 +373,24 @@ export component PluginOptions inherits Rectangle {
             context-key: root.section == 1 ? "filesystem-packages" : "archive-packages";
         }
     }
-    if root.section == 3 : ReadOnlyPluginCatalog {
+    if root.section == 3 : PluginCatalog {
         rows: ViewerPluginsView.thumbnailer-rows; selected: ViewerPluginsView.thumbnailer-selected;
         visible-rows: root.visible-rows; label: "Thumbnailer plugins";
         error: ViewerPluginsView.thumbnailer-error;
         empty-text: "No thumbnailer plugins are installed beside this application.";
         selected-row(index) => { ViewerPluginsView.select-thumbnailer(index); }
+        if ViewerPluginsView.thumbnailer-selected >= 0 : PluginExtensionEditor {
+            thumbnailer: true;
+            extensions <=> ViewerPluginsView.thumbnailer-extensions;
+            settings-ready: ViewerPluginsView.thumbnailer-settings-ready;
+            extension-override: ViewerPluginsView.thumbnailer-extension-override;
+            error: ViewerPluginsView.thumbnailer-extension-error;
+            feedback-revision: root.extension-feedback-revision;
+            page-extent: plugin-scroll.content-height;
+            edited(text) => { ViewerPluginsView.edit-thumbnailer-extensions(text); }
+            reset => { ViewerPluginsView.reset-thumbnailer-extensions(); }
+            reveal(top, height) => { root.reveal-in-page(top, height); }
+        }
     }
     if ViewerPluginsView.error != "" : ErrorNotice { text: ViewerPluginsView.error; }
         }

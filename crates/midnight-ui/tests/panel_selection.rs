@@ -64,9 +64,44 @@ fn selected_rows_keep_their_fill_when_focused_in_every_theme_and_view() {
                     "selection must differ from ordinary rows"
                 );
                 if !matches!(theme, 21..=22) {
-                    assert!(
-                        (0..3).any(|channel| fills[1][channel].abs_diff(fills[2][channel]) >= 20),
-                        "theme {theme}, active {active}, mode {mode}: selected fill must stand apart from caret"
+                    assert_ne!(
+                        fills[1], fills[2],
+                        "theme {theme}, active {active}, mode {mode}: selected and caret fills differ"
+                    );
+                }
+                let theme_colors = test.window.global::<Theme>();
+                let selected = ui::root_item(&test.window, names[2], AccessibleRole::ListItem);
+                let selected_at = selected.map_to_native_window(selected.geometry().origin);
+                let square = test.pixel(
+                    selected_at.x + 5.0,
+                    selected_at.y + selected.geometry().height() / 2.0,
+                );
+                let gap = test.pixel(selected_at.x + 5.0, selected_at.y + 3.0);
+                let selected_color = theme_colors.get_selected_edge();
+                let fill = theme_colors.get_selected_background();
+                assert_eq!(
+                    [square.r, square.g, square.b],
+                    [
+                        selected_color.red(),
+                        selected_color.green(),
+                        selected_color.blue()
+                    ],
+                    "selected rows need a solid square marker in every view"
+                );
+                assert_eq!(
+                    [gap.r, gap.g, gap.b],
+                    [fill.red(), fill.green(), fill.blue()],
+                    "selection marker must have a gap above it, unlike the caret stroke"
+                );
+                if active {
+                    let caret = ui::root_item(&test.window, names[1], AccessibleRole::ListItem);
+                    let caret_at = caret.map_to_native_window(caret.geometry().origin);
+                    let stroke = test.pixel(caret_at.x + 1.0, caret_at.y + 3.0);
+                    let caret_color = theme_colors.get_cursor_edge();
+                    assert_eq!(
+                        [stroke.r, stroke.g, stroke.b],
+                        [caret_color.red(), caret_color.green(), caret_color.blue()],
+                        "the focused row keeps its full-height stroke"
                     );
                 }
                 let row = ui::root_item(&test.window, names[3], AccessibleRole::ListItem);

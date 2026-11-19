@@ -102,7 +102,8 @@ fn switching_content_keeps_old_pixels_but_prevents_motion_until_new_surface_arri
     assert!(open.enqueue(ViewerInput::Search {
         query: "needle".into(),
         backwards: false,
-        case_sensitive: false
+        case_sensitive: false,
+        whole_words: false,
     }));
     assert!(open.window.get_retained_raster());
     assert!(!raster_presentation::push(&open, 0.0, 60.0, false));

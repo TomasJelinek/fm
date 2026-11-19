@@ -10,6 +10,7 @@ mod choices;
 mod controls;
 mod copy_completion;
 pub(super) mod copy_dialog;
+mod directory_link_tooltip;
 mod drag_drop;
 mod elevation;
 mod file_actions;

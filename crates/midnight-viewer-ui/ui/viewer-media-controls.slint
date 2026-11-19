@@ -1,0 +1,206 @@
+import { Theme } from "../../midnight-ui/ui/theme.slint";
+import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
+
+export struct MediaControlsState {
+    session: string,
+    playing: bool,
+    can-play-pause: bool,
+    can-seek: bool,
+    position: float,
+    time: string,
+    status: string,
+    error: string,
+}
+
+component PlaybackTimeline inherits Rectangle {
+    in property <string> session;
+    in property <bool> enabled;
+    in property <float> position;
+    in property <string> time;
+    in property <color> accent;
+    in property <length> control-height;
+    callback seek(string, float);
+
+    private property <float> step: 0.01;
+    private property <float> current-position: clamp(root.position, 0, 1);
+    private property <string> pressed-session;
+    private property <float> press-position;
+    private property <float> preview-position;
+    private property <length> grab-offset;
+    private property <bool> scrubbing: root.enabled && root.pressed-session != ""
+        && root.pressed-session == root.session;
+    private property <float> shown-position: root.scrubbing
+        ? root.preview-position : root.current-position;
+    private property <length> thumb-size: Theme.touch ? 20px : 16px;
+    private property <length> track-width: max(1px, root.width - root.thumb-size);
+
+    min-width: 44px; preferred-width: 160px;
+    min-height: root.control-height; preferred-height: root.control-height;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    forward-focus: keys;
+    accessible-role: slider;
+    accessible-label: "Playback position";
+    accessible-description: root.time;
+    accessible-enabled: root.enabled;
+    accessible-orientation: horizontal;
+    accessible-value: root.shown-position;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 1;
+    accessible-value-step: root.step;
+    accessible-action-set-value(value) => {
+        if value.is-float() { root.adjust(value.to-float()); }
+    }
+    accessible-action-increment => { root.adjust(root.current-position + root.step); }
+    accessible-action-decrement => { root.adjust(root.current-position - root.step); }
+
+    changed session => { root.pressed-session = ""; }
+    changed enabled => { if !root.enabled { root.pressed-session = ""; } }
+    changed width => { root.pressed-session = ""; }
+
+    pure function position-at(x: length) -> float {
+        return clamp((x - root.grab-offset) / root.track-width, 0, 1);
+    }
+
+    function adjust(position: float) {
+        let target = clamp(position, 0, 1);
+        if root.enabled && !root.scrubbing && target >= 0 && target <= 1
+            && target != root.current-position {
+            root.seek(root.session, target);
+        }
+    }
+
+    Rectangle {
+        x: root.thumb-size / 2; y: (root.height - self.height) / 2;
+        width: root.track-width; height: 4px;
+        background: Theme.frame; border-radius: 2px;
+    }
+    Rectangle {
+        x: root.thumb-size / 2; y: (root.height - self.height) / 2;
+        width: root.track-width * root.shown-position; height: 4px;
+        background: root.enabled ? root.accent : Theme.muted-text;
+        border-radius: 2px;
+    }
+    Rectangle {
+        x: root.track-width * root.shown-position; y: (root.height - self.height) / 2;
+        width: root.thumb-size; height: self.width; border-radius: self.width / 2;
+        background: Theme.surface;
+        border-color: keys.has-focus ? Theme.active-frame : Theme.frame;
+        border-width: keys.has-focus ? 2px : 1px;
+        Rectangle {
+            x: 4px; y: 4px;
+            width: parent.width - 8px; height: self.width; border-radius: self.width / 2;
+            background: root.enabled ? root.accent : Theme.muted-text;
+        }
+    }
+    keys := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if root.scrubbing || event.modifiers.alt || event.modifiers.control
+                || event.modifiers.meta || event.modifiers.shift {
+                return reject;
+            }
+            if event.text == Key.LeftArrow { root.adjust(root.current-position - root.step); }
+            else if event.text == Key.RightArrow { root.adjust(root.current-position + root.step); }
+            else if event.text == Key.Home { root.adjust(0); }
+            else if event.text == Key.End { root.adjust(1); }
+            else { return reject; }
+            accept
+        }
+    }
+    area := TouchArea {
+        enabled: root.enabled;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.cancel {
+                root.pressed-session = "";
+                return;
+            }
+            if event.button != PointerEventButton.left { return; }
+            if event.kind == PointerEventKind.down {
+                keys.focus();
+                let thumb-left = root.track-width * root.current-position;
+                root.grab-offset = self.mouse-x >= thumb-left && self.mouse-x <= thumb-left + root.thumb-size
+                    ? self.mouse-x - thumb-left : root.thumb-size / 2;
+                root.press-position = root.current-position;
+                root.preview-position = root.position-at(self.mouse-x);
+                root.pressed-session = root.session;
+            } else if event.kind == PointerEventKind.up {
+                let session = root.pressed-session;
+                let commit = root.scrubbing;
+                let target = root.position-at(self.mouse-x);
+                root.pressed-session = "";
+                if commit && abs(target - root.press-position) > 0.00001 {
+                    root.seek(session, target);
+                }
+            }
+        }
+        moved => {
+            if self.pressed && root.scrubbing {
+                root.preview-position = root.position-at(self.mouse-x);
+            }
+        }
+    }
+}
+
+export component MediaControls inherits Rectangle {
+    in property <MediaControlsState> state;
+    in property <bool> compact;
+    in property <color> accent;
+    in property <length> font-size;
+    in property <length> control-height;
+    in property <length> status-size;
+    callback toggle(string);
+    callback seek(string, float);
+    private property <string> message: root.state.error == "" ? root.state.status : root.state.error;
+    private property <length> inset: root.compact ? 4px : 6px;
+    private property <length> message-height: max(18px, root.status-size + 4px);
+
+    background: Theme.surface;
+    border-width: 1px; border-color: Theme.frame; border-radius: 4px;
+    min-width: 0px; horizontal-stretch: 1; vertical-stretch: 0;
+    min-height: root.control-height + root.inset * 2
+        + (root.message == "" ? 0px : root.message-height + 2px);
+    preferred-height: self.min-height;
+    VerticalLayout {
+        padding: root.inset;
+        spacing: 2px;
+        HorizontalLayout {
+            height: root.control-height;
+            spacing: 6px;
+            ActionButton {
+                width: max(50px, root.font-size * 4 + (root.compact ? 10px : 24px));
+                font-size: root.font-size; compact: root.compact;
+                control-height: root.control-height; minimum-control-height: root.control-height;
+                text: root.state.playing ? "Pause" : "Play";
+                enabled: root.state.can-play-pause;
+                clicked => { root.toggle(root.state.session); }
+            }
+            PlaybackTimeline {
+                session: root.state.session;
+                enabled: root.state.can-seek;
+                position: root.state.position;
+                time: root.state.time;
+                accent: root.accent; control-height: root.control-height;
+                seek(session, position) => { root.seek(session, position); }
+            }
+            if root.state.time != "" : Text {
+                // Intrinsic size cannot depend on the row's allocated width:
+                // that feeds the parent layout's own width calculation.
+                min-width: 0px;
+                preferred-width: max(100px, root.font-size * 11);
+                max-width: self.preferred-width; horizontal-stretch: 0;
+                text: root.state.time;
+                font-size: root.font-size; color: Theme.text;
+                overflow: elide; vertical-alignment: center;
+                accessible-role: text; accessible-label: "Playback time";
+                accessible-value: root.state.time;
+            }
+        }
+        if root.message != "" : Text {
+            height: root.message-height;
+            text: root.message; font-size: root.status-size;
+            color: root.state.error == "" ? Theme.muted-text : Theme.error-text;
+            overflow: elide; vertical-alignment: center;
+            accessible-role: text; accessible-label: root.message;
+        }
+    }
+}

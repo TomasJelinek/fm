@@ -145,17 +145,48 @@ pub trait TransferService: Send + Sync {
     ) -> Result<crate::PreparedTransferMove, FsError> {
         Err(transfer_unsupported(path, "verified Move is unsupported"))
     }
+
+    /// Prepare a native Move with an explicit copy-side directory-link policy.
+    /// Reject keeps the ordinary native Move route. Implementations must supply
+    /// independent no-follow removal authority for every projected directory link.
+    fn prepare_move_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<crate::PreparedTransferMoveEntry, FsError> {
+        if links == CopyLinkPolicy::Reject {
+            return self
+                .prepare_move_source(path, cancel)
+                .map(crate::PreparedTransferMoveEntry::Ordinary);
+        }
+        Err(transfer_unsupported(
+            path,
+            "Move with directory links is unsupported",
+        ))
+    }
+
     fn prepare_transfer_source(
         &self,
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError>;
-    /// Optional explicit link-preserving Copy capture. Reject keeps legacy source
-    /// preparation unchanged. Preserve requires a positive no-follow native
-    /// capability; never fall back to a readable referent or Move preparation.
-    /// Retain this policy in directory sources so next_child/open_child capture
-    /// link objects recursively. Capture original raw binding, identity and
-    /// revision/representation; retries keep these pins rather than recapturing.
+    /// Prepare a read-only source using an explicit link policy.
+    ///
+    /// Reject uses legacy preparation. Preserve requires positive native no-follow
+    /// authority over the original link and exact representation.
+    ///
+    /// Directory materialization keeps the original logical path and presents an
+    /// ordinary directory to the worker. FollowDirectoryContents supplies the
+    /// actual pinned target identity for destination ancestry checks, keeps the
+    /// original link proof, and propagates both through every descendant. It
+    /// rejects cycles and unqualified targets. EmptyDirectories validates the
+    /// directory-link kind, exposes the original link identity, and enumerates
+    /// no children. Neither mode grants access to file symlinks or special files.
+    ///
+    /// Preserve the policy across named children, enumeration and retry. A projected
+    /// root has unknown namespace geometry unless the pin independently retains
+    /// and verifies the exact original binding and, for Follow, the target.
     fn prepare_transfer_source_with_links(
         &self,
         path: &Path,
@@ -168,6 +199,9 @@ pub trait TransferService: Send + Sync {
                 path,
                 "link-preserving source preparation is unsupported",
             )),
+            CopyLinkPolicy::FollowDirectoryContents | CopyLinkPolicy::EmptyDirectories => Err(
+                transfer_unsupported(path, "directory link preparation is unsupported"),
+            ),
         }
     }
     fn prepare_transfer_destination(
@@ -198,9 +232,10 @@ pub(crate) fn unconfirmed_transfer_release(operation: &'static str) -> FsError {
     )
 }
 
-/// A no-follow regular file, ordinary directory or explicitly preserved link.
-/// Iteration opens at most one child per call. Retain directory sources on the traversal stack;
-/// preserved links are leaves and never grant referent reads or traversal.
+/// A retained source for a file, directory, or explicitly preserved link.
+/// Iteration opens at most one child per call. Directory sources stay on the traversal stack.
+/// Directory-link projections grant read-only authority over any followed contents.
+/// Preserved links are leaves.
 pub trait TransferSource: Send {
     /// Optional exact native root binding/ancestry. None is conservative unknown authority,
     /// not a claim that this source is independent. Construction and refresh are worker-only.
@@ -228,8 +263,11 @@ pub trait TransferSource: Send {
             "native link representation is unsupported",
         ))
     }
-    /// Metadata-only independent traversal of this pinned source. Never consumes its copy
-    /// iterator, reads file contents, follows links or grants mutation authority.
+    /// Independently enumerate metadata for the same projection execution will copy.
+    /// Use the retained policy and native identity, ancestry and cancellation guards.
+    /// An unsupported or incomplete projection returns an error so progress totals
+    /// can remain unknown. Discovery never consumes the execution iterator, reads
+    /// file contents or grants mutation authority.
     fn discover(
         &self,
         cancel: &Cancellation,
@@ -263,7 +301,7 @@ pub trait TransferSource: Send {
     fn tree_copy_occurrence(&self) -> Option<crate::TreeCopyOccurrence> {
         None
     }
-    /// Open one ordinary child relative to this pinned directory, without following links.
+    /// Open one child of this pinned directory using the source's retained policy.
     fn open_child(
         &self,
         _name: &OsStr,
@@ -287,6 +325,25 @@ pub trait TransferSource: Send {
         Err(transfer_unsupported(
             &self.entry().item.path,
             "recursive Move is unsupported",
+        ))
+    }
+
+    /// Enumerate a no-follow original under an ordinary Move directory. Explicit
+    /// directory-link handling requires either ordinary Move authority or a
+    /// separate read-only projection and an original-link capture.
+    fn next_move_child_with_links(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<crate::PreparedTransferMoveEntry>, FsError> {
+        if links == CopyLinkPolicy::Reject {
+            return self
+                .next_move_child(cancel)
+                .map(|child| child.map(crate::PreparedTransferMoveEntry::Ordinary));
+        }
+        Err(transfer_unsupported(
+            &self.entry().item.path,
+            "recursive Move with directory links is unsupported",
         ))
     }
     fn prepare_modified_time(
@@ -314,6 +371,13 @@ pub trait TransferSource: Send {
     /// return `None`; their member identities must never be compared to native inodes.
     fn native_identity(&self) -> Option<TransferIdentity> {
         Some(self.entry().identity)
+    }
+    /// Identity of this native occurrence before directory-link projection.
+    /// A projected directory link returns its own retained no-follow identity.
+    /// An ordinary descendant returns its own identity even inside a projection.
+    /// Use native_identity for physical ancestry and containment.
+    fn native_original_identity(&self) -> Option<TransferIdentity> {
+        self.native_identity()
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError>;

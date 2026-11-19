@@ -227,3 +227,32 @@ async fn completed_copy_roots_are_reported_before_the_next_conflict() {
     }
     h.close().await;
 }
+
+#[tokio::test]
+async fn duplicate_flat_copy_paths_have_one_requested_and_committed_root() {
+    let temp = fixture();
+    let source = temp.path().join("source.txt");
+    let destination = temp.path().join("destination");
+    fs::write(&source, b"one selected source").unwrap();
+    fs::create_dir(&destination).unwrap();
+    let mut h = Harness::native();
+    h.controller
+        .enqueue(request(1, &[source.clone(), source.clone()], &destination))
+        .await;
+    let done = h.terminal(1).await;
+    h.close().await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(
+        (
+            done.requested_roots,
+            done.completed_roots,
+            done.files_completed
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(
+        fs::read(destination.join("source.txt")).unwrap(),
+        b"one selected source"
+    );
+    assert!(source.is_file());
+}

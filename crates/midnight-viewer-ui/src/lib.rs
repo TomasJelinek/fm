@@ -16,6 +16,7 @@ mod image_tiles;
 mod image_zoom;
 #[cfg(test)]
 mod layout_handshake_tests;
+mod media_controls;
 #[cfg(test)]
 mod opening_retirement_tests;
 #[cfg(test)]
@@ -57,7 +58,7 @@ use std::{
 mod generated {
     slint::include_modules!();
 }
-pub use generated::{ViewerRasterTile, ViewerWindow};
+pub use generated::{MediaControlsState, ViewerRasterTile, ViewerWindow};
 pub use midnight_ui_input::WindowPlacement;
 
 pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
@@ -105,6 +106,7 @@ pub struct ViewerWindows {
 
 struct OpenWindow {
     window: ViewerWindow,
+    media_controls: media_controls::MediaControls,
     session: Rc<WindowSession>,
     input: RefCell<InputSender>,
     timer: Timer,
@@ -230,7 +232,12 @@ impl OpenWindow {
                 | ViewerInput::PreviousFile
                 | ViewerInput::Close
         );
+        let replaces_motion =
+            retires_document || (changes_context && !matches!(input, ViewerInput::Resize(_)));
         let accepted = sender(input);
+        if accepted && replaces_motion {
+            raster_motion::retire_raw(self);
+        }
         if accepted && retires_document {
             self.document_layout.borrow_mut().take();
         }
@@ -425,7 +432,17 @@ impl ViewerWindows {
             }
         };
         let input = Rc::downgrade(&session);
-        let open = Rc::new(OpenWindow {
+        let open = Rc::new_cyclic(|weak: &std::rc::Weak<OpenWindow>| OpenWindow {
+            media_controls: media_controls::MediaControls::install(
+                &window,
+                Rc::new({
+                    let weak = weak.clone();
+                    move |control| {
+                        weak.upgrade()
+                            .is_some_and(|open| open.enqueue(ViewerInput::MediaControl(control)))
+                    }
+                }),
+            ),
             window,
             session,
             input: RefCell::new(Rc::new(move |value| {
@@ -581,9 +598,10 @@ fn apply_mode(open: &OpenWindow, mode: u16, image_mode: bool, reset_policy: bool
         window.invoke_focus_content();
     }
     window.set_web_mode(web_mode);
+    window.set_whole_words_available(!image_mode && !web_mode && mode != 3);
     window.set_source_mode(mode == 2 && !image_mode);
     window.set_markdown_mode(mode == 4 && !image_mode);
-    window.set_font_available(mode != 3 && !image_mode && !web_mode);
+    window.set_font_available(mode != 3 && mode != VIEWER_MODE_VIDEO && !image_mode && !web_mode);
     preferences::present(open);
 }
 
@@ -605,6 +623,12 @@ fn select_layout(open: &OpenWindow, token: u64, mode: u16, generation: u64) {
     layout.pending_ack = true;
     layout.awaiting_frame = true;
     drop(layout);
+    if mode == VIEWER_MODE_VIDEO {
+        open.media_controls.begin(MediaSessionId(generation));
+    } else {
+        open.media_controls.retire_active();
+    }
+    raster_motion::retire_raw(open);
     raster_rebase::cancel_context(open);
     raster_motion::cancel(open);
     open.retained_raster.borrow_mut().camera.suspend();
@@ -661,6 +685,9 @@ fn pump_geometry(open: &OpenWindow) {
         open.retained_raster.borrow_mut().camera.suspend();
         if window.get_image_mode() {
             open.image_zoom.borrow_mut().clear();
+            open.text_position.borrow_mut().cancel();
+        } else if open.layout.borrow().mode == VIEWER_MODE_VIDEO {
+            // Video pixels scale like images; resizing preserves the media session generation.
             open.text_position.borrow_mut().cancel();
         } else {
             open.text_position.borrow_mut().changing_content();
@@ -936,21 +963,50 @@ fn present_outputs(
 
 fn apply_output_controls(open: &OpenWindow, outputs: &[ViewerOutput]) {
     // A newly selected route fences every frame in this batch, including an old
-    // frame prepared before its layout control reached the UI. Closed batches
-    // cannot start another opening or acknowledge its canvas.
-    if !outputs
-        .iter()
-        .any(|output| matches!(output, ViewerOutput::Closed))
+    // frame prepared before its layout control reached the UI. Settle failed
+    // seeks here as well, before the prepared frame's position fence is checked.
+    // Closed batches cannot start another opening or acknowledge its canvas.
+    if !open.closed.get()
+        && !outputs
+            .iter()
+            .any(|output| matches!(output, ViewerOutput::Closed))
     {
         open.palette.observe(outputs);
         for output in outputs {
-            if let ViewerOutput::LayoutSelected {
-                token,
-                mode,
-                content_generation,
-            } = output
-            {
-                select_layout(open, *token, *mode, *content_generation);
+            match output {
+                ViewerOutput::LayoutSelected {
+                    token,
+                    mode,
+                    content_generation,
+                } => select_layout(open, *token, *mode, *content_generation),
+                ViewerOutput::MediaRetired { session } => {
+                    if open.media_controls.retire(*session) {
+                        // A failed replacement may never announce a layout.
+                        // Hide the retired actor's picture and accessibility
+                        // content before a prepared old frame can be delivered.
+                        open.window.set_surface(slint::Image::default());
+                        open.window.set_accessible_text(Default::default());
+                    }
+                }
+                ViewerOutput::VerticalPositionUnavailable {
+                    generation,
+                    sequence,
+                } => {
+                    // Retained raster motion can advance the displayed camera
+                    // independently of the last worker frame.
+                    let displayed = open.window.get_displayed_position();
+                    let settled = open.text_position.borrow_mut().vertical_unavailable(
+                        *generation,
+                        *sequence,
+                        f64::from(displayed),
+                    );
+                    if settled {
+                        let pending = open.text_position.borrow().has_pending();
+                        open.window.set_position(displayed);
+                        open.window.set_position_pending(pending);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -961,6 +1017,10 @@ fn accepts_frame(open: &OpenWindow, frame: &ViewerFrame) -> bool {
         && frame.revision > open.frame.get()
         && frame.generation >= open.frame_generation.get()
         && open.layout.borrow().accepts_frame(frame)
+        && (frame.mode != VIEWER_MODE_VIDEO
+            || open
+                .media_controls
+                .accepts_frame(MediaSessionId(frame.generation), frame.media_control))
         && open.palette.allows(frame)
         && raster_rebase::allows(open, frame.raster_rebase)
         && open.text_position.borrow().accepts_frame(
@@ -984,7 +1044,13 @@ fn present_controlled_outputs(
             continue;
         }
         match &output {
-            ViewerOutput::LayoutSelected { .. } | ViewerOutput::PaletteApplied { .. } => {}
+            ViewerOutput::LayoutSelected { .. }
+            | ViewerOutput::PaletteApplied { .. }
+            | ViewerOutput::MediaRetired { .. }
+            | ViewerOutput::VerticalPositionUnavailable { .. } => {}
+            ViewerOutput::MediaSnapshot(snapshot) => {
+                open.media_controls.apply(snapshot.clone());
+            }
             ViewerOutput::Frame(frame) => {
                 if !accepts_frame(open, frame) {
                     service.retire(output);
@@ -998,7 +1064,6 @@ fn present_controlled_outputs(
                     service.retire(output);
                     continue;
                 }
-                raster_motion::receive(open, frame);
                 if frame.raster.is_some() {
                     if !raster_presentation::receive(open, frame) {
                         service.retire(output);
@@ -1163,7 +1228,9 @@ fn present_controlled_outputs(
                         raster_presentation::present(open);
                     }
                 }
+                raster_motion::receive(open, frame);
                 raster_rebase::presented(open, frame);
+                raster_motion::resume_raw(open);
                 let opening_report = pixel_delivery::trace_published(open, frame);
                 window.invoke_frame_presented();
                 if let Some(report) = opening_report {
@@ -1190,6 +1257,7 @@ fn present_controlled_outputs(
                 {
                     // Keep the displayed pixels and settle at the actual camera.
                     // The failed frontier must not replay indefinitely.
+                    raster_motion::retire_raw(open);
                     raster_motion::cancel(open);
                     window.set_status(midnight_core::visible_name(message).as_ref().into());
                 }
@@ -1217,6 +1285,7 @@ fn present_controlled_outputs(
                     open.document_layout.borrow_mut().take();
                     open.image_camera.borrow_mut().suspend();
                     open.image_redraw.stop();
+                    raster_motion::retire_raw(open);
                     raster_motion::cancel(open);
                     window.set_status(midnight_core::visible_name(message).as_ref().into());
                 }
@@ -1277,6 +1346,11 @@ fn observe_native_content(
     shortcuts: bool,
     ancillary: &mut midnight_ui_input::NativeScroll,
 ) -> bool {
+    if media_controls::is_active(&open.window) {
+        ancillary.cancel();
+        image_motion::bookkeeping(open, event);
+        return false;
+    }
     // Every native transition must update auxiliary press/gesture bookkeeping,
     // including a release that the browser or retained image consumes below.
     let ancillary_consumed = ancillary.observe(open.window.window(), event, None);
@@ -1394,9 +1468,26 @@ fn bind(open: &Rc<OpenWindow>) {
                 query: open.window.get_query().to_string(),
                 backwards,
                 case_sensitive: open.window.get_case_sensitive(),
+                whole_words: open.window.get_whole_words()
+                    && open.window.get_whole_words_available(),
             })
         {
             open.text_position.borrow_mut().cancel();
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_clear_search(move || {
+        if let Some(open) = weak.upgrade() {
+            open.window.set_query("".into());
+            if open.enqueue(ViewerInput::Search {
+                query: String::new(),
+                backwards: false,
+                case_sensitive: open.window.get_case_sensitive(),
+                whole_words: open.window.get_whole_words()
+                    && open.window.get_whole_words_available(),
+            }) {
+                open.text_position.borrow_mut().cancel();
+            }
         }
     });
     let weak = Rc::downgrade(open);
@@ -1418,6 +1509,14 @@ fn dispatch_keyboard_shortcut(open: &OpenWindow, action: &str) -> bool {
 }
 
 fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
+    if media_controls::is_active(&open.window)
+        && !matches!(
+            action,
+            "viewer.close" | "viewer.next-file" | "viewer.previous-file"
+        )
+    {
+        return false;
+    }
     if raster_rebase::waiting(open) && matches!(action, "viewer.copy" | "viewer.select-page") {
         return true;
     }
@@ -1524,6 +1623,8 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
                 query: open.window.get_query().to_string(),
                 backwards: action == "viewer.find-previous",
                 case_sensitive: open.window.get_case_sensitive(),
+                whole_words: open.window.get_whole_words()
+                    && open.window.get_whole_words_available(),
             }
         }
         "viewer.first" => ViewerInput::Seek(0.0),
@@ -1537,26 +1638,20 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             None => return false,
         },
     };
-    if let ViewerInput::Scroll { x, y } = input
-        && open.window.get_tiled()
-    {
-        return image_motion::push(
-            open,
-            x / open.window.window().scale_factor(),
-            y / open.window.window().scale_factor(),
-            false,
-        );
-    }
-    if let ViewerInput::Scroll { x, y } = input
-        && open.window.get_retained_raster()
-        && raster_presentation::push(
-            open,
-            x / open.window.window().scale_factor(),
-            y / open.window.window().scale_factor(),
-            true,
-        )
-    {
-        return true;
+    if let ViewerInput::Scroll { x, y } = input {
+        let scale = open.window.window().scale_factor();
+        if open.window.get_tiled() {
+            return image_motion::push(open, x / scale, y / scale, false);
+        }
+        if !raster_motion::owns_raw(open)
+            && open.window.get_retained_raster()
+            && raster_presentation::push(open, x / scale, y / scale, true)
+        {
+            return true;
+        }
+        if !open.window.get_image_mode() && !open.window.get_web_mode() {
+            return raster_motion::admit_raw(open, x, y);
+        }
     }
     let changing = matches!(
         input,
@@ -1599,34 +1694,42 @@ fn focus_search(open: &OpenWindow) {
 fn bind_pointer(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_scroll(move |x, y| {
-        if let Some(open) = weak.upgrade() {
-            // Logical/pixel input already includes the platform's own momentum.
-            raster_motion::cancel_legacy(&open);
-            if open.window.get_tiled() {
-                image_motion::push(&open, x, y, true);
-                return;
-            }
-            if open.window.get_retained_raster() && raster_presentation::push(&open, x, y, true) {
-                return;
-            }
-            if raster_motion::continue_direct(&open, x, y) {
-                return;
-            }
-            let scale = open.window.window().scale_factor();
-            if open.enqueue(ViewerInput::Scroll {
-                x: x * scale,
-                y: y * scale,
-            }) {
-                open.text_position.borrow_mut().cancel();
-            }
+        let Some(open) = weak.upgrade() else {
+            return false;
+        };
+        if media_controls::is_active(&open.window) {
+            return false;
         }
+        // Logical/pixel input already includes the platform's own momentum.
+        raster_motion::cancel_legacy(&open);
+        if open.window.get_tiled() {
+            image_motion::push(&open, x, y, true);
+            return true;
+        }
+        if !raster_motion::owns_raw(&open)
+            && ((open.window.get_retained_raster() && raster_presentation::push(&open, x, y, true))
+                || raster_motion::continue_direct(&open, x, y))
+        {
+            return true;
+        }
+        let scale = open.window.window().scale_factor();
+        let (x, y) = (x * scale, y * scale);
+        if !open.window.get_image_mode() && !open.window.get_web_mode() {
+            return raster_motion::admit_raw(&open, x, y);
+        }
+        if open.enqueue(ViewerInput::Scroll { x, y }) {
+            open.text_position.borrow_mut().cancel();
+        }
+        true
     });
     fn position(open: &OpenWindow, horizontal: bool, value: f32) {
-        if raster_presentation::seek(open, horizontal, f64::from(value)) {
-            return;
+        if !raster_motion::owns_raw(open) {
+            if raster_presentation::seek(open, horizontal, f64::from(value)) {
+                return;
+            }
+            raster_rebase::cancel_context(open);
+            raster_motion::cancel(open);
         }
-        raster_rebase::cancel_context(open);
-        raster_motion::cancel(open);
         if open.window.get_tiled() {
             image_motion::seek(open, usize::from(!horizontal), f64::from(value));
             return;
@@ -1660,13 +1763,17 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
     });
     let weak = Rc::downgrade(open);
     open.window.on_position_drag_began(move |_| {
-        if let Some(open) = weak.upgrade() {
+        if let Some(open) = weak.upgrade()
+            && !raster_motion::owns_raw(&open)
+        {
             raster_presentation::begin_seek(&open);
         }
     });
     let weak = Rc::downgrade(open);
     open.window.on_position_drag_ended(move |_| {
-        if let Some(open) = weak.upgrade() {
+        if let Some(open) = weak.upgrade()
+            && !raster_motion::owns_raw(&open)
+        {
             raster_presentation::end_seek(&open);
         }
     });
@@ -1772,9 +1879,11 @@ fn bind_image(open: &Rc<OpenWindow>) {
 }
 
 fn close(open: &OpenWindow) {
+    raster_motion::retire_raw(open);
     raster_rebase::cancel_context(open);
     raster_motion::cancel(open);
     if !open.closed.replace(true) {
+        open.media_controls.retire_active();
         {
             let mut layout = open.layout.borrow_mut();
             layout.pending_ack = false;
@@ -1802,6 +1911,7 @@ fn close(open: &OpenWindow) {
 
 fn mode_label(mode: u16) -> &'static str {
     match mode {
+        VIEWER_MODE_VIDEO => "Video",
         1 => "Text",
         2 => "Source",
         3 => "Binary",

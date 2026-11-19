@@ -773,7 +773,8 @@ fn captured_tree_start_policy_survives_refusal_without_recapturing_sources() {
             let draft = p.copies.draft.as_ref().unwrap();
             let token = draft.token.clone();
             let destination = draft.destination.clone();
-            let crate::presenter::copy_dialog::CopyDraftInput::Tree(capture) = &draft.input else {
+            let crate::presenter::copy_dialog::CopyDraftInput::Tree { capture, .. } = &draft.input
+            else {
                 panic!("captured tree");
             };
             let sources = Arc::downgrade(&capture.sources);

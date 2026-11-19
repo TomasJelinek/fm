@@ -1,6 +1,6 @@
 //! Viewer messages contain immutable snapshots; all file work belongs to the backend.
 use crate::{DirectoryIndex, Entry};
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 #[path = "viewer_document.rs"]
 mod document;
 pub use document::DocumentLayout;
@@ -211,8 +211,60 @@ pub struct ViewerImageInfo {
     pub document_layout: Option<DocumentLayout>,
 }
 
+/// App-private mode of the installed FFmpeg video viewer.
+pub const VIEWER_MODE_VIDEO: u16 = 0xff00;
+
+/// Identifier of a viewer media session. IDs increase within its viewer window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MediaSessionId(pub u64);
+
+/// Correlation of one accepted control. Zero identifies initial session updates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MediaControlId(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaAction {
+    SetPlaying(bool),
+    Seek(Duration),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MediaControl {
+    pub session: MediaSessionId,
+    pub id: MediaControlId,
+    pub action: MediaAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MediaPhase {
+    Opening,
+    Paused,
+    Playing,
+    Buffering,
+    Seeking,
+    Ended,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaSnapshot {
+    pub session: MediaSessionId,
+    /// Latest settled control. A seek settles on the matching decoder
+    /// acknowledgement or when the current session reports terminal failure.
+    pub control: MediaControlId,
+    /// Monotonic publication order within this session.
+    pub revision: u64,
+    pub position: Duration,
+    pub duration: Option<Duration>,
+    pub seekable: bool,
+    /// Intended playback after the current seek or buffering interval.
+    pub playing: bool,
+    pub phase: MediaPhase,
+}
+
 #[derive(Clone, Debug)]
 pub enum ViewerInput {
+    MediaControl(MediaControl),
     /// Opt in to app-owned retained text pixels; legacy CPU consumers stay viewport-only.
     RetainedRaster(bool),
     Raster {
@@ -273,6 +325,7 @@ pub enum ViewerInput {
         query: String,
         backwards: bool,
         case_sensitive: bool,
+        whole_words: bool,
     },
     Select {
         frame: u64,
@@ -292,6 +345,10 @@ pub enum ViewerInput {
 #[derive(Clone, Debug)]
 pub struct ViewerFrame {
     pub generation: u64,
+    /// Applied media control when these pixels were produced; present only for video.
+    /// Generation identifies the media session. Accepted seek intent fences this
+    /// acknowledgement independently of the ordinary frame revision.
+    pub media_control: Option<MediaControlId>,
     /// Vertical, horizontal; advanced only when matching content has been prepared.
     pub position_sequence: [u64; 2],
     pub revision: u64,
@@ -322,6 +379,12 @@ pub struct ViewerFrame {
 
 #[derive(Clone, Debug)]
 pub enum ViewerOutput {
+    MediaSnapshot(MediaSnapshot),
+    /// The worker has retired this exact media actor, even if opening its
+    /// replacement fails before another layout can be selected.
+    MediaRetired {
+        session: MediaSessionId,
+    },
     /// App-private layout selection before opening content on opted-in sessions.
     /// The content generation is a floor for ViewerFrame::generation. This is
     /// neither a pixel-ready acknowledgement nor a permission grant.
@@ -350,6 +413,11 @@ pub enum ViewerOutput {
     /// Host-owned commands from an interactive viewer, after browser arbitration.
     WebShortcut(viewer_web::HostShortcut),
     Frame(Box<ViewerFrame>),
+    /// A Source seek ended at this sequence while the last displayed camera remained valid.
+    VerticalPositionUnavailable {
+        generation: u64,
+        sequence: u64,
+    },
     /// Keep the current picture until the UI replies with its displayed camera.
     RasterRebase {
         surface: ViewerSurfaceId,

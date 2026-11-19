@@ -134,7 +134,9 @@ fn prepare_owned(
                 .service
                 .initial_target()
         };
-        scope.get().generate(&initial.path(), lifetime)
+        scope
+            .get()
+            .generate(&initial.path(), lifetime, RenderContext::Bootstrap)
     })();
     match opened {
         Ok(main) => Ok(Prepared {
@@ -280,8 +282,9 @@ impl OfficeSource for CapturedReader {
 }
 
 // Each credit conservatively accounts one full MiB before external generation.
-// Four credits therefore bound all live/reserved HTML slices to four MiB, with
-// no Vec spare capacity and no retained-window cache. Credits survive an
+// Four credits therefore bound published/reserved HTML slices to four MiB, with
+// no retained-window cache. Serialized link adaptation additionally needs at most
+// one MiB of transient scratch (see Scope::generate). Credits survive an
 // unsuccessful last-source release together with its unconfirmed owner.
 #[derive(Default)]
 struct Credits(AtomicUsize);
@@ -310,6 +313,85 @@ struct Generation {
     last: u64,
 }
 
+#[derive(Clone, Copy)]
+enum RenderContext {
+    Bootstrap,
+    Resource,
+}
+
+/// Canonical Office target identity is independent of the browser's private URL directory.
+/// Only generator-owned anchor markup is adapted; document text is already HTML-escaped.
+fn adapt_links(
+    bytes: Arc<[u8]>,
+    target: OfficeTarget,
+    context: RenderContext,
+    cancel: &Cancellation,
+) -> Result<Arc<[u8]>, String> {
+    const ANCHOR: &[u8] = b"<a href=\"/office/v1/";
+    const START: &[u8] = b"<a href=\"";
+    if cancel.is_cancelled() {
+        return Err("Office link adaptation cancelled".into());
+    }
+    let parents = match context {
+        RenderContext::Bootstrap => 0,
+        RenderContext::Resource => target
+            .path()
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .count()
+            .saturating_sub(1),
+    };
+    let anchors = bytes
+        .windows(ANCHOR.len())
+        .filter(|part| *part == ANCHOR)
+        .count();
+    let prefix_bytes = parents.checked_mul(3).ok_or("Office link size overflow")?;
+    let length = bytes
+        .len()
+        .checked_sub(anchors)
+        .and_then(|base| {
+            anchors
+                .checked_mul(prefix_bytes)
+                .and_then(|extra| base.checked_add(extra))
+        })
+        .filter(|length| *length <= HTML_BYTES)
+        .ok_or("Office adapted HTML size limit exceeded")?;
+    if cancel.is_cancelled() {
+        return Err("Office link adaptation cancelled".into());
+    }
+    if anchors == 0 {
+        return Ok(bytes);
+    }
+    let mut adapted = Vec::new();
+    adapted
+        .try_reserve_exact(length)
+        .map_err(|_| "Office link adaptation allocation failed")?;
+    let mut copied = 0;
+    for (index, candidate) in bytes.windows(ANCHOR.len()).enumerate() {
+        if candidate != ANCHOR {
+            continue;
+        }
+        if cancel.is_cancelled() {
+            return Err("Office link adaptation cancelled".into());
+        }
+        adapted.extend_from_slice(&bytes[copied..index]);
+        adapted.extend_from_slice(START);
+        for _ in 0..parents {
+            adapted.extend_from_slice(b"../");
+        }
+        copied = index + START.len() + 1;
+    }
+    adapted.extend_from_slice(&bytes[copied..]);
+    debug_assert_eq!(adapted.len(), length);
+    // Do not retain the generated input across Vec-to-Arc's output allocation.
+    drop(bytes);
+    let adapted = Arc::from(adapted);
+    if cancel.is_cancelled() {
+        return Err("Office link adaptation cancelled".into());
+    }
+    Ok(adapted)
+}
+
 struct Scope {
     parent: Option<Arc<Parent>>,
     generation: Mutex<Option<Generation>>,
@@ -323,7 +405,12 @@ impl fmt::Debug for Scope {
 }
 
 impl Scope {
-    fn generate(&self, path: &str, cancel: &Cancellation) -> Result<CapturedFile, String> {
+    fn generate(
+        &self,
+        path: &str,
+        cancel: &Cancellation,
+        context: RenderContext,
+    ) -> Result<CapturedFile, String> {
         let parent = self
             .parent
             .as_ref()
@@ -353,11 +440,16 @@ impl Scope {
         if rendered.bytes.is_empty() || rendered.bytes.len() > HTML_BYTES {
             return Err("Office generated HTML size limit exceeded".into());
         }
+        // The generation mutex serializes adaptation. In addition to the four
+        // published/reserved slice credits, rewriting needs at most one MiB of
+        // transient scratch; final immutable bytes still fit one slice credit.
+        let bytes = adapt_links(rendered.bytes, target, context, cancel)?;
+        parent.validate(cancel).map_err(text)?;
         generation.last = rendered.generation;
         let mut source = Retained::new(Arc::new(Generated {
             parent: Some(parent.clone()),
             version: identity(parent.revision, target, rendered.generation),
-            bytes: rendered.bytes,
+            bytes,
             _credit: credit,
         }));
         let capture = CapturedFile::from_source(source.get().clone()).map_err(text);
@@ -379,7 +471,11 @@ impl Scope {
 
 impl Resources for Scope {
     fn capture(&self, segments: &[String]) -> Result<CapturedFile, String> {
-        self.generate(&target_path(segments)?, &Cancellation::default())
+        self.generate(
+            &target_path(segments)?,
+            &Cancellation::default(),
+            RenderContext::Resource,
+        )
     }
 
     fn capture_with_cancellation(
@@ -388,7 +484,11 @@ impl Resources for Scope {
         cancellation: &ResourceCancellation,
     ) -> Result<CapturedFile, String> {
         let cancellation = Cancellation::observing(cancellation.flag());
-        self.generate(&target_path(segments)?, &cancellation)
+        self.generate(
+            &target_path(segments)?,
+            &cancellation,
+            RenderContext::Resource,
+        )
     }
 
     fn path_policy(&self) -> ResourcePathPolicy {

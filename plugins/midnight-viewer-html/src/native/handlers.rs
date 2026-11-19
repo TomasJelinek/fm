@@ -9,14 +9,19 @@ fn bounded_text(value: Option<&CefString>, limit: usize) -> String {
 }
 
 /// Publishes owned RGBA pixels for the surface's current revision.
-fn emit_frame(doc: &Document, surface: &crate::surface::Surface, rgba: Vec<u8>) {
+fn emit_frame(
+    doc: &Document,
+    surface: &crate::surface::Surface,
+    rgba: Vec<u8>,
+    view_paint: Option<u64>,
+) {
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(
         crate::trace::Event::LayersCopied,
         surface.width.into(),
         surface.height.into(),
     );
-    doc.emit(api::EventKind::Frame(api::Frame {
+    let frame = api::Frame {
         viewport_revision: surface.revision,
         // CEF accepts inputs asynchronously; OnPaint does not supply their renderer
         // acknowledgment. Zero avoids claiming unproven pixel/input causality.
@@ -24,7 +29,58 @@ fn emit_frame(doc: &Document, surface: &crate::surface::Surface, rgba: Vec<u8>) 
         width: surface.width,
         height: surface.height,
         rgba,
-    }));
+    };
+    if let Some(paint) = view_paint {
+        doc.emit_view_frame(frame, paint);
+    } else {
+        doc.emit(api::EventKind::Frame(frame));
+    }
+}
+
+fn patch_pending_view(
+    doc: &Document,
+    surface: &crate::surface::Surface,
+    paint: u64,
+    native_width: u32,
+    native_height: u32,
+    bgra: &[u8],
+    dirty: &[Rect],
+) -> Option<Vec<u8>> {
+    use crate::surface::{DamageRect, MAX_DAMAGE_RECTS};
+
+    let previous = paint.checked_sub(1)?;
+    if previous == 0 || dirty.is_empty() || dirty.len() > MAX_DAMAGE_RECTS {
+        return None;
+    }
+    let mut damage = [DamageRect::default(); MAX_DAMAGE_RECTS];
+    for (rect, raw) in damage.iter_mut().zip(dirty) {
+        *rect = DamageRect {
+            x: raw.x,
+            y: raw.y,
+            width: raw.width,
+            height: raw.height,
+        };
+    }
+    doc.output.take_view_pixels(
+        crate::output::ViewPaint {
+            session: doc.header.session,
+            document: doc.header.document,
+            viewport_revision: surface.revision,
+            width: surface.width,
+            height: surface.height,
+            serial: previous,
+        },
+        |rgba| {
+            surface.patch_cropped(
+                surface.revision,
+                native_width,
+                native_height,
+                bgra,
+                &damage[..dirty.len()],
+                rgba,
+            )
+        },
+    )
 }
 
 /// Recomposes the retained base with the current popup layer, if a base exists.
@@ -33,7 +89,7 @@ fn emit_layers(doc: &Document) {
         return;
     };
     if let Some(rgba) = doc.layers.lock().ok().and_then(|layers| layers.frame()) {
-        emit_frame(doc, &surface, rgba);
+        emit_frame(doc, &surface, rgba, None);
     }
 }
 
@@ -56,6 +112,8 @@ wrap_app! {
                 for flag in ["disable-background-networking", "disable-component-update", "disable-extensions", "disable-sync", "no-first-run", "disable-default-apps", "disable-domain-reliability"] {
                     command_line.append_switch(Some(&CefString::from(flag)));
                 }
+                #[cfg(feature = "diagnostic-software-compositing")]
+                command_line.append_switch(Some(&CefString::from("disable-gpu-compositing")));
             }
         }
     }
@@ -99,10 +157,10 @@ wrap_render_handler! {
             }
             0
         }
-        fn on_paint(&self, _browser: Option<&mut Browser>, type_: PaintElementType, _dirty_rects: Option<&[Rect]>, buffer: *const u8, width: i32, height: i32) {
-            if buffer.is_null() || width <= 0 || height <= 0 || !self.doc.active.load(Ordering::Acquire) { return; }
+        fn on_paint(&self, _browser: Option<&mut Browser>, type_: PaintElementType, dirty_rects: Option<&[Rect]>, buffer: *const u8, width: i32, height: i32) {
+            if !self.doc.active.load(Ordering::Acquire) { return; }
             if type_ == PaintElementType::POPUP {
-                if width > 8192 || height > 8192 || width as u64 * height as u64 > 1024 * 1024 { return; }
+                if buffer.is_null() || width <= 0 || height <= 0 || width > 8192 || height > 8192 || width as u64 * height as u64 > 1024 * 1024 { return; }
                 // SAFETY: CEF callback guarantees this bounded width*height*4 BGRA allocation.
                 let bgra = unsafe { std::slice::from_raw_parts(buffer, width as usize * height as usize * 4) };
                 if let Ok(mut layers) = self.doc.layers.lock() { layers.popup(width as u32, height as u32, bgra); }
@@ -111,8 +169,12 @@ wrap_render_handler! {
             }
             if type_ != PaintElementType::VIEW { return; }
             #[cfg(feature = "diagnostic-timing")]
-            crate::trace::record(crate::trace::Event::PaintBegin, width as u64, height as u64);
+            let paint_entry_us = crate::trace::view_paint_entry();
             let Ok(mut surface) = self.doc.surface.lock() else { return; };
+            let view_paint = surface.begin_view_paint();
+            if buffer.is_null() || width <= 0 || height <= 0 { return; }
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::record(crate::trace::Event::PaintBegin, width as u64, height as u64);
             // Check native dimensions before forming the borrowed slice or allocating pixels.
             let Ok(viewport) = self.doc.viewport.lock() else { return; };
             let native_width = ((viewport.width as f64 / viewport.scale).ceil() * viewport.scale).ceil() as u32;
@@ -125,18 +187,27 @@ wrap_render_handler! {
             // Surface dimensions were validated on Open/Resize, and the borrow stays here.
             let bgra = unsafe { std::slice::from_raw_parts(buffer, length) };
             let revision = surface.revision;
-            if let Some(rgba) = surface.paint_cropped(revision, width as u32, height as u32, bgra) {
-                #[cfg(feature = "diagnostic-timing")]
-                crate::trace::record(crate::trace::Event::PaintConverted, width as u64, height as u64);
-                // Without a popup the converted pixels move into the frame (no second copy).
-                let frame = self.doc.layers.lock().ok().and_then(|mut layers| layers.view(surface.width, surface.height, rgba));
-                if let Some(rgba) = frame { emit_frame(&self.doc, &surface, rgba); }
-            }
+            let Ok(mut layers) = self.doc.layers.lock() else { return; };
+            let uncomposited = view_paint.filter(|_| !layers.popup_visible());
+            let patched = uncomposited.zip(dirty_rects).and_then(|(serial, dirty)| {
+                patch_pending_view(&self.doc, &surface, serial, width as u32, height as u32, bgra, dirty)
+            });
+            let rgba = patched.or_else(|| surface.paint_cropped(revision, width as u32, height as u32, bgra));
+            let Some(rgba) = rgba else { return; };
+            #[cfg(feature = "diagnostic-timing")]
+            let pump_summary = crate::trace::valid_view_paint(self.doc.header.document, paint_entry_us);
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::record(crate::trace::Event::PaintConverted, width as u64, height as u64);
+            let frame = layers.view(surface.width, surface.height, rgba);
+            drop(layers);
+            if let Some(rgba) = frame { emit_frame(&self.doc, &surface, rgba, uncomposited); }
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::emit_paint_window(pump_summary);
         }
         fn on_popup_show(&self, browser: Option<&mut Browser>, show: i32) {
             let Ok(surface) = self.doc.surface.lock() else { return; };
             let hidden = self.doc.layers.lock().ok().and_then(|mut layers| layers.show(show != 0));
-            if let Some(rgba) = hidden { emit_frame(&self.doc, &surface, rgba); }
+            if let Some(rgba) = hidden { emit_frame(&self.doc, &surface, rgba, None); }
             drop(surface);
             // No base is retained without a popup; repaint the view to compose onto.
             if show != 0 && let Some(host) = browser.and_then(|browser| browser.host()) {

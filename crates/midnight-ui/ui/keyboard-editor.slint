@@ -62,6 +62,8 @@ export component KeyboardEditor inherits VerticalLayout {
     private property <string> selected-id: KeyboardEditorView.selected-id;
     private property <int> selected-row: KeyboardEditorView.selected-row;
     private property <length> row-height: Theme.control-height;
+    // Match ActionButton's minimum and measured caption, including large fonts.
+    private property <length> field-height: max(32px, Theme.control-height, field-metrics.preferred-height + 10px);
     spacing: 8px; alignment: start;
     changed revision => { root.selected-alias = min(root.selected-alias, max(0, KeyboardEditorView.aliases.length - 1)); }
     changed selected-id => { root.selected-alias = 0; }
@@ -116,7 +118,7 @@ export component KeyboardEditor inherits VerticalLayout {
     GridLayout {
         spacing: 8px;
         CompactPicker {
-            row: 0; col: 0; minimum-control-width: 0px;
+            row: 0; col: 0; colspan: 2; minimum-control-width: 0px; control-height: root.field-height;
             model: KeyboardEditorView.aliases; current-index: root.selected-alias;
             label: root.selected-alias < KeyboardEditorView.aliases.length ? KeyboardEditorView.aliases[root.selected-alias] : "Unassigned";
             accessible-name: "Shortcuts for selected command"; horizontal-stretch: 1; show-row-icons: false;
@@ -125,18 +127,18 @@ export component KeyboardEditor inherits VerticalLayout {
             selected(index) => { root.selected-alias = index; }
         }
         HintedActionButton {
-            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
-            text: "Remove"; enabled: root.selected-alias >= 0 && root.selected-alias < KeyboardEditorView.aliases.length;
+            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 2; colspan: root.narrow ? 2 : 1;
+            text: "Remove"; min-height: root.field-height; horizontal-stretch: 1; enabled: root.selected-alias >= 0 && root.selected-alias < KeyboardEditorView.aliases.length;
             hint: "Remove only the selected shortcut from this command.";
             clicked => { KeyboardEditorView.remove(KeyboardEditorView.selected-id, KeyboardEditorView.aliases[root.selected-alias]); }
         }
-    }
-    Text { text: "Press shortcut keys"; color: Theme.text; font-size: Theme.font-size; }
-    GridLayout {
-        spacing: 8px;
+        Text {
+            row: root.narrow ? 2 : 1; col: 0; colspan: root.narrow ? 2 : 3;
+            text: "Press shortcut keys"; color: Theme.text; font-size: Theme.font-size;
+        }
         capture-box := Rectangle {
-            row: 0; col: 0; colspan: root.narrow ? 2 : 1; min-width: 0px;
-            horizontal-stretch: 1; height: Theme.control-height;
+            row: root.narrow ? 3 : 2; col: 0; colspan: root.narrow ? 2 : 1; min-width: 0px;
+            horizontal-stretch: 1; height: root.field-height;
             background: Theme.pane-background; border-width: capture.has-focus ? 2px : 1px;
             border-color: capture.has-focus ? Theme.active-frame : Theme.frame; border-radius: 3px;
             accessible-role: text-input; accessible-label: "Press shortcut keys";
@@ -148,6 +150,10 @@ export component KeyboardEditor inherits VerticalLayout {
                 text: KeyboardEditorView.candidate == "" ? "Click here, then press a shortcut" : KeyboardEditorView.candidate;
                 color: KeyboardEditorView.candidate == "" ? Theme.secondary-text : Theme.text;
                 font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
+            }
+            field-metrics := Text {
+                visible: false; text: "Assign";
+                font-family: Theme.effective-font-family; font-size: Theme.font-size;
             }
             capture := FocusScope {
                 changed has-focus => { KeyboardEditorView.capturing = self.has-focus; }
@@ -163,11 +169,11 @@ export component KeyboardEditor inherits VerticalLayout {
                 }
             }
         }
-        HintedActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
-            text: "Clear"; hint: "Clear the captured shortcut without changing saved assignments."; clicked => { KeyboardEditorView.clear(); } }
+        HintedActionButton { row: root.narrow ? 4 : 2; col: root.narrow ? 0 : 1;
+            text: "Clear"; min-height: root.field-height; hint: "Clear the captured shortcut without changing saved assignments."; clicked => { KeyboardEditorView.clear(); } }
         HintedActionButton {
-            row: root.narrow ? 1 : 0; col: root.narrow ? 1 : 2;
-            text: "Assign"; enabled: KeyboardEditorView.can-assign;
+            row: root.narrow ? 4 : 2; col: root.narrow ? 1 : 2;
+            text: "Assign"; min-height: root.field-height; horizontal-stretch: 1; enabled: KeyboardEditorView.can-assign;
             hint: "Add this shortcut, keeping the command's other shortcuts. An occupied shortcut asks for replacement confirmation.";
             clicked => { KeyboardEditorView.assign(KeyboardEditorView.selected-id, KeyboardEditorView.candidate); }
         }

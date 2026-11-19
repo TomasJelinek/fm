@@ -155,46 +155,74 @@ fn capture_uses_visible_order_and_skips_directories_and_filtered_files() {
 }
 
 #[test]
-fn window_slot_and_opening_fail_cleanly_when_the_runtime_drops_the_worker() {
+fn window_slot_and_opening_fail_cleanly_when_the_resident_refuses_the_worker() {
+    // New work requires the original transient runtime to remain alive. Resident refusal is
+    // the supported backend-unavailable boundary; resident_tests separately covers accepted
+    // queued ownership and credit disposal after the original transient runtime exits.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
         .build()
         .unwrap();
+    let (resident_owner, resident) = midnight_work_budget::resident::Owner::start(
+        "viewer-refusal-credit",
+        crate::RESIDENT_WORKERS,
+    )
+    .unwrap();
     let service = Service::with_native_capture(
         runtime.handle().clone(),
-        Arc::new(|_, _| panic!("a dropped worker captures nothing")),
+        resident,
+        Arc::new(|_, _| panic!("a refused worker captures nothing")),
     );
-    runtime.shutdown_background();
+    resident_owner.seal();
     let root = tempfile::tempdir().unwrap();
-    let session = service
-        .open(
-            launch(root.path(), &["file.txt"], false),
-            appearance(),
-            ViewerGeometry {
-                width: 200,
-                height: 100,
-                scale: 1.0,
-            },
+    let result = service.open(
+        launch(root.path(), &["file.txt"], false),
+        appearance(),
+        ViewerGeometry {
+            width: 200,
+            height: 100,
+            scale: 1.0,
+        },
+    );
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .contains("resident worker is unavailable")
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while service.windows.load(Ordering::Acquire) != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "refused window retained its admission credit"
+        );
+        std::thread::yield_now();
+    }
+    drop(service);
+    runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            resident_owner.shutdown(runtime.handle()),
         )
+        .await
+        .unwrap()
         .unwrap();
-    assert_eq!(
-        service.windows.load(Ordering::Acquire),
-        0,
-        "the admitted window slot is returned"
-    );
-    assert_eq!(
-        session.mailbox.take_open_result(),
-        Some(Err("Viewer backend is unavailable.".into()))
-    );
+    });
 }
 
 #[test]
 fn transient_catalog_failure_lets_the_same_image_policy_configure_again() {
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .unwrap();
-    let service = Service::new(runtime.handle().clone());
+    let (resident_owner, resident) = midnight_work_budget::resident::Owner::start(
+        "viewer-catalog-policy",
+        crate::RESIDENT_WORKERS,
+    )
+    .unwrap();
+    let service = Service::new(runtime.handle().clone(), resident);
     let policy = crate::image_startup::Policy {
         disabled: Arc::from([]),
         associations: Arc::default(),
@@ -216,6 +244,16 @@ fn transient_catalog_failure_lets_the_same_image_policy_configure_again() {
         service.image_policy.lock().unwrap().as_ref() == Some(&newer),
         "a stale failure keeps a newer policy"
     );
+    drop(service);
+    runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            resident_owner.shutdown(runtime.handle()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    });
 }
 
 #[test]
@@ -331,6 +369,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         query: "needle".into(),
         backwards: false,
         case_sensitive: false,
+        whole_words: false,
     });
     let found = frame(&session, |f| {
         f.accessible_text.contains("needle") && f.position > 0.5
@@ -352,6 +391,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         query: "not present in this file".into(),
         backwards: false,
         case_sensitive: false,
+        whole_words: false,
     });
     // The search was submitted; NextFile then cancels it if it is still running.
     status(&session, &["searching", "no further match"]);
@@ -364,6 +404,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         query: "Second".into(),
         backwards: false,
         case_sensitive: true,
+        whole_words: false,
     });
     frame(&session, |f| {
         f.revision > source.revision && f.accessible_text.contains("Second")
@@ -392,6 +433,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         query: "world".into(),
         backwards: false,
         case_sensitive: true,
+        whole_words: false,
     });
     frame(&session, |f| {
         f.revision > markdown.revision && f.accessible_text.contains("world")
@@ -450,6 +492,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         query: "A".into(),
         backwards: false,
         case_sensitive: true,
+        whole_words: false,
     });
     frame(&basic, |f| {
         f.revision > hex.revision && f.accessible_text.contains("41")
@@ -531,4 +574,74 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         .unwrap();
     status(&unavailable, &["no compatible viewer"]);
     unavailable.close();
+}
+
+#[test]
+#[ignore = "requires MIDNIGHT_VIEWER_TEST_INSTALL with basic and source plugins"]
+fn native_whole_word_find_exhausts_substrings_and_keeps_real_row_prefix() {
+    let installation =
+        std::path::PathBuf::from(std::env::var_os("MIDNIGHT_VIEWER_TEST_INSTALL").unwrap());
+    let executor = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-find-native", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = Service::new(executor.handle().clone(), resident);
+    *service.runtime.lock().unwrap() = Some(Arc::new(Runtime::discover(&installation).unwrap()));
+    *service.images.lock().unwrap() = Some(Arc::from([]));
+    let files = tempfile::tempdir().unwrap();
+    let text = format!(
+        "{}\n    α😀 target value\n{}",
+        "hotdog dog_name dog\u{301} dog\u{203f}tail\n".repeat(32),
+        "trailing row\n".repeat(40)
+    );
+    for (name, basic) in [("word-boundaries.txt", true), ("word-boundaries.rs", false)] {
+        let path = files.path().join(name);
+        std::fs::write(&path, &text).unwrap();
+        images::settle_generated_fixture(&path);
+        let session = service
+            .open(
+                launch(files.path(), &[name], basic),
+                appearance(),
+                ViewerGeometry {
+                    width: 600,
+                    height: 180,
+                    scale: 1.0,
+                },
+            )
+            .unwrap();
+        frame(&session, |_| true);
+        assert!(session.send(ViewerInput::Search {
+            query: "dog".into(),
+            backwards: false,
+            case_sensitive: false,
+            whole_words: true
+        }));
+        status(&session, &["no further match"]);
+        assert!(session.send(ViewerInput::Search {
+            query: "dog".into(),
+            backwards: true,
+            case_sensitive: false,
+            whole_words: true
+        }));
+        status(&session, &["no further match"]);
+        assert!(session.send(ViewerInput::Search {
+            query: "target".into(),
+            backwards: false,
+            case_sensitive: false,
+            whole_words: true
+        }));
+        let found = frame(&session, |frame| {
+            frame.accessible_text.contains("    α😀 target value")
+                && !frame.status.contains("Searching")
+        });
+        assert!(session.send(ViewerInput::Copy {
+            frame: found.revision
+        }));
+        assert_eq!(copied(&session), "target");
+        session.close();
+    }
 }

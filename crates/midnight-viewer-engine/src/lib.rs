@@ -47,6 +47,7 @@ mod routing;
 mod search_cursor;
 #[cfg(test)]
 mod tests;
+mod video_actor;
 mod viewport;
 mod window_worker;
 mod worker;

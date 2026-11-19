@@ -7,6 +7,7 @@ pub(super) struct Pending {
     source: String,
     destination: PathBuf,
     summary: String,
+    directory_links_available: bool,
     retry: Option<Retry>,
 }
 
@@ -50,6 +51,7 @@ impl Presenter {
             ),
             destination: self.panes[pane.other().index()].display_path().to_owned(),
             summary: String::new(),
+            directory_links_available: p.native_capabilities(),
             retry: None,
         });
         self.flush_tree_transfer(send);
@@ -237,7 +239,10 @@ impl Presenter {
                     let token = format!("copy-draft:{}", self.desktop.request().0);
                     self.copies.draft = Some(copy_dialog::CopyDraft {
                         token,
-                        input: copy_dialog::CopyDraftInput::Tree(capture),
+                        input: copy_dialog::CopyDraftInput::Tree {
+                            capture,
+                            directory_links_available: pending.directory_links_available,
+                        },
                         source: pending.source.clone(),
                         destination: pending.destination.clone(),
                         summary: pending.summary.clone(),

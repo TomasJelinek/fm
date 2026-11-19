@@ -70,16 +70,23 @@ pub(super) struct CopyOutbox {
     shutdown: Cancellation,
     /// Announces job controls and shutdown to every wait of this job.
     pub controls: Controls,
+    pub(super) pause: Arc<CopyPause>,
 }
 impl CopyOutbox {
     #[cfg(test)]
     pub(super) fn pending(outbox: Outbox) -> Self {
-        Self::pending_with_shutdown(outbox, Cancellation::default(), Controls::default())
+        Self::pending_with_shutdown(
+            outbox,
+            Cancellation::default(),
+            Controls::default(),
+            Cancellation::default().pausable_child(),
+        )
     }
     pub(super) fn pending_with_shutdown(
         outbox: Outbox,
         shutdown: Cancellation,
         controls: Controls,
+        cancel: Cancellation,
     ) -> Self {
         // Public admission accepts at most 4096 roots. Root-completion notices
         // are provider-free; one decision notice plus one spare fits after all
@@ -98,6 +105,7 @@ impl CopyOutbox {
             receiver: Arc::new(Mutex::new(Some(receiver))),
             shutdown,
             controls,
+            pause: Arc::new(CopyPause::new(cancel)),
         }
     }
     #[cfg(test)]
@@ -180,9 +188,11 @@ impl CopyOutbox {
         }
         progress.pause_requested = false;
         progress.paused = false;
+        progress.cancel_confirmation_ready = None;
         progress.wait_reason = None;
         progress.verification_pass_id = 0;
         progress.verification_throughput = Arc::default();
+        progress.closure = closure(&progress);
         self.forward(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
             .await;
     }
@@ -201,6 +211,39 @@ impl CopyOutbox {
     async fn wait_shutdown(&self) {
         self.controls.until(|| self.shutdown.is_cancelled()).await;
     }
+}
+
+/// The terminal result arrives after checked worker retirement. Keep its existing
+/// errors and recovery paths on that exact snapshot and add only the final counts.
+fn closure(progress: &CopyProgress) -> Option<CopyClosureReceipt> {
+    if !progress.state.is_terminal()
+        || (progress.state == CopyOperationState::Completed
+            && progress.failed == 0
+            && progress.skipped == 0
+            && progress.errors.is_empty()
+            && progress.source_delete_pending == 0
+            && progress.source_removal_durability_unconfirmed == 0
+            && progress.source_residual_count == 0
+            && progress.recovery_count == 0)
+    {
+        return None;
+    }
+    let discovery = &progress.discovery;
+    let recursive =
+        discovery.scope == DiscoveryScope::Recursive && discovery.state == DiscoveryState::Complete;
+    Some(CopyClosureReceipt {
+        unfinished_roots: progress
+            .requested_roots
+            .saturating_sub(progress.completed_roots),
+        uncommitted_files: recursive
+            .then(|| discovery.files.checked_sub(progress.files_completed))
+            .flatten(),
+        uncommitted_bytes: discovery
+            .bytes
+            .filter(|_| recursive)
+            .and_then(|bytes| bytes.checked_sub(progress.completed_bytes)),
+        omitted_error_details: progress.failed.saturating_sub(progress.errors.len() as u64),
+    })
 }
 
 #[cfg(test)]

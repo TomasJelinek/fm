@@ -8,43 +8,60 @@ import { HintedActionButton } from "hinted-inputs.slint";
 import { OperationRow } from "jobs-dialog.slint";
 import { OperationSpeedChart } from "operation-speed-chart.slint";
 
-// Copy, Move and Delete share one progress view. Only the operation's data differs.
+// Copy, Move and Delete share one progress window.
 export component JobProgressWindow inherits DialogWindow {
     in property <OperationRow> job;
     in property <string> close-error;
     in property <bool> cancel-confirmation;
+    in property <bool> awaiting-copy-confirmation;
+    in property <bool> copy-cancel-submitted;
+    in property <string> copy-confirmation-token;
     callback resolve();
     callback copy-details();
     callback set-paused(bool);
     callback show-jobs();
     callback request-dismiss();
-    callback confirm-cancel();
+    callback confirm-cancel(string);
     private property <bool> details-visible;
     private property <bool> compact: root.height < 350px;
+    private property <bool> transfer: root.job.kind == 0;
+    private property <bool> transfer-summary: root.transfer && root.job.transfer-outcome != "";
+    private property <bool> can-request-cancel: root.job.active && root.job.cancellable;
+    private property <bool> cancelling-delete: root.job.kind == 1 && root.job.active && !root.job.cancellable;
+    private property <bool> show-actions: !root.cancel-confirmation
+        && !root.awaiting-copy-confirmation && !root.copy-cancel-submitted;
     title: root.job.title;
     preferred-width: max(640px, Theme.font-size * 34);
-    preferred-height: max(420px, Theme.font-size * 24);
+    preferred-height: root.transfer ? max(380px, Theme.font-size * 22) : max(420px, Theme.font-size * 24);
     request-close => { root.request-dismiss(); }
     public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }
     init => { footer.focus-dismiss(); }
     changed cancel-confirmation => { footer.focus-dismiss(); }
+    changed awaiting-copy-confirmation => { footer.focus-dismiss(); }
+    changed copy-cancel-submitted => {
+        if !root.copy-cancel-submitted { footer.focus-dismiss(); }
+    }
     FocusScope {
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.request-dismiss(); return accept; }
             reject
         }
         VerticalLayout {
-            padding: root.compact ? 6px : 16px; spacing: root.compact ? 4px : 10px;
+            padding: root.compact ? 6px : root.transfer ? 10px : 16px;
+            spacing: root.compact ? 4px : root.transfer ? 6px : 10px;
             DialogHeader {
                 title: root.job.title;
-                detail: root.job.paused ? (root.job.pause-requested ? "Paused" : "Resuming...")
+                enabled: !root.copy-cancel-submitted;
+                detail: root.cancelling-delete || root.transfer-summary ? ""
+                    : root.job.paused ? (root.job.pause-requested ? "Paused" : "Resuming...")
                     : root.job.pause-requested ? "Pausing..." : root.job.state;
-                compact: root.compact; native-icon: root.job.icon;
+                compact: root.compact || root.transfer; native-icon: root.job.icon;
                 fallback-icon: root.job.kind == 1 ? FallbackIcons.delete : FallbackIcons.copy;
                 close-label: root.cancel-confirmation ? "Dismiss cancellation question"
-                    : root.job.active ? "Cancel operation" : "Close progress";
+                    : root.awaiting-copy-confirmation ? "Dismiss pending confirmation"
+                    : root.can-request-cancel ? "Cancel operation" : "Close progress";
                 close => { root.request-dismiss(); }
             }
             progress-scroll := ScrollView {
@@ -70,38 +87,69 @@ export component JobProgressWindow inherits DialogWindow {
                         }
                     }
                     if !root.cancel-confirmation : VerticalLayout {
-                        padding-right: 8px; spacing: 10px; alignment: start;
+                        padding-right: 8px; spacing: root.transfer ? 6px : 10px; alignment: start;
                         Text {
-                            text: root.job.progress-label != "" ? root.job.progress-label : root.job.summary;
+                            text: root.transfer-summary ? root.job.state
+                                : root.job.progress-label != "" ? root.job.progress-label : root.job.summary;
                             color: root.job.failed ? Theme.error-text : Theme.strong-text;
                             font-size: root.compact ? Theme.font-size : Theme.font-size * 1.25;
                             overflow: elide;
                         }
-                        if root.job.verification-view && root.job.determinate : ProgressIndicator {
-                            accessible-label: "Overall progress";
-                            accessible-value: root.job.progress-label;
-                            progress: root.job.progress; height: 4px;
+                        if root.transfer && !root.transfer-summary && root.job.transfer-totals != "" : Text {
+                            text: root.job.transfer-totals; color: Theme.strong-text;
+                            font-size: Theme.font-size; wrap: word-wrap;
+                        }
+                        if root.transfer && root.job.active : Text {
+                            text: "Time remaining: " + (root.job.paused ? "Paused"
+                                : root.job.eta != "" ? root.job.eta
+                                : root.job.discovering ? "Discovering items..."
+                                : root.job.determinate && !root.job.waiting && !root.job.pause-requested
+                                    && root.job.cancellable && !root.job.attention ? "Calculating..." : "Unavailable");
+                            color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
                         }
                         if root.job.active && !root.job.determinate : ProgressIndicator {
-                            accessible-label: root.job.activity-label != "" ? root.job.activity-label : "Discovering operation items";
+                            accessible-label: root.cancelling-delete ? "Deletion progress"
+                                : root.job.activity-label != "" ? root.job.activity-label : "Discovering operation items";
                             indeterminate: !root.job.paused && !root.job.waiting; progress: 0; height: 4px;
                         }
-                        if root.job.kind == 0 || root.job.kind == 1 : OperationSpeedChart {
-                            chart: root.job.speed-chart; deletion: root.job.kind == 1;
-                            overall-progress: true; verification-phase: root.job.verification-view;
-                            determinate: root.job.verification-view ? root.job.file-determinate : root.job.determinate;
-                            progress: root.job.verification-view ? root.job.file-progress : root.job.progress;
-                            progress-label: root.job.verification-view ? root.job.file-progress-label : root.job.progress-label;
-                            waiting-label: root.job.activity-label != "" ? root.job.activity-label
+                        if (root.transfer && !root.transfer-summary) || root.job.kind == 1 : OperationSpeedChart {
+                            chart: root.transfer ? root.job.transfer-speed-chart : root.job.speed-chart;
+                            deletion: root.job.kind == 1;
+                            overall-progress: true;
+                            determinate: root.job.determinate; progress: root.job.progress;
+                            progress-label: root.cancelling-delete ? root.job.summary : root.job.progress-label;
+                            waiting-label: root.cancelling-delete ? ""
+                                : root.job.activity-label != "" ? root.job.activity-label
                                 : root.job.discovering ? "Discovering items..."
                                 : root.job.paused ? "Paused" : "Waiting for activity";
                             height: max(130px, Theme.font-size * 7.5);
                         }
-                        if root.job.current-path != "" : Text {
+                        if root.transfer && !root.transfer-summary && root.job.transfer-directory != "" : Text {
+                            text: root.job.transfer-directory; color: Theme.secondary-text;
+                            font-size: Theme.small-font; overflow: elide; min-width: 0px;
+                        }
+                        if root.transfer && !root.transfer-summary && root.job.transfer-name != "" : Text {
+                            text: root.job.transfer-name; color: Theme.strong-text;
+                            font-size: Theme.font-size; overflow: elide; min-width: 0px;
+                        }
+                        if root.job.current-path != "" && (!root.transfer
+                            || (!root.transfer-summary && root.job.transfer-directory == "" && root.job.transfer-name == "")) : Text {
                             text: root.job.current-path; color: Theme.text; font-size: Theme.font-size;
                             wrap: char-wrap; min-width: 0px;
                         }
-                        if root.job.file-progress-label != "" : VerticalLayout {
+                        if root.transfer-summary : Text {
+                            text: root.job.transfer-outcome; color: Theme.text;
+                            font-size: Theme.font-size; wrap: char-wrap; min-width: 0px;
+                        }
+                        if root.transfer && root.details-visible && root.job.verification-view : OperationSpeedChart {
+                            chart: root.job.speed-chart; overall-progress: true; verification-phase: true;
+                            determinate: root.job.file-determinate; progress: root.job.file-progress;
+                            progress-label: root.job.file-progress-label;
+                            waiting-label: root.job.activity-label;
+                            height: max(130px, Theme.font-size * 7.5);
+                        }
+                        if root.job.file-progress-label != "" && (!root.transfer
+                            || (root.details-visible && !root.job.verification-view)) : VerticalLayout {
                             spacing: 4px;
                             Text {
                                 text: root.job.file-progress-label; color: Theme.secondary-text;
@@ -113,23 +161,29 @@ export component JobProgressWindow inherits DialogWindow {
                                 progress: root.job.file-progress; height: 8px;
                             }
                         }
-                        if root.job.active : Text {
+                        if !root.transfer && root.job.active && !root.cancelling-delete : Text {
                             text: root.job.eta == "" && root.job.activity-label != ""
                                 ? root.job.activity-label
                                 : "Time remaining: " + (root.job.paused ? "Paused"
                                     : root.job.eta != "" ? root.job.eta : "Calculating...");
                             color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
                         }
-                        if root.job.remaining != "" : Text {
+                        if root.job.remaining != "" && (!root.transfer || (root.details-visible && !root.transfer-summary)) : Text {
                             text: root.job.remaining; color: Theme.text;
                             font-size: Theme.font-size; wrap: word-wrap;
                         }
-                        if root.details-visible || root.job.failed : Text {
-                            text: root.job.detail; color: root.job.failed ? Theme.error-text : Theme.text;
+                        if root.details-visible || (!root.transfer && root.job.failed) : Text {
+                            text: root.job.progress-detail != "" ? root.job.progress-detail : root.job.detail;
+                            color: root.job.failed ? Theme.error-text : Theme.text;
                             font-size: Theme.small-font; min-width: 0px; wrap: char-wrap;
                         }
                     }
                 }
+            }
+            if root.awaiting-copy-confirmation || root.copy-cancel-submitted : Text {
+                text: root.awaiting-copy-confirmation
+                    ? "Waiting for a safe checkpoint..." : "Cancellation requested...";
+                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
             }
             if root.close-error != "" : Text {
                 text: root.close-error; color: Theme.error-text;
@@ -137,39 +191,48 @@ export component JobProgressWindow inherits DialogWindow {
             }
             footer := DialogFooter {
                 compact-height: root.compact;
-                dismiss-fallback-icon: root.cancel-confirmation ? FallbackIcons.done : FallbackIcons.close;
-                dismiss-text: root.cancel-confirmation ? "Continue"
-                    : root.job.active ? "Cancel operation" : "Close";
-                dismiss-hint: root.cancel-confirmation ? "Keep the operation in its current running or paused state (Escape)."
-                    : root.job.active ? "Ask whether to cancel this operation (Escape)."
+                dismiss-enabled: !root.copy-cancel-submitted;
+                dismiss-fallback-icon: root.cancel-confirmation || root.awaiting-copy-confirmation
+                    ? FallbackIcons.done : FallbackIcons.close;
+                dismiss-text: root.copy-cancel-submitted ? "Cancelling..."
+                    : root.cancel-confirmation || root.awaiting-copy-confirmation ? "Continue"
+                    : root.can-request-cancel ? "Cancel operation" : "Close";
+                dismiss-hint: root.cancel-confirmation ? (root.transfer
+                    ? "Release this confirmation pause. A manual pause stays in place (Escape)."
+                    : "Keep the operation in its current running or paused state (Escape).")
+                    : root.awaiting-copy-confirmation ? "Dismiss the pending confirmation (Escape)."
+                    : root.can-request-cancel ? "Ask whether to cancel this operation (Escape)."
+                    : root.job.active ? "Close this progress window (Escape)."
                     : "Close this completed operation.";
                 dismiss => { root.request-dismiss(); }
                 if root.cancel-confirmation : HintedActionButton {
+                    private property <string> occurrence;
+                    init => { self.occurrence = root.copy-confirmation-token; }
                     text: "Cancel operation"; destructive: true;
                     enabled: root.job.active && root.job.cancellable;
                     hint: "Cancel this operation. Completed changes will remain.";
-                    clicked => { root.confirm-cancel(); }
+                    clicked => { root.confirm-cancel(self.occurrence); }
                 }
-                if !root.cancel-confirmation && root.job.pausable : HintedActionButton {
+                if root.show-actions && root.job.pausable : HintedActionButton {
                     text: root.job.pause-requested ? "Resume" : "Pause";
                     hint: "Pause or resume this operation at a safe file-operation checkpoint.";
                     clicked => { root.set-paused(!root.job.pause-requested); }
                 }
-                if !root.cancel-confirmation : HintedActionButton {
+                if root.show-actions : HintedActionButton {
                     text: root.details-visible ? "Fewer details" : "Details";
                     hint: "Show operation counters, source, destination and diagnostics.";
                     clicked => { root.details-visible = !root.details-visible; }
                 }
-                if !root.cancel-confirmation : HintedActionButton {
+                if root.show-actions : HintedActionButton {
                     text: "Jobs"; hint: "Open the session's job list.";
                     clicked => { root.show-jobs(); }
                 }
-                if !root.cancel-confirmation && !root.job.active : HintedActionButton {
+                if root.show-actions && !root.job.active : HintedActionButton {
                     text: "Copy details"; fallback-icon: FallbackIcons.copy;
                     hint: "Copy this operation's full details and retained errors.";
                     clicked => { root.copy-details(); }
                 }
-                if !root.cancel-confirmation && root.job.attention : HintedActionButton {
+                if root.show-actions && root.job.attention : HintedActionButton {
                     text: "Resolve"; hint: "Review this operation's pending overwrite or error decision.";
                     clicked => { root.resolve(); }
                 }

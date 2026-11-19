@@ -119,13 +119,13 @@ pub(super) fn with_input<T>(
         ffi::av_dict_set(
             &mut options,
             c"format_whitelist".as_ptr(),
-            c"matroska,webm,avi,ogg".as_ptr(),
+            c"matroska,webm,avi,ogg,mov,mp4,m4a,3gp,3g2,mj2".as_ptr(),
             0,
         );
         ffi::av_dict_set(
             &mut options,
             c"codec_whitelist".as_ptr(),
-            c"vp8,vp9,theora,ffv1,rawvideo".as_ptr(),
+            c"vp8,vp9,theora,ffv1,rawvideo,opus".as_ptr(),
             0,
         );
         ffi::av_dict_set(
@@ -160,6 +160,61 @@ pub(super) fn start_time(input: &ffmpeg::format::context::Input) -> i64 {
         start
     }
 }
+
+fn video_seek_timestamp(micros: i64, time_base: ffmpeg::Rational) -> io::Result<i64> {
+    if time_base.numerator() <= 0 || time_base.denominator() <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid selected video time base",
+        ));
+    }
+    // Floor toward the preceding stream tick, including negative container start times. A
+    // rounded-up tick could seek past the caller's target before preroll is decoded.
+    let ticks = (i128::from(micros) * i128::from(time_base.denominator()))
+        .div_euclid(1_000_000 * i128::from(time_base.numerator()));
+    i64::try_from(ticks).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Video seek exceeds the selected stream timestamp range",
+        )
+    })
+}
+
+/// Seek the selected video, leaving the ordinary thumbnail/global seek path unchanged.
+/// `absolute_micros` is in the container's AV_TIME_BASE timeline, including its start time.
+pub(super) fn seek_video(
+    input: &mut ffmpeg::format::context::Input,
+    stream_index: usize,
+    absolute_micros: i64,
+) -> io::Result<()> {
+    let index = c_int::try_from(stream_index).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Video stream index exceeds native range",
+        )
+    })?;
+    let time_base = input
+        .stream(stream_index)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Video stream index is unavailable",
+            )
+        })?
+        .time_base();
+    let target = video_seek_timestamp(absolute_micros, time_base)?;
+    // SAFETY: `input` exclusively owns a live opened context and the audited AVIO bridge for
+    // this synchronous call. The selected stream exists and fits c_int; its positive time base
+    // and all converted timestamps were checked before native mutation. min <= target == max
+    // permits an earlier keyframe but never a later seek timestamp; decoding skips preroll.
+    let result =
+        unsafe { ffi::avformat_seek_file(input.as_mut_ptr(), index, i64::MIN, target, target, 0) };
+    if result < 0 {
+        return Err(io::Error::other(ffmpeg::Error::from(result)));
+    }
+    Ok(())
+}
+
 pub(super) fn limit_decoder(context: &mut ffmpeg::codec::context::Context) {
     // SAFETY: the caller exclusively owns this unopened codec context. Native decode is single
     // threaded; the host supplies bounded CPU parallelism across independent restricted helpers.
@@ -280,6 +335,51 @@ pub(super) fn color_conversion(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_video_seek_ticks_never_round_beyond_the_requested_timestamp() {
+        let time_base = ffmpeg_next::Rational::new(1, 6);
+        for (micros, expected) in [
+            (-1, -1),
+            (0, 0),
+            (200_000, 1),
+            (333_333, 1),
+            (333_334, 2),
+            (500_000, 3),
+        ] {
+            assert_eq!(
+                super::video_seek_timestamp(micros, time_base).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            super::video_seek_timestamp(i64::MAX, ffmpeg_next::Rational::new(1, 1_000_000))
+                .unwrap(),
+            i64::MAX
+        );
+    }
+
+    #[test]
+    fn invalid_time_bases_and_unrepresentable_selected_video_ticks_are_rejected() {
+        for time_base in [
+            ffmpeg_next::Rational::new(0, 6),
+            ffmpeg_next::Rational::new(1, 0),
+            ffmpeg_next::Rational::new(-1, 6),
+        ] {
+            assert_eq!(
+                super::video_seek_timestamp(1, time_base)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+        assert_eq!(
+            super::video_seek_timestamp(i64::MAX, ffmpeg_next::Rational::new(1, i32::MAX))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
+
     #[test]
     fn sd_tagged_streams_are_displayable_but_wide_gamut_and_hdr_are_not() {
         // The full BT.601 triplet that ffmpeg/libvpx write for smpte170m sources.

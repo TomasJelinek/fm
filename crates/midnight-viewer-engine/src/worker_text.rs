@@ -408,7 +408,7 @@ pub(super) fn paint_gutter(
         }
         let x = (margin - label.width() - 8.0 * geometry.scale).max(0.0);
         renderer
-            .paint_over_into(label, raster, [-x, origin[1] - line.y])
+            .paint_annotation_at_into(label, raster, [0.0, origin[1]], [x, line.y])
             .map_err(|error| error.to_string())?;
     }
     Ok(())

@@ -4,16 +4,23 @@
 //! changes, native scale changes, refused sends, visibility changes, delivered frames,
 //! the cache location and notices the service reports, and cache clears wake it again.
 use crate::{pulse::Pulse, wake_gate::WakeGate};
-use midnight_core::Command;
+use midnight_core::{
+    Command, DesktopRequestId, Event, PreferencesRevision, ThumbnailerAssociations,
+};
 use midnight_thumbnail_host::scheduler::Work;
 use midnight_thumbnail_host::service::{Service, View};
-use midnight_ui::{MainWindow, Presenter, ThumbnailTarget};
+use midnight_ui::{
+    BeginOwned, DeferredDrop, MainWindow, OwnedCommandScope, Presenter, ThumbnailTarget,
+};
 use slint::ComponentHandle;
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     rc::{Rc, Weak},
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 #[path = "thumbnail_content.rs"]
@@ -28,6 +35,217 @@ const INTERVAL: Duration = Duration::from_millis(100);
 /// Runs a UI pass on the event loop's thread; false when no event loop can be reached
 /// from another thread (a headless test platform).
 type Post = Arc<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send + Sync>;
+
+#[derive(Clone)]
+pub(crate) struct RoutingSnapshot {
+    pub(crate) generation: u64,
+    pub(crate) associations: Arc<ThumbnailerAssociations>,
+}
+
+pub(crate) struct Routing {
+    snapshot: Mutex<RoutingSnapshot>,
+    generation: AtomicU64,
+}
+
+impl Default for Routing {
+    fn default() -> Self {
+        Self {
+            snapshot: Mutex::new(RoutingSnapshot {
+                generation: 1,
+                associations: Arc::default(),
+            }),
+            generation: AtomicU64::new(1),
+        }
+    }
+}
+
+impl Routing {
+    pub(crate) fn snapshot(&self) -> RoutingSnapshot {
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn is_current(&self, generation: u64) -> bool {
+        self.generation.load(Ordering::Acquire) == generation
+    }
+
+    pub(crate) fn accept(&self, associations: Arc<ThumbnailerAssociations>) -> bool {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if snapshot.associations == associations {
+            return false;
+        }
+        snapshot.generation = snapshot.generation.wrapping_add(1);
+        snapshot.associations = associations;
+        self.generation
+            .store(snapshot.generation, Ordering::Release);
+        true
+    }
+}
+
+// Both queues can accumulate acknowledgements behind the window's bounded event
+// drain. Settings can coalesce saves, so a later receipt releases older snapshots.
+const MAX_PENDING_RECEIPTS: usize = 128;
+
+#[derive(Default)]
+struct RoutingReceipts {
+    load_seen: bool,
+    saved_through: Option<PreferencesRevision>,
+    saves: BTreeMap<PreferencesRevision, Arc<ThumbnailerAssociations>>,
+    artwork: HashMap<DesktopRequestId, u64>,
+}
+
+enum Receipt {
+    Save(PreferencesRevision, Arc<ThumbnailerAssociations>),
+    Artwork(DesktopRequestId, u64),
+}
+
+/// Joins successfully queued UI requests to the acknowledgements used at presentation.
+pub(crate) struct RoutingCommands {
+    routing: Arc<Routing>,
+    import_resource: bool,
+    receipts: RefCell<RoutingReceipts>,
+}
+
+impl RoutingCommands {
+    pub(crate) fn new(routing: Arc<Routing>, import_resource: bool) -> Self {
+        Self {
+            routing,
+            import_resource,
+            receipts: RefCell::default(),
+        }
+    }
+
+    pub(crate) fn dispatch(
+        &self,
+        command: Command,
+        send: impl FnOnce(Command) -> bool,
+        refuse: impl FnOnce(Command),
+    ) -> bool {
+        let receipt = match &command {
+            Command::SavePreferences {
+                revision,
+                preferences,
+            } => Some(Receipt::Save(
+                *revision,
+                preferences.thumbnailer_associations.clone(),
+            )),
+            Command::PickPath { request, input }
+                if crate::command_artwork::requires_import(input.kind, self.import_resource) =>
+            {
+                Some(Receipt::Artwork(
+                    *request,
+                    self.routing.generation.load(Ordering::Acquire),
+                ))
+            }
+            _ => None,
+        };
+        {
+            let receipts = self.receipts.borrow();
+            let full = match &receipt {
+                Some(Receipt::Save(revision, _)) => {
+                    receipts.saves.len() >= MAX_PENDING_RECEIPTS
+                        && !receipts.saves.contains_key(revision)
+                }
+                Some(Receipt::Artwork(request, _)) => {
+                    receipts.artwork.len() >= MAX_PENDING_RECEIPTS
+                        && !receipts.artwork.contains_key(request)
+                }
+                None => false,
+            };
+            if full {
+                drop(receipts);
+                refuse(command);
+                return false;
+            }
+        }
+        if !send(command) {
+            return false;
+        }
+        let mut receipts = self.receipts.borrow_mut();
+        match receipt {
+            Some(Receipt::Save(revision, association))
+                if receipts.saved_through.is_none_or(|saved| revision > saved) =>
+            {
+                receipts.saves.entry(revision).or_insert(association);
+            }
+            Some(Receipt::Artwork(request, generation)) => {
+                receipts.artwork.entry(request).or_insert(generation);
+            }
+            _ => {}
+        }
+        true
+    }
+
+    pub(crate) fn track_owned(self: &Rc<Self>, begin: BeginOwned) -> BeginOwned {
+        let routing = self.clone();
+        Rc::new(move || -> Option<Box<dyn OwnedCommandScope>> {
+            Some(Box::new(RoutedScope {
+                inner: begin()?,
+                routing: routing.clone(),
+            }))
+        })
+    }
+
+    /// Install only a successful load or an exact successful save acknowledgement.
+    /// Suppress stale picker results before the presenter can bind an imported path.
+    pub(crate) fn apply(&self, event: &mut Event) -> bool {
+        let mut receipts = self.receipts.borrow_mut();
+        let associations = match event {
+            Event::PreferencesLoaded(result) if !receipts.load_seen => {
+                receipts.load_seen = true;
+                result
+                    .as_ref()
+                    .ok()
+                    .map(|accepted| accepted.preferences.thumbnailer_associations.clone())
+            }
+            Event::PreferencesSaved { revision, result } => {
+                let Some(associations) = receipts.saves.remove(revision) else {
+                    return false;
+                };
+                receipts.saved_through = Some(*revision);
+                receipts.saves.retain(|pending, _| *pending > *revision);
+                result.is_ok().then_some(associations)
+            }
+            Event::PathPicked { request, result } => {
+                if receipts
+                    .artwork
+                    .remove(request)
+                    .is_some_and(|generation| !self.routing.is_current(generation))
+                {
+                    *result = Ok(None);
+                }
+                None
+            }
+            _ => None,
+        };
+        drop(receipts);
+        associations.is_some_and(|associations| self.routing.accept(associations))
+    }
+}
+
+struct RoutedScope {
+    inner: Box<dyn OwnedCommandScope>,
+    routing: Rc<RoutingCommands>,
+}
+
+impl OwnedCommandScope for RoutedScope {
+    fn send(&self, command: Command) -> bool {
+        self.routing.dispatch(
+            command,
+            |command| self.inner.send(command),
+            |command| self.inner.retire(Box::new(command)),
+        )
+    }
+
+    fn retire(&self, value: DeferredDrop) {
+        self.inner.retire(value);
+    }
+}
 
 pub(crate) struct Controller {
     pulse: Rc<Pulse>,
@@ -139,13 +357,16 @@ pub(crate) fn install(
     presenter: Rc<RefCell<Presenter>>,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
     send: Rc<dyn Fn(Command) -> bool>,
+    routing: Arc<Routing>,
 ) -> Controller {
-    install_service(
+    install_service_with_routing(
         window,
         presenter,
         Rc::new(Service::installed()),
         content::Factory::installed(filesystem),
         send,
+        Arc::new(|pass| slint::invoke_from_event_loop(pass).is_ok()),
+        routing,
     )
 }
 
@@ -161,7 +382,7 @@ thread_local! {
     static PULSE: RefCell<Weak<Pulse>> = const { RefCell::new(Weak::new()) };
 }
 
-fn wake_pulse() {
+pub(crate) fn wake_pulse() {
     if let Some(pulse) = PULSE.with(|pulse| pulse.borrow().upgrade()) {
         pulse.wake();
     }
@@ -174,6 +395,8 @@ struct Bridge {
     capture: content::Factory,
     send: Rc<dyn Fn(Command) -> bool>,
     epoch: Rc<Cell<u64>>,
+    routing: Arc<Routing>,
+    route_generation: u64,
     wake: Arc<WakeGate>,
     post: Post,
     deliveries: Deliveries,
@@ -194,7 +417,21 @@ impl Bridge {
             self.service.stop();
             return false;
         };
+        let routing = self.routing.snapshot();
+        let route_changed = routing.generation != self.route_generation;
+        if route_changed {
+            self.route_generation = routing.generation;
+            self.epoch.set(self.epoch.get().wrapping_add(1));
+        }
         if !window.window().is_visible() {
+            if route_changed {
+                // A hidden window can still have work from its previous view.
+                self.service.set_view(View {
+                    generation: self.epoch.get(),
+                    thumbnailer_associations: routing.associations,
+                    targets: Vec::new(),
+                });
+            }
             // Startup waits hidden for preferences; poll until the window shows.
             return true;
         }
@@ -224,7 +461,8 @@ impl Bridge {
         let scale = window.window().scale_factor();
         let mut refresh_all = false;
         let mut changed = Vec::new();
-        if self.epoch.get() != self.last_epoch {
+        let epoch_changed = self.epoch.get() != self.last_epoch;
+        if epoch_changed {
             self.deliveries = Deliveries::default();
             self.tokens.clear();
             self.last_epoch = self.epoch.get();
@@ -234,7 +472,7 @@ impl Bridge {
             state.report_thumbnail_error(notice);
             refresh_all = true;
         }
-        if self.deliveries.changed(&rows, scale) {
+        if epoch_changed || self.deliveries.changed(&rows, scale) {
             busy = true;
             // Entering/leaving an animated state can change the displayed
             // frame. Viewport scheduling alone has no presentation change.
@@ -274,14 +512,19 @@ impl Bridge {
                     self.capture.target(row, token, physical_edge(row, scale))
                 })
                 .collect();
+            let generation = self.epoch.get();
             self.service.set_view(View {
-                generation: self.epoch.get(),
+                generation,
+                thumbnailer_associations: routing.associations,
                 targets,
             });
             // Budget refusals wait for a changed view. Retain only bounded metadata,
             // never the decoded pixels, and keep the same pinned source token.
             let (tokens, service) = (&self.tokens, &self.service);
             self.deliveries.set_view(rows, scale, |work| {
+                if work.generation != generation {
+                    return true;
+                }
                 let Some((identity, _)) = tokens.iter().find(|(_, token)| **token == work.token)
                 else {
                     return true;
@@ -316,7 +559,10 @@ impl Bridge {
         let Some(window) = self.window.upgrade() else {
             return;
         };
-        if !window.window().is_visible() || self.epoch.get() != self.last_epoch {
+        if !window.window().is_visible()
+            || self.epoch.get() != self.last_epoch
+            || !self.routing.is_current(self.route_generation)
+        {
             return;
         }
         let presenter = self.presenter.clone();
@@ -409,6 +655,7 @@ fn wake_bridge(gate: &Arc<WakeGate>, post: &Post) {
     }
 }
 
+#[cfg(test)]
 fn install_service(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
@@ -426,8 +673,7 @@ fn install_service(
     )
 }
 
-/// [`install_service`] with `post` in place of Slint's event loop for the UI passes that the
-/// service's ready notifications schedule.
+#[cfg(test)]
 fn install_service_with(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
@@ -435,6 +681,26 @@ fn install_service_with(
     capture: content::Factory,
     send: Rc<dyn Fn(Command) -> bool>,
     post: Post,
+) -> Controller {
+    install_service_with_routing(
+        window,
+        presenter,
+        service,
+        capture,
+        send,
+        post,
+        Arc::default(),
+    )
+}
+
+fn install_service_with_routing(
+    window: &MainWindow,
+    presenter: Rc<RefCell<Presenter>>,
+    service: Rc<Service>,
+    capture: content::Factory,
+    send: Rc<dyn Fn(Command) -> bool>,
+    post: Post,
+    routing: Arc<Routing>,
 ) -> Controller {
     let control = service.clone();
     let epoch = Rc::new(Cell::new(1u64));
@@ -451,6 +717,7 @@ fn install_service_with(
     let (ready, notified) = (wake.clone(), post.clone());
     // Called for every frame, cache location and notice the service stores.
     service.set_ready_notifier(Arc::new(move || wake_bridge(&ready, &notified)));
+    let route_generation = routing.snapshot().generation;
     let bridge = Rc::new(RefCell::new(Bridge {
         window: window.as_weak(),
         presenter,
@@ -458,6 +725,8 @@ fn install_service_with(
         capture,
         send,
         epoch,
+        routing,
+        route_generation,
         wake,
         post,
         deliveries: Deliveries::default(),

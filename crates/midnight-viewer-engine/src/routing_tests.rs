@@ -104,6 +104,114 @@ fn route(
 }
 
 #[test]
+fn video_after_image_and_web_preserves_process_indices_and_user_routing_policy() {
+    let video = midnight_media_host::video_installation::VIDEO_PROVIDER_ID;
+    let native = vec![
+        native("basic", &[], &[viewer::MODE_TEXT, viewer::MODE_BINARY], 0),
+        native("source", &["mp4"], &[viewer::MODE_SOURCE], 0),
+    ];
+    let process = [
+        ("midnight.viewer.image", vec!["png".into()]),
+        (HTML_ID, vec!["html".into()]),
+        (video, vec!["mp4".into(), "webm".into()]),
+    ];
+    let mut associations = ViewerAssociations::default();
+    for (name, index) in [
+        ("image.PNG", 0),
+        ("page.html", 1),
+        ("movie.MP4", 2),
+        ("movie.webm", 2),
+    ] {
+        assert_eq!(
+            route(&native, &process, name, false, &[], &associations),
+            Some(Route::Process { index })
+        );
+    }
+    let source = Some(Route::Native {
+        index: 1,
+        mode: viewer::MODE_SOURCE,
+        detect_binary: false,
+    });
+    assert_eq!(
+        route(
+            &native,
+            &process,
+            "movie.mp4",
+            false,
+            &[video.into()],
+            &associations
+        ),
+        source
+    );
+    associations.order = vec!["source".into(), video.into()];
+    assert_eq!(
+        route(&native, &process, "movie.mp4", false, &[], &associations),
+        source
+    );
+    associations.order.reverse();
+    assert_eq!(
+        route(&native, &process, "movie.mp4", false, &[], &associations),
+        Some(Route::Process { index: 2 })
+    );
+
+    associations
+        .overrides
+        .insert(video.into(), vec!["movie".into()]);
+    assert_eq!(
+        route(&native, &process, "custom.MOVIE", false, &[], &associations),
+        Some(Route::Process { index: 2 })
+    );
+    assert_eq!(
+        route(&native, &process, "movie.mp4", false, &[], &associations),
+        source,
+        "an override replaces rather than extends the installed video suffixes"
+    );
+    for name in ["movie.mp4", "custom.movie"] {
+        assert_eq!(
+            route(&native, &process, name, true, &[], &associations),
+            Some(Route::Native {
+                index: 0,
+                mode: viewer::MODE_TEXT,
+                detect_binary: false
+            }),
+            "Basic never selects a decoder or probes binary content"
+        );
+    }
+    associations.overrides.insert(video.into(), vec![]);
+    assert_eq!(
+        route(&native, &process, "movie.mp4", false, &[], &associations),
+        source
+    );
+    assert_eq!(
+        route(&native, &process, "custom.movie", false, &[], &associations),
+        Some(Route::Native {
+            index: 0,
+            mode: viewer::MODE_TEXT,
+            detect_binary: true
+        })
+    );
+    associations
+        .overrides
+        .insert(video.into(), vec!["movie".into()]);
+    assert_eq!(
+        route(
+            &native,
+            &process[..2],
+            "custom.movie",
+            false,
+            &[],
+            &associations
+        ),
+        Some(Route::Native {
+            index: 0,
+            mode: viewer::MODE_TEXT,
+            detect_binary: true
+        }),
+        "retained preferences cannot manufacture an unavailable video provider"
+    );
+}
+
+#[test]
 fn routing_user_order_overrides_the_native_process_split_but_never_prefers_fallback() {
     let native = vec![
         native("basic", &[], &[viewer::MODE_TEXT, viewer::MODE_BINARY], 999),

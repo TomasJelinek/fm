@@ -502,7 +502,13 @@ async fn run(
                     }
                     Ok(Ok(job)) => { disposing.spawn(job.status.clone(), job.cancelled()); }
                     Ok(Err(error)) => {
-                        let progress = worker::failed_status(&status, error);
+                        let id = status.lock().unwrap_or_else(|e| e.into_inner()).id;
+                        let cancel_requested = registry
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get(&id)
+                            .is_some_and(|job| job.cancel.is_cancelled());
+                        let progress = worker::failed_status(&status, error, cancel_requested);
                         finish(&registry, &outbox, progress).await;
                     }
                     Err(error) => {

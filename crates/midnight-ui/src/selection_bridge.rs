@@ -19,6 +19,28 @@ struct Layout {
     viewport_width: f32,
     content_x: f32,
 }
+
+impl Layout {
+    fn row_at(
+        self,
+        window: &MainWindow,
+        pane: PaneId,
+        point: (f32, f32),
+        content_y: f32,
+    ) -> Option<Option<usize>> {
+        let (x, y) = point;
+        let content_point = (x, y - content_y);
+        self.grid
+            .row_at(content_point)
+            .map(|row| {
+                window
+                    .invoke_file_row_band_visible(pane.index() as i32, y)
+                    .then_some(row)
+            })
+            .or_else(|| self.grid.empty_at(content_point).then_some(None))
+    }
+}
+
 struct Gesture {
     pane: PaneId,
     capture: Capture,
@@ -54,7 +76,7 @@ fn layout(window: &MainWindow, presenter: &Presenter, pane: PaneId) -> (Layout, 
                 window.get_left_list_top(),
                 window.get_left_list_width(),
                 window.get_left_list_height(),
-                window.get_left_list_content_y(),
+                window.get_left_list_row_offset_y(),
                 window.get_left_view_mode(),
                 window.get_left_view_columns(),
                 window.get_left_view_rows(),
@@ -66,7 +88,7 @@ fn layout(window: &MainWindow, presenter: &Presenter, pane: PaneId) -> (Layout, 
                 window.get_right_list_top(),
                 window.get_right_list_width(),
                 window.get_right_list_height(),
-                window.get_right_list_content_y(),
+                window.get_right_list_row_offset_y(),
                 window.get_right_view_mode(),
                 window.get_right_view_columns(),
                 window.get_right_view_rows(),
@@ -134,12 +156,7 @@ pub(crate) fn drop_row_at(
     {
         return None;
     }
-    let point = (x, y - offset);
-    layout
-        .grid
-        .row_at(point)
-        .map(Some)
-        .or_else(|| layout.grid.empty_at(point).then_some(None))
+    layout.row_at(window, pane, (x, y), offset)
 }
 fn repaint(window: &MainWindow, presenter: &Rc<RefCell<Presenter>>, pane: PaneId) {
     let (model, first, end) = if pane == PaneId::Left {
@@ -333,13 +350,14 @@ impl Bridge {
             let pane = pane(id);
             let p = self.presenter.borrow();
             let (layout, offset) = layout(&window, &p, pane);
-            let point = (x - layout.left, y - layout.top - offset);
+            let point = (x - layout.left, y - layout.top);
             if y < layout.top
                 || y >= layout.top + layout.height
                 || point.0 < 0.0
                 || point.0 >= layout.viewport_width
                 || layout.content_x.abs() > 0.01
-                || !(point.0 >= layout.grid.width || layout.grid.empty_at(point))
+                || !(point.0 >= layout.grid.width
+                    || layout.row_at(&window, pane, point, offset) == Some(None))
             {
                 return false;
             }
@@ -351,7 +369,7 @@ impl Bridge {
                 pane,
                 capture,
                 layout,
-                anchor: point,
+                anchor: (point.0, point.1 - offset),
                 pointer: (x, y),
                 moved: false,
                 previewed: None,
@@ -411,6 +429,7 @@ pub(crate) fn install(
 
 #[cfg(test)]
 mod tests {
+    use super::drop_row_at;
     use crate::{SelectionRectangle, test_harness::Harness};
     use i_slint_core::model::{ModelChangeListener, ModelChangeListenerBox};
     use midnight_core::*;
@@ -512,6 +531,27 @@ mod tests {
             .iter()
             .filter(|command| matches!(command, Command::SummarizeRectangle(_)))
             .count()
+    }
+
+    #[test]
+    fn clipped_row_fragment_is_a_pane_background_drop_target() {
+        let h = listed(100);
+        let w = &h.window;
+        let x = w.get_left_list_left() + 20.0;
+        let top = w.get_left_list_top();
+        let row_height = w.get_left_view_row_height();
+        w.invoke_scroll_selection(0, -row_height / 2.0);
+        assert_eq!(w.get_left_list_content_y(), -row_height / 2.0);
+        let presenter = h.presenter.borrow();
+
+        assert_eq!(
+            drop_row_at(w, &presenter, PaneId::Left, (x, top + 1.0)),
+            Some(None)
+        );
+        assert_eq!(
+            drop_row_at(w, &presenter, PaneId::Left, (x, top + row_height)),
+            Some(Some(1))
+        );
     }
 
     #[test]

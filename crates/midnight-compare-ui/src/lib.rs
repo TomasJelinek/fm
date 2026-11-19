@@ -1,5 +1,7 @@
 //! Presentation and short input callbacks only. The comparator service owns file work.
 #![deny(unsafe_code)]
+#[cfg(test)]
+extern crate self as midnight_compare_ui;
 mod admission;
 #[cfg(test)]
 mod admission_tests;
@@ -9,6 +11,7 @@ mod external_outcome_tests;
 #[cfg(test)]
 mod external_retry_tests;
 mod file_choice;
+mod find;
 mod fonts;
 #[cfg(test)]
 mod identity_tests;
@@ -23,6 +26,7 @@ mod raw_paths;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod support;
+mod tooltip;
 #[cfg(test)]
 mod wake_tests;
 use midnight_compare_engine::{
@@ -72,9 +76,12 @@ struct OpenWindow {
     /// Polls the mailbox, only on a platform whose event loop the worker cannot wake.
     poll: Timer,
     closed: Cell<bool>,
+    tooltip_observer: RefCell<Option<midnight_ui_input::PostWindowEventObserver>>,
     geometry: Cell<(u32, u32, u32)>,
     geometry_revision: Cell<u64>,
     comparison_generation: Cell<u64>,
+    find_revision: Cell<u64>,
+    submitted_find: RefCell<Option<midnight_compare_engine::FindQuery>>,
     comparison_requested: Cell<bool>,
     external_outcome: Cell<Option<ExternalCompareChoiceOutcome>>,
     pending: RefCell<Vec<Input>>,
@@ -103,9 +110,12 @@ impl OpenWindow {
             batch: Timer::default(),
             poll: Timer::default(),
             closed: Cell::new(false),
+            tooltip_observer: RefCell::new(None),
             geometry: Cell::new((0, 0, 0)),
             geometry_revision: Cell::new(0),
             comparison_generation: Cell::new(0),
+            find_revision: Cell::new(0),
+            submitted_find: RefCell::new(None),
             comparison_requested: Cell::new(false),
             external_outcome: Cell::new(None),
             pending: RefCell::new(Vec::new()),
@@ -130,6 +140,7 @@ impl OpenWindow {
             }
             self.external_outcome.set(None);
             if compare {
+                self.reset_find();
                 self.comparison_requested.set(true);
                 self.window.set_identity_state(-1);
                 self.window.set_status("Preparing comparison…".into());
@@ -183,7 +194,9 @@ impl OpenWindow {
         }
         let window = &self.window;
         let scale = window.window().scale_factor();
-        window.set_compact(window.window().size().to_logical(scale).width < 500.0);
+        let logical = window.window().size().to_logical(scale);
+        tooltip::synchronize(self);
+        window.set_compact(logical.width < 500.0);
         let geometry = (
             (window.get_content_width() * scale).max(2.0) as u32,
             (window.get_content_height() * scale).max(1.0) as u32,
@@ -216,6 +229,8 @@ impl OpenWindow {
     }
     fn close(&self) {
         if !self.closed.replace(true) {
+            self.tooltip_observer.borrow_mut().take();
+            self.reset_find();
             self.external_outcome.set(None);
             self.comparison_requested.set(false);
             self.window.set_identity_state(-1);
@@ -328,6 +343,8 @@ impl ComparatorWindows {
         bind(&open, keys, self.service.clone());
         fonts::bind(&open, self.font_listener.clone());
         file_choice::bind(&open, self.picker_owner);
+        *open.tooltip_observer.borrow_mut() =
+            Some(tooltip::install(&open).map_err(|error| error.to_string())?);
         open.window.show().map_err(|error| error.to_string())?;
         // The size after `show` may equal the size the layout started with, which raises
         // no change; the worker started from an estimate.
@@ -377,6 +394,31 @@ impl ComparatorWindows {
 }
 
 fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
+    let weak = Rc::downgrade(open);
+    open.window.on_search(move |backwards| {
+        if let Some(open) = weak.upgrade() {
+            open.find(backwards);
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_search_edited(move || {
+        if let Some(open) = weak.upgrade() {
+            open.clear_find();
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_clear_search(move || {
+        if let Some(open) = weak.upgrade() {
+            open.clear_find();
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_search_options_changed(move || {
+        if let Some(open) = weak.upgrade() {
+            open.clear_find();
+            open.find(false);
+        }
+    });
     let weak = Rc::downgrade(open);
     open.window.on_output_ready(move || {
         if let Some(open) = weak.upgrade() {
@@ -514,6 +556,8 @@ fn same_state(old: &Input, new: &Input) -> bool {
         (Input::Resize(..), Input::Resize(..))
             | (Input::Mode(_), Input::Mode(_))
             | (Input::FontFamily(_), Input::FontFamily(_))
+            | (Input::Find { .. }, Input::Find { .. })
+            | (Input::FindStep { .. }, Input::FindStep { .. })
             | (
                 Input::Fit | Input::ActualPixels,
                 Input::Fit | Input::ActualPixels
@@ -527,6 +571,27 @@ fn same_state(old: &Input, new: &Input) -> bool {
 /// follows, so at most one of each kind waits and a full queue always holds navigation.
 /// The oldest navigation input is shed first.
 fn queue_input(pending: &mut Vec<Input>, input: Input) {
+    let input = match input {
+        Input::FindStep {
+            mut delta,
+            revision,
+        } => {
+            if let Some(index) = pending
+                .iter()
+                .position(|old| matches!(old, Input::FindStep { .. }))
+                && let Input::FindStep { delta: old, .. } = pending.remove(index)
+            {
+                delta = delta.saturating_add(old);
+            }
+            Input::FindStep { delta, revision }
+        }
+        input @ Input::Find { .. } => {
+            // Replacing/clearing a query invalidates every relative step for the old query.
+            pending.retain(|old| !matches!(old, Input::FindStep { .. }));
+            input
+        }
+        input => input,
+    };
     if !navigation(&input) {
         pending.retain(|old| !same_state(old, &input));
         pending.push(input);
@@ -568,6 +633,14 @@ fn key(open: &OpenWindow, action: &str) -> bool {
     let input = match action {
         "viewer.close" => {
             open.close();
+            return true;
+        }
+        "viewer.find" if !open.window.get_image_mode() => {
+            open.window.invoke_focus_search();
+            return true;
+        }
+        "viewer.find-next" | "viewer.find-previous" if !open.window.get_image_mode() => {
+            open.find(action == "viewer.find-previous");
             return true;
         }
         "compare.next-difference" => Input::Difference { backwards: false },

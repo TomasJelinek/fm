@@ -130,6 +130,43 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual([row["name"] for row in rows], ["external"])
         self.assertEqual(rows[0]["scopes"], ["api", "basic"])
 
+    def test_historical_public_sdk_from_exact_project_registry_keeps_external_dependencies(self):
+        sdk = package("our-sdk", "0.4.0", source=None)
+        released = package("our-sdk", "0.1.0", license=None,
+                           source="registry+https://midnight-explorer.invalid/api-index")
+        plugin = package("our-plugin", source=None)
+        external = package("external")
+        rows = self.module.inventory({
+            ("api", "Linux"): graph(sdk, [external], {"our-sdk": [external]}),
+            ("basic", "Linux"): graph(plugin, [released, external],
+                                       {"our-plugin": [released], "our-sdk": [external]})})
+        self.assertEqual([row["name"] for row in rows], ["external"])
+        self.assertEqual(rows[0]["scopes"], ["api", "basic"])
+
+    def test_historical_sdk_requires_exact_registry_and_nonvendored_member_name(self):
+        registry = "registry+https://midnight-explorer.invalid/api-index"
+        cases = [
+            ("registry+https://github.com/rust-lang/crates.io-index", "our-sdk", False),
+            ("registry+https://mirror.example/api-index", "our-sdk", False),
+            (registry + "/mirror", "our-sdk", False),
+            (registry, "our-sdk-lookalike", False),
+            (registry, "our-sdk", True),
+        ]
+        for source, name, vendored in cases:
+            with self.subTest(source=source, name=name, vendored=vendored):
+                sdk = package("our-sdk", "0.4.0", source=None)
+                if vendored:
+                    sdk["metadata"] = {"midnight": {"vendored-third-party": True}}
+                released = package(name, "0.1.0", license=None, source=source)
+                plugin = package("our-plugin", source=None)
+                rows = self.module.inventory({
+                    ("api", "Linux"): graph(sdk, [], {}),
+                    ("basic", "Linux"): graph(plugin, [released],
+                                               {"our-plugin": [released]})})
+                historical = next(row for row in rows
+                                  if row["name"] == name and row["version"] == "0.1.0")
+                self.assertEqual(historical["license"], "UNKNOWN")
+
     def test_missing_or_conflicting_license_is_never_silently_approved(self):
         root = package("app", source=None)
         missing = package("lib", license=None)

@@ -7,6 +7,10 @@ pub(super) struct PreparedOpening {
 }
 
 impl Worker {
+    fn video_process_index(&self) -> usize {
+        self.images.len() + self.web_providers.len()
+    }
+
     pub(super) fn invalidate_layout(&mut self) {
         self.layout.invalidate();
         self.pending_layout = None;
@@ -25,26 +29,33 @@ impl Worker {
                     && !self.disabled_plugins.contains(&provider.id)
             })
             .map(|index| index + self.images.len());
-        let route = crate::routing::choose(
-            self.runtime.catalog(),
-            self.images
-                .iter()
-                .map(|provider| crate::routing::ProcessCandidate {
-                    id: &provider.id,
-                    extensions: &provider.extensions,
-                })
-                .chain(self.web_providers.iter().map(|provider| {
-                    crate::routing::ProcessCandidate {
+        let route =
+            crate::routing::choose(
+                self.runtime.catalog(),
+                self.images
+                    .iter()
+                    .map(|provider| crate::routing::ProcessCandidate {
                         id: &provider.id,
                         extensions: &provider.extensions,
-                    }
-                })),
-            path,
-            self.basic,
-            &self.disabled_plugins,
-            &self.associations,
-            office_renderer,
-        );
+                    })
+                    .chain(self.web_providers.iter().map(|provider| {
+                        crate::routing::ProcessCandidate {
+                            id: &provider.id,
+                            extensions: &provider.extensions,
+                        }
+                    }))
+                    .chain(self.video_installation.iter().map(|installation| {
+                        crate::routing::ProcessCandidate {
+                            id: VIDEO_PROVIDER_ID,
+                            extensions: installation.extensions(),
+                        }
+                    })),
+                path,
+                self.basic,
+                &self.disabled_plugins,
+                &self.associations,
+                office_renderer,
+            );
         if office_renderer.is_none()
             && crate::routing::office_requested(
                 path,
@@ -85,11 +96,14 @@ impl Worker {
                 route
             }
             crate::routing::Route::Process { index } => {
-                self.mode = if index >= self.images.len() {
-                    VIEWER_MODE_HTML
-                } else {
-                    VIEWER_MODE_IMAGE
-                };
+                self.mode =
+                    if self.video_installation.is_some() && index == self.video_process_index() {
+                        VIEWER_MODE_VIDEO
+                    } else if index >= self.images.len() {
+                        VIEWER_MODE_HTML
+                    } else {
+                        VIEWER_MODE_IMAGE
+                    };
                 self.modes = vec![self.mode];
                 self.binary = false;
                 route
@@ -183,6 +197,36 @@ impl Worker {
                     .ok_or("Office HTML renderer is no longer available.")?
                     .clone();
                 self.open_office(provider, file)?;
+                None
+            }
+            crate::routing::Route::Process { index }
+                if self.video_installation.is_some() && index == self.video_process_index() =>
+            {
+                let installation = self
+                    .video_installation
+                    .clone()
+                    .ok_or("Selected video viewer is unavailable.")?;
+                let generation = self.positions.generation;
+                let video = VideoView::start(
+                    installation,
+                    file,
+                    generation,
+                    self.geometry.width,
+                    self.geometry.height,
+                    self.wake.clone(),
+                );
+                match video {
+                    Ok(video) => {
+                        output.put(ViewerOutput::MediaSnapshot(video.presentation()));
+                        self.video = Some(video);
+                    }
+                    Err(error) => {
+                        let mut snapshot = crate::video_actor::opening(MediaSessionId(generation));
+                        snapshot.phase = MediaPhase::Failed(error.clone());
+                        output.put(ViewerOutput::MediaSnapshot(snapshot));
+                        return Err(error);
+                    }
+                }
                 None
             }
             crate::routing::Route::Process { index } if index >= self.images.len() => {

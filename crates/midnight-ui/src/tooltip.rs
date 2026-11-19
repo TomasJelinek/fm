@@ -7,11 +7,9 @@ use crate::{
     AboutWindow, ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobProgressWindow,
     JobsWindow, MainWindow, TooltipPlacement,
 };
-use i_slint_core::{
-    items::TooltipArea,
-    lengths::LogicalLength,
-    window::{WindowInner, WindowKind},
-};
+#[cfg(test)]
+use i_slint_core::items::TooltipArea;
+use i_slint_core::window::{WindowInner, WindowKind};
 use slint::{
     ComponentHandle, PlatformError,
     platform::{PointerEventButton, WindowEvent},
@@ -252,35 +250,8 @@ pub(crate) fn synchronize_find(window: &FindWindow) -> bool {
     synchronize_host(window.window(), window.global::<TooltipPlacement>())
 }
 fn synchronize_host(window: &slint::Window, global: TooltipPlacement<'_>) -> bool {
-    let cursor = (global.get_cursor_x(), global.get_cursor_y());
-    if cursor.0 < 0.0 || cursor.1 < 0.0 {
-        return false;
-    }
-    // A property write can update popup geometry; release popup storage first.
-    let parents = {
-        let inner = WindowInner::from_pub(window);
-        inner
-            .active_popups()
-            .iter()
-            .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
-            .filter_map(|popup| popup.parent_item.upgrade())
-            .collect::<Vec<_>>()
-    };
-    let mut changed = false;
-    for parent in parents {
-        let Some(area) = parent.downcast::<TooltipArea>() else {
-            continue;
-        };
-        let origin = parent.map_to_native_window(parent.geometry().origin);
-        // Ignore sub-pixel rounding when deciding whether initial placement needs retry.
-        changed |= (area.as_pin_ref().mouse_x().get() - (cursor.0 - origin.x)).abs() > 0.01
-            || (area.as_pin_ref().mouse_y().get() - (cursor.1 - origin.y)).abs() > 0.01;
-        area.as_pin_ref()
-            .mouse_x
-            .set(LogicalLength::new(cursor.0 - origin.x));
-        area.as_pin_ref()
-            .mouse_y
-            .set(LogicalLength::new(cursor.1 - origin.y));
-    }
-    changed
+    midnight_ui_input::synchronize_tooltip_anchors(
+        window,
+        slint::LogicalPosition::new(global.get_cursor_x(), global.get_cursor_y()),
+    )
 }

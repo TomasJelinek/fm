@@ -12,11 +12,9 @@ pub(super) fn configure(selector: BackendSelector, default_renderer: bool) -> Ba
         midnight_ui::configure_dialog_window_attributes(attributes.with_drag_and_drop(false))
     });
     if default_renderer {
-        // Prefer the native Windows API. Keep the explicit backend override
-        // available for driver diagnostics.
         // Slint 1.18's generic Direct3D requirement is rejected by its WGPU
-        // adapter preflight and silently selects software. The explicit WGPU
-        // configuration selects DX12 in both preflight and initialization.
+        // adapter preflight and silently selects software. Explicit WGPU
+        // settings keep the same backend policy in preflight and initialization.
         selector.require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(
             graphics_settings(),
         ))
@@ -29,7 +27,11 @@ fn graphics_settings() -> slint::wgpu_30::WGPUSettings {
     use slint::wgpu_30::wgpu::InstanceFlags;
     let mut graphics = slint::wgpu_30::WGPUSettings::default();
     if std::env::var_os("WGPU_BACKEND").is_none() {
-        graphics.backends = slint::wgpu_30::wgpu::Backends::DX12;
+        // Pinned WGPU prefers Vulkan for equally ranked adapters. Keep DX12
+        // available when Vulkan is absent; this does not retry device failures.
+        // An explicit WGPU_BACKEND remains authoritative for driver diagnostics.
+        graphics.backends =
+            slint::wgpu_30::wgpu::Backends::VULKAN | slint::wgpu_30::wgpu::Backends::DX12;
     }
     // Native driver debugging layers substantially delay ordinary panel frames.
     // Keep them explicitly available through WGPU_DEBUG/WGPU_VALIDATION, while
@@ -51,7 +53,21 @@ mod tests {
     fn native_debug_layers_are_explicit_and_indirect_validation_is_retained() {
         if let Ok(mode) = std::env::var("MIDNIGHT_RENDER_FLAGS_PROBE") {
             let graphics = graphics_settings();
-            assert_eq!(graphics.backends, Backends::DX12);
+            let backend = std::env::var("MIDNIGHT_RENDER_BACKEND_PROBE").unwrap();
+            let expected = match backend.as_str() {
+                "default" => {
+                    assert!(std::env::var_os("WGPU_BACKEND").is_none());
+                    Backends::VULKAN | Backends::DX12
+                }
+                "dx12" => Backends::DX12,
+                "vulkan" => Backends::VULKAN,
+                "vulkan,dx12" => Backends::VULKAN | Backends::DX12,
+                other => panic!("unknown backend probe {other}"),
+            };
+            assert_eq!(
+                graphics.backends, expected,
+                "backend {backend}, flags {mode}"
+            );
             assert_eq!(
                 graphics.instance_flags.contains(InstanceFlags::DEBUG),
                 mode == "on"
@@ -68,7 +84,10 @@ mod tests {
             return;
         }
         // Environment changes are isolated to child test processes.
-        for mode in ["default", "on"] {
+        for (backend, mode) in ["default", "dx12", "vulkan", "vulkan,dx12"]
+            .into_iter()
+            .flat_map(|backend| ["default", "off", "on"].map(|mode| (backend, mode)))
+        {
             let mut command = std::process::Command::new(std::env::current_exe().unwrap());
             command
                 .args([
@@ -77,12 +96,18 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("MIDNIGHT_RENDER_FLAGS_PROBE", mode)
-                .env("WGPU_BACKEND", "dx12")
+                .env("MIDNIGHT_RENDER_BACKEND_PROBE", backend)
+                .env_remove("WGPU_BACKEND")
                 .env("WGPU_VALIDATION_INDIRECT_CALL", "0")
                 .env_remove("WGPU_DEBUG")
                 .env_remove("WGPU_VALIDATION");
             if mode == "on" {
                 command.env("WGPU_DEBUG", "1").env("WGPU_VALIDATION", "1");
+            } else if mode == "off" {
+                command.env("WGPU_DEBUG", "0").env("WGPU_VALIDATION", "0");
+            }
+            if backend != "default" {
+                command.env("WGPU_BACKEND", backend);
             }
             // Other tests of this binary may start workers; the creation lock covers only the
             // spawn, never the wait for the probe's output.
@@ -96,7 +121,7 @@ mod tests {
                 .unwrap();
             assert!(
                 output.status.success(),
-                "{mode}: {}{}",
+                "backend {backend}, flags {mode}: {}{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );

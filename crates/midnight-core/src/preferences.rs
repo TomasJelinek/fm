@@ -305,6 +305,8 @@ pub struct UserPreferences {
     pub thumbnails_network: bool,
     /// Allow previews for archive entries when preview decoding is enabled.
     pub thumbnails_archives: bool,
+    /// Provider-keyed overrides shared by panel previews and custom artwork.
+    pub thumbnailer_associations: Arc<crate::ThumbnailerAssociations>,
     /// Square thumbnail artwork edge in logical pixels; decoding resolves physical pixels separately.
     pub thumbnail_size: u16,
     /// Only deviations from the application shortcut catalog are persisted.
@@ -361,6 +363,7 @@ impl Default for UserPreferences {
             thumbnails_enabled: true,
             thumbnails_network: false,
             thumbnails_archives: true,
+            thumbnailer_associations: Arc::default(),
             thumbnail_size: DEFAULT_THUMBNAIL_SIZE,
             shortcuts: Vec::new(),
             panel_filters: Default::default(),
@@ -469,6 +472,9 @@ impl UserPreferences {
             );
         }
         if let Err(error) = self.viewer_associations.validate() {
+            message = Some(error);
+        }
+        if let Err(error) = self.thumbnailer_associations.validate() {
             message = Some(error);
         }
         if let Err(error) = crate::validate_disabled_viewers(&self.disabled_viewer_plugins) {

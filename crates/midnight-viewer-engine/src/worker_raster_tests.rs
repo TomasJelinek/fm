@@ -1515,7 +1515,162 @@ fn retained_rebase_holds_prefetch_pixels_until_displayed_camera_reply_and_keeps_
         "coalesced metadata frame must retain the acknowledgement"
     );
     worker.input(ViewerInput::Scroll { x: 0.0, y: 1.0 }, &output);
+    assert_eq!(
+        paint(&mut worker, &output).raster_rebase,
+        Some(transition),
+        "untagged fallback input cannot prove the UI presented the acknowledgement"
+    );
+    worker.input(ViewerInput::Seek(0.0), &output);
     assert_eq!(paint(&mut worker, &output).raster_rebase, None);
+}
+
+#[test]
+fn retained_rebase_queues_raw_scroll_fifo_until_the_displayed_camera_and_read_complete() {
+    let (mut reference, reference_output, source, _, _, displayed, speculative, transition) =
+        pending_rebase();
+    let reply = displayed + 128.0 - f64::from(speculative) - 20.0;
+    reference.input(
+        ViewerInput::RasterRebase {
+            transition,
+            origin: [0.0, reply],
+        },
+        &reference_output,
+    );
+    reference.viewport_request = Some(91);
+    reference.received_page(91, fragment(&source, 0, 8192), &reference_output);
+    reference.event(91, EventKind::Completed, &reference_output);
+    assert!(reference.origin[1] > 2.0);
+    assert_eq!(reference.page.as_ref().unwrap().start, 0);
+    // These ordinary inputs start from the corrected camera. At real BOF,
+    // FIFO clamps the first move to zero and then advances 7.5 pixels.
+    // Netting or reversing the two moves would instead end at 5.5 pixels.
+    let deltas = [-(reference.origin[1] + 2.0), 7.5];
+    for y in deltas {
+        reference.input(ViewerInput::Scroll { x: 0.0, y }, &reference_output);
+    }
+    assert_eq!(reference.origin[1], 7.5);
+    let expected = paint(&mut reference, &reference_output);
+
+    let (mut worker, output, source, _, _, displayed, speculative, transition) = pending_rebase();
+    let before = worker.origin;
+    for y in deltas {
+        worker.input(ViewerInput::Scroll { x: 0.0, y }, &output);
+        worker.paint(&output).unwrap();
+        assert!(worker.raster_rebase_waiting());
+        assert_eq!(
+            worker.origin, before,
+            "raw input cannot use the speculative camera"
+        );
+        assert!(
+            !output
+                .take()
+                .iter()
+                .any(|event| matches!(event, ViewerOutput::Frame(_))),
+            "paint remains gated until the displayed-camera reply"
+        );
+    }
+    worker.input(
+        ViewerInput::RasterRebase {
+            transition,
+            origin: [0.0, displayed + 128.0 - f64::from(speculative) - 20.0],
+        },
+        &output,
+    );
+    worker.viewport_request = Some(91);
+    worker.received_page(91, fragment(&source, 0, 8192), &output);
+    worker.event(90, EventKind::Completed, &output);
+    assert_eq!(worker.viewport_request, Some(91));
+    worker.paint(&output).unwrap();
+    assert!(
+        !output
+            .take()
+            .iter()
+            .any(|event| matches!(event, ViewerOutput::Frame(_))),
+        "a staged correction and unrelated terminal cannot release queued motion"
+    );
+
+    worker.event(91, EventKind::Completed, &output);
+    let actual = paint(&mut worker, &output);
+    assert_eq!(actual.raster_rebase, Some(transition));
+    assert_eq!(worker.origin[1], 7.5);
+    assert!(worker.viewport_request.is_none());
+    let viewport = |frame: &ViewerFrame| {
+        if frame.raster.is_some() {
+            visible(frame)
+        } else {
+            frame.pixels.to_vec()
+        }
+    };
+    assert_pixels_equal(
+        &viewport(&actual),
+        &viewport(&expected),
+        "queued raw input follows the actual displayed camera in FIFO order",
+    );
+}
+
+#[test]
+fn retained_rebase_ack_survives_raw_scroll_before_paint_and_coalesced_frames() {
+    use crate::input_queue::{Message, Wakes};
+
+    let (mut worker, output, _, _, _, displayed, speculative, transition) = pending_rebase();
+    let (wakes, receiver) = Wakes::channel();
+    let closed = AtomicBool::new(false);
+    // One input batch may contain the reply and a raw Scroll queued before the
+    // UI observed RasterRebase. Admit through Wakes so Scroll retains its real
+    // motion credit; there is no presentation between these two messages.
+    for input in [
+        ViewerInput::RasterRebase {
+            transition,
+            origin: [0.0, displayed],
+        },
+        ViewerInput::Scroll { x: 0.0, y: 1.0 },
+    ] {
+        assert!(wakes.send_input(Message::Input(input)));
+    }
+    let batch: Vec<_> = receiver.try_iter().collect();
+    assert!(matches!(
+        batch.as_slice(),
+        [
+            Message::Input(ViewerInput::RasterRebase { .. }),
+            Message::Scroll(_)
+        ]
+    ));
+    wakes.taken(batch.len());
+    worker.input_batch(batch, &closed, &wakes, &output);
+    let corrected = speculative - 128.0;
+    assert!((worker.origin[1] - corrected - 1.0).abs() < 0.001);
+    for _ in 0..100 {
+        output.put(ViewerOutput::WebShortcut(
+            midnight_core::viewer_web::HostShortcut::Find,
+        ));
+    }
+    worker.paint(&output).unwrap();
+    let first_revision = worker.frames.latest_revision();
+    // Leave the first frame in the mailbox so this replacement coalesces it.
+    assert!(wakes.send_input(Message::Input(ViewerInput::Scroll { x: 0.0, y: 1.0 })));
+    let second = receiver.try_recv().unwrap();
+    assert!(matches!(&second, Message::Scroll(_)));
+    wakes.taken(1);
+    worker.input_batch(vec![second], &closed, &wakes, &output);
+    worker.paint(&output).unwrap();
+    let frames: Vec<_> = output
+        .take()
+        .into_iter()
+        .filter_map(|event| match event {
+            ViewerOutput::Frame(frame) => Some(frame),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        frames.len(),
+        1,
+        "only the latest frame survives mailbox coalescing"
+    );
+    assert!(frames[0].revision > first_revision);
+    assert_eq!(frames[0].revision, worker.frames.latest_revision());
+    assert_eq!(frames[0].raster_rebase, Some(transition));
+    assert_eq!(frames[0].position, worker.position_metrics().unwrap().0);
+    assert!((worker.origin[1] - corrected - 2.0).abs() < 0.001);
 }
 
 #[test]

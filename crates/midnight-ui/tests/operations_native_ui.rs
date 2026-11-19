@@ -5,6 +5,9 @@ mod input;
 mod native;
 #[path = "support/ui.rs"]
 mod ui;
+#[cfg(windows)]
+#[path = "operations_native_ui/windows_delete.rs"]
+mod windows_delete;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;

@@ -77,9 +77,14 @@ pub(super) fn residue_issue(done: &str, residue: &MutationResidue) -> FsError {
         io::Error::other(format!("{done}, but {residue}.")),
     )
 }
-pub(super) fn failed_status(status: &Status, error: FsError) -> OperationProgress {
+pub(super) fn failed_status(
+    status: &Status,
+    error: FsError,
+    cancel_requested: bool,
+) -> OperationProgress {
     let mut progress = status.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    progress.state = if error.kind == io::ErrorKind::Interrupted {
+    // A provider may interrupt preparation independently of our cancellation token.
+    progress.state = if cancel_requested && error.kind == io::ErrorKind::Interrupted {
         OperationState::Cancelled
     } else {
         OperationState::Failed
@@ -100,6 +105,7 @@ pub(super) fn panicked(status: &Status, message: String) -> OperationProgress {
     failed_status(
         status,
         error(&path, &format!("Native worker failed: {message}")),
+        false,
     )
 }
 
@@ -513,7 +519,7 @@ impl Job {
 // These futures own a guard before their first poll, including disposal-task abort.
 impl WorkerOwned<Job> {
     pub(super) async fn failure(self, error: FsError) -> OperationProgress {
-        let result = failed_status(&self.status, error);
+        let result = failed_status(&self.status, error, self.cancel.is_cancelled());
         self.dispose(result).await
     }
     pub(super) async fn cancelled(self) -> OperationProgress {

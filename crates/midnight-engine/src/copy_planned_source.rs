@@ -11,6 +11,7 @@ struct State {
     active: Mutex<Option<Active>>,
     pin: Arc<dyn TransferNamespacePin>,
     entry: TransferEntry,
+    original_identity: Option<TransferIdentity>,
     authority: Authority,
     retry: bool,
     service: Arc<dyn TransferService>,
@@ -32,7 +33,10 @@ pub(super) fn defer(
     }
     let pin = source.native_namespace_scope(cancel)?;
     let qualified = match &pin {
-        Some(pin) if source.native_identity() == Some(source.entry().identity) => {
+        Some(pin)
+            if source.native_identity() == Some(source.entry().identity)
+                && source.native_original_identity() == Some(source.entry().identity) =>
+        {
             matches!(pin.refresh(cancel)?, TransferNamespaceProbe::Known(scopes)
                 if !scopes.is_empty() && scopes.iter().any(|scope| scope.object == Some(source.entry().identity)))
         }
@@ -44,9 +48,11 @@ pub(super) fn defer(
         return Ok(PinnedSource {
             source: SharedSource::new(source),
             capture,
+            link_capture: None,
         });
     }
     let entry = source.entry().clone();
+    let original_identity = source.native_original_identity();
     let retry = source.supports_read_retry();
     let moved = capture.is_some();
     drop(source);
@@ -55,6 +61,7 @@ pub(super) fn defer(
         active: Mutex::new(None),
         pin: pin.expect("qualified pin"),
         entry,
+        original_identity,
         authority,
         retry,
         service,
@@ -62,6 +69,7 @@ pub(super) fn defer(
     Ok(PinnedSource {
         source: SharedSource::new(Box::new(Source(state.clone()))),
         capture: moved.then(|| Arc::new(Capture(state)) as Arc<dyn TransferMoveCapture>),
+        link_capture: None,
     })
 }
 
@@ -114,9 +122,24 @@ impl State {
                     capture: Some(prepared.capture),
                 }
             }
+            Authority::MoveWithLinks(links) => {
+                let prepared = self.service.prepare_move_source_with_links(
+                    &self.entry.item.path,
+                    links,
+                    cancel,
+                )?;
+                let PreparedTransferMoveEntry::Ordinary(prepared) = prepared else {
+                    return Err(changed(&self.entry.item.path));
+                };
+                Active {
+                    source: prepared.source,
+                    capture: Some(prepared.capture),
+                }
+            }
         };
         active.source.revalidate(cancel)?;
         if active.source.native_identity() != Some(self.entry.identity)
+            || active.source.native_original_identity() != self.original_identity
             || !same_entry(active.source.entry(), &self.entry)
         {
             return Err(changed(&self.entry.item.path));
@@ -170,6 +193,9 @@ struct Source(Arc<State>);
 impl TransferSource for Source {
     fn entry(&self) -> &TransferEntry {
         &self.0.entry
+    }
+    fn native_original_identity(&self) -> Option<TransferIdentity> {
+        self.0.original_identity
     }
     fn native_namespace_scope(
         &self,
@@ -225,6 +251,15 @@ impl TransferSource for Source {
     ) -> Result<Option<PreparedTransferMove>, FsError> {
         self.0
             .with_active(cancel, |active| active.source.next_move_child(cancel))
+    }
+    fn next_move_child_with_links(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<PreparedTransferMoveEntry>, FsError> {
+        self.0.with_active(cancel, |active| {
+            active.source.next_move_child_with_links(links, cancel)
+        })
     }
     fn prepare_modified_time(
         &self,

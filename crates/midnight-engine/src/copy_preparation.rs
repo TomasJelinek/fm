@@ -127,11 +127,12 @@ impl Preparation {
                 Err(error) => return Err(error),
             }
         }
-        let roots = self.planned.as_ref().expect("planned input").roots(
-            &self.service,
-            self.input.links,
-            cancel,
-        )?;
+        let links = input::source_link_policy(self.input.links, self.input.metadata);
+        let roots =
+            self.planned
+                .as_ref()
+                .expect("planned input")
+                .roots(&self.service, links, cancel)?;
         status
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -144,7 +145,16 @@ impl Preparation {
         let mut endpoints = Vec::new();
         for root in roots {
             root.revalidate(cancel)?;
-            endpoints.push((access, root.native_namespace_scope(cancel)?));
+            let pin = if links == CopyLinkPolicy::FollowDirectoryContents
+                && root.entry().item.kind == EntryKind::Directory
+            {
+                // A nested link can escape this directory's own read scope.
+                // Keep its original source pin but claim opaque exclusion.
+                None
+            } else {
+                root.native_namespace_scope(cancel)?
+            };
+            endpoints.push((access, pin));
             let name = root.entry().item.path.file_name().ok_or_else(|| {
                 error(
                     &root.entry().item.path,
@@ -215,6 +225,7 @@ impl Preparation {
             Resolved::Captured { sources, .. } => match sources {
                 PreparedCapturedTransfer::Copy(roots) => roots.len(),
                 PreparedCapturedTransfer::Move(roots) => roots.len(),
+                PreparedCapturedTransfer::MoveWithDirectoryLinks(roots) => roots.len(),
             },
         };
         status
@@ -222,12 +233,13 @@ impl Preparation {
             .unwrap_or_else(|error| error.into_inner())
             .requested_roots = requested_roots as u64;
         let mut job = ownership::Armed::new(match resolved {
-            Resolved::NativeMove(request) => worker::Job::prepare_move_with_metadata(
+            Resolved::NativeMove(request) => worker::Job::prepare_move_with_options(
                 request,
                 &self.service,
                 cancel,
                 status,
                 metadata,
+                links,
             ),
             Resolved::Native(request) => worker::Job::prepare_with_options(
                 request,
@@ -259,6 +271,18 @@ impl Preparation {
                 cancel,
                 status,
                 metadata,
+            ),
+            Resolved::Captured {
+                destination,
+                sources: PreparedCapturedTransfer::MoveWithDirectoryLinks(sources),
+            } => worker::Job::prepare_move_entries(
+                destination,
+                sources,
+                &self.service,
+                cancel,
+                status,
+                metadata,
+                links,
             ),
             Resolved::Archive {
                 destination,
@@ -294,7 +318,48 @@ enum PlannedInput {
     Native(CopyRequest, bool),
     Copy(PathBuf, Vec<SharedSource>, bool),
     Move(PathBuf, Vec<(SharedSource, Arc<dyn TransferMoveCapture>)>),
+    MoveWithDirectoryLinks(PathBuf, Vec<PlannedMoveEntry>),
 }
+
+enum PlannedMoveEntry {
+    Ordinary(SharedSource, Arc<dyn TransferMoveCapture>),
+    DirectoryLink(SharedSource, Arc<dyn TransferDirectoryLinkMoveCapture>),
+}
+
+impl PlannedMoveEntry {
+    fn new(entry: PreparedTransferMoveEntry) -> Self {
+        match entry {
+            PreparedTransferMoveEntry::Ordinary(prepared) => {
+                Self::Ordinary(SharedSource::new(prepared.source), prepared.capture)
+            }
+            PreparedTransferMoveEntry::DirectoryLink { source, capture } => {
+                Self::DirectoryLink(SharedSource::new(source), capture)
+            }
+        }
+    }
+
+    fn source(&self) -> SharedSource {
+        match self {
+            Self::Ordinary(source, _) | Self::DirectoryLink(source, _) => source.clone(),
+        }
+    }
+
+    fn prepared(&self) -> PreparedTransferMoveEntry {
+        match self {
+            Self::Ordinary(source, capture) => {
+                PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+                    source: Box::new(source.clone()),
+                    capture: capture.clone(),
+                })
+            }
+            Self::DirectoryLink(source, capture) => PreparedTransferMoveEntry::DirectoryLink {
+                source: Box::new(source.clone()),
+                capture: capture.clone(),
+            },
+        }
+    }
+}
+
 impl PlannedInput {
     fn new(resolved: Resolved) -> Self {
         match resolved {
@@ -325,6 +390,13 @@ impl PlannedInput {
                     .into_iter()
                     .map(|source| (SharedSource::new(source.source), source.capture))
                     .collect(),
+            ),
+            Resolved::Captured {
+                destination,
+                sources: PreparedCapturedTransfer::MoveWithDirectoryLinks(sources),
+            } => Self::MoveWithDirectoryLinks(
+                destination,
+                sources.into_iter().map(PlannedMoveEntry::new).collect(),
             ),
         }
     }
@@ -366,6 +438,12 @@ impl PlannedInput {
                         .collect(),
                 ),
             },
+            Self::MoveWithDirectoryLinks(destination, roots) => Resolved::Captured {
+                destination: destination.clone(),
+                sources: PreparedCapturedTransfer::MoveWithDirectoryLinks(
+                    roots.iter().map(PlannedMoveEntry::prepared).collect(),
+                ),
+            },
         }
     }
     fn roots(
@@ -383,7 +461,9 @@ impl PlannedInput {
                     service
                         .source(
                             path,
-                            if *moved {
+                            if *moved && links.materializes_directory_links() {
+                                Authority::MoveWithLinks(links)
+                            } else if *moved {
                                 Authority::Move
                             } else {
                                 Authority::Copy(links)
@@ -395,6 +475,9 @@ impl PlannedInput {
                 .collect(),
             Self::Copy(_, roots, _) => Ok(roots.clone()),
             Self::Move(_, roots) => Ok(roots.iter().map(|(source, _)| source.clone()).collect()),
+            Self::MoveWithDirectoryLinks(_, roots) => {
+                Ok(roots.iter().map(PlannedMoveEntry::source).collect())
+            }
         }
     }
 }
@@ -403,6 +486,7 @@ impl PlannedInput {
 enum Authority {
     Copy(CopyLinkPolicy),
     Move,
+    MoveWithLinks(CopyLinkPolicy),
 }
 
 #[derive(Default)]
@@ -475,15 +559,29 @@ impl RetainedService {
         let source = if let Some(previous) = previous {
             previous
         } else {
-            let (source, capture) = match authority {
+            let (source, capture, link_capture) = match authority {
                 Authority::Copy(links) => (
                     self.service
                         .prepare_transfer_source_with_links(path, links, cancel)?,
                     None,
+                    None,
                 ),
                 Authority::Move => {
                     let prepared = self.service.prepare_move_source(path, cancel)?;
-                    (prepared.source, Some(prepared.capture))
+                    (prepared.source, Some(prepared.capture), None)
+                }
+                Authority::MoveWithLinks(links) => {
+                    match self
+                        .service
+                        .prepare_move_source_with_links(path, links, cancel)?
+                    {
+                        PreparedTransferMoveEntry::Ordinary(prepared) => {
+                            (prepared.source, Some(prepared.capture), None)
+                        }
+                        PreparedTransferMoveEntry::DirectoryLink { source, capture } => {
+                            (source, None, Some(capture))
+                        }
+                    }
                 }
             };
             // Install the original owner before any fallible pin qualification.
@@ -491,19 +589,24 @@ impl RetainedService {
             let ready = PinnedSource {
                 source: SharedSource::new(source),
                 capture,
+                link_capture,
             };
             let displaced = self.pins(path)?.sources.insert(key.clone(), ready.clone());
             drop(displaced);
-            let source = planned_source::defer(
-                self.service.clone(),
-                authority,
-                Box::new(ready.source.clone()),
-                ready.capture.clone(),
-                cancel,
-            )?;
-            let displaced = self.pins(path)?.sources.insert(key, source.clone());
-            drop(displaced);
-            source
+            if ready.link_capture.is_some() {
+                ready
+            } else {
+                let source = planned_source::defer(
+                    self.service.clone(),
+                    authority,
+                    Box::new(ready.source.clone()),
+                    ready.capture.clone(),
+                    cancel,
+                )?;
+                let displaced = self.pins(path)?.sources.insert(key, source.clone());
+                drop(displaced);
+                source
+            }
         };
         source.revalidate(cancel)?;
         Ok(source)
@@ -523,7 +626,9 @@ impl RetainedService {
         } else {
             let directory = match authority {
                 Authority::Copy(_) => self.service.prepare_transfer_destination(path, cancel)?,
-                Authority::Move => self.service.prepare_move_destination(path, cancel)?,
+                Authority::Move | Authority::MoveWithLinks(_) => {
+                    self.service.prepare_move_destination(path, cancel)?
+                }
             };
             let destination = PinnedDirectory {
                 path: path.to_owned(),
@@ -595,6 +700,37 @@ impl TransferService for RetainedService {
         })
     }
 
+    fn prepare_move_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMoveEntry, FsError> {
+        if links == CopyLinkPolicy::Reject {
+            return self
+                .prepare_move_source(path, cancel)
+                .map(PreparedTransferMoveEntry::Ordinary);
+        }
+        let pinned = self.source(path, Authority::MoveWithLinks(links), cancel)?;
+        let source = Box::new(pinned.source);
+        match (pinned.capture, pinned.link_capture) {
+            (Some(capture), None) => {
+                Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+                    source,
+                    capture,
+                }))
+            }
+            (None, Some(capture)) => {
+                Ok(PreparedTransferMoveEntry::DirectoryLink { source, capture })
+            }
+            _ => Err(error(
+                path,
+                io::ErrorKind::InvalidData,
+                "Retained Move source does not carry exactly one mutation authority.",
+            )),
+        }
+    }
+
     fn prepare_move_destination(
         &self,
         path: &Path,
@@ -630,6 +766,7 @@ impl PinnedDirectory {
 struct PinnedSource {
     source: SharedSource,
     capture: Option<Arc<dyn TransferMoveCapture>>,
+    link_capture: Option<Arc<dyn TransferDirectoryLinkMoveCapture>>,
 }
 
 impl PinnedSource {
@@ -645,6 +782,20 @@ impl PinnedSource {
                 ));
             }
         }
+        if let Some(capture) = &self.link_capture {
+            capture.revalidate(cancel)?;
+            let original = capture.entry();
+            if original.item.path != self.source.entry.item.path
+                || original.item.kind != EntryKind::DirectoryLink
+                || Some(original.identity) != self.source.native_original_identity()
+            {
+                return Err(error(
+                    &self.source.entry.item.path,
+                    io::ErrorKind::InvalidData,
+                    "Retained directory projection and original link no longer match.",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -653,6 +804,7 @@ impl PinnedSource {
 struct SharedSource {
     entry: TransferEntry,
     native_identity: Option<TransferIdentity>,
+    native_original_identity: Option<TransferIdentity>,
     virtual_identity: Option<VirtualEntryId>,
     source: Arc<Mutex<Box<dyn TransferSource>>>,
 }
@@ -662,6 +814,7 @@ impl SharedSource {
         Self {
             entry: source.entry().clone(),
             native_identity: source.native_identity(),
+            native_original_identity: source.native_original_identity(),
             virtual_identity: source.virtual_identity(),
             source: Arc::new(Mutex::new(source)),
         }
@@ -701,6 +854,10 @@ impl TransferSource for SharedSource {
         self.native_identity
     }
 
+    fn native_original_identity(&self) -> Option<TransferIdentity> {
+        self.native_original_identity
+    }
+
     fn tree_copy_occurrence(&self) -> Option<TreeCopyOccurrence> {
         self.source()
             .ok()
@@ -716,6 +873,7 @@ impl TransferSource for SharedSource {
         source.revalidate(cancel)?;
         if !same_entry(source.entry(), &self.entry)
             || source.native_identity() != self.native_identity
+            || source.native_original_identity() != self.native_original_identity
             || source.virtual_identity() != self.virtual_identity
         {
             return Err(error(
@@ -748,6 +906,14 @@ impl TransferSource for SharedSource {
         cancel: &Cancellation,
     ) -> Result<Option<PreparedTransferMove>, FsError> {
         self.source()?.next_move_child(cancel)
+    }
+
+    fn next_move_child_with_links(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<PreparedTransferMoveEntry>, FsError> {
+        self.source()?.next_move_child_with_links(links, cancel)
     }
 
     fn prepare_modified_time(

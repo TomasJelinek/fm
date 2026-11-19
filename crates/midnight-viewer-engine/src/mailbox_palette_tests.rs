@@ -5,6 +5,7 @@ fn frame(generation: u64, revision: u64) -> ViewerOutput {
     ViewerOutput::Frame(Box::new(ViewerFrame {
         generation,
         revision,
+        media_control: None,
         position_sequence: [0; 2],
         mode: 2,
         modes: vec![2],

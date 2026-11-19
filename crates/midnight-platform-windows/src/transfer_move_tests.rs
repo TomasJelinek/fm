@@ -51,6 +51,90 @@ fn native_drop_device_observes_actual_volume_without_capturing_a_source() {
 }
 
 #[test]
+fn same_volume_follow_moves_a_dangling_junction_without_qualifying_its_target() {
+    use midnight_core::{
+        CopyLinkPolicy, EntryKind, PreparedTransferMoveEntry, TransferNativeMoveOutcome,
+    };
+    use std::ffi::OsStr;
+
+    let (_temp, parent) = fixture();
+    let link = parent.join("dangling junction 文档");
+    let missing = parent.join("deleted former referent");
+    let output = parent.join("output");
+    fs::create_dir(&link).unwrap();
+    fs::create_dir(&missing).unwrap();
+    fs::create_dir(&output).unwrap();
+    crate::test_fixtures::create_junction(&link, &missing).unwrap();
+    let original_payload = fs::read_link(&link).unwrap();
+    fs::remove_dir(&missing).unwrap();
+
+    let filesystem = crate::WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let PreparedTransferMoveEntry::DirectoryLink { source, capture } = filesystem
+        .prepare_move_source_with_links(&link, CopyLinkPolicy::FollowDirectoryContents, &cancel)
+        .unwrap()
+    else {
+        panic!("expected a raw junction with a deferred read-only projection");
+    };
+    assert_eq!(source.native_identity(), None);
+    assert_eq!(
+        source.native_original_identity(),
+        Some(capture.entry().identity)
+    );
+    let original_identity = capture.entry().identity;
+    source.revalidate(&cancel).unwrap();
+    assert!(capture.prepare_copy_projection(&cancel).is_err());
+    assert_eq!(fs::read_link(&link).unwrap(), original_payload);
+    let target = filesystem
+        .prepare_move_destination(&output, &cancel)
+        .unwrap();
+    let name = OsStr::new("renamed junction");
+    let moved = capture
+        .try_native_move(&*target, name, None, &cancel)
+        .unwrap();
+    assert!(
+        matches!(moved, TransferNativeMoveOutcome::Moved { destination, recovery, .. }
+        if destination == output.join(name) && recovery.is_empty())
+    );
+    let observed = target.inspect(name, &cancel).unwrap().unwrap();
+    assert_eq!(observed.item.kind, EntryKind::DirectoryLink);
+    assert_eq!(observed.identity, original_identity);
+    assert!(fs::symlink_metadata(&link).is_err());
+    assert!(fs::symlink_metadata(&missing).is_err());
+    assert_eq!(fs::read_link(output.join(name)).unwrap(), original_payload);
+    drop(source);
+    drop(capture);
+    fs::remove_dir(output.join(name)).unwrap();
+}
+
+#[test]
+fn a_rebound_intermediate_junction_cannot_revalidate_the_original_move_parent() {
+    use super::{identity, native, source_links};
+
+    let (_temp, folder) = fixture();
+    let container = folder.join("source ancestor");
+    let parent = container.join("link parent");
+    let parked = folder.join("retained physical ancestor");
+    fs::create_dir_all(&parent).unwrap();
+    let cancel = Cancellation::default();
+    let held = native::open_parent(&parent).unwrap();
+    let expected = identity(&held, &parent).unwrap();
+    let proof = source_links::MoveParent::capture(&held, &parent, &parent, &cancel).unwrap();
+    proof.revalidate(&parent, &cancel).unwrap();
+    drop(held);
+
+    fs::rename(&container, &parked).unwrap();
+    fs::create_dir(&container).unwrap();
+    crate::test_fixtures::create_junction(&container, &parked).unwrap();
+    let following = native::open_parent(&parent).unwrap();
+    assert_eq!(identity(&following, &parent).unwrap(), expected);
+    assert!(proof.revalidate(&parent, &cancel).is_err());
+    drop(following);
+    fs::remove_dir(&container).unwrap();
+    assert!(parked.join("link parent").is_dir());
+}
+
+#[test]
 fn native_move_preserves_identity_and_streams_without_creating_copy_stages() {
     use midnight_core::{TransferNativeMoveOutcome, TransferSource};
     let (_temp, parent) = fixture();

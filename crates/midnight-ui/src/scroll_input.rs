@@ -118,9 +118,8 @@ impl InputState {
                 }
                 let cursor = cursor.to_logical::<f32>(f64::from(scale));
                 self.wheel_position = Some(slint::LogicalPosition::new(cursor.x, cursor.y));
-                // Match the pinned Winit backend's normal line distance. A
-                // thumbnail notch must cross one band, otherwise idle snapping
-                // would repeatedly return small discrete notches to their start.
+                // Match Winit's normal line distance for text rows. Use at
+                // least one band per notch in the taller thumbnail view.
                 return self
                     .wheel
                     .push(x * 60.0, y * self.line_height.max(60.0), now);
@@ -473,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn phased_touchpad_gesture_blocks_settling_but_unphased_wheel_does_not() {
+    fn phased_touchpad_holds_scroll_interaction_until_release() {
         let mut state = PressState::default();
         let wheel = |phase| WindowEvent::MouseWheel {
             device_id: DeviceId::dummy(),

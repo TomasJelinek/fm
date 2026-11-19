@@ -1,6 +1,10 @@
 //! Compose explicit image selection, restricted decoding and native managed storage.
 //! All callbacks execute within the engine's bounded path-picker worker.
-use midnight_core::{Cancellation, FsError, PathPickerKind, PathPickerRequest, PathPickerService};
+use crate::thumbnails::Routing;
+use midnight_core::{
+    Cancellation, FsError, PathPickerKind, PathPickerRequest, PathPickerService,
+    ThumbnailerAssociations,
+};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -12,17 +16,28 @@ struct Pixels {
     height: u32,
     rgba: Vec<u8>,
 }
-type Decode = Arc<dyn Fn(&Path, &Cancellation) -> io::Result<Pixels> + Send + Sync>;
+type Decode = Arc<
+    dyn Fn(&Path, &ThumbnailerAssociations, &(dyn Fn() -> bool + Sync)) -> io::Result<Pixels>
+        + Send
+        + Sync,
+>;
 struct Picker {
     native: Arc<dyn PathPickerService>,
     decode: Decode,
+    routing: Arc<Routing>,
+}
+
+pub(crate) fn requires_import(kind: PathPickerKind, import_resource: bool) -> bool {
+    kind == PathPickerKind::CommandIconImage
+        || (import_resource && kind == PathPickerKind::CommandIconResource)
 }
 
 pub(crate) fn installed(
     native: Arc<dyn PathPickerService>,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
+    routing: Arc<Routing>,
 ) -> Arc<dyn PathPickerService> {
-    with_installation(native, filesystem, || {
+    with_installation(native, filesystem, routing, || {
         midnight_plugin_host::installed_executable().map_err(io::Error::other)
     })
 }
@@ -32,14 +47,16 @@ pub(crate) fn installed(
 fn with_installation(
     native: Arc<dyn PathPickerService>,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
+    routing: Arc<Routing>,
     installation: impl Fn() -> io::Result<PathBuf> + Send + Sync + 'static,
 ) -> Arc<dyn PathPickerService> {
     Arc::new(Picker {
         native,
-        decode: Arc::new(move |path, cancel| {
+        routing,
+        decode: Arc::new(move |path, associations, cancelled| {
             let executable = installation()?;
             let source = filesystem
-                .capture(path, &|| cancel.is_cancelled())
+                .capture(path, cancelled)
                 .map_err(io::Error::other)?;
             let extension = path
                 .extension()
@@ -49,7 +66,8 @@ fn with_installation(
                 &executable,
                 &source,
                 extension,
-                &|| cancel.is_cancelled(),
+                associations,
+                cancelled,
             )?;
             Ok(Pixels {
                 width: frame.width,
@@ -66,12 +84,14 @@ impl PathPickerService for Picker {
         request: &PathPickerRequest,
         cancel: &Cancellation,
     ) -> Result<Option<PathBuf>, FsError> {
-        let import = request.kind == PathPickerKind::CommandIconImage
-            || (request.kind == PathPickerKind::CommandIconResource
-                && self.native.command_icon_resource_requires_import());
-        if !import {
+        if !requires_import(
+            request.kind,
+            self.native.command_icon_resource_requires_import(),
+        ) {
             return self.native.pick_path(request, cancel);
         }
+        let snapshot = self.routing.snapshot();
+        let cancelled = || cancel.is_cancelled() || !self.routing.is_current(snapshot.generation);
         let mut selection = request.clone();
         if selection.kind == PathPickerKind::CommandIconImage {
             selection.kind = PathPickerKind::Image;
@@ -79,21 +99,23 @@ impl PathPickerService for Picker {
         let Some(path) = self.native.pick_path(&selection, cancel)? else {
             return Ok(None);
         };
-        if cancel.is_cancelled() {
+        if cancelled() {
             return Ok(None);
         }
         midnight_core::validate_picked_path(&path)?;
-        let pixels = (self.decode)(&path, cancel)
-            .map_err(|error| FsError::from_io("import command icon", &path, error))?;
-        if cancel.is_cancelled() {
+        let pixels = (self.decode)(&path, &snapshot.associations, &cancelled);
+        if cancelled() {
             return Ok(None);
         }
+        let pixels =
+            pixels.map_err(|error| FsError::from_io("import command icon", &path, error))?;
         let stored =
             self.native
-                .store_command_icon(pixels.width, pixels.height, &pixels.rgba, cancel)?;
-        if cancel.is_cancelled() {
+                .store_command_icon(pixels.width, pixels.height, &pixels.rgba, cancel);
+        if cancelled() {
             return Ok(None);
         }
+        let stored = stored?;
         midnight_core::validate_picked_path(&stored)?;
         Ok(Some(stored))
     }

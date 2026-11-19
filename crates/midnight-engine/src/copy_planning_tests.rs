@@ -39,6 +39,23 @@ impl TransferService for Service {
     ) -> Result<Box<dyn TransferSource>, FsError> {
         Ok(self.source(self.native.prepare_transfer_source(path, cancel)?))
     }
+    fn prepare_transfer_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        match links {
+            CopyLinkPolicy::Reject
+            | CopyLinkPolicy::FollowDirectoryContents
+            | CopyLinkPolicy::EmptyDirectories => self.prepare_transfer_source(path, cancel),
+            CopyLinkPolicy::Preserve => Err(error(
+                path,
+                io::ErrorKind::Unsupported,
+                "This fixture does not preserve links.",
+            )),
+        }
+    }
     fn prepare_move_source(
         &self,
         path: &Path,
@@ -342,6 +359,69 @@ fn endpoint_planning_opens_only_read_only_destination_and_uses_exact_children() 
     assert_eq!(counts.writes.load(Ordering::SeqCst), 0);
     assert_eq!(counts.live.load(Ordering::SeqCst), 0);
     assert_eq!(status.lock().unwrap().requested_roots, 1);
+}
+
+#[test]
+fn potentially_followed_descendants_make_the_source_endpoint_opaque() {
+    let temp = tempfile::tempdir().unwrap();
+    require_qualified_volume(temp.path());
+    let source = temp.path().join("tree");
+    let destination = temp.path().join("destination");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("ordinary.txt"), b"abc").unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    let cancel = Cancellation::default();
+    for (links, opaque) in [
+        (CopyLinkPolicy::FollowDirectoryContents, true),
+        (CopyLinkPolicy::EmptyDirectories, false),
+    ] {
+        let counts = Arc::new(Counts::default());
+        let input = CopyInput::options(CopyOptionsRequest {
+            input: CopyOptionsInput::Native(MetadataTransferRequest {
+                input: MetadataTransferInput::Paths(CopyRequest {
+                    id: OperationId(1),
+                    clipboard: FileClipboard {
+                        paths: vec![source.clone()],
+                        intent: FileClipboardIntent::Copy,
+                    },
+                    destination: destination.clone(),
+                    verification: TransferVerification::default(),
+                    start_policy: TransferStartPolicy::Immediate,
+                }),
+                intent: TransferIntent::Copy,
+                metadata: TransferMetadataPolicy::ContentOnly,
+            }),
+            links,
+        });
+        let status = Arc::new(Mutex::new(super::super::initial(&input)));
+        let mut preparation = Preparation::qualified(
+            input,
+            crate::transfer_composition::QualifiedTransferInstallation::audited(Arc::new(
+                Service {
+                    native: midnight_platform::LocalFileSystem::new(None),
+                    counts: counts.clone(),
+                    opaque: false,
+                },
+            )),
+        );
+        let endpoints = preparation.pin_endpoints(&cancel, &status).unwrap();
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].0, TransferNamespaceAccess::Read);
+        assert_eq!(endpoints[0].1.is_none(), opaque);
+        assert_eq!(endpoints[1].0, TransferNamespaceAccess::Write);
+        assert!(endpoints[1].1.is_some());
+        assert_eq!(counts.writes.load(Ordering::SeqCst), 0);
+
+        let job = preparation.attempt(cancel.clone(), status.clone()).unwrap();
+        let scanned = super::super::snapshot(&status).discovery;
+        assert_eq!(scanned.state, DiscoveryState::Complete);
+        assert_eq!(
+            (scanned.files, scanned.directories, scanned.bytes),
+            (1, 1, Some(3))
+        );
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        job.finish();
+    }
 }
 
 #[test]

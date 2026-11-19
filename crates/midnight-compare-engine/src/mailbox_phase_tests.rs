@@ -51,6 +51,7 @@ fn frame(generation: u64) -> Output {
         names: ["left".into(), "right".into()],
         appearance_revision: 0,
         frame: Frame {
+            find: Arc::default(),
             fonts: None,
             text_family: None,
             geometry_revision: 0,

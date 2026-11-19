@@ -1,6 +1,9 @@
 //! F5 through real Slint callbacks, tree actor and verified copy queue.
 #[path = "support/window_input.rs"]
 mod input;
+#[allow(dead_code)]
+#[path = "support/modeless.rs"]
+mod modeless;
 #[path = "support/tree_filters.rs"]
 mod support;
 #[path = "support/tree_copy.rs"]
@@ -8,12 +11,13 @@ mod transfer;
 #[path = "support/ui.rs"]
 mod ui;
 
+use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_core::*;
 use slint::platform::Key;
 use std::sync::Arc;
 use support::Harness;
 
-fn exercise(pane: PaneId, archive: bool) {
+fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
     let destination = Arc::new(transfer::Destination::default());
     let mut h = Harness::with_transfer(
         pane,
@@ -40,7 +44,33 @@ fn exercise(pane: PaneId, archive: bool) {
             .get_copy_draft_body()
             .contains("2 selected items")
     );
-    input::key(&h.dialog(), Key::Return);
+    let dialog = h.dialog();
+    let links = modeless::accessible_popup_item(
+        &dialog,
+        AccessibleRole::Checkbox,
+        "Follow directory links",
+    );
+    if archive {
+        assert!(links.is_none_or(|item| !item.is_visible()));
+    } else {
+        let links = links.expect("captured native tree dialog exposes the directory-link policy");
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .unwrap(),
+            "true"
+        );
+        if !follow_directory_links {
+            input::click(&dialog, &links);
+            assert_eq!(
+                links
+                    .accessible_string_property(AccessibleStringProperty::Checked)
+                    .unwrap(),
+                "false"
+            );
+        }
+    }
+    input::key(&dialog, Key::Return);
     h.until(|h| {
         h.copy_progress
             .last()
@@ -53,6 +83,25 @@ fn exercise(pane: PaneId, archive: bool) {
         "{progress:?}"
     );
     assert_eq!(progress.files_completed, 2);
+    let observed = destination.link_policies.lock().unwrap();
+    if archive {
+        assert!(
+            observed.is_empty(),
+            "archive members keep their provider readers"
+        );
+    } else {
+        let expected = if follow_directory_links {
+            CopyLinkPolicy::FollowDirectoryContents
+        } else {
+            CopyLinkPolicy::EmptyDirectories
+        };
+        assert!(
+            !observed.is_empty(),
+            "the captured native options must reach preparation"
+        );
+        assert!(observed.iter().all(|policy| *policy == expected));
+    }
+    drop(observed);
     h.until(|h| {
         h.selection
             .as_ref()
@@ -78,10 +127,15 @@ fn exercise(pane: PaneId, archive: bool) {
 
 #[test]
 fn native_nested_folders_copy_and_deselect_through_f5() {
-    exercise(PaneId::Left, false);
+    exercise(PaneId::Left, false, true);
+}
+
+#[test]
+fn captured_native_copy_passes_unchecked_directory_links_to_preparation() {
+    exercise(PaneId::Left, false, false);
 }
 
 #[test]
 fn archive_nested_folders_copy_and_deselect_through_f5() {
-    exercise(PaneId::Right, true);
+    exercise(PaneId::Right, true, true);
 }

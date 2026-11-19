@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
 import { PrefixName } from "panel-search.slint";
 import { FileRow, TreePress } from "file-models.slint";
@@ -34,8 +35,16 @@ export component FileEntry inherits Rectangle {
     callback drag-released(float, float);
     callback drag-cancelled();
     callback hover-changed(string, bool);
+    callback read-directory-link-target(string);
+    in property <bool> link-tooltips-enabled;
+    in property <string> link-target-text;
     private property <string> hover-identity: pointer.has-hover && root.visible ? item.identity : "";
-    changed hover-identity => { root.hover-changed(item.identity, root.hover-identity != ""); }
+    private property <string> reported-hover;
+    changed hover-identity => {
+        if root.hover-identity != "" { root.hover-changed(root.hover-identity, true); }
+        else if root.reported-hover != "" { root.hover-changed(root.reported-hover, false); }
+        root.reported-hover = root.hover-identity;
+    }
     private property <color> name-background: FilenameColorPresentation.background(item.color-rule && item.custom-background, item.background, item.cursor, root.active, item.selected, mod(root.source-index, 2) != 0);
     private property <color> text-color: item.color-rule ? FilenameColorPresentation.foreground(item.custom-foreground, item.foreground, root.name-background, item.selected, item.directory)
         : item.selected ? Theme.selected-text
@@ -73,6 +82,14 @@ export component FileEntry inherits Rectangle {
         + (item.browsable-archive ? " · Archive: open as folder" : "")
         + (item.size-state == 3 ? " · Folder size warning" : "");
     pointer := TouchArea {
+        if item.folder-link && root.link-tooltips-enabled && root.visible && !root.touch-contact : Tooltip {
+            TipBody {
+                text: root.link-target-text == "" ? "Link target unavailable" : root.link-target-text;
+                init => {
+                    if root.hover-identity != "" { root.read-directory-link-target(root.hover-identity); }
+                }
+            }
+        }
         private property <string> pressed-identity;
         private property <bool> control-pressed;
         private property <bool> shift-pressed;
@@ -301,10 +318,16 @@ export component FileEntry inherits Rectangle {
             }
         }
     }
-    Rectangle {
-        x: 0px; y: 0px; width: item.selected ? 4px : 3px; height: parent.height;
-        background: item.selected ? Theme.selected-edge
-            : item.cursor && root.active ? Theme.cursor-edge : transparent;
+    // A square means marked for an operation; a full-height stroke is the caret.
+    // Shape remains distinguishable in monochrome/high-contrast themes.
+    if item.cursor && root.active : Rectangle {
+        x: 0px; y: 0px; width: 3px; height: parent.height;
+        background: Theme.cursor-edge;
+    }
+    if item.selected : Rectangle {
+        x: 0px; y: (parent.height - self.height) / 2;
+        width: Theme.touch ? 9px : 7px; height: self.width;
+        background: Theme.selected-edge;
     }
     if item.selected && item.cursor : Rectangle {
         x: 4px; y: 0px; width: parent.width - 4px; height: parent.height;

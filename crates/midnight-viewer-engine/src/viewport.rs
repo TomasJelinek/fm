@@ -49,6 +49,26 @@ pub(crate) fn available_height(
     }
 }
 
+/// Lowest Source camera with complete leading logical-line context. A packet's
+/// partial flag describes either edge, so its first logical line is uncertain
+/// until a decoded hard break, even after some wrapped visual rows have passed.
+/// None means this bounded packet has no complete leading-line boundary.
+pub(crate) fn source_minimum_origin(
+    page: &crate::page::Page,
+    shaped: &midnight_viewer_render::TextPage,
+) -> Option<f32> {
+    if !page.before || !page.partial_line {
+        return Some(0.0);
+    }
+    let (at, character) = page
+        .text
+        .char_indices()
+        .find(|(_, ch)| logical_break(*ch))?;
+    let end = at + character.len_utf8();
+    let end = end + usize::from(character == '\r' && page.text[end..].starts_with('\n'));
+    shaped.caret_geometry(end).ok().map(|caret| caret.y0 as f32)
+}
+
 fn logical_break(character: char) -> bool {
     matches!(
         character,
@@ -334,6 +354,7 @@ mod tests {
             end: end as u64,
             before: start != 0,
             after: true,
+            partial_line: false,
         }
     }
 

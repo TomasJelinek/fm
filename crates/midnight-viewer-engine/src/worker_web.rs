@@ -451,6 +451,7 @@ impl Worker {
                 query,
                 backwards,
                 case_sensitive,
+                ..
             } => {
                 let find_next = web.find == *query;
                 web.find.clone_from(query);
@@ -559,6 +560,7 @@ impl Worker {
                     };
                     output.put(ViewerOutput::Frame(Box::new(ViewerFrame {
                         generation: self.positions.generation,
+                        media_control: None,
                         position_sequence: [0; 2],
                         revision,
                         mode: VIEWER_MODE_HTML,

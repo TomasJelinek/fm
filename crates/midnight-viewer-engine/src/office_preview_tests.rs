@@ -1,4 +1,7 @@
 //! Captured-parent, generated-resource and checked-release boundaries without Chromium.
+#[path = "office_link_tests.rs"]
+mod links;
+
 use super::*;
 use midnight_office_preview::{DocumentId, ImmutableHtml, OfficeTarget, SheetId, SlideId};
 use midnight_plugin_host::{ContentResources, ContentSource, Error};
@@ -938,7 +941,7 @@ fn office_xlsx_prepares_first_real_cell_before_any_resource_navigation() {
     );
     assert!(!html.contains("NATIVE_BETA_A1_V1"));
     assert!(
-        html.contains("href=\"/office/v1/catalog.html\""),
+        html.contains("href=\"office/v1/catalog.html\""),
         "All sheets remains available"
     );
     let catalog = prepared

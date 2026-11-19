@@ -3,7 +3,9 @@
 mod ui;
 
 use i_slint_core::{
-    accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+    accessibility::AccessibleStringProperty,
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    items::AccessibleRole,
     window::WindowInner,
 };
 use midnight_ui::{
@@ -353,10 +355,50 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         tab("12", "B", false),
     ])));
     draw(&mut pixels);
-    let middle_close = ui::root_position(&window, &close_tab_hint("B"), AccessibleRole::Button);
-    pointer_click(&window, middle_close, PointerEventButton::Middle);
-    assert_eq!(*closed.borrow(), vec![(0, SharedString::from("12"))]);
-    closed.borrow_mut().clear();
+    let tab_item = ui::root_item(&window, "B\nD:\\文档\\B", AccessibleRole::Button);
+    let close = ui::root_item(&window, &close_tab_hint("B"), AccessibleRole::Button);
+    let mut ancestors = std::iter::successors(
+        close.parent_item(ParentItemTraversalMode::StopAtPopups),
+        |item| item.parent_item(ParentItemTraversalMode::StopAtPopups),
+    );
+    assert!(
+        ancestors.any(|item| item == tab_item),
+        "close belongs to the tab frame"
+    );
+
+    let tab_rect = tab_item.geometry();
+    let close_rect = close.geometry();
+    let tab_origin = tab_item.map_to_native_window(tab_rect.origin);
+    let close_origin = close.map_to_native_window(close_rect.origin);
+    let right_inset = tab_origin.x + tab_rect.size.width - close_origin.x - close_rect.size.width;
+    let top_inset = close_origin.y - tab_origin.y;
+    let bottom_inset =
+        tab_origin.y + tab_rect.size.height - close_origin.y - close_rect.size.height;
+    for (edge, inset) in [
+        ("right", right_inset),
+        ("top", top_inset),
+        ("bottom", bottom_inset),
+    ] {
+        assert!(
+            (inset - 3.0).abs() <= 0.5,
+            "{edge} close inset was {inset}px"
+        );
+    }
+
+    let close_center = slint::LogicalPosition::new(
+        close_origin.x + close_rect.size.width / 2.0,
+        close_origin.y + close_rect.size.height / 2.0,
+    );
+    for button in [PointerEventButton::Left, PointerEventButton::Middle] {
+        pointer_click(&window, close_center, button);
+        assert_eq!(*closed.borrow(), vec![(0, SharedString::from("12"))]);
+        assert_eq!(
+            selected.borrow().len(),
+            1,
+            "{button:?} on close must not select the tab"
+        );
+        closed.borrow_mut().clear();
+    }
     let position = ui::root_position(&window, &close_tab_hint("A"), AccessibleRole::Button);
     window
         .window()

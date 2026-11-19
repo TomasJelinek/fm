@@ -91,6 +91,28 @@ fn fixture_directory() -> tempfile::TempDir {
 }
 
 #[test]
+fn tooltip_reads_the_stored_target_of_a_dangling_junction() {
+    let temp = fixture_directory();
+    let target = temp.path().join("target_文档 & 🦀");
+    let alias = temp.path().join("alias_e\u{301}");
+    fs::create_dir(&target).unwrap();
+    fs::create_dir(&alias).unwrap();
+    crate::test_fixtures::create_junction(&alias, &target).unwrap();
+    fs::remove_dir(&target).unwrap();
+
+    let shown = WindowsFileSystem::new(None)
+        .read_link_target(&alias)
+        .unwrap()
+        .unwrap();
+    let mut verbatim = OsString::from(r"\\?\");
+    verbatim.push(&target);
+    assert!(
+        shown == target || shown == PathBuf::from(verbatim),
+        "unexpected junction target {shown:?}"
+    );
+}
+
+#[test]
 fn denied_junction_alias_keeps_target_acl_authority_and_never_launches() {
     let temp = fixture_directory();
     let target = temp.path().join("target_文档 & 🦀");

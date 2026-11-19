@@ -244,6 +244,24 @@ provider writes, all tree consumers, native icon-picker interaction, Linux deskt
 workflows or full release qualification. The new hosted CI run must finish before
 it is counted as green.
 
+## Screenshot follow-up — 18 November 2026
+
+These requested changes extend the checks under the existing work items. The
+screenshots describe layout and interaction. The 54 retained requirements and
+their earlier evidence remain in scope. The integration base is `544b48db`.
+[Current verification ledger](ACTIVE_WORK.md#screenshot-follow-up--18-november-2026)
+
+| Work | Requested behavior | Evidence still needed |
+| --- | --- | --- |
+| Settings JSON | Save application preferences as readable, indented JSON while preserving existing values, load compatibility and the save contract. | Reopen settings saved from a compact file and verify equivalent values and readable output. The current encoder uses compact JSON. |
+| Silent Delete | Investigate why the requested Delete left `D:/temp/QQQ/ww/.claude` present without an error. Surface refusal, failure or partial completion in the terminal job and the UI. | Inspect the reported path read-only and reproduce with equivalent disposable fixtures. Exercise ordinary, hidden, read-only and directory-link cases as applicable. Verify retained paths, terminal counts and the visible result. The earlier Delete progress passes cover different cases. |
+| Panel geometry and interactions | Keep scrolling smooth and full rows visible without the abrupt end snap. Support Alt+Enter properties for multiple selected entries. Shrink and inset the tab close button, show a directory link or junction's target in its tooltip, and use a file-move drag icon distinct from a window-move cursor. | Check wheel and keyboard scrolling, partial row geometry and settled alignment. Verify multi-selection reaches the supported native properties route, tab hit areas at compact sizes, link and unavailable-target tooltips, and distinct drag intents. |
+| Plug-in associations and media | Make viewer and thumbnailer extension associations editable, retaining user overrides. Add video thumbnails for the formats supported by the shared FFmpeg build, including MP4. Add a viewer that plays supported videos through that same FFmpeg runtime. | Verify persisted associations and correct routing, then exercise playback and thumbnail generation against the pinned decoder and container matrix on supported platforms. Confirm actual pins, build flags and distribution terms before updating notices or making a format claim. |
+| Source file associations | Highlight `.manifest` as XML and `.usda` with USDA syntax rules. Preserve user extension overrides. | Verify default routing, representative token spans, and override behavior. Source plug-in CI for the current main remains open. |
+| Large HTML viewer | On the reported `03vvvyz8_clash_data.html`, address slow first open, failed repeat open and slow scrolling. | Use the exact local fixture to record first paint, close and repeat-open behavior, and scroll frame timings separately. Repeated Find regression and the earlier H2 results retain separate coverage. |
+| Copy/Move setup and progress windows | Fit setup and error dialogs at compact sizes with tighter checkbox spacing. After discovery, drive total progress from known file and byte totals. Show completed and total files and sizes, ETA and Pause, with the current directory and filename on separate lines. Omit the visible Finalizing label and keep secondary statistics behind Details. | Verify the setup and error layouts, the discovery-to-transfer transition, aggregate progress and ETA, path/name display, compact and expanded views, and functional pause and resume with live progress. |
+| Copy/Move cancellation, summary and directory links | Pause while cancel confirmation is open and preserve any earlier manual pause when continuing. Show a terminal summary for cancellation, errors or warnings with processed and unprocessed counts and the encountered issues. At Copy startup, follow directory links and junctions by default. With following disabled, create empty destination directories. | Exercise Continue and Cancel, terminal cancelled and partial results, both link choices, loops and containment. Settle and verify same- and cross-volume Move rules for link identity and referent protection before permitting source cleanup. Preserve existing overwrite and verified-publication guarantees. |
+
 ## Assigned functional requirements
 
 All rows target Windows x64 and Linux x86-64 unless a narrower platform is stated.

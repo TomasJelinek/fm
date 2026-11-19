@@ -77,15 +77,22 @@ fn find(item: ItemRc, role: AccessibleRole, label: &str) -> Option<ItemRc> {
     }
     None
 }
-pub fn popup_item(window: &JobProgressWindow, label: &str, role: AccessibleRole) -> ItemRc {
+pub fn find_popup_item(
+    window: &JobProgressWindow,
+    label: &str,
+    role: AccessibleRole,
+) -> Option<ItemRc> {
     find(
         ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
         role,
         label,
     )
-    .unwrap_or_else(|| panic!("missing operation progress control {label}"))
 }
-#[allow(dead_code)] // The compact reflow fixture uses keyboard/scroll input only.
+pub fn popup_item(window: &JobProgressWindow, label: &str, role: AccessibleRole) -> ItemRc {
+    find_popup_item(window, label, role)
+        .unwrap_or_else(|| panic!("missing operation progress control {label}"))
+}
+#[allow(dead_code)] // The compact reflow fixture uses keyboard and scroll input only.
 pub fn click_popup(window: &JobProgressWindow, label: &str, role: AccessibleRole) {
     let item = popup_item(window, label, role);
     let rect = item.geometry();

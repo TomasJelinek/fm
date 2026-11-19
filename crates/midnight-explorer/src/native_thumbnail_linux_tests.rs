@@ -43,6 +43,7 @@ fn local_png_reaches_the_installed_thumbnail_worker_with_network_previews_disabl
     let service = service::Service::start(installation.join("me"), cache);
     service.set_view(service::View {
         generation: 1,
+        thumbnailer_associations: Default::default(),
         targets: vec![factory.target(&row, 1, 96).unwrap()],
     });
     let deadline = Instant::now() + Duration::from_secs(15);

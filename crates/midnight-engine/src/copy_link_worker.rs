@@ -10,10 +10,16 @@ pub(super) fn validate_options(
     path: &Path,
     status: &Status,
     metadata: TransferMetadataPolicy,
+    links: CopyLinkPolicy,
 ) -> Result<(), FsError> {
-    if snapshot(status).intent != TransferIntent::Copy
-        || metadata != TransferMetadataPolicy::ContentOnly
-    {
+    if snapshot(status).intent != TransferIntent::Copy {
+        return Err(error(
+            path,
+            io::ErrorKind::Unsupported,
+            "This source preparation requires Copy authority.",
+        ));
+    }
+    if links == CopyLinkPolicy::Preserve && metadata != TransferMetadataPolicy::ContentOnly {
         return Err(error(
             path,
             io::ErrorKind::Unsupported,
@@ -29,7 +35,7 @@ pub(super) fn admit_roots(
     links: CopyLinkPolicy,
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
-    if links == CopyLinkPolicy::Reject {
+    if links != CopyLinkPolicy::Preserve {
         return Ok(());
     }
     for source in roots {

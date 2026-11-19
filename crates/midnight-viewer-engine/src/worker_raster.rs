@@ -234,6 +234,7 @@ impl Worker {
                 {
                     return;
                 }
+                self.interrupt_find();
                 self.raster.rebase_ack = None;
                 self.raster.sequence = sequence;
                 self.raster.target = origin;
@@ -424,7 +425,10 @@ impl Worker {
     }
 
     pub(super) fn resume_raster_target(&mut self, output: &Mailbox) {
-        self.apply_raster_target_with(output, false);
+        // Raw scroll and a corrected rebase make the viewport origin authoritative.
+        if self.raster.sequence != 0 {
+            self.apply_raster_target_with(output, false);
+        }
     }
 
     fn apply_raster_target_with(&mut self, output: &Mailbox, prefetch: bool) {

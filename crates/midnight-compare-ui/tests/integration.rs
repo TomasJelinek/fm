@@ -11,6 +11,7 @@
 
 mod difference_navigation;
 mod file_choice;
+mod find;
 mod fonts;
 mod image_composition;
 mod keyboard;

@@ -272,3 +272,89 @@ fn supported_native_mode_change_invalidates_an_unacknowledged_opening() {
         Some(Err("retained failure".into()))
     );
 }
+
+#[test]
+fn video_layout_waits_for_matching_canvas_before_admitting_the_capture() {
+    let (mut worker, _) = worker();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("owned.mp4");
+    std::fs::write(&path, b"captured layout fixture").unwrap();
+    let file = midnight_plugin_host::CapturedFile::capture(&path).unwrap();
+    worker.layout = crate::layout_handshake::Handshake::new(true);
+    worker.positions.reset().unwrap();
+    worker.mode = VIEWER_MODE_VIDEO;
+    worker.modes = vec![VIEWER_MODE_VIDEO];
+    let output = Mailbox::with_layout();
+    worker
+        .select_opening(
+            super::super::layout::PreparedOpening {
+                file,
+                route: crate::routing::Route::Process { index: 0 },
+            },
+            &output,
+        )
+        .unwrap();
+    let (token, mode, generation) = selection(&output);
+    assert_eq!(mode, VIEWER_MODE_VIDEO);
+    assert_eq!(generation, worker.positions.generation);
+    assert!(worker.video.is_none());
+    assert!(
+        worker
+            .take_layout_ready(token + 1, worker.geometry)
+            .is_none()
+    );
+    assert!(output.take_open_result().is_none());
+
+    let opening = worker.take_layout_ready(token, worker.geometry).unwrap();
+    assert_eq!(opening.file.path(), path);
+    assert!(worker.video.is_none());
+}
+
+#[test]
+fn video_controls_and_frames_share_capture_generation() {
+    let (mut worker, output) = worker();
+    worker.positions.reset().unwrap();
+    worker.mode = VIEWER_MODE_VIDEO;
+    let generation = worker.positions.generation;
+    let mut snapshot = crate::video_actor::opening(MediaSessionId(generation));
+    snapshot.playing = true;
+    snapshot.control = MediaControlId(73);
+    snapshot.position = Duration::from_micros(500);
+    snapshot.duration = Some(Duration::from_micros(1000));
+    snapshot.phase = MediaPhase::Playing;
+    worker
+        .publish_video(
+            crate::video_actor::VideoUpdate {
+                frame: Some(midnight_media_host::video_transport::VideoFrame {
+                    presentation: Duration::from_micros(500),
+                    width: 1,
+                    height: 1,
+                    rgba: Box::new([255, 0, 128, 128]),
+                }),
+                snapshot,
+                notice: None,
+            },
+            &output,
+        )
+        .unwrap();
+    let events = output.take();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ViewerOutput::MediaSnapshot(snapshot)
+            if snapshot.session.0 == generation
+                && snapshot.playing
+                && snapshot.position == Duration::from_micros(500)
+    )));
+    let frame = events
+        .iter()
+        .find_map(|event| match event {
+            ViewerOutput::Frame(frame) => Some(frame),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(frame.mode, VIEWER_MODE_VIDEO);
+    assert_eq!(frame.media_control, Some(MediaControlId(73)));
+    assert_eq!(frame.generation, generation);
+    assert_eq!(&*frame.pixels, &[128, 0, 64, 128]);
+    assert_eq!(output.take_open_result(), Some(Ok(())));
+}

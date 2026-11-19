@@ -223,7 +223,7 @@ class ThumbnailerInputTests(unittest.TestCase):
             (prefix / "lib").mkdir(parents=True)
             (prefix / "share/midnight-ffmpeg").mkdir(parents=True)
             (prefix / "share/midnight-ffmpeg/COPYING.LGPLv2.1").write_text("LGPL\n")
-            for name in ("libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10"):
+            for name in ("libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10", "libswresample.so.7"):
                 (prefix / "lib" / name).write_bytes(b"new " + name.encode())
             archive = fixture / "ffmpeg-9.0.2.tar.xz"
             archive.write_bytes(b"source fixture")
@@ -233,7 +233,10 @@ class ThumbnailerInputTests(unittest.TestCase):
             for name, body in (("sha256sum", "exit 0\n"),  # the pinned digest is checked elsewhere
                                ("cargo", 'mkdir -p "$CARGO_TARGET_DIR/debug"\n'
                                          'name=$(basename "$(dirname "$3")")\n'
-                                         'printf "new %s\\n" "$name" > "$CARGO_TARGET_DIR/debug/$name"\n')):
+                                         'printf "new %s\\n" "$name" > "$CARGO_TARGET_DIR/debug/$name"\n'
+                                         'if [ "$name" = midnight-thumbnail-video ]; then\n'
+                                         '  printf "new video playback\\n" > "$CARGO_TARGET_DIR/debug/midnight-video-playback"\n'
+                                         'fi\n')):
                 (tools / name).write_text("#!/bin/sh\nset -eu\n" + body)
                 (tools / name).chmod(0o755)
             destination = fixture / "app/thumbnailers"
@@ -253,6 +256,8 @@ class ThumbnailerInputTests(unittest.TestCase):
             self.assertFalse((destination / "notices/removed-provider").exists())
             self.assertEqual((destination / "libavcodec.so.63").read_bytes(), b"new libavcodec.so.63")
             self.assertEqual((destination / "midnight-thumbnail-video").read_text(), "new midnight-thumbnail-video\n")
+            self.assertEqual((destination / "midnight-video-playback").read_text(), "new video playback\n")
+            self.assertTrue((destination / "libswresample.so.7").is_file())
             self.assertTrue((destination / "notices/midnight-thumbnail-image/dav1d-LICENSE").is_file())
             self.assertTrue((destination / "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz").is_file())
             self.assertEqual(list((fixture / "app").glob(".thumbnailers-build.*")), [])
@@ -260,7 +265,7 @@ class ThumbnailerInputTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "Windows thumbnail build swap")
 class WindowsThumbnailerSwapTests(unittest.TestCase):
-    LIBRARIES = ("avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll")
+    LIBRARIES = ("avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll", "swresample-7.dll")
 
     def setUp(self):
         temporary = ROOT / "_build/tmp"
@@ -296,7 +301,9 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
             "name = pathlib.Path(sys.argv[sys.argv.index('--manifest-path') + 1]).parent.name\n"
             "output = pathlib.Path(os.environ['CARGO_TARGET_DIR']) / 'debug'\n"
             "output.mkdir(parents=True, exist_ok=True)\n"
-            "(output / (name + '.exe')).write_text('new ' + name)\n")
+            "(output / (name + '.exe')).write_text('new ' + name)\n"
+            "if name == 'midnight-thumbnail-video':\n"
+            "    (output / 'midnight-video-playback.exe').write_text('new video playback')\n")
         (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{tools / "cargo.py"}" %*\n')
         self.environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
         self.environment.pop("CARGO_TARGET_DIR", None)
@@ -327,6 +334,8 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         self.assertFalse((self.destination / "notices/removed-provider").exists())
         self.assertEqual((self.destination / "avcodec-63.dll").read_bytes(), unsigned_pe(True, b"new avcodec-63.dll"))
         self.assertEqual((self.destination / "midnight-thumbnail-video.exe").read_text(), "new midnight-thumbnail-video")
+        self.assertEqual((self.destination / "midnight-video-playback.exe").read_text(), "new video playback")
+        self.assertTrue((self.destination / "swresample-7.dll").is_file())
         self.assertTrue((self.destination / "notices/midnight-thumbnail-image/dav1d-LICENSE").is_file())
         self.assertTrue((self.destination / "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz").is_file())
 

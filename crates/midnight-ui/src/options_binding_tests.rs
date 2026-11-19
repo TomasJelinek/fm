@@ -8,13 +8,13 @@ use crate::{
 };
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
-    item_tree::ItemRc,
+    item_tree::{ItemRc, ParentItemTraversalMode},
     items::{AccessibleRole, Flickable},
 };
 use midnight_core::{
     ArchiveFormat, Bookmark, BookmarkId, Command, Event, FilenameColorRule, FilenameColorTarget,
-    FilenameStyle, FilterMode, RgbColor, ShellFlavor, UserCommand, UserCommandId,
-    UserCommandInvocation, UserCommandLaunch, UserPreferences, ViewerPluginInfo,
+    FilenameStyle, FilterMode, RgbColor, ShellFlavor, ThumbnailerPluginInfo, UserCommand,
+    UserCommandId, UserCommandInvocation, UserCommandLaunch, UserPreferences, ViewerPluginInfo,
 };
 use slint::{ComponentHandle, platform::Key};
 use std::{cell::Cell, rc::Rc, sync::Arc};
@@ -286,6 +286,67 @@ fn viewer_options() -> Harness {
 }
 
 #[test]
+fn installed_viewer_list_reserves_every_row_and_scrolls_with_the_page() {
+    let mut h = viewer_options();
+    let mut catalog = viewer_catalog();
+    for index in 0..24 {
+        let mut plugin = catalog[0].clone();
+        plugin.id = format!("midnight.viewer.extra-{index}");
+        plugin.name = format!("Installed viewer {index}");
+        catalog.push(plugin);
+    }
+    let installed = catalog.len();
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ViewerPluginsListed(Ok(catalog)));
+    h.refresh();
+    let list = h.item("Viewer priority", AccessibleRole::List);
+    let first = h.item("Source viewer · 1", AccessibleRole::ListItem);
+    let row_height = first.geometry().size.height;
+    assert!(row_height > 0.0);
+    assert!(
+        list.geometry().size.height >= installed as f32 * row_height,
+        "the catalog gives all installed rows space within the page"
+    );
+    let viewport = std::iter::successors(Some(list), |item| {
+        item.parent_item(ParentItemTraversalMode::StopAtPopups)
+    })
+    .find(|item| item.downcast::<Flickable>().is_some())
+    .expect("the plugin page scroll viewport");
+    let screen_top = |item: &ItemRc| item.map_to_native_window(item.geometry().origin).y;
+    let first_top = screen_top(&first);
+    h.activate("Source viewer · 1", AccessibleRole::ListItem);
+    h.key(Key::End);
+    assert_eq!(
+        h.window.global::<ViewerPluginsView>().get_selected(),
+        installed as i32 - 1
+    );
+    assert!(
+        screen_top(&first) < first_top,
+        "keyboard selection scrolls the page to the last viewer"
+    );
+
+    h.key(Key::Home);
+    assert_eq!(h.window.global::<ViewerPluginsView>().get_selected(), 0);
+    h.type_text("Viewer extensions", "rs; ../outside");
+    h.activate("Thumbnailers", AccessibleRole::Button);
+    h.activate("OK", AccessibleRole::Button);
+    assert!(h.window.get_options_open());
+    assert_eq!(h.text("Viewer extensions"), "rs; ../outside");
+    let message = h.window.global::<ViewerPluginsView>().get_extension_error();
+    assert!(!message.is_empty());
+    let editor = h.item("Viewer extensions", AccessibleRole::TextInput);
+    let error = h.item(message.as_str(), AccessibleRole::Text);
+    let viewport_top = screen_top(&viewport);
+    let viewport_bottom = viewport_top + viewport.geometry().size.height;
+    assert!(
+        screen_top(&editor) >= viewport_top - 1.0
+            && screen_top(&error) + error.geometry().size.height <= viewport_bottom + 1.0,
+        "rejected OK brings the editor and its validation into the page viewport"
+    );
+}
+
+#[test]
 fn a_refused_viewer_extension_list_stays_visible_with_its_error() {
     let mut h = viewer_options();
     assert_eq!(h.text("Viewer extensions"), "rs; py");
@@ -296,22 +357,30 @@ fn a_refused_viewer_extension_list_stays_visible_with_its_error() {
     h.type_text("Viewer extensions", &refused);
     let window = h.window.clone_strong();
     let view = window.global::<ViewerPluginsView>();
-    assert!(view.get_error().contains("32 KiB"), "{}", view.get_error());
+    assert!(
+        view.get_extension_error().contains("32 KiB"),
+        "{}",
+        view.get_extension_error()
+    );
     assert!(
         h.text("Viewer extensions") == refused,
         "the refused list stays visible for shortening"
     );
+
+    h.activate("Thumbnailers", AccessibleRole::Button);
+    assert!(is_checked(&h.item("Thumbnailers", AccessibleRole::Button)));
     h.activate("OK", AccessibleRole::Button);
     assert!(h.window.get_options_open(), "OK refuses the over-long list");
     assert_eq!(h.window.get_options_topic_index(), 5);
+    assert!(is_checked(&h.item("Viewers", AccessibleRole::Button)));
     assert!(h.text("Viewer extensions") == refused);
 
     h.type_text("Viewer extensions", "rs; py; txt");
-    assert_eq!(view.get_error(), "");
+    assert_eq!(view.get_extension_error(), "");
     assert_eq!(h.text("Viewer extensions"), "rs; py; txt");
     h.type_text("Viewer extensions", &refused);
     h.activate("Reset viewer extensions", AccessibleRole::Button);
-    assert_eq!(view.get_error(), "");
+    assert_eq!(view.get_extension_error(), "");
     assert_eq!(
         h.text("Viewer extensions"),
         "rs; py",
@@ -355,6 +424,172 @@ fn viewer_extensions_follow_the_selected_viewer_after_typing() {
             .any(|command| matches!(command, Command::SavePreferences { .. })),
         "all edits remain Options previews"
     );
+}
+
+const IMAGE_THUMBNAILER_ID: &str = "midnight-image";
+const VIDEO_THUMBNAILER_ID: &str = "midnight-video";
+
+fn thumbnailer_options() -> Harness {
+    let mut h = viewer_options();
+    let catalog = [
+        (
+            IMAGE_THUMBNAILER_ID,
+            "Image thumbnailer",
+            ["png", "jpg"],
+            false,
+        ),
+        (
+            VIDEO_THUMBNAILER_ID,
+            "Video thumbnailer",
+            ["mp4", "mov"],
+            true,
+        ),
+    ]
+    .into_iter()
+    .map(|(id, name, extensions, video)| ThumbnailerPluginInfo {
+        id: id.into(),
+        name: name.into(),
+        version: "1".into(),
+        extensions: extensions.into_iter().map(String::from).collect(),
+        video,
+        location: format!("thumbnailers/{id}").into(),
+        status: "Installed".into(),
+    })
+    .collect();
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Ok(catalog)));
+    h.refresh();
+    h.activate("Thumbnailers", AccessibleRole::Button);
+    h
+}
+
+#[test]
+fn thumbnailer_associations_edit_and_reset_to_trusted_manifest_defaults() {
+    let mut h = thumbnailer_options();
+    assert_eq!(h.text("Thumbnailer extensions"), "png; jpg");
+    h.type_text("Thumbnailer extensions", "png");
+    h.activate("Video thumbnailer · 1", AccessibleRole::ListItem);
+    assert_eq!(h.text("Thumbnailer extensions"), "mp4; mov");
+    h.activate("Image thumbnailer · 1", AccessibleRole::ListItem);
+    assert_eq!(h.text("Thumbnailer extensions"), "png");
+    h.activate("Reset thumbnailer extensions", AccessibleRole::Button);
+    assert_eq!(h.text("Thumbnailer extensions"), "png; jpg");
+
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Err(
+            "Thumbnailer discovery failed".into(),
+        )));
+    h.refresh();
+    assert!(
+        h.find(|item| {
+            item.accessible_role() == AccessibleRole::TextInput
+                && item
+                    .accessible_string_property(AccessibleStringProperty::Label)
+                    .is_some_and(|label| label.as_str() == "Thumbnailer extensions")
+        })
+        .is_none(),
+        "the editor needs a trusted catalog selection"
+    );
+}
+
+#[test]
+fn cancel_restores_staged_thumbnailer_associations() {
+    let mut h = thumbnailer_options();
+    h.type_text("Thumbnailer extensions", "jpg");
+    h.activate("Video thumbnailer · 1", AccessibleRole::ListItem);
+    h.activate("Image thumbnailer · 1", AccessibleRole::ListItem);
+    assert_eq!(h.text("Thumbnailer extensions"), "jpg");
+    h.activate("Cancel", AccessibleRole::Button);
+    assert!(!h.window.get_options_open());
+    h.window.invoke_show_options();
+    h.window.set_options_topic_index(5);
+    h.refresh();
+    h.activate("Thumbnailers", AccessibleRole::Button);
+    assert_eq!(h.text("Thumbnailer extensions"), "png; jpg");
+    assert!(
+        !h.sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. }))
+    );
+}
+
+#[test]
+fn rejected_thumbnailer_extensions_return_from_viewers_with_inline_feedback() {
+    let mut h = thumbnailer_options();
+    let invalid = "png; ../outside";
+    h.type_text("Thumbnailer extensions", invalid);
+    h.activate("Viewers", AccessibleRole::Button);
+    assert!(is_checked(&h.item("Viewers", AccessibleRole::Button)));
+    h.activate("OK", AccessibleRole::Button);
+    assert!(h.window.get_options_open());
+    assert_eq!(h.window.get_options_topic_index(), 5);
+    assert!(is_checked(&h.item("Thumbnailers", AccessibleRole::Button)));
+    assert_eq!(h.text("Thumbnailer extensions"), invalid);
+    let message = h
+        .window
+        .global::<ViewerPluginsView>()
+        .get_thumbnailer_extension_error();
+    assert!(!message.is_empty());
+    h.item(message.as_str(), AccessibleRole::Text);
+    assert!(
+        !h.sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. }))
+    );
+}
+
+#[test]
+fn an_explicit_empty_thumbnailer_list_saves_with_viewer_edits_in_one_commit() {
+    let mut h = thumbnailer_options();
+    h.type_text("Thumbnailer extensions", "");
+    h.activate("Viewers", AccessibleRole::Button);
+    h.type_text("Viewer extensions", "rs; py; txt");
+    h.activate("OK", AccessibleRole::Button);
+    let revision = {
+        let commands = h.sent.borrow();
+        let mut saves = commands.iter().filter_map(|command| match command {
+            Command::SavePreferences {
+                revision,
+                preferences,
+            } => Some((*revision, preferences)),
+            _ => None,
+        });
+        let (revision, preferences) = saves.next().expect("one Options commit");
+        assert!(saves.next().is_none(), "one Options commit");
+        let image_defaults = ["png".into(), "jpg".into()];
+        let video_defaults = ["mp4".into(), "mov".into()];
+        assert!(
+            preferences
+                .thumbnailer_associations
+                .effective_extensions(IMAGE_THUMBNAILER_ID, &image_defaults)
+                .is_empty(),
+            "an explicit empty list disables this provider's extension matches"
+        );
+        assert_eq!(
+            preferences
+                .thumbnailer_associations
+                .effective_extensions(VIDEO_THUMBNAILER_ID, &video_defaults),
+            &video_defaults
+        );
+        assert_eq!(
+            preferences
+                .viewer_associations
+                .overrides
+                .get("midnight.viewer.source"),
+            Some(&vec!["rs".into(), "py".into(), "txt".into()])
+        );
+        revision
+    };
+    h.presenter.borrow_mut().apply(Event::PreferencesSaved {
+        revision,
+        result: Ok(Default::default()),
+    });
+    h.refresh();
+    assert!(!h.window.get_options_open(), "the commit was acknowledged");
 }
 
 #[test]

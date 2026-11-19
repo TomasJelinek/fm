@@ -77,6 +77,10 @@ fn actual_images_publish_pending_before_file_identity_and_keep_generation_across
     assert!(initial.layers.is_some());
     assert_eq!(initial.identity, IdentityVerdict::Pending);
     let complete = settled(&session);
+    assert!(
+        Arc::ptr_eq(&initial.find, &complete.find),
+        "image paints share one empty Find snapshot"
+    );
     assert_eq!(complete.identity, IdentityVerdict::IdenticalFiles);
     assert_eq!(
         complete.comparison_generation,
@@ -84,6 +88,7 @@ fn actual_images_publish_pending_before_file_identity_and_keep_generation_across
     );
     assert!(session.send(Input::Zoom(2.0)).is_ok());
     let zoomed = frame(&session);
+    assert!(Arc::ptr_eq(&complete.find, &zoomed.find));
     assert_eq!(zoomed.comparison_generation, complete.comparison_generation);
     assert_eq!(zoomed.identity, IdentityVerdict::IdenticalFiles);
     assert!(session.send(Input::Mode(ImageMode::OnionSkin)).is_ok());

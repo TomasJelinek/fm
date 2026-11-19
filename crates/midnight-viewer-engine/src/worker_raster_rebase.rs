@@ -46,6 +46,7 @@ impl Worker {
         restored: Option<[f32; 2]>,
         raw: [f32; 2],
         same_context: bool,
+        continuing_layout: bool,
         output: &Mailbox,
     ) {
         if let Some(mut handoff) = self.raster.handoff
@@ -78,6 +79,7 @@ impl Worker {
                 restored: raw,
                 phase: Phase::Waiting,
             });
+            self.motion.begin_rebase(self.viewport_request, transition);
             output.put(ViewerOutput::RasterRebase {
                 surface,
                 transition,
@@ -91,10 +93,12 @@ impl Worker {
                 output,
             );
         }
+        let acknowledgement = self.raster.rebase_ack.filter(|_| continuing_layout);
         self.raster_page_loaded(
             continuing.filter(|_| restored.is_some() && same_context),
             raw,
         );
+        self.raster.rebase_ack = acknowledgement;
     }
 
     fn rebase_camera_covered(&self, origin: [f32; 2]) -> bool {
@@ -178,8 +182,7 @@ impl Worker {
         self.frames.invalidate();
         self.raster.reset_automatic(self.origin);
         self.restore_rebase_selection();
-        self.raster.rebase_ack = Some(transition);
-        self.dirty = true;
+        self.acknowledge_raster_rebase(transition, output);
     }
 
     pub(in crate::worker) fn finish_raster_rebase(&mut self, completed: bool, output: &Mailbox) {
@@ -198,8 +201,13 @@ impl Worker {
         }
         self.raster.reset_automatic(self.origin);
         self.restore_rebase_selection();
-        self.raster.rebase_ack = Some(handoff.transition);
+        self.acknowledge_raster_rebase(handoff.transition, output);
+    }
+
+    fn acknowledge_raster_rebase(&mut self, transition: u64, output: &Mailbox) {
+        self.raster.rebase_ack = Some(transition);
         self.dirty = true;
+        self.resume_motion(MotionOwner::Rebase(transition), output);
     }
 
     pub(in crate::worker) fn abort_raster_rebase(
@@ -210,6 +218,7 @@ impl Worker {
         let Some(handoff) = self.raster.handoff.take() else {
             return false;
         };
+        self.motion.retire(MotionOwner::Rebase(handoff.transition));
         self.continuation = None;
         self.raster.reset_automatic(self.origin);
         self.restore_rebase_selection();
@@ -223,22 +232,36 @@ impl Worker {
     }
 
     pub(in crate::worker) fn raster_rebase_waiting(&self) -> bool {
-        self.raster.handoff.is_some()
+        self.pending_raster_rebase().is_some()
+    }
+
+    pub(in crate::worker) fn pending_raster_rebase(&self) -> Option<u64> {
+        self.raster.handoff.map(|handoff| handoff.transition)
     }
 
     pub(in crate::worker) fn raster_rebase_ack(&self) -> Option<u64> {
         self.raster.rebase_ack
     }
 
+    pub(in crate::worker) fn reset_raster_for_scroll(&mut self) {
+        // Raw input may have been queued before the corrected frame reached
+        // the UI. Keep the receipt on replacement frames until a new context
+        // or an input carrying the displayed surface makes it obsolete.
+        let ack = self.raster.rebase_ack;
+        self.reset_raster_context();
+        self.raster.rebase_ack = ack;
+    }
+
     pub(in crate::worker) fn cancel_raster_rebase(&mut self) {
-        if self.raster.handoff.take().is_some() {
-            if let Some(id) = self.viewport_request.take()
-                && let Some(session) = &self.session
-            {
-                session.cancel(id);
+        if let Some(handoff) = self.raster.handoff.take() {
+            if let Some(id) = self.viewport_request.take() {
+                if let Some(session) = &self.session {
+                    session.cancel(id);
+                }
+                self.source_foreground_finished(id, false);
             }
             self.continuation = None;
-            self.queued_scroll = [0.0; 2];
+            self.motion.retire(MotionOwner::Rebase(handoff.transition));
         }
         self.raster.rebase_ack = None;
     }

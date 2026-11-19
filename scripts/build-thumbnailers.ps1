@@ -52,8 +52,13 @@ try {
         $env:CARGO_TARGET_DIR=Join-Path $BuildRoot $name
         $arguments=@('build','--manifest-path',(Join-Path $project 'Cargo.toml'),'--config',$ApiConfig,'--locked','--offline')
         if ($Profile -eq 'release') { $arguments+='--release' }
+        if ($name -eq 'midnight-thumbnail-video') { $arguments+=@('--features','playback-worker') }
         & cargo @arguments
         if ($LASTEXITCODE -ne 0) { throw "$name build failed" }
+        if ($name -eq 'midnight-thumbnail-video') {
+            $playback='midnight-video-playback.exe'
+            Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR "$Profile/$playback") -Destination (Join-Path $package $playback)
+        }
         Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR "$Profile/$name.exe") -Destination (Join-Path $package "$name.exe")
         $manifest=Get-Content -LiteralPath (Join-Path $project 'thumbnailer.json') -Raw | ConvertFrom-Json
         $manifest.executable="$name.exe"
@@ -70,8 +75,8 @@ try {
             throw "Missing distribution notices for $name; stage pinned dependency license notices first"
         }
     }
-    # Only four installed code files are readable by the sandbox identity. No directory,
-    # user content, write permission or network capability is granted.
+    # The playback executable and the shared FFmpeg libraries need read and execute.
+    # The sandbox receives no directory, user content, write or network authority.
     if (-not ('MidnightWorkerBuildIdentity' -as [type])) { Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -89,9 +94,12 @@ public static class MidnightWorkerBuildIdentity {
 '@
     }
     $sid=[MidnightWorkerBuildIdentity]::Get()
-    foreach ($name in @('avcodec-63.dll','avformat-63.dll','avutil-61.dll','swscale-10.dll')) {
+    $ffmpegLibraries=@('avcodec-63.dll','avformat-63.dll','avutil-61.dll','swscale-10.dll','swresample-7.dll')
+    foreach ($name in $ffmpegLibraries) {
+        Copy-Item -LiteralPath (Join-Path $FfmpegPrefix "bin/$name") -Destination (Join-Path $package $name)
+    }
+    foreach ($name in $ffmpegLibraries + @('midnight-video-playback.exe')) {
         $path=Join-Path $package $name
-        Copy-Item -LiteralPath (Join-Path $FfmpegPrefix "bin/$name") -Destination $path
         $acl=Get-Acl -LiteralPath $path
         $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid,
             [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,[System.Security.AccessControl.AccessControlType]::Allow))

@@ -370,6 +370,14 @@ pub trait OpenService: Send + Sync + 'static {
     /// link. Reject missing/special files and use literal native arguments only.
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError>;
 
+    /// Read the stored first hop of a link for presentation on a bounded backend
+    /// worker. Use the exact absolute path captured from the original native row.
+    /// Implementations read the link object directly and preserve native encoding
+    /// and relative target semantics. `Ok(None)` means the capability is unavailable.
+    fn read_link_target(&self, _link: &Path) -> Result<Option<PathBuf>, FsError> {
+        Ok(None)
+    }
+
     /// Explicit typed activation on a backend worker, without filesystem fallback.
     /// None means native dispatch was accepted. A returned helper remains owned
     /// and reaped by the caller; success is published only after its successful exit.

@@ -1,6 +1,9 @@
 //! Frame-paced wheel input for backend-rasterized text and document viewers.
 use super::*;
 use midnight_ui_input::WheelMotion;
+use std::collections::VecDeque;
+
+const MAX_RAW_RETRIES: usize = 64;
 
 #[derive(Default)]
 pub(super) struct Motion {
@@ -10,6 +13,9 @@ pub(super) struct Motion {
     // A bounded legacy frame can have a lower effective DPI than the native window.
     scale: Option<[f32; 2]>,
     resumed_direct: bool,
+    // Engine can still hold older steps after the UI queue empties. Keep later
+    // relative inputs on the same route until a camera or content replacement.
+    raw: Option<VecDeque<(f32, f32)>>,
 }
 
 impl Motion {
@@ -60,11 +66,7 @@ pub(super) fn install(open: &Rc<OpenWindow>) {
         midnight_ui_input::WHEEL_FRAME,
         move || {
             let Some(open) = weak.upgrade() else { return };
-            if open.closed.get()
-                || !(raster_rebase::needs_retry(&open)
-                    || open.raster_motion.borrow().active()
-                    || open.retained_raster.borrow().camera.active())
-            {
+            if open.closed.get() || !active(&open) {
                 open.raster_redraw.stop();
                 return;
             }
@@ -78,7 +80,57 @@ pub(super) fn install(open: &Rc<OpenWindow>) {
     open.raster_redraw.stop();
 }
 
+pub(super) fn owns_raw(open: &OpenWindow) -> bool {
+    open.raster_motion.borrow().raw.is_some()
+}
+
+pub(super) fn retire_raw(open: &OpenWindow) {
+    open.raster_motion.borrow_mut().raw = None;
+}
+
+fn raw_context_ready(open: &OpenWindow) -> bool {
+    !open.closed.get()
+        && !open.layout.borrow().awaiting_frame
+        && open.text_position.borrow().context_available()
+}
+
+pub(super) fn admit_raw(open: &OpenWindow, x: f32, y: f32) -> bool {
+    if !raw_context_ready(open) || !x.is_finite() || !y.is_finite() || (x, y) == (0.0, 0.0) {
+        return false;
+    }
+    let (already_owned, queued) = {
+        let motion = open.raster_motion.borrow();
+        (
+            motion.raw.is_some(),
+            motion.raw.as_ref().map_or(0, VecDeque::len),
+        )
+    };
+    let sent =
+        queued == 0 && !raster_rebase::waiting(open) && open.enqueue(ViewerInput::Scroll { x, y });
+    if !sent && queued >= MAX_RAW_RETRIES {
+        return false;
+    }
+    {
+        let mut motion = open.raster_motion.borrow_mut();
+        let queue = motion.raw.get_or_insert_with(VecDeque::new);
+        if !sent {
+            queue.push_back((x, y));
+        }
+    }
+    open.text_position.borrow_mut().cancel();
+    if already_owned {
+        wake_or_stop(open);
+    } else {
+        cancel(open);
+    }
+    true
+}
+
 pub(super) fn push(open: &OpenWindow, x: f32, y: f32) -> bool {
+    if owns_raw(open) {
+        let scale = open.window.window().scale_factor();
+        return admit_raw(open, x * scale, y * scale);
+    }
     if let Some(queued) = raster_rebase::push(open, x, y, false) {
         return queued;
     }
@@ -111,12 +163,31 @@ pub(super) fn step(open: &OpenWindow) {
         raster_rebase::retry(open);
         return;
     }
-    if open.window.get_retained_raster() {
-        raster_presentation::step(open);
-        return;
-    }
     if open.closed.get() || open.window.get_tiled() || open.window.get_web_mode() {
         cancel(open);
+        return;
+    }
+    let raw = open
+        .raster_motion
+        .borrow()
+        .raw
+        .as_ref()
+        .map(|queue| queue.front().copied());
+    if let Some(next) = raw {
+        if let Some((x, y)) = next
+            && raw_context_ready(open)
+            && open.enqueue(ViewerInput::Scroll { x, y })
+            && let Some(queue) = &mut open.raster_motion.borrow_mut().raw
+        {
+            let _ = queue.pop_front();
+        }
+        if !active(open) {
+            open.raster_redraw.stop();
+        }
+        return;
+    }
+    if open.window.get_retained_raster() {
+        raster_presentation::step(open);
         return;
     }
     let delta = open
@@ -196,11 +267,11 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) {
         frame.image.as_ref().map_or(0, |info| info.surface.0),
     );
     let mut motion = open.raster_motion.borrow_mut();
-    // Input callbacks already stop movement before file/mode/resize changes.
     // A wheel cancelling an outstanding scrollbar request can itself advance
-    // the worker generation; its acknowledgement must not end the new gesture.
+    // the worker generation. Only a presented mode/surface change ends that gesture.
     if motion.context != Some(context) {
         motion.cancel();
+        motion.raw = None;
         open.raster_redraw.stop();
     }
     motion.context = Some(context);
@@ -226,12 +297,25 @@ pub(super) fn cancel(open: &OpenWindow) {
     wake_or_stop(open);
 }
 
+pub(super) fn resume_raw(open: &OpenWindow) {
+    if owns_raw(open) {
+        wake_or_stop(open);
+    }
+}
+
+fn active(open: &OpenWindow) -> bool {
+    if raster_rebase::waiting(open) {
+        return raster_rebase::needs_retry(open);
+    }
+    let motion = open.raster_motion.borrow();
+    if let Some(queue) = &motion.raw {
+        return !queue.is_empty() && raw_context_ready(open);
+    }
+    motion.active() || open.retained_raster.borrow().camera.active()
+}
+
 fn wake_or_stop(open: &OpenWindow) {
-    if !open.closed.get()
-        && (raster_rebase::needs_retry(open)
-            || open.raster_motion.borrow().active()
-            || open.retained_raster.borrow().camera.active())
-    {
+    if !open.closed.get() && active(open) {
         if !open.raster_redraw.running() {
             open.raster_redraw.restart();
         }

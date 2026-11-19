@@ -427,3 +427,96 @@ fn wrapping_checkbox_preserves_a_full_touch_target_and_keyboard_toggle() {
     ui::key(&test.window, Key::Space);
     assert_eq!(toggles.borrow().as_slice(), &[true, false]);
 }
+
+#[test]
+fn keyboard_fields_align_with_action_buttons_at_desktop_touch_and_large_fonts() {
+    let mut test = ui::TestUi::new();
+    test.resize(1640, 1280);
+    let window = test.window.clone_strong();
+    let keyboard = window.global::<KeyboardEditorView>();
+    keyboard.set_selected_label("Rename focused item".into());
+    keyboard.set_aliases(slint::ModelRc::new(slint::VecModel::from(vec![
+        "F2".into(),
+    ])));
+    keyboard.set_can_assign(true);
+    test.window.invoke_show_options();
+    test.window.set_options_topic_index(3);
+    let mut horizontal_cases = 0;
+    let mut stacked_cases = 0;
+    for (density, font) in [(0, 12), (1, 12), (0, 24), (1, 24), (0, 32)] {
+        test.window.invoke_apply_preferences(0, density);
+        test.window.invoke_apply_fonts("".into(), font, font);
+        test.draw();
+        if matches!((density, font), (0, 12) | (1, 12) | (0, 32)) {
+            render::snapshot(
+                &test,
+                &format!("keyboard-alignment-density-{density}-font-{font}"),
+            );
+        }
+        let picker = ui::popup_item(
+            &test.window,
+            "Shortcuts for selected command",
+            AccessibleRole::Combobox,
+        );
+        let capture = ui::popup_item(
+            &test.window,
+            "Press shortcut keys",
+            AccessibleRole::TextInput,
+        );
+        let remove = ui::popup_item(&test.window, "Remove", AccessibleRole::Button);
+        let clear = ui::popup_item(&test.window, "Clear", AccessibleRole::Button);
+        let assign = ui::popup_item(&test.window, "Assign", AccessibleRole::Button);
+        let height = capture.geometry().height();
+        for (label, item) in [
+            ("picker", &picker),
+            ("Remove", &remove),
+            ("Clear", &clear),
+            ("Assign", &assign),
+        ] {
+            assert!(
+                (item.geometry().height() - height).abs() <= 1.0,
+                "{label} height differs from shortcut edit at density {density}, font {font}"
+            );
+        }
+        let alias = bounds(&picker);
+        let edit = bounds(&capture);
+        let removing = bounds(&remove);
+        let clearing = bounds(&clear);
+        let assigning = bounds(&assign);
+        eprintln!(
+            "keyboard alignment density={density} font={font}: picker={alias:?} edit={edit:?} Remove={removing:?} Clear={clearing:?} Assign={assigning:?}"
+        );
+        let stacked = removing.1 >= alias.3;
+        if font == 12 {
+            assert!(
+                !stacked,
+                "ordinary desktop and touch fields stay beside their actions"
+            );
+        }
+        if stacked {
+            stacked_cases += 1;
+            assert!((alias.0 - removing.0).abs() <= 1.0);
+            assert!((alias.2 - removing.2).abs() <= 1.0);
+            assert!((alias.0 - edit.0).abs() <= 1.0);
+            assert!((alias.2 - edit.2).abs() <= 1.0);
+            assert!((edit.0 - clearing.0).abs() <= 1.0);
+            assert!((edit.2 - assigning.2).abs() <= 1.0);
+            assert!((clearing.1 - assigning.1).abs() <= 1.0);
+            assert!((alias.3 + 8.0 - removing.1).abs() <= 1.0);
+            assert!(removing.3 < edit.1);
+            assert!((edit.3 + 8.0 - clearing.1).abs() <= 1.0);
+            assert!((clearing.2 + 8.0 - assigning.0).abs() <= 1.0);
+        } else {
+            horizontal_cases += 1;
+            assert!((alias.1 - removing.1).abs() <= 1.0);
+            assert!((edit.1 - clearing.1).abs() <= 1.0);
+            assert!((edit.1 - assigning.1).abs() <= 1.0);
+            assert!((alias.0 - edit.0).abs() <= 1.0);
+            assert!((removing.0 - assigning.0).abs() <= 1.0);
+            assert!((removing.2 - assigning.2).abs() <= 1.0);
+            assert!((alias.2 - clearing.2).abs() <= 1.0);
+        }
+    }
+    assert!(horizontal_cases >= 2);
+    assert!(stacked_cases >= 1);
+}

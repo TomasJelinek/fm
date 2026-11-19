@@ -85,6 +85,7 @@ impl Backend {
     fn view(&self, generation: u64, targets: Vec<Target>) {
         self.shared.signal(|mailbox| {
             mailbox.next = Some(View {
+                thumbnailer_associations: Default::default(),
                 generation,
                 targets,
             });
@@ -483,6 +484,7 @@ fn a_rejected_delivery_retries_from_cache_after_the_view_changes_without_recaptu
         thread: Some(worker),
     };
     assert!(service.set_view(View {
+        thumbnailer_associations: Default::default(),
         generation: 1,
         targets: targets.clone()
     }));
@@ -491,6 +493,7 @@ fn a_rejected_delivery_retries_from_cache_after_the_view_changes_without_recaptu
     let rejected = if first.token == 1 { first } else { second };
     assert_eq!(rejected.edge, 256);
     assert!(service.set_view(View {
+        thumbnailer_associations: Default::default(),
         generation: 1,
         targets: vec![targets[0].clone()]
     }));
@@ -639,6 +642,7 @@ fn clearing_waits_for_old_decode_and_only_new_generation_may_repopulate() {
     backend.shared.signal(|mailbox| {
         mailbox.clear_cache = true;
         mailbox.next = Some(View {
+            thumbnailer_associations: Default::default(),
             generation: 2,
             targets: vec![target(2)],
         });
