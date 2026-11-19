@@ -15,7 +15,10 @@ fn the_default_fitting_is_not_written() {
     let bytes = encode_preferences(preferences(GlyphFitting::Fitted)).unwrap();
     let document: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(document.get("glyph_fitting").is_none());
-    assert_eq!(decode_preferences(&bytes).unwrap().glyph_fitting, GlyphFitting::Fitted);
+    assert_eq!(
+        decode_preferences(&bytes).unwrap().glyph_fitting,
+        GlyphFitting::Fitted
+    );
 }
 
 #[test]

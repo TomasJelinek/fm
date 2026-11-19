@@ -302,7 +302,8 @@ fn manifest_filename_uses_captured_folder_and_invalid_drafts_never_enqueue() {
         generation: 1,
         algorithm: ChecksumAlgorithm::Sha256,
         destination: destination.into(),
-        acknowledge: false, overwrite: false,
+        acknowledge: false,
+        overwrite: false,
     };
     assert!(!p.save_checksum_manifest(id, form("../outside.sha256"), &send));
     assert!(commands.borrow().is_empty());
@@ -333,7 +334,8 @@ fn partial_checksum_save_requires_exact_current_run_acknowledgement() {
         generation: 1,
         algorithm: ChecksumAlgorithm::Sha256,
         destination: text.to_string(),
-        acknowledge, overwrite: false,
+        acknowledge,
+        overwrite: false,
     };
     assert!(!p.save_checksum_manifest(id, form(false), &send));
     assert!(commands.borrow().is_empty());
@@ -447,9 +449,15 @@ fn an_existing_manifest_is_offered_for_replacement_instead_of_failing() {
         })),
     })));
     let s = &p.checksums.sessions[&id];
-    assert!(s.error.is_empty(), "an existing file is a question, not an error");
-    assert!(s.save_prompt.as_ref().is_some_and(|prompt| prompt.overwrite
-        && prompt.message.contains("chosen.sha256")));
+    assert!(
+        s.error.is_empty(),
+        "an existing file is a question, not an error"
+    );
+    assert!(
+        s.save_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.overwrite && prompt.message.contains("chosen.sha256"))
+    );
     p.dismiss_checksum_save_prompt(id);
     assert!(p.checksums.sessions[&id].save_prompt.is_none());
     assert_eq!(saves().len(), 1, "Cancel writes nothing");

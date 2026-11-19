@@ -229,7 +229,10 @@ impl GlyphFitting {
     pub const ALL: [Self; 3] = [Self::Fitted, Self::Snapped, Self::Subpixel];
 
     pub fn index(self) -> i32 {
-        Self::ALL.iter().position(|choice| *choice == self).unwrap_or(0) as i32
+        Self::ALL
+            .iter()
+            .position(|choice| *choice == self)
+            .unwrap_or(0) as i32
     }
 
     pub fn from_index(index: i32) -> Self {

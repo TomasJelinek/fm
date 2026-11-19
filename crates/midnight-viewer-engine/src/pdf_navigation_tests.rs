@@ -62,10 +62,9 @@ fn load_pdf_catalogs(service: &Service, application: &std::path::Path) {
             .iter()
             .any(|provider| provider.id == "midnight.viewer.pdf")
     );
-    let web = midnight_web_viewer_host::discover_with_diagnostics(application)
-        .unwrap()
-        .providers;
-    cache_explicit_catalogs(service, (runtime, images.into(), web.into()));
+    // Only the PDF image viewer is under test. Web discovery also validates the
+    // application executable itself, which a private test installation lacks.
+    cache_explicit_catalogs(service, (runtime, images.into(), Arc::from([])));
 }
 
 fn cache_explicit_catalogs(service: &Service, expected: crate::Catalogs) {

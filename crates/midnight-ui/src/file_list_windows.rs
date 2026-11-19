@@ -517,7 +517,10 @@ fn expand_tabs(text: &str) -> std::borrow::Cow<'_, str> {
 mod expand_tabs_tests {
     #[test]
     fn tabs_become_spaces_to_the_next_eight_column_stop() {
-        assert_eq!(super::expand_tabs("a\tbc\td\nxyz\t1"), "a       bc      d\nxyz     1");
+        assert_eq!(
+            super::expand_tabs("a\tbc\td\nxyz\t1"),
+            "a       bc      d\nxyz     1"
+        );
         assert_eq!(super::expand_tabs("12345678\tx"), "12345678        x");
         assert_eq!(super::expand_tabs("plain"), "plain");
     }

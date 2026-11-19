@@ -239,8 +239,11 @@ impl Controller {
         replace_existing: bool,
     ) {
         if let Some(predecessors) = self.capture_confirmation(id) {
-            self.send_confirmation(id, Message::Confirm(id, name, replace_existing, predecessors))
-                .await;
+            self.send_confirmation(
+                id,
+                Message::Confirm(id, name, replace_existing, predecessors),
+            )
+            .await;
         }
     }
 

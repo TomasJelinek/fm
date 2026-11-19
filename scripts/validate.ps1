@@ -107,9 +107,11 @@ foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerat
 $savedConsoleEncoding = $null
 
 function Restore-Environment {
+    # Remove added variables: SetEnvironmentVariable(name, $null) would leave them empty on
+    # PowerShell 7 with .NET 11, because PowerShell passes $null to a string parameter as ''.
     foreach ($variable in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
         if (-not $savedEnvironment.ContainsKey($variable)) {
-            [Environment]::SetEnvironmentVariable($variable, $null, 'Process')
+            Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
         }
     }
     foreach ($variable in $savedEnvironment.Keys) {
@@ -635,7 +637,9 @@ try {
         Variables = @{ Selection = @('midnight-plugin-host', 'lib', '--ignored') } }
     Add-Step @{ Id = 'viewer-engine-ignored'; Job = 'check'; Title = 'Native viewer engine integration'
         Needs = @('test-install', 'filesystem-native') + $allViewers; Body = $ignoredBody
-        Variables = @{ Selection = @('midnight-viewer-engine', 'lib', '--ignored', '--nocapture') } }
+        # As in CI: the native CEF Office/HTML and qualified-product Source acceptance tests are manual.
+        Variables = @{ Selection = @('midnight-viewer-engine', 'lib', '--ignored', '--nocapture',
+                '--skip', 'office_preview::native_tests', '--skip', 'tests::source_native_acceptance') } }
     Add-Step @{ Id = 'native-fs-ignored'; Job = 'check'; Title = 'Installed native filesystem browse and reads'
         Needs = @('test-install', 'filesystem-native'); Body = $ignoredBody
         Variables = @{ Selection = @('midnight-native-filesystem-host', 'test:native', '--ignored', '--test-threads=1') } }

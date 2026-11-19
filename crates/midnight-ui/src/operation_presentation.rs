@@ -137,7 +137,8 @@ fn present_replace(
     replace_name: Option<&(OperationId, String)>,
     preview: &OperationPreview,
 ) {
-    let Some((_, name)) = replace_name.filter(|(id, _)| preview.kind == MutationKind::CreateFile && *id == preview.id)
+    let Some((_, name)) = replace_name
+        .filter(|(id, _)| preview.kind == MutationKind::CreateFile && *id == preview.id)
     else {
         return;
     };

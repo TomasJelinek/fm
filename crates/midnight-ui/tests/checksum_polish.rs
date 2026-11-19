@@ -92,7 +92,9 @@ fn click_calculate(native: &slint::platform::software_renderer::MinimalSoftwareW
     modeless::click_item(native, buttons.last().unwrap(), "Calculate");
 }
 
-fn window(windows: &Rc<RefCell<Vec<Rc<slint::platform::software_renderer::MinimalSoftwareWindow>>>>) -> ChecksumWindow {
+fn window(
+    windows: &Rc<RefCell<Vec<Rc<slint::platform::software_renderer::MinimalSoftwareWindow>>>>,
+) -> ChecksumWindow {
     slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
     let window = ChecksumWindow::new().unwrap();
     window.invoke_apply_preferences(1, 0, "".into(), 13, 15);
@@ -164,7 +166,14 @@ fn an_existing_file_or_partial_results_are_asked_about_in_the_window() {
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
     draw(&native, 860, 620, "save-replace-prompt");
-    assert!(accessible_item(&native, AccessibleRole::Text, "checksums.sha256 already exists. Replace it?").is_some());
+    assert!(
+        accessible_item(
+            &native,
+            AccessibleRole::Text,
+            "checksums.sha256 already exists. Replace it?"
+        )
+        .is_some()
+    );
     click(&native, "Replace");
     click(&native, "Cancel");
     assert_eq!(&*answers.borrow(), &["confirm", "cancel"]);
@@ -178,7 +187,10 @@ fn calculate_sends_the_chosen_checksums_and_needs_at_least_one() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     window.on_calculate({
         let sent = sent.clone();
-        move |draft| sent.borrow_mut().push((draft.sha256, draft.md5, draft.recursive))
+        move |draft| {
+            sent.borrow_mut()
+                .push((draft.sha256, draft.md5, draft.recursive))
+        }
     });
     window.show().unwrap();
     let native = windows.borrow()[0].clone();

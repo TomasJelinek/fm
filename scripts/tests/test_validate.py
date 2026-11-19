@@ -503,6 +503,29 @@ class WindowsValidationTests(ValidationRunFixture, unittest.TestCase):
         self.assertEqual(re.findall(r"^\s*\d+\. (\S+) - ", result.stdout, re.MULTILINE),
                          ["filesystem-api", "decoder-native-tests"])
 
+    def test_a_powershell_session_gets_its_environment_back(self):
+        # Variables the run adds are removed afterwards, not left empty (on PowerShell 7 with
+        # .NET 11, SetEnvironmentVariable(name, $null) keeps an empty variable), and the
+        # session's own values are restored.
+        added = ("TMPDIR", "CARGO_NET_OFFLINE", "CARGO_REGISTRIES_MIDNIGHT_INDEX")
+        environment = {name: value for name, value in self.environment.items() if name.upper() not in added}
+        script = str(self.root / "scripts/validate.ps1").replace("'", "''")
+        result = subprocess.run(
+            [self.shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+             f"& '{script}' --only decoder-native-tests --offline; $code = $LASTEXITCODE; "
+             f"foreach ($name in @({', '.join(repr(name) for name in added)})) {{ "
+             "$value = [Environment]::GetEnvironmentVariable($name); "
+             "if ($null -eq $value) { \"$name absent\" } else { \"$name=[$value]\" } }; "
+             "\"TEMP=[$env:TEMP]\"; exit $code"],
+            cwd=self.owner.name, env=environment, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=180)
+        # The fixture's helper tests include a deliberate failure; restoring after it counts.
+        self.assertRegex(result.stdout, r"-- decoder-native-tests: (PASS|FAIL) in ", result.stderr)
+        lines = result.stdout.splitlines()
+        for name in added:
+            self.assertIn(f"{name} absent", lines, result.stdout)
+        self.assertIn(f"TEMP=[{environment['TEMP']}]", lines, result.stdout)
+
     def test_ci_steps_skipped_for_a_prerequisite_are_named_before_the_result(self):
         # Offline, the image viewer's pinned dav1d downloads are not cached in the fixture.
         arguments = ("--only", "viewer-image", "--worker-sdk", str(self.worker_sdk), "--offline")

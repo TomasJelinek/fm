@@ -501,7 +501,9 @@ fn a_new_empty_file_over_a_listed_file_asks_then_replaces() {
             sample: vec![],
         },
     ))));
-    p.confirm_operation("1", existing.clone(), &|_| panic!("an existing name asks first"));
+    p.confirm_operation("1", existing.clone(), &|_| {
+        panic!("an existing name asks first")
+    });
     assert!(p.operations.preview.is_some(), "the dialog stays open");
     assert_eq!(
         p.operations.replace_name,

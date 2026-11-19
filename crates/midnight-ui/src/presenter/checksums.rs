@@ -173,7 +173,11 @@ fn is_checksum_file(path: &Path) -> bool {
 /// The checksum file among the captured files: any selected one, else the lone cursor file.
 fn selected_checksum_file(files: &SelectedFiles) -> Option<PathBuf> {
     if files.selection.is_empty() {
-        return files.fallback.as_ref().filter(|p| is_checksum_file(p)).cloned();
+        return files
+            .fallback
+            .as_ref()
+            .filter(|p| is_checksum_file(p))
+            .cloned();
     }
     files
         .selection
