@@ -264,11 +264,26 @@ class LinuxValidationTests(ValidationRunFixture, unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("no prepared FFmpeg 9.0.2", result.stdout)
         self.assertIn("uses the bundle given with --worker-sdk", result.stdout)
+        # Neither a step that CI does not run nor another platform's step is a CI gap.
+        self.assertNotIn("WARNING:", result.stdout)
         result = self.run_validation(*arguments, "--strict")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("VALIDATION FAILED: --strict and 1 step(s) skipped", result.stdout)
         result = self.run_validation("--only", "powershell-tests-5", "--strict")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_ci_steps_skipped_for_a_prerequisite_are_named_before_the_result(self):
+        # Offline, the image viewer's pinned dav1d downloads are not cached in the fixture.
+        arguments = ("--only", "viewer-image", "--worker-sdk", str(self.worker_sdk), "--offline")
+        result = self.run_validation(*arguments)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        lines = result.stdout.splitlines()
+        warning = lines.index("WARNING: 1 CI step(s) SKIPPED for a missing prerequisite or needed step: "
+                              "viewer-image (use --strict to fail)")
+        self.assertEqual(lines[warning + 1], "VALIDATION PASSED")
+        result = self.run_validation(*arguments, "--strict")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("VALIDATION FAILED: --strict and 1 step(s) skipped", result.stdout)
 
     def test_missing_rust_or_python_stops_with_127(self):
         (self.bin / "rustc").unlink()
@@ -333,6 +348,19 @@ class WindowsValidationTests(ValidationRunFixture, unittest.TestCase):
         self.assertEqual(re.findall(r"^\s*\d+\. (\S+) - ", result.stdout, re.MULTILINE),
                          ["filesystem-api", "decoder-native-tests"])
 
+    def test_ci_steps_skipped_for_a_prerequisite_are_named_before_the_result(self):
+        # Offline, the image viewer's pinned dav1d downloads are not cached in the fixture.
+        arguments = ("--only", "viewer-image", "--worker-sdk", str(self.worker_sdk), "--offline")
+        result = self.run_validation(*arguments)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        lines = result.stdout.splitlines()
+        warning = lines.index("WARNING: 1 CI step(s) SKIPPED for a missing prerequisite or needed step: "
+                              "viewer-image (use --strict to fail)")
+        self.assertEqual(lines[warning + 1], "VALIDATION PASSED")
+        result = self.run_validation(*arguments, "--strict")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("VALIDATION FAILED: --strict and 1 step(s) skipped", result.stdout)
+
     def test_results_skips_strictness_and_the_private_installation(self):
         self.cargo_output.write_text(
             "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n",
@@ -363,6 +391,8 @@ class WindowsValidationTests(ValidationRunFixture, unittest.TestCase):
         result = self.run_validation(*arguments)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("VALIDATION PASSED", result.stdout)
+        # Neither a step that CI does not run nor another platform's step is a CI gap.
+        self.assertNotIn("WARNING:", result.stdout)
         result = self.run_validation(*arguments, "--strict")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("VALIDATION FAILED: --strict and 1 step(s) skipped", result.stdout)

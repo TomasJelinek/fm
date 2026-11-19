@@ -795,7 +795,7 @@ summary="$run_directory/summary.txt"
 {
     printf '\nValidation summary: linux (%s), profile %s, started %s\n' "$native_target" "$build_profile" "$(date -d "@$started" '+%Y-%m-%d %H:%M:%S')"
     printf '%-2s %-26s %-7s %8s %7s %6s %7s  %s\n' '#' Step Result Time Passed Failed Ignored 'CI job / reason'
-    passed_steps=0; failed_steps=0; skipped_steps=0; strict_skips=0
+    passed_steps=0; failed_steps=0; skipped_steps=0; strict_skips=0; ci_skips=; ci_skip_count=0
     tests_passed=0; tests_failed=0; tests_ignored=0
     number=0
     for id in "${step_ids[@]}"; do
@@ -807,7 +807,16 @@ summary="$run_directory/summary.txt"
             FAIL) failed_steps=$((failed_steps + 1)) ;;
             SKIPPED)
                 skipped_steps=$((skipped_steps + 1))
-                case "${step_kind[$id]}" in platform|supplied) ;; *) strict_skips=$((strict_skips + 1)) ;; esac
+                case "${step_kind[$id]}" in
+                    platform|supplied) ;;
+                    *)
+                        strict_skips=$((strict_skips + 1))
+                        if [[ ${step_job[$id]} != 'not in CI' ]]; then
+                            ci_skips+="${ci_skips:+, }$id"
+                            ci_skip_count=$((ci_skip_count + 1))
+                        fi
+                        ;;
+                esac
                 ;;
         esac
         passed=; failed=; ignored=
@@ -825,6 +834,11 @@ summary="$run_directory/summary.txt"
         "$tests_passed" "$tests_failed" "$tests_ignored"
     if [[ ${#selected[@]} -gt 0 ]]; then
         printf 'Only the selected steps and the steps they need ran (--only %s).\n' "$(IFS=,; printf '%s' "${selection[*]}")"
+    fi
+    # Without --strict such a run still passes; this line keeps the gap in CI coverage visible.
+    if [[ $ci_skip_count -gt 0 ]]; then
+        printf 'WARNING: %d CI step(s) SKIPPED for a missing prerequisite or needed step: %s (use --strict to fail)\n' \
+            "$ci_skip_count" "$ci_skips"
     fi
     if [[ $failed_steps -gt 0 ]]; then printf '%s\n' 'VALIDATION FAILED'
     elif [[ $strict == 1 && $strict_skips -gt 0 ]]; then printf 'VALIDATION FAILED: --strict and %d step(s) skipped\n' "$strict_skips"

@@ -951,13 +951,17 @@ public static class MidnightValidationProcess {
     $tally = @{ PASS = 0; FAIL = 0; SKIPPED = 0 }
     $tests = @{ Passed = 0; Failed = 0; Ignored = 0 }
     $strictFailures = 0
+    $ciSkips = New-Object Collections.Generic.List[string]
     $number = 0
     foreach ($step in $steps) {
         $number++
         $result = $results[$step.Id]
         if (-not $result) { continue }
         $tally[$result.Status]++
-        if ($result.Status -eq 'SKIPPED' -and $result.Kind -notin @('platform', 'supplied')) { $strictFailures++ }
+        if ($result.Status -eq 'SKIPPED' -and $result.Kind -notin @('platform', 'supplied')) {
+            $strictFailures++
+            if ($step.Job -ne 'not in CI') { $ciSkips.Add($step.Id) }
+        }
         $passed = ''; $failed = ''; $ignored = ''
         if ($result.Counts -and $result.Counts.Found) {
             $passed = $result.Counts.Passed; $failed = $result.Counts.Failed; $ignored = $result.Counts.Ignored
@@ -971,6 +975,11 @@ public static class MidnightValidationProcess {
     $lines.Add(('Steps: {0} passed, {1} failed, {2} skipped in {3}. Tests: {4} passed, {5} failed, {6} ignored.' -f
         $tally.PASS, $tally.FAIL, $tally.SKIPPED, (Format-Duration $elapsed), $tests.Passed, $tests.Failed, $tests.Ignored))
     if ($selected) { $lines.Add("Only the selected steps and the steps they need ran (--only $($selection -join ','))." ) }
+    # Without --strict such a run still passes; this line keeps the gap in CI coverage visible.
+    if ($ciSkips.Count) {
+        $lines.Add(('WARNING: {0} CI step(s) SKIPPED for a missing prerequisite or needed step: {1} (use --strict to fail)' -f
+            $ciSkips.Count, ($ciSkips -join ', ')))
+    }
     $exitCode = 0
     if ($tally.FAIL) { $exitCode = 1; $lines.Add('VALIDATION FAILED') }
     elseif ($strict -and $strictFailures) { $exitCode = 1; $lines.Add("VALIDATION FAILED: --strict and $strictFailures step(s) skipped") }
