@@ -23,7 +23,7 @@ export component ListHeader inherits HorizontalLayout {
     Text {
         text: root.title; color: Theme.strong-text; font-size: Theme.font-size;
         horizontal-stretch: 1; min-width: 0px; overflow: elide;
-        if root.hint != "": Tip { text: root.hint; }
+        Tip { text: root.hint; }
     }
     for index in root.action-indices : HintedActionButton {
         text: ["+", "−", "↑", "↓"][index];

@@ -38,8 +38,10 @@ export component Tip inherits Rectangle {
     in property <length> width-limit: 560px;
     // Pinned Slint 1.18.1 fixes a popup declared directly in a component to the
     // stock frame's own size. Under a conditional that frame follows TipBody, as
-    // it did for the conditional and per-row hints this replaces.
-    if true: Tooltip { TipBody { text: root.text; width-limit: root.width-limit; } }
+    // it did for the conditional and per-row hints this replaces. The condition
+    // is the hosts' own: they place Tip without one, and an empty text gets no
+    // hover area.
+    if root.text != "": Tooltip { TipBody { text: root.text; width-limit: root.width-limit; } }
 }
 
 // Keep the closed control compact while giving full labels a readable popup.
@@ -301,7 +303,7 @@ export component CompactPicker inherits Rectangle {
             clicked => { if !root.press-cancelled && self.pressed-context == root.context { focus.focus(); root.open(); } }
         }
     }
-    if root.hint != "": Tip { text: root.hint; }
+    Tip { text: root.hint; }
     popup := PopupWindow {
         private property <length> below: max(1px, TooltipPlacement.surface-height - root.absolute-position.y - root.height - 8px);
         private property <length> above: max(1px, root.absolute-position.y - 8px);
