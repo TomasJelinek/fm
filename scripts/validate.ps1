@@ -637,7 +637,9 @@ try {
         Variables = @{ Selection = @('midnight-plugin-host', 'lib', '--ignored') } }
     Add-Step @{ Id = 'viewer-engine-ignored'; Job = 'check'; Title = 'Native viewer engine integration'
         Needs = @('test-install', 'filesystem-native') + $allViewers; Body = $ignoredBody
-        Variables = @{ Selection = @('midnight-viewer-engine', 'lib', '--ignored', '--nocapture') } }
+        # As in CI: the native CEF Office/HTML and qualified-product Source acceptance tests are manual.
+        Variables = @{ Selection = @('midnight-viewer-engine', 'lib', '--ignored', '--nocapture',
+                '--skip', 'office_preview::native_tests', '--skip', 'tests::source_native_acceptance') } }
     Add-Step @{ Id = 'native-fs-ignored'; Job = 'check'; Title = 'Installed native filesystem browse and reads'
         Needs = @('test-install', 'filesystem-native'); Body = $ignoredBody
         Variables = @{ Selection = @('midnight-native-filesystem-host', 'test:native', '--ignored', '--test-threads=1') } }
