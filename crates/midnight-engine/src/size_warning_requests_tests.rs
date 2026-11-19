@@ -170,12 +170,13 @@ async fn snapshots_run_on_two_workers_and_full_queue_retires_ownership_off_calle
             .iter()
             .all(|thread| *thread != caller)
     );
-    // Session-long readers run on their own threads, not the blocking pool.
+    // Session-long readers run on the engine's resident workers (here the
+    // fixture's "reports-test" pool), not on Tokio's blocking pool.
     let names = probe.names.lock().unwrap();
     assert!(
-        names
-            .iter()
-            .all(|name| name.as_deref() == Some("midnight-report-reader")),
+        names.iter().all(|name| name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("reports-test-"))),
         "{names:?}"
     );
     drop(names);

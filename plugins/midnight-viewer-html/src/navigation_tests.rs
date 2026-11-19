@@ -19,7 +19,7 @@ fn binding(path: &str) -> Binding {
         document: 9,
         browser: 3,
         frame: "main-frame".into(),
-        url: format!("https://mewv-9.invalid/{path}"),
+        url: format!("{}{path}", crate::policy::DocumentPolicy::main_url_of(9)),
     }
 }
 
@@ -984,6 +984,10 @@ fn invalid_namespace_metadata_and_exhausted_attempt_ids_fail_closed() {
     assert!(!nav.begin(wrong, now));
     let mut wrong = intent("a.html");
     wrong.binding.url = "https://external.example/a.html".into();
+    assert!(!nav.begin(wrong, now));
+    // Same origin, but above the document directory.
+    let mut wrong = intent("a.html");
+    wrong.binding.url = "https://mewv-9.invalid/a.html".into();
     assert!(!nav.begin(wrong, now));
     let mut wrong = intent("a.html");
     wrong.binding.frame.clear();

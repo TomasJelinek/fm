@@ -1,13 +1,13 @@
-// The engine sources included below name these three from the crate root, which
-// `integration.rs` provides by re-exporting them from this module.
+use midnight_engine::providers;
+
 #[path = "../src/copy_nested_retirement.rs"]
 #[allow(dead_code)]
-pub(crate) mod copy_nested_retirement;
+mod copy_nested_retirement;
 
 // Standalone fixtures omit other Engine users of the checked ownership re-exports.
 #[path = "../src/retirement.rs"]
 #[allow(dead_code, unused_imports)]
-pub(crate) mod retirement;
+mod retirement;
 
 #[path = "../src/checksum.rs"]
 #[allow(dead_code)] // This fixture does not include the tree-capture admission caller.

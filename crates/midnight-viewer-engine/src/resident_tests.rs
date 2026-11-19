@@ -2,7 +2,13 @@
 use super::*;
 use midnight_core::{DirectoryIndex, Entry, EntryId, EntryKind, GeneratedTextSource};
 use midnight_work_budget::resident::Owner;
-use std::{io, path::PathBuf, sync::Condvar, thread::ThreadId, time::Duration};
+use std::{
+    io,
+    path::PathBuf,
+    sync::{Condvar, mpsc},
+    thread::ThreadId,
+    time::Duration,
+};
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -149,6 +155,59 @@ fn skipped_queued_window_drops_source_on_resident_before_returning_window_credit
         );
     });
     assert_eq!(service.windows.load(Ordering::Acquire), 0);
+}
+
+/// A window job that the resident pool drops without running (sealed while it waited
+/// behind busy workers) returns its admitted slot and fails the opening. Opening after
+/// the transient runtime is gone is outside the Service contract (see below).
+#[test]
+fn window_slot_and_opening_fail_cleanly_when_the_resident_pool_drops_the_worker() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (owner, spawner) = Owner::start("viewer-dropped-worker-test", RESIDENT_WORKERS).unwrap();
+    let (gate, _threads) = hold_all(&spawner, runtime.handle());
+    let service = Service::with_native_capture(
+        runtime.handle().clone(),
+        spawner,
+        Arc::new(|_, _| panic!("a dropped worker captures nothing")),
+    );
+    let (dropped, _drops) = mpsc::channel();
+    let session = service
+        .open(
+            launch(&service, dropped),
+            appearance(),
+            ViewerGeometry {
+                width: 200,
+                height: 100,
+                scale: 1.0,
+            },
+        )
+        .unwrap();
+    assert_eq!(service.windows.load(Ordering::Acquire), 1);
+    owner.seal();
+    drop(gate);
+    let deadline = std::time::Instant::now() + WAIT;
+    while service.windows.load(Ordering::Acquire) != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the admitted window slot is returned"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        session.mailbox.take_open_result(),
+        Some(Err("Viewer backend is unavailable.".into()))
+    );
+    runtime.block_on(async {
+        tokio::time::timeout(WAIT, owner.shutdown(runtime.handle()))
+            .await
+            .unwrap()
+            .unwrap();
+    });
 }
 
 #[test]

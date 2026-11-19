@@ -176,7 +176,9 @@ pub(crate) fn install(
         let sender = send.clone();
         let browse = move || {
             if let Some(window) = weak.upgrade() {
-                if window.get_options_topic_index() != 10 {
+                if window.get_options_topic_index()
+                    != crate::presenter::settings_picker::OPTIONS_TOPIC_COMPARATORS
+                {
                     return;
                 }
                 let owner = crate::picker_window::owner(&window);

@@ -120,7 +120,7 @@ fn multiline_literals_still_span_lines() {
 }
 
 #[test]
-fn apostrophes_in_json_comments_and_yaml_plain_scalars_stay_plain() {
+fn apostrophes_in_json_comments_and_yaml_plain_scalars_open_no_quotes() {
     let styled = lex(
         "tsconfig.json",
         "{\n  // don't do this\n  \"strict\": true\n}\n",
@@ -128,9 +128,19 @@ fn apostrophes_in_json_comments_and_yaml_plain_scalars_stay_plain() {
     assert_eq!(strings(&styled), ["\"strict\""], "{styled:?}");
     assert!(has(&styled, "true", STYLE_KEYWORD));
 
+    // The YAML lexer colours a plain value as one string span, so the apostrophe
+    // stays inside "Don't fail" and opens no quote: the next keys and the quoted
+    // scalars are lexed on their own.
     let code = "name: Don't fail\nquoted: 'it''s'\nlist: ['a', \"b\"]\nenabled: true\n";
     let styled = lex("x.yaml", code);
-    assert_eq!(strings(&styled), ["'it''s'", "'a'", "\"b\""], "{styled:?}");
+    assert_eq!(
+        strings(&styled),
+        ["Don't fail", "'it''s'", "'a'", "\"b\""],
+        "{styled:?}"
+    );
+    for key in ["quoted", "list", "enabled"] {
+        assert!(has(&styled, key, STYLE_TYPE), "{key}: {styled:?}");
+    }
     assert!(has(&styled, "true", STYLE_KEYWORD));
 }
 

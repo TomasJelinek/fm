@@ -155,46 +155,14 @@ fn capture_uses_visible_order_and_skips_directories_and_filtered_files() {
 }
 
 #[test]
-fn window_slot_and_opening_fail_cleanly_when_the_runtime_drops_the_worker() {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .unwrap();
-    let service = Service::with_native_capture(
-        runtime.handle().clone(),
-        Arc::new(|_, _| panic!("a dropped worker captures nothing")),
-    );
-    runtime.shutdown_background();
-    let root = tempfile::tempdir().unwrap();
-    let session = service
-        .open(
-            launch(root.path(), &["file.txt"], false),
-            appearance(),
-            ViewerGeometry {
-                width: 200,
-                height: 100,
-                scale: 1.0,
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        service.windows.load(Ordering::Acquire),
-        0,
-        "the admitted window slot is returned"
-    );
-    assert_eq!(
-        session.mailbox.take_open_result(),
-        Some(Err("Viewer backend is unavailable.".into()))
-    );
-}
-
-#[test]
 fn transient_catalog_failure_lets_the_same_image_policy_configure_again() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let service = Service::new(runtime.handle().clone());
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = Service::new(runtime.handle().clone(), resident);
     let policy = crate::image_startup::Policy {
         disabled: Arc::from([]),
         associations: Arc::default(),

@@ -9,13 +9,6 @@
 // as when every file was a separate test crate, so their types never mix.
 #![allow(clippy::duplicate_mod)]
 
-// `checksum_manifest_verification` compiles engine sources that refer to these
-// modules as `crate::...`, as they do inside the engine itself.
-#[allow(unused_imports)]
-pub(crate) use checksum_manifest_verification::{copy_nested_retirement, retirement};
-#[allow(unused_imports)]
-pub(crate) use midnight_engine::providers;
-
 mod archive_selection;
 mod checksum_actor;
 mod checksum_manifest_verification;

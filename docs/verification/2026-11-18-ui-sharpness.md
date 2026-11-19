@@ -196,9 +196,9 @@ machine that produced them, not in the repository.
 ## Tests of the icon change and the text fitting
 
 Docker build image, Linux, debug profile, headless software renderer, on the final
-code. `cargo test --locked --no-fail-fast` for the listed packages with `--lib
---bins --tests` (examples were not built), and the vendored package with the command
-in the vendor notes:
+code based on main `544b48db`. `cargo test --locked --no-fail-fast` for the listed
+packages with `--lib --bins --tests` (examples were not built), and the vendored
+package with the command in the vendor notes:
 
 | Target | Passed | Failed | Ignored |
 | --- | ---: | ---: | ---: |
@@ -223,8 +223,9 @@ No failure is in code this change touches:
 - The 19 failures of `midnight-ui` and `midnight-viewer-ui` are the same 19 tests that
   fail on main `544b48db` in this environment
   ([list](2026-11-18-slint-compile-time.md)).
-- `midnight-engine` had no baseline: neither of its test targets compiled on main.
-  After the fixture repairs named in [active work](../ACTIVE_WORK.md), 19 of its 20
+- `midnight-engine` had no baseline: neither of its test targets compiled on main
+  `544b48db`. With local fixture repairs, which main's merge repair has since
+  replaced, 19 of its 20
   library failures are in `copy_operations` (eight stop with "requires a supported
   local lookup domain", the others are timeouts and assertions of the copy scheduler
   and its peer-refusal tests) and one, in `size_warning_requests`, asserts a worker
@@ -243,6 +244,35 @@ ranking, the probe budget, links out of the roots) and parse XSETTINGS blobs. Th
 tests cover the cache, the edges read from the window, and a left pane of rows beside
 a right pane of tiles whose parent icons are 20 and 96 px bitmaps in boxes of exactly
 that size.
+
+### After merging main `2e6ee4ff`
+
+Main gained the merge repair ([active work](../ACTIVE_WORK.md)) while this change was
+made. Merged with it, the same commands give:
+
+| Target | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| `midnight-core` library | 99 | 0 | 0 |
+| `midnight-core` integration | 151 | 0 | 2 |
+| `midnight-engine` library | 1,670 | 19 | 16 |
+| `midnight-engine` integration | 417 | 0 | 7 |
+| `midnight-platform-linux` library | 308 | 37 | 33 |
+| `midnight-platform-linux` integration | 39 | 0 | 0 |
+| `midnight-ui` library | 1,232 | 0 | 2 |
+| `midnight-ui` integration | 765 | 0 | 1 |
+| `midnight-ui-input` library and `placement` | 32 | 0 | 0 |
+| `midnight-viewer-ui` library | 170 | 0 | 0 |
+| `midnight-viewer-ui` integration | 27 | 0 | 0 |
+| `midnight-compare-ui` library | 25 | 0 | 0 |
+| `midnight-compare-ui` integration | 15 | 0 | 0 |
+| `midnight-explorer` | 123 | 0 | 17 |
+
+The remaining failures are the same 19 `copy_operations` tests of the engine and 37
+transfer tests of the Linux provider as before the merge. Main `2e6ee4ff` alone was
+not run in this environment, so that they fail there too follows from their messages
+and their modules, not from a baseline run. The vendored renderer is untouched by the
+merge. The application builds, and `cargo clippy --locked --lib --bins --tests -- -D
+clippy::all` passes for the five packages named below.
 
 Not verified: Windows (nothing was built or run there); a Wayland session; a
 fractional scale factor; any font other than DejaVu Sans in the application itself;

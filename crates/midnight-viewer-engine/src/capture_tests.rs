@@ -306,7 +306,10 @@ fn backspace_after_opening_captures_only_neighbors_of_a_large_folder() {
         .enable_all()
         .build()
         .unwrap();
-    let service = crate::Service::with_native_capture(runtime.handle().clone(), source);
+    let (_resident_owner, resident) =
+        midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
+            .unwrap();
+    let service = crate::Service::with_native_capture(runtime.handle().clone(), resident, source);
     *service.runtime.lock().unwrap() = Some(Arc::new(
         midnight_plugin_host::Runtime::discover(root.path()).unwrap(),
     ));

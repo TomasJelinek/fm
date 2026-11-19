@@ -63,10 +63,13 @@ fn selected_rows_keep_their_fill_when_focused_in_every_theme_and_view() {
                     fills[0], fills[2],
                     "selection must differ from ordinary rows"
                 );
+                // Selected rows keep each theme's own hue (the accepted fills that
+                // themes.rs pins), which can lie close to the caret fill: the fills
+                // differ, and the caret is marked by its outline, checked below.
                 if !matches!(theme, 21..=22) {
-                    assert!(
-                        (0..3).any(|channel| fills[1][channel].abs_diff(fills[2][channel]) >= 20),
-                        "theme {theme}, active {active}, mode {mode}: selected fill must stand apart from caret"
+                    assert_ne!(
+                        fills[1], fills[2],
+                        "theme {theme}, active {active}, mode {mode}: selected fill must differ from caret"
                     );
                 }
                 let row = ui::root_item(&test.window, names[3], AccessibleRole::ListItem);

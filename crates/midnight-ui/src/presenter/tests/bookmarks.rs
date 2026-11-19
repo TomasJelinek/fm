@@ -294,6 +294,9 @@ fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
             comparators: midnight_core::FileComparatorSnapshot::default(),
         }))),
         &|command| {
+            if startup_metadata(&command) {
+                return true;
+            }
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
             };

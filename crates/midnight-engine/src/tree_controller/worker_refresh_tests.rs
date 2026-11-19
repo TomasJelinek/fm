@@ -330,16 +330,15 @@ impl StorageService for Unobserved {
     }
 }
 
-/// A production watch controller (15 s polling); nobody reads its hints. The
-/// returned owner keeps the controller's resident worker running.
+/// A production watch controller (15 s polling); nobody reads its hints. Keep the
+/// returned resident pool owner alive while the controller runs: dropping it seals
+/// the pool that runs the watch worker.
 fn watch_controller() -> (
+    midnight_work_budget::resident::Owner,
     crate::watch::Controller,
     tokio::task::JoinSet<()>,
     mpsc::Receiver<Event>,
-    midnight_work_budget::resident::Owner,
 ) {
-    let (resident, spawner) =
-        midnight_work_budget::resident::Owner::start("tree-refresh-test", 1).unwrap();
     let domain =
         crate::retirement::RetirementDomain::try_start(crate::watch::RETIREMENT_CAPACITY, 0)
             .unwrap();
@@ -348,8 +347,10 @@ fn watch_controller() -> (
     };
     let (sender, hints) = mpsc::channel(8);
     let mut tasks = tokio::task::JoinSet::new();
+    let (owner, resident) =
+        midnight_work_budget::resident::Owner::start("tree-refresh-watch-test", 2).unwrap();
     let watch = crate::watch::Controller::new(
-        &spawner,
+        &resident,
         retirement,
         crate::task_lifetime::TaskLifetime::testing(()),
         Arc::new(Unobserved),
@@ -360,7 +361,7 @@ fn watch_controller() -> (
         },
         &mut tasks,
     );
-    (watch, tasks, hints, resident)
+    (owner, watch, tasks, hints)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -380,7 +381,7 @@ async fn unchanged_refresh_loaded_publishes_nothing_and_settles_the_watch_withou
         tree_event(&mut fixture.receiver),
         TreeEvent::Refreshed { result: Ok(()), .. }
     ));
-    let (watch, mut tasks, _hints, _resident) = watch_controller();
+    let (_owner, watch, mut tasks, _hints) = watch_controller();
     let handle = watch.handle();
     fixture.worker.watch = Some(handle.clone());
     // The exact Commit installs watch authority for the acknowledged view.

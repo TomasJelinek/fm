@@ -12,7 +12,10 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_ui::{ComparatorOptionsDraft, ComparatorOptionsView};
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, platform::Key};
+use slint::{
+    ComponentHandle, LogicalPosition, Model, ModelRc, SharedString, VecModel,
+    platform::{Key, WindowEvent},
+};
 use std::{cell::RefCell, rc::Rc};
 
 fn strings(values: &[&str]) -> ModelRc<SharedString> {
@@ -153,6 +156,43 @@ fn inside_clips(test: &ui::TestUi, control: &ItemRc) {
             );
         }
         parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+}
+
+/// The dialog footer keeps its actions at full size and scrolls them when they do not
+/// fit beside Cancel (the spec asks for a reachable footer whose touch targets never
+/// shrink), so wider system fonts can leave OK partly scrolled out at 320×200. Bring an
+/// action that a scroll area clips into view with horizontal wheel input, as a user can.
+fn reveal_action(test: &mut ui::TestUi, action: &ItemRc) {
+    for _ in 0..8 {
+        let area = bounds(action);
+        let mut scroll = None;
+        let mut parent = action.parent_item(ParentItemTraversalMode::StopAtPopups);
+        while let Some(item) = parent {
+            if item.downcast::<Flickable>().is_some() {
+                let clip = bounds(&item);
+                if area.2 > clip.2 + 1.0 {
+                    scroll = Some((clip, clip.2 - area.2));
+                } else if area.0 < clip.0 - 1.0 {
+                    scroll = Some((clip, clip.0 - area.0));
+                }
+                if scroll.is_some() {
+                    break;
+                }
+            }
+            parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+        }
+        let Some((clip, delta)) = scroll else {
+            return;
+        };
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerScrolled {
+                position: LogicalPosition::new((clip.0 + clip.2) / 2.0, (clip.1 + clip.3) / 2.0),
+                delta_x: delta,
+                delta_y: 0.0,
+            });
+        settle(test);
     }
 }
 
@@ -623,10 +663,9 @@ fn long_values_wrap_and_error_fields_remain_reachable_across_sizes_fonts_and_the
             ),
         );
         for label in ["OK", "Cancel"] {
-            inside_clips(
-                &test,
-                &ui::popup_item(&test.window, label, AccessibleRole::Button),
-            );
+            let action = ui::popup_item(&test.window, label, AccessibleRole::Button);
+            reveal_action(&mut test, &action);
+            inside_clips(&test, &action);
         }
     }
 }

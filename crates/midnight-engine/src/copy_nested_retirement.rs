@@ -1,6 +1,6 @@
 //! Copy-local retirement acknowledgement for explicitly qualified owners.
 #[cfg(test)]
-use crate::retirement::WorkerOwned;
+use super::retirement::WorkerOwned;
 use midnight_core::{ArchiveMount, FsError};
 use std::{
     cell::RefCell,
@@ -162,7 +162,7 @@ pub(crate) fn give_up_archive(mount: Arc<dyn ArchiveMount>) {
 /// Gives up only this mount reference (`MountedFilesystem::release_quarantined`), for
 /// an owner whose release cannot run in an already quarantined context or after the
 /// failed release of a resource it guards. Its unwind is contained like a step's.
-pub(crate) fn give_up_mount(mount: Arc<dyn crate::providers::MountedFilesystem>) {
+pub(crate) fn give_up_mount(mount: Arc<dyn super::providers::MountedFilesystem>) {
     contain(&current().unwrap_or_default(), || {
         mount.release_quarantined()
     });
@@ -177,8 +177,8 @@ fn contain(context: &Context, operation: impl FnOnce()) {
     }
 }
 
-pub(crate) fn provider_error() -> crate::providers::ProviderError {
-    crate::providers::ProviderError::Failed(
+pub(crate) fn provider_error() -> super::providers::ProviderError {
+    super::providers::ProviderError::Failed(
         "Provider retirement is unconfirmed; Copy authority remains retained.".into(),
     )
 }
@@ -193,8 +193,8 @@ pub(crate) fn fs_error(error: impl std::fmt::Display) -> FsError {
 /// Catches an individual explicit bridge, with its remaining owners armed by
 /// the concrete caller. This does not qualify an arbitrary payload's destructor.
 pub(crate) fn provider_step(
-    operation: impl FnOnce() -> Result<(), crate::providers::ProviderError>,
-) -> Result<(), crate::providers::ProviderError> {
+    operation: impl FnOnce() -> Result<(), super::providers::ProviderError>,
+) -> Result<(), super::providers::ProviderError> {
     let context = current().unwrap_or_default();
     let mut result = Ok(());
     if !context.with(|| checked_step(|| result = operation())) && result.is_ok() {
@@ -226,9 +226,9 @@ pub(crate) fn content_step(
 /// everything else. Its unwind is contained like the step's.
 pub(crate) fn provider_release<T>(
     owner: T,
-    release: impl FnOnce(T) -> Result<(), crate::providers::ProviderError>,
+    release: impl FnOnce(T) -> Result<(), super::providers::ProviderError>,
     quarantined: impl FnOnce(T),
-) -> Result<(), crate::providers::ProviderError> {
+) -> Result<(), super::providers::ProviderError> {
     let mut owner = Some(owner);
     let result = provider_step(|| owner.take().map_or(Ok(()), release));
     if let Some(owner) = owner {
@@ -250,15 +250,15 @@ pub(crate) fn content_release<T>(
     result
 }
 pub(crate) fn release_provider(
-    owner: Arc<dyn crate::providers::FilesystemProvider>,
-) -> Result<(), crate::providers::ProviderError> {
+    owner: Arc<dyn super::providers::FilesystemProvider>,
+) -> Result<(), super::providers::ProviderError> {
     provider_step(|| owner.release_on_worker())
 }
 /// A step skipped because the context is already quarantined gives the mount up
 /// instead of forgetting it with its archive references.
 pub(crate) fn release_mount(
-    owner: Arc<dyn crate::providers::MountedFilesystem>,
-) -> Result<(), crate::providers::ProviderError> {
+    owner: Arc<dyn super::providers::MountedFilesystem>,
+) -> Result<(), super::providers::ProviderError> {
     provider_release(
         owner,
         |owner| owner.release_on_worker(),

@@ -574,14 +574,12 @@ impl Worker {
         let viewport = self.page_viewport(anchor, backwards);
         // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN admission_viewport
         #[cfg(test)]
-        let observation_viewport = position::observation::enabled(self).then(|| {
-            (
-                viewport.source_anchor,
-                viewport.backwards,
-                viewport.max_bytes,
-                viewport.max_lines,
-            )
-        });
+        let observation_viewport = position::observation::enabled(self).then_some((
+            viewport.source_anchor,
+            viewport.backwards,
+            viewport.max_bytes,
+            viewport.max_lines,
+        ));
         // SOURCE_COMPLETION_OBSERVATION_V2_END admission_viewport
         self.continuation = None;
         let Some(session) = &self.session else {
@@ -1173,35 +1171,35 @@ impl Worker {
                     }
                     // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN terminal_page_decision
                     #[cfg(test)]
-                    if position::observation::enabled(self) {
-                        if let Some((pending, staged_id, terminal_completed)) = observation_page {
-                            let page_match = staged_id.map(|page_id| page_id == id);
-                            let reason = if !terminal_completed {
-                                1
-                            } else if pending && staged_id.is_none() {
-                                2
-                            } else if pending && page_match == Some(false) {
-                                3
-                            } else if pending && !completed {
-                                4
-                            } else {
-                                0
-                            };
-                            position::observation::record(
-                                self,
-                                7,
-                                reason,
-                                Some(id),
-                                position::observation::Extra {
-                                    page_match,
-                                    page_applied: (terminal_completed
-                                        && pending
-                                        && page_match == Some(true))
-                                    .then_some(completed),
-                                    ..position::observation::Extra::event(&event)
-                                },
-                            );
-                        }
+                    if position::observation::enabled(self)
+                        && let Some((pending, staged_id, terminal_completed)) = observation_page
+                    {
+                        let page_match = staged_id.map(|page_id| page_id == id);
+                        let reason = if !terminal_completed {
+                            1
+                        } else if pending && staged_id.is_none() {
+                            2
+                        } else if pending && page_match == Some(false) {
+                            3
+                        } else if pending && !completed {
+                            4
+                        } else {
+                            0
+                        };
+                        position::observation::record(
+                            self,
+                            7,
+                            reason,
+                            Some(id),
+                            position::observation::Extra {
+                                page_match,
+                                page_applied: (terminal_completed
+                                    && pending
+                                    && page_match == Some(true))
+                                .then_some(completed),
+                                ..position::observation::Extra::event(&event)
+                            },
+                        );
                     }
                     // SOURCE_COMPLETION_OBSERVATION_V2_END terminal_page_decision
                     if completed && self.positions.has_pending() {

@@ -140,7 +140,9 @@ impl Navigation {
             session,
             document,
             source,
-            root_url: format!("https://mewv-{document}.invalid/"),
+            // The captured document's own URL, below its origin's root, so a binding
+            // above the document directory is not admitted (policy.rs).
+            root_url: crate::policy::DocumentPolicy::main_url_of(document),
             last_attempt: 0,
             current: None,
             latest: None,

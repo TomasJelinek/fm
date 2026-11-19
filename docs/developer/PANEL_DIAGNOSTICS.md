@@ -31,7 +31,7 @@ saved records. Cancellation alone is not an issue, but cannot erase an actual
 concurrent failure.
 
 `Command::OpenSizeWarnings` carries the retained report, request ID and cancellation.
-Two dedicated `midnight-report-reader` threads (normally outside Tokio's blocking
+Two report readers on the engine's resident worker threads (outside Tokio's blocking
 pool) and eight pending slots bound report snapshot and preview requests. The
 matching `Event::SizeWarningsReady` returns an immutable `GeneratedTextSource`.
 Stale results, queue rejection and shutdown retire ownership on backend workers. No
@@ -78,7 +78,7 @@ exhaustion.
 
 A flat folder registers again with a refresh; a tree batch with a later scope
 update, at most once per poll interval. A pane's watch worker that panics restarts
-in place on its own thread: at once the first time, afterwards no sooner than a
+in place on its resident worker thread: at once the first time, afterwards no sooner than a
 minute after its previous restart, reporting `Restarting` meanwhile. A registration
 that panicked twice in a row is skipped until another one is made, so its view is
 only polled and reports `PollingOnly`. Panics on platform notification threads,

@@ -19,6 +19,66 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Merge repair — 19 November 2026
+
+The deep code review (`3ebc2001`) and the viewer, comparator and filesystem
+integration work (`ecf9374e`) were developed in parallel from `3a27eeb2` and merged
+in `cf8138e4`; `48db5ec6`, `45ede585` and `544b48db` followed. That merge did not
+build the test targets of the engine, viewer engine, comparator, plugin host and
+explorer, failed workspace Clippy, and failed several comparator and UI tests on
+every run. Twenty-seven repair commits on `544b48db` resolve these semantic
+conflicts; each commit message names the cause and the side whose intent it follows.
+
+- Engine: production files included into the single `integration` test binary reach
+  their modules through `super::` paths; library tests use the merged comparator
+  snapshot and resident-worker APIs; the actor-thread module that the resident
+  worker pool replaced is removed, and the engine contracts describe the resident
+  workers.
+- Viewers and comparator: viewer-engine tests start resident pools and use
+  shared-pixel document rasters; the comparator test builds, configuration tests
+  (now linked into core's integration binary as `file_comparators::`) and fixture
+  paths are fixed; a picker closed by an Options page change is published at once,
+  also when the change is deferred (a product fix); tests that met the asynchronous
+  font catalog frame now wait for it or hold the scan.
+- UI, plugin host and explorer: tests follow the merged accessible names, restored
+  theme fills, optional-source status, retained viewer windows, web policy
+  presentation and picker callbacks; HTML captured navigation below the synthetic
+  document root is admitted (a product fix); queued change handlers settle before
+  the viewer mode list opens.
+- Separate workspaces: the source viewer's tests follow the merged lookahead and
+  YAML lexer, and the archive reader keeps its zero relative seek check under strict
+  Clippy.
+
+The two TEST-03 timeouts were races inside the tests and are fixed on top of the
+repair ([test timeout races](verification/2026-11-18-test-timeout-races.md)).
+
+Validation of the integrated tip (orchestrator logs `vrepair-*` in the repair
+worktree's `_build/qa`): Windows: `cargo fmt -p <package> -- --check` for every
+workspace package and workspace Clippy with `-D warnings` reported nothing, and
+`cargo test --workspace --no-fail-fast` gave 6,780 passed / 0 failed / 143 ignored
+in 92 groups. Linux (WSL Ubuntu 24.04): workspace Clippy with `-D warnings` reported
+nothing, and the workspace tests gave 6,692 passed / 0 failed / 133 ignored in 92
+groups. The separate workspaces' CI commands passed at the repair's `e0ce73fe` (logs
+`repair-*-separate*`): on Windows the API, plugin SDK consumer, viewer conformance,
+worker package, PDF, archive and filesystem plugin workspaces and the HTML viewer
+without its native CEF feature; on Linux the API, plugin SDK consumer, viewer
+conformance, PDF, archive and filesystem plugin workspaces (the HTML viewer's
+dependencies cannot be resolved offline there).
+
+Not established:
+
+- The HTML viewer's native CEF code, where both sides changed `native.rs`,
+  `handlers.rs` and `resources.rs`, has not been compiled: no CEF SDK or `cef`
+  crates are cached on this machine.
+- The image decoder, image viewer, image thumbnail and video thumbnail workspaces
+  got formatting checks only, because their native inputs are not available offline;
+  their trees equal the review's validated `3ebc2001`.
+- No GitHub-hosted CI run.
+- On this machine Microsoft Defender for Endpoint data loss prevention moves the
+  NTFS ChangeTime of newly written files of some types, which makes live-validated
+  captures report a change; a few comparator tests fail intermittently here for that
+  reason (COMPARE-02).
+
 ### Slint compile time and UI sharpness — 18 November 2026
 
 On main `544b48db`, Linux only. Rebuilding `midnight-ui-bindings` after a `.slint`
@@ -61,15 +121,13 @@ UI test results equal main's in the same Docker environment: 19 tests of
 in the compile-time record and were not investigated. Not run: Windows, the full
 workspace gates, release builds.
 
-The icon change needed the engine's test targets, neither of which compiled on main:
-two unit-test fixtures named an older interface (`preferences/tests.rs`,
-`tree_controller/worker_refresh_tests.rs`), and the single integration binary could
-not resolve the engine sources that `checksum_manifest_verification.rs` includes. All
-three were repaired with fixture-only edits. With them the engine's integration
-target passes and its unit tests fail only in fixtures that need a qualified local
-filesystem, as do tests of `midnight-platform-linux`; `midnight-core`'s integration
-guard reports `tests/file_comparators.rs` as undeclared on main. The results are in
-the [sharpness record](verification/2026-11-18-ui-sharpness.md).
+The icon and text changes were developed and measured on `544b48db`, before the
+merge repair above: their records name the tests that failed there, which the repair
+has since addressed, and the engine's test targets were made to compile locally to
+run the icon worker's tests. The branch was then merged with the repaired main, whose
+own fixes of those targets replace the local ones; what was run again after that
+merge is at the end of the
+[sharpness record](verification/2026-11-18-ui-sharpness.md).
 
 ### Deep code review — 18 November 2026
 
@@ -251,9 +309,20 @@ on Windows and the workspace tests gave 6,156 passed / 0 failed / 127 ignored in
 groups (logs `vfinal-win-*`); on Linux workspace Clippy reported no warnings, and in
 a third run the workspace tests gave 6,004 passed / 0 failed / 128
 ignored in 85 groups (log `vfinal-linux-test3.log`). The two earlier Linux runs of
-`ac4c2e87` each had one timeout, a different test each time: the first while Windows
-Clippy and the Windows tests ran beside it, the second after the Windows suite had
-finished; both tests passed five isolated runs and the other full runs (TEST-03).
+`ac4c2e87` each had one timeout, a different test each time; both are fixed in the
+tests only (TEST-03, [test timeout
+races](verification/2026-11-18-test-timeout-races.md)).
+`navigation::blocked_left_listing_does_not_prevent_right_completion` was a race
+inside the test: it waited for its listing to reach the provider without reading
+its 8-slot event channel, which the Engine's unsolicited startup and navigation
+events could fill before the listing sent its start event. The timeout of
+`operations_native_ui::real_copy_conflict_shows_both_entries_in_the_native_locale`
+is attributed, by its mechanism and an injected-delay reproduction with the
+identical message, to a click on a row before the Engine's saved preferences
+restored the tabs, which replaced the panel, so F5 found no target; no trace of the
+historical run exists. The engine tests now read events while they wait, the
+real-Engine UI harnesses wait for the restored tabs, and the operations harness
+checks the cursor after each click.
 
 Not established by this checkpoint:
 
@@ -290,8 +359,8 @@ UI-PERF-01 (idle wakeups); PERF-04 (unmeasured hot paths and the corpus test tim
 ARCH-01 (small-content budget); ARCH-05, ARCH-06 and LIFE-02 (captures retained
 after a taint or quarantine); ARCH-07, REL-01 and SDK-01 to SDK-04 (next API/SDK
 releases); META-04, WATCH-01, SPOOL-01, LINK-01, IO-02, TREE-PERF-01, TREE-02,
-INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, BUILD-01, TRASH-01, TEST-01, TEST-02, TEST-03 and
-OPTIONS-02. The role table under
+INPUT-01, PROC-01, PLUGIN-01, COMPARE-01, COMPARE-02, BUILD-01, TRASH-01, TEST-01, TEST-02, TABS-01,
+NOTICE-03, IO-03 and OPTIONS-02. The role table under
 [current role boundaries](#current-role-boundaries-and-exclusive-ownership)
 describes assignments made before this review; the review assigned no further role
 work beyond these rows. The [corrections table](#corrections-to-stale-staged-references)

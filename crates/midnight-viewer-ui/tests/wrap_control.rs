@@ -384,15 +384,13 @@ fn source_and_markdown_widgets_fit_narrow_window_and_emit_real_input() {
                 .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
         }
     }
+    // The font chooser is a CompactPicker: arrow keys browse its open list and only
+    // Return commits, so each round reaches the font callback once, with the row it
+    // ended on; the browsed rows in between do not.
     assert_eq!(
         *fonts.borrow(),
-        [
-            "Noto Sans CJK JP",
-            "Yu Gothic UI",
-            "Noto Sans CJK JP",
-            "sans-serif"
-        ],
-        "every keyboard selection step immediately reaches the font callback"
+        ["Noto Sans CJK JP", "Yu Gothic UI", "sans-serif"],
+        "every committed keyboard selection reaches the font callback"
     );
     click("Viewer font size");
     window.set_source_mode(false);
