@@ -40,7 +40,9 @@ export component Tip inherits Rectangle {
     // stock frame's own size. Under a conditional that frame follows TipBody, as
     // it did for the conditional and per-row hints this replaces. The condition
     // is the hosts' own: they place Tip without one, and an empty text gets no
-    // hover area.
+    // hover area. Inside a popup, a text that can become empty while its tooltip
+    // shows needs tooltip::dismiss first: Slint 1.18.1 panics when the shown
+    // tooltip is destroyed there.
     if root.text != "": Tooltip { TipBody { text: root.text; width-limit: root.width-limit; } }
 }
 
