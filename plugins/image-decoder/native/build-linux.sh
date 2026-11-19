@@ -16,6 +16,12 @@ native_prefix="$native_root/prefix-linux-$(uname -m)"
 native_setup=(setup "$native_build" "$native_source" --prefix "$native_prefix" --libdir lib
     --buildtype release --default-library static --wrap-mode=nodownload
     -Denable_tools=false -Denable_tests=false -Denable_examples=false -Denable_docs=false)
+# A build configured before prepare-source.py made vcs_version.h a configure-time file lists
+# the header as a ninja output, and reconfiguring it lets ninja delete the regenerated
+# header: configure such a build afresh.
+if [[ -f "$native_build/.ninja_log" ]] && grep -Fq vcs_version.h "$native_build/.ninja_log"; then
+    rm -rf -- "${native_build:?}" || return $?
+fi
 [[ ! -f "$native_build/meson-private/coredata.dat" ]] || native_setup+=(--reconfigure)
 python3 -I -S -B "$native_script_dir/private-meson.py" "${native_setup[@]}" || return $?
 python3 -I -S -B "$native_script_dir/private-meson.py" compile -C "$native_build" -j "$native_jobs" || return $?

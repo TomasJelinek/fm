@@ -32,6 +32,14 @@ $setup = @('-3', '-I', '-S', '-B', (Join-Path $PSScriptRoot 'private-meson.py'),
     '--prefix', $prefix, '--libdir', 'lib', '--buildtype', 'release', '--default-library', 'static',
     '--wrap-mode=nodownload', '-Db_vscrt=md', '-Denable_tools=false', '-Denable_tests=false',
     '-Denable_examples=false', '-Denable_docs=false')
+# A build configured before prepare-source.py made vcs_version.h a configure-time file lists
+# the header as a ninja output, and reconfiguring it lets ninja delete the regenerated
+# header: configure such a build afresh.
+$ninjaLog = Join-Path $build '.ninja_log'
+if ((Test-Path -LiteralPath $ninjaLog -PathType Leaf) -and
+    (Select-String -LiteralPath $ninjaLog -SimpleMatch 'vcs_version.h' -Quiet)) {
+    Remove-Item -LiteralPath $build -Recurse -Force
+}
 if (Test-Path -LiteralPath (Join-Path $build 'meson-private/coredata.dat')) { $setup += '--reconfigure' }
 & py @setup | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'dav1d Meson configuration failed' }
