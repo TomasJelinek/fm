@@ -204,4 +204,26 @@ mod tests {
         let message = error.to_string();
         assert!(message.starts_with(HELPER_REQUIREMENT), "{message}");
     }
+
+    /// Cargo.toml sets `test = false` for the `midnight-elevated-listing` binary, so
+    /// `cargo test` builds no harness for it and a unit test there would never run.
+    #[test]
+    fn listing_binary_has_no_unit_tests() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let source = std::fs::read_to_string(&path).expect("binary source");
+        for line in source.lines().map(str::trim) {
+            let words: Vec<_> = line
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .collect();
+            let attribute = line.starts_with("#[") || line.starts_with("#![");
+            // A module file would hold code that this check does not read.
+            let module_file =
+                !line.starts_with("//") && words.contains(&"mod") && line.ends_with(';');
+            assert!(
+                !(attribute && words.contains(&"test")) && !module_file,
+                "{}: `{line}`; remove `test = false` from the binary in Cargo.toml",
+                path.display()
+            );
+        }
+    }
 }

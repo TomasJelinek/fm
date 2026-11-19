@@ -24,6 +24,7 @@ tempfile.workspace = true
 # The containment probe that the integration tests start has no unit tests, so
 # `cargo test` neither builds nor starts an empty test harness for it. The tests still
 # receive the built probe as CARGO_BIN_EXE_midnight-worker-probe.
+# `probe_binary_has_no_unit_tests` in src/lib.rs fails if one is added while this is set.
 [[bin]]
 name = "midnight-worker-probe"
 path = "src/bin/midnight-worker-probe.rs"
