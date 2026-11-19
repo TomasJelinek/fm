@@ -630,6 +630,95 @@ qualification remain open. [Merged check receipt](../_build/merge-main-20261118/
   their dated runs. End-to-end performance validation remains open.
 
 ### Checkpoints from main
+### Integration validation — 19 November 2026
+
+With PowerShell 7.7 installed on the Windows development machine, and cmake, nasm,
+libclang, Ninja and the FreeType headers (the packages of `scripts/setup-linux.sh`)
+in its WSL Ubuntu 24.04, `main` was validated end to end on both platforms; the
+commits merged since the deep code review were integrated as reviewed. CI on `main`
+had been failing: its check job stopped at Format since `4f072e00`, and its Linux
+native viewer engine step had failed since the 18 November integration (the Windows
+check job did not reach it).
+
+Fixes on `main`:
+
+- *Remove unset variables when restoring them under PowerShell 7*: PowerShell passes
+  `$null` to a .NET string parameter as `''`, and PowerShell 7.7 on .NET 11 keeps
+  such a variable as an empty one (Windows PowerShell 5.1 deleted it). The web SDK
+  packager therefore left `CARGO`, `CARGO_HOME` and `RUSTUP_HOME` empty in a calling
+  build when they had been unset, and `validate.ps1` left the variables a run adds
+  empty in a calling session; both now remove them, and a test runs `validate.ps1`
+  inside a PowerShell session.
+- Two *Format … as rustfmt does* commits: `cargo fmt --all` on the 21 files that
+  CI's Format step reported up to `ec96710a`; no other change.
+- *Borrow the test root as a slice in the About licenses test*: past Format, CI's
+  Clippy step (`-D warnings`) rejected `&[root.clone()]` in `about_licenses.rs`
+  (`clippy::cloned_ref_to_slice_refs`). CI's Clippy command then passed here on
+  Windows and Linux; CI's run of `e9bab4ef` passed every other job, including both
+  release builds.
+- *Fix the viewer engine's source position and PDF integration tests*: the source
+  position test took the first frame after `LineNumbers(false)` as the repaint, but
+  under load that frame still carried the numbered pixels (4 of 16 runs failed under
+  CPU load; 16 of 16 passed once it waits for the changed frame). The PDF navigation
+  tests also discovered web viewers, which validates the application executable that
+  a private test installation lacks; they now cache an empty web catalog.
+- *Skip the manual native CEF and qualified Source tests in the engine step*: CI,
+  `validate.ps1` and `validate.sh` skip `office_preview::native_tests` (trusted CEF
+  installation, prepared D: profile) and `tests::source_native_acceptance`
+  (qualified product build), manual qualifications tracked in the [feature
+  status](FEATURE_STATUS.md).
+- *Accept thumbnail notices reached through a linked cargo home* and *Require an
+  explicit root for thumbnail notice inputs* (with a security and a compatibility
+  review): `scripts/thumbnail-notices.py` refused every notice input whose absolute
+  path contained a link, so the thumbnailer build failed with a linked `CARGO_HOME`,
+  `~/.cargo` or `/home` (observed with a linked registry crate folder in WSL). Each
+  input is now checked against the package root its caller names, which alone is
+  resolved (it and its ancestors may be links); below it every name must be portable
+  and no link, reparse point or `..` is accepted. The notice tests pass on Windows
+  (16, 4 skipped without symlink privilege) and Linux (16, 3 skipped), as do the
+  script tests (Windows 253 / 0 / 137, Linux 321 / 0 / 69).
+
+Evidence (orchestrator logs in the integration worktree's `_build/validate/logs` and
+`_build/qa`, and in its WSL clone):
+
+- Linux, `./build.sh --validate` at `a8f93b88` in a fresh clone: the build,
+  including the pinned FFmpeg 9.0.2 and dav1d, then 37 of 40 steps passed (workspace
+  tests 6,740 / 0 / 133, script tests 316 / 0 / 66); the viewer engine step failed
+  as in CI and the two PowerShell steps were skipped as Windows-only. The video
+  thumbnailer (5 / 0) and HTML viewer (33 / 0 / 1) steps ran on this machine for the
+  first time.
+- Windows, `scripts\validate.ps1` at `a8f93b88`: 31 of 40 steps passed (workspace
+  tests 6,815 / 0 / 143), 3 failed (the script tests on the PowerShell 7 restore,
+  the PowerShell 7 deployment tests on the shortcut flake of TEST-04 and the viewer
+  engine step) and 6 were skipped; the image viewer, PDF viewer and image
+  thumbnailer steps ran here for the first time. The HTML viewer step passed (33 / 0
+  / 1) with `--web-sdk` and a web SDK bundle packaged by WSL's classic-zlib Python,
+  whose API crate matches the HTML viewer's pinned checksum.
+- After the fixes the viewer engine step passed on Windows and Linux (5 / 0), and at
+  the integrated tip (`main` `ec96710a` with these commits) the workspace tests
+  passed on Windows (6,825 / 0 / 143) and Linux (6,750 / 0 / 133), as did the script
+  tests (Windows 248 / 0 / 135, Linux 316 / 0 / 67) and, one commit earlier, both
+  PowerShell deployment test steps.
+
+Not established:
+
+- `build.bat --validate` end to end on this machine: `build.bat` now builds the
+  host, both filesystem modules and five viewers here, then stops as documented at
+  the HTML viewer's web SDK packaging (Python 3.15 is the only Python and bundles
+  zlib-ng); its thumbnailer build would also need the MSVC FFmpeg prefix
+  (`MIDNIGHT_FFMPEG_PREFIX`, `MIDNIGHT_FFMPEG_SOURCE_ARCHIVE`, `LIBCLANG_PATH`),
+  which is why the Windows video thumbnailer step is skipped.
+- The manual native CEF Office/HTML and qualified Source acceptance tests (not run),
+  and CI results for these commits.
+- The desktop shortcut test failed intermittently on this machine under both
+  PowerShell versions; it is recorded with TEST-04 in the
+  [backlog](IMPLEMENTATION_BACKLOG.md).
+- The other build and packaging scripts still handle links inconsistently: some
+  refuse a checkout reached through a linked or hidden folder, others follow links in
+  package license inputs (BUILD-02 in the backlog; a policy decision first).
+
+This supersedes the first two "Not established" items of the test speed checkpoint
+below.
 
 ### Test speed and full validation — 19 November 2026
 

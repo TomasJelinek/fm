@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -33,15 +34,47 @@ def first_party(package, repository):
     return Path(package["manifest_path"]).parent in expected
 
 
-def add_file(plan, source, relative):
-    source, relative = Path(source).absolute(), Path(relative)
+def package_member(root, source):
+    """The path of a notice below its package root; '..' or a path outside the root escapes."""
+    root, source = Path(root).absolute(), Path(source).absolute()
+    if source != root and source.is_relative_to(root):
+        member = source.relative_to(root)
+        if ".." not in member.parts:
+            return member
+    raise ValueError(f"Notice input escapes its package: {source}")
+
+
+def is_link(metadata):
+    """A symbolic link or any Windows reparse point, such as a junction."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def add_file(plan, source, relative, *, root):
+    """Read a notice: a regular file below its package root, reached without links.
+
+    The caller names the root: the crate's manifest directory, the shared notice tree or
+    the plugin directory. Only the root is resolved, so links above it, such as a linked
+    CARGO_HOME or /home, and a root that is itself a link are accepted. Every component
+    below it must be a portable name and is inspected without following links, so neither
+    a link, '..' nor a drive or stream name can substitute content from outside the package.
+    """
+    source, root = Path(source).absolute(), Path(root).absolute()
+    member = package_member(root, source)
+    relative = Path(relative)
     if relative.is_absolute() or not relative.parts:
         raise ValueError(f"Invalid notice destination: {relative}")
-    for part in relative.parts:
+    # Check the walked names before any access: on Windows, joining a drive-qualified name
+    # such as 'D:x' re-anchors the path on that drive, and 'LICENSE:x' names a data stream.
+    for part in (*member.parts, *relative.parts):
         _release.portable_component(part)
-    if source.resolve() != source:
-        raise ValueError(f"Notice input must not traverse symlinks: {source}")
-    with _release.plain_file(source) as stream:
+    # Descend from the resolved root; an error names the link as the caller spelled it.
+    path, given = root.resolve(strict=True), root
+    for part in member.parts:
+        path, given = path / part, given / part
+        if is_link(path.lstat()):
+            raise ValueError(f"Notice input must not traverse symlinks: {given}")
+    with _release.plain_file(path) as stream:
         content = stream.read()
     if not content:
         raise ValueError(f"Required notice is empty: {source}")
@@ -50,7 +83,7 @@ def add_file(plan, source, relative):
 
 def add_tree(plan, directory, relative):
     for source in _release.plain_tree(directory, maximum=65536):
-        add_file(plan, source, relative / source.relative_to(directory))
+        add_file(plan, source, relative / package_member(directory, source), root=directory)
 
 
 def ffmpeg_sys_override(package, repository):
@@ -75,7 +108,8 @@ def notice_plan(plugin, metadata, repository):
         # Native dav1d, bundled fonts and MPL parser source are not all described
         # by Cargo. Preserve the checked-in distribution notice superset too.
         add_tree(plan, shared, Path("licenses"))
-    add_file(plan, shared / "rust/COPYRIGHT-library.html", Path("licenses/rust/COPYRIGHT-library.html"))
+    add_file(plan, shared / "rust/COPYRIGHT-library.html", Path("licenses/rust/COPYRIGHT-library.html"),
+             root=shared)
     features = {node["id"]: sorted(node.get("features", []))
                 for node in (metadata.get("resolve") or {}).get("nodes", [])}
     identities = set()
@@ -99,17 +133,17 @@ def notice_plan(plugin, metadata, repository):
             # identified canonical license text; do not claim it was bundled.
             for filename in ("Cargo.toml", "Cargo.toml.orig", ".cargo_vcs_info.json"):
                 if (source / filename).is_file():
-                    add_file(plan, source / filename, Path("licenses") / name / filename)
+                    add_file(plan, source / filename, Path("licenses") / name / filename, root=source)
         for path in files:
-            add_file(plan, path, Path("licenses") / name / path.relative_to(source))
+            add_file(plan, path, Path("licenses") / name / package_member(source, path), root=source)
         inventory.append({**{key: package.get(key) for key in
                              ("name", "version", "license", "repository", "source")},
                           "features": features.get(package["id"], []), "project_owned": owned})
     plugin_root = Path(roots[0]["manifest_path"]).parent
-    add_file(plan, plugin_root / "README.md", Path("README.md"))
+    add_file(plan, plugin_root / "README.md", Path("README.md"), root=plugin_root)
     for filename in ("LICENSE", "LICENCE", "COPYING", "NOTICE", "THIRD-PARTY.md"):
         if (plugin_root / filename).is_file():
-            add_file(plan, plugin_root / filename, Path(filename))
+            add_file(plan, plugin_root / filename, Path(filename), root=plugin_root)
     plan[Path("THIRD-PARTY.json")] = (json.dumps(inventory, indent=2, ensure_ascii=False) + "\n").encode()
     plan[Path("THIRD-PARTY.txt")] = (
         "Pinned dependency declarations and resolved features are in THIRD-PARTY.json.\n"
