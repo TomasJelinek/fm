@@ -80,6 +80,54 @@ class ThumbnailNoticeTests(unittest.TestCase):
     def generate(self):
         self.notices.generate_notices(self.metadata, self.output, repository=self.root)
 
+    def directory_link(self, kind, link, target):
+        """A directory symlink, skipped where the OS forbids it, or a Windows junction."""
+        target.mkdir(parents=True, exist_ok=True)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "junction":
+            import _winapi  # A junction needs no symlink privilege.
+            _winapi.CreateJunction(str(target), str(link))
+            return link
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"OS does not permit fixture symlinks: {error}")
+        return link
+
+    def assert_links_above_and_at_crate_roots_are_accepted(self, kind):
+        # Cargo metadata names crates as the build reaches them: below a linked cargo or home
+        # directory (~/.cargo -> /data/cargo, /home -> /var/home), or in a registry crate
+        # folder that is itself a link. Neither substitutes content from outside the crate.
+        home = self.directory_link(kind, self.root / "home/.cargo", self.root / "disk/cargo")
+        registry = Path("registry/src/index.crates.io-0000")
+        self.dependency(self.package("codec", directory=home / registry / "codec-1.2.3", files={
+            "LICENSE-MIT": "Codec terms\n", "LICENSES/Apache-2.0.txt": "Codec Apache terms\n"}))
+        crate = self.directory_link(kind, self.root / "cargo" / registry / "crunchy-0.2.4",
+                                    self.root / "disk/crunchy-0.2.4")
+        self.dependency(self.package("crunchy", version="0.2.4", directory=crate,
+                                     files={"LICENSE": "Crunchy terms\n"}))
+        self.generate()
+        licenses = self.output / "midnight-thumbnail-image/licenses"
+        self.assertEqual((licenses / "codec-1.2.3/LICENSE-MIT").read_text(), "Codec terms\n")
+        self.assertEqual((licenses / "codec-1.2.3/LICENSES/Apache-2.0.txt").read_text(),
+                         "Codec Apache terms\n")
+        self.assertEqual((licenses / "crunchy-0.2.4/LICENSE").read_text(), "Crunchy terms\n")
+
+    def assert_linked_directory_inside_a_crate_is_rejected(self, kind):
+        # The crate is reached through an accepted linked cargo home, but that tolerance ends
+        # at the crate's own root: a link below it cannot copy unrelated content.
+        home = self.directory_link(kind, self.root / "home/.cargo", self.root / "disk/cargo")
+        crate = home / "registry/src/index.crates.io-0000/redirect-1.2.3"
+        package = self.package("redirect", directory=crate, files={"LICENSE": "Redirect terms\n"})
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "MIT.txt").write_text("Unrelated private content\n", encoding="utf-8")
+        self.directory_link(kind, crate / "LICENSES", outside)
+        self.dependency(package)
+        with self.assertRaisesRegex(ValueError, "must not traverse symlinks: .*LICENSES$"):
+            self.generate()
+        self.assertFalse(self.output.exists())
+
     def test_both_workers_keep_transitive_and_vendored_terms_features_and_existing_shared_notices(self):
         self.dependency(self.package("codec", files={"LICENSE-MIT": "Codec terms\n",
                                                      "NOTICE": "Codec attribution\n"}),
@@ -160,6 +208,32 @@ class ThumbnailNoticeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.generate()
         self.assertFalse(self.output.exists())
+
+    def test_symlinks_above_or_at_a_crate_root_are_accepted(self):
+        self.assert_links_above_and_at_crate_roots_are_accepted("symlink")
+
+    @unittest.skipUnless(os.name == "nt", "Junctions are Windows directory reparse points")
+    def test_junctions_above_or_at_a_crate_root_are_accepted(self):
+        self.assert_links_above_and_at_crate_roots_are_accepted("junction")
+
+    def test_symlinked_directory_inside_a_crate_is_rejected(self):
+        self.assert_linked_directory_inside_a_crate_is_rejected("symlink")
+
+    @unittest.skipUnless(os.name == "nt", "Junctions are Windows directory reparse points")
+    def test_junction_inside_a_crate_is_rejected(self):
+        self.assert_linked_directory_inside_a_crate_is_rejected("junction")
+
+    def test_license_file_cannot_escape_its_crate(self):
+        package = self.package("escape")
+        unrelated = Path(package["manifest_path"]).parent.with_name("LICENSE")
+        unrelated.write_text("Unrelated private content\n", encoding="utf-8")
+        self.dependency(package)
+        for license_file in ("../LICENSE", str(unrelated)):
+            with self.subTest(license_file=license_file):
+                package["license_file"] = license_file
+                with self.assertRaisesRegex(ValueError, "escapes its package"):
+                    self.generate()
+                self.assertFalse(self.output.exists())
 
     def test_output_must_be_in_build_and_must_not_traverse_symlinks(self):
         with self.assertRaisesRegex(ValueError, "_build"):
