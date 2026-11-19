@@ -19,6 +19,47 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Test speed and full validation — 19 November 2026
+
+Two follow-ups of the deep code review are on main. The test speed pass
+(`57d03d20`..`8dedeac9`, with TEST-04 in `62f3e14d`) cuts the workspace test run
+without losing a test: optimized `regex-automata` in development builds takes the
+comparator budget test from about 5 s to 0.5 s, the rejected-work engine test runs
+its nine kinds concurrently (1.95 s to 0.43 s), three targets without tests no
+longer build test harnesses, the Linux-only worker-platform files are modules of
+their topic executables, and guards keep unit tests out of `test = false` targets.
+Warm runs are about 10 % shorter on Windows and 12 % on Linux, with 63 instead of 69
+test executables ([test speed pass](verification/2026-11-18-test-speed-pass.md)).
+
+`build.bat --validate` and `./build.sh --validate` (`e8eb7878`..`a9ea2b53`) run
+`scripts/validate.ps1` or `scripts/validate.sh` after the build: every workspace
+test target including doc tests, the Python script tests and the separate
+workspaces' CI test commands, tests only (no formatting, Clippy or source-size
+checks). A step whose prerequisite is missing is SKIPPED with its reason and named
+in a warning; `--strict` makes such skips fail; on Windows a build that fails
+validation is not deployed ([test execution](developer/TEST_EXECUTION.md)).
+
+Evidence (orchestrator logs in the integration worktree's `_build/validate/logs` and
+`_build/qa`): a full Windows run of `validate.ps1` at `f3bde653` passed 27 of 40
+steps, including the workspace tests with 6,813 passed / 0 failed / 143 ignored; one
+step failed on a flaky directory rename in the script tests, which `34bd4e29`
+retries, after which the script tests passed (209 / 0); 12 steps were skipped for
+missing prerequisites or as Linux-only. On Linux the workspace tests passed (6,738 /
+0 / 133) and, in a git checkout, the 15 SDK, viewer, PDF, archive and qualification
+steps passed (473 / 0); the script tests passed (316 / 0).
+
+Not established:
+
+- `build.bat --validate` end to end on this machine: PowerShell 7 is not installed
+  here, so `build.bat` stops before building; its validation hooks are covered by
+  the build hook tests, which ran here only with a test stand-in for PowerShell 7.
+- The image viewer and image thumbnailer steps (they need PowerShell 7 or cached
+  pinned dav1d inputs), the video thumbnailer (FFmpeg) and the HTML viewer (its web
+  SDK package needs a Python with classic zlib, 3.13 or older on Windows) were
+  skipped here.
+- Reusing the build helpers' target directories in validation, to avoid compiling
+  the modules twice, is not done.
+
 ### Merge repair — 19 November 2026
 
 The deep code review (`3ebc2001`) and the viewer, comparator and filesystem
