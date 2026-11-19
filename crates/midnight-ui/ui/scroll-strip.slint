@@ -17,6 +17,8 @@ export component ScrollStrip {
     preferred-width: 100%;
     flickable := Flickable {
         mouse-drag-pan-enabled: false;
+        // Explicit position: see the Flickable of ScrollView in scroll-view.slint.
+        x: 0px; y: 0px;
         width: parent.width;
         height: parent.height;
         @children

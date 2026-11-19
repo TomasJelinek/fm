@@ -156,6 +156,11 @@ export component ScrollView {
     preferred-width: 100%;
     flickable := Flickable {
         mouse-drag-pan-enabled: false;
+        // An explicit position keeps this child out of the root's synthesized layout
+        // info, which would otherwise materialize eight constraint properties per
+        // scroll view. The Flickable item reports no constraint, only a stretch of 1,
+        // which no scroll view here exceeds.
+        x: 0px; y: 0px;
         width: parent.width;
         height: parent.height;
         @children
