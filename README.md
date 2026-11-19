@@ -124,8 +124,9 @@ Slint and the other locked dependencies on the first build; no separate Slint SD
 installation is needed. The first build takes longer than subsequent builds.
 
 The commands below assume the current directory is the repository root. The
-optional root build helpers locate the repository themselves, so they also work
-when invoked by a quoted path from another directory. For builds they accept no
+optional root build helpers locate the repository themselves, so they also work,
+with any of their arguments, when invoked by a quoted path from another directory
+(a build hook test runs them that way). For builds they accept no
 argument (debug), `debug`, or `release`, run a locked build of `midnight-explorer`,
 and return failures to the caller. Both also accept `--validate`, which then runs
 every test that CI runs for the platform ([full validation](#full-validation)).
@@ -629,7 +630,9 @@ platform, with CI's own test commands and in CI's job order, and build only what
 tests need:
 
 - the public API/SDK and protocol workspace tests, the C/Rust ABI layout test and
-  the plugin, worker and web SDK release bundles;
+  the plugin, worker and web SDK release bundles (CI's `public-sdk` and
+  `public-worker-sdk` jobs run on Linux only; Windows validation runs them as well,
+  since its plugin steps need the bundles);
 - the tests of the independent viewers, the viewer ABI conformance fixture, the image
   and PDF viewers, the image thumbnailer, the archive worker (with its release package
   and fixture export) and the filesystem API with the native and network filesystem
@@ -655,13 +658,15 @@ AV1 decoder bootstrap, a classic-zlib Python for the web SDK, cached pinned
 downloads in an `--offline` run, Xvfb, or the other platform's steps. A step whose
 required step failed or was skipped is skipped too. Validation continues after a
 failure and ends with a table of every step (PASS, FAIL or SKIPPED, duration and
-passed/failed/ignored test counts); step logs, the generated step scripts and the
-summary stay in `_build/validate/logs/<run>/`.
+passed/failed/ignored test counts); step logs, the summary and, on Windows, the
+generated step scripts stay in `_build/validate/logs/<run>/`.
 
 Exit status: 0 when no step failed, 1 when one failed (or, with `--strict`, when a
 step was skipped for a missing prerequisite; other-platform steps never count), 2
 for invalid arguments and 127 when cargo, rustc (it must be on `PATH`) or Python 3.12+
-is missing. `build.bat` returns that status, and `build.sh` exits with it. The
+is missing. Without `--strict`, a run in which a CI step was skipped that way still
+passes, but a `WARNING: N CI step(s) SKIPPED ...` line before the result names those
+steps. `build.bat` returns that status, and `build.sh` exits with it. The
 scripts also take `--offline` (as does `CARGO_NET_OFFLINE=true`), `--dry-run`, which
 prints every step with its commands and the reason for any skip, `--only ID[,ID...]`,
 which runs the named steps and the steps they need, and `--plugin-sdk`,
@@ -1129,8 +1134,8 @@ cargo run -p midnight-explorer -- --ui-smoke-test --software
 ```
 
 These are the main workspace's checks; [full validation](#full-validation) runs
-every test of CI for the platform with one command, but not the formatting and
-Clippy checks. During
+every test of CI for the platform with one command, but not the formatting, Clippy
+and source size checks. During
 implementation, build the affected test targets once and use the
 [targeted parallel runner](docs/developer/TEST_EXECUTION.md) for independent
 headless suites. It shares a CPU thread budget across up to four processes,

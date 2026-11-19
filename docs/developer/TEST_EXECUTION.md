@@ -32,6 +32,12 @@ listed as skipped:
 | `check` | `test-install`, `script-tests`, `decoder-native-tests`, `powershell-tests-7`, `powershell-tests-5`, `workspace-tests`, `trash-qualification`, `bad-descriptor`, the nine ignored qualification steps, `x11-dnd`, `x11-clipboard` |
 | `release` | `host-build` and `smoke-test` for the selected profile |
 
+CI runs the `public-sdk` and `public-worker-sdk` jobs on ubuntu-24.04 only; its
+Windows plugin jobs download the bundles that those jobs package. Windows validation
+runs these steps in addition: it packages the bundles its plugin steps need, and
+`sdk-api`, `sdk-abi` (`api/scripts/check-abi.ps1`, which CI never runs) and
+`sdk-protocols` are extra Windows coverage.
+
 `workspace-tests` runs CI's gates (below) with
 `scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast`: the same Cargo
 selections and features, including doc tests and example builds, but it retires no
@@ -41,13 +47,19 @@ status). The later qualification steps reuse those executables through its `run`
 `artifact` modes, as CI does.
 
 Each step runs in its own process (a PowerShell 7 process, or Windows PowerShell 5.1
-when PowerShell 7 is not installed; a `bash` subshell on Linux), with `TEMP`/`TMP`
-(Windows) or `TMPDIR` (Linux) under `_build/tmp`, `PYTHONUTF8=1` and CI's registry
-name variable. `rustc` must be on `PATH` (the user-command probe tests compile with
-it); a checkout's `.tools/cargo` is used when Cargo is not on `PATH`, as by the build
-helpers. The independent modules are built below `_build/validate/` (the image
-viewer, PDF viewer and image thumbnailer share `raster-ci`, so the pinned dav1d
-build is prepared once); the main workspace uses the normal target directory.
+when PowerShell 7 is not installed; a `bash` subshell on Linux), with `TEMP`, `TMP`
+and `TMPDIR` (Windows, as CI sets them) or `TMPDIR` (Linux) under `_build/tmp`,
+`PYTHONUTF8=1` and CI's registry name variable. `rustc` must be on `PATH` (the
+user-command probe tests compile with it); a checkout's `.tools/cargo` is used when
+Cargo is not on `PATH`, as by the build helpers. The independent modules are built
+below `_build/validate/` (the image viewer, PDF viewer and image thumbnailer share
+`raster-ci`, so the pinned dav1d build is prepared once); the main workspace uses the
+normal target directory. A few outputs lie outside `_build/validate/`: the plugin SDK
+packager writes its bundle to `_build/plugin-sdk-<timestamp>` (removed when
+validation ends), the web SDK packager compiles in `_build/html-viewer/api-target`,
+`thumbnail-video` prepares FFmpeg in the build helpers' `_build/thumbnailers/ffmpeg`,
+temporary files go to `_build/tmp`, and the Windows private test installation
+(below) is created in `%USERPROFILE%`.
 `test-install` mirrors CI's `private-test-installation` action with the packages this
 run built: on Windows a new `%USERPROFILE%\MidnightViewerTests-<guid>` whose DACL
 grants only the user, SYSTEM and Administrators; on Linux a mode-700
@@ -66,9 +78,14 @@ locked crates (its lockfile includes the optional CEF bindings) in Cargo's cache
 the GIO runtime for the Linux network plugin, and `xvfb-run` with `xauth`. A step
 whose required step did not pass is skipped as well. `--strict` turns a skip for a
 missing prerequisite into a failure; other-platform steps and SDKs given with
-`--plugin-sdk`, `--worker-sdk` or `--web-sdk` never count. `--only` runs the named
-steps and the steps they need, for example `--only workspace-tests` reruns the
-workspace tests with their private installation.
+`--plugin-sdk`, `--worker-sdk` or `--web-sdk` never count. Without `--strict` such a
+run still passes, but when a step that CI runs was skipped this way (or because a
+step it needs did not pass), the summary names it before the result:
+`WARNING: N CI step(s) SKIPPED for a missing prerequisite or needed step: IDS (use
+--strict to fail)`; the two steps that CI does not run are not listed. `--only` runs
+the named steps (at least one, comma-separated) and the steps they need, for example
+`--only workspace-tests` reruns the workspace tests with their private installation.
+A flag given a value, such as `--strict=no`, is rejected with exit status 2.
 
 Validation continues after a failure. Each step's output is shown and saved as
 `_build/validate/logs/<run>/NN-<step>.log`, next to the generated step script
@@ -80,11 +97,14 @@ is missing.
 
 Differences from CI, all deliberate: validation runs tests only, so CI's
 formatting, Clippy and source size checks are not steps, the plugins' `scripts/ci.*`
-(which also run those checks) are not called but their test commands are, and the
-image thumbnailer's optimized build, which no test uses, is left to the build
-helpers; the steps run one after another on one machine instead of in parallel
-jobs; test executables are kept; the developer's Cargo profile settings are kept,
-while CI's `check` job sets
+(which also run those checks) are not called but their test commands are (a test
+compares the arguments of every `cargo test` run with each plugin's `ci.ps1` and
+`ci.sh`), and the image thumbnailer's optimized build, which no test uses, is not
+run: the build helpers compile the thumbnailer optimized only for a release build
+(`build.bat release`, `./build.sh release`), so `--validate` with a debug build never
+compiles it optimized; the steps run one after another on one machine instead of in
+parallel jobs; test executables are kept; the developer's Cargo profile settings are
+kept, while CI's `check` job sets
 `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_INCREMENTAL=0` and
 `CARGO_BUILD_JOBS=2` to fit its hosted disk (set them yourself to reproduce a CI
 build exactly); the filesystem API tests run once instead of in both filesystem
