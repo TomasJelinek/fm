@@ -936,6 +936,8 @@ impl Presenter {
         self.flush_selection(send);
         self.flush_drag_commands(send);
         self.flush_comparison(send);
+        // A manifest destination was just chosen: save to it now.
+        self.begin_pending_checksum_saves(send);
         self.dispatch_open_directories(send);
         self.flush_loaded_preferences(send);
     }

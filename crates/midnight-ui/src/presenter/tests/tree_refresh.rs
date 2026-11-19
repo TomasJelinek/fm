@@ -376,7 +376,7 @@ fn saved_checksum_manifest_reconciles_an_adopted_tree_instead_of_reading_it_flat
         generation: p.checksums.sessions[&id].generation.0,
         algorithm: ChecksumAlgorithm::Sha256,
         destination: "checksums.sha256".into(),
-        acknowledge: false,
+        acknowledge: false, overwrite: false,
     };
     assert!(p.save_checksum_manifest(id, form, &|command| {
         *queued.borrow_mut() = Some(command);
@@ -403,7 +403,8 @@ fn saved_checksum_manifest_reconciles_an_adopted_tree_instead_of_reading_it_flat
                 included: 1,
                 excluded: 0,
                 verified_bytes: 3,
-            })),
+                recovery: Vec::new(),
+})),
         })),
         &|command| {
             sent.borrow_mut().push(command);

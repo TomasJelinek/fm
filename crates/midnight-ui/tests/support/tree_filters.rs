@@ -1030,6 +1030,16 @@ impl Harness {
         self.ui.native.clone()
     }
 
+    /// Whether an independent tool window is open (it opens after an Engine round trip).
+    #[allow(dead_code)]
+    pub fn has_tool_window(&self) -> bool {
+        self.windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .any(|window| window.window().is_visible())
+    }
+
     pub fn tool_window(&self) -> Rc<MinimalSoftwareWindow> {
         let children: Vec<_> = self
             .windows

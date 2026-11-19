@@ -12,6 +12,9 @@ fn setup(send: &dyn Fn(Command) -> bool) -> (Presenter, ChecksumJobId) {
     let id = p
         .open_captured_checksums(PaneId::Left, root, files, send)
         .unwrap();
+    // Opening calculates nothing; the tests press Calculate as the user would.
+    let algorithms = p.checksums.sessions[&id].algorithms;
+    p.start_checksums(id, algorithms, false, send);
     (p, id)
 }
 
@@ -299,7 +302,7 @@ fn manifest_filename_uses_captured_folder_and_invalid_drafts_never_enqueue() {
         generation: 1,
         algorithm: ChecksumAlgorithm::Sha256,
         destination: destination.into(),
-        acknowledge: false,
+        acknowledge: false, overwrite: false,
     };
     assert!(!p.save_checksum_manifest(id, form("../outside.sha256"), &send));
     assert!(commands.borrow().is_empty());
@@ -330,7 +333,7 @@ fn partial_checksum_save_requires_exact_current_run_acknowledgement() {
         generation: 1,
         algorithm: ChecksumAlgorithm::Sha256,
         destination: text.to_string(),
-        acknowledge,
+        acknowledge, overwrite: false,
     };
     assert!(!p.save_checksum_manifest(id, form(false), &send));
     assert!(commands.borrow().is_empty());
@@ -367,4 +370,106 @@ fn late_checksum_events_do_not_reopen_released_windows() {
         })))
     });
     assert!(p.checksums.sessions.is_empty());
+}
+
+#[test]
+fn opening_calculates_nothing_and_a_selected_checksum_file_opens_verification() {
+    let root = std::env::temp_dir();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let files = |name: &str| SelectedFiles {
+        selection: Arc::new(SelectionSnapshot::default()),
+        view: Arc::new(DirectoryIndex::default()),
+        fallback: Some(root.join(name)),
+    };
+    let plain = p
+        .open_captured_checksums(PaneId::Left, root.clone(), files("photo.jpg"), &send)
+        .unwrap();
+    assert!(!p.checksums.sessions[&plain].running);
+    assert!(!p.checksums.sessions[&plain].verify_initial);
+    let manifest = p
+        .open_captured_checksums(PaneId::Left, root.clone(), files("photos.SHA256"), &send)
+        .unwrap();
+    assert!(p.checksums.sessions[&manifest].verify_initial);
+    assert_eq!(
+        p.checksums.sessions[&manifest].manifest_suggested,
+        root.join("photos.SHA256")
+    );
+    assert!(
+        sent.borrow().is_empty(),
+        "nothing is calculated or verified until the user asks"
+    );
+}
+
+#[test]
+fn an_existing_manifest_is_offered_for_replacement_instead_of_failing() {
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let (mut p, id) = setup(&send);
+    finish(&mut p, id, ChecksumCompletion::Completed);
+    let saves = || {
+        sent.borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::SaveChecksumManifest {
+                    save_id, request, ..
+                } => Some((*save_id, request.overwrite, request.destination.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let chosen = std::env::temp_dir().join("chosen.sha256");
+    let s = p.checksums.sessions.get_mut(&id).unwrap();
+    s.suggested = chosen.clone();
+    s.save_pending = Some(ChecksumAlgorithm::Sha256);
+    p.begin_pending_checksum_saves(&send);
+    let first = saves();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].2, chosen);
+    assert!(!first[0].1);
+    let generation = p.checksums.sessions[&id].generation;
+    p.apply(Event::ChecksumManifest(Box::new(ChecksumManifestEvent {
+        save_id: first[0].0,
+        job: id,
+        generation,
+        update: ChecksumManifestUpdate::Finished(Err(FsError {
+            operation: "save checksum manifest",
+            path: chosen.clone(),
+            message: "Manifest destination already exists.".into(),
+            kind: std::io::ErrorKind::AlreadyExists,
+        })),
+    })));
+    let s = &p.checksums.sessions[&id];
+    assert!(s.error.is_empty(), "an existing file is a question, not an error");
+    assert!(s.save_prompt.as_ref().is_some_and(|prompt| prompt.overwrite
+        && prompt.message.contains("chosen.sha256")));
+    p.dismiss_checksum_save_prompt(id);
+    assert!(p.checksums.sessions[&id].save_prompt.is_none());
+    assert_eq!(saves().len(), 1, "Cancel writes nothing");
+    p.checksums.sessions.get_mut(&id).unwrap().save_pending = Some(ChecksumAlgorithm::Sha256);
+    p.begin_pending_checksum_saves(&send);
+    let second = saves();
+    p.apply(Event::ChecksumManifest(Box::new(ChecksumManifestEvent {
+        save_id: second[1].0,
+        job: id,
+        generation,
+        update: ChecksumManifestUpdate::Finished(Err(FsError {
+            operation: "save checksum manifest",
+            path: chosen.clone(),
+            message: "Manifest destination already exists.".into(),
+            kind: std::io::ErrorKind::AlreadyExists,
+        })),
+    })));
+    p.confirm_checksum_save(id, &send);
+    let all = saves();
+    assert_eq!(all.len(), 3);
+    assert!(all[2].1, "Replace sends the confirmed overwrite");
+    assert_eq!(all[2].2, chosen);
 }

@@ -7,13 +7,18 @@ the gesture. Ctrl+Shift/Alt link gestures are unavailable and do not silently
 perform a different action. These rules also apply to captured native folders in
 expanded tree branches; see the [drag design](superpowers/specs/2026-11-10-folder-drag-and-native-handoff.md).
 
-**Ctrl+F8 — checksums** calculates selected files with focused-file fallback,
-described in the [checksum API](developer/CHECKSUMS.md). Ctrl+F7 continues to open
+**Ctrl+F8 — checksums** opens the Checksums window for the selected files (or the
+focused file), described in the [checksum API](developer/CHECKSUMS.md). Nothing is
+calculated until you press **Calculate**; the algorithm dropdown has a checkbox per
+algorithm and an *Include subfolders* checkbox. If the selection contains a checksum
+file, the window opens on **Verify file** with that file chosen. Ctrl+F7 continues to open
 filename case conversion. Default registration preserves user-customized bindings.
 These controls describe current source; packaged releases may precede it.
 The same window saves and verifies SFV/CRC32, MD5, SHA-1, SHA-256 and SHA-512
-files. **Verify file → Browse → Verify** reads a manifest on background workers;
-a focused checksum file pre-fills that page. Empty panels can also open it.
+files. **Save manifest…** asks for a file and saves at once; partial results and an
+existing file are confirmed in the window first (**Save** / **Replace**).
+**Verify file → Browse → Verify** reads a manifest on background workers. Empty
+panels can also open it.
 Inside the checksum results list, **Ctrl+C** copies the chosen hash and
 **Ctrl+Shift+C** copies the full row. **Shift+F10** opens the per-algorithm copy
 menu; **Escape** closes that modeless window and requests cancellation of its work.
@@ -143,7 +148,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+R / Ctrl+F9 | Refresh |
 | Ctrl+F3 / Ctrl+F4 / Ctrl+F5 / Ctrl+F6 | Sort the active panel by name / extension / modified time / size; repeat to reverse the order. Each detailed panel also has a clickable Ext header next to Name, with the current sort arrow; repeat-click reverses the order. The drive-bar sort dropdown offers Extension in every view mode. |
 | Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
-| Ctrl+F8 | Open modeless Checksums: SHA-256 default; optional SHA-512/MD5/SHA-1/CRC32, recursion, Stop, copy, Save manifest and Verify file (`.sfv`, `.md5`, `.sha1`, `.sha256`, `.sha512`) |
+| Ctrl+F8 | Open modeless Checksums: Calculate (SHA-256 default; optional SHA-512/MD5/SHA-1/CRC32 and recursion in the algorithm dropdown), Stop, copy, Save manifest… (confirms replacing an existing file) and Verify file (`.sfv`, `.md5`, `.sha1`, `.sha256`, `.sha512`) |
 | Ctrl+F10 | Compare the two displayed native directories by size and/or modified time; select differences; also available as Compare directories in the shared toolbar |
 | Ctrl+Shift+C | Compare two selected files in the active panel; otherwise use its single selected/focused file and the opposite explicit selection, or its unique visible same-name file when nothing is selected there. If the pair cannot be determined, choose File A and File B using paths or Browse; Enter compares, Escape cancels. Exact native names are matched. Image pairs support Side-by-Side, Swipe and Onion Skin. Compare files in the shared toolbar also works without a panel target. |
 | Ctrl+F11 | Fill the entire panels area with the active panel, hiding the other panel and splitter; press again to restore the previous split |

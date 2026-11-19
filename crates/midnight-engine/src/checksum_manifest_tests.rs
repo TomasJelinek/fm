@@ -41,6 +41,7 @@ fn fixture(name: &str) -> (ChecksumRun, ChecksumManifestRequest) {
             algorithm: ChecksumAlgorithm::Sha256,
             destination: root.join("out.sha256"),
             acknowledge_partial: None,
+            overwrite: false,
         },
     )
 }

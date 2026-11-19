@@ -135,15 +135,18 @@ fn minimum_checksum_window_keeps_both_page_and_algorithm_pickers_usable_at_font3
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
     modeless::draw(&native, 320, 200, "checksum-navigation-minimum-font32");
-    for label in ["Checksum page", "Output algorithm"] {
-        let item = modeless::accessible_item(&native, AccessibleRole::Combobox, label).unwrap();
+    for (role, label) in [
+        (AccessibleRole::Combobox, "Checksum page"),
+        (AccessibleRole::Button, "Checksum algorithms"),
+    ] {
+        let item = modeless::accessible_item(&native, role, label).unwrap();
         inside(&item, 320.0, 200.0);
         assert!(
             item.geometry().width() >= 100.0,
             "{label} needs a readable trigger"
         );
     }
-    window.set_page(4);
+    window.set_page(1);
     modeless::draw(&native, 320, 200, "checksum-verify-minimum-font32");
     inside(
         &modeless::accessible_item(&native, AccessibleRole::Button, "Close").unwrap(),

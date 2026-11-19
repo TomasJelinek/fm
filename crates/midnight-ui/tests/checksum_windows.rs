@@ -22,7 +22,7 @@ fn checksum_window_offers_file_verification_and_browse() {
     draw(&native, 1000, 620, "checksum-verify-page");
     click(&native, "Verify file");
     draw(&native, 1000, 620, "checksum-verify-input");
-    assert_eq!(window.get_page(), 4);
+    assert_eq!(window.get_page(), 1);
     assert!(
         modeless::accessible_item(
             &native,
@@ -272,10 +272,6 @@ fn checksum_rows_support_accessible_selection_and_algorithm_context_copy() {
 
 #[test]
 fn checksum_window_captures_selection_streams_and_closes_without_blocking_main() {
-    use i_slint_core::{
-        accessibility::{AccessibilityAction, AccessibleStringProperty},
-        items::AccessibleRole,
-    };
     let windows = Rc::new(RefCell::new(Vec::new()));
     slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
     let main = MainWindow::new().unwrap();
@@ -343,6 +339,15 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
         2,
         "Checksums need an independent native window"
     );
+    // Opening calculates nothing; the user presses Calculate in the new window.
+    let child = windows.borrow()[1].clone();
+    draw(&child, 1000, 620, "checksum-before-calculate");
+    let calculate = modeless::accessible_items(
+        &child,
+        i_slint_core::items::AccessibleRole::Button,
+        "Calculate",
+    );
+    modeless::click_item(&child, calculate.last().unwrap(), "Calculate");
     let request = commands
         .borrow()
         .iter()
@@ -451,87 +456,65 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
             .iter()
             .any(|command| matches!(command, Command::SaveChecksumManifest { .. }))
     );
+    // Choosing a file saves at once; an existing file is asked about, not refused.
     click(&native, "Save manifest…");
-    state.borrow_mut().apply(Event::PathPicked {
-        request: pick_request(),
-        result: Ok(Some(root.join("checksums.sha256"))),
-    });
-    midnight_ui::refresh(&main, &state.borrow());
-    draw(&native, 1000, 620, "checksum-default-destination");
-    let destination = || {
-        modeless::accessible_item(&native, AccessibleRole::Text, "Manifest output path")
-            .unwrap()
-            .accessible_string_property(AccessibleStringProperty::Value)
-            .unwrap()
-            .to_string()
-    };
-    assert!(destination().ends_with("checksums.sha256"));
-    modeless::accessible_item(&native, AccessibleRole::Combobox, "Checksum file format")
-        .unwrap()
-        .accessible_action(&AccessibilityAction::Expand);
-    draw(&native, 1000, 620, "checksum-format-dropdown");
-    for key in [Key::DownArrow, Key::Return] {
-        native
-            .window()
-            .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
-        native
-            .window()
-            .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
-    }
-    assert!(destination().ends_with("checksums.md5"));
-    click(&native, "Options");
-    draw(&native, 1000, 620, "checksum-recalculate-options");
-    modeless::accessible_item(&native, AccessibleRole::Checkbox, "MD5")
-        .unwrap()
-        .accessible_action(&AccessibilityAction::Default);
-    click(&native, "Calculate");
-    let next = commands
-        .borrow()
-        .iter()
-        .rev()
-        .find_map(|command| match command {
-            Command::StartSelectedChecksums(request) => Some(request.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(next.algorithms, ChecksumAlgorithms::default());
-    let mut finished = (*completed).clone();
-    finished.generation = next.generation;
-    finished.algorithms = next.algorithms;
-    state
-        .borrow_mut()
-        .apply(Event::Checksum(Box::new(ChecksumEvent {
-            job: next.job,
-            generation: next.generation,
-            update: ChecksumUpdate::Finished(Arc::new(finished)),
-        })));
-    midnight_ui::refresh(&main, &state.borrow());
-    assert!(
-        destination().ends_with("checksums.sha256"),
-        "Recalculation must update the untouched generated suffix"
-    );
-    draw(&native, 320, 200, "checksum-completed");
-    click(&native, "Export…");
     let chosen = root.join("Šek 日本語.sha256");
-    state.borrow_mut().apply(Event::PathPicked {
-        request: pick_request(),
-        result: Ok(Some(chosen.clone())),
-    });
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    state.borrow_mut().apply_with_sender(
+        Event::PathPicked {
+            request: pick_request(),
+            result: Ok(Some(chosen.clone())),
+        },
+        &send,
+    );
     midnight_ui::refresh(&main, &state.borrow());
-    draw(&native, 320, 200, "checksum-save");
-    assert_eq!(destination(), chosen.to_string_lossy());
-    assert!(
-        !commands
+    draw(&native, 1000, 620, "checksum-save");
+    let saves = || {
+        commands
             .borrow()
             .iter()
-            .any(|command| matches!(command, Command::SaveChecksumManifest { .. }))
-    );
-    click(&native, "Save");
-    assert!(commands.borrow().iter().any(
-        |c| matches!(c, Command::SaveChecksumManifest { job, generation, request: save, .. }
-                if *job == request.job && *generation == next.generation
-                && save.destination == chosen && save.algorithm == ChecksumAlgorithm::Sha256)
-    ));
+            .filter_map(|c| match c {
+                Command::SaveChecksumManifest {
+                    save_id,
+                    job,
+                    generation,
+                    request: save,
+                } if *job == request.job
+                    && *generation == request.generation
+                    && save.destination == chosen
+                    && save.algorithm == ChecksumAlgorithm::Sha256 =>
+                {
+                    Some((*save_id, save.overwrite))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = saves();
+    assert_eq!(first.len(), 1);
+    assert!(!first[0].1, "the first attempt never replaces");
+    state
+        .borrow_mut()
+        .apply(Event::ChecksumManifest(Box::new(ChecksumManifestEvent {
+            save_id: first[0].0,
+            job: request.job,
+            generation: request.generation,
+            update: ChecksumManifestUpdate::Finished(Err(FsError {
+                operation: "save checksum manifest",
+                path: chosen.clone(),
+                message: "Manifest destination already exists.".into(),
+                kind: std::io::ErrorKind::AlreadyExists,
+            })),
+        })));
+    midnight_ui::refresh(&main, &state.borrow());
+    draw(&native, 1000, 620, "checksum-replace-prompt");
+    click(&native, "Replace");
+    let all = saves();
+    assert_eq!(all.len(), 2);
+    assert!(all[1].1, "Replace confirms the overwrite");
     accepting.set(false);
     click(&native, "Close");
     assert!(native.window().is_visible());
@@ -580,7 +563,7 @@ fn checksum_actions_keep_320_by_200_layout_in_every_theme_and_density() {
         for density in 0..2 {
             window.invoke_apply_preferences(theme, density, "".into(), 11, 15);
             for (width, height) in [(860, 620), (320, 200)] {
-                for page in 0..5 {
+                for page in 0..2 {
                     window.set_page(page);
                     modeless::draw_or_layout(
                         &native,
@@ -589,8 +572,13 @@ fn checksum_actions_keep_320_by_200_layout_in_every_theme_and_density() {
                         &format!("checksum-layout-theme{theme}-density{density}-page{page}"),
                         theme == themes[0],
                     );
-                    if page == 1 {
-                        click(&native, "Calculate");
+                    if page == 0 {
+                        let calculate = modeless::accessible_items(
+                            &native,
+                            i_slint_core::items::AccessibleRole::Button,
+                            "Calculate",
+                        );
+                        modeless::click_item(&native, calculate.last().unwrap(), "Calculate");
                     }
                     let previous_closes = closed.get();
                     click(&native, "Close");

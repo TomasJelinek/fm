@@ -41,7 +41,6 @@ struct Harness {
     state: Rc<RefCell<Presenter>>,
     attempts: Rc<Cell<usize>>,
     releases: Rc<Cell<usize>>,
-    accepting: Rc<Cell<bool>>,
     clock: Rc<Cell<Duration>>,
 }
 impl Harness {
@@ -112,7 +111,6 @@ impl Harness {
             state,
             attempts,
             releases,
-            accepting,
             clock,
         }
     }
@@ -123,15 +121,16 @@ impl Harness {
 }
 
 #[test]
-fn failed_checksum_native_window_retries_only_release_at_bounded_rate_until_accepted() {
+fn failed_checksum_native_window_is_reported_once_and_never_recreated() {
     let h = Harness::new();
     h.main.invoke_calculate_checksums(0);
     assert_eq!(h.attempts.get(), 2);
     h.tick(0);
-    assert_eq!(h.releases.get(), 1);
+    // Opening calculates nothing, so a refused window has no started job to release.
+    assert_eq!(h.releases.get(), 0);
     let report = h.main.get_message_generation();
     for _ in 0..16 {
-        h.tick(0);
+        h.tick(1000);
         midnight_ui::refresh(&h.main, &h.state.borrow());
     }
     assert_eq!(
@@ -140,33 +139,12 @@ fn failed_checksum_native_window_retries_only_release_at_bounded_rate_until_acce
         "only the failed tool is attempted; its notice remains in the main window"
     );
     assert!(h.main.get_embedded_modal_open());
-    assert_eq!(h.releases.get(), 1, "no zero-delay release retry loop");
-    h.tick(249);
-    assert_eq!(h.releases.get(), 1);
-    h.tick(250);
-    assert_eq!(h.releases.get(), 2);
+    assert_eq!(h.releases.get(), 0);
     assert_eq!(
         h.main.get_message_generation(),
         report,
         "native failure is reported once"
     );
-    let guard = h.state.borrow_mut();
-    h.tick(500);
-    drop(guard);
-    assert_eq!(
-        h.releases.get(),
-        2,
-        "a borrowed Presenter defers release safely"
-    );
-    h.accepting.set(true);
-    h.tick(750);
-    assert_eq!(h.releases.get(), 3);
-    for _ in 0..8 {
-        midnight_ui::refresh(&h.main, &h.state.borrow());
-    }
-    h.tick(2000);
-    assert_eq!(h.attempts.get(), 2);
-    assert_eq!(h.releases.get(), 3);
     h.main.invoke_close_checksum_windows();
     h.main.hide().unwrap();
 }
@@ -176,10 +154,10 @@ fn host_shutdown_stops_failed_checksum_retries_and_initial_find_failure_closes_l
     let h = Harness::new();
     h.main.invoke_calculate_checksums(0);
     h.tick(0);
-    assert_eq!(h.releases.get(), 1);
+    assert_eq!(h.releases.get(), 0);
     h.main.invoke_close_checksum_windows();
     h.tick(1000);
-    assert_eq!(h.releases.get(), 1);
+    assert_eq!(h.releases.get(), 0);
     assert_eq!(h.attempts.get(), 2);
     h.main.invoke_find_files(0);
     assert_eq!(h.attempts.get(), 3);
