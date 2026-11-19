@@ -489,6 +489,14 @@ impl Job {
                         }
                     }
                 }
+                Err(error)
+                    if matches!(progress.kind, MutationKind::Delete(_))
+                        && error.kind == io::ErrorKind::Interrupted
+                        && self.cancel.is_cancelled() =>
+                {
+                    // Native cancellation can follow already-reported deletions.
+                    break;
+                }
                 Err(error) => {
                     progress.failed += 1;
                     if progress.errors.len() < 16 {
@@ -530,11 +538,16 @@ impl Job {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        // A residue undoes nothing; only targets that did not complete leave partial work.
-        if progress.failed > residues && progress.processed_entries > 0 {
+        // A residue undoes nothing; an incomplete target can leave partial work.
+        if progress.processed_entries > 0
+            && (progress.state == OperationState::Cancelled || progress.failed > residues)
+        {
+            if !progress.message.is_empty() {
+                progress.message.push('\n');
+            }
             progress
                 .message
-                .push_str("\nSome changes were already completed and have not been undone.");
+                .push_str("Some changes were already completed and have not been undone.");
         }
         progress
     }

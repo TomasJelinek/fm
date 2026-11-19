@@ -189,12 +189,15 @@ impl PreparedMutation for FakeTarget {
         {
             std::thread::park_timeout(Duration::from_millis(5));
         }
-        if cancel.is_cancelled() && !self.calls.complete_after_cancel.load(Ordering::Acquire) {
-            return Err(FsError::from_io(
+        let interrupted = || {
+            FsError::from_io(
                 "delete",
                 &self.item.path,
                 std::io::ErrorKind::Interrupted.into(),
-            ));
+            )
+        };
+        if cancel.is_cancelled() && !self.calls.complete_after_cancel.load(Ordering::Acquire) {
+            return Err(interrupted());
         }
         progress(&self.item.path);
         while self.calls.blocked_after_progress.load(Ordering::Acquire) && !cancel.is_cancelled() {
@@ -208,6 +211,9 @@ impl PreparedMutation for FakeTarget {
                 &self.item.path,
                 std::io::ErrorKind::PermissionDenied.into(),
             ));
+        }
+        if cancel.is_cancelled() && !self.calls.complete_after_cancel.load(Ordering::Acquire) {
+            return Err(interrupted());
         }
         Ok(DeleteCompletion {
             residue: self.calls.residue.lock().unwrap().take(),
@@ -571,6 +577,46 @@ async fn mutations_are_serial_and_cancelling_one_does_not_cancel_the_next() {
         (OperationId(2), OperationState::Completed)
     );
     assert_eq!(h.calls.deleted.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn cancelled_delete_preserves_partial_progress_and_only_genuine_errors() {
+    for fail_after_progress in [false, true] {
+        let mut h = Harness::new(MutationKind::Delete(DeleteMode::Permanent));
+        h.calls
+            .blocked_after_progress
+            .store(true, Ordering::Release);
+        h.calls
+            .fail_after_progress
+            .store(fail_after_progress, Ordering::Release);
+        h.controller.prepare(h.request.clone()).await;
+        h.preview().await;
+        h.controller.confirm(h.request.id, None).await;
+
+        // The provider has already removed one entry, but has not returned
+        // from deleting the selected root.
+        loop {
+            if let OperationEvent::Progress(progress) = h.next().await
+                && progress.state == OperationState::Running
+                && progress.processed_entries == 1
+            {
+                break;
+            }
+        }
+        h.controller.cancel(h.request.id);
+        let done = h.finished().await;
+        assert_eq!(done.state, OperationState::Cancelled);
+        assert_eq!((done.completed, done.processed_entries), (0, 1));
+        assert_eq!(done.failed, u64::from(fail_after_progress));
+        assert!(done.message.contains("have not been undone"));
+        if fail_after_progress {
+            assert_eq!(done.errors.len(), 1);
+            assert_eq!(done.errors[0].kind, std::io::ErrorKind::PermissionDenied);
+            assert_eq!(done.errors[0].path, h.request.source.entries[0].path);
+        } else {
+            assert!(done.errors.is_empty());
+        }
+    }
 }
 
 #[tokio::test]
