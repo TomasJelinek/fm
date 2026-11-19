@@ -1,5 +1,5 @@
 import { FallbackIcons } from "action-icons.slint";
-import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 
 // Custom assignments have one action: remove. The complete extension stays visible.
@@ -29,16 +29,5 @@ export component ArchiveExtensionChip inherits Rectangle {
         width: max(0px, root.width - self.x - 8px); height: root.height - 8px;
         text: "." + root.extension; color: Theme.text; font-size: Theme.font-size;
         vertical-alignment: center; wrap: char-wrap;
-    }
-}
-
-export component ArchiveExtensionInput inherits HintedLineEdit {
-    callback cancelled();
-    accessible-label: "Custom archive extension";
-    placeholder-text: "Extension, then Enter";
-    hint: "Enter a literal extension, such as backup or backup.tar. Press Enter to add it, or Escape to cancel.";
-    key-pressed(event) => {
-        if event.text == Key.Escape { root.cancelled(); return accept; }
-        reject
     }
 }
