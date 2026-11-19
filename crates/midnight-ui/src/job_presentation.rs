@@ -75,9 +75,10 @@ fn cached_copy(p: &Presenter, progress: &std::sync::Arc<CopyProgress>) -> Operat
     );
     // Icons and conflicts arrive independently of progress snapshots. Theme styling
     // remains a Slint binding; never freeze asynchronous artwork or decision state.
-    row.icon = p
-        .desktop
-        .image(&IconKey::action(copy_artwork(progress.intent)));
+    row.icon = p.desktop.image(
+        &IconKey::action(copy_artwork(progress.intent)),
+        IconPlace::Action,
+    );
     row.attention = copy_attention(p, progress.id);
     row
 }
@@ -88,9 +89,10 @@ fn cached_mutation(p: &Presenter, progress: &std::sync::Arc<OperationProgress>) 
         &p.number_locale,
         || mutation(p, progress),
     );
-    row.icon = p
-        .desktop
-        .image(&IconKey::action(mutation_artwork(progress.kind).0));
+    row.icon = p.desktop.image(
+        &IconKey::action(mutation_artwork(progress.kind).0),
+        IconPlace::Action,
+    );
     row.attention = mutation_attention(p, progress.id);
     row
 }
@@ -207,7 +209,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         activity_label: SharedString::default(),
         determinate: meter.determinate,
         progress: meter.fraction,
-        icon: p.desktop.image(&IconKey::action(icon)),
+        icon: p.desktop.image(&IconKey::action(icon), IconPlace::Action),
         speed_chart: if matches!(progress.kind, MutationKind::Delete(_)) {
             p.job_charts
                 .get(progress.id, true, &progress.throughput, &p.number_locale)
@@ -377,9 +379,10 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         verification_view,
         waiting: waiting.is_some(),
         activity_label: copy_activity(progress, meter.discovering).into(),
-        icon: p
-            .desktop
-            .image(&IconKey::action(copy_artwork(progress.intent))),
+        icon: p.desktop.image(
+            &IconKey::action(copy_artwork(progress.intent)),
+            IconPlace::Action,
+        ),
         kind: 0,
         speed_chart: if !progress.state.is_terminal()
             && progress.phase == CopyOperationPhase::Verifying

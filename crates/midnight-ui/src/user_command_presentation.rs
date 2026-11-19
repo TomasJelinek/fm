@@ -116,7 +116,10 @@ impl Model for Rows {
             hint: command_hint(command, p.shortcut_hint(&command.id.action())).into(),
             icon: p
                 .custom_command_icon(&revision, command.id.as_str())
-                .unwrap_or_else(|| p.desktop.image(&IconKey::action(ActionIcon::Run))),
+                .unwrap_or_else(|| {
+                    p.desktop
+                        .image(&IconKey::action(ActionIcon::Run), IconPlace::Action)
+                }),
         })
     }
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -320,7 +323,9 @@ pub(crate) fn job_rows(p: &Presenter) -> Vec<OperationRow> {
                 active: !job.finished,
                 determinate: job.finished,
                 progress: if job.finished { 1.0 } else { 0.0 },
-                icon: p.desktop.image(&IconKey::action(ActionIcon::Run)),
+                icon: p
+                    .desktop
+                    .image(&IconKey::action(ActionIcon::Run), IconPlace::Action),
                 kind: 6,
                 speed_chart: Default::default(),
                 completed: job.finished && job.error.is_none(),

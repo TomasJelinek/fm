@@ -59,6 +59,7 @@ mod font_catalog;
 mod fonts;
 mod function_bar;
 mod hidden_icons;
+mod icon_edges;
 mod information_window_lifetime;
 mod interaction_controls;
 mod interaction_performance;

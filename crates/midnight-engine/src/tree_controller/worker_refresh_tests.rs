@@ -330,12 +330,16 @@ impl StorageService for Unobserved {
     }
 }
 
-/// A production watch controller (15 s polling); nobody reads its hints.
+/// A production watch controller (15 s polling); nobody reads its hints. The
+/// returned owner keeps the controller's resident worker running.
 fn watch_controller() -> (
     crate::watch::Controller,
     tokio::task::JoinSet<()>,
     mpsc::Receiver<Event>,
+    midnight_work_budget::resident::Owner,
 ) {
+    let (resident, spawner) =
+        midnight_work_budget::resident::Owner::start("tree-refresh-test", 1).unwrap();
     let domain =
         crate::retirement::RetirementDomain::try_start(crate::watch::RETIREMENT_CAPACITY, 0)
             .unwrap();
@@ -345,6 +349,7 @@ fn watch_controller() -> (
     let (sender, hints) = mpsc::channel(8);
     let mut tasks = tokio::task::JoinSet::new();
     let watch = crate::watch::Controller::new(
+        &spawner,
         retirement,
         crate::task_lifetime::TaskLifetime::testing(()),
         Arc::new(Unobserved),
@@ -355,7 +360,7 @@ fn watch_controller() -> (
         },
         &mut tasks,
     );
-    (watch, tasks, hints)
+    (watch, tasks, hints, resident)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -375,7 +380,7 @@ async fn unchanged_refresh_loaded_publishes_nothing_and_settles_the_watch_withou
         tree_event(&mut fixture.receiver),
         TreeEvent::Refreshed { result: Ok(()), .. }
     ));
-    let (watch, mut tasks, _hints) = watch_controller();
+    let (watch, mut tasks, _hints, _resident) = watch_controller();
     let handle = watch.handle();
     fixture.worker.watch = Some(handle.clone());
     // The exact Commit installs watch authority for the acknowledged view.

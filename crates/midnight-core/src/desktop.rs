@@ -119,10 +119,73 @@ pub enum IconKind {
     Location(LocationKind),
 }
 
-/// Delivered icon keys the backend remembers: it does not load or resend a key
-/// while that key is among this many most recently requested ones. A UI image
-/// cache must therefore hold at least this many icons.
+/// Delivered icons the backend remembers: it does not load or resend an icon,
+/// at any edge it was delivered at, while that icon is among this many most
+/// recently requested ones. A UI image cache must therefore hold at least this
+/// many icons, each at every edge the frontend draws.
 pub const DESKTOP_ICON_CAPACITY: usize = 256;
+
+/// Largest edge, in device pixels, of an icon a provider is asked for and of an
+/// `IconPixels` bitmap. Thumbnail tiles on dense displays draw icons this large.
+pub const MAX_ICON_EDGE: u16 = 256;
+
+/// Edges, in device pixels, at which a frontend draws native icons. The backend
+/// delivers every requested icon at the edges of the places its kind is drawn
+/// in, as far as the platform's provider serves them (`IconService::icon_edge`).
+/// Action art is drawn at several small sizes from one bitmap and stays at
+/// `IconKey::DEFAULT_EDGE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IconEdges {
+    /// File and folder rows.
+    pub entry: u16,
+    /// Tiles of entries without a thumbnail; zero while no pane shows tiles.
+    pub tile: u16,
+    /// Location, drive and bookmark choices.
+    pub location: u16,
+}
+
+impl Default for IconEdges {
+    /// The single edge delivered before frontends reported theirs.
+    fn default() -> Self {
+        Self {
+            entry: IconKey::DEFAULT_EDGE,
+            tile: 0,
+            location: IconKey::DEFAULT_EDGE,
+        }
+    }
+}
+
+impl IconEdges {
+    /// The distinct edges at which an icon of `kind` is drawn.
+    pub fn of(self, kind: IconKind) -> impl Iterator<Item = u16> {
+        let action = IconKey::DEFAULT_EDGE;
+        let places = match kind {
+            IconKind::File | IconKind::Link => [self.entry, self.tile, 0, 0],
+            // Folder art also stands in for a location without art of its own.
+            IconKind::Folder | IconKind::FolderLink => [self.entry, self.tile, self.location, 0],
+            IconKind::Drive | IconKind::Location(_) => [self.location, 0, 0, 0],
+            // Some action art is also the icon of a row or of a location choice.
+            IconKind::Action(ActionIcon::Parent) => [action, self.entry, self.tile, 0],
+            IconKind::Action(ActionIcon::Network) => [action, self.entry, self.tile, self.location],
+            IconKind::Action(
+                ActionIcon::RecycleBin
+                | ActionIcon::OpenPath
+                | ActionIcon::Bookmarks
+                | ActionIcon::AddBookmark,
+            ) => [action, self.location, 0, 0],
+            IconKind::Action(_) => [action, 0, 0, 0],
+        };
+        (0..places.len())
+            .filter(move |&at| places[at] != 0 && !places[..at].contains(&places[at]))
+            .map(move |at| places[at])
+    }
+
+    /// False for edges no provider is asked for.
+    pub fn is_valid(self) -> bool {
+        let drawn = 1..=MAX_ICON_EDGE;
+        drawn.contains(&self.entry) && drawn.contains(&self.location) && self.tile <= MAX_ICON_EDGE
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IconKey {
@@ -135,12 +198,22 @@ pub struct IconKey {
 }
 
 impl IconKey {
+    /// The edge every constructor assigns. Frontends build keys of this edge to
+    /// name an icon; the backend delivers it at the edges it is drawn at.
+    pub const DEFAULT_EDGE: u16 = 32;
+
+    /// The same icon at another edge, in device pixels.
+    pub fn sized(mut self, size: u16) -> Self {
+        self.size = size;
+        self
+    }
+
     pub fn action(role: ActionIcon) -> Self {
         Self {
             kind: IconKind::Action(role),
             extension: None,
             drive_root: None,
-            size: 32,
+            size: Self::DEFAULT_EDGE,
         }
     }
 
@@ -160,7 +233,7 @@ impl IconKey {
             kind: IconKind::Folder,
             extension: None,
             drive_root: None,
-            size: 32,
+            size: Self::DEFAULT_EDGE,
         }
     }
     pub fn file() -> Self {
@@ -168,7 +241,7 @@ impl IconKey {
             kind: IconKind::File,
             extension: None,
             drive_root: None,
-            size: 32,
+            size: Self::DEFAULT_EDGE,
         }
     }
     pub fn folder_link() -> Self {
@@ -182,7 +255,7 @@ impl IconKey {
             kind: IconKind::Drive,
             extension: None,
             drive_root: None,
-            size: 32,
+            size: Self::DEFAULT_EDGE,
         }
     }
     /// Preserve the native volume identity so different drives have independent icons.
@@ -213,7 +286,7 @@ impl IconKey {
                 None
             },
             drive_root: None,
-            size: 32,
+            size: Self::DEFAULT_EDGE,
         }
     }
 }
@@ -230,8 +303,9 @@ pub struct IconPixels {
 
 impl IconPixels {
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, &'static str> {
-        if !(1..=64).contains(&width) || !(1..=64).contains(&height) {
-            return Err("Icon dimensions must be in 1..=64.");
+        let edges = 1..=u32::from(MAX_ICON_EDGE);
+        if !edges.contains(&width) || !edges.contains(&height) {
+            return Err("Icon dimensions must be in 1..=256.");
         }
         let expected = (width as usize) * (height as usize) * 4;
         if rgba.len() != expected {
@@ -399,6 +473,15 @@ pub trait OpenService: Send + Sync + 'static {
 /// All native icon extraction and file decoding happen on a backend worker.
 pub trait IconService: Send + Sync + 'static {
     fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError>;
+
+    /// The edge to request from `load_icon` for an icon drawn at `drawn` device
+    /// pixels. A provider that renders artwork at the requested size returns
+    /// `drawn`; the default is the one edge every icon was delivered at before,
+    /// which the frontend then scales itself. Called on the backend's own task:
+    /// an implementation computes the answer without I/O.
+    fn icon_edge(&self, _drawn: u16) -> u16 {
+        IconKey::DEFAULT_EDGE
+    }
 
     /// Explicitly configured Program artwork only. The caller captures and revalidates
     /// the native executable around this backend-only lookup; no program is launched.
@@ -593,8 +676,63 @@ mod tests {
         assert!(IconPixels::new(2, 2, vec![0; 16]).is_ok());
         assert!(IconPixels::new(2, 2, vec![0; 15]).is_err());
         assert!(IconPixels::new(0, 2, vec![]).is_err());
-        assert!(IconPixels::new(65, 1, vec![0; 260]).is_err());
+        assert!(IconPixels::new(256, 1, vec![0; 1024]).is_ok());
+        assert!(IconPixels::new(257, 1, vec![0; 1028]).is_err());
         assert!(IconPixels::new(u32::MAX, u32::MAX, vec![]).is_err());
+    }
+
+    #[test]
+    fn icon_edges_list_each_place_a_kind_is_drawn_in_once() {
+        let edges = IconEdges {
+            entry: 20,
+            tile: 96,
+            location: 26,
+        };
+        let of = |kind| edges.of(kind).collect::<Vec<_>>();
+        assert_eq!(of(IconKind::File), [20, 96]);
+        assert_eq!(of(IconKind::Link), [20, 96]);
+        assert_eq!(of(IconKind::Folder), [20, 96, 26]);
+        assert_eq!(of(IconKind::FolderLink), [20, 96, 26]);
+        assert_eq!(of(IconKind::Drive), [26]);
+        assert_eq!(of(IconKind::Location(LocationKind::Home)), [26]);
+        assert_eq!(of(IconKind::Action(ActionIcon::Copy)), [32]);
+        assert_eq!(of(IconKind::Action(ActionIcon::Parent)), [32, 20, 96]);
+        assert_eq!(of(IconKind::Action(ActionIcon::Network)), [32, 20, 96, 26]);
+        assert_eq!(of(IconKind::Action(ActionIcon::RecycleBin)), [32, 26]);
+
+        // No tile view, and rows drawn at the location edge: nothing repeats.
+        let rows = IconEdges {
+            entry: 20,
+            tile: 0,
+            location: 20,
+        };
+        assert_eq!(rows.of(IconKind::Folder).collect::<Vec<_>>(), [20]);
+        assert_eq!(
+            IconEdges::default()
+                .of(IconKind::Action(ActionIcon::Network))
+                .collect::<Vec<_>>(),
+            [32],
+            "the default delivers one bitmap of the default edge per icon"
+        );
+        assert!(IconEdges::default().is_valid() && edges.is_valid());
+        for invalid in [
+            IconEdges { entry: 0, ..edges },
+            IconEdges {
+                location: 0,
+                ..edges
+            },
+            IconEdges {
+                entry: 257,
+                ..edges
+            },
+            IconEdges { tile: 257, ..edges },
+            IconEdges {
+                location: 257,
+                ..edges
+            },
+        ] {
+            assert!(!invalid.is_valid(), "{invalid:?}");
+        }
     }
 
     #[test]

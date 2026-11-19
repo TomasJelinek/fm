@@ -1,9 +1,13 @@
 //! Project the bounded native icon cache into named UI action roles.
-use crate::{ActionIcons, Presenter};
+use crate::{ActionIcons, IconPlace, Presenter};
 use midnight_core::{ActionIcon, IconKey};
 
 pub(super) fn palette(presenter: &Presenter) -> ActionIcons {
-    let image = |role| presenter.desktop.image(&IconKey::action(role));
+    let image = |role| {
+        presenter
+            .desktop
+            .image(&IconKey::action(role), IconPlace::Action)
+    };
     ActionIcons {
         network: image(ActionIcon::Network),
         back: image(ActionIcon::Back),

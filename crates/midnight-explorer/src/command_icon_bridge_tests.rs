@@ -69,6 +69,10 @@ fn command_artwork_retries_rejected_sends_and_clears_hidden_views_without_decodi
             storage: Arc::new(|_| panic!("executable reached image decoder storage lookup")),
         },
         Rc::new(move |command| {
+            // The same pass reports the edges at which native icons are drawn.
+            if matches!(command, Command::SetIconEdges(_)) {
+                return true;
+            }
             let Command::SetCommandIconView {
                 generation,
                 targets,

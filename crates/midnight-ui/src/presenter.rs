@@ -16,6 +16,8 @@ mod copy_dialog;
 mod copy_errors_tests;
 mod copy_selection;
 mod desktop;
+pub(crate) use desktop::IconPlace;
+pub use desktop::IconView;
 pub(crate) mod drag_drop;
 mod drive_information;
 mod editor;
