@@ -1,0 +1,24 @@
+// The shared ScrollView without its two scroll bars, for strips that never show
+// them. A hidden bar is still an instance with its own bindings at every use.
+export component ScrollStrip {
+    out property <length> visible-width <=> flickable.width;
+    out property <length> visible-height <=> flickable.height;
+    in-out property <length> content-width <=> flickable.content-width;
+    in-out property <length> content-height <=> flickable.content-height;
+    in-out property <length> content-x <=> flickable.content-x;
+    in-out property <length> content-y <=> flickable.content-y;
+    in property <bool> mouse-drag-pan-enabled <=> flickable.mouse-drag-pan-enabled;
+    callback scrolled <=> flickable.flicked;
+    min-height: 50px;
+    min-width: 50px;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    preferred-height: 100%;
+    preferred-width: 100%;
+    flickable := Flickable {
+        mouse-drag-pan-enabled: false;
+        width: parent.width;
+        height: parent.height;
+        @children
+    }
+}

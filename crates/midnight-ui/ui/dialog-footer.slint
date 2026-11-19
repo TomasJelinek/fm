@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -7,15 +7,17 @@ import { FallbackIcons } from "action-icons.slint";
 // Actions use spare width and scroll when necessary. Dismiss remains reachable;
 // a narrow, tall dialog puts it on a second row instead of squeezing controls.
 export component DialogFooter inherits Rectangle {
-    in property <string> dismiss-text: "Cancel";
-    in property <string> dismiss-hint: "Close this dialog (Escape).";
-    in property <image> dismiss-native-icon;
-    in property <image> dismiss-fallback-icon: FallbackIcons.close;
-    in property <bool> dismiss-enabled: true;
+    // Aliases, not copies: the footer is inlined into every dialog, so each
+    // forwarded property would be one more generated binding per dialog.
+    in property <string> dismiss-text <=> dismiss-button.text;
+    in property <string> dismiss-hint <=> dismiss-button.hint;
+    in property <image> dismiss-native-icon <=> dismiss-button.native-icon;
+    in property <image> dismiss-fallback-icon <=> dismiss-button.fallback-icon;
+    in property <bool> dismiss-enabled <=> dismiss-button.enabled;
     in property <bool> compact-height;
     in property <bool> compact-controls;
     in property <bool> fill-actions;
-    callback dismiss();
+    callback dismiss <=> dismiss-button.clicked;
     public function focus-dismiss() { dismiss-button.focus(); }
     private property <bool> stacked: root.width < 440px && !root.compact-height;
     private property <length> control-height: max(Theme.control-height,
@@ -43,9 +45,7 @@ export component DialogFooter inherits Rectangle {
         x: root.width - self.width; y: root.stacked ? root.action-height + 8px : 0px;
         width: min(root.width, max(80px, self.preferred-width));
         height: root.control-height;
-        text: root.dismiss-text; hint: root.dismiss-hint;
-        native-icon: root.dismiss-native-icon; fallback-icon: root.dismiss-fallback-icon;
-        enabled: root.dismiss-enabled;
-        clicked => { root.dismiss(); }
+        text: "Cancel"; hint: "Close this dialog (Escape).";
+        fallback-icon: FallbackIcons.close;
     }
 }

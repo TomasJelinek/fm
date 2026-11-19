@@ -36,7 +36,7 @@ pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow
             tooltip: shown_text(&bookmark_tooltip(presenter, bookmark)),
             icon: presenter
                 .desktop
-                .image(&IconKey::action(ActionIcon::Bookmarks)),
+                .image(&IconKey::action(ActionIcon::Bookmarks), IconPlace::Location),
             kind: LocationRole::HotPath,
         })
         .collect()
@@ -64,9 +64,10 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         label: "Add path".into(),
         compact_label: "Add path".into(),
         tooltip: "Save the active panel's current folder".into(),
-        icon: presenter
-            .desktop
-            .image(&IconKey::action(ActionIcon::AddBookmark)),
+        icon: presenter.desktop.image(
+            &IconKey::action(ActionIcon::AddBookmark),
+            IconPlace::Location,
+        ),
         kind: LocationRole::HotPath,
     });
     hot_paths.push(NavigationChoiceRow {
@@ -76,7 +77,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         tooltip: "Add or remove saved paths and assign numbered shortcuts".into(),
         icon: presenter
             .desktop
-            .image(&IconKey::action(ActionIcon::Bookmarks)),
+            .image(&IconKey::action(ActionIcon::Bookmarks), IconPlace::Location),
         kind: LocationRole::HotPath,
     });
     navigation_models::update(

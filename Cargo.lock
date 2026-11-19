@@ -1079,6 +1079,7 @@ dependencies = [
  "itertools 0.15.0",
  "log",
  "rgb",
+ "skrifa",
  "slotmap",
  "swash",
  "wasm-bindgen",
@@ -2699,6 +2700,7 @@ dependencies = [
 name = "midnight-explorer"
 version = "0.2.0"
 dependencies = [
+ "femtovg",
  "find-msvc-tools",
  "midnight-compare-engine",
  "midnight-compare-ui",
@@ -2912,11 +2914,10 @@ name = "midnight-ui-bindings"
 version = "0.2.0"
 dependencies = [
  "i-slint-compiler",
- "prettyplease",
+ "proc-macro2",
  "slint",
  "slint-build",
  "spin_on",
- "syn 2.0.119",
 ]
 
 [[package]]

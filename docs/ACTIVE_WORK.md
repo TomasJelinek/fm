@@ -79,6 +79,56 @@ Not established:
   captures report a change; a few comparator tests fail intermittently here for that
   reason (COMPARE-02).
 
+### Slint compile time and UI sharpness — 18 November 2026
+
+On main `544b48db`, Linux only. Rebuilding `midnight-ui-bindings` after a `.slint`
+change took 41.4 s in its build script and 370.1 s in `rustc`; it now takes 10.8 s
+and 172.7 s ([record](verification/2026-11-18-slint-compile-time.md)). The causes
+were a `rustc` lint that copied the 63 MB generated source for every short block, the
+SDK `ScrollView` inlined with both scroll bars at 71 uses, the file pane, error
+notice, dialog frame and tooltips copied by the compiler's inlining rules, and
+incremental compilation that cost more than it saved for this crate. The main window
+now uses its own `ScrollView`/`ListView` (`ui/scroll-view.slint`) and a shared `Tip`.
+
+The same change removes the blur of file-pane content that did not start on a device
+pixel and puts the pane split, function keys, status metrics and dialog position on
+whole pixels ([record](verification/2026-11-18-ui-sharpness.md)).
+
+A second change delivers native icons at the size they are drawn. The UI reports the
+device-pixel edges of rows, tiles and location choices (`Command::SetIconEdges`), the
+backend loads each icon at the edges of its kind and again when they change, and the
+UI keeps one bitmap per edge. On Linux the provider follows the desktop's icon theme
+through XSETTINGS and its inherited themes, picks the theme directory by pixel size
+and scales at most once, in premultiplied alpha. With Yaru, tiles are untouched 96 px
+artwork and rows are 24 px artwork reduced to 20 px. The icons are therefore the
+desktop's own and no longer Adwaita's, including more theme artwork among the
+toolbar actions. **Open:** the Windows provider still delivers one 32 px bitmap
+(`IconService::icon_edge` keeps it unchanged); action icons stay at 32 px because one
+bitmap is drawn at six sizes; SVG-only themes fall back as before.
+
+A third change adds two text fittings to the vendored FemtoVG, off by default:
+`MIDNIGHT_GLYPH_FITTING=snapped` or `=fitted`. `fitted` puts stems on whole pixel
+columns through the hinting engine swash already uses and keeps word spacing with
+whole-pixel advances inside words. **Open:** making one of them the default needs a
+visual decision; `fitted` can leave ink up to one pixel from layout positions, which
+shows where selections or the quick-search prefix clip text. The vendored renderer
+gains a `skrifa` edge and the explorer a direct `femtovg` one, with no new package
+([third-party record](THIRD_PARTY.md)).
+
+UI test results equal main's in the same Docker environment: 19 tests of
+`midnight-ui` and `midnight-viewer-ui` fail there before and after, and the
+`midnight-compare-ui` library test target does not compile on main. They are listed
+in the compile-time record and were not investigated. Not run: Windows, the full
+workspace gates, release builds.
+
+The icon and text changes were developed and measured on `544b48db`, before the
+merge repair above: their records name the tests that failed there, which the repair
+has since addressed, and the engine's test targets were made to compile locally to
+run the icon worker's tests. The branch was then merged with the repaired main, whose
+own fixes of those targets replace the local ones; what was run again after that
+merge is at the end of the
+[sharpness record](verification/2026-11-18-ui-sharpness.md).
+
 ### Deep code review — 18 November 2026
 
 A deep code review of the whole repository, started from main `3a27eeb2` on

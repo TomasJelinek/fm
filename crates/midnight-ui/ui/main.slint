@@ -23,7 +23,8 @@ import { DecisionWindow } from "decision-window.slint";
 export { JobsWindow, DecisionWindow }
 
 import { HintedActionButton } from "hinted-inputs.slint";
-import { ScrollView, Palette } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
+import { ScrollView } from "scroll-view.slint";
 import { CommandMenuBody } from "command-menu.slint";
 import { MainMenuBody } from "main-menu.slint";
 import { Theme } from "theme.slint";
@@ -819,9 +820,11 @@ export component MainWindow inherits Window {
             private property <length> minimum-pane: min(286px, self.usable / 2);
             private property <length> rail-width: root.panel-zoomed ? 0px : (Theme.touch ? 44px : 28px);
             private property <bool> active-on-left: (root.active-pane == 0) != root.panels-swapped;
+            // Whole device pixels: a pane frame between two pixel columns smears its
+            // vertical edges, and so does every framed control aligned to them.
             private property <length> left-width: root.single-panel
                 ? (self.active-on-left ? self.usable - self.rail-width : self.rail-width)
-                : clamp(self.usable * root.panel-ratio, self.minimum-pane, self.usable - self.minimum-pane);
+                : round(clamp(self.usable * root.panel-ratio, self.minimum-pane, self.usable - self.minimum-pane) / 1phx) * 1phx;
             private property <length> right-width: self.usable - self.left-width;
             left := FilePane {
                 minimal: root.compact-window;
@@ -842,7 +845,7 @@ export component MainWindow inherits Window {
                 mutation(action) => { root.mutation(0, action); }
                 x: root.panels-swapped ? panels.left-width + panels.gutter : 0px;
                 width: root.panels-swapped ? panels.right-width : panels.left-width;
-                y: 0px; height: parent.height; clip: true;
+                y: 0px; height: parent.height;
                 action-icons: root.action-icons; choices: root.navigation-choices;
                 choice-index: root.left-navigation-index; choice-revision: root.navigation-revision;
                 navigation-choice(identity) => { root.navigation-choice(0, identity); }
@@ -927,7 +930,7 @@ export component MainWindow inherits Window {
                 mutation(action) => { root.mutation(1, action); }
                 x: root.panels-swapped ? 0px : panels.left-width + panels.gutter;
                 width: root.panels-swapped ? panels.left-width : panels.right-width;
-                y: 0px; height: parent.height; clip: true;
+                y: 0px; height: parent.height;
                 action-icons: root.action-icons; choices: root.navigation-choices;
                 choice-index: root.right-navigation-index; choice-revision: root.navigation-revision;
                 navigation-choice(identity) => { root.navigation-choice(1, identity); }
@@ -1213,7 +1216,7 @@ export component MainWindow inherits Window {
         if !root.compact-window && root.desktop-feedback-important && root.desktop-status != "" : Text {
             text: root.desktop-status;
             color: Theme.secondary-text; font-size: Theme.hint-font;
-            height: Theme.hint-font * 1.5; overflow: elide;
+            height: ceil(Theme.hint-font * 1.5 / 1px) * 1px; overflow: elide;
             accessible-label: root.desktop-status;
             Tooltip { TipBody { text: root.desktop-status; } }
         }

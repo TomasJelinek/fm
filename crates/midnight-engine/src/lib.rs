@@ -1060,6 +1060,7 @@ impl EngineServices {
                         Some(Command::ListDesktopContext) => desktop.context(),
                         Some(Command::OpenSystemLocation { request, location }) => desktop.open_system_location(request, location, &mut tasks).await,
                         Some(Command::SetCommandIconView { generation, targets }) => desktop.command_icons(generation, targets),
+                        Some(Command::SetIconEdges(edges)) => desktop.icon_edges(edges),
                         Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
                         Some(Command::ListComparatorCapabilities { disabled_plugins }) => {
                             viewer_plugins.comparator_capabilities(disabled_plugins);

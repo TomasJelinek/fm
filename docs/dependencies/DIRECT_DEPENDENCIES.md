@@ -16,6 +16,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [chrono](https://crates.io/crates/chrono/0.4.45) | 0.4.45 | MIT OR Apache-2.0 | midnight-platform-linux, midnight-ui |
 | [crc32fast](https://crates.io/crates/crc32fast/1.5.4) | 1.5.4 | MIT OR Apache-2.0 | midnight-engine |
 | [dav1d](https://crates.io/crates/dav1d/0.11.0) | 0.11.0 | MIT | midnight-image-decoder |
+| femtovg | 0.27.0 | MIT OR Apache-2.0 | midnight-explorer |
 | [ffmpeg-next](https://crates.io/crates/ffmpeg-next/9.0.0) | 9.0.0 | WTFPL | midnight-thumbnail-video |
 | [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.15) | 0.1.15 | MIT OR Apache-2.0 | midnight-explorer |
 | [flate2](https://crates.io/crates/flate2/1.1.10) | 1.1.10 | MIT OR Apache-2.0 | midnight-api-package, midnight-fs-archive, midnight-office-preview |
@@ -38,7 +39,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [notify](https://crates.io/crates/notify/8.2.1) | 8.2.1 | CC0-1.0 | midnight-platform-linux |
 | [parley](https://crates.io/crates/parley/0.11.1) | 0.11.1 | Apache-2.0 OR MIT | midnight-viewer-render |
 | [png](https://crates.io/crates/png/0.18.1) | 0.18.1 | MIT OR Apache-2.0 | midnight-viewer-ui |
-| [prettyplease](https://crates.io/crates/prettyplease/0.2.37) | 0.2.37 | MIT OR Apache-2.0 | midnight-ui-bindings |
+| [proc-macro2](https://crates.io/crates/proc-macro2/1.0.107) | 1.0.107 | MIT OR Apache-2.0 | midnight-ui-bindings |
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.6) | 0.13.6 | MIT | midnight-viewer-markdown |
 | [quick-xml](https://crates.io/crates/quick-xml/0.41.0) | 0.41.0 | MIT | midnight-office-preview |
 | [regex](https://crates.io/crates/regex/1.13.1) | 1.13.1 | MIT OR Apache-2.0 | midnight-platform-common, midnight-viewer-source |
@@ -55,7 +56,6 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [slint-build](https://crates.io/crates/slint-build/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-ui-bindings, midnight-viewer-ui |
 | [spin_on](https://crates.io/crates/spin_on/0.1.1) | 0.1.1 | Apache-2.0 OR MIT | midnight-ui-bindings |
 | [swash](https://crates.io/crates/swash/0.2.10) | 0.2.10 | Apache-2.0 OR MIT | midnight-viewer-render |
-| [syn](https://crates.io/crates/syn/2.0.119) | 2.0.119 | MIT OR Apache-2.0 | midnight-ui-bindings |
 | [tar](https://crates.io/crates/tar/0.4.46) | 0.4.46 | MIT OR Apache-2.0 | midnight-api-package, midnight-fs-archive |
 | [tempfile](https://crates.io/crates/tempfile/3.27.0) | 3.27.0 | MIT OR Apache-2.0 | midnight-compare-engine, midnight-elevation, midnight-engine, midnight-filesystem-host, midnight-native-filesystem-host, midnight-platform, midnight-platform-common, midnight-platform-linux, midnight-platform-windows, midnight-plugin-host, midnight-thumbnail-host, midnight-viewer-engine, midnight-web-viewer-host, midnight-worker-platform |
 | [tokio](https://crates.io/crates/tokio/1.54.1) | 1.54.1 | MIT | midnight-compare-engine, midnight-compare-ui, midnight-engine, midnight-explorer, midnight-platform-linux, midnight-ui, midnight-viewer-engine, midnight-viewer-ui |

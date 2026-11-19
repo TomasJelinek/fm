@@ -1,6 +1,6 @@
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton } from "hinted-inputs.slint";
+import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { NativeActionImage, FallbackIcons } from "action-icons.slint";
 import { DialogHeader, DialogWindowStyle } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
@@ -91,7 +91,7 @@ export component CopyConflictDialog inherits Rectangle {
                 HintedActionButton { text: "Merge folders"; hint: "Copy into this existing folder. Existing files require a separate conflict decision."; clicked => { root.decide(6, ""); } }
                 HintedActionButton { text: "Merge all folders"; hint: "Merge remaining compatible folder conflicts in this job. This does not authorize replacing files."; clicked => { root.decide(7, ""); } }
             }
-            name := LineEdit {
+            name := HintedLineEdit {
                 max-height: max(Theme.control-height, self.preferred-height);
                 vertical-stretch: 0;
                 visible: root.allow-alternate-name;

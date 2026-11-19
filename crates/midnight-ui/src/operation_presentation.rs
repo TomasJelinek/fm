@@ -108,7 +108,11 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         MutationKind::CreateFile => (ActionIcon::NewFile, 4, ""),
         MutationKind::EditMetadata => return,
     };
-    window.set_operation_icon(presenter.desktop.image(&IconKey::action(role)));
+    window.set_operation_icon(
+        presenter
+            .desktop
+            .image(&IconKey::action(role), IconPlace::Action),
+    );
     window.set_operation_kind(kind_id);
     window.set_operation_warning(warning.into());
     window.set_operation_body(shown_text(&body));

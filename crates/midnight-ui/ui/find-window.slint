@@ -1,5 +1,5 @@
-import { ComboBox, ScrollView } from "std-widgets.slint";
-import { HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
+import { ScrollView } from "scroll-view.slint";
+import { HintedLineEdit, HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { CompactPicker } from "controls.slint";
@@ -129,7 +129,7 @@ export component FindWindow inherits ToolWindow {
                                 : "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names.";
                             accepted => { root.submit(); }
                         }
-                        mode := ComboBox {
+                        mode := HintedComboBox {
                             row: root.narrow ? root.name-row + 1 : 0; col: root.narrow ? 0 : 2;
                             model: ["Masks", "Regex", "Expression"]; enabled: !root.running;
                             accessible-label: "Find match mode"; min-width: 0px;

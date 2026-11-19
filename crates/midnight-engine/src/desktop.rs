@@ -57,6 +57,7 @@ pub(crate) struct Desktop {
     processes: Processes,
     icons: mpsc::Sender<IconKey>,
     command_icons: watch::Sender<command_icons::View>,
+    icon_edges: watch::Sender<IconEdges>,
     volume_icons: watch::Sender<Vec<IconKey>>,
     children: mpsc::Sender<TrackedChild>,
     property_budget: Arc<Semaphore>,
@@ -120,6 +121,7 @@ impl Desktop {
         } = services;
         let (icons, receiver) = mpsc::channel(64);
         let (command_icons, command_view) = watch::channel(command_icons::View::default());
+        let (icon_edges, drawn_edges) = watch::channel(IconEdges::default());
         tasks.spawn(scope.future(command_icons::worker(
             scope.clone(),
             services.clone(),
@@ -127,6 +129,7 @@ impl Desktop {
             outbox.clone(),
             receiver,
             command_view,
+            drawn_edges,
         )));
         let (volume_icons, roots) = watch::channel(Vec::new());
         tasks.spawn(forward_icons(roots, icons.clone()));
@@ -151,6 +154,7 @@ impl Desktop {
             processes,
             icons,
             command_icons,
+            icon_edges,
             volume_icons,
             children,
             property_budget: Arc::new(Semaphore::new(1)),
@@ -196,6 +200,17 @@ impl Desktop {
             };
             true
         });
+    }
+
+    /// Icons delivered so far are loaded again at edges they were not drawn at before.
+    pub(crate) fn icon_edges(&self, edges: IconEdges) {
+        if edges.is_valid() {
+            self.icon_edges.send_if_modified(|current| {
+                let changed = *current != edges;
+                *current = edges;
+                changed
+            });
+        }
     }
 
     pub(crate) fn icon_sender(&self) -> mpsc::Sender<IconKey> {
@@ -862,7 +877,9 @@ async fn icon_worker(
 ) {
     let (sender, commands) = watch::channel(command_icons::View::default());
     drop(sender);
-    command_icons::worker(scope, services, None, outbox, receiver, commands).await;
+    let (sender, edges) = watch::channel(IconEdges::default());
+    drop(sender);
+    command_icons::worker(scope, services, None, outbox, receiver, commands, edges).await;
 }
 
 fn fallback_icon(kind: IconKind) -> Option<IconPixels> {
@@ -1104,9 +1121,9 @@ mod tests {
                 }
                 IconKind::FolderLink => Some(IconPixels::new(1, 1, vec![0; 4]).unwrap()),
                 IconKind::Action(ActionIcon::View) => Some(IconPixels {
-                    width: 65,
+                    width: 257,
                     height: 1,
-                    rgba: vec![255; 260].into(),
+                    rgba: vec![255; 1028].into(),
                     generic: false,
                 }),
                 _ => None,

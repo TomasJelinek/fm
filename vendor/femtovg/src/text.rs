@@ -18,6 +18,9 @@ mod font;
 use font::{Font, GlyphRendering};
 pub use font::{FontMetrics, VariationAxisInfo};
 
+mod fitting;
+pub use fitting::{glyph_fitting, set_glyph_fitting, GlyphFitting};
+
 #[cfg(feature = "textlayout")]
 mod textlayout;
 #[cfg(feature = "textlayout")]
@@ -132,6 +135,8 @@ pub struct RenderedGlyph {
     atlas_x: u32,
     atlas_y: u32,
     color_glyph: bool,
+    /// The whole-pixel advance of a glyph fitted for `GlyphFitting::Fitted`.
+    fitted_advance: Option<f32>,
 }
 
 #[derive(Debug)]
@@ -441,6 +446,10 @@ pub struct GlyphAtlas {
     pub glyph_textures: RefCell<Vec<FontTexture>>,
     #[cfg(feature = "swash")]
     swash_scale_context: Rc<RefCell<swash::scale::ScaleContext>>,
+    /// Fixed for the life of the atlas, so its bitmaps are all of one fitting.
+    fitting: GlyphFitting,
+    #[cfg(feature = "swash")]
+    fitted: RefCell<fitting::FittedRasterizer>,
 }
 
 impl GlyphAtlas {
@@ -450,6 +459,9 @@ impl GlyphAtlas {
             glyph_textures: RefCell::default(),
             #[cfg(feature = "swash")]
             swash_scale_context: (**_text_context).borrow().swash_scale_context(),
+            fitting: glyph_fitting(),
+            #[cfg(feature = "swash")]
+            fitted: RefCell::default(),
         }
     }
 }
@@ -488,8 +500,11 @@ impl GlyphAtlas {
 
         let initial_render_target = canvas.current_render_target;
 
+        let fitting = fitting::of_run(self.fitting, mode == RenderMode::Fill);
+        let mut word = fitting::WordPen::default();
+
         for glyph in glyphs {
-            let subpixel_location = crate::geometry::quantize(glyph.x.fract(), 0.1) * 10.0;
+            let (pen_x, subpixel_location) = fitting::place(fitting, &mut word, glyph.x, glyph.y);
 
             let id = RenderedGlyphId::new(
                 glyph.glyph_id,
@@ -508,6 +523,7 @@ impl GlyphAtlas {
                 std::collections::hash_map::Entry::Vacant(_) => {
                     let result = self.render_glyph(
                         canvas,
+                        font_id,
                         font_size,
                         line_width,
                         mode,
@@ -522,8 +538,11 @@ impl GlyphAtlas {
             };
 
             let Some(rendered) = glyph_cache_entry.get() else {
+                // A blank ends the word.
+                word.advance(pen_x, glyph.y, None);
                 continue;
             };
+            word.advance(pen_x, glyph.y, rendered.fitted_advance);
 
             if let Some(texture) = self.glyph_textures.borrow().get(rendered.texture_index) {
                 let image_id = texture.image_id;
@@ -546,7 +565,7 @@ impl GlyphAtlas {
 
                 let line_width_offset = if rendered.color_glyph { 0. } else { line_width_offset };
 
-                q.x0 = glyph.x.trunc() + rendered.bearing_x as f32 - line_width_offset - GLYPH_PADDING as f32;
+                q.x0 = pen_x + rendered.bearing_x as f32 - line_width_offset - GLYPH_PADDING as f32;
                 q.y0 = glyph.y.round() - rendered.bearing_y as f32 - line_width_offset - GLYPH_PADDING as f32;
                 q.x1 = q.x0 + rendered.width as f32;
                 q.y1 = q.y0 + rendered.height as f32;
@@ -574,6 +593,7 @@ impl GlyphAtlas {
     fn render_glyph<T: Renderer>(
         &self,
         canvas: &mut Canvas<T>,
+        _font_id: FontId,
         font_size: f32,
         line_width: f32,
         mode: RenderMode,
@@ -585,6 +605,23 @@ impl GlyphAtlas {
     ) -> Result<Option<RenderedGlyph>, ErrorKind> {
         #[cfg(feature = "swash")]
         if mode == RenderMode::Fill {
+            if self.fitting == GlyphFitting::Fitted {
+                // Fonts with color glyphs and glyphs the hinter rejects fall
+                // through to the unfitted path below.
+                let fitted = self.fitted.borrow_mut().render(
+                    _font_id,
+                    font.data(),
+                    font.face_index(),
+                    font_size,
+                    glyph_id,
+                    normalized_coords,
+                );
+                if let Some(glyph) = fitted {
+                    return self
+                        .upload_glyph(canvas, &glyph.data, glyph.placement, false, glyph.advance)
+                        .map(Some);
+                }
+            }
             if let Some(result) =
                 self.render_glyph_swash(canvas, font, font_size, glyph_id, _subpixel_x, normalized_coords)?
             {
@@ -647,6 +684,7 @@ impl GlyphAtlas {
             atlas_y: dst_y as u32 + GLYPH_MARGIN,
             texture_index: dst_index,
             color_glyph,
+            fitted_advance: None,
         };
 
         match glyph_representation {
@@ -773,22 +811,41 @@ impl GlyphAtlas {
             .render(&mut scaler, glyph_id)
         };
 
-        let image = match image {
+        let mut image = match image {
             // Guard against glyphs with no visual (spaces)
             Some(img) if img.placement.width > 0 && img.placement.height > 0 => img,
             _ => return Ok(None),
         };
 
+        let is_color = image.content == swash::scale::image::Content::Color;
+        if !is_color && self.fitting != GlyphFitting::Subpixel {
+            for coverage in &mut image.data {
+                *coverage = fitting::contrast(*coverage);
+            }
+        }
+        self.upload_glyph(canvas, &image.data, image.placement, is_color, None)
+            .map(Some)
+    }
+
+    /// Copies a rasterized glyph into the atlas: coverage bytes, or RGBA for a
+    /// color glyph, in `placement.width * placement.height` pixels, top row first.
+    #[cfg(feature = "swash")]
+    fn upload_glyph<T: Renderer>(
+        &self,
+        canvas: &mut Canvas<T>,
+        data: &[u8],
+        placement: swash::zeno::Placement,
+        is_color: bool,
+        fitted_advance: Option<f32>,
+    ) -> Result<RenderedGlyph, ErrorKind> {
         let padding = GLYPH_PADDING + GLYPH_MARGIN;
-        let glyph_width = image.placement.width;
-        let glyph_height = image.placement.height;
+        let glyph_width = placement.width;
+        let glyph_height = placement.height;
         let alloc_width = glyph_width + 2 * padding;
         let alloc_height = glyph_height + 2 * padding;
 
         let (dst_index, dst_image_id, (dst_x, dst_y)) =
             self.find_texture_or_alloc(canvas, alloc_width as usize, alloc_height as usize)?;
-
-        let is_color = image.content == swash::scale::image::Content::Color;
 
         // Create a padded image with zeroed borders so the sampled rect's edge
         // texels are blank (the texture itself starts zero-initialized).
@@ -801,12 +858,8 @@ impl GlyphAtlas {
                 for x in 0..glyph_width as usize {
                     let src_idx = (y * glyph_width as usize + x) * 4;
                     let dst_idx = (y + GLYPH_PADDING as usize) * padded_width + x + GLYPH_PADDING as usize;
-                    pixels[dst_idx] = rgb::RGBA8::new(
-                        image.data[src_idx],
-                        image.data[src_idx + 1],
-                        image.data[src_idx + 2],
-                        image.data[src_idx + 3],
-                    );
+                    pixels[dst_idx] =
+                        rgb::RGBA8::new(data[src_idx], data[src_idx + 1], data[src_idx + 2], data[src_idx + 3]);
                 }
             }
         } else {
@@ -814,7 +867,7 @@ impl GlyphAtlas {
                 for x in 0..glyph_width as usize {
                     let src_idx = y * glyph_width as usize + x;
                     let dst_idx = (y + GLYPH_PADDING as usize) * padded_width + x + GLYPH_PADDING as usize;
-                    pixels[dst_idx] = rgb::RGBA8::new(image.data[src_idx], 0, 0, 0);
+                    pixels[dst_idx] = rgb::RGBA8::new(data[src_idx], 0, 0, 0);
                 }
             }
         }
@@ -825,16 +878,17 @@ impl GlyphAtlas {
         let img = imgref::Img::new(&pixels[..], padded_width, padded_height);
         canvas.update_image(dst_image_id, crate::image::ImageSource::from(img), target_x, target_y)?;
 
-        Ok(Some(RenderedGlyph {
+        Ok(RenderedGlyph {
             texture_index: dst_index,
             width: alloc_width - 2 * GLYPH_MARGIN,
             height: alloc_height - 2 * GLYPH_MARGIN,
-            bearing_x: image.placement.left,
-            bearing_y: image.placement.top,
+            bearing_x: placement.left,
+            bearing_y: placement.top,
             atlas_x: dst_x as u32 + GLYPH_MARGIN,
             atlas_y: dst_y as u32 + GLYPH_MARGIN,
             color_glyph: is_color,
-        }))
+            fitted_advance,
+        })
     }
 
     // Returns (texture index, image id, glyph padding box)

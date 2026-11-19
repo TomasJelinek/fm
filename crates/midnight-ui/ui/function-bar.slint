@@ -3,7 +3,7 @@ import { FunctionButton } from "function-button.slint";
 import { FunctionSlot } from "function-models.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
-import { ScrollView } from "std-widgets.slint";
+import { ScrollStrip } from "scroll-strip.slint";
 import { ActionAvailability } from "action-availability.slint";
 
 export component FunctionBar inherits Rectangle {
@@ -72,15 +72,18 @@ export component FunctionBar inherits Rectangle {
     }
     public function release-press() { root.pointer-snapshot = false; }
     public function cancel-press() { root.press-cancelled = true; }
+    // Whole pixels: a framed key between two pixel columns smears its vertical edges.
+    // The Jobs key takes the remainder of the division.
     private property <length> cell-width: max(root.compact ? 36px : 0px,
-        (root.width - 4px * root.visible-count) / (root.visible-count + 1));
+        floor((root.width - 4px * root.visible-count) / (root.visible-count + 1) / 1px) * 1px);
     private property <length> key-width: max(Theme.touch ? 44px : 40px, root.cell-width);
+    private property <length> jobs-width: max(root.cell-width,
+        root.width - root.visible-count * (root.cell-width + 4px));
     height: root.compact ? min(32px, Theme.bottom-height) : Theme.bottom-height;
     min-width: 0px;
-    keys := ScrollView {
+    keys := ScrollStrip {
         x: 0px; y: 0px;
-        width: max(0px, root.width - root.cell-width - 4px); height: root.height;
-        horizontal-scrollbar-policy: always-off; vertical-scrollbar-policy: always-off;
+        width: max(0px, root.width - root.jobs-width - 4px); height: root.height;
         mouse-drag-pan-enabled: true;
         content-width: max(self.visible-width,
             root.visible-count * root.key-width + max(0, root.visible-count - 1) * 4px);
@@ -126,8 +129,8 @@ export component FunctionBar inherits Rectangle {
         }
     }
     FunctionButton {
-        min-width: 0px; width: root.cell-width; height: root.height;
-        x: root.width - root.cell-width;
+        min-width: 0px; width: root.jobs-width; height: root.height;
+        x: root.width - root.jobs-width;
         press-cancelled: root.press-cancelled;
         native-icon: root.icons.menu; fallback-icon: FallbackIcons.menu; text: "Jobs";
         hint: "Operation queue, progress and cancellation.";

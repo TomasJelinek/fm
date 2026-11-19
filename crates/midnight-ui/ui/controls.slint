@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
 import { LocationImage } from "action-icons.slint";
@@ -26,6 +26,19 @@ export component TipBody inherits Rectangle {
         wrap: char-wrap;
         accessible-label: root.text;
     }
+}
+
+// A Tooltip written in a control compiles to its own popup component, again for
+// every component that inherits or inlines that control. This child-free area
+// covers its parent like the hover area of a direct Tooltip, ignores input and
+// is generated once for all of them.
+export component Tip inherits Rectangle {
+    in property <string> text;
+    in property <length> width-limit: 560px;
+    // Pinned Slint 1.18.1 fixes a popup declared directly in a component to the
+    // stock frame's own size. Under a conditional that frame follows TipBody, as
+    // it did for the conditional and per-row hints this replaces.
+    if true: Tooltip { TipBody { text: root.text; width-limit: root.width-limit; } }
 }
 
 // Keep the closed control compact while giving full labels a readable popup.
@@ -287,7 +300,7 @@ export component CompactPicker inherits Rectangle {
             clicked => { if !root.press-cancelled && self.pressed-context == root.context { focus.focus(); root.open(); } }
         }
     }
-    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+    if root.hint != "": Tip { text: root.hint; }
     popup := PopupWindow {
         private property <length> below: max(1px, TooltipPlacement.surface-height - root.absolute-position.y - root.height - 8px);
         private property <length> above: max(1px, root.absolute-position.y - 8px);
@@ -408,7 +421,7 @@ export component CompactPicker inherits Rectangle {
                                 }
                             }
                         }
-                        Tooltip { TipBody { text: root.row-hint(index); } }
+                        Tip { text: root.row-hint(index); }
                     }
                 }
             }

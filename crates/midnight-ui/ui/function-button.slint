@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { NativeActionImage } from "action-icons.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 
 // Native buttons enforce a taller minimum; these fixed-height function keys
 // share the same focus, pointer and accessibility behavior at either density.
@@ -34,14 +34,16 @@ export component FunctionButton inherits Rectangle {
     private property <length> caption-icon-width: root.show-icon ? Theme.icon-size + 4px : 0px;
     // Fit compact keys to host font metrics without increasing footer layout minima.
     // Keep normal-density text readable and leave smaller user font choices intact.
-    private property <length> compact-font-size: clamp(
+    // Whole sizes: glyphs are hinted per size, so a fractional one gives neighbouring
+    // keys different stem weights.
+    private property <length> compact-font-size: floor(clamp(
         Theme.font-size * max(0px, root.width - root.caption-icon-width - 9px)
             / max(1px, compact-metrics.preferred-width),
-        min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size);
-    private property <length> caption-font-size: clamp(
+        min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size) / 1px) * 1px;
+    private property <length> caption-font-size: floor(clamp(
         Theme.font-size * max(0px, root.width - root.caption-icon-width - 9px)
             / max(1px, caption-metrics.preferred-width),
-        min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size);
+        min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size) / 1px) * 1px;
     caption-metrics := Text { visible: false; text: root.caption; font-size: Theme.font-size; }
     compact-metrics := Text { visible: false; text: root.compact-text; font-size: Theme.font-size; }
     horizontal-stretch: 1;
@@ -114,5 +116,5 @@ export component FunctionButton inherits Rectangle {
             }
         }
     }
-    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+    if root.hint != "": Tip { text: root.hint; }
 }

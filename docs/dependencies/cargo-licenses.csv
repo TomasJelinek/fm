@@ -138,7 +138,7 @@ fax,0.2.7,MIT,registry+https://github.com/rust-lang/crates.io-index,image-decode
 fdeflate,0.3.7,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; image-decoder; image-viewer; pdf-viewer; renderer-tests; thumbnail-image,Linux; Windows,
 fearless_simd,0.7.0,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,pdf-viewer,Linux; Windows,
 fearless_simd,1.2.0,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,pdf-viewer,Linux; Windows,
-femtovg,0.27.0,MIT OR Apache-2.0,local path dependency,app; renderer-tests,Linux; Windows,
+femtovg,0.27.0,MIT OR Apache-2.0,local path dependency,app; renderer-tests,Linux; Windows,midnight-explorer
 ffmpeg-next,9.0.0,WTFPL,registry+https://github.com/rust-lang/crates.io-index,thumbnail-video,Linux; Windows,midnight-thumbnail-video
 ffmpeg-sys-next,9.0.1,WTFPL,registry+https://github.com/rust-lang/crates.io-index,thumbnail-video,Linux; Windows,
 field-offset,0.3.6,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
@@ -361,10 +361,9 @@ polycool,0.4.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io
 portable-atomic,1.15.0,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; html-viewer,Linux; Windows,
 potential_utf,0.1.6,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 presser,0.3.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
-prettyplease,0.2.37,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-ui-bindings
 proc-macro-crate,3.5.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 proc-macro2,1.0.106,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
-proc-macro2,1.0.107,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; basic; conformance; html-viewer; image-decoder; image-viewer; markdown; pdf-viewer; source; thumbnail-image; thumbnail-video,Linux; Windows,
+proc-macro2,1.0.107,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; basic; conformance; html-viewer; image-decoder; image-viewer; markdown; pdf-viewer; source; thumbnail-image; thumbnail-video,Linux; Windows,midnight-ui-bindings
 profiling,1.0.18,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 pulldown-cmark,0.13.6,MIT,registry+https://github.com/rust-lang/crates.io-index,app; markdown,Linux; Windows,midnight-viewer-markdown
 pxfm,0.1.29,BSD-3-Clause OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
@@ -470,7 +469,7 @@ subtle,2.6.1,BSD-3-Clause,registry+https://github.com/rust-lang/crates.io-index,
 svgtypes,0.16.1,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; image-decoder; image-viewer; renderer-tests; thumbnail-image,Linux; Windows,
 swash,0.2.10,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,midnight-viewer-render
 syn,2.0.117,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
-syn,2.0.119,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; basic; conformance; image-decoder; image-viewer; markdown; pdf-viewer; source; thumbnail-image,Linux; Windows,midnight-ui-bindings
+syn,2.0.119,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; basic; conformance; image-decoder; image-viewer; markdown; pdf-viewer; source; thumbnail-image,Linux; Windows,
 syn,3.0.10,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,html-viewer,Linux; Windows,
 syn,3.0.4,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 syn,3.0.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; image-decoder; image-viewer; pdf-viewer; thumbnail-image; thumbnail-video,Linux; Windows,

@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { TipBody } from "controls.slint";
+import { Tip } from "controls.slint";
 import { ActionIcons, FallbackIcons, NativeActionImage } from "action-icons.slint";
 
 export component FileColumnHeading inherits Rectangle {
@@ -33,11 +33,9 @@ export component FileColumnHeading inherits Rectangle {
     accessible-value: root.sorted ? (root.descending ? "Descending" : "Ascending") : "Not sorted";
     accessible-action-default => { root.activate(); }
     TouchArea { clicked => { root.activate(); } }
-    Tooltip {
-        TipBody {
-            text: "Sort by " + root.sort-label + (root.sorted
-                ? (root.descending ? " · descending; click for ascending" : " · ascending; click for descending")
-                : " · click for ascending");
-        }
+    Tip {
+        text: "Sort by " + root.sort-label + (root.sorted
+            ? (root.descending ? " · descending; click for ascending" : " · ascending; click for descending")
+            : " · click for ascending");
     }
 }

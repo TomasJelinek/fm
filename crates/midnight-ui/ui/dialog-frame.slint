@@ -20,22 +20,22 @@ export global DialogWindowStyle {
     in-out property <bool> native-titlebar;
 }
 
-// A viewport-sized popup keeps its native lifetime and focus. Only the inner
-// rectangle moves: embedded Slint popups do not track x/y-only changes reliably.
-export component DialogFrame inherits Rectangle {
+// Size/position policy and the resize grips above the dialog content. DialogFrame
+// takes children, so Slint inlines it into every dialog; this child-free part is
+// generated once and shared. It covers the body it sizes.
+component DialogFrameChrome inherits Rectangle {
+    in property <length> frame-width;
+    in property <length> frame-height;
     in property <length> desired-width;
     in property <length> desired-height;
-    in property <bool> dismiss-on-outside;
-    in property <bool> dim;
     in property <length> minimum-body-width: 280px;
     in property <length> minimum-body-height: 180px;
-    callback dismiss();
     private property <length> offset-x;
     private property <length> offset-y;
     private property <length> requested-width: -1px;
     private property <length> requested-height: -1px;
-    private property <length> available-width: max(0px, root.width - 2 * root.margin);
-    private property <length> available-height: max(0px, root.height - 2 * root.margin);
+    private property <length> available-width: max(0px, root.frame-width - 2 * root.margin);
+    private property <length> available-height: max(0px, root.frame-height - 2 * root.margin);
     private property <bool> resizing;
     private property <int> resize-horizontal;
     private property <int> resize-vertical;
@@ -43,17 +43,17 @@ export component DialogFrame inherits Rectangle {
     private property <length> resize-top;
     private property <length> resize-width;
     private property <length> resize-height;
-    private property <length> margin: root.width < 400px || root.height < 280px ? 4px : 12px;
+    private property <length> margin: root.frame-width < 400px || root.frame-height < 280px ? 4px : 12px;
     out property <length> body-width: min(root.requested-width < 0px ? root.desired-width : root.requested-width, root.available-width);
     out property <length> body-height: min(root.requested-height < 0px ? root.desired-height : root.requested-height, root.available-height);
-    out property <length> body-left: clamp((root.width - root.body-width) / 2 + root.offset-x,
-        root.margin, max(root.margin, root.width - root.body-width - root.margin));
-    out property <length> body-top: clamp((root.height - root.body-height) / 2 + root.offset-y,
-        root.margin, max(root.margin, root.height - root.body-height - root.margin));
-    min-width: 0px; min-height: 0px;
-    background: root.dim ? #00000060 : transparent;
-    changed width => { root.resizing = false; }
-    changed height => { root.resizing = false; }
+    // Whole device pixels: a body centered in an odd remainder would smear its frame.
+    out property <length> body-left: round(clamp((root.frame-width - root.body-width) / 2 + root.offset-x,
+        root.margin, max(root.margin, root.frame-width - root.body-width - root.margin)) / 1phx) * 1phx;
+    out property <length> body-top: round(clamp((root.frame-height - root.body-height) / 2 + root.offset-y,
+        root.margin, max(root.margin, root.frame-height - root.body-height - root.margin)) / 1phx) * 1phx;
+    x: 0px; y: 0px; width: root.body-width; height: root.body-height;
+    changed frame-width => { root.resizing = false; }
+    changed frame-height => { root.resizing = false; }
     public function reset() {
         root.offset-x = 0px; root.offset-y = 0px;
         root.requested-width = -1px; root.requested-height = -1px;
@@ -62,9 +62,9 @@ export component DialogFrame inherits Rectangle {
     public function move-by(dx: length, dy: length) {
         root.resizing = false;
         root.offset-x = clamp(root.body-left + dx, root.margin,
-            max(root.margin, root.width - root.body-width - root.margin)) - (root.width - root.body-width) / 2;
+            max(root.margin, root.frame-width - root.body-width - root.margin)) - (root.frame-width - root.body-width) / 2;
         root.offset-y = clamp(root.body-top + dy, root.margin,
-            max(root.margin, root.height - root.body-height - root.margin)) - (root.height - root.body-height) / 2;
+            max(root.margin, root.frame-height - root.body-height - root.margin)) - (root.frame-height - root.body-height) / 2;
     }
     function begin-resize(horizontal: int, vertical: int) {
         root.resize-horizontal = horizontal; root.resize-vertical = vertical;
@@ -77,9 +77,9 @@ export component DialogFrame inherits Rectangle {
         let right = root.resize-left + root.resize-width;
         let bottom = root.resize-top + root.resize-height;
         let max-width = max(0px, root.resize-horizontal < 0
-            ? right - root.margin : root.width - root.margin - root.resize-left);
+            ? right - root.margin : root.frame-width - root.margin - root.resize-left);
         let max-height = max(0px, root.resize-vertical < 0
-            ? bottom - root.margin : root.height - root.margin - root.resize-top);
+            ? bottom - root.margin : root.frame-height - root.margin - root.resize-top);
         let width = root.resize-horizontal == 0 ? root.resize-width
             : clamp(root.resize-width + root.resize-horizontal * dx,
                 min(root.minimum-body-width, max-width), max-width);
@@ -89,9 +89,54 @@ export component DialogFrame inherits Rectangle {
         let left = root.resize-horizontal < 0 ? right - width : root.resize-left;
         let top = root.resize-vertical < 0 ? bottom - height : root.resize-top;
         root.requested-width = width; root.requested-height = height;
-        root.offset-x = left - (root.width - width) / 2;
-        root.offset-y = top - (root.height - height) / 2;
+        root.offset-x = left - (root.frame-width - width) / 2;
+        root.offset-y = top - (root.frame-height - height) / 2;
     }
+    Path {
+        x: parent.width - 12px; y: parent.height - 12px;
+        width: 9px; height: 9px; viewbox-width: 10; viewbox-height: 10;
+        commands: "M 1 9 L 9 1 M 5 9 L 9 5";
+        stroke: Theme.secondary-text; stroke-width: 1px;
+    }
+    for edge in [
+        { horizontal: -1, vertical: 0 }, { horizontal: 1, vertical: 0 },
+        { horizontal: 0, vertical: -1 }, { horizontal: 0, vertical: 1 },
+        { horizontal: -1, vertical: -1 }, { horizontal: 1, vertical: -1 },
+        { horizontal: -1, vertical: 1 }, { horizontal: 1, vertical: 1 },
+    ] : DialogResizeEdge {
+        private property <length> corner: Theme.touch ? 20px : 12px;
+        private property <length> thickness: Theme.touch ? 10px : 6px;
+        horizontal: edge.horizontal; vertical: edge.vertical;
+        x: edge.horizontal == 0 ? self.corner : edge.horizontal < 0 ? 0px : parent.width - self.width;
+        y: edge.vertical == 0 ? self.corner : edge.vertical < 0 ? 0px : parent.height - self.height;
+        width: edge.horizontal == 0 ? max(0px, parent.width - 2 * self.corner)
+            : edge.vertical == 0 ? self.thickness : self.corner;
+        height: edge.vertical == 0 ? max(0px, parent.height - 2 * self.corner)
+            : edge.horizontal == 0 ? self.thickness : self.corner;
+        begin(horizontal, vertical) => { root.begin-resize(horizontal, vertical); }
+        resize-by(dx, dy) => { root.resize-by(dx, dy); }
+        finish => { root.resizing = false; }
+    }
+}
+
+// A viewport-sized popup keeps its native lifetime and focus. Only the inner
+// rectangle moves: embedded Slint popups do not track x/y-only changes reliably.
+export component DialogFrame inherits Rectangle {
+    in property <length> desired-width <=> chrome.desired-width;
+    in property <length> desired-height <=> chrome.desired-height;
+    in property <bool> dismiss-on-outside;
+    in property <bool> dim;
+    in property <length> minimum-body-width <=> chrome.minimum-body-width;
+    in property <length> minimum-body-height <=> chrome.minimum-body-height;
+    callback dismiss();
+    out property <length> body-width <=> chrome.body-width;
+    out property <length> body-height <=> chrome.body-height;
+    out property <length> body-left <=> chrome.body-left;
+    out property <length> body-top <=> chrome.body-top;
+    min-width: 0px; min-height: 0px;
+    background: root.dim ? #00000060 : transparent;
+    public function reset() { chrome.reset(); }
+    public function move-by(dx: length, dy: length) { chrome.move-by(dx, dy); }
     TouchArea {
         clicked => { if root.dismiss-on-outside { root.dismiss(); } }
         scroll-event(event) => { accept }
@@ -103,31 +148,7 @@ export component DialogFrame inherits Rectangle {
         // Blank body areas must never activate the outside-dismiss surface.
         TouchArea { scroll-event(event) => { accept } }
         @children
-        Path {
-            x: parent.width - 12px; y: parent.height - 12px;
-            width: 9px; height: 9px; viewbox-width: 10; viewbox-height: 10;
-            commands: "M 1 9 L 9 1 M 5 9 L 9 5";
-            stroke: Theme.secondary-text; stroke-width: 1px;
-        }
-        for edge in [
-            { horizontal: -1, vertical: 0 }, { horizontal: 1, vertical: 0 },
-            { horizontal: 0, vertical: -1 }, { horizontal: 0, vertical: 1 },
-            { horizontal: -1, vertical: -1 }, { horizontal: 1, vertical: -1 },
-            { horizontal: -1, vertical: 1 }, { horizontal: 1, vertical: 1 },
-        ] : DialogResizeEdge {
-            private property <length> corner: Theme.touch ? 20px : 12px;
-            private property <length> thickness: Theme.touch ? 10px : 6px;
-            horizontal: edge.horizontal; vertical: edge.vertical;
-            x: edge.horizontal == 0 ? self.corner : edge.horizontal < 0 ? 0px : parent.width - self.width;
-            y: edge.vertical == 0 ? self.corner : edge.vertical < 0 ? 0px : parent.height - self.height;
-            width: edge.horizontal == 0 ? max(0px, parent.width - 2 * self.corner)
-                : edge.vertical == 0 ? self.thickness : self.corner;
-            height: edge.vertical == 0 ? max(0px, parent.height - 2 * self.corner)
-                : edge.horizontal == 0 ? self.thickness : self.corner;
-            begin(horizontal, vertical) => { root.begin-resize(horizontal, vertical); }
-            resize-by(dx, dy) => { root.resize-by(dx, dy); }
-            finish => { root.resizing = false; }
-        }
+        chrome := DialogFrameChrome { frame-width: root.width; frame-height: root.height; }
     }
 }
 

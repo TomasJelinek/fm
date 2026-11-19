@@ -1,3 +1,5 @@
+#[path = "build/source.rs"]
+mod source;
 #[path = "build/tooltip.rs"]
 mod tooltip;
 

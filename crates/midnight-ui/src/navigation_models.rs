@@ -76,7 +76,9 @@ pub(super) fn choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
                 label: shown_text(&label),
                 compact_label: shown_text(&compact),
                 tooltip: shown_text(&tooltip),
-                icon: presenter.desktop.image(&IconKey::for_location(location)),
+                icon: presenter
+                    .desktop
+                    .image(&IconKey::for_location(location), IconPlace::Location),
                 kind: match location.kind {
                     LocationKind::Volume => LocationRole::Drive,
                     LocationKind::Home => LocationRole::Home,
@@ -118,9 +120,10 @@ pub(super) fn ordered_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow>
                     label: choice.label.as_str().into(),
                     compact_label: choice.label.as_str().into(),
                     tooltip: "Open system Recycle Bin/Trash".into(),
-                    icon: presenter
-                        .desktop
-                        .image(&IconKey::action(ActionIcon::RecycleBin)),
+                    icon: presenter.desktop.image(
+                        &IconKey::action(ActionIcon::RecycleBin),
+                        IconPlace::Location,
+                    ),
                     kind: LocationRole::RecycleBin,
                 },
             );
@@ -147,7 +150,7 @@ pub(super) fn ordered_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow>
             .into(),
             icon: presenter
                 .desktop
-                .image(&IconKey::action(ActionIcon::Network)),
+                .image(&IconKey::action(ActionIcon::Network), IconPlace::Location),
             kind: LocationRole::Network,
         },
     );

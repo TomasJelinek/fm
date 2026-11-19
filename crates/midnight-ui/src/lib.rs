@@ -85,6 +85,7 @@ pub use picker_window::native_path_picker_owner;
 mod plugin_options;
 mod presentation_eq;
 use presentation_eq::SamePresentation;
+mod icon_view;
 mod presenter;
 mod scroll_input;
 mod search_input;
@@ -97,6 +98,7 @@ mod shortcut_editor;
 mod shortcut_input;
 mod size_presentation;
 mod thumbnail_content;
+pub use icon_view::icon_view;
 mod thumbnail_presentation;
 mod thumbnail_refresh;
 pub use thumbnail_refresh::refresh_thumbnail_rows;
@@ -112,7 +114,8 @@ mod drive_information_presentation;
 mod volume_presentation;
 use command_line::{command_directory_text, command_path_text, replace_command_selection};
 use midnight_core::*;
-pub use presenter::{DeferredDrop, Presenter, TabSummary};
+pub(crate) use presenter::IconPlace;
+pub use presenter::{DeferredDrop, IconView, Presenter, TabSummary};
 use slint::{ComponentHandle, Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
 use std::{
     cell::{Cell, RefCell},
@@ -219,7 +222,10 @@ impl Model for Rows {
                 size: "".into(),
                 size_state: 0,
                 size_hint: "Parent folder".into(),
-                icon: state.desktop.image(&IconKey::action(ActionIcon::Parent)),
+                icon: state.desktop.image(
+                    &IconKey::action(ActionIcon::Parent),
+                    IconPlace::Entry(self.pane),
+                ),
                 directory: true,
                 selected: false,
                 cursor: pane.parent_cursor,
@@ -310,9 +316,11 @@ impl Model for Rows {
             modified_time: modified_time.into(),
             folder_link: entry.kind == EntryKind::DirectoryLink,
             icon: state.thumbnail_image(self.pane, entry).unwrap_or_else(|| {
-                state
-                    .desktop
-                    .entry_image(&IconKey::for_entry(entry), state.can_browse_archive(entry))
+                state.desktop.entry_image(
+                    &IconKey::for_entry(entry),
+                    IconPlace::Entry(self.pane),
+                    state.can_browse_archive(entry),
+                )
             }),
             directory,
             selected: pane.selection_visible(entry),
@@ -487,7 +495,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         },
         icon: presenter
             .desktop
-            .image(&IconKey::action(ActionIcon::OpenPath)),
+            .image(&IconKey::action(ActionIcon::OpenPath), IconPlace::Location),
         kind: LocationRole::Documents,
     });
     let position = |key: Option<SharedString>| {
@@ -560,11 +568,14 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         .volumes
         .iter()
         .map(|volume| {
-            presenter.desktop.image(&if volume.id == "home" {
-                IconKey::folder()
-            } else {
-                IconKey::for_drive(&volume.root)
-            })
+            presenter.desktop.image(
+                &if volume.id == "home" {
+                    IconKey::folder()
+                } else {
+                    IconKey::for_drive(&volume.root)
+                },
+                IconPlace::Location,
+            )
         })
         .collect();
     update_model_by(

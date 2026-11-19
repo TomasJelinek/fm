@@ -81,6 +81,10 @@ opt-level = 1
 opt-level = 1
 # Generated line tables are not useful when debugging handwritten presenters.
 debug = 0
+# Adding or removing one element renumbers the generated identifiers after it, so
+# little is reused, while the dependency graph costs time, memory and gigabytes of
+# disk on every build. Measurements: docs/verification/2026-11-18-slint-compile-time.md.
+incremental = false
 
 # Copy readback, checksums, plugin trust and the thumbnail cache hash every byte.
 # Unoptimized digest loops dominated hashing-heavy debug runs and tests.

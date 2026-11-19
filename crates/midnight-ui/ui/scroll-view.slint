@@ -1,0 +1,194 @@
+import { Palette } from "std-widgets.slint";
+
+// The SDK ScrollView is inlined at every use site together with both scroll bars
+// and their four arrow buttons: its bar sets `visible` and its arrows `opacity` on
+// their own roots, which the pinned compiler can only lower by inlining. That was
+// about a third of all generated elements. These components keep the SDK's
+// geometry, colors and input behavior, but set both on inner elements, so one bar
+// implementation is shared by every scroll view.
+//
+// Rust input code relies on this geometry and behavior (midnight-ui-input
+// native_scroll.rs): the bar's TouchArea fills a 14px overlay, and a wheel over
+// the bar moves the content without emitting `scrolled`.
+
+component ScrollArrow inherits TouchArea {
+    in property <bool> horizontal;
+    in property <bool> forward;
+    in property <bool> revealed;
+    private property <color> surface: Palette.background;
+    // The SDK glyph is drawn at 54% of its tint.
+    private property <brush> tint: (root.has-hover && !root.pressed
+        ? (root.surface.to-hsv().value < 0.5 ? #ffffffc9 : #00000099) : Palette.border).transparentize(0.4558);
+    width: root.horizontal ? 6px : 8px;
+    height: root.horizontal ? 8px : 6px;
+    Path {
+        visible: root.revealed;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.pressed ? root.width - 2px : root.width;
+        height: root.horizontal ? self.width * 4 / 3 : self.width * 3 / 4;
+        viewbox-width: root.horizontal ? 6 : 8;
+        viewbox-height: root.horizontal ? 8 : 6;
+        commands: root.horizontal
+            ? (root.forward ? "M 0 1 Q 0 0 0.832 0.555 L 5.168 3.445 Q 6 4 5.168 4.555 L 0.832 7.445 Q 0 8 0 7 Z"
+                : "M 6 1 Q 6 0 5.168 0.555 L 0.832 3.445 Q 0 4 0.832 4.555 L 5.168 7.445 Q 6 8 6 7 Z")
+            : (root.forward ? "M 1 0 Q 0 0 0.555 0.832 L 3.445 5.168 Q 4 6 4.555 5.168 L 7.445 0.832 Q 8 0 7 0 Z"
+                : "M 1 6 Q 0 6 0.555 5.168 L 3.445 0.832 Q 4 0 4.555 0.832 L 7.445 5.168 Q 8 6 7 6 Z");
+        fill: root.tint;
+        accessible-role: none;
+        animate fill { duration: 150ms; }
+        animate width, height { duration: 150ms; easing: ease-out; }
+    }
+}
+
+component ScrollBar {
+    in property <bool> horizontal;
+    in property <length> maximum;
+    in property <length> page-size;
+    // One-way. A run-time two-way binding on a ListView's content-y counts as a
+    // binding, and the SDK's list layout then stops correcting that position.
+    in property <length> value;
+    in property <ScrollBarPolicy> policy: ScrollBarPolicy.as-needed;
+    // Read by the owner instead of `visible`, which may not be set on this root.
+    out property <bool> shown: root.policy == ScrollBarPolicy.always-on
+        || (root.policy == ScrollBarPolicy.as-needed && root.maximum > 0);
+    callback move-to(position: length);
+    callback scrolled();
+    private property <length> offset: 16px;
+    private property <length> step-size: 10px;
+    private property <bool> hovered: area.has-hover || backward.has-hover || forward.has-hover;
+    private property <length> size: root.hovered ? 6px : 2px;
+    private property <length> track-size: (root.horizontal ? root.width : root.height) - 2 * root.offset;
+    animate size { duration: 150ms; easing: ease-out; }
+    Rectangle {
+        visible: root.shown;
+        clip: true;
+        border-width: 1px;
+        border-radius: 7px;
+        background: root.hovered ? Palette.alternate-background : transparent;
+        thumb := Rectangle {
+            width: !root.horizontal ? root.size : root.maximum <= 0phx ? 0phx
+                : max(min(16px, root.width), root.track-size * root.page-size / (root.maximum + root.page-size));
+            height: root.horizontal ? root.size : root.maximum <= 0phx ? 0phx
+                : max(min(16px, root.height), root.track-size * (root.page-size / (root.maximum + root.page-size)));
+            x: !root.horizontal ? parent.width - 4px - self.width
+                : root.offset + (root.track-size - self.width) * (-root.value / root.maximum);
+            y: root.horizontal ? parent.height - 4px - self.height
+                : root.offset + (root.track-size - self.height) * (-root.value / root.maximum);
+            border-radius: (root.horizontal ? self.height : self.width) / 2;
+            background: Palette.border;
+            animate width, height { duration: 150ms; easing: ease-out; }
+        }
+        area := TouchArea {
+            private property <length> anchor-value;
+            private property <length> anchor-maximum;
+            private property <length> anchor-x;
+            private property <length> anchor-y;
+            width: parent.width;
+            height: parent.height;
+            function anchor() {
+                self.anchor-value = -root.value; self.anchor-maximum = root.maximum;
+                self.anchor-x = self.mouse-x; self.anchor-y = self.mouse-y;
+            }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down { self.anchor(); }
+            }
+            moved => {
+                if self.enabled && self.pressed {
+                    // A virtualized list refines its extent while rows load. Anchor
+                    // again instead of jumping.
+                    if self.anchor-maximum != root.maximum { self.anchor(); }
+                    root.move-to(-max(0px, min(root.maximum, self.anchor-value + (root.horizontal
+                        ? (self.mouse-x - self.anchor-x) * (root.maximum / (root.track-size - thumb.width))
+                        : (self.mouse-y - self.anchor-y) * (root.maximum / (root.track-size - thumb.height))))));
+                    root.scrolled();
+                }
+            }
+            scroll-event(event) => {
+                if root.horizontal && event.delta-x != 0 {
+                    root.move-to(max(-root.maximum, min(0px, root.value + event.delta-x)));
+                    return accept;
+                } else if !root.horizontal && event.delta-y != 0 {
+                    root.move-to(max(-root.maximum, min(0px, root.value + event.delta-y)));
+                    return accept;
+                }
+                reject
+            }
+        }
+        backward := ScrollArrow {
+            x: !root.horizontal ? (parent.width - self.width) / 2 : 4px;
+            y: root.horizontal ? (parent.height - self.height) / 2 : 4px;
+            horizontal: root.horizontal; revealed: root.hovered;
+            clicked => { root.move-to(min(0px, root.value + root.step-size)); }
+        }
+        forward := ScrollArrow {
+            x: !root.horizontal ? (parent.width - self.width) / 2 : root.width - self.width - 4px;
+            y: root.horizontal ? (parent.height - self.height) / 2 : root.height - self.height - 4px;
+            horizontal: root.horizontal; forward: true; revealed: root.hovered;
+            clicked => { root.move-to(max(-root.maximum, root.value - root.step-size)); }
+        }
+    }
+}
+
+// The SDK ScrollView's interface, including its deprecated viewport aliases.
+export component ScrollView {
+    in property <bool> enabled: true;
+    out property <length> visible-width <=> flickable.width;
+    out property <length> visible-height <=> flickable.height;
+    in-out property <length> content-width <=> flickable.content-width;
+    in-out property <length> content-height <=> flickable.content-height;
+    in-out property <length> content-x <=> flickable.content-x;
+    in-out property <length> content-y <=> flickable.content-y;
+    in-out property <length> viewport-width <=> flickable.content-width;
+    in-out property <length> viewport-height <=> flickable.content-height;
+    in-out property <length> viewport-x <=> flickable.content-x;
+    in-out property <length> viewport-y <=> flickable.content-y;
+    in property <ScrollBarPolicy> vertical-scrollbar-policy <=> vertical-bar.policy;
+    in property <ScrollBarPolicy> horizontal-scrollbar-policy <=> horizontal-bar.policy;
+    in property <bool> mouse-drag-pan-enabled <=> flickable.mouse-drag-pan-enabled;
+    in-out property <bool> has-focus;
+    callback scrolled <=> flickable.flicked;
+    min-height: 50px;
+    min-width: 50px;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    preferred-height: 100%;
+    preferred-width: 100%;
+    flickable := Flickable {
+        mouse-drag-pan-enabled: false;
+        width: parent.width;
+        height: parent.height;
+        @children
+    }
+    vertical-bar := ScrollBar {
+        width: 14px;
+        x: flickable.width + flickable.x - self.width;
+        y: flickable.y;
+        height: horizontal-bar.shown ? parent.height - horizontal-bar.height : parent.height;
+        maximum: flickable.content-height - flickable.height;
+        page-size: flickable.height;
+        value: flickable.content-y;
+        move-to(position) => { flickable.content-y = position; }
+        scrolled => { root.scrolled(); }
+    }
+    horizontal-bar := ScrollBar {
+        width: vertical-bar.shown ? parent.width - vertical-bar.width : parent.width;
+        height: 14px;
+        y: flickable.height + flickable.y - self.height;
+        x: flickable.x;
+        horizontal: true;
+        maximum: flickable.content-width - flickable.width;
+        page-size: flickable.width;
+        value: flickable.content-x;
+        move-to(position) => { flickable.content-x = position; }
+        scrolled => { root.scrolled(); }
+    }
+}
+
+// Slint 1.18 virtualizes a repeater whose parent component is named ListView and
+// has ScrollView's content and visible size properties.
+export component ListView inherits ScrollView {
+    @children
+    accessible-role: list;
+    accessible-orientation: Orientation.vertical;
+}

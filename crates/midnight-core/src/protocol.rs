@@ -46,6 +46,8 @@ pub enum Command {
         generation: u64,
         targets: Vec<crate::CommandIconTarget>,
     },
+    /// The device-pixel edges at which the frontend now draws native icons.
+    SetIconEdges(crate::IconEdges),
     EnqueueCapturedTransfer(crate::CapturedTransferRequest),
     RunFileList(Box<crate::FileListRequest>),
     ConfirmFileList {
