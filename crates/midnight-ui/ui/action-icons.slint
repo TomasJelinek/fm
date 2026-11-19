@@ -1,4 +1,3 @@
-import { Button } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { LocationRole } from "navigation-models.slint";
 
@@ -150,7 +149,7 @@ component ActionButtonContent inherits HorizontalLayout {
     }
 }
 
-// Keep the native button's input/focus behavior, with application-owned paint.
+// The stock Button's input/focus behavior, with application-owned paint.
 // Fluent's stock primary brush follows the OS accent rather than our palette.
 export component ActionButton inherits Rectangle {
     in property <string> text;
@@ -178,7 +177,7 @@ export component ActionButton inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.activate(); } }
     function activate() {
-        // A focused native Button can still deliver Enter after it becomes disabled.
+        // A focused scope still receives Enter after it becomes disabled.
         if !root.enabled { return; }
         if root.focusable { input.focus(); }
         root.clicked();
@@ -198,13 +197,18 @@ export component ActionButton inherits Rectangle {
         compact: root.compact; font-size: root.font-size; vertical-padding: root.vertical-padding;
         removal-icon: root.removal-icon; destructive: root.destructive; enabled: root.enabled;
     }
-    input := Button {
-        // Explicit placement keeps native input geometry out of content sizing.
+    // The focus scope of Fluent's Button (button.slint, i-focus-scope) without the
+    // Button around it, which was instantiated hidden at every use: zero width, so
+    // it never takes a click, and Space or Return activate.
+    input := FocusScope {
+        // Explicit placement keeps the scope out of content sizing.
         x: 0px; y: 0px;
-        width: root.width; height: root.height;
-        opacity: 0; accessible-role: none;
-        text: root.text; enabled: root.enabled && root.focusable;
-        clicked => { root.activate(); }
+        width: 0px; height: root.height;
+        enabled: root.enabled && root.focusable;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return { root.activate(); return accept; }
+            reject
+        }
     }
     pointer := TouchArea {
         enabled: root.enabled;
