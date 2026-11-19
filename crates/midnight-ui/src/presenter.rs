@@ -31,6 +31,8 @@ mod filename_colors;
 mod filter;
 pub(crate) mod find;
 #[cfg(test)]
+mod find_roots_tests;
+#[cfg(test)]
 mod find_tests;
 #[cfg(all(test, unix))]
 mod find_unix_tests;
@@ -1017,6 +1019,8 @@ impl Presenter {
                 self.file_list_path_picked(request, result);
             } else if self.owns_checksum_picker(request) {
                 self.checksum_path_picked(request, result);
+            } else if self.owns_find_picker(request) {
+                self.find_path_picked(request, result);
             } else {
                 self.settings_path_picked(request, result);
             }

@@ -1,10 +1,50 @@
 import { ListView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
+import { Tip } from "controls.slint";
+
+// Column widths; a header separator drag changes one. The window keeps them for its session.
+export struct FindColumnWidths {
+    group: length, name: length, extension: length, path: length, size: length, modified: length,
+}
 
 export struct FindRow {
     token: string, name: string, extension: string, path: string, size: string,
     modified: string, directory: bool, duplicate-group: string, group-start: bool, group-shade: bool,
+}
+
+// The 10px gap after each column; in the header it is a drag separator.
+component ColumnGrip inherits Rectangle {
+    in property <bool> active;
+    in property <length> start-width;
+    in property <string> title;
+    callback resize(length);
+    width: 10px;
+    accessible-role: none;
+    Rectangle {
+        visible: root.active;
+        x: (parent.width - self.width) / 2; y: 4px; width: 1px; height: max(0px, parent.height - 8px);
+        background: grip.has-hover || grip.pressed ? Theme.active-frame : Theme.frame;
+    }
+    grip := TouchArea {
+        enabled: root.active;
+        mouse-cursor: col-resize;
+        private property <length> pressed-at;
+        private property <length> pressed-width;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.pressed-at = self.absolute-position.x + self.mouse-x;
+                self.pressed-width = root.start-width;
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.resize(max(Theme.small-font * 3, self.pressed-width
+                    + (self.absolute-position.x + self.mouse-x - self.pressed-at)));
+            }
+        }
+    }
+    Tip { text: root.active ? "Drag to resize the " + root.title + " column" : ""; }
 }
 
 component Columns inherits HorizontalLayout {
@@ -13,20 +53,31 @@ component Columns inherits HorizontalLayout {
     in property <int> sort-column;
     in property <bool> descending;
     in property <bool> duplicates;
+    in property <FindColumnWidths> widths;
     callback sort(int);
-    padding-left: 6px; padding-right: 6px; spacing: 10px;
-    if root.duplicates: Text {
-        width: Theme.small-font * 16;
-        text: root.header ? "Identical group" : root.entry.duplicate-group;
-        color: root.header ? Theme.secondary-text : Theme.accent;
-        font-size: root.header ? Theme.small-font : Theme.font-size;
-        font-weight: root.header || root.entry.group-start ? 600 : 400;
-        vertical-alignment: center; overflow: elide;
+    callback resize(int, length);
+    padding-left: 6px; padding-right: 6px; spacing: 0px; alignment: start;
+    pure function column-width(index: int) -> length {
+        return index == 0 ? root.widths.name : index == 1 ? root.widths.extension
+            : index == 2 ? root.widths.path : index == 3 ? root.widths.size : root.widths.modified;
     }
-    for title[index] in ["Name", "Extension", "Path", "Size", "Modified"]: Rectangle {
-        horizontal-stretch: index == 2 ? 1 : 0;
-        min-width: Theme.small-font * (index == 0 ? 16 : index == 1 ? 8 : index == 2 ? 24 : index == 3 ? 10 : 18);
-        preferred-width: self.min-width;
+    if root.duplicates: HorizontalLayout {
+        Text {
+            width: root.widths.group;
+            text: root.header ? "Identical group" : root.entry.duplicate-group;
+            color: root.header ? Theme.secondary-text : Theme.accent;
+            font-size: root.header ? Theme.small-font : Theme.font-size;
+            font-weight: root.header || root.entry.group-start ? 600 : 400;
+            vertical-alignment: center; overflow: elide;
+        }
+        ColumnGrip {
+            active: root.header; start-width: root.widths.group; title: "Identical group";
+            resize(width) => { root.resize(-1, width); }
+        }
+    }
+    for title[index] in ["Name", "Extension", "Path", "Size", "Modified"]: HorizontalLayout {
+      Rectangle {
+        width: root.column-width(index);
         if root.header || index != 2: Text {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
             text: root.header ? title + (root.sort-column == index ? (root.descending ? " ↓" : " ↑") : "")
@@ -47,6 +98,11 @@ component Columns inherits HorizontalLayout {
             accessible-action-default => { root.sort(index); }
             TouchArea { clicked => { root.sort(index); } }
         }
+      }
+      ColumnGrip {
+          active: root.header; start-width: root.column-width(index); title: title;
+          resize(width) => { root.resize(index, width); }
+      }
     }
 }
 
@@ -61,7 +117,22 @@ export component FindResults inherits FocusScope {
     callback sort(int);
     callback reveal(string);
     callback action-key(KeyEvent) -> bool;
-    private property <length> table-width: Theme.small-font * (root.duplicates ? 92 : 76) + (root.duplicates ? 62px : 52px);
+    // Defaults follow the font until a header separator is dragged.
+    in-out property <FindColumnWidths> widths: {
+        group: Theme.small-font * 16, name: Theme.small-font * 16, extension: Theme.small-font * 8,
+        path: Theme.small-font * 24, size: Theme.small-font * 10, modified: Theme.small-font * 18,
+    };
+    // Padding plus one 10px separator after each column.
+    private property <length> table-width: root.widths.name + root.widths.extension + root.widths.path
+        + root.widths.size + root.widths.modified + (root.duplicates ? root.widths.group + 72px : 62px);
+    function resize-column(index: int, width: length) {
+        if index == -1 { root.widths.group = width; }
+        else if index == 0 { root.widths.name = width; }
+        else if index == 1 { root.widths.extension = width; }
+        else if index == 2 { root.widths.path = width; }
+        else if index == 3 { root.widths.size = width; }
+        else if index == 4 { root.widths.modified = width; }
+    }
     private property <length> row-height: Theme.row-height;
     private property <bool> reveal-active;
     private property <length> view-height: list.visible-height;
@@ -108,7 +179,9 @@ export component FindResults inherits FocusScope {
         height: Theme.column-height; width: parent.width; clip: true; background: Theme.header;
         Columns { x: list.content-x; width: list.content-width; height: parent.height;
             header: true; sort-column: root.sort-column; descending: root.descending; duplicates: root.duplicates;
-            sort(column) => { root.sort(column); } }
+            widths: root.widths;
+            sort(column) => { root.sort(column); }
+            resize(index, width) => { root.resize-column(index, width); } }
     }
     list := ListView {
         y: root.header-height; width: parent.width; height: max(0px, parent.height - self.y);
@@ -126,7 +199,7 @@ export component FindResults inherits FocusScope {
             accessible-value: row.token;
             accessible-item-selectable: true; accessible-item-selected: root.selected-row == index; accessible-item-index: index;
             accessible-action-default => { root.selected-row = index; root.focus(); }
-            Columns { entry: row; duplicates: root.duplicates; }
+            Columns { entry: row; duplicates: root.duplicates; widths: root.widths; }
             // Hidden instead of conditional: an `if` is one more generated component.
             Rectangle {
                 visible: root.duplicates && row.group-start;

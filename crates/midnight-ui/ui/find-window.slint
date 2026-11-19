@@ -2,17 +2,19 @@ import { ScrollView } from "scroll-view.slint";
 import { HintedLineEdit, HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
-import { CompactPicker } from "controls.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { ToolWindow } from "tool-window.slint";
-import { FindResults, FindRow } from "find-results.slint";
+import { FindResults, FindRow, FindColumnWidths } from "find-results.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { FindAdvanced } from "find-advanced.slint";
+import { FindRootsPicker, FindRootRow } from "find-roots.slint";
+import { FindSyntaxHelp } from "find-help.slint";
+import { FindStatusLine } from "find-status.slint";
 
-export { FindRow }
+export { FindRow, FindRootRow, FindColumnWidths }
 export struct FindDraft {
     masks: string, mode: int, recursive: bool, name-case: bool,
     content-enabled: bool, content: string, content-case: bool, whole-words: bool,
@@ -36,9 +38,23 @@ export component FindWindow inherits ToolWindow {
     preferred-width: 780px; preferred-height: 560px;
     icon: FallbackIcons.find;
     in property <[FindRow]> rows;
-    in property <[string]> roots;
+    in property <[FindRootRow]> roots;
     private property <int> selected-root;
-    changed roots => { root.selected-root = max(0, min(root.selected-root, root.roots.length - 1)); }
+    private property <int> current-root: root.roots.length == 0 ? -1
+        : max(0, min(root.selected-root, root.roots.length - 1));
+    // Ticked roots, counted by the host.
+    in property <int> searched-roots;
+    // The host updates one model in place, so its length is watched instead.
+    private property <int> root-count: root.roots.length;
+    private property <int> known-root-count;
+    changed root-count => {
+        if root.known-root-count > 0 && root.root-count > root.known-root-count {
+            // A folder was added: choose it and finish the Add entry.
+            root.selected-root = root.root-count - 1;
+            root.adding = false;
+        }
+        root.known-root-count = root.root-count;
+    }
     in property <bool> running;
     in property <bool> stopping;
     in property <bool> duplicate-results;
@@ -58,13 +74,21 @@ export component FindWindow inherits ToolWindow {
     in-out property <int> selected-row: -1;
     in-out property <bool> show-details;
     private property <bool> show-advanced;
+    // Add shows a one-line folder entry under the Search folders picker.
+    private property <bool> adding;
+    private property <string> new-root-text;
+    // Syntax help covers the results while the query stays editable.
+    in-out property <bool> show-help;
+    in-out property <FindColumnWidths> column-widths <=> results.widths;
     // Hiding the query editor must not leave the native window without a key
     // recipient: Escape remains available while Details replaces that editor.
     changed show-details => { root.focus-content(); }
     callback search(FindDraft);
     callback stop();
     callback add-root(string);
+    callback browse-root();
     callback remove-root(int);
+    callback toggle-root(int, bool);
     callback reveal(string);
     callback file-action(string, int);
     callback action-key(KeyEvent, string) -> bool;
@@ -84,16 +108,27 @@ export component FindWindow inherits ToolWindow {
     }
     callback copy-details();
     public function begin() { masks.focus(); }
+    public function start-adding() {
+        // The entry is created empty and focuses itself.
+        root.new-root-text = "";
+        root.adding = true;
+    }
     public function submit() {
         if root.running || !advanced.valid { return; }
+        root.show-help = false;
         root.search({masks: masks.text, mode: mode.current-index, recursive: recursive.checked, name-case: names.checked,
             content-enabled: content-enabled.checked, content: content.text, content-case: content-case.checked,
             whole-words: advanced.whole-words, modified-enabled: advanced.modified-enabled,
             modified-seconds: advanced.modified-seconds, duplicates: advanced.duplicates});
     }
-    Rectangle {
+    FocusScope {
         min-width: 0px; min-height: 0px;
         preferred-width: 0px; preferred-height: 0px;
+        // F1 bubbles here from the query editors and the results.
+        key-pressed(event) => {
+            if event.text == Key.F1 { root.show-help = !root.show-help; return accept; }
+            reject
+        }
         VerticalLayout {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
             padding: root.height < 360px ? 4px : 12px; spacing: root.height < 360px ? 3px : 6px;
@@ -129,38 +164,95 @@ export component FindWindow inherits ToolWindow {
                                 : "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names.";
                             accepted => { root.submit(); }
                         }
-                        mode := HintedComboBox {
+                        HorizontalLayout {
                             row: root.narrow ? root.name-row + 1 : 0; col: root.narrow ? 0 : 2;
-                            model: ["Masks", "Regex", "Expression"]; enabled: !root.running;
-                            accessible-label: "Find match mode"; min-width: 0px;
-                            preferred-width: max(120px, Theme.font-size * 9);
-                            horizontal-stretch: 0;
+                            spacing: 6px;
+                            mode := HintedComboBox {
+                                model: ["Masks", "Regex", "Expression"]; enabled: !root.running;
+                                accessible-label: "Find match mode"; min-width: 0px;
+                                preferred-width: max(120px, Theme.font-size * 9);
+                                horizontal-stretch: 1;
+                            }
+                            FindActionButton {
+                                text: "Help"; fallback-icon: FallbackIcons.help;
+                                hint: "Syntax help with examples for the chosen mode (F1). Click an example to use it.";
+                                clicked => { root.show-help = !root.show-help; }
+                            }
                         }
                         names := WrappingCheckBox {
                             row: root.narrow ? root.name-row + 1 : 1; col: 1; colspan: root.narrow ? 1 : 2;
                             text: "Match name case"; enabled: !root.running;
                         }
-                        Text {
+                        // Labels and buttons stay on the picker's line while the Add entry is open.
+                        VerticalLayout {
                             row: root.narrow ? root.name-row + 2 : 2; col: 0; colspan: root.narrow ? 2 : 1;
-                            text: "Search folders" + (root.roots.length > 1 ? " (" + root.roots.length + ")" : "");
-                            color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
-                            vertical-alignment: center; min-width: 0px; wrap: word-wrap;
+                            alignment: start;
+                            Text {
+                                min-height: root.narrow ? 0px : Theme.control-height;
+                                text: "Search folders" + (root.roots.length > 1
+                                    ? " (" + (root.searched-roots < root.roots.length
+                                        ? root.searched-roots + " of " : "") + root.roots.length + ")" : "");
+                                color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
+                                vertical-alignment: center; min-width: 0px; wrap: word-wrap;
+                            }
                         }
-                        roots := CompactPicker {
+                        VerticalLayout {
                             row: root.narrow ? root.name-row + 3 : 2; col: root.narrow ? 0 : 1;
-                            model: root.roots; path-labels: true;
-                            enabled: !root.running; horizontal-stretch: 1; minimum-control-width: 0px;
-                            current-index: root.roots.length > 0 ? root.selected-root : -1;
-                            label: self.current-index >= 0 ? root.roots[self.current-index] : "";
-                            accessible-name: "Search folders";
-                            hint: "Folders searched by this Find. Choose one to review or remove it.";
-                            selected(index) => { root.selected-root = index; }
+                            spacing: 6px; alignment: start; horizontal-stretch: 1;
+                            roots := FindRootsPicker {
+                                roots: root.roots; current-index: root.current-root;
+                                enabled: !root.running;
+                                accessible-name: "Search folders";
+                                hint: "Folders this Find can search. Ticked folders are searched; click a name to choose it for Remove.";
+                                selected(index) => { root.selected-root = index; }
+                                toggled(index, searched) => { root.toggle-root(index, searched); }
+                            }
+                            if root.adding: HorizontalLayout {
+                                spacing: 6px;
+                                HintedLineEdit {
+                                    enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
+                                    min-height: Theme.control-height;
+                                    accessible-label: "Folder to add";
+                                    placeholder-text: "Absolute folder path";
+                                    hint: "Type an absolute folder path and press Enter, or choose one with Browse.";
+                                    init => { self.focus(); }
+                                    edited(text) => { root.new-root-text = text; }
+                                    accepted(text) => { if text != "" { root.add-root(text); } }
+                                }
+                                FindActionButton {
+                                    text: "Browse…"; fallback-icon: FallbackIcons.open-path;
+                                    enabled: !root.running;
+                                    hint: "Choose a folder with the system folder chooser.";
+                                    clicked => { root.browse-root(); }
+                                }
+                                FindActionButton {
+                                    text: "OK"; enabled: !root.running && root.new-root-text != "";
+                                    hint: "Add the typed folder to Search folders.";
+                                    clicked => { root.add-root(root.new-root-text); }
+                                }
+                            }
                         }
-                        FindActionButton {
+                        VerticalLayout {
                             row: root.narrow ? root.name-row + 3 : 2; col: root.narrow ? 1 : 2;
-                            text: "Remove"; fallback-icon: FallbackIcons.close;
-                            enabled: !root.running && root.roots.length > 0;
-                            clicked => { root.remove-root(roots.current-index); }
+                            alignment: start;
+                            // Narrow windows stack Add over Remove to keep the grid inside the window.
+                            GridLayout {
+                                spacing: 6px;
+                                FindActionButton {
+                                    row: 0; col: 0;
+                                    text: "Add"; fallback-icon: FallbackIcons.tab-add;
+                                    enabled: !root.running;
+                                    hint: "Add another folder: type its path or browse for it. Existing folders keep their original native path, including names that cannot be typed.";
+                                    clicked => { if root.adding { root.adding = false; } else { root.start-adding(); } }
+                                }
+                                FindActionButton {
+                                    row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                                    text: "Remove"; fallback-icon: FallbackIcons.close;
+                                    enabled: !root.running && root.roots.length > 0;
+                                    hint: "Remove the chosen folder from this Find.";
+                                    clicked => { root.remove-root(root.current-root); }
+                                }
+                            }
                         }
                         recursive := WrappingCheckBox {
                             row: root.narrow ? root.name-row + 4 : 3; col: root.narrow ? 0 : 1; colspan: 2;
@@ -212,27 +304,6 @@ export component FindWindow inherits ToolWindow {
                             horizontal-stretch: 1; vertical-alignment: center;
                         }
                     }
-                    Rectangle {
-                        visible: root.show-advanced;
-                        height: root.show-advanced ? extra-roots.preferred-height : 0px;
-                        extra-roots := GridLayout {
-                            spacing: 6px;
-                            new-root := HintedLineEdit {
-                                row: 0; col: 0;
-                                enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
-                                accessible-label: "Add absolute search folder";
-                                placeholder-text: "Add another absolute folder path";
-                                hint: "Add another native folder. Existing roots retain their original native path, including names that cannot be typed here.";
-                                accepted => { root.add-root(self.text); }
-                            }
-                            FindActionButton {
-                                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
-                                text: "Add"; fallback-icon: FallbackIcons.tab-add;
-                                enabled: !root.running && new-root.text != "";
-                                clicked => { root.add-root(new-root.text); }
-                            }
-                        }
-                    }
                     advanced := FindAdvanced {
                         visible: root.show-advanced;
                         height: root.show-advanced ? self.preferred-height : 0px;
@@ -240,7 +311,16 @@ export component FindWindow inherits ToolWindow {
                         content-enabled: content-enabled.checked;
                         submit => { root.submit(); }
                     }
-                    if root.error != "": ErrorNotice { text: root.error; }
+                    if root.error != "": FindStatusLine {
+                        text: root.error; error: true; wrap: true;
+                        max-height: Theme.font-size * 4.5;
+                        details => { root.show-details = true; }
+                    }
+                    // Short windows with large text have no status line under the results.
+                    if !root.inline-status && root.progress != "": FindStatusLine {
+                        text: root.progress; error: root.attention; font-size: Theme.small-font;
+                        details => { root.show-details = true; }
+                    }
                 }
               }
               if root.show-details: ScrollView {
@@ -285,20 +365,21 @@ export component FindWindow inherits ToolWindow {
                     text: root.running ? "Searching…" : "No results"; color: Theme.muted-text;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
+                if root.show-help: FindSyntaxHelp {
+                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                    mode: mode.current-index; enabled: !root.running;
+                    use-example(query) => { masks.text = query; masks.focus(); }
+                    close => { root.show-help = false; }
+                }
             }
             if root.current-directory != "" && root.inline-status: PathText {
                 text: root.current-directory; foreground: Theme.secondary-text;
                 font-size: Theme.small-font; height: max(18px, Theme.small-font + 4px);
             }
-            if root.progress != "" && root.inline-status: HorizontalLayout {
-                spacing: 4px; height: max(18px, Theme.small-font + 4px);
-                if root.attention: Rectangle {
-                    width: 18px; border-radius: 9px; background: Theme.error-text;
-                    Text { text: "!"; color: Theme.error-background; font-weight: 700;
-                        horizontal-alignment: center; vertical-alignment: center; }
-                }
-                Text { text: root.progress; color: root.attention ? Theme.error-text : Theme.secondary-text;
-                    font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
+            if root.progress != "" && root.inline-status: FindStatusLine {
+                height: max(18px, Theme.small-font + 4px);
+                text: root.progress; error: root.attention; font-size: Theme.small-font;
+                details => { root.show-details = true; }
             }
             DialogFooter {
                 compact-height: root.height < 350px;
@@ -326,8 +407,10 @@ export component FindWindow inherits ToolWindow {
                         hint: "Open the selected file with its system association. This may run a program. Folders use Go to file.";
                         clicked => { root.act-selected(3); } }
                 }
-                FindActionButton { text: root.show-details ? "Query" : "Details"; fallback-icon: FallbackIcons.properties; clicked => { root.show-details = !root.show-details; } }
-                if root.width >= 600px: FindActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
+                // Details open from the error or status line; Back returns to the query.
+                if root.show-details: FindActionButton { text: "Back"; fallback-icon: FallbackIcons.find;
+                    hint: "Return to the query."; clicked => { root.show-details = false; } }
+                if root.width >= 600px && !root.show-details: FindActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
             }
         }
     }

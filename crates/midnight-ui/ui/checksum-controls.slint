@@ -4,7 +4,7 @@ import { Tip } from "controls.slint";
 export struct ChecksumDraft { md5: bool, sha1: bool, sha256: bool, sha512: bool, crc32: bool, recursive: bool }
 
 // One drawn checkbox: the popup rows below toggle and select through separate hit areas.
-component MenuCheck inherits Rectangle {
+export component MenuCheck inherits Rectangle {
     in property <bool> checked;
     in property <bool> enabled: true;
     width: 16px; height: 16px; border-radius: 3px; border-width: 1px;

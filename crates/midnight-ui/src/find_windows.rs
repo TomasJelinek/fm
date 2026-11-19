@@ -2,7 +2,8 @@
 use crate::dialog_host::{CloseDisposition, DialogHost, DialogOwner, DialogSessions};
 use crate::tool_window_failure::Failures;
 use crate::{
-    FindDraft, FindRow, FindWindow, MainWindow, Presenter, Theme, presenter::find::FindForm,
+    FindDraft, FindRootRow, FindRow, FindWindow, MainWindow, Presenter, Theme,
+    presenter::find::{FindForm, FindRoot},
     shown_text,
 };
 use midnight_core::*;
@@ -145,7 +146,10 @@ struct WindowRecord {
     host: Rc<DialogHost>,
     shown: bool,
     rows: Rc<Rows>,
-    roots: Vec<std::path::PathBuf>,
+    roots: Vec<FindRoot>,
+    // One model for the window's life: a tick updates its row in place, so an
+    // open Search folders list stays open while several folders are toggled.
+    root_rows: Rc<VecModel<FindRootRow>>,
     revision: Option<u64>,
 }
 type Windows = Rc<RefCell<HashMap<FindSessionId, WindowRecord>>>;
@@ -317,15 +321,11 @@ fn refresh(
         w.set_sort_descending(s.sort.descending);
         w.set_details(shown_text(&details(s, &p.number_locale)));
         if record.roots != s.roots {
+            update_roots(&record.root_rows, &record.roots, &s.roots);
             record.roots = s.roots.clone();
-            w.set_roots(
-                Rc::new(VecModel::from(
-                    s.roots
-                        .iter()
-                        .map(|p| shown_text(&p.to_string_lossy()))
-                        .collect::<Vec<_>>(),
-                ))
-                .into(),
+            w.set_searched_roots(
+                i32::try_from(s.roots.iter().filter(|root| root.searched).count())
+                    .unwrap_or(i32::MAX),
             );
         }
         let selected = (record.rows.structure.get().0 == s.generation.0)
@@ -387,6 +387,8 @@ fn create(
         view: RefCell::new(None),
     });
     window.set_rows(rows.clone().into());
+    let root_rows = Rc::new(VecModel::default());
+    window.set_roots(root_rows.clone().into());
     macro_rules! callback {
         ($name:ident, |$p:ident, $send:ident $(, $arg:ident)*| $body:block) => {{
             let state = state.clone(); let sender = send.clone(); let weak = main.as_weak();
@@ -437,6 +439,18 @@ fn create(
     callback!(on_remove_root, |p, _send, row| {
         p.remove_find_root(id, row);
     });
+    callback!(on_toggle_root, |p, _send, row, searched| {
+        p.set_find_root_searched(id, row, searched);
+    });
+    {
+        let weak = window.as_weak();
+        callback!(on_browse_root, |p, send| {
+            if let Some(w) = weak.upgrade() {
+                let owner = crate::picker_window::native_path_picker_owner(w.window());
+                p.request_find_root_picker(id, owner, send);
+            }
+        });
+    }
     callback!(on_reveal, |p, send, row| {
         p.reveal_find(id, &row, send);
     });
@@ -495,8 +509,29 @@ fn create(
         shown: false,
         rows,
         roots: vec![],
+        root_rows,
         revision: None,
     })
+}
+
+fn root_row(root: &FindRoot) -> FindRootRow {
+    FindRootRow {
+        label: shown_text(&root.path.to_string_lossy()),
+        searched: root.searched,
+    }
+}
+
+/// Ticks change rows in place; any other change replaces the list.
+fn update_roots(model: &VecModel<FindRootRow>, old: &[FindRoot], new: &[FindRoot]) {
+    if old.len() == new.len() && old.iter().zip(new).all(|(a, b)| a.path == b.path) {
+        for (row, (a, b)) in old.iter().zip(new).enumerate() {
+            if a.searched != b.searched {
+                model.set_row_data(row, root_row(b));
+            }
+        }
+    } else {
+        model.set_vec(new.iter().map(root_row).collect::<Vec<_>>());
+    }
 }
 
 fn form(draft: FindDraft) -> FindForm {
@@ -543,7 +578,7 @@ fn sort_index(column: FindSortColumn) -> i32 {
 
 fn progress(s: &crate::presenter::find::FindSession, locale: &NumberLocale) -> String {
     let status = if !s.error.is_empty() {
-        "Error · see Details"
+        "Error · click for details"
     } else if s.stopping {
         "Stopping…"
     } else if s.running {
@@ -555,9 +590,9 @@ fn progress(s: &crate::presenter::find::FindSession, locale: &NumberLocale) -> S
     } else {
         match s.summary.as_ref().map(|s| s.completion) {
             Some(FindCompletion::Completed) => "Completed",
-            Some(FindCompletion::Incomplete) => "Incomplete · see Details",
+            Some(FindCompletion::Incomplete) => "Incomplete · click for details",
             Some(FindCompletion::Cancelled) => "Cancelled",
-            Some(FindCompletion::Failed) => "Failed · see Details",
+            Some(FindCompletion::Failed) => "Failed · click for details",
             None => "Ready",
         }
     };

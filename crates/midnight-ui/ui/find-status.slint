@@ -1,0 +1,55 @@
+import { Theme } from "theme.slint";
+import { Tip } from "controls.slint";
+import { ErrorGlyph } from "error-notice.slint";
+
+// A Find error or status line. The icon and the text open the full details
+// page; the line itself is a summary, never the only copy of the diagnostic.
+export component FindStatusLine inherits Rectangle {
+    in property <string> text;
+    // Red text with an error icon; otherwise ordinary secondary status text.
+    in property <bool> error;
+    in property <bool> wrap;
+    in property <length> font-size: Theme.font-size;
+    callback details();
+    private property <length> glyph-size: max(14px, root.font-size + 2px);
+    min-width: 0px;
+    min-height: max(root.glyph-size, label.min-height);
+    preferred-height: max(root.glyph-size, label.preferred-height);
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-description: "Click for more details";
+    accessible-action-default => { root.details(); }
+    forward-focus: focus;
+    border-radius: 3px;
+    border-width: focus.has-focus ? 1px : 0px;
+    border-color: Theme.active-frame;
+    background: area.has-hover ? Theme.hover : transparent;
+    HorizontalLayout {
+        spacing: 6px;
+        if root.error: VerticalLayout {
+            alignment: start;
+            ErrorGlyph { width: root.glyph-size; height: root.glyph-size; accessible-role: none; }
+        }
+        label := Text {
+            text: root.text; font-size: root.font-size;
+            color: root.error ? Theme.error-text : Theme.secondary-text;
+            wrap: root.wrap ? word-wrap : no-wrap; overflow: elide;
+            vertical-alignment: center; horizontal-stretch: 1; min-width: 0px;
+            accessible-role: none;
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
+                && (event.text == Key.Return || event.text == Key.Space) {
+                root.details(); return accept;
+            }
+            reject
+        }
+        area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.details(); }
+        }
+    }
+    Tip { text: "Click for more details"; }
+}

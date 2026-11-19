@@ -125,7 +125,10 @@ fn find_primary_and_close_actions_use_application_colors_and_keep_keyboard_input
     let windows = platform();
     let child = FindWindow::new().unwrap();
     child.set_roots(slint::ModelRc::new(slint::VecModel::from(vec![
-        "C:/資料".into(),
+        midnight_ui::FindRootRow {
+            label: "C:/資料".into(),
+            searched: true,
+        },
     ])));
     child.invoke_apply_preferences(3, 0, "".into(), 13, 21);
     let drafts = Rc::new(RefCell::new(Vec::new()));

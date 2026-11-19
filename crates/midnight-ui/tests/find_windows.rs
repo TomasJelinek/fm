@@ -359,9 +359,10 @@ fn find_column_headers_dispatch_pointer_sort_and_location_is_a_separate_line() {
         "actual chooser must preserve Masks and expose Regex/Expression"
     );
     let location = modeless::accessible_item(&native, AccessibleRole::Text, path).unwrap();
+    // The status line is a button that opens the details.
     let progress = modeless::accessible_item(
         &native,
-        AccessibleRole::Text,
+        AccessibleRole::Button,
         "42 files examined · 3 results",
     )
     .unwrap();
@@ -466,7 +467,8 @@ fn modeless_find_streams_results_and_closes_independently_at_320_by_200() {
     );
     accepting.set(true);
     draw(&first, 320, 200);
-    click_footer_action(&first, 320, 200, "Details", "find-busy", true);
+    let status = status_line(&first);
+    click_footer_action(&first, 320, 200, &status, "find-busy", true);
     draw(&first, 320, 200);
     click_footer_action(&first, 320, 200, "Copy", "find-busy", true);
     assert!(commands.borrow().iter().any(
@@ -519,6 +521,8 @@ fn find_actions_and_details_remain_accessible_in_every_theme_and_density() {
     window.set_error("Access denied\n\nFolder: C:\\Žluťoučký 日本語\\Long folder".into());
     window.set_details("100 files · 12 folders\n1 access error\nNo partial content match was treated as a complete result.".into());
     window.set_attention(true);
+    let status = "Error · click for details · 0 found · 0 examined";
+    window.set_progress(status.into());
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
     // Themes select colours only (ui/theme.slint), so every theme is laid out and
@@ -532,7 +536,8 @@ fn find_actions_and_details_remain_accessible_in_every_theme_and_density() {
             for (width, height) in [(860, 620), (320, 200)] {
                 window.set_show_details(false);
                 modeless::draw_or_layout(&native, width, height, &case, render);
-                click_footer_action(&native, width, height, "Details", &case, render);
+                // The status line, not a footer button, opens the details.
+                click_footer_action(&native, width, height, status, &case, render);
                 assert!(
                     window.get_show_details(),
                     "Details: theme={scheme}, density={density}, {width}x{height}"
@@ -540,10 +545,10 @@ fn find_actions_and_details_remain_accessible_in_every_theme_and_density() {
                 let details = format!("{case}-details");
                 modeless::draw_or_layout(&native, width, height, &details, render);
                 click_footer_action(&native, width, height, "Copy", &details, render);
-                click_footer_action(&native, width, height, "Query", &details, render);
+                click_footer_action(&native, width, height, "Back", &details, render);
                 assert!(
                     !window.get_show_details(),
-                    "Query: theme={scheme}, density={density}, {width}x{height}"
+                    "Back: theme={scheme}, density={density}, {width}x{height}"
                 );
                 click_footer_action(&native, width, height, "Close", &case, render);
             }
@@ -553,6 +558,34 @@ fn find_actions_and_details_remain_accessible_in_every_theme_and_density() {
     assert_eq!(closed.get(), cases);
     assert_eq!(copies.get(), cases);
     window.hide().unwrap();
+}
+
+/// The label of the last line that opens Find details (the status under the results).
+fn status_line(native: &MinimalSoftwareWindow) -> String {
+    use i_slint_core::{
+        accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+        window::WindowInner,
+    };
+    fn walk(item: ItemRc, found: &mut Option<String>) {
+        if item.accessible_role() == AccessibleRole::Button
+            && item
+                .accessible_string_property(AccessibleStringProperty::Description)
+                .is_some_and(|text| text == "Click for more details")
+        {
+            *found = item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .map(|label| label.to_string());
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            walk(item, found);
+        }
+    }
+    let mut found = None;
+    let root = WindowInner::from_pub(native.window()).component();
+    walk(ItemRc::new_root(root), &mut found);
+    found.expect("Find shows a status line that opens details")
 }
 
 // Compact footers keep Close fixed and scroll the remaining real controls. A

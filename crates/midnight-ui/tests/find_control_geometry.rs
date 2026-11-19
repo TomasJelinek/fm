@@ -7,9 +7,9 @@ use i_slint_core::{
     items::{AccessibleRole, ComplexText, ImageItem, Orientation, SimpleText},
 };
 use midnight_core::PreferenceTheme;
-use midnight_ui::FindWindow;
+use midnight_ui::{FindRootRow, FindWindow};
 use slint::{
-    ComponentHandle, SharedString, VecModel,
+    ComponentHandle, VecModel,
     platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
 use std::{cell::RefCell, rc::Rc};
@@ -123,9 +123,10 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
     slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
     let window = FindWindow::new().unwrap();
     window.set_roots(
-        Rc::new(VecModel::from(vec![SharedString::from(
-            r"D:\fixtures\資料",
-        )]))
+        Rc::new(VecModel::from(vec![FindRootRow {
+            label: r"D:\fixtures\資料".into(),
+            searched: true,
+        }]))
         .into(),
     );
     window.show().unwrap();
@@ -156,6 +157,8 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
                 );
             };
             for label in [
+                "Help",
+                "Add",
                 "Remove",
                 "More options",
                 "Find",
@@ -163,7 +166,6 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
                 "View",
                 "Edit",
                 "Open",
-                "Details",
                 "Copy details",
                 "Close",
             ] {
@@ -173,7 +175,6 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
                 .unwrap()
                 .accessible_action(&AccessibilityAction::Default);
             draw(&native);
-            check("Add");
             check("Fewer options");
             modeless::accessible_item(&native, AccessibleRole::Button, "Fewer options")
                 .unwrap()
@@ -185,7 +186,7 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
             window.set_running(false);
             window.set_show_details(true);
             draw(&native);
-            for label in ["Copy", "Query", "Copy details", "Close"] {
+            for label in ["Copy", "Back", "Close"] {
                 check(label);
             }
         }

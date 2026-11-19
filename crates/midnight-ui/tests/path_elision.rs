@@ -281,7 +281,10 @@ fn find_root_picker_marks_omissions_and_removes_the_selected_original_root() {
     let roots = ModelRc::new(VecModel::from(
         paths
             .iter()
-            .map(|path| path.as_str().into())
+            .map(|path| midnight_ui::FindRootRow {
+                label: path.as_str().into(),
+                searched: true,
+            })
             .collect::<Vec<_>>(),
     ));
     window.set_roots(roots);
@@ -317,9 +320,14 @@ fn find_root_picker_marks_omissions_and_removes_the_selected_original_root() {
     ui::click(&native, &paths[1]);
     ui::click(&native, "Remove");
     assert_eq!(removed.borrow().as_slice(), [1]);
-    assert_eq!(window.get_roots().row_data(1).unwrap(), paths[1]);
+    assert_eq!(window.get_roots().row_data(1).unwrap().label, paths[1]);
 
-    window.set_roots(ModelRc::new(VecModel::from(vec![paths[0].as_str().into()])));
+    window.set_roots(ModelRc::new(VecModel::from(vec![
+        midnight_ui::FindRootRow {
+            label: paths[0].as_str().into(),
+            searched: true,
+        },
+    ])));
     ui::draw(&native, 860, 620, "find-root-picker-shrunk");
     ui::click(&native, "Remove");
     assert_eq!(removed.borrow().as_slice(), [1, 0]);

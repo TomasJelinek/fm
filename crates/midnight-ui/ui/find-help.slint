@@ -1,0 +1,123 @@
+import { Theme } from "theme.slint";
+import { Tip } from "controls.slint";
+import { CloseButton } from "close-button.slint";
+import { VScrollView } from "scroll-view.slint";
+
+// Supported syntax is implemented by midnight-platform-common (filter.rs and
+// filter_expression). This is presentation only: queries are compiled and
+// evaluated on a backend worker.
+struct FindHelpExample { query: string, meaning: string }
+
+component FindHelpRow inherits Rectangle {
+    in property <FindHelpExample> example;
+    in property <bool> enabled;
+    callback use();
+    accessible-role: button;
+    accessible-label: root.example.query;
+    accessible-description: root.example.meaning;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.use(); } }
+    border-radius: 4px;
+    background: area.has-hover && root.enabled ? Theme.hover : transparent;
+    VerticalLayout {
+        padding: 4px; spacing: 1px;
+        Text {
+            text: root.example.query; color: Theme.accent; font-size: Theme.font-size;
+            font-weight: 600; wrap: char-wrap;
+        }
+        Text {
+            text: root.example.meaning; color: Theme.secondary-text; font-size: Theme.small-font;
+            wrap: word-wrap;
+        }
+    }
+    area := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.use(); }
+    }
+    Tip { text: root.enabled ? "Use this example as the query" : ""; }
+}
+
+// Syntax help for the Find name/expression modes. Clicking an example copies
+// it into the query; nothing searches until Find is pressed.
+export component FindSyntaxHelp inherits Rectangle {
+    // 0 Masks, 1 Regex, 2 Expression: the Find mode chooser's order.
+    in property <int> mode;
+    in property <bool> enabled: true;
+    callback use-example(string);
+    callback close();
+    private property <[[FindHelpExample]]> examples: [
+        [
+            { query: "*.rs;*.toml", meaning: "Rust sources and TOML files: ; separates alternatives." },
+            { query: "*.*|*.bak;*.tmp", meaning: "Every name except .bak and .tmp files: masks after | exclude." },
+            { query: "report-202?.pdf", meaning: "? matches exactly one character, e.g. report-2024.pdf." },
+            { query: "*.jpg;*.jpeg|private*", meaning: "JPEG files, except names starting with private." },
+            { query: "notes;;draft.txt", meaning: ";; is a literal semicolon: finds the name notes;draft.txt." },
+        ],
+        [
+            { query: "[.](png|jpe?g)$", meaning: "Names ending in .png, .jpg or .jpeg." },
+            { query: "^README", meaning: "Names starting with README: ^ anchors the start." },
+            { query: "^\\d{4}-\\d{2}-\\d{2}", meaning: "Names starting with a date such as 2026-11-19." },
+            { query: "^(build|dist|target)$", meaning: "Exactly build, dist or target: $ anchors the end." },
+            { query: "(?i)invoice", meaning: "invoice in any letter case, even with Match name case on." },
+        ],
+        [
+            { query: "kind = file and size >= 10MiB", meaning: "Regular files of at least 10 MiB (10,485,760 bytes)." },
+            { query: "name like \"*.log\" and modified < \"2026-01-01T00:00:00Z\"", meaning: "Log files last modified before 2026 (UTC)." },
+            { query: "kind = directory and name =~ \"^(build|dist)$\"", meaning: "Folders named exactly build or dist (regex)." },
+            { query: "attributes has hidden or attributes has system", meaning: "Items with the hidden or system attribute." },
+            { query: "not (name like \"*.tmp\") and size > 0", meaning: "Non-empty items that are not .tmp files." },
+            { query: "missing(modified)", meaning: "Items whose modification time is unknown." },
+        ],
+    ];
+    private property <[string]> titles: ["Masks syntax", "Regex syntax", "Expression syntax"];
+    private property <[string]> intros: [
+        "Masks match each file and folder name. * matches any text and ? one character. Separate alternatives with ; and put excluded masks after one |. *.* also matches names without an extension. Match name case controls letter case.",
+        "A regular expression is matched against each file and folder name; a match anywhere in the name is enough. Use ^ and $ to anchor the start and end, [.] or \\. for a literal dot. Match name case controls letter case.",
+        "A typed predicate over each entry's name and metadata, never a script. Combine conditions with and, or and not; parentheses group them. Write keywords in lowercase and quote text in double quotes.",
+    ];
+    private property <[string]> references: [
+        "Masks never test folder paths, only names. Up to 64 masks. Use Expression mode to combine names with size, date or kind.",
+        "Uses the Rust regex syntax: classes such as \\d, \\w and \\s, alternatives (a|b), repetition *, +, ?, {n,m}. Look-around and back-references are not supported, and very large patterns are rejected. (?i) at the start ignores letter case.",
+        "FIELDS AND OPERATORS\nname: = and != (exact), like (* and ? wildcards), =~ (regex)\nsize, modified: =, !=, <, <=, >, >=\nkind: = or != file, directory, directory-link, symlink, other\nattributes has: readonly, hidden, system, archive, temporary, sparse, compressed, offline, encrypted\npresent(field), missing(field): whether that metadata is known\n\nVALUES\nSizes are whole bytes with an optional B, kB, MB, GB, TB (powers of 1000) or KiB, MiB, GiB, TiB (powers of 1024). Times are quoted ISO timestamps with a time zone: \"2026-11-19T08:30:00Z\" or \"2026-11-19T09:30:00+01:00\".\n\nRULES\nnot binds tighter than and, and tighter than or: use parentheses for clarity. Unknown metadata never matches a comparison; a missing size is not zero. Up to 4096 bytes, 256 nodes, 32 nested levels and 16 name patterns.",
+    ];
+    private property <int> page: max(0, min(2, root.mode));
+    background: Theme.pane-background;
+    // Input over the help never reaches the results underneath.
+    TouchArea {}
+    VerticalLayout {
+        padding: 8px; spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.titles[root.page]; color: Theme.strong-text; font-size: Theme.font-size;
+                font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+            }
+            CloseButton {
+                label: "Close help"; hint: "Close syntax help and show the results (F1)";
+                clicked => { root.close(); }
+            }
+        }
+        VScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-right: 12px; spacing: 6px; alignment: start;
+                Text {
+                    text: root.intros[root.page]; color: Theme.text; font-size: Theme.font-size;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.enabled ? "Examples · click one to use it" : "Examples";
+                    color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
+                }
+                for example in root.examples[root.page]: FindHelpRow {
+                    example: example; enabled: root.enabled;
+                    use => { root.use-example(example.query); }
+                }
+                Text {
+                    text: root.references[root.page]; color: Theme.secondary-text;
+                    font-size: Theme.small-font; wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

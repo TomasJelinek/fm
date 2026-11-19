@@ -592,9 +592,10 @@ fn find_form_labels_align_and_basic_controls_fit_without_scrolling() {
     slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
     let window = FindWindow::new().unwrap();
     window.set_roots(
-        Rc::new(slint::VecModel::from(vec![slint::SharedString::from(
-            "D:\\fixtures\\資料",
-        )]))
+        Rc::new(slint::VecModel::from(vec![midnight_ui::FindRootRow {
+            label: "D:\\fixtures\\資料".into(),
+            searched: true,
+        }]))
         .into(),
     );
     window.show().unwrap();

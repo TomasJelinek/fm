@@ -64,6 +64,7 @@ mod filename_colors;
 mod find_actions;
 mod find_control_geometry;
 mod find_interactions;
+mod find_window_controls;
 mod find_windows;
 mod focus;
 mod font_catalog;

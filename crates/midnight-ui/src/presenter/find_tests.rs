@@ -1,5 +1,5 @@
 use super::*;
-use crate::presenter::find::FindForm;
+use crate::presenter::find::{FindForm, FindRoot};
 use crate::presenter::tests::assert_late_event_is_only_retired;
 
 fn presenter() -> Presenter {
@@ -37,7 +37,7 @@ fn four_independent_windows_keep_captured_raw_roots() {
         p.create_find(PaneId::Right).unwrap();
     }
     assert!(p.create_find(PaneId::Left).is_none());
-    assert_eq!(p.finds.sessions[&first].roots, [expected]);
+    assert_eq!(p.finds.sessions[&first].roots, [FindRoot::new(expected)]);
     assert!(p.close_find(first, &|_| panic!(
         "unsubmitted sessions need no backend close"
     )));

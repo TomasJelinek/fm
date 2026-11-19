@@ -2,7 +2,10 @@
 use super::*;
 #[path = "find_actions.rs"]
 mod actions;
+#[path = "find_roots.rs"]
+mod roots;
 pub(crate) use actions::FileAction;
+pub(crate) use roots::FindRoot;
 
 pub(crate) struct FindForm {
     pub masks: String,
@@ -40,7 +43,8 @@ pub(crate) struct FindState {
 pub(crate) struct FindSession {
     pub revision: u64,
     pub origin: PaneId,
-    pub roots: Vec<PathBuf>,
+    /// Every listed folder keeps its captured native path; unticked ones are not searched.
+    pub roots: Vec<FindRoot>,
     pub generation: FindGeneration,
     pub results: Vec<Arc<FindResult>>,
     pub order: Option<Arc<FindOrder>>,
@@ -55,6 +59,8 @@ pub(crate) struct FindSession {
     pub error: String,
     pending: Option<FindValidationRequest>,
     pending_file: Option<actions::PendingFile>,
+    /// The native folder chooser opened by Add, bound to this session.
+    picker: Option<DesktopRequestId>,
     file_cancel: Cancellation,
     viewer: Option<ViewerLaunch>,
 }
@@ -107,7 +113,9 @@ impl Presenter {
             FindSession {
                 revision: 0,
                 origin: pane,
-                roots: vec![self.panes[pane.index()].display_path().to_owned()],
+                roots: vec![FindRoot::new(
+                    self.panes[pane.index()].display_path().to_owned(),
+                )],
                 generation: FindGeneration(0),
                 results: vec![],
                 order: None,
@@ -122,45 +130,12 @@ impl Presenter {
                 error: String::new(),
                 pending: None,
                 pending_file: None,
+                picker: None,
                 file_cancel: Cancellation::default(),
                 viewer: None,
             },
         );
         Some(id)
-    }
-
-    pub(crate) fn add_find_root(&mut self, id: FindSessionId, text: &str) {
-        let Some(s) = self.finds.session_mut(&id) else {
-            return;
-        };
-        if s.running {
-            return;
-        }
-        let path = PathBuf::from(text);
-        let mut roots = s.roots.clone();
-        if !roots.contains(&path) {
-            roots.push(path);
-        }
-        let request = FindRequest::new(id, s.generation, roots);
-        match request.validate() {
-            Ok(()) => {
-                s.roots = request.roots;
-                s.error.clear();
-            }
-            Err(error) => s.error = error.into(),
-        }
-    }
-
-    pub(crate) fn remove_find_root(&mut self, id: FindSessionId, row: i32) {
-        let Some(s) = self.finds.session_mut(&id) else {
-            return;
-        };
-        if !s.running
-            && let Ok(row) = usize::try_from(row)
-            && row < s.roots.len()
-        {
-            s.roots.remove(row);
-        }
     }
 
     pub(crate) fn start_find(
@@ -175,7 +150,17 @@ impl Presenter {
         let Some(generation) = s.generation.0.checked_add(1).map(FindGeneration) else {
             return false;
         };
-        let mut request = FindRequest::new(id, generation, s.roots.clone());
+        let roots: Vec<_> = s
+            .roots
+            .iter()
+            .filter(|root| root.searched)
+            .map(|root| root.path.clone())
+            .collect();
+        if roots.is_empty() && !s.roots.is_empty() {
+            s.error = "Tick at least one search folder.".into();
+            return false;
+        }
+        let mut request = FindRequest::new(id, generation, roots);
         request.masks = form.masks;
         request.name_mode = form.name_mode;
         request.sort = s.sort;
@@ -263,6 +248,14 @@ impl Presenter {
         let Some(s) = self.finds.session_mut(&id) else {
             return true;
         };
+        // A chooser still open for this window must not add a folder after it closes.
+        if let Some(request) = s.picker {
+            if !send(Command::CancelPathPicker { request }) {
+                s.error = "Request queue is busy. Try closing again.".into();
+                return false;
+            }
+            s.picker = None;
+        }
         if s.generation.0 > 0 && !send(Command::CloseFind(id)) {
             s.error = "Request queue is busy. Try closing again.".into();
             return false;

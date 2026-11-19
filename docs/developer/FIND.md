@@ -29,9 +29,17 @@ refresh already holds a shared presenter borrow, so it must not request a mutabl
 presenter borrow while notifying Slint. The normal `take_retired` handoff drains
 that queue for worker disposal, including streamed reorder and search restart.
 
-Roots retain raw native `PathBuf`s independently of their display text. Add/remove
-edits a list of at most 16 roots; unchanged paths never round-trip through a lossy
-text editor. Masks and Regex use their existing filename compiler; Expression
+Roots retain raw native `PathBuf`s independently of their display text. The
+Search folders dropdown lists at most 16 roots, each with a checkbox: only ticked
+roots enter `StartFind`, and Find with none ticked is refused before the backend
+queue. Unticked roots still count toward the 16-root and 1 MiB request bounds.
+Add, on the Search folders line before Remove, opens a one-line entry for a typed
+absolute path (Enter or OK) with Browse…, which sends `PickPath` for a native
+directory bound to that Find session; a late or foreign chooser answer is only
+retired, and closing the window cancels an open chooser first. Adding a listed
+path ticks it instead of duplicating it. Remove removes the folder chosen by
+clicking its name in the dropdown. Unchanged paths never round-trip through a
+lossy text editor, so names that cannot be typed keep their original native path. Masks and Regex use their existing filename compiler; Expression
 uses captured native name/kind/size/time/attribute facts and preserves unknown
 metadata semantics. A nonmatching directory is still traversed. Patterns are
 bounded non-executable input. Content is literal UTF-8 (optional BOM) or UTF-16
@@ -137,6 +145,12 @@ Extension and secondary filename keys share the aggregate key budget; sorting
 and native locale calls remain entirely on the backend worker.
 Narrow windows horizontally scroll the aligned columns; Close stays separate
 from the scrolling actions. Stop retains results for subsequent read-only use.
+Every result column (Name, Extension, Path, Size, Modified and, for identical
+files, the group column) resizes by dragging the separator after its header; the
+widths are kept by that Find window for its session, and a separator drag never
+sorts. Help beside the mode chooser (or F1) covers the results with syntax help
+for the chosen Masks, Regex or Expression mode; clicking an example puts it in
+the query without searching, and Find closes the help.
 
 Go to file sends retained session/generation/result IDs, not authority reconstructed
 from displayed paths. The backend reopens and validates identity/revision. The UI
@@ -192,7 +206,11 @@ before publication.
 Current scope is native Windows/Linux. Archives and other providers, legacy
 content encodings, BOM-less UTF-16, hex/regex content queries and automatic file
 execution are not enabled. System file activation requires the explicit Open action. Unsupported content, access errors and reached budgets produce
-an explicit incomplete result, counts and Details; no silent complete claim.
+an explicit incomplete result, counts and details; no silent complete claim. An
+error appears as red text with an error icon, and the status line under the
+results summarizes progress; clicking either (tooltip "Click for more details")
+shows the full error, counts and diagnostics with Copy and Back. There is no
+separate Details button.
 
 The refactor has causal blocked-I/O, sorting, Stop-to-Sort and header-geometry
 RED/GREEN coverage. Windows and Linux software-window pointer/key/geometry checks
