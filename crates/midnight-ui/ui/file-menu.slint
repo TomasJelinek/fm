@@ -1,4 +1,4 @@
-import { ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 
 // Application actions are used only when the platform reports no native menu.
@@ -59,9 +59,8 @@ export component FileActionMenu inherits Rectangle {
                 }
                 reject
             }
-            menu-scroll := ScrollView {
+            menu-scroll := VScrollView {
                 x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
-                horizontal-scrollbar-policy: always-off;
                 content-width: self.visible-width;
                 content-height: Theme.control-height * 7;
                 changed visible-height => { root.reveal-current(); }

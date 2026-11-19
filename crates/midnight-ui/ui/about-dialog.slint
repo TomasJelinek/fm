@@ -1,5 +1,5 @@
 import { AboutSlint } from "std-widgets.slint";
-import { ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
@@ -25,9 +25,8 @@ export component AboutDialog inherits Rectangle {
                 native-icon: root.application-icon;
                 close-label: "Close dialog"; close => { root.close(); }
             }
-            ScrollView {
+            VScrollView {
                 min-height: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     spacing: 8px; alignment: start;
                     Text { text: "Version " + root.application-version; color: Theme.text; wrap: word-wrap; }

@@ -1,5 +1,5 @@
 import { ProgressIndicator } from "std-widgets.slint";
-import { ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
 import { DialogWindow } from "dialog-window.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
@@ -48,9 +48,9 @@ export component JobProgressWindow inherits DialogWindow {
                     : root.job.active ? "Cancel operation" : "Close progress";
                 close => { root.request-dismiss(); }
             }
-            progress-scroll := ScrollView {
+            progress-scroll := VScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+                content-width: self.visible-width;
                 content-height: max(self.visible-height, content.preferred-height);
                 content := VerticalLayout {
                     x: 0px; y: 0px; width: progress-scroll.visible-width;

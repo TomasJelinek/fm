@@ -1,5 +1,5 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
-import { ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
 import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { Theme } from "theme.slint";
@@ -49,9 +49,8 @@ export component CompareDirectoriesDialog inherits Rectangle {
                 fallback-icon: FallbackIcons.compare-directories;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
-            ScrollView {
+            VScrollView {
                 min-height: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     spacing: 12px; alignment: start;
                     VerticalLayout {

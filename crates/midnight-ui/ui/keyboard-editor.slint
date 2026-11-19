@@ -1,4 +1,4 @@
-import { ListView } from "scroll-view.slint";
+import { ListView } from "vlist-view.slint";
 import { CompactPicker, TipBody } from "controls.slint";
 import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { ErrorNotice } from "error-notice.slint";
@@ -96,7 +96,6 @@ export component KeyboardEditor inherits VerticalLayout {
             }
             commands := ListView {
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                horizontal-scrollbar-policy: always-off;
                 changed visible-height => { root.reveal-selection(); }
                 for command in KeyboardEditorView.commands : CommandRow {
                     width: commands.visible-width; command: command;

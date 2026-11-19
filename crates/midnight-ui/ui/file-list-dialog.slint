@@ -1,6 +1,6 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { TextEdit } from "std-widgets.slint";
-import { ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
 import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { CompactPicker, TipBody } from "controls.slint";
 import { Theme } from "theme.slint";
@@ -82,8 +82,7 @@ export component FileListDialog inherits Rectangle {
             }
             Rectangle {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1; clip: true;
-                if root.conflict-pending: ScrollView {
-                    horizontal-scrollbar-policy: always-off;
+                if root.conflict-pending: VScrollView {
                     VerticalLayout {
                         spacing: 10px; padding: 8px; alignment: start;
                         Text {
@@ -97,9 +96,8 @@ export component FileListDialog inherits Rectangle {
                         }
                     }
                 }
-                form-scroll := ScrollView {
+                form-scroll := VScrollView {
                     visible: !root.conflict-pending;
-                    horizontal-scrollbar-policy: always-off;
                     content-width: self.visible-width;
                     content-height: max(self.visible-height, form.min-height);
                     form := VerticalLayout {

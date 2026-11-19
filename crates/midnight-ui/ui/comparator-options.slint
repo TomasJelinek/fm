@@ -1,4 +1,4 @@
-import { ListView } from "scroll-view.slint";
+import { ListView } from "vlist-view.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { ArgumentEditor } from "argument-editor.slint";
 import { ListHeader } from "list-header.slint";
@@ -102,7 +102,6 @@ component ComparatorPriorityList inherits Rectangle {
         }
         rows := ListView {
             x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-            horizontal-scrollbar-policy: always-off;
             accessible-label: "Comparator rules"; accessible-item-count: root.count;
             changed visible-height => { root.reveal-selection(); }
             for label[index] in ComparatorOptionsView.labels : Rectangle {

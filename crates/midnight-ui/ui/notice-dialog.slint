@@ -2,7 +2,7 @@ import { Theme } from "theme.slint";
 import { DialogText } from "dialog-text.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
-import { ScrollView } from "scroll-view.slint";
+import { HScrollView } from "scroll-view.slint";
 import { FallbackIcons } from "action-icons.slint";
 
 export component NoticeDialog inherits Rectangle {
@@ -102,10 +102,10 @@ export component NoticeDialog inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 8px;
-                ScrollView {
+                HScrollView {
                     horizontal-stretch: 1; min-width: 0px;
                     height: root.action-row-height;
-                    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: as-needed;
                     HorizontalLayout {
                         alignment: start; spacing: 8px;
                         if root.details != "": HintedActionButton {

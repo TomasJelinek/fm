@@ -1,4 +1,4 @@
-import { ScrollView } from "scroll-view.slint";
+import { ScrollView, HScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { NativeActionImage, FallbackIcons } from "action-icons.slint";
@@ -107,10 +107,10 @@ export component CopyConflictDialog inherits Rectangle {
                 }
             }
             // Error actions stay beside the footer even when diagnostics exceed the viewport.
-            if root.failure-mode && (root.can-retry || root.can-skip) : ScrollView {
+            if root.failure-mode && (root.can-retry || root.can-skip) : HScrollView {
                 min-width: 0px;
                 height: max(32px, Theme.control-height) + 16px;
-                horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                horizontal-scrollbar-policy: as-needed;
                 HorizontalLayout {
                     alignment: start; spacing: 8px; height: max(32px, Theme.control-height);
                     if root.can-retry : HintedActionButton { text: "Retry"; hint: "Retry the failed step after resolving the problem."; clicked => { root.decide(8, ""); } }
@@ -120,10 +120,10 @@ export component CopyConflictDialog inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 8px;
-                ScrollView {
+                HScrollView {
                     horizontal-stretch: 1; min-width: 0px;
                     height: max(32px, Theme.control-height + (root.compact ? 12px : 0px), cancel-job-button.preferred-height);
-                    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: as-needed;
                     HorizontalLayout { alignment: end;
                         cancel-job-button := HintedActionButton { text: "Cancel job"; hint: "Stop this job. Completed changes are retained."; clicked => { root.decide(3, ""); } }
                     }

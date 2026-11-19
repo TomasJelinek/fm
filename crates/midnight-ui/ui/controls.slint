@@ -1,4 +1,4 @@
-import { ListView } from "scroll-view.slint";
+import { ListView } from "vlist-view.slint";
 import { Theme } from "theme.slint";
 import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
 import { LocationImage } from "action-icons.slint";
@@ -352,7 +352,6 @@ export component CompactPicker inherits Rectangle {
                 border-color: Theme.active-frame; border-radius: 4px;
                 ListView {
                     x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
-                    horizontal-scrollbar-policy: always-off;
                     // Direct ListView children stay virtualized even for a full
                     // installed-font catalog. The host keeps the committed index.
                     content-y: -min(max(0px, root.item-count * root.control-height - self.visible-height),

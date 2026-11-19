@@ -1,4 +1,4 @@
-import { ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { HintedComboBox } from "hinted-inputs.slint";
@@ -121,9 +121,8 @@ export component MainMenuBody inherits Rectangle {
                 hint: "Show all actions or choose a category.";
                 selected(value) => { root.category = self.current-index; choices.content-y = 0px; }
             }
-            choices := ScrollView {
+            choices := VScrollView {
                 min-width: 0px; min-height: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     spacing: 0px; alignment: start;
                     for index in root.entries.length : Rectangle {

@@ -1,4 +1,4 @@
-import { ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
 import { HintedComboBox } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
@@ -34,10 +34,9 @@ export component ChecksumOutputPicker inherits HintedComboBox {
     preferred-height: Theme.control-height; vertical-stretch: 0;
 }
 
-export component ChecksumOptions inherits ScrollView {
+export component ChecksumOptions inherits VScrollView {
     in-out property <ChecksumDraft> draft;
     in property <bool> busy;
-    horizontal-scrollbar-policy: always-off;
     VerticalLayout {
         padding: 12px; spacing: 12px; alignment: start;
         Text { text: "Calculate algorithms"; color: Theme.strong-text; font-weight: 600; }

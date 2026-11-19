@@ -1,7 +1,8 @@
 import { NavigationButton } from "navigation-controls.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
-import { ListView, ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
+import { ListView } from "vlist-view.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { TipBody } from "controls.slint";
@@ -75,14 +76,12 @@ export component HotPathsDialog inherits Rectangle {
                 close-label: "Close dialog"; close => { root.dismiss(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
                 fallback-icon: FallbackIcons.bookmarks; }
-            ScrollView {
+            VScrollView {
                 min-height: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
                 content-width: self.visible-width;
                 VerticalLayout { spacing: 8px;
                     ListView {
                         height: root.list-height;
-                        horizontal-scrollbar-policy: always-off;
                         for bookmark[index] in root.model : Rectangle {
                             height: root.row-height;
                             background: bookmark.identity == root.selected-identity ? Theme.selected-background : row-area.has-hover ? Theme.hover : transparent;

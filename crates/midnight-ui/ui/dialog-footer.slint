@@ -1,4 +1,4 @@
-import { ScrollView } from "scroll-view.slint";
+import { HScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -26,12 +26,12 @@ export component DialogFooter inherits Rectangle {
     private property <length> action-height: root.control-height + (root.overflowing ? FluentScrollMetrics.overlay-size : 0px);
     min-width: 0px; preferred-width: 0px; horizontal-stretch: 1;
     height: root.stacked ? root.action-height + 8px + root.control-height : root.action-height;
-    action-scroll := ScrollView {
+    action-scroll := HScrollView {
         x: 0px; y: 0px;
         width: root.stacked ? root.width : max(0px, root.width - dismiss-button.width - 8px);
         height: root.action-height;
         content-width: max(self.visible-width, actions.min-width);
-        horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+        horizontal-scrollbar-policy: as-needed;
         actions := HorizontalLayout {
             y: 0px;
             height: root.control-height;

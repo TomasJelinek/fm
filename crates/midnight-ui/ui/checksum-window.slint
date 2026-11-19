@@ -1,4 +1,4 @@
-import { ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { ErrorNotice, ErrorGlyph } from "error-notice.slint";
 import { Theme } from "theme.slint";
@@ -135,8 +135,8 @@ export component ChecksumWindow inherits ToolWindow {
                 visible: root.page == 1; draft <=> root.draft; busy: root.running || root.saving || root.picker-busy;
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
             }
-            ScrollView {
-                visible: root.page == 2; horizontal-scrollbar-policy: always-off;
+            VScrollView {
+                visible: root.page == 2;
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                 VerticalLayout {
                     padding: root.compact ? 8px : 16px; spacing: 12px; alignment: start;
@@ -173,8 +173,7 @@ export component ChecksumWindow inherits ToolWindow {
                     if root.error != "": ErrorNotice { text: root.error; }
                 }
             }
-            if root.page == 4: ScrollView {
-                horizontal-scrollbar-policy: always-off;
+            if root.page == 4: VScrollView {
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                 VerticalLayout {
                     padding: root.compact ? 8px : 16px; spacing: 12px; alignment: start;
@@ -198,8 +197,7 @@ export component ChecksumWindow inherits ToolWindow {
                     if root.error != "": ErrorNotice { text: root.error; }
                 }
             }
-            if root.page == 3: ScrollView {
-                horizontal-scrollbar-policy: always-off;
+            if root.page == 3: VScrollView {
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                 VerticalLayout {
                     padding: 12px; spacing: 12px; alignment: start;

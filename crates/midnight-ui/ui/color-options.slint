@@ -2,7 +2,7 @@ import { ActionButton } from "action-icons.slint";
 import { Theme } from "theme.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
-import { ListView } from "scroll-view.slint";
+import { ListView } from "vlist-view.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { TipBody } from "controls.slint";
@@ -76,7 +76,6 @@ component ColorPriorityList inherits Rectangle {
         rules := ListView {
             x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
             enabled: !ColorOptionsView.busy;
-            horizontal-scrollbar-policy: always-off;
             accessible-label: "Filename color rules"; accessible-item-count: root.rule-count;
             changed visible-height => { root.reveal-selection(); }
             for label[index] in ColorOptionsView.labels : Rectangle {

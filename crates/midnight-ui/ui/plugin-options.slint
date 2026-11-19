@@ -1,7 +1,8 @@
 import { FallbackIcons } from "action-icons.slint";
 import { HintedCheckBox, HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
 import { LineEdit } from "std-widgets.slint";
-import { ListView, ScrollView } from "scroll-view.slint";
+import { VScrollView } from "scroll-view.slint";
+import { ListView } from "vlist-view.slint";
 import { TipBody } from "controls.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { Theme } from "theme.slint";
@@ -96,7 +97,6 @@ component PluginCatalogList inherits Rectangle {
         }
         list := ListView {
             x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-            horizontal-scrollbar-policy: always-off;
             changed visible-height => { root.reveal(); }
             for plugin[index] in root.rows : Rectangle {
                 width: list.visible-width; height: root.row-height;
@@ -192,9 +192,8 @@ export component PluginOptions inherits Rectangle {
     VerticalLayout {
         x: 0px; y: 0px; width: root.width; height: root.height;
         spacing: 8px;
-    ScrollView {
+    VScrollView {
         min-height: 0px; vertical-stretch: 1;
-        horizontal-scrollbar-policy: always-off;
         content-width: self.visible-width;
         VerticalLayout {
             spacing: 8px; alignment: start;

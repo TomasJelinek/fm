@@ -24,7 +24,7 @@ export { JobsWindow, DecisionWindow }
 
 import { HintedActionButton } from "hinted-inputs.slint";
 import { Palette } from "std-widgets.slint";
-import { ScrollView } from "scroll-view.slint";
+import { ScrollStrip } from "scroll-strip.slint";
 import { CommandMenuBody } from "command-menu.slint";
 import { MainMenuBody } from "main-menu.slint";
 import { Theme } from "theme.slint";
@@ -1072,11 +1072,9 @@ export component MainWindow inherits Window {
                         max(max(0px, self.width) * 0.5, min(320px, self.width - 120px)));
                     private property <length> prompt-width: root.command-directory == "" ? 0px
                         : min(root.command-path-natural-width, max(0px, self.width - self.editor-reserve));
-                    cwd-scroll := ScrollView {
+                    cwd-scroll := ScrollStrip {
                         x: 0px; y: 0px;
                         width: command-content.prompt-width; height: parent.height;
-                        horizontal-scrollbar-policy: always-off;
-                        vertical-scrollbar-policy: always-off;
                         mouse-drag-pan-enabled: true;
                         content-width: max(self.visible-width, root.command-path-natural-width);
                         content-height: self.visible-height;
