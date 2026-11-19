@@ -51,6 +51,16 @@ Fixes on `main`:
   installation, prepared D: profile) and `tests::source_native_acceptance`
   (qualified product build), manual qualifications tracked in the [feature
   status](FEATURE_STATUS.md).
+- *Accept thumbnail notices reached through a linked cargo home* and *Require an
+  explicit root for thumbnail notice inputs* (with a security and a compatibility
+  review): `scripts/thumbnail-notices.py` refused every notice input whose absolute
+  path contained a link, so the thumbnailer build failed with a linked `CARGO_HOME`,
+  `~/.cargo` or `/home` (observed with a linked registry crate folder in WSL). Each
+  input is now checked against the package root its caller names, which alone is
+  resolved (it and its ancestors may be links); below it every name must be portable
+  and no link, reparse point or `..` is accepted. The notice tests pass on Windows
+  (16, 4 skipped without symlink privilege) and Linux (16, 3 skipped), as do the
+  script tests (Windows 253 / 0 / 137, Linux 321 / 0 / 69).
 
 Evidence (orchestrator logs in the integration worktree's `_build/validate/logs` and
 `_build/qa`, and in its WSL clone):
@@ -87,6 +97,9 @@ Not established:
 - The desktop shortcut test failed intermittently on this machine under both
   PowerShell versions; it is recorded with TEST-04 in the
   [backlog](IMPLEMENTATION_BACKLOG.md).
+- The other build and packaging scripts still handle links inconsistently: some
+  refuse a checkout reached through a linked or hidden folder, others follow links in
+  package license inputs (BUILD-02 in the backlog; a policy decision first).
 
 This supersedes the first two "Not established" items of the test speed checkpoint
 below.
