@@ -32,16 +32,44 @@ now uses its own `ScrollView`/`ListView` (`ui/scroll-view.slint`) and a shared `
 
 The same change removes the blur of file-pane content that did not start on a device
 pixel and puts the pane split, function keys, status metrics and dialog position on
-whole pixels ([record](verification/2026-11-18-ui-sharpness.md)). **Open:** native
-icons are still one 32 px bitmap (16 px enlarged on a GTK desktop without
-`gtk-3.0/settings.ini`) resampled to every drawn size, and glyphs are still
-positioned and hinted as the renderer does today.
+whole pixels ([record](verification/2026-11-18-ui-sharpness.md)).
+
+A second change delivers native icons at the size they are drawn. The UI reports the
+device-pixel edges of rows, tiles and location choices (`Command::SetIconEdges`), the
+backend loads each icon at the edges of its kind and again when they change, and the
+UI keeps one bitmap per edge. On Linux the provider follows the desktop's icon theme
+through XSETTINGS and its inherited themes, picks the theme directory by pixel size
+and scales at most once, in premultiplied alpha. With Yaru, tiles are untouched 96 px
+artwork and rows are 24 px artwork reduced to 20 px. The icons are therefore the
+desktop's own and no longer Adwaita's, including more theme artwork among the
+toolbar actions. **Open:** the Windows provider still delivers one 32 px bitmap
+(`IconService::icon_edge` keeps it unchanged); action icons stay at 32 px because one
+bitmap is drawn at six sizes; SVG-only themes fall back as before.
+
+A third change adds two text fittings to the vendored FemtoVG, off by default:
+`MIDNIGHT_GLYPH_FITTING=snapped` or `=fitted`. `fitted` puts stems on whole pixel
+columns through the hinting engine swash already uses and keeps word spacing with
+whole-pixel advances inside words. **Open:** making one of them the default needs a
+visual decision; `fitted` can leave ink up to one pixel from layout positions, which
+shows where selections or the quick-search prefix clip text. The vendored renderer
+gains a `skrifa` edge and the explorer a direct `femtovg` one, with no new package
+([third-party record](THIRD_PARTY.md)).
 
 UI test results equal main's in the same Docker environment: 19 tests of
 `midnight-ui` and `midnight-viewer-ui` fail there before and after, and the
 `midnight-compare-ui` library test target does not compile on main. They are listed
 in the compile-time record and were not investigated. Not run: Windows, the full
 workspace gates, release builds.
+
+The icon change needed the engine's test targets, neither of which compiled on main:
+two unit-test fixtures named an older interface (`preferences/tests.rs`,
+`tree_controller/worker_refresh_tests.rs`), and the single integration binary could
+not resolve the engine sources that `checksum_manifest_verification.rs` includes. All
+three were repaired with fixture-only edits. With them the engine's integration
+target passes and its unit tests fail only in fixtures that need a qualified local
+filesystem, as do tests of `midnight-platform-linux`; `midnight-core`'s integration
+guard reports `tests/file_comparators.rs` as undeclared on main. The results are in
+the [sharpness record](verification/2026-11-18-ui-sharpness.md).
 
 ### Deep code review — 18 November 2026
 
