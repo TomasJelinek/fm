@@ -1,6 +1,5 @@
 //! Installed Filter and Hot Paths use the main adapter and preserve captured authority.
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::ParentItemTraversalMode,

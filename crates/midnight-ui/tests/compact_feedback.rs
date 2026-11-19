@@ -1,8 +1,7 @@
 //! Verify compact panel details, fixed function-button height and size warnings.
 #[path = "support/bitmap.rs"]
 mod bitmap;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

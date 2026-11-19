@@ -1,6 +1,5 @@
 //! Real row widgets keep disclosure separate from navigation and selection.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibilityAction,

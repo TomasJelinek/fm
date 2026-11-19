@@ -6,8 +6,7 @@ use std::{
     rc::Rc,
 };
 
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use ui::{chord, key};
 
 #[test]

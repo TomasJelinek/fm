@@ -4,8 +4,7 @@
 mod form;
 #[path = "support/window_input.rs"]
 mod input;
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 
 use i_slint_core::{
     item_tree::ItemRc,

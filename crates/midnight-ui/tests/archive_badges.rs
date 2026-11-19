@@ -1,6 +1,5 @@
 //! Render the archive entrance mark in every panel mode without changing row geometry.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::FileRow;

@@ -4,9 +4,7 @@
 mod form;
 #[path = "support/window_input.rs"]
 mod input;
-#[path = "support/modeless.rs"]
-#[allow(dead_code)] // This fixture reuses the adapter and bitmap, not input helpers.
-mod modeless;
+use crate::support::modeless;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

@@ -1,8 +1,7 @@
 //! Native attribute metadata reaches real file/folder artwork in all panel modes.
 #![cfg(windows)]
 
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::{ItemRc, ParentItemTraversalMode},

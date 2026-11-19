@@ -1,6 +1,5 @@
 //! Warning controls must expose diagnostics without triggering row actions.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_ui::FileRow;

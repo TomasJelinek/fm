@@ -1,8 +1,7 @@
 //! Public clipboard and Jobs callbacks preserve admitted-copy ordering under backpressure.
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_core::*;
 use midnight_ui::{BeginOwned, Presenter, refresh};

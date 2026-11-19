@@ -6,8 +6,7 @@ mod owned_commands;
 mod owned_windows;
 #[path = "support/selection.rs"]
 mod selection;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibilityAction,

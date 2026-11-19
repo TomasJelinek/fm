@@ -4,12 +4,10 @@ mod form;
 mod input;
 #[path = "support/embedded_file_list.rs"]
 mod installed;
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 #[path = "support/owned_windows.rs"]
 mod owned_windows;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_ui::FileListPresentation;

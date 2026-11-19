@@ -1,5 +1,4 @@
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},
     items::AccessibleRole,

@@ -1,6 +1,5 @@
 //! Installed panel bridge tests; commands are the real application boundary.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;

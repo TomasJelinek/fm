@@ -1,11 +1,8 @@
 //! Real keyboard/pointer routing; mock commands never touch a filesystem.
-#[allow(dead_code)] // This fixture uses the render helpers, not its pointer helpers.
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 #[path = "support/owned_windows.rs"]
 mod owned_windows;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 #[path = "support/window_input.rs"]
 mod window_input;
 use midnight_core::*;

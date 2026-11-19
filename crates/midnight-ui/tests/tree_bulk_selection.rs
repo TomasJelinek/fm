@@ -1,8 +1,7 @@
 //! Real tree selection publications and immediate Slint feedback for both providers.
 #[path = "support/tree_filters.rs"]
 mod support;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_core::*;
 use slint::platform::Key;

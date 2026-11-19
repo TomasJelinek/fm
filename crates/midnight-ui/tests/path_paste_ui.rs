@@ -1,5 +1,4 @@
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use i_slint_core::items::{AccessibleRole, TextInput};
 use i_slint_core::{
     input::{InternalKeyEvent, KeyEventType},

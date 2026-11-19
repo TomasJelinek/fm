@@ -1,6 +1,5 @@
 //! Product rows retain colored Unicode prefixes, compact compression marks and normal input.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use i_slint_core::{
     item_tree::ItemRc,
     items::{AccessibleRole, ImageItem},

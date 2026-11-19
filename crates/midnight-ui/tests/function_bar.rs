@@ -3,8 +3,7 @@
 mod render;
 #[path = "support/shortcut_editor.rs"]
 mod shortcut_editor;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,

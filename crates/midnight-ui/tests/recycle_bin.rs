@@ -1,6 +1,5 @@
 //! A capability-backed system shortcut opens the desktop shell, preserving panel authority.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     graphics::ImageInner,

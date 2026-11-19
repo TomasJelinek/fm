@@ -1,6 +1,5 @@
 //! Native icons are looked up at the edge of the place that draws them.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

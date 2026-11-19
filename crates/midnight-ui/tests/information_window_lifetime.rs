@@ -1,7 +1,5 @@
 //! Modeless information tools and embedded notices retain their own lifetimes.
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 
 use i_slint_core::{items::AccessibleRole, window::WindowInner};
 use midnight_ui::{MainWindow, NoticePresentation, Presenter};

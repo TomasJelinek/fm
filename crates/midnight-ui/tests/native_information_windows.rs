@@ -1,6 +1,5 @@
 //! Modeless information tools stay native; blocking notices remain in the main client area.
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 
 use i_slint_core::{items::AccessibleRole, window::WindowInner};
 use midnight_ui::{HelpWindow, MainWindow, Presenter};

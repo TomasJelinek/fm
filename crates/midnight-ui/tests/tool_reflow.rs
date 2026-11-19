@@ -1,7 +1,5 @@
 //! Small tool windows preserve editable queries, navigation and job diagnostics.
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 #[path = "support/progress_form.rs"]
 mod ui;
 

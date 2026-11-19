@@ -1,8 +1,7 @@
 //! Actual overflow controls retain panel ownership, reveal every drive and clamp on resize.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_ui::{LocationRole, LocationRow};
 use slint::{ModelRc, VecModel};

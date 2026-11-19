@@ -2,8 +2,7 @@
 mod popup_scroll;
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

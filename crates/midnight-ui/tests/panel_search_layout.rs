@@ -1,4 +1,5 @@
 //! Native committed text keeps its caret and match count visible in the compact path slot.
+use crate::support::ui;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     input::{InternalKeyEvent, KeyEvent, KeyEventType},
@@ -6,8 +7,6 @@ use i_slint_core::{
     items::{Orientation, TextCursorAffinity, TextInput},
     window::WindowInner,
 };
-#[path = "support/ui.rs"]
-mod ui;
 
 use midnight_ui::MainWindow;
 use slint::{

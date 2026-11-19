@@ -1,8 +1,7 @@
 //! Selection survives focus changes in real detailed, brief and thumbnail rows.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{FileRow, Theme};

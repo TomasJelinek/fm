@@ -1,5 +1,4 @@
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_ui::{Presenter, UnixPermissionsCodec};
 use slint::ComponentHandle;

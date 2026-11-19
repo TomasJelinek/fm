@@ -1,6 +1,5 @@
 //! Real keyboard and pointer routing for tab identities and persistent bookmarks.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,

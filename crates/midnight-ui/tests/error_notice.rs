@@ -1,6 +1,5 @@
 //! Dismissing presentation never clears the host's failure or grants capabilities.
-#[path = "support/modeless.rs"]
-mod ui;
+use crate::support::modeless as ui;
 use i_slint_core::{
     accessibility::AccessibilityAction,
     item_tree::ItemRc,

@@ -1,6 +1,5 @@
 //! Installed command shortcuts use acknowledged native tree occurrences as literal text.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_core::*;
 use midnight_ui::{FileRow, Presenter, install, refresh};

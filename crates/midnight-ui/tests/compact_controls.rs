@@ -1,6 +1,5 @@
 //! Exercise compact controls through actual pointer and keyboard dispatch.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

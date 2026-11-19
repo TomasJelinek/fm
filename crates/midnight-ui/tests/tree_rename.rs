@@ -1,8 +1,7 @@
 //! Real F2/F7 input uses the installed presenter and backend tree authority.
 #[path = "support/tree_filters.rs"]
 mod support;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use midnight_core::*;
 use slint::platform::Key;
 use support::Harness;

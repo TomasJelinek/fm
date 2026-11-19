@@ -1,8 +1,7 @@
 //! Fallback action menus remain usable and scrollable in a 320×200 host.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::{ItemRc, ParentItemTraversalMode},

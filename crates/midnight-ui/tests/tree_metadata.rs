@@ -1,8 +1,7 @@
 //! Existing Attributes/Times/Case controls use typed authority from either expanded pane.
 #[path = "support/tree_filters.rs"]
 mod support;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use midnight_core::*;
 use support::Harness;
 

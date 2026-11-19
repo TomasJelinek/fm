@@ -1,8 +1,7 @@
 //! Real toolbar events across view modes; sorting must not depend on visible headers.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{LocationRole, NavigationChoiceRow};

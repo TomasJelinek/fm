@@ -1,6 +1,5 @@
 //! Real shortcut routing reopens saved Network addresses without native-path parsing.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};

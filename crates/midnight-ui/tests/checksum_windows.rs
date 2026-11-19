@@ -1,5 +1,4 @@
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 use midnight_core::*;
 use midnight_ui::{ChecksumDraft, ChecksumWindow, MainWindow, Presenter};
 use modeless::{Windows, click, draw};

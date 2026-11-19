@@ -3,8 +3,7 @@
 mod native;
 #[path = "support/tree_filters.rs"]
 mod support;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;

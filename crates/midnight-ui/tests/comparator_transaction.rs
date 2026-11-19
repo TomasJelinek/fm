@@ -10,8 +10,7 @@ mod raw_paths;
 mod raw_paths;
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},

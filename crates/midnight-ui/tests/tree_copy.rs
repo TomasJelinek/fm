@@ -5,8 +5,7 @@ mod input;
 mod support;
 #[path = "support/tree_copy.rs"]
 mod transfer;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_core::*;
 use slint::platform::Key;

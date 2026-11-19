@@ -1,8 +1,7 @@
 //! Loading feedback is delayed without delaying the backend request or changing row geometry.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{item_tree::ItemRc, window::WindowInner};
 use midnight_core::*;

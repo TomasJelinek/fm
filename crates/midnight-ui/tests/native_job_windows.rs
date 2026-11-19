@@ -1,9 +1,7 @@
 //! Real job callbacks keep presentation closure separate from operation decisions.
 #[path = "support/window_input.rs"]
 mod input;
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 
 use midnight_core::*;
 use midnight_ui::{MainWindow, NoticePresentation, Presenter, install, refresh};

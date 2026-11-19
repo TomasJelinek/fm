@@ -1,7 +1,5 @@
 //! Explicit Find actions are visible independently of panel navigation.
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
 use midnight_ui::{FindRow, FindWindow};
 use slint::{

@@ -1,6 +1,5 @@
 //! Exercise the real color picker without a settings store or main app window.
-#[path = "support/modeless.rs"]
-mod ui;
+use crate::support::modeless as ui;
 
 use slint::{
     ComponentHandle,

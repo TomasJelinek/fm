@@ -1,6 +1,5 @@
 //! Synthetic navigation rows keep semantic artwork across every panel layout.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

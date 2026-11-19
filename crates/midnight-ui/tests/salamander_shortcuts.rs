@@ -1,6 +1,5 @@
 //! Dispatch real Slint keys against the whole window without a backend.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use midnight_ui::{MainWindow, Theme};
 use slint::{

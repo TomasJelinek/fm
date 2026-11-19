@@ -1,8 +1,7 @@
 //! Options footer alignment and diagnostics at actual rendered sizes.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

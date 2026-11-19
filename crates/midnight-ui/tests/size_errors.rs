@@ -1,8 +1,7 @@
 //! Only actual folder-size failures receive an error glyph in each panel view.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

@@ -3,8 +3,7 @@
 mod input;
 #[path = "support/operations_native.rs"]
 mod native;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;

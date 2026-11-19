@@ -1,9 +1,6 @@
 //! Embedded message layout, clipboard dispatch and focus behavior.
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::modeless;
+use crate::support::ui;
 
 use i_slint_core::{item_tree::ItemRc, items::AccessibleRole, window::WindowInner};
 use midnight_core::*;

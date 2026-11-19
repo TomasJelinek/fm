@@ -1,4 +1,5 @@
 //! Parent-route and viewport checks in a software window; no OS desktop automation.
+use crate::support::ui;
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
     window::WindowInner,
@@ -7,8 +8,6 @@ use midnight_core::*;
 use midnight_ui::{Presenter, Theme, install, refresh};
 use slint::{ComponentHandle, Model, platform::Key};
 use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc};
-#[path = "support/ui.rs"]
-mod ui;
 
 fn parent_button(item: ItemRc) -> Option<ItemRc> {
     if item.accessible_role() == AccessibleRole::Button

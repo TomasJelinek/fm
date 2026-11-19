@@ -1,6 +1,5 @@
 //! Shared command-menu delegates retain callbacks and gestures during native icon delivery.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

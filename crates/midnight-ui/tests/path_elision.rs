@@ -1,6 +1,5 @@
 //! Path omissions are explicit while native targets and complete values survive.
-#[path = "support/modeless.rs"]
-mod ui;
+use crate::support::modeless as ui;
 use i_slint_core::{
     item_tree::ItemRc,
     items::{AccessibleRole, ComplexText, SimpleText},

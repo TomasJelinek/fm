@@ -1,6 +1,5 @@
 //! Panel ownership follows real pointer input without taking control focus.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;

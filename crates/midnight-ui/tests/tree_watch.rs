@@ -3,8 +3,7 @@
 mod native;
 #[path = "support/tree_filters.rs"]
 mod support;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 #[path = "support/tree_watch.rs"]
 mod watch;
 

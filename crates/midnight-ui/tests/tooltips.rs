@@ -1,8 +1,7 @@
 //! Real hover, paint and click routing across the shared tooltip compiler adapter.
 #[path = "support/owned_windows.rs"]
 mod owned_windows;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

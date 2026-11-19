@@ -1,10 +1,8 @@
 //! Embedded operation forms retain the backend target and the exact UI occurrence.
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

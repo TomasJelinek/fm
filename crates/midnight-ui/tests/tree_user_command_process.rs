@@ -3,8 +3,7 @@
 mod native;
 #[path = "support/tree_filters.rs"]
 mod support;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 // Engine owns polling here; reuse the compiler/report helpers, not their direct-child waiter.
 #[cfg(windows)]
 #[path = "support/tree_command_process_windows.rs"]

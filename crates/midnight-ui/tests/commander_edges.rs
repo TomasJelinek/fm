@@ -3,8 +3,7 @@
 mod render;
 #[path = "support/toolbar.rs"]
 mod toolbar;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;

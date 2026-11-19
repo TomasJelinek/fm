@@ -1,8 +1,6 @@
 //! Actual Ctrl+L/Ctrl+F1 request, detail display, copy and dismissed-result lifecycle.
-#[path = "support/modeless.rs"]
-mod modeless;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::modeless;
+use crate::support::ui;
 use i_slint_core::{item_tree::ItemRc, items::AccessibleRole, window::WindowInner};
 use midnight_core::*;
 use midnight_ui::{MainWindow, NoticePresentation, Presenter, install, refresh};

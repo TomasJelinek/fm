@@ -2,8 +2,7 @@
 mod bitmap;
 #[path = "support/popup_scroll.rs"]
 mod popup_scroll;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},
     item_tree::ItemRc,

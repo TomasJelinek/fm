@@ -1,6 +1,5 @@
 //! Prefix search follows actual file-panel text focus and immutable backend snapshots.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::input::{InternalKeyEvent, KeyEvent, KeyEventType};
 use i_slint_core::items::AccessibleRole;

@@ -2,8 +2,7 @@
 //! Authored before the component; NOT RUN pending the coordinated UI build lease.
 #[path = "support/render.rs"]
 mod render;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibilityAction,

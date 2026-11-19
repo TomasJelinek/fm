@@ -5,9 +5,17 @@
 //! start-up cost; libtest still runs all tests in parallel. Cargo `autotests` is
 //! disabled for this package, so `every_test_file_is_a_module` fails when a new
 //! file is not declared below.
-// Each module keeps its own copy of the shared `support` files it includes, exactly
+// Each module keeps its own copy of any other `support` file it includes, exactly
 // as when every file was a separate test crate, so their types never mix.
 #![allow(clippy::duplicate_mod)]
+
+// Compiled once for all modules instead of once per module that uses them. They hold
+// no process-wide state, so sharing them shares only their types. Nested, so that
+// `every_test_file_is_a_module` does not take them for test files.
+mod support {
+    pub mod modeless;
+    pub mod ui;
+}
 
 mod action_icon_colors;
 mod archive_badges;

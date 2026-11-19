@@ -1,6 +1,5 @@
 //! A large installed-font catalog must stay lazy and commit only accepted choices.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
 use slint::{ComponentHandle, Model, ModelRc, ModelTracker, SharedString, platform::Key};

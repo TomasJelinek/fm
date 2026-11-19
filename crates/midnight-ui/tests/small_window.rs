@@ -4,9 +4,7 @@ mod compact_jobs;
 #[allow(dead_code)]
 #[path = "support/jobs_form.rs"]
 mod jobs_form;
-#[allow(dead_code)]
-#[path = "support/modeless.rs"]
-mod modeless;
+use crate::support::modeless;
 mod render {
     pub fn snapshot(test: &super::ui::TestUi, name: &str) {
         super::modeless::bitmap::snapshot(&test.pixels, test.width, test.height, name);
@@ -14,8 +12,7 @@ mod render {
 }
 #[path = "support/toolbar.rs"]
 mod toolbar;
-#[path = "support/ui.rs"]
-mod ui;
+use crate::support::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
