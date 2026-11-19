@@ -17,11 +17,14 @@ Debug profile, Docker build image (Ubuntu 24.04, Rust 1.99.1), `jobs = 4` from
 `cargo build --locked --offline -p midnight-explorer --timings` after touching
 `main.slint`, so that only the bindings and what depends on them are rebuilt:
 
-| | main `e7e0f390` | this change |
-| --- | ---: | ---: |
-| Build script (Slint to Rust) | 11.1 s | 11.4 s |
-| `rustc` on the bindings | 187.2 s | 119.2 s |
-| Whole rebuild as reported by Cargo | 202 s | 134 s |
+| | main `e7e0f390` | build passes (1, 2) | with the source changes (5, 6) |
+| --- | ---: | ---: | ---: |
+| Build script (Slint to Rust) | 11.1 s | 11.4 s | 10.1 s |
+| `rustc` on the bindings | 187.2 s | 119.2 s | 95.1 s |
+| Whole rebuild as reported by Cargo | 202 s | 134 s | 108 s |
+
+The last column is main `c2e62c10`, measured twice with the same result to within
+0.1 s.
 
 The first build after the change also recompiled `midnight-ui` beside the bindings,
 because their metadata changed: bindings 128.1 s, `midnight-ui` 71.8 s, 147 s in all.

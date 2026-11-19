@@ -107,7 +107,9 @@ views without the bar a site never shows (`VScrollView`, `HScrollView`,
 `ActionButton`, two controls that no longer inherit a stock widget, and 54 fewer
 conditional components (`Tip` owns its empty-text condition and serves 19 more
 sites). The main UI's generated Rust went from 30.57 MB and 591 components to
-26.97 MB and 523; the viewer and comparator UIs shrank by 0.18 and 0.13 MB.
+26.97 MB and 523; the viewer and comparator UIs shrank by 0.18 and 0.13 MB. With
+them the rebuild after a `.slint` change takes 108 s, 95.1 s of it in `rustc` on the
+bindings.
 
 **Open:** run-time speed of debug builds with the split was not measured (the dev
 machine code is 1.4 MB larger); Windows and the release executable were not built;
