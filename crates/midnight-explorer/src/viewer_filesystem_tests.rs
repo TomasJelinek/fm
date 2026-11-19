@@ -261,7 +261,8 @@ fn wait_frame(
             match output {
                 ViewerOutput::Frame(frame) if predicate(&frame) => return *frame,
                 ViewerOutput::Frame(frame) => {
-                    last_frame = Some((frame.mode, frame.caption, frame.status));
+                    let text = frame.accessible_text.chars().take(48).collect::<String>();
+                    last_frame = Some((frame.mode, frame.caption, frame.status, text));
                 }
                 ViewerOutput::Status(message) => status = message,
                 ViewerOutput::ImageUnavailable { message, .. } => {
@@ -456,7 +457,12 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
     });
     assert!(found.revision > source.revision);
     assert!(found.position > source.position);
-    assert!(found.accessible_text.starts_with("row 0200"));
+    // The found page keeps whole rows, so it holds row 200 with its real prefix.
+    assert!(
+        found.accessible_text.contains("// native row 0200 α😀"),
+        "{:?}",
+        found.accessible_text.chars().take(80).collect::<String>()
+    );
 
     assert!(session.send(ViewerInput::NextFile));
     let markdown = wait_frame(&session, "rendered Markdown", |frame| {
