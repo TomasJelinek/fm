@@ -96,7 +96,8 @@ MIT alternative, retaining both upstream license texts and
 [exact source provenance and patch details](../vendor/README.md). Application
 package/version selections are unchanged. The same local source also guards
 feature-specific imports/helpers so the app's `swash,wgpu` feature set compiles
-without unused-item warnings; no dependency, license or feature selection changes.
+without unused-item warnings; that correction changes no dependency, license or
+feature selection (the later `skrifa` edge is recorded under 18 November below).
 Its lockfile changes only the
 renderer source from the registry to the local patch. The `renderer-tests` scope
 accounts for the independent vendored test workspace with
@@ -260,6 +261,29 @@ proc-macro) unchanged. Exactly those rows changed, giving **642 records / 524 na
 generator `--check`: no Windows capture was taken, and the Windows result follows
 from the lockfile, where `midnight-ui-bindings` and `bindgen` are the only packages
 that name `prettyplease`. The build-graph notice staging below predates this change.
+
+Also on 18 November 2026 the vendored FemtoVG 0.27.0 gained an opt-in text fitting
+([vendor notes](../vendor/README.md), [record](verification/2026-11-18-ui-sharpness.md)).
+Two dependency edges change and no package, version, license or feature does:
+
+- `femtovg` now depends directly on `skrifa` 0.44.0 (MIT OR Apache-2.0), optional
+  and enabled by its existing `swash` feature, with default features off and
+  `std`. swash 0.2.10 already brought that package into the application, so its
+  row is unchanged; both lockfiles only add the name to the `femtovg` entry. The
+  application graph already selects `skrifa`'s `default` feature, which includes
+  `std` (Linux-host `cargo tree --locked --offline -e features -i skrifa@0.44.0
+  -p midnight-explorer --target x86_64-unknown-linux-gnu` lists `default`, `std`
+  and `autohint_shaping`), so the feature union is unchanged.
+- `midnight-explorer` now names `femtovg` itself, to choose the fitting before its
+  first window, with `default-features = false` and `features = ["swash"]`: the
+  version and features Slint's renderer already requires, resolved by the same
+  `[patch.crates-io]` entry to `vendor/femtovg`. The vendored package thereby
+  becomes a direct record: **642 records / 524 names / 65 direct records**. The
+  three generated tables were edited for that one row; as above this is a targeted
+  refresh without a Windows capture or generator `--check`.
+
+The local source remains under the upstream MIT OR Apache-2.0 choice and release
+notices are unchanged: the collector already copies both FemtoVG license files.
 
 On 18 November 2026 the dependency changes since commit `48ec78d` were rechecked
 (`git diff 48ec78d..HEAD` of `Cargo.lock` and every `Cargo.toml`). Besides the two

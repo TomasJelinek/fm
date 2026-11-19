@@ -1079,6 +1079,7 @@ dependencies = [
  "itertools 0.15.0",
  "log",
  "rgb",
+ "skrifa",
  "slotmap",
  "swash",
  "wasm-bindgen",
@@ -2699,6 +2700,7 @@ dependencies = [
 name = "midnight-explorer"
 version = "0.2.0"
 dependencies = [
+ "femtovg",
  "find-msvc-tools",
  "midnight-compare-engine",
  "midnight-compare-ui",

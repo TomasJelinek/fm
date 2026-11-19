@@ -41,6 +41,7 @@ pub use text::{
 pub use text::TextContext;
 #[cfg(feature = "textlayout")]
 pub use text::TextMetrics;
+pub use text::{glyph_fitting, set_glyph_fitting, GlyphFitting};
 
 use text::{GlyphAtlas, TextContextImpl};
 

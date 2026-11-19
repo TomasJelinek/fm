@@ -199,7 +199,7 @@ captures and does not prove that old captures match today's source files.
 | [fdeflate](https://crates.io/crates/fdeflate/0.3.7) | 0.3.7 | MIT OR Apache-2.0 | app, image-decoder, image-viewer, pdf-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
 | [fearless_simd](https://crates.io/crates/fearless_simd/0.7.0) | 0.7.0 | Apache-2.0 OR MIT | pdf-viewer | Linux, Windows | — |
 | [fearless_simd](https://crates.io/crates/fearless_simd/1.2.0) | 1.2.0 | Apache-2.0 OR MIT | pdf-viewer | Linux, Windows | — |
-| femtovg | 0.27.0 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
+| femtovg | 0.27.0 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | yes |
 | [ffmpeg-next](https://crates.io/crates/ffmpeg-next/9.0.0) | 9.0.0 | WTFPL | thumbnail-video | Linux, Windows | yes |
 | [ffmpeg-sys-next](https://crates.io/crates/ffmpeg-sys-next/9.0.1) | 9.0.1 | WTFPL | thumbnail-video | Linux, Windows | — |
 | [field-offset](https://crates.io/crates/field-offset/0.3.6) | 0.3.6 | MIT OR Apache-2.0 | app | Linux, Windows | — |

@@ -557,6 +557,7 @@ dependencies = [
  "rustybuzz",
  "serde",
  "serde_json",
+ "skrifa 0.44.0",
  "slotmap",
  "swash",
  "ttf-parser",
