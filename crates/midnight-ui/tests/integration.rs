@@ -9,9 +9,11 @@
 // as when every file was a separate test crate, so their types never mix.
 #![allow(clippy::duplicate_mod)]
 
-// Compiled once for all modules instead of once per module that uses them. They hold
-// no process-wide state, so sharing them shares only their types. Nested, so that
-// `every_test_file_is_a_module` does not take them for test files.
+// Compiled once for the test modules that include them directly, instead of once per
+// module. Support files that include `modeless.rs` themselves (`tree_filters`,
+// `operation_form`, `job_windows`, `operations_native`) keep their own copy. Neither
+// file holds process-wide state, so sharing them shares only their types. Nested, so
+// that `every_test_file_is_a_module` does not take them for test files.
 mod support {
     pub mod modeless;
     pub mod ui;

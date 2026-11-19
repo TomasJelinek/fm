@@ -92,6 +92,15 @@ the accessibility lookups and that can never match. Neither pass changes an
 expression, a path or a public item; the release profile compiles this crate as one
 unit, where the split made no measurable difference.
 
+A targeted `cargo test -p midnight-ui` now reuses the application build's Slint,
+bindings and `midnight-ui` library instead of compiling its own (the workspace names
+the application's Slint features, and `midnight-ui-input` pins three shared
+dependencies as the application resolves them); `cargo test --workspace` still has
+its own units. The `midnight-ui` integration tests compile their `ui` helper once
+instead of 115 times and `modeless` 21 instead of 51 times, and three fixtures no
+longer copy the palette into every binding; the 766 tests of that binary are
+unchanged.
+
 **Open:** run-time speed of debug builds with the split was not measured (the dev
 machine code is 1.4 MB larger); Windows and the release executable were not built.
 Measured and left as they are: thin local LTO off, opt-level `"z"` or 0 for the

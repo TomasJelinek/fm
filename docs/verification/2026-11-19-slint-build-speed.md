@@ -104,6 +104,58 @@ the embedded source path.
   `self` or `super`, and output without component structs (live preview, which this
   workspace does not enable) with a build error.
 
+## Targeted tests and their helpers
+
+Two further changes, on main `e7757bd5`. They change manifests and test code only.
+
+### 3. Targeted UI tests compiled their own Slint and bindings
+
+Cargo unifies features per command. `cargo test -p midnight-ui` selected Slint
+without `unstable-wgpu-30` and three shared dependencies with fewer features than
+the application (`tracing-core` and `indexmap` without their defaults, `lazy_static`
+only as a build dependency), so it compiled Slint, the bindings and `midnight-ui` a
+second time, and `cargo test -p midnight-viewer-ui` its own Slint. The workspace
+`slint` entry now names the two Slint features the application selects, and
+`midnight-ui-input`, which every UI crate builds, names the three dependencies as
+the application resolves them.
+
+In the resolved unit graph of eleven package selections the bindings were six
+distinct units and are four, and Slint was eight and is six. Built in one target
+directory after `cargo build -p midnight-explorer -p midnight-elevation`:
+
+| Command | Reported fresh, same files as the application build |
+| --- | --- |
+| `cargo test -p midnight-ui --lib --tests --no-run` | Slint, the bindings, `midnight-ui-input`, the `midnight-ui` library |
+| `cargo test -p midnight-viewer-ui --lib --tests --no-run` | Slint, `midnight-ui-input`, the `midnight-viewer-ui` library |
+
+Still separate units: `cargo test --workspace` (tokio `test-util` and x11rb `xtest`
+come from development dependencies), and `cargo build -p midnight-ui`,
+`cargo test -p midnight-compare-ui` and `cargo test -p midnight-ui-bindings` on their
+own, which select no platform crate, so that zbus, fontdb and icu_collections resolve
+differently. The application's units are unchanged except `midnight-ui-input` and
+the crates that depend on it. No package, version or license changes
+([third-party record](../THIRD_PARTY.md)).
+
+### 4. Test helpers were compiled once per test module
+
+The `midnight-ui` integration binary compiled `tests/support/ui.rs` 115 times and
+`modeless.rs` 51 times, once per including file. Both are now modules of the test
+crate that the test modules import; support files that include `modeless.rs`
+themselves keep their copy, so 21 of those remain and one of `ui.rs`. Three test
+fixtures (`error_notice`, `color_picker`,
+`path_elision`) export `Theme`, so that their bindings read the palette at run time
+instead of each holding a copy of its constants.
+
+Type-check of the integration target with the host compiler, CPU time and peak
+memory: 25.2 s and 2.19 GB before, 23.0 s and 2.01 GB with the shared helpers,
+17.4 s and 1.57 GB with the fixtures as well. The 640 `#[test]` functions and the
+766 test names of the binary are the same before and after; the name lists were
+compared.
+
+Not done: sharing `support/tree_filters.rs`. It includes a `midnight-explorer`
+source file whose eight unit tests the binary therefore runs once per including
+module; sharing would reduce 766 test names to 654.
+
 ## Measured and not changed
 
 Bindings compiled alone as above, against 176 s:
@@ -147,13 +199,28 @@ Docker build image, Linux, debug profile, headless software renderer.
 | `midnight-explorer` binary | 123 | 0 | 17 |
 
 `cargo clippy --locked --offline -p midnight-ui-bindings --all-targets -- -D warnings`
-and `rustfmt --check` on the changed files pass. The viewer and comparator UIs
-compile their own generated code and were not rebuilt or run.
+and `rustfmt --check` on the changed files pass.
 
 Run on its own, `cargo test -p midnight-ui-bindings` selects fewer Slint features
 than the application and therefore compiled Slint and the bindings a second time
 (3 min 12 s); a build that already has the bindings for that feature set compiles
 only the test target.
+
+With changes 3 and 4,
+`cargo test --locked --offline -p midnight-ui -p midnight-ui-input -p midnight-explorer
+-p midnight-viewer-ui -p midnight-compare-ui --lib --bins --tests --no-fail-fast`:
+
+| Target | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| `midnight-ui` library | 1,232 | 0 | 2 |
+| `midnight-ui` integration | 765 | 0 | 1 |
+| `midnight-ui-input` library and `placement` | 32 | 0 | 0 |
+| `midnight-explorer` binary | 123 | 0 | 17 |
+| `midnight-viewer-ui` library and integration | 197 | 0 | 0 |
+| `midnight-compare-ui` library and integration | 40 | 0 | 0 |
+
+`cargo clippy --locked --offline -p midnight-ui -p midnight-ui-input --all-targets --
+-D warnings` passes.
 
 ## Not verified
 
@@ -162,3 +229,7 @@ only the test target.
   was linked.
 - Frame, resize and test run time of debug builds with the split.
 - The per-arm cost of unreachable patterns on any compiler other than Rust 1.99.1.
+- The Windows dependency graph for change 3 (it could not be resolved offline on the
+  Linux host) and a Windows build of the test code of change 4.
+- The build time of the integration test target with change 4 inside Cargo; only its
+  type-check was timed.

@@ -73,7 +73,7 @@ and the 18 November recheck below describe the pre-merge inventories. The counts
 below describe the checked-in tables. The final merge dependency graph still
 needs a matching inventory and notice check:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **66**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **69**
   package/version records declared by project crates, including build/test tools.
 - [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **643**
   package/version/source records, **525** distinct crate names, including transitives.

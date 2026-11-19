@@ -13,8 +13,9 @@ i-slint-core = { version = "=1.18.1", default-features = false, features = ["std
 # so these make Slint's dependencies resolve as in the application build: the default
 # features of tracing-core and indexmap, and lazy_static as a normal dependency (as a
 # build-only dependency of the Slint compiler it is compiled without debug info). Slint
-# and the generated bindings are then the same compiled units for `cargo build -p
-# midnight-explorer` and `cargo test -p midnight-ui` or `-p midnight-viewer-ui`.
+# is then the same compiled unit for `cargo build -p midnight-explorer`, `cargo test -p
+# midnight-ui` and `cargo test -p midnight-viewer-ui`, and so are the generated bindings
+# for the first two. Checked on Linux: docs/verification/2026-11-19-slint-build-speed.md.
 tracing-core = "0.1"
 indexmap = "2"
 lazy_static = "1"
