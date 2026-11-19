@@ -127,9 +127,9 @@ their license/source/version declarations; current Find/tooltip, Media and
 work-budget direct-dependant edges are refreshed rather than new dependency pins.
 
 The subsequent integration reused the shared Slint writer for comparator bindings.
-This removed the app's last prettyplease dependency. The current tables use
-the refreshed Windows captures and the prior native Linux trees updated for that
-removed package, checked against the locked Linux-target metadata.
+This removed the app's last prettyplease dependency. The current tables were
+checked against fresh Windows and Ubuntu captures for the app and renderer
+workspaces.
 
 The first generator attempt exposed older `midnight-plugin-api`/`midnight-plugin-sdk`
 0.1.0 releases in the independent Basic/conformance graphs. These are project

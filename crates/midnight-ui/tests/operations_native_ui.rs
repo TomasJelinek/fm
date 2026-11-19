@@ -7,6 +7,9 @@ use crate::support::ui;
 #[cfg(windows)]
 #[path = "operations_native_ui/windows_delete.rs"]
 mod windows_delete;
+#[cfg(windows)]
+#[path = "../../midnight-engine/tests/support/checksum_verify_links_windows.rs"]
+mod windows_links;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;
@@ -77,6 +80,98 @@ fn real_f5_multiselection_toolbar_copy_and_f6_move_preserve_bytes_and_clear_sele
         fs::read(h.right.join("část 文档 🦀.txt")).unwrap(),
         b"Owned Unicode source"
     );
+    h.assert_sentinel();
+}
+
+#[cfg(windows)]
+#[test]
+fn real_copy_follows_a_junction_by_default() {
+    copy_junction(true);
+}
+
+#[cfg(windows)]
+#[test]
+fn real_copy_without_following_creates_an_empty_directory() {
+    copy_junction(false);
+}
+
+#[cfg(windows)]
+fn copy_junction(follow: bool) {
+    use i_slint_core::accessibility::AccessibleStringProperty;
+    use std::{os::windows::fs::MetadataExt, path::Path};
+
+    const PAYLOAD: &[u8] = b"Owned junction payload";
+    const REPARSE_POINT: u32 = 0x400;
+    let mut h = native::Harness::new();
+    let target = h.root.join("referent");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("payload.bin"), PAYLOAD).unwrap();
+    let junction = h.left.join("inside/junction");
+    // The shared cmd.exe junction fixture takes ordinary local drive paths.
+    let ordinary = |path: &Path| {
+        let path = path
+            .to_str()
+            .expect("the authored fixture paths are Unicode");
+        std::path::PathBuf::from(path.strip_prefix(r"\\?\").unwrap_or(path))
+    };
+    windows_links::create(&ordinary(&junction), &ordinary(&target));
+
+    h.focus(PaneId::Left, "inside", false);
+    let start = h.copies.len();
+    ui::key(&h.ui.window, Key::F5);
+    h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
+    h.dialog();
+    let links = ui::popup_item(
+        &h.ui.window,
+        "Follow directory links",
+        AccessibleRole::Checkbox,
+    );
+    assert_eq!(
+        links
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .as_deref(),
+        Some("true")
+    );
+    if !follow {
+        ui::click_popup(
+            &h.ui.window,
+            "Follow directory links",
+            AccessibleRole::Checkbox,
+        );
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .as_deref(),
+            Some("false")
+        );
+        ui::click_popup(
+            &h.ui.window,
+            "Destination folder",
+            AccessibleRole::TextInput,
+        );
+    }
+
+    let result = confirm_copy(&mut h, start);
+    let destination = h.right.join("inside/junction");
+    let metadata = fs::symlink_metadata(&destination).unwrap();
+    assert!(metadata.is_dir());
+    assert_eq!(metadata.file_attributes() & REPARSE_POINT, 0);
+    assert_eq!(result.completed_roots, 1);
+    assert_eq!(result.files_completed, u64::from(follow));
+    assert_eq!(
+        result.verified_bytes,
+        if follow { PAYLOAD.len() as u64 } else { 0 }
+    );
+    assert_eq!(
+        fs::read_dir(&destination).unwrap().count(),
+        usize::from(follow)
+    );
+    if follow {
+        assert_eq!(fs::read(destination.join("payload.bin")).unwrap(), PAYLOAD);
+    }
+    assert_eq!(fs::read(junction.join("payload.bin")).unwrap(), PAYLOAD);
+    fs::remove_dir(&junction).unwrap();
+    assert_eq!(fs::read(target.join("payload.bin")).unwrap(), PAYLOAD);
     h.assert_sentinel();
 }
 

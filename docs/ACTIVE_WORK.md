@@ -20,6 +20,25 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Post-merge validation — 19 November 2026
+
+The Windows application at `4a6ccf77` built with the locked dependency graph.
+The packaged F5 Copy, F6 Move and F10 Delete checks passed. The Delete check
+declined a confirmation, then removed only the selected fixture after confirming.
+The final independent inventories matched the intended paths and SHA-256 hashes.
+Seventy-one transfer and job window tests passed, including both directory
+junction modes, and 23 progress presentation and eight viewer control tests passed.
+The settings migration passed seven tests and the Office parser passed 68.
+
+Packaged Office Find passed for DOCX, XLSX, PPTX, ODT, ODS and ODP. The test
+observed active highlights moving in both directions. Clear restored the visible
+content, and an absent query reported zero matches. F3 video playback passed
+with a VP9/Opus MP4, including pause, seek and resumed audio. The bundled FFmpeg
+build lacks H.264 and AAC. Windows F3 PDF passed on a 128-page mixed-size fixture
+using Paged navigation and Continuous drag and scrollbar controls. Ubuntu 24.04
+under WSL 2 passed 94 targeted media/viewer tests and two installed PDF worker
+tests. All Windows acceptance runs used an authored private desktop and files.
+
 ### Media follow-up — 19 November 2026
 
 The reviewed 64-file Media overlay is integrated. After EOF/empty-stream fixes,
