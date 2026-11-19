@@ -2797,7 +2797,7 @@ dependencies = [
  "midnight-core",
  "midnight-ui-input",
  "midnight-work-budget",
- "proc-macro2 1.0.107",
+ "proc-macro2",
  "slint",
  "slint-build",
  "spin_on",
