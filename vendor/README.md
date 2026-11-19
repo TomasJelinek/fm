@@ -74,12 +74,14 @@ eviction drops only cache ownership, so deferred/in-flight GPU commands retain
 their bindings safely. This removes the measured per-render viewport buffer
 allocation without changing device polling or texture lifetimes.
 
-A fourth change adds an opt-in fitting of filled text to the pixel grid. It is
-off by default: with `GlyphFitting::Subpixel` glyph bitmaps, their cache keys and
-their quads are exactly upstream's. `femtovg::set_glyph_fitting` selects a fitting
-for the process, and each glyph atlas reads it once when its canvas is created,
-so one atlas never holds bitmaps of two fittings. The application sets it before
-its first window ([how and why](../docs/verification/2026-11-18-ui-sharpness.md)).
+A fourth change adds an opt-in fitting of filled text to the pixel grid. In the
+crate it is off by default: with `GlyphFitting::Subpixel` glyph bitmaps, their
+cache keys and their quads are exactly upstream's. `femtovg::set_glyph_fitting`
+selects a fitting for the process, and each glyph atlas reads it once when its
+canvas is created, so one atlas never holds bitmaps of two fittings. The explorer
+selects `Fitted` before its first window and keeps the other two reachable
+([how and why](../docs/verification/2026-11-18-ui-sharpness.md)); tests and
+examples that create windows without it keep `Subpixel`.
 
 - `Snapped` gives every glyph one bitmap, rasterized at offset zero and drawn at
   the rounded layout position instead of at one of eleven tenth-pixel phases, and

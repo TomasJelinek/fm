@@ -25,7 +25,7 @@ layouts do not round.
 | Function bar cells were `width / count`, unrounded | Vertical edges of the F-key buttons two pixels wide and dim | Fixed |
 | Fractional metrics: 19.8 px picker icon, 16.5 px status line, fitted function-key font size, dialog centered in an odd remainder | Resampled picker icons, smeared borders below the status line, uneven key captions, smeared dialog frames | Fixed |
 | Native icons: one 32 px bitmap per icon drawn at 14 to 20 px and at 96 px in thumbnail tiles; on a GTK desktop without `gtk-3.0/settings.ini` the lookup falls back to Adwaita's 16 px PNGs, enlarged to 32 px first; straight-alpha filtering darkens edges | Soft row, location and tile icons; folder tiles are a 6x enlargement | Fixed on Linux for rows, tiles and locations; Windows and action icons unchanged |
-| Glyphs are 8-bit coverage, hinted vertically only, placed in 0.1 px steps | Vertical stems cover two grey columns; the same letter is rasterized differently within one string | Two fittings available, off by default |
+| Glyphs are 8-bit coverage, hinted vertically only, placed in 0.1 px steps | Vertical stems cover two grey columns; the same letter is rasterized differently within one string | Fitted to whole pixel columns since 19 November; the earlier rendering remains selectable |
 
 ### Panes
 
@@ -122,8 +122,12 @@ LCD subpixel rendering, so native applications look sharper beside it. Neither t
 software renderer (no hinting, measurably softer) nor the choice of font changes this.
 
 The vendored renderer now has two other fittings ([vendor notes](../../vendor/README.md)).
-Both are off by default; `MIDNIGHT_GLYPH_FITTING=snapped` or `=fitted` in the
-environment selects one for a run:
+Since 19 November 2026 the explorer uses `fitted`. That was the user's decision
+after comparing the three on this machine; until then both were opt-in.
+`MIDNIGHT_GLYPH_FITTING=subpixel` or `=snapped` in the environment selects another
+one for a run, to compare them or to rule the fitting out as a cause:
+
+- **subpixel**: the renderer's own placement, as before this change.
 
 - **snapped**: one bitmap per glyph, on a whole pixel, with a mild contrast curve.
 - **fitted**: also fits outlines horizontally, through the hinting engine swash
@@ -137,19 +141,20 @@ text on dark rows; "ink" is a pixel with at least 10 % coverage):
 
 | Fitting | Names: ink pixels | of them at least 90 % covered | Dates and times: ink pixels | of them at least 90 % covered |
 | --- | ---: | ---: | ---: | ---: |
-| subpixel (default) | 2,221 | 20.8 % | 5,665 | 24.8 % |
+| subpixel | 2,221 | 20.8 % | 5,665 | 24.8 % |
 | snapped | 1,976 | 41.4 % | 4,949 | 42.8 % |
 | fitted | 1,884 | 38.6 % | 4,603 | 37.8 % |
 
 The share understates `fitted`: its stems are single full columns with nothing beside
 them, which is why it has the fewest ink pixels, while `snapped` reaches its share by
 raising the contrast of two-column stems. A standalone comparison with the same
-libraries measured the stem of `l` and `i` at two columns for the default and for
+libraries measured the stem of `l` and `i` at two columns for `subpixel` and for
 `snapped` and at one for the font's own program; it also showed that fitted outlines
 on unrounded linear positions open visible gaps ("Nam e"), which the word-wise pen
 removes.
 
-Known limits of `fitted`, which is why it is not the default yet:
+Known limits of `fitted`, accepted with that decision and not yet exercised in the
+running application beyond the snapshots:
 
 - Layout, carets, selections and elision still use linear advances, so ink can be up
   to one pixel from where layout placed it. The recolored quick-search prefix in file
@@ -157,7 +162,7 @@ Known limits of `fitted`, which is why it is not the default yet:
 - A word that crosses the left edge of a clip can move by a pixel while its text
   scrolls horizontally, as in a scrolled line edit.
 - Fonts whose program does not fit horizontally (Ubuntu, Lato, Liberation Sans) get
-  the automatic hinter with the contrast curve: crisper than the default, but their
+  the automatic hinter with the contrast curve: crisper than `subpixel`, but their
   stems keep a second, faint column.
 - Viewer and comparator content is rasterized by their own engine and is unchanged;
   their toolbars follow the process setting.
@@ -187,8 +192,13 @@ Row and tile icons looked the same before and after the alignment change, as
 expected. After the icon change, snapshots of the same window show Yaru's artwork in
 rows, location buttons and, in the Thumbnails view of the idle-wakeup probe
 (`MIDNIGHT_IDLE_WAKEUP_PROBE=8:2:thumbnails`, captured with `xwd`), 96 px folder tiles
-with single-pixel outlines. The three text fittings were captured with
-`MIDNIGHT_GLYPH_FITTING` unset, `snapped` and `fitted`.
+with single-pixel outlines. The three text fittings were captured while `fitted` was
+still opt-in, with `MIDNIGHT_GLYPH_FITTING` unset (then `subpixel`), `snapped` and
+`fitted`. After the default changed, a snapshot taken without the variable is
+identical, pixel for pixel, to one taken with `fitted` in the same session, and so is
+one taken with an unknown value; the `subpixel` and `snapped` snapshots each differ
+from it in the text. Those five were 320 by 200 pixels, because that session's smoke
+test captured before the window had its size; the earlier ones were 1340 by 820.
 
 The compared images are in `_build/verification/2026-11-18-ui-sharpness/` on the
 machine that produced them, not in the repository.

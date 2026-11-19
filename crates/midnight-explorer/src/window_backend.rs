@@ -7,14 +7,16 @@ mod native;
 #[path = "window_backend_windows.rs"]
 mod native;
 
-/// How the default renderer fits text to the pixel grid. Both fittings are
-/// opt-in while they are being evaluated: `MIDNIGHT_GLYPH_FITTING=snapped` or
-/// `fitted`; anything else keeps the renderer's own subpixel placement.
+/// How the default renderer fits text to the pixel grid. The explorer uses
+/// `fitted`, which puts stems on whole pixel columns. `MIDNIGHT_GLYPH_FITTING`
+/// selects another fitting for a run, to compare them or to rule the fitting
+/// out: `subpixel` is the renderer's own placement, `snapped` whole-pixel
+/// glyphs without horizontal fitting.
 fn glyph_fitting(choice: Option<&str>) -> femtovg::GlyphFitting {
     match choice {
+        Some("subpixel") => femtovg::GlyphFitting::Subpixel,
         Some("snapped") => femtovg::GlyphFitting::Snapped,
-        Some("fitted") => femtovg::GlyphFitting::Fitted,
-        _ => femtovg::GlyphFitting::Subpixel,
+        _ => femtovg::GlyphFitting::Fitted,
     }
 }
 
@@ -48,14 +50,15 @@ mod tests {
     use femtovg::GlyphFitting;
 
     #[test]
-    fn text_fitting_is_opt_in_by_exact_name() {
-        assert_eq!(glyph_fitting(None), GlyphFitting::Subpixel);
-        assert_eq!(glyph_fitting(Some("snapped")), GlyphFitting::Snapped);
+    fn text_is_fitted_unless_another_fitting_is_named_exactly() {
+        assert_eq!(glyph_fitting(None), GlyphFitting::Fitted);
         assert_eq!(glyph_fitting(Some("fitted")), GlyphFitting::Fitted);
-        for other in ["", "Fitted", "fitted ", "subpixel", "1", "on"] {
+        assert_eq!(glyph_fitting(Some("subpixel")), GlyphFitting::Subpixel);
+        assert_eq!(glyph_fitting(Some("snapped")), GlyphFitting::Snapped);
+        for other in ["", "Subpixel", "snapped ", "off", "0", "none"] {
             assert_eq!(
                 glyph_fitting(Some(other)),
-                GlyphFitting::Subpixel,
+                GlyphFitting::Fitted,
                 "{other:?}"
             );
         }

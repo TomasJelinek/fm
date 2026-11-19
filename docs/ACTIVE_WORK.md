@@ -106,14 +106,16 @@ toolbar actions. **Open:** the Windows provider still delivers one 32 px bitmap
 (`IconService::icon_edge` keeps it unchanged); action icons stay at 32 px because one
 bitmap is drawn at six sizes; SVG-only themes fall back as before.
 
-A third change adds two text fittings to the vendored FemtoVG, off by default:
-`MIDNIGHT_GLYPH_FITTING=snapped` or `=fitted`. `fitted` puts stems on whole pixel
-columns through the hinting engine swash already uses and keeps word spacing with
-whole-pixel advances inside words. **Open:** making one of them the default needs a
-visual decision; `fitted` can leave ink up to one pixel from layout positions, which
-shows where selections or the quick-search prefix clip text. The vendored renderer
-gains a `skrifa` edge and the explorer a direct `femtovg` one, with no new package
-([third-party record](THIRD_PARTY.md)).
+A third change adds two text fittings to the vendored FemtoVG. `fitted` puts stems
+on whole pixel columns through the hinting engine swash already uses and keeps word
+spacing with whole-pixel advances inside words. The explorer uses it since
+19 November 2026, by the user's decision after comparing snapshots;
+`MIDNIGHT_GLYPH_FITTING=subpixel` or `=snapped` selects the earlier rendering or the
+intermediate one for a run. **Open:** `fitted` can leave ink up to one pixel from
+layout positions, which may show where selections, carets or the quick-search prefix
+clip text and in scrolled line edits; that was read from the code, not yet seen or
+ruled out in use. The vendored renderer gains a `skrifa` edge and the explorer a
+direct `femtovg` one, with no new package ([third-party record](THIRD_PARTY.md)).
 
 UI test results equal main's in the same Docker environment: 19 tests of
 `midnight-ui` and `midnight-viewer-ui` fail there before and after, and the
