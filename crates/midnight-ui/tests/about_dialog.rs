@@ -76,3 +76,36 @@ fn dragging_the_sky_moves_the_dialog_and_close_dismisses_it() {
     test.draw();
     assert!(!test.window.get_about_open());
 }
+
+#[test]
+fn double_clicking_a_library_opens_its_license_and_back_returns_to_the_list() {
+    let mut test = open();
+    let weak = test.window.as_weak();
+    test.window.on_license_open(move |name, version| {
+        let window = weak.upgrade().unwrap();
+        window.set_license_detail_title(format!("{name} {version}").into());
+        window.set_license_detail_license("MIT OR Apache-2.0".into());
+        window.set_license_detail_authors("Ada Lovelace".into());
+        window.set_license_detail_text("Permission is hereby granted".into());
+        window.set_license_detail_open(true);
+    });
+    ui::click_popup(&test.window, "Licenses", AccessibleRole::Text);
+    test.draw();
+    let row = ui::popup_item(&test.window, "library-3 0.1.0", AccessibleRole::Button);
+    let rect = row.geometry();
+    let at = row.map_to_native_window(rect.origin);
+    let position = LogicalPosition::new(at.x + rect.size.width / 2.0, at.y + rect.size.height / 2.0);
+    let left = PointerEventButton::Left;
+    for _ in 0..2 {
+        ui::pointer_button(&test.window, position, left, true);
+        ui::pointer_button(&test.window, position, left, false);
+    }
+    test.draw();
+    assert!(test.window.get_license_detail_open());
+    assert!(ui::try_popup_item(&test.window, "Permission is hereby granted", AccessibleRole::Text).is_some());
+    render::snapshot(&test, "about-license-detail");
+    ui::click_popup(&test.window, "Back", AccessibleRole::Button);
+    test.draw();
+    assert!(!test.window.get_license_detail_open());
+    assert!(ui::try_popup_item(&test.window, "library-3", AccessibleRole::Text).is_some());
+}

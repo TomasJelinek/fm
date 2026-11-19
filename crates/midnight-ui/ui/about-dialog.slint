@@ -35,19 +35,38 @@ component InfoRow inherits HorizontalLayout {
     Text { text: root.value; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; horizontal-stretch: 1; }
 }
 
-// The hero is the same midnight sky in every theme: drifting stars, a rare shooting
-// star, a glowing crescent and a hill line. One looping phase drives all of it.
+// The hero is the same midnight sky in every theme. One looping phase (three
+// cycles per loop, so every sine below repeats seamlessly) drives the aurora,
+// twinkling and glinting stars, three shooting stars, drifting clouds and the
+// fireflies over the hills.
 component Sky inherits Rectangle {
     in property <float> phase;
     in property <image> logo;
     in property <string> version;
     callback dragged(length, length);
-    background: @linear-gradient(180deg, #070a24 0%, #141a4a 55%, #3b2a72 100%);
+    // 0..1 over the whole 24 s loop: slow drift that wraps without a jump.
+    private property <float> drift: root.phase / 18.8496;
+    background: @linear-gradient(180deg, #050820 0%, #101645 50%, #3b2a72 100%);
     clip: true;
+    // Aurora ribbons swaying behind everything.
+    Path {
+        x: 20px * Math.sin(root.phase * 1rad) - 20px; y: 8px; width: parent.width + 40px; height: self.width * 90 / 480;
+        viewbox-width: 480; viewbox-height: 90;
+        commands: "M 0 36 C 80 0, 160 70, 240 30 S 400 0, 480 34 L 480 70 C 400 52, 320 92, 240 62 S 80 44, 0 72 Z";
+        fill: @linear-gradient(180deg, #38f2b855 0%, #38f2b800 100%);
+        opacity: 0.55 + 0.35 * Math.sin(root.phase * 2rad);
+    }
+    Path {
+        x: 24px * Math.sin(root.phase * 1rad + 2rad) - 20px; y: 22px; width: parent.width + 40px; height: self.width * 80 / 480;
+        viewbox-width: 480; viewbox-height: 80;
+        commands: "M 0 30 C 100 60, 170 0, 260 34 S 400 64, 480 26 L 480 60 C 390 80, 330 30, 250 58 S 90 30, 0 60 Z";
+        fill: @linear-gradient(180deg, #a06bff4d 0%, #a06bff00 100%);
+        opacity: 0.5 + 0.4 * Math.sin(root.phase * 3rad + 1rad);
+    }
     // Glow behind the crescent.
     Rectangle {
         x: parent.width - 150px; y: -20px; width: 130px; height: 130px; border-radius: 65px;
-        background: @radial-gradient(circle, #f6d78a55 0%, #f6d78a00 70%);
+        background: @radial-gradient(circle, #f6d78a66 0%, #f6d78a00 70%);
         opacity: 0.8 + 0.2 * Math.sin(root.phase * 2rad);
     }
     Path {
@@ -55,18 +74,33 @@ component Sky inherits Rectangle {
         commands: "M 34 3 A 28 28 0 1 0 57 42 A 22 22 0 1 1 34 3 Z";
         fill: @linear-gradient(135deg, #fff4cf 0%, #f2c768 100%);
     }
-    for i in 34 : Rectangle {
+    for i in 70 : Rectangle {
         private property <float> twinkle: Math.abs(Math.sin((root.phase * (1 + Math.mod(i, 4)) + i * 1.7) * 1rad));
         x: Math.mod(i * 53 + i * i * 11, 97) / 97 * parent.width;
         y: Math.mod(i * 29 + i * i * 7, 61) / 61 * (parent.height - 46px);
         width: (1 + Math.mod(i, 3) * 0.7) * 1px; height: self.width; border-radius: self.width / 2;
-        background: Math.mod(i, 5) == 0 ? #ffd9a8 : #dfe6ff;
-        opacity: 0.25 + 0.75 * self.twinkle;
+        background: Math.mod(i, 5) == 0 ? #ffd9a8 : Math.mod(i, 7) == 0 ? #a8c8ff : #dfe6ff;
+        opacity: 0.2 + 0.8 * self.twinkle;
     }
-    // A shooting star crosses the sky once per loop.
-    Path {
-        private property <float> t: Math.clamp(Math.mod(root.phase / 6.2832, 1) * 3.2 - 0.4, 0, 1);
-        x: parent.width * 0.85 - self.t * parent.width * 0.55; y: 8px + self.t * 70px;
+    // Brighter stars with a four-point glint.
+    for i in 8 : Rectangle {
+        private property <float> glint: Math.pow(Math.abs(Math.sin((root.phase * (1 + Math.mod(i, 3)) + i * 2.3) * 1rad)), 3);
+        x: (0.06 + 0.115 * i) * parent.width; y: 10px + Math.mod(i * 37, 56) * 1px;
+        width: 1px; height: 1px;
+        Rectangle { x: -6px * (0.4 + parent.glint); y: 0px; width: 12px * (0.4 + parent.glint); height: 1px; background: #ffffff; opacity: 0.3 + 0.7 * parent.glint; }
+        Rectangle { x: 0px; y: -6px * (0.4 + parent.glint); width: 1px; height: 12px * (0.4 + parent.glint); background: #ffffff; opacity: 0.3 + 0.7 * parent.glint; }
+        Rectangle { x: -2px; y: -2px; width: 5px; height: 5px; border-radius: 2.5px; background: #ffffff; opacity: 0.4 + 0.6 * parent.glint; }
+    }
+    // Faint clouds drift across the sky and wrap around.
+    for i in 3 : Rectangle {
+        x: Math.mod(root.drift + i / 3, 1) * (parent.width + 260px) - 130px; y: 38px + i * 30px;
+        width: 130px + i * 30px; height: 14px; border-radius: 7px;
+        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff1c 50%, #ffffff00 100%);
+    }
+    // Three shooting stars at staggered moments of the loop.
+    for k in 3 : Path {
+        private property <float> t: Math.clamp(Math.mod(root.phase / 6.2832 + k / 3, 1) * 5 - 0.5, 0, 1);
+        x: parent.width * (0.9 - 0.2 * k) - self.t * parent.width * 0.5; y: 6px + k * 14px + self.t * 64px;
         width: 64px; height: 30px; viewbox-width: 64; viewbox-height: 30;
         commands: "M 0 0 L 64 30";
         stroke: @linear-gradient(90deg, #ffffff00 0%, #ffffff 100%); stroke-width: 1.5px;
@@ -74,24 +108,32 @@ component Sky inherits Rectangle {
     }
     // Hills in front of the sky.
     Path {
-        y: parent.height - 44px; width: parent.width; height: 44px; viewbox-width: 480; viewbox-height: 44;
+        y: parent.height - self.height; width: parent.width; height: self.width * 44 / 480; viewbox-width: 480; viewbox-height: 44;
         commands: "M 0 44 L 0 26 Q 70 4 150 24 T 300 20 T 480 26 L 480 44 Z";
         fill: #080b22;
     }
+    // Fireflies wander over the hills.
+    for i in 8 : Rectangle {
+        x: parent.width * (0.06 + 0.12 * i) + 16px * Math.sin((root.phase * (1 + Math.mod(i, 3)) + i) * 1rad);
+        y: parent.height - 34px - 12px * Math.abs(Math.sin((root.phase * 2 + i * 1.3) * 1rad)) - Math.mod(i, 2) * 8px;
+        width: 3px; height: 3px; border-radius: 1.5px; background: #ffe9a0;
+        opacity: 0.25 + 0.75 * Math.abs(Math.sin((root.phase * 3 + i * 0.9) * 1rad));
+        Rectangle { x: -4px; y: -4px; width: 11px; height: 11px; border-radius: 5.5px; background: @radial-gradient(circle, #ffe9a066 0%, #ffe9a000 70%); }
+    }
     Path {
-        y: parent.height - 30px; width: parent.width; height: 30px; viewbox-width: 480; viewbox-height: 30;
+        y: parent.height - self.height; width: parent.width; height: self.width * 30 / 480; viewbox-width: 480; viewbox-height: 30;
         commands: "M 0 30 L 0 20 Q 90 2 200 18 T 480 14 L 480 30 Z";
         fill: Theme.surface;
     }
     // Pulsing halo and the application icon.
     Rectangle {
         x: (parent.width - self.width) / 2; y: 14px; width: 112px; height: 112px; border-radius: 56px;
-        background: @radial-gradient(circle, #8fa2ff66 0%, #8fa2ff00 70%);
+        background: @radial-gradient(circle, #8fa2ff77 0%, #8fa2ff00 70%);
         opacity: 0.65 + 0.35 * Math.sin(root.phase * 3rad);
     }
     Image {
         source: root.logo; image-fit: contain;
-        x: (parent.width - self.width) / 2; y: 28px; width: 72px; height: 72px;
+        x: (parent.width - self.width) / 2; y: 28px + 2px * Math.sin(root.phase * 3rad); width: 72px; height: 72px;
     }
     Text {
         y: 108px; width: parent.width; text: "Midnight Explorer";
@@ -129,6 +171,12 @@ export component AboutDialog inherits Rectangle {
     in property <image> application-icon;
     in property <[LicenseRow]> licenses;
     in property <string> license-summary;
+    in-out property <bool> detail-open;
+    in property <string> detail-title;
+    in property <string> detail-license;
+    in property <string> detail-authors;
+    in property <string> detail-text;
+    callback license-open(string, string);
     callback close();
     callback move-dialog(length, length);
     callback license-filter(string);
@@ -141,7 +189,10 @@ export component AboutDialog inherits Rectangle {
     animate phase { duration: 24s; iteration-count: -1; easing: linear; }
     FocusScope {
         key-pressed(event) => {
-            if event.text == Key.Escape { root.close(); return accept; }
+            if event.text == Key.Escape {
+                if root.detail-open { root.detail-open = false; } else { root.close(); }
+                return accept;
+            }
             reject
         }
         VerticalLayout {
@@ -153,13 +204,13 @@ export component AboutDialog inherits Rectangle {
             }
             VerticalLayout {
                 padding: 12px; padding-top: 4px; spacing: 8px; vertical-stretch: 1;
-                HorizontalLayout {
+                if !root.detail-open : HorizontalLayout {
                     spacing: 4px; alignment: center;
                     AboutTab { text: "About"; active: root.tab == 0; min-width: 96px; clicked => { root.tab = 0; } }
                     AboutTab { text: "Licenses"; active: root.tab == 1; min-width: 96px; clicked => { root.tab = 1; } }
                 }
                 Rectangle { height: 1px; background: Theme.frame; }
-                if root.tab == 0 : VScrollView {
+                if !root.detail-open && root.tab == 0 : VScrollView {
                     min-height: 0px; vertical-stretch: 1;
                     VerticalLayout {
                         spacing: 10px; alignment: start; padding-right: 6px;
@@ -188,11 +239,11 @@ export component AboutDialog inherits Rectangle {
                         }
                     }
                 }
-                if root.tab == 1 : VerticalLayout {
+                if !root.detail-open && root.tab == 1 : VerticalLayout {
                     spacing: 6px; vertical-stretch: 1; min-height: 0px;
                     HintedLineEdit {
                         placeholder-text: "Filter by library or license";
-                        hint: "Show only libraries whose name or license contains this text.";
+                        hint: "Show only libraries whose name or license contains this text. Double-click a library to read its license and authors.";
                         edited(text) => { root.license-filter(text); }
                     }
                     Text { text: root.license-summary; color: Theme.secondary-text; font-size: Theme.small-font; }
@@ -203,16 +254,45 @@ export component AboutDialog inherits Rectangle {
                             x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                             for row[index] in root.licenses : Rectangle {
                                 width: licenses.visible-width; height: 24px;
-                                background: Math.mod(index, 2) == 1 ? Theme.alternate-row : transparent;
+                                background: row-area.has-hover ? Theme.hover : Math.mod(index, 2) == 1 ? Theme.alternate-row : transparent;
+                                accessible-role: button; accessible-label: row.name + " " + row.version;
+                                accessible-action-default => { root.license-open(row.name, row.version); }
                                 HorizontalLayout {
                                     padding-left: 8px; padding-right: 8px; spacing: 8px;
                                     Text { text: row.name; color: Theme.text; font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                                     Text { text: row.version; color: Theme.secondary-text; font-size: Theme.small-font; width: 64px; overflow: elide; vertical-alignment: center; }
                                     Text { text: row.license; color: Theme.secondary-text; font-size: Theme.small-font; width: 150px; overflow: elide; vertical-alignment: center; }
                                 }
+                                row-area := TouchArea {
+                                    double-clicked => { root.license-open(row.name, row.version); }
+                                }
                             }
                         }
                     }
+                }
+                if root.detail-open : VerticalLayout {
+                    spacing: 6px; vertical-stretch: 1; min-height: 0px;
+                    Text { text: root.detail-title; color: Theme.strong-text; font-size: Theme.font-size * 1.2; font-weight: 700; overflow: elide; }
+                    Text { text: root.detail-license; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+                    if root.detail-authors != "" : Text {
+                        text: root.detail-authors; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+                    }
+                    Rectangle {
+                        vertical-stretch: 1; min-height: 80px;
+                        border-width: 1px; border-color: Theme.frame; border-radius: 4px; clip: true;
+                        VScrollView {
+                            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                            VerticalLayout {
+                                padding: 8px; alignment: start;
+                                Text { text: root.detail-text; color: Theme.text; font-size: Theme.small-font; font-family: "monospace"; wrap: word-wrap; }
+                            }
+                        }
+                    }
+                }
+                if root.detail-open : HintedActionButton {
+                    text: "Back"; fallback-icon: FallbackIcons.back; min-height: Theme.control-height;
+                    hint: "Return to the list of libraries (Escape).";
+                    clicked => { root.detail-open = false; }
                 }
                 close-button := HintedActionButton {
                     text: "Close"; min-height: Theme.control-height;

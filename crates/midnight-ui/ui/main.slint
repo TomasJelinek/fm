@@ -707,9 +707,15 @@ export component MainWindow inherits Window {
     in property <[LicenseRow]> license-rows;
     in property <string> license-summary;
     callback license-filter(string);
+    callback license-open(string, string);
+    in-out property <bool> license-detail-open;
+    in property <string> license-detail-title;
+    in property <string> license-detail-license;
+    in property <string> license-detail-authors;
+    in property <string> license-detail-text;
     changed about-open => {
         PopupFocus.update();
-        if root.about-open { about-popup.show(); } else { about-popup.close(); root.focus-files(); }
+        if root.about-open { about-popup.show(); } else { about-popup.close(); root.license-detail-open = false; root.focus-files(); }
         PopupFocus.update();
     }
     public function show-about() { if root.about-open { return; } root.drag-invalidate-targets(); root.about-open = true; }
@@ -1332,6 +1338,10 @@ export component MainWindow inherits Window {
                 licenses: root.license-rows; license-summary: root.license-summary;
                 move-dialog(dx, dy) => { about-frame.move-by(dx, dy); }
                 license-filter(query) => { root.license-filter(query); }
+                license-open(name, version) => { root.license-open(name, version); }
+                detail-open <=> root.license-detail-open;
+                detail-title: root.license-detail-title; detail-license: root.license-detail-license;
+                detail-authors: root.license-detail-authors; detail-text: root.license-detail-text;
                 close => { root.about-open = false; }
             }
         }
