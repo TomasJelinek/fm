@@ -30,6 +30,8 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [icu_locale_core](https://crates.io/crates/icu_locale_core/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | image | 0.25.10 | MIT OR Apache-2.0 | midnight-image-decoder, midnight-thumbnail-image, midnight-viewer-image |
 | [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-common, midnight-platform-linux |
+| [indexmap](https://crates.io/crates/indexmap/2.14.2) | 2.14.2 | Apache-2.0 OR MIT | midnight-ui-input |
+| [lazy_static](https://crates.io/crates/lazy_static/1.5.1) | 1.5.1 | MIT OR Apache-2.0 | midnight-ui-input |
 | [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-linux, midnight-filesystem-native-macos, midnight-platform-linux, midnight-plugin-host, midnight-worker-sdk |
 | [libloading](https://crates.io/crates/libloading/0.8.9) | 0.8.9 | ISC | midnight-filesystem-network |
 | [lzma-rust2](https://crates.io/crates/lzma-rust2/0.21.0) | 0.21.0 | Apache-2.0 | midnight-fs-archive |
@@ -61,6 +63,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [tokio](https://crates.io/crates/tokio/1.54.1) | 1.54.1 | MIT | midnight-compare-engine, midnight-compare-ui, midnight-engine, midnight-explorer, midnight-platform-linux, midnight-ui, midnight-viewer-engine, midnight-viewer-ui |
 | [toml](https://crates.io/crates/toml/0.9.12%2Bspec-1.1.0) | 0.9.12+spec-1.1.0 | MIT OR Apache-2.0 | midnight-api-package, midnight-filesystem-host, midnight-native-filesystem-host, midnight-plugin-host |
 | [tracing](https://crates.io/crates/tracing/0.1.44) | 0.1.44 | MIT | midnight-explorer |
+| [tracing-core](https://crates.io/crates/tracing-core/0.1.36) | 0.1.36 | MIT | midnight-ui-input |
 | [tracing-subscriber](https://crates.io/crates/tracing-subscriber/0.3.23) | 0.3.23 | MIT | midnight-explorer |
 | [unicase](https://crates.io/crates/unicase/2.10.0) | 2.10.0 | MIT OR Apache-2.0 | midnight-core, midnight-engine |
 | [unicode-segmentation](https://crates.io/crates/unicode-segmentation/1.13.3) | 1.13.3 | MIT OR Apache-2.0 | midnight-engine, midnight-ui, midnight-viewer-render |

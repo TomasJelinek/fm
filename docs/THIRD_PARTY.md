@@ -293,6 +293,48 @@ Two dependency edges change and no package, version, license or feature does:
 The local source remains under the upstream MIT OR Apache-2.0 choice and release
 notices are unchanged: the collector already copies both FemtoVG license files.
 
+On 19 November 2026 two manifest changes made the application build and a targeted
+`cargo test -p midnight-ui` or `-p midnight-viewer-ui` resolve the same features
+below Slint, so that Cargo can use one compiled Slint and one compiled copy of the
+generated UI bindings for both. No package, version or license selection changes;
+`Cargo.lock` gains three dependency edges of `midnight-ui-input` and nothing else.
+
+- The workspace `slint` 1.18.1 dependency names `unstable-winit-030` and
+  `unstable-wgpu-30` for every member. `midnight-explorer` already selected both,
+  so the application's features are unchanged. A package selection without
+  `midnight-explorer` or the `midnight-viewer-ui` tests now gains
+  `unstable-wgpu-30` on `slint` and `i-slint-backend-selector` (and
+  `unstable-winit-030` when only `midnight-ui-bindings` is selected); `i-slint-core`
+  and `i-slint-backend-winit` had identical features in every selection before and
+  keep them.
+- `midnight-ui-input` declares `tracing-core` 0.1.36 (MIT), `indexmap` 2.14.2
+  (Apache-2.0 OR MIT) and `lazy_static` 1.5.1 (MIT OR Apache-2.0) without using
+  them. The first two carry their `default` feature (`tracing-core`: `default`,
+  `std`, `once_cell`; `indexmap`: `default`, `std`), which `tracing-log` and `zip`
+  already enable in the application; `lazy_static` has no feature and is already a
+  normal application dependency through `sharded-slab`. The pinned license files of
+  the three packages were inspected. All three were locked at these versions and
+  are linked into the application already, so release notices are unchanged.
+
+The three packages become direct records declared by `midnight-ui-input`; the
+tables hold **642 records / 524 names** as before and list 69 direct rows (66
+before this change, counted in the tables). Rendering the previous rows with the
+generator's own `render` reproduces the three committed tables byte for byte, and
+the same code wrote the three changed rows. A native Linux `app` capture
+(`cargo metadata --locked --offline --filter-platform x86_64-unknown-linux-gnu` and
+`cargo tree --locked --offline --workspace --target x86_64-unknown-linux-gnu --edges
+normal,build,dev --prefix none`), selected with the generator's own code, lists
+these three declarations, and all of its 400 third-party records are listed for
+`app` and Linux (its eight other records are project-owned API/SDK crates, which a
+complete run excludes). It also reports `midnight-work-budget` as a declarer of `tokio`
+1.54.1 (its optional `resident-workers` dependency), which the direct-dependant
+column does not name; that row is older than this change and was left as it is.
+This is a targeted refresh, not a full 46-pair recapture or generator `--check`.
+No Windows capture was taken: the Windows-only packages are not in this host's
+offline cache, and the Windows rows follow from the three declarations being
+unconditional. Whether Cargo then reuses the compiled units is a build result,
+not a dependency fact, and is not recorded here.
+
 On 18 November 2026 the dependency changes since commit `48ec78d` were rechecked
 (`git diff 48ec78d..HEAD` of `Cargo.lock` and every `Cargo.toml`). Besides the two
 removals above, they change only:
