@@ -127,7 +127,9 @@ The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. For builds they accept no
 argument (debug), `debug`, or `release`, run a locked build of `midnight-explorer`,
-and return failures to the caller. Linux `build.sh` also supports `clean`,
+and return failures to the caller. Both also accept `--validate`, which then runs
+every test that CI runs for the platform ([full validation](#full-validation)).
+Linux `build.sh` also supports `clean`,
 `--dry-run` and explicit `--install-deps`. It selects native or Docker builds and
 can bootstrap Rust; see the Linux instructions below. `build.bat` expects its
 prerequisites to be installed already. Application builds through the helpers also build the
@@ -256,7 +258,14 @@ Build from PowerShell or Command Prompt:
 ```powershell
 .\build.bat
 .\build.bat release
+.\build.bat --validate
+.\build.bat release --validate
 ```
+
+`build.bat [debug|release] [--validate]` accepts its arguments in any order;
+`--validate` alone builds debug. It runs `scripts\validate.ps1` after every build
+step and before the private deployment described below, so a build that fails
+validation is not deployed ([full validation](#full-validation)).
 
 Host-only commands with a normal Rust installation (native filesystem and viewer packages
 must also be built with the helpers above):
@@ -450,13 +459,15 @@ not recognized yet; install a listed terminal, for example
 To install Rust manually, use the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.
 The Linux helper accepts
-`./build.sh [debug|release|clean] [--install-deps] [--dry-run]`:
+`./build.sh [debug|release|clean] [--install-deps] [--dry-run] [--validate]`:
 
 ```sh
 ./build.sh
 ./build.sh debug
 ./build.sh release
 ./build.sh --dry-run
+./build.sh --validate
+./build.sh release --validate --dry-run
 FM_BUILD_BACKEND=native ./build.sh debug --install-deps --dry-run
 FM_BUILD_BACKEND=native ./build.sh debug --install-deps
 ```
@@ -466,7 +477,13 @@ helper's host package installation. It is rejected with
 `FM_BUILD_BACKEND=docker`. `--dry-run` prints the selected setup/build plan without
 package installation, Rust bootstrap or compilation. With no profile, debug is
 selected. The helper requires Linux and rejects macOS; application and build
-support for macOS remain pending.
+support for macOS remain pending. `--validate` runs `scripts/validate.sh` after the
+last build step; with `--dry-run` it prints the validation plan and its commands
+as well ([full validation](#full-validation)). Validation needs the native backend:
+with `FM_BUILD_BACKEND=docker`, or when `auto` would select Docker, `build.sh`
+refuses `--validate` with exit status 2 before building, because the Docker build
+image has no X11 test display (Xvfb), mounts the source read-only and has not been
+qualified for the tests. `clean` cannot be combined with `--validate`.
 
 Build only the host with Cargo (install the native provider/viewers separately as
 described above):
@@ -600,6 +617,58 @@ font qualification remains separate from functional CPU startup and scrolling.
 For WGPU diagnostics only,
 `SLINT_WGPU_CPU=1 ./_build/debug/me` permits a CPU adapter. This still needs the
 graphics runtime and fonts; it does not establish production GPU performance.
+
+### Full validation
+
+`build.bat --validate` and `./build.sh --validate` run, after the build,
+[scripts/validate.ps1](scripts/validate.ps1) (Windows) or
+[scripts/validate.sh](scripts/validate.sh) (Linux). Each also runs on its own, for
+example `pwsh -NoProfile -File scripts\validate.ps1` or `bash scripts/validate.sh release`.
+They run every test that CI ([ci.yml](.github/workflows/ci.yml)) runs for the host
+platform, with CI's own test commands and in CI's job order, and build only what those
+tests need:
+
+- the public API/SDK and protocol workspace tests, the C/Rust ABI layout test and
+  the plugin, worker and web SDK release bundles;
+- the tests of the independent viewers, the viewer ABI conformance fixture, the image
+  and PDF viewers, the image thumbnailer, the archive worker (with its release package
+  and fixture export) and the filesystem API with the native and network filesystem
+  plugins, with CI's test commands (for the viewers those of their `scripts/ci.*`)
+  and the package builds that the private test installation needs;
+- the tests of CI's `check` job: the script and native helper tests, the PowerShell
+  deployment tests under PowerShell 7 and 5.1 (Windows), every workspace test target
+  including doc tests (CI's own [gates](docs/developer/TEST_EXECUTION.md#full-validation),
+  retiring nothing and running every gate), and the ignored qualification tests
+  against a private test installation of the packages built above; on Linux also the
+  Trash and isolated X11 tests;
+- CI's `release` job for the selected profile (default debug): the host build and
+  its installed filesystem smoke test.
+
+Two steps that CI does not run yet are included when their inputs exist: the HTML
+viewer's tests without native CEF, and the video thumbnailer's tests with an FFmpeg
+9.0.2 prefix (on Windows from `MIDNIGHT_FFMPEG_PREFIX`,
+`MIDNIGHT_FFMPEG_SOURCE_ARCHIVE` and `LIBCLANG_PATH`; on Linux the one a normal build
+prepared). Tests always use the debug test profile; the independent modules use the
+profiles their CI jobs use. A step whose prerequisite is missing is skipped with the
+reason, never silently omitted: for example PowerShell 7 or the MSVC tools for the
+AV1 decoder bootstrap, a classic-zlib Python for the web SDK, cached pinned
+downloads in an `--offline` run, Xvfb, or the other platform's steps. A step whose
+required step failed or was skipped is skipped too. Validation continues after a
+failure and ends with a table of every step (PASS, FAIL or SKIPPED, duration and
+passed/failed/ignored test counts); step logs, the generated step scripts and the
+summary stay in `_build/validate/logs/<run>/`.
+
+Exit status: 0 when no step failed, 1 when one failed (or, with `--strict`, when a
+step was skipped for a missing prerequisite; other-platform steps never count), 2
+for invalid arguments and 127 when cargo, rustc (it must be on `PATH`) or Python 3.12+
+is missing. `build.bat` returns that status, and `build.sh` exits with it. The
+scripts also take `--offline` (as does `CARGO_NET_OFFLINE=true`), `--dry-run`, which
+prints every step with its commands and the reason for any skip, `--only ID[,ID...]`,
+which runs the named steps and the steps they need, and `--plugin-sdk`,
+`--worker-sdk` and `--web-sdk` to test against an already packaged bundle, as CI's
+plugin jobs do. A cold first run compiles every independent module and the
+workspace tests; see the [test execution guide](docs/developer/TEST_EXECUTION.md#full-validation)
+for the steps, the environment and how validation differs from CI.
 
 ## Controls
 
@@ -1059,7 +1128,10 @@ cargo run -p midnight-explorer -- --smoke-test
 cargo run -p midnight-explorer -- --ui-smoke-test --software
 ```
 
-During implementation, build the affected test targets once and use the
+These are the main workspace's checks; [full validation](#full-validation) runs
+every test of CI for the platform with one command, but not the formatting and
+Clippy checks. During
+implementation, build the affected test targets once and use the
 [targeted parallel runner](docs/developer/TEST_EXECUTION.md) for independent
 headless suites. It shares a CPU thread budget across up to four processes,
 coalesces filters of the same executable and retains separate logs. Keep

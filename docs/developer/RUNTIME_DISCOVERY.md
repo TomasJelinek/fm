@@ -72,9 +72,11 @@ does not disable built-in text comparison.
 
 ## Deployment and build workflow
 
-`build.bat [debug|release]` builds the host and its authorization helper, the native
-and network filesystem providers, all six independent viewers, both thumbnailers and
-the archive worker, then calls `scripts/deploy-build.ps1`.
+`build.bat [debug|release] [--validate]` builds the host and its authorization helper,
+the native and network filesystem providers, all six independent viewers, both
+thumbnailers and the archive worker, then calls `scripts/deploy-build.ps1`. With
+`--validate` it first runs `scripts/validate.ps1` ([full validation](TEST_EXECUTION.md#full-validation));
+a build that fails validation is not deployed.
 It requires 64-bit PowerShell 7 and Python 3.12 or newer, checks both before
 building, and honors `CARGO_TARGET_DIR`. A missing authorization helper, image/video
 thumbnail worker, filesystem/viewer module, runtime library or corresponding

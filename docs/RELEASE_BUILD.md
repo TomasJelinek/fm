@@ -48,7 +48,10 @@ tails, operation throughput and memory, rather than assuming that every addition
 optimization always improves performance.
 
 Run `build.bat release` or `./build.sh release` (Cargo uses `--release`), then smoke-test that actual
-executable. These helpers also build the platform's independent native and network
+executable. Adding `--validate` also runs CI's tests for the platform and the
+installed smoke test of that release build
+([full validation](developer/TEST_EXECUTION.md#full-validation)). These helpers also
+build the platform's independent native and network
 filesystem packages, the six viewer packages, both thumbnail workers and the archive
 worker against the public APIs/SDKs and stage them under `filesystems/`, `viewers/`
 and `thumbnailers/` beside the executable. Every module is required.
