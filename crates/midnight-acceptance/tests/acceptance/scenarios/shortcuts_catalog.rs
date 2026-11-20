@@ -567,6 +567,31 @@ fn sorted(names: &[&str]) -> Vec<String> {
     names
 }
 
+/// The Checksums window shows its Calculate page, and Calculate can start. The sweep
+/// does not lay the new window out, so its items are looked up without geometry.
+fn checksums_ready(app: &App) -> Result<(), String> {
+    let window =
+        tools::tool_titled(app, "Checksums · Midnight Explorer").ok_or("no Checksums window")?;
+    let mut calculate = Vec::new();
+    for root in inspect::roots(window.window()) {
+        inspect::walk(&root, &mut |item| {
+            if item.accessible_role() == AccessibleRole::Button
+                && inspect::label(item).as_deref() == Some("Calculate")
+            {
+                calculate.push(item.clone());
+            }
+        });
+    }
+    // The footer's Calculate (after the page tab, if any) exists only on that page.
+    let Some(button) = calculate.last() else {
+        return Err("Checksums opened on Verify file instead of Calculate".into());
+    };
+    if !tools::enabled(button) {
+        return Err("Checksums opened with nothing to calculate: Calculate is disabled".into());
+    }
+    Ok(())
+}
+
 /// The probe for one catalog action and key; None when the sweep has none.
 fn probe_for(id: &str, paths: &Paths) -> Option<Probe> {
     let left = paths.left.clone();
@@ -784,12 +809,16 @@ fn probe_for(id: &str, paths: &Paths) -> Option<Probe> {
                 vec!["Find files · Midnight Explorer".to_owned()],
             )
         })?,
-        "files.checksums" => probe(files, &["tools", "focus"], |_, _, after| {
+        // From the parent row with nothing marked, as right after opening a folder: the
+        // window must open ready to calculate the folder's files, not on an empty
+        // Verify page with Calculate disabled.
+        "files.checksums" => probe(Setup::at(".."), &["tools", "focus"], |app, _, after| {
             same(
                 "the tool windows",
                 after.tools.clone(),
                 vec!["Checksums · Midnight Explorer".to_owned()],
-            )
+            )?;
+            checksums_ready(app)
         })?,
         "files.edit" => probe(files, &["notice", "popups", "focus"], |_, _, after| {
             // No editor service in this run: the attempt must be reported.
