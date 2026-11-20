@@ -17,6 +17,33 @@ fn temporary() -> tempfile::TempDir {
     tempfile::tempdir_in(root).unwrap()
 }
 
+/// VIEW-05: a Copy source's verification guard, modified-time pin and namespace pin accept
+/// a ChangeTime that alone moved; a new LastWriteTime still fails each of them and the
+/// source (whose own stamp has never included ChangeTime).
+#[test]
+fn copy_source_guards_accept_only_a_moved_change_time() {
+    use crate::test_fixtures::move_file_time;
+    let temp = temporary();
+    let path = temp.path().join("fresh");
+    fs::write(&path, b"source").unwrap();
+    let service = crate::WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let mut source = service.prepare_transfer_source(&path, &cancel).unwrap();
+    let guard = source.rewind_for_validation(&cancel).unwrap();
+    let modified = source.prepare_modified_time(&cancel).unwrap();
+    let pin = source.native_namespace_scope(&cancel).unwrap().unwrap();
+    move_file_time(&path, false);
+    source.revalidate(&cancel).unwrap();
+    guard.revalidate(&cancel).unwrap();
+    modified.revalidate(&cancel).unwrap();
+    pin.refresh(&cancel).unwrap();
+    move_file_time(&path, true);
+    assert!(source.revalidate(&cancel).is_err());
+    assert!(guard.revalidate(&cancel).is_err());
+    assert!(modified.revalidate(&cancel).is_err());
+    assert!(pin.refresh(&cancel).is_err());
+}
+
 #[derive(Default)]
 struct AnnouncementEvents {
     roots: Mutex<Vec<Arc<dyn TransferNamespacePin>>>,

@@ -2,7 +2,7 @@
 use super::*;
 use midnight_core::{
     PreparedTransferMove, PreparedTransferMoveEntry, TransferMoveCapture,
-    TransferMoveCaptureOutcome, TransferRecovery, TransferTarget,
+    TransferMoveCaptureOutcome, TransferRecovery, TransferRevisionPolicy, TransferTarget,
 };
 use rustix::fs::{RenameFlags, renameat_with};
 use std::{ffi::OsString, sync::Mutex};
@@ -27,8 +27,14 @@ pub(super) fn supports_native_replacement(
             .is_ok()
 }
 
-pub(super) fn prepare(path: &Path, cancel: &Cancellation) -> Result<PreparedTransferMove, FsError> {
-    let (source, capture) = prepare_native(path, cancel)?;
+/// `revisions` is how the source and its Move capture compare their pinned revisions: a
+/// Move accepts a moved ctime (VIEW-05); Rename's replacement keeps them exact.
+pub(super) fn prepare(
+    path: &Path,
+    revisions: TransferRevisionPolicy,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMove, FsError> {
+    let (source, capture) = prepare_native_with(path, revisions, cancel)?;
     Ok(PreparedTransferMove {
         source: Box::new(source),
         capture,
@@ -38,11 +44,12 @@ pub(super) fn prepare(path: &Path, cancel: &Cancellation) -> Result<PreparedTran
 pub(super) fn prepare_with_links(
     path: &Path,
     links: CopyLinkPolicy,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMoveEntry, FsError> {
     let mode = match links {
         CopyLinkPolicy::Reject => {
-            return prepare(path, cancel).map(PreparedTransferMoveEntry::Ordinary);
+            return prepare(path, revisions, cancel).map(PreparedTransferMoveEntry::Ordinary);
         }
         CopyLinkPolicy::Preserve => {
             return Err(FsError::from_io(
@@ -64,16 +71,27 @@ pub(super) fn prepare_with_links(
         &name,
         None,
         directory_links::Traversal::new(mode),
+        revisions,
         cancel,
     )
 }
 
+/// The exact Move capture, as Rename's replacement uses it.
+#[cfg(test)]
 fn prepare_native(
     path: &Path,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
+    prepare_native_with(path, TransferRevisionPolicy::Exact, cancel)
+}
+
+fn prepare_native_with(
+    path: &Path,
+    revisions: TransferRevisionPolicy,
+    cancel: &Cancellation,
+) -> Result<(source::Source, Arc<Capture>), FsError> {
     let (parent_file, parent_path, name) = move_parent(path, cancel)?;
-    prepare_native_child(parent_file, parent_path, &name, None, cancel)
+    prepare_native_child(parent_file, parent_path, &name, None, revisions, cancel)
 }
 
 fn move_parent(
@@ -100,10 +118,17 @@ pub(super) fn prepare_child(
     parent_path: PathBuf,
     name: &OsStr,
     namespace: Arc<namespace::Bindings>,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMove, FsError> {
-    let (source, capture) =
-        prepare_native_child(parent_file, parent_path, name, Some(namespace), cancel)?;
+    let (source, capture) = prepare_native_child(
+        parent_file,
+        parent_path,
+        name,
+        Some(namespace),
+        revisions,
+        cancel,
+    )?;
     Ok(PreparedTransferMove {
         source: Box::new(source),
         capture,
@@ -116,6 +141,7 @@ pub(super) fn prepare_child_with_links(
     name: &OsStr,
     namespace: Option<Arc<namespace::Bindings>>,
     traversal: directory_links::Traversal,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMoveEntry, FsError> {
     let (source, parent) = prepare_candidate(
@@ -126,6 +152,7 @@ pub(super) fn prepare_child_with_links(
         Some(traversal),
         cancel,
     )?;
+    let source = source.with_revisions(revisions);
     if let Some(original) = source.original_link() {
         let capture = Arc::new(link_capture::Capture::prepare(original, parent, cancel)?);
         return Ok(PreparedTransferMoveEntry::DirectoryLink {
@@ -133,7 +160,7 @@ pub(super) fn prepare_child_with_links(
             capture,
         });
     }
-    let (source, capture) = prepare_ordinary(source, parent, name, cancel)?;
+    let (source, capture) = prepare_ordinary(source, parent, name, revisions, cancel)?;
     Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
         source: Box::new(source),
         capture,
@@ -145,11 +172,18 @@ fn prepare_native_child(
     parent_path: PathBuf,
     name: &OsStr,
     namespace: Option<Arc<namespace::Bindings>>,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
     let (source, parent) =
         prepare_candidate(parent_file, parent_path, name, namespace, None, cancel)?;
-    prepare_ordinary(source, parent, name, cancel)
+    prepare_ordinary(
+        source.with_revisions(revisions),
+        parent,
+        name,
+        revisions,
+        cancel,
+    )
 }
 
 fn prepare_candidate(
@@ -224,11 +258,13 @@ fn prepare_ordinary(
     mut source: source::Source,
     parent: destination::Directory,
     name: &OsStr,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
     let path = &source.entry().item.path;
+    // The source's own binding pin; its revision policy is the Move's.
     let expected = parent
-        .prepare_target(name, cancel)?
+        .prepare_target_with(name, revisions, cancel)?
         .ok_or_else(|| invalid(path, "Move source disappeared while preparing"))?;
     if expected.entry().identity != source.entry().identity {
         return Err(invalid(path, "Move source changed while preparing"));

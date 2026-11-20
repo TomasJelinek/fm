@@ -74,7 +74,12 @@ impl TransferMoveFinalizer for Finalizer {
         self.directory.revalidate(cancel)?;
         qualify(&self.file, &self.source)?;
         if self.receipt.identity != Some(identity(&self.file, &self.source)?)
-            || Revision::of(&self.file, &self.source)? != self.revision
+            // Move only. The read lease still reports writers: a moved ctime alone is no
+            // change (VIEW-05).
+            || !self.revision.matches(
+                Revision::of(&self.file, &self.source)?,
+                midnight_core::TransferRevisionPolicy::AcceptChangeTimeOnly,
+            )
             || self
                 .directory
                 .inspect(&self.name, cancel)?

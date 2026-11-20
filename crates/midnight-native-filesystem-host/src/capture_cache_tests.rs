@@ -14,6 +14,8 @@ struct State {
     revision: Vec<u8>,
     length: u64,
     change_after_read: bool,
+    /// Move the change time of a native revision during every read.
+    drift_during_read: bool,
 }
 
 #[derive(Debug, Default)]
@@ -68,6 +70,11 @@ impl Transport for ContentTransport {
                 // before and after reading, as documented in NATIVE_PLUGIN_PROTOCOL.md.
                 if state.change_after_read {
                     state.revision = vec![2];
+                }
+                if state.drift_during_read
+                    && let Some(change) = state.revision.last_mut()
+                {
+                    *change = change.wrapping_add(1);
                 }
                 validate(&state, *reader)?;
                 Ok(Response::Content { bytes, eof })
@@ -253,6 +260,7 @@ fn snapshot_checked_reads_forward_original_expected_metadata() {
         path,
         length: 12,
         revision: vec![1],
+        policy: RevisionPolicy::Exact,
         name: "archive.7z".into(),
         initial: Mutex::new(None),
         release_failure: Mutex::new(None),
@@ -316,4 +324,128 @@ fn evicted_readers_must_match_original_revision_and_length() {
         drop(snapshots);
         assert!(lock(&transport.0).readers.is_empty());
     }
+}
+
+/// This platform's native plugin revision. Payload bytes 32..40 belong to the write time
+/// (Windows LastWriteTime, Linux mtime nanoseconds); the last byte to the change time.
+#[cfg(any(windows, target_os = "linux"))]
+fn native_revision(write: u8, change: u8) -> Vec<u8> {
+    #[cfg(windows)]
+    let (prefix, payload) = (b"native.windows.read.v1".as_slice(), 48);
+    #[cfg(target_os = "linux")]
+    let (prefix, payload) = (b"native.linux.read.v1".as_slice(), 56);
+    let mut revision = [prefix, &vec![1; payload]].concat();
+    revision[prefix.len() + 32] = write;
+    *revision.last_mut().unwrap() = change;
+    revision
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn native_fixture() -> (Arc<CaptureCache>, Arc<ContentTransport>, PathBuf) {
+    let (cache, transport, path) = fixture();
+    lock(&transport.0).revision = native_revision(1, 1);
+    (cache, transport, path)
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn count(transport: &ContentTransport, matches: impl Fn(&Request) -> bool) -> usize {
+    lock(&transport.0)
+        .requests
+        .iter()
+        .filter(|request| matches(request))
+        .count()
+}
+
+/// VIEW-05: a viewer capture reads on after only the change time moved, through its
+/// resident reader (which the native lease then refuses) and through a first reopen; an
+/// exact capture of the same file still fails.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn a_viewer_capture_reads_on_after_only_the_change_time_moved() {
+    let (cache, transport, path) = native_fixture();
+    let viewer = cache
+        .capture_checked_with(&path, RevisionPolicy::AcceptChangeTimeOnly, &|| false)
+        .unwrap();
+    let unread = cache
+        .capture_checked_with(&path, RevisionPolicy::AcceptChangeTimeOnly, &|| false)
+        .unwrap();
+    let exact = cache.capture(&path, &|| false).unwrap();
+    assert_eq!(viewer.read_at(0, 4).unwrap(), b"firs");
+    assert_eq!(exact.read_at(0, 4).unwrap(), b"firs");
+    {
+        let mut state = lock(&transport.0);
+        state.revision = native_revision(1, 2);
+        state.requests.clear();
+    }
+    assert!(exact.read_at(0, 4).is_err());
+    assert!(exact.revalidate().is_err());
+    assert_eq!(viewer.read_at(4, 4).unwrap(), b"t-se");
+    assert_eq!(
+        count(&transport, |r| matches!(r, Request::OpenRead { .. })),
+        1,
+        "the refused resident reader was reopened once"
+    );
+    viewer.revalidate().unwrap();
+    assert_eq!(viewer.read_at(8, 4).unwrap(), b"cond");
+    assert_eq!(unread.read_at(0, 4).unwrap(), b"firs");
+    assert_eq!(viewer.stable_version(), native_revision(1, 1));
+    drop((viewer, unread, exact));
+    assert!(lock(&transport.0).readers.is_empty());
+}
+
+/// Under the same policy, a new write time, length or unknown revision is still a change.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn a_viewer_capture_still_refuses_every_other_change() {
+    for change in 0..3 {
+        let (cache, transport, path) = native_fixture();
+        let viewer = cache
+            .capture_checked_with(&path, RevisionPolicy::AcceptChangeTimeOnly, &|| false)
+            .unwrap();
+        let unread = cache
+            .capture_checked_with(&path, RevisionPolicy::AcceptChangeTimeOnly, &|| false)
+            .unwrap();
+        assert_eq!(viewer.read_at(0, 4).unwrap(), b"firs");
+        {
+            let mut state = lock(&transport.0);
+            match change {
+                0 => state.revision = native_revision(2, 2),
+                1 => state.length = 11,
+                _ => state.revision = vec![2],
+            }
+        }
+        assert!(viewer.read_at(0, 4).is_err(), "change {change}");
+        assert!(viewer.revalidate().is_err(), "change {change}");
+        assert!(unread.read_at(0, 4).is_err(), "change {change}");
+        assert!(unread.revalidate().is_err(), "change {change}");
+        drop((viewer, unread));
+        assert!(lock(&transport.0).readers.is_empty());
+    }
+}
+
+/// A change time that moves during every read fails after a bounded number of reopens.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn a_change_time_that_keeps_moving_fails_after_bounded_reopens() {
+    let (cache, transport, path) = native_fixture();
+    let viewer = cache
+        .capture_checked_with(&path, RevisionPolicy::AcceptChangeTimeOnly, &|| false)
+        .unwrap();
+    viewer.revalidate().unwrap();
+    {
+        let mut state = lock(&transport.0);
+        state.drift_during_read = true;
+        state.requests.clear();
+    }
+    assert!(viewer.read_at(0, 4).is_err());
+    assert_eq!(
+        count(&transport, |r| matches!(r, Request::ReadAt { .. })),
+        1 + CHANGE_TIME_REOPENS
+    );
+    assert_eq!(
+        count(&transport, |r| matches!(r, Request::OpenRead { .. })),
+        CHANGE_TIME_REOPENS
+    );
+    drop(viewer);
+    assert!(lock(&transport.0).readers.is_empty());
 }

@@ -204,7 +204,9 @@ display label. Neither decoded text nor breadcrumb labels replace native identit
 
 The current local-file broker captures identity/metadata, then opens a read-only
 regular-file handle for the session and validates it against that capture. Each
-read checks identity, length and change/write timestamps before and after reading.
+read checks identity, length and change/write timestamps before and after reading;
+a viewer's capture accepts a change time that alone moved (see
+[change-time drift](CONTENT_READS.md#change-time-drift-view-05)).
 This guarantee is **LiveValidated**, not an immutable snapshot. A detected change
 fails the read; consumers must not mix content from different revisions. Final
 symlinks, reparse files and special files are refused by the native open policy.

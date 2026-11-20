@@ -26,9 +26,13 @@ impl TransferModifiedTimePin for Pin {
     fn current_modified(&self, cancel: &Cancellation) -> Result<SystemTime, FsError> {
         modified(&self.file, &self.path, cancel)
     }
+    /// Copy and Move only: a moved ChangeTime alone is no change (VIEW-05).
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
-        if Revision::of(&self.file, &self.path)? != self.revision {
+        if !self.revision.matches(
+            Revision::of(&self.file, &self.path)?,
+            midnight_core::TransferRevisionPolicy::AcceptChangeTimeOnly,
+        ) {
             return Err(invalid(&self.path, "source modified-time revision changed"));
         }
         Ok(())

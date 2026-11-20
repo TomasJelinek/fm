@@ -545,7 +545,7 @@ fn displayed_target_metadata_and_revision_cannot_straddle_a_concurrent_edit() {
         FILE_NON_DIRECTORY_FILE,
     )
     .unwrap();
-    let result = target_snapshot(&file, &target, || {
+    let result = target_snapshot(&file, &target, TransferRevisionPolicy::Exact, || {
         fs::write(&target, b"updated longer contents").unwrap()
     });
     assert!(
@@ -568,6 +568,14 @@ fn native_change_time_rejects_same_length_edit_with_restored_last_write_time() {
     let expected = prepare_target(&directory, OsStr::new("target"), &cancel)
         .unwrap()
         .unwrap();
+    let transfer = prepare_target_with(
+        &directory,
+        OsStr::new("target"),
+        TransferRevisionPolicy::AcceptChangeTimeOnly,
+        &cancel,
+    )
+    .unwrap()
+    .unwrap();
     let file = native::open_relative(
         &directory.file,
         OsStr::new("target"),
@@ -622,5 +630,151 @@ fn native_change_time_rejects_same_length_edit_with_restored_last_write_time() {
         expected.revalidate(&cancel).is_err(),
         "native ChangeTime was omitted from the consent revision"
     );
+    // The decided limit (VIEW-05): to a Copy or Move conflict pin this edit differs only in
+    // its ChangeTime and is accepted; Replace keeps the displaced file in recovery.
+    transfer.revalidate(&cancel).unwrap();
     assert_eq!(fs::read(&target).unwrap(), b"new bytes");
+}
+
+#[test]
+fn a_transfer_revision_accepts_only_a_moved_change_time_under_its_policy() {
+    use TransferRevisionPolicy::{AcceptChangeTimeOnly, Exact};
+    let pinned = Revision {
+        size: 3,
+        modified: 5,
+        created: 7,
+        attributes: FILE_ATTRIBUTE_ARCHIVE,
+        changed: 11,
+    };
+    for policy in [Exact, AcceptChangeTimeOnly] {
+        assert!(pinned.matches(pinned, policy));
+    }
+    let drifted = Revision {
+        changed: 12,
+        ..pinned
+    };
+    assert!(!pinned.matches(drifted, Exact));
+    assert!(pinned.matches(drifted, AcceptChangeTimeOnly));
+    // Length, LastWriteTime, creation time and attributes each still count, with or
+    // without a moved ChangeTime.
+    for changed in [11, 12] {
+        for current in [
+            Revision {
+                size: 4,
+                changed,
+                ..pinned
+            },
+            Revision {
+                modified: 6,
+                changed,
+                ..pinned
+            },
+            Revision {
+                created: 8,
+                changed,
+                ..pinned
+            },
+            Revision {
+                attributes: FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_HIDDEN,
+                changed,
+                ..pinned
+            },
+        ] {
+            for policy in [Exact, AcceptChangeTimeOnly] {
+                assert!(!pinned.matches(current, policy), "{current:?}");
+            }
+        }
+    }
+}
+
+/// VIEW-05: a Copy or Move conflict pin, and the replacement's own checks through it,
+/// accept a target whose ChangeTime alone moved while the decision was pending; an exact
+/// pin (user commands, checksum and file-list outputs, Rename) still refuses it.
+#[test]
+fn a_transfer_conflict_pin_replaces_a_target_whose_change_time_alone_moved() {
+    let temp = fixture();
+    let target = temp.path().join("target");
+    fs::write(&target, b"old bytes").unwrap();
+    let directory = Directory::from_file(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().to_owned(),
+    )
+    .unwrap();
+    let cancel = Cancellation::default();
+    let pin = |policy| {
+        prepare_target_with(&directory, OsStr::new("target"), policy, &cancel)
+            .unwrap()
+            .unwrap()
+    };
+    let transfer = pin(TransferRevisionPolicy::AcceptChangeTimeOnly);
+    let exact = pin(TransferRevisionPolicy::Exact);
+    crate::test_fixtures::move_file_time(&target, false);
+    assert!(
+        exact.revalidate(&cancel).is_err(),
+        "the ChangeTime did not move"
+    );
+    transfer.revalidate(&cancel).unwrap();
+    let mut stage = directory
+        .stage_file_for_target(
+            OsStr::new("target"),
+            transfer,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    stage.write_all(b"new bytes").unwrap();
+    stage.sync(&cancel).unwrap();
+    let TransferPublication::Replaced { recovery, .. } = stage
+        .publish_replace(OsStr::new("target"), &cancel)
+        .unwrap()
+    else {
+        panic!("the consented target was not replaced");
+    };
+    assert_eq!(fs::read(&target).unwrap(), b"new bytes");
+    assert_eq!(fs::read(&recovery.path).unwrap(), b"old bytes");
+}
+
+/// Under the same policy, a new length, LastWriteTime, attribute or file still counts.
+#[test]
+fn a_transfer_conflict_pin_still_refuses_every_other_change() {
+    for change in 0..4 {
+        let temp = fixture();
+        let target = temp.path().join("target");
+        fs::write(&target, b"old bytes").unwrap();
+        let directory = Directory::from_file(
+            native::open_parent(temp.path()).unwrap(),
+            temp.path().to_owned(),
+        )
+        .unwrap();
+        let cancel = Cancellation::default();
+        let transfer = prepare_target_with(
+            &directory,
+            OsStr::new("target"),
+            TransferRevisionPolicy::AcceptChangeTimeOnly,
+            &cancel,
+        )
+        .unwrap()
+        .unwrap();
+        let permissions = fs::metadata(&target).unwrap().permissions();
+        match change {
+            0 => fs::OpenOptions::new()
+                .append(true)
+                .open(&target)
+                .unwrap()
+                .write_all(b"!")
+                .unwrap(),
+            1 => crate::test_fixtures::move_file_time(&target, true),
+            2 => {
+                let mut read_only = permissions.clone();
+                read_only.set_readonly(true);
+                fs::set_permissions(&target, read_only).unwrap();
+            }
+            _ => {
+                fs::rename(&target, temp.path().join("held")).unwrap();
+                fs::write(&target, b"old bytes").unwrap();
+            }
+        }
+        assert!(transfer.revalidate(&cancel).is_err(), "change {change}");
+        fs::set_permissions(&target, permissions).unwrap();
+    }
 }

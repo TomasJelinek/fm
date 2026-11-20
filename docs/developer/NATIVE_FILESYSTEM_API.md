@@ -60,7 +60,10 @@ capturing a revision must not pin a reader for every captured file.
 comparison, thumbnail, command-icon artwork and archive-container captures together
 keep at most 16 resident readers. An evicted reader reopens only while the file
 keeps its captured length and revision, and a capture's readers are released when
-that captured source is released or dropped. `InstalledProvider::shared(home)` is a
+that captured source is released or dropped. A viewer capture
+(`InstalledProvider::capture_with` with `RevisionPolicy::AcceptChangeTimeOnly`,
+VIEW-05) also reopens, and continues reading, a file whose revision differs only in
+its change time; see [change-time drift](CONTENT_READS.md#change-time-drift-view-05). `InstalledProvider::shared(home)` is a
 lazy backend-only installation binding pinned until application exit. It has no
 builtin fallback. Do not call these APIs or drop their resource owners on the UI
 thread.

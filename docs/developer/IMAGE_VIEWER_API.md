@@ -260,8 +260,11 @@ and spare refill. Cleanup errors are inspected before conversion to text.
 The Windows typed executable pin contract retains a data-read, SHARE_READ-only
 lease for the full `ImageSession`. Identity, length, modification time and trust
 guards remain checked; only ChangeTime drift is tolerated while the lease denies
-data writes. No executable hash is added. Generic user `CapturedFile`, manifest
-validation and Linux strict behavior remain unchanged. This worker-code proof
+data writes. No executable hash is added. This contract leaves generic user
+`CapturedFile`, manifest validation and Linux strict behavior unchanged; the
+image viewer's user content is a viewer capture, which accepts a change-time-only
+drift under its own policy (see
+[change-time drift](CONTENT_READS.md#change-time-drift-view-05)). This worker-code proof
 is distinct from own-EXE SHA default-OFF selection. These additions belong to the
 Rust host API, not the plugin SDK, ABI or MIV1 protocol.
 

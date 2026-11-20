@@ -495,6 +495,8 @@ struct Pins {
     destinations: HashMap<(PathBuf, Authority), PinnedDirectory>,
 }
 
+/// Copy and Move preparation only: the sources it prepares compare their pinned revisions
+/// under `TRANSFER_REVISIONS`, whichever policy a caller asks for.
 struct RetainedService {
     service: Arc<dyn TransferService>,
     witness: Option<crate::transfer_composition::TransferRetirementWitness>,
@@ -561,20 +563,27 @@ impl RetainedService {
         } else {
             let (source, capture, link_capture) = match authority {
                 Authority::Copy(links) => (
-                    self.service
-                        .prepare_transfer_source_with_links(path, links, cancel)?,
+                    self.service.prepare_transfer_source_with_policy(
+                        path,
+                        links,
+                        TRANSFER_REVISIONS,
+                        cancel,
+                    )?,
                     None,
                     None,
                 ),
                 Authority::Move => {
-                    let prepared = self.service.prepare_move_source(path, cancel)?;
+                    let prepared =
+                        prepare_ordinary_move_source(self.service.as_ref(), path, cancel)?;
                     (prepared.source, Some(prepared.capture), None)
                 }
                 Authority::MoveWithLinks(links) => {
-                    match self
-                        .service
-                        .prepare_move_source_with_links(path, links, cancel)?
-                    {
+                    match self.service.prepare_move_source_with_policy(
+                        path,
+                        links,
+                        TRANSFER_REVISIONS,
+                        cancel,
+                    )? {
                         PreparedTransferMoveEntry::Ordinary(prepared) => {
                             (prepared.source, Some(prepared.capture), None)
                         }

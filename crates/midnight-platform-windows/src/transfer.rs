@@ -4,7 +4,8 @@ use crate::mutation::{native, validate_name, validate_path};
 use crate::reparse::Native;
 use midnight_core::{
     Cancellation, CopyLinkPolicy, EntryKind, EntryMetadata, FsError, MutationItem,
-    TransferDirectory, TransferEntry, TransferIdentity, TransferService, TransferSource,
+    TransferDirectory, TransferEntry, TransferIdentity, TransferRevisionPolicy, TransferService,
+    TransferSource,
 };
 use std::{fs::File, io, os::windows::fs::MetadataExt, path::Path, sync::Arc};
 use windows_sys::Win32::Storage::FileSystem::*;
@@ -121,7 +122,7 @@ impl TransferService for crate::WindowsFileSystem {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<midnight_core::PreparedTransferMove, FsError> {
-        move_source::prepare(path, cancel)
+        move_source::prepare(path, TransferRevisionPolicy::Exact, cancel)
     }
     fn prepare_move_source_with_links(
         &self,
@@ -129,12 +130,20 @@ impl TransferService for crate::WindowsFileSystem {
         links: CopyLinkPolicy,
         cancel: &Cancellation,
     ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
+        self.prepare_move_source_with_policy(path, links, TransferRevisionPolicy::Exact, cancel)
+    }
+    fn prepare_move_source_with_policy(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
         match links {
-            CopyLinkPolicy::Reject => self
-                .prepare_move_source(path, cancel)
+            CopyLinkPolicy::Reject => move_source::prepare(path, revisions, cancel)
                 .map(midnight_core::PreparedTransferMoveEntry::Ordinary),
             CopyLinkPolicy::FollowDirectoryContents | CopyLinkPolicy::EmptyDirectories => {
-                move_source::prepare_with_links(path, links, cancel)
+                move_source::prepare_with_links(path, links, revisions, cancel)
             }
             CopyLinkPolicy::Preserve => Err(unsupported(
                 path,

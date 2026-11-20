@@ -153,7 +153,8 @@ pub(super) fn prepare_with_options(
     let permit = permit(&cancel, &request.destination)?;
     let mut prepared_roots = VecDeque::new();
     for path in &request.clipboard.paths {
-        let prepared = service.prepare_move_source_with_links(path, links, &cancel)?;
+        let prepared =
+            service.prepare_move_source_with_policy(path, links, TRANSFER_REVISIONS, &cancel)?;
         if prepared.source().entry().item.path != *path {
             return Err(unsupported(
                 path,

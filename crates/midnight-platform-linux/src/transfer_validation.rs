@@ -13,9 +13,13 @@ struct ReadGuard {
     path: PathBuf,
 }
 impl TransferReadGuard for ReadGuard {
+    /// Copy and Move verification only: a moved ctime alone is no change (VIEW-05).
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
-        if Revision::of(&self.file, &self.path)? != self.revision {
+        if !self.revision.matches(
+            Revision::of(&self.file, &self.path)?,
+            midnight_core::TransferRevisionPolicy::AcceptChangeTimeOnly,
+        ) {
             return Err(invalid(
                 &self.path,
                 "retained file changed during validation",

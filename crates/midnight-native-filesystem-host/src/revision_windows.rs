@@ -1,11 +1,16 @@
 //! Windows v1 identity: volume, file ID, length, last-write time and change time.
-pub(crate) fn matches(expected: &[u8], current: &[u8]) -> bool {
+use midnight_plugin_host::RevisionPolicy;
+
+/// The trailing 8 bytes are the ChangeTime, which `AcceptChangeTimeOnly` leaves out.
+pub(crate) fn matches(expected: &[u8], current: &[u8], policy: RevisionPolicy) -> bool {
     super::matches_payload(
         expected,
         current,
         b"native.windows.read.v1",
         b"windows-file-v1",
         48,
+        8,
+        policy,
     )
 }
 

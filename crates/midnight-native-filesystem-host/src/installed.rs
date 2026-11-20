@@ -8,6 +8,7 @@ use midnight_core::{
     StorageService, Volume, VolumeInformation, VolumeService,
 };
 use midnight_filesystem_plugin_api::Failure;
+use midnight_plugin_host::RevisionPolicy;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -118,11 +119,32 @@ impl InstalledProvider {
             .map_err(|failure| failure.error)
     }
 
+    /// `capture` whose later reads apply `policy` to the captured revision. Viewers
+    /// capture with `RevisionPolicy::AcceptChangeTimeOnly`; see `CaptureCache`.
+    pub fn capture_with(
+        &self,
+        path: &Path,
+        policy: RevisionPolicy,
+        cancelled: Cancel<'_>,
+    ) -> Result<midnight_plugin_host::CapturedFile, Failure> {
+        self.capture_checked_with(path, policy, cancelled)
+            .map_err(|failure| failure.error)
+    }
+
     /// Typed failed-capture cleanup status through this installation's SAME
     /// bounded cache. No direct opener or alternate provider is consulted.
     pub fn capture_checked(
         &self,
         path: &Path,
+        cancelled: Cancel<'_>,
+    ) -> Result<midnight_plugin_host::CapturedFile, CaptureFailure> {
+        self.capture_checked_with(path, RevisionPolicy::Exact, cancelled)
+    }
+
+    fn capture_checked_with(
+        &self,
+        path: &Path,
+        policy: RevisionPolicy,
         cancelled: Cancel<'_>,
     ) -> Result<midnight_plugin_host::CapturedFile, CaptureFailure> {
         check_cancel(cancelled).map_err(|error| CaptureFailure {
@@ -135,7 +157,7 @@ impl InstalledProvider {
         })?;
         self.captures
             .get_or_init(|| CaptureCache::new(provider.clone()))
-            .capture_checked(path, cancelled)
+            .capture_checked_with(path, policy, cancelled)
     }
 
     /// Capture through the installed provider and require a persisted native revision, if supplied.
@@ -149,9 +171,9 @@ impl InstalledProvider {
     ) -> Result<midnight_plugin_host::CapturedFile, Failure> {
         let file = self.capture(path, cancelled)?;
         check_cancel(cancelled)?;
-        if expected
-            .is_some_and(|expected| !crate::revision::matches(expected, &file.stable_version()))
-        {
+        if expected.is_some_and(|expected| {
+            !crate::revision::matches(expected, &file.stable_version(), RevisionPolicy::Exact)
+        }) {
             return Err(Failure::new(
                 midnight_filesystem_plugin_api::ErrorCode::SourceChanged,
                 "Native file no longer matches the saved revision",

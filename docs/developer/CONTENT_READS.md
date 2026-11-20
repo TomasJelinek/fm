@@ -32,6 +32,36 @@ Validation is the documented LiveValidated contract, not a filesystem snapshot
 or a guarantee against changes that the platform's metadata cannot detect.
 Capture, reading, validation and disposal remain backend work.
 
+## Change-time drift (VIEW-05)
+
+A native revision includes the change time (NTFS ChangeTime, Linux ctime), which
+also moves on metadata-only updates: on the Windows development machine endpoint
+protection moves it on freshly written files one or two seconds after they are
+written, while the volume, file ID, length and LastWriteTime stay the same. Every
+capture therefore carries an explicit `RevisionPolicy`:
+
+- `Exact`, the default of `CapturedFile::capture`, `InstalledProvider::capture` and
+  `capture_matching`: every captured field must still match. Comparison, thumbnail,
+  command-icon, archive-container, manifest and package captures use it; the
+  comparator's own content check for a moved change time is described in
+  [file comparison](FILE_COMPARISON.md).
+- `AcceptChangeTimeOnly`, which viewers request through
+  `CapturedFile::capture_with` (the viewer engine's in-process capture) and
+  `InstalledProvider::capture_with` (the application's viewer capture): a revision
+  whose change time alone moved is unchanged. Windows still requires the same volume,
+  file ID, length and LastWriteTime; Linux the same device, inode, length and mtime.
+
+The revision bytes that a capture reports (`stable_version`) never change. The
+native filesystem plugin's reader keeps checking each read against its own revision,
+change time included, and its package and wire format are unchanged. Under
+`AcceptChangeTimeOnly` the host's capture cache therefore handles a failed native
+read or validation by releasing that reader and reopening the path, at most twice
+per operation, and adopts the new reader only when its revision differs from the
+captured one in nothing but the change time; a reopen that finds any other
+difference fails the operation. The adapter still checks the caller's original
+length and revision against the capture, then passes the adopted reader's own
+revision to that reader's checked read.
+
 Regression tests are in `midnight-plugin-host/src/checked_read_tests.rs`, with
 native adapter/cache tests in the native filesystem host. They cover both direct
 and retained readers, original metadata forwarding, bounds/EOF/counts, and

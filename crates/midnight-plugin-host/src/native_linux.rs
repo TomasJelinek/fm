@@ -22,6 +22,20 @@ pub(crate) struct Snapshot {
     ctime_ns: i64,
 }
 impl Snapshot {
+    /// Whether `current` is still this captured revision under `policy`. Accepting a
+    /// change-time-only drift still requires the same device, inode, length and mtime.
+    pub(crate) fn matches(&self, current: &Self, policy: crate::RevisionPolicy) -> bool {
+        match policy {
+            crate::RevisionPolicy::Exact => self == current,
+            crate::RevisionPolicy::AcceptChangeTimeOnly => {
+                self.device == current.device
+                    && self.inode == current.inode
+                    && self.length == current.length
+                    && self.mtime == current.mtime
+                    && self.mtime_ns == current.mtime_ns
+            }
+        }
+    }
     pub(crate) fn version_bytes(&self) -> Vec<u8> {
         let mut bytes = b"linux-file-v1".to_vec();
         for value in [self.device, self.inode, self.length] {
@@ -96,6 +110,54 @@ impl Drop for Library {
         // SAFETY: unique owned loader reference; instance/jobs/buffers already quiescent.
         unsafe {
             libc::dlclose(self.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod revision_policy_tests {
+    use super::Snapshot;
+    use crate::RevisionPolicy::{AcceptChangeTimeOnly, Exact};
+
+    fn snapshot(fields: [i64; 7]) -> Snapshot {
+        let [length, device, inode, mtime, mtime_ns, ctime, ctime_ns] = fields;
+        Snapshot {
+            length: length as u64,
+            device: device as u64,
+            inode: inode as u64,
+            mtime,
+            mtime_ns,
+            ctime,
+            ctime_ns,
+        }
+    }
+
+    #[test]
+    fn only_a_moved_ctime_is_accepted_and_only_when_asked() {
+        let fields = [3, 7, 9, 11, 12, 13, 14];
+        let captured = snapshot(fields);
+        for policy in [Exact, AcceptChangeTimeOnly] {
+            assert!(captured.matches(&snapshot(fields), policy));
+        }
+        for ctime in [5, 6] {
+            let mut drifted = fields;
+            drifted[ctime] += 1;
+            assert!(!captured.matches(&snapshot(drifted), Exact));
+            assert!(captured.matches(&snapshot(drifted), AcceptChangeTimeOnly));
+        }
+        // Length, device, inode and mtime (seconds or nanoseconds) each still count,
+        // with or without a moved ctime.
+        for field in 0..5 {
+            for ctime_moved in [false, true] {
+                let mut current = fields;
+                current[field] += 1;
+                if ctime_moved {
+                    current[6] += 1;
+                }
+                for policy in [Exact, AcceptChangeTimeOnly] {
+                    assert!(!captured.matches(&snapshot(current), policy), "{field}");
+                }
+            }
         }
     }
 }

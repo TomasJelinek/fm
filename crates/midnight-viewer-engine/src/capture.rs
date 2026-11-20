@@ -3,7 +3,7 @@
 //! Only paths or labels are retained for Space/Backspace navigation. Other entries are
 //! captured on demand by [`crate::capture_prefetch`] when a file is about to be opened.
 use midnight_core::{EntryKind, ViewerLaunch};
-use midnight_plugin_host::CapturedFile;
+use midnight_plugin_host::{CapturedFile, RevisionPolicy};
 use std::{
     ops::Range,
     path::PathBuf,
@@ -68,12 +68,15 @@ pub(crate) fn window(
     range
 }
 
+/// In-process native capture. A viewer keeps reading a file whose change time alone moved
+/// after capture (VIEW-05); identity, length and write time must still match.
 pub(crate) fn native() -> crate::NativeCapture {
     Arc::new(|path, closed| {
         if closed.load(Ordering::Acquire) {
             return Err("Viewer closed".into());
         }
-        CapturedFile::capture(path).map_err(|error| error.to_string())
+        CapturedFile::capture_with(path, RevisionPolicy::AcceptChangeTimeOnly)
+            .map_err(|error| error.to_string())
     })
 }
 
@@ -154,6 +157,32 @@ pub(crate) fn prepare_with(
 #[cfg(test)]
 mod tests {
     use super::window;
+    use midnight_plugin_host::CapturedFile;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    /// VIEW-05: the viewer's in-process capture keeps reading after only the change time
+    /// moved (the read-only attribute and NTFS ChangeTime on Windows, the mode and ctime
+    /// on Linux); a content change is still refused.
+    #[test]
+    fn native_capture_reads_on_after_only_the_change_time_moved() {
+        let root = tempfile::tempdir().unwrap();
+        // No extension: endpoint protection on some machines rescans fresh `.txt` files.
+        let path = root.path().join("fresh");
+        std::fs::write(&path, b"content").unwrap();
+        let captured = super::native()(&path, &Arc::new(AtomicBool::new(false))).unwrap();
+        let exact = CapturedFile::capture(&path).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let writable = std::fs::metadata(&path).unwrap().permissions();
+        let mut read_only = writable.clone();
+        read_only.set_readonly(true);
+        std::fs::set_permissions(&path, read_only).unwrap();
+        std::fs::set_permissions(&path, writable).unwrap();
+        assert!(exact.revalidate().is_err(), "the change time did not move");
+        captured.revalidate().unwrap();
+        assert_eq!(captured.read_at(0, 7).unwrap(), b"content");
+        std::fs::write(&path, b"changed").unwrap();
+        assert!(captured.read_at(0, 7).is_err());
+    }
 
     #[test]
     fn window_grows_alternately_around_the_focus_until_the_budget() {

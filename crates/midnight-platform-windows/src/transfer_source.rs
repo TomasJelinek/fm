@@ -20,9 +20,12 @@ pub(super) struct Source {
     name: OsString,
     file: Arc<File>,
     readable: Option<File>,
+    // Size, LastWriteTime and creation time; ChangeTime is not part of it.
     stamp: (u64, u64, u64),
     listing: Listing,
     access: Access,
+    /// How the Move capture of each Move child compares the child's pinned revision.
+    move_revisions: TransferRevisionPolicy,
     link: Option<Arc<source_links::Binding>>,
     parent_ancestry: Option<Arc<Ancestor>>,
     directory_ancestry: Option<Arc<Ancestor>>,
@@ -134,6 +137,11 @@ impl Source {
             Access::Move(links),
             cancel,
         )
+    }
+    /// The revision policy of this Move source's children's Move captures.
+    pub(super) fn with_move_revisions(mut self, revisions: TransferRevisionPolicy) -> Self {
+        self.move_revisions = revisions;
+        self
     }
     pub(super) fn native_file(&self) -> Arc<File> {
         self.file.clone()
@@ -267,6 +275,7 @@ impl Source {
             stamp,
             listing: Listing::default(),
             access,
+            move_revisions: TransferRevisionPolicy::Exact,
             link,
             parent_ancestry: parent.ancestry,
             directory_ancestry,
@@ -389,6 +398,7 @@ impl TransferSource for Source {
                     self.file.clone(),
                     self.entry.item.path.clone(),
                     &name,
+                    self.move_revisions,
                     cancel,
                 )
             })
@@ -419,6 +429,7 @@ impl TransferSource for Source {
                     &name,
                     Some(listed),
                     links,
+                    self.move_revisions,
                     cancel,
                 )
             })

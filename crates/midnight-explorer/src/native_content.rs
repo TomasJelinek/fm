@@ -227,6 +227,7 @@ fn external_capture_error(
 
 /// Viewer-only asset authority. Main content always comes from the installed filesystem plugin.
 /// Parent directory pins are shared across prefetched panel files (see `DirectoryPins`).
+/// A viewer keeps reading a file whose change time alone moved after capture (VIEW-05).
 pub(crate) fn factory_with_resources(
     filesystem: Arc<InstalledProvider>,
     directories: Arc<dyn midnight_core::TransferService>,
@@ -236,7 +237,11 @@ pub(crate) fn factory_with_resources(
     let pins = DirectoryPins::<Directory>::new(runtime.clone());
     Arc::new(move |path, cancel| {
         let main = filesystem
-            .capture(path, &|| cancel.load(Ordering::Acquire))
+            .capture_with(
+                path,
+                midnight_plugin_host::RevisionPolicy::AcceptChangeTimeOnly,
+                &|| cancel.load(Ordering::Acquire),
+            )
             .map_err(|failure| format!("Native filesystem: {failure}"))?;
         if cancel.load(Ordering::Acquire) {
             return Err("Viewer closed".into());

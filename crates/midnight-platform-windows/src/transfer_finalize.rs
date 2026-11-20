@@ -243,7 +243,12 @@ impl TransferMoveFinalizer for Finalizer {
                 .receipt
                 .identity
                 .ok_or_else(|| invalid(&self.source, "temporary source identity unknown"))?
-            || Revision::of(&self.file, &self.source)? != self.revision
+            // Move only. The source handle still denies write sharing: a moved ChangeTime
+            // alone is no change (VIEW-05).
+            || !self.revision.matches(
+                Revision::of(&self.file, &self.source)?,
+                midnight_core::TransferRevisionPolicy::AcceptChangeTimeOnly,
+            )
             || self
                 .directory
                 .inspect(&self.name, cancel)?

@@ -47,6 +47,36 @@ use ownership::{Owned, Scope};
 mod worker;
 pub(crate) use admission::{Admission, Reservation};
 use input::CopyInput;
+/// Copy and Move compare every pinned native revision (sources, conflict pins and Move
+/// captures) under this policy: a new change time alone (Windows ChangeTime, Linux ctime),
+/// which endpoint protection gives freshly written files, is no change (VIEW-05). User
+/// commands, checksum and file-list outputs and Rename keep exact revisions.
+pub(crate) const TRANSFER_REVISIONS: TransferRevisionPolicy =
+    TransferRevisionPolicy::AcceptChangeTimeOnly;
+
+/// `TransferService::prepare_move_source` under `TRANSFER_REVISIONS`.
+pub(crate) fn prepare_ordinary_move_source(
+    service: &dyn TransferService,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMove, FsError> {
+    match service.prepare_move_source_with_policy(
+        path,
+        CopyLinkPolicy::Reject,
+        TRANSFER_REVISIONS,
+        cancel,
+    )? {
+        PreparedTransferMoveEntry::Ordinary(prepared) => Ok(prepared),
+        PreparedTransferMoveEntry::DirectoryLink { .. } => Err(FsError::from_io(
+            "prepare Move source",
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "The provider prepared a directory link for an ordinary Move.",
+            ),
+        )),
+    }
+}
 /// Whether `command` is a Copy-family command, from the same list guarded admission
 /// uses for its operation ID (`input::copy_command_id`).
 pub(crate) fn is_copy_command(command: &Command) -> bool {

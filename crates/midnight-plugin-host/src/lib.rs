@@ -13,7 +13,7 @@ mod discovery;
 pub use discovery::{Diagnostic, PluginInfo, host_target};
 mod content;
 mod text_detection;
-pub use content::{CapturedFile, ContentResources, ContentSource};
+pub use content::{CapturedFile, ContentResources, ContentSource, RevisionPolicy};
 #[cfg(windows)]
 #[path = "installation_windows.rs"]
 mod installation;

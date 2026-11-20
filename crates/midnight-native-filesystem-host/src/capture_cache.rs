@@ -3,8 +3,9 @@
 //! native reader/mount for every captured file.
 use crate::{Cancel, CaptureFailure, NativeProvider, client::PendingRelease, discovery::invalid};
 use midnight_filesystem_plugin_api::Failure;
-use midnight_plugin_host::{CapturedFile, ContentSource, Error};
+use midnight_plugin_host::{CapturedFile, ContentSource, Error, RevisionPolicy};
 use std::{
+    cell::Cell,
     collections::VecDeque,
     path::{Path, PathBuf},
     sync::{
@@ -14,9 +15,13 @@ use std::{
 };
 
 const READERS: usize = 16;
+/// Reopens after a failed read or validation under `RevisionPolicy::AcceptChangeTimeOnly`,
+/// in case the change time moves again while the path is reopened.
+const CHANGE_TIME_REOPENS: usize = 2;
 
 /// Backend-only snapshot capture with at most sixteen resident regular-file readers.
-/// Reopening an evicted reader must match the original captured revision and length.
+/// Reopening an evicted reader must match the original captured revision and length,
+/// exactly or under the capture's `RevisionPolicy`.
 #[derive(Debug)]
 pub struct CaptureCache {
     provider: NativeProvider,
@@ -47,6 +52,21 @@ impl CaptureCache {
         path: &Path,
         cancelled: Cancel<'_>,
     ) -> Result<CapturedFile, CaptureFailure> {
+        self.capture_checked_with(path, RevisionPolicy::Exact, cancelled)
+    }
+
+    /// `capture_checked` whose reads compare the captured revision under `policy`.
+    /// Under `AcceptChangeTimeOnly` (VIEW-05), a read or validation that fails is retried
+    /// on a reopened reader, which is used only when its revision differs from the
+    /// captured one in nothing but the change time: the native reader checks every read
+    /// against its own revision, so a change time that moved after it was opened fails
+    /// the read. The revision this capture reports never changes.
+    pub fn capture_checked_with(
+        self: &Arc<Self>,
+        path: &Path,
+        policy: RevisionPolicy,
+        cancelled: Cancel<'_>,
+    ) -> Result<CapturedFile, CaptureFailure> {
         let mut cleanup_unconfirmed = false;
         let initial = self
             .provider
@@ -75,6 +95,7 @@ impl CaptureCache {
             path: path.into(),
             length: initial.length(),
             revision: initial.version(),
+            policy,
             name: initial.display_name(),
             initial: Mutex::new(Some(initial.into_inner())),
             release_failure: Mutex::new(None),
@@ -132,7 +153,7 @@ impl CaptureCache {
                 }
             };
         let source = PendingRelease::new(source);
-        if source.length() != snapshot.length || source.version() != snapshot.revision {
+        if !snapshot.accepts(source.length(), &source.version()) {
             if let Err(error) = release_source(source.into_inner()) {
                 snapshot.note_release_failure(error.clone());
                 return Err(error);
@@ -170,6 +191,7 @@ struct Snapshot {
     path: PathBuf,
     length: u64,
     revision: Vec<u8>,
+    policy: RevisionPolicy,
     name: String,
     initial: Mutex<Option<Arc<dyn ContentSource>>>,
     release_failure: Mutex<Option<Error>>,
@@ -182,6 +204,15 @@ impl Snapshot {
             *failure = Some(error);
         }
     }
+    /// Whether a native reader of this path still reads this capture: the captured length
+    /// and revision, or under `AcceptChangeTimeOnly` a known native revision that differs
+    /// only in its change time (the same identity, length and write time).
+    fn accepts(&self, length: u64, revision: &[u8]) -> bool {
+        length == self.length
+            && (revision == self.revision
+                || (self.policy == RevisionPolicy::AcceptChangeTimeOnly
+                    && crate::revision::matches(&self.revision, revision, self.policy)))
+    }
     fn source(&self) -> Result<Arc<dyn ContentSource>, Error> {
         if let Some(error) = lock(&self.release_failure).clone() {
             return Err(error);
@@ -190,12 +221,59 @@ impl Snapshot {
         initial.map_or_else(|| self.cache.get(self), Ok)
     }
 
+    /// Release this capture's readers so that the next access reopens the path.
+    fn retire_readers(&self) -> Result<(), Error> {
+        let mut readers = VecDeque::with_capacity(2);
+        readers.extend(lock(&self.initial).take());
+        readers.extend(self.detach_reader());
+        release_sources(readers).inspect_err(|error| self.note_release_failure(error.clone()))
+    }
+
+    /// `with_source`; under `AcceptChangeTimeOnly`, a failed operation is repeated on a
+    /// reopened reader, which `CaptureCache::get` adopts only when `accepts` its revision.
+    /// A reopen that fails, such as for a changed identity, length or write time, ends it.
+    fn with_reader<T>(
+        &self,
+        operation: impl Fn(&dyn ContentSource) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let mut result = self.with_source(&operation);
+        if self.policy == RevisionPolicy::Exact {
+            return result;
+        }
+        for _ in 0..CHANGE_TIME_REOPENS {
+            if result.is_ok() || self.cleanup_unconfirmed() {
+                break;
+            }
+            let reopened = Cell::new(false);
+            result = self.with_acquired(
+                || {
+                    self.retire_readers()?;
+                    let reader = self.cache.get(self)?;
+                    reopened.set(true);
+                    Ok(reader)
+                },
+                &operation,
+            );
+            if !reopened.get() {
+                break;
+            }
+        }
+        result
+    }
+
     fn with_source<T>(
         &self,
         operation: impl FnOnce(&dyn ContentSource) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let source = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.source()))
-        {
+        self.with_acquired(|| self.source(), operation)
+    }
+
+    fn with_acquired<T>(
+        &self,
+        acquire: impl FnOnce() -> Result<Arc<dyn ContentSource>, Error>,
+        operation: impl FnOnce(&dyn ContentSource) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let source = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(acquire)) {
             Ok(result) => PendingRelease::new(result?),
             Err(panic) => {
                 std::mem::forget(panic);
@@ -280,16 +358,16 @@ impl ContentSource for Snapshot {
         self.name.clone()
     }
     fn validate(&self) -> Result<(), Error> {
-        self.with_source(|source| {
+        self.with_reader(|source| {
             source.validate()?;
-            if source.length() != self.length || source.version() != self.revision {
+            if !self.accepts(source.length(), &source.version()) {
                 return Err(Error("Native file changed after capture".into()));
             }
             Ok(())
         })
     }
     fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
-        self.with_source(|source| source.read_at(offset, length))
+        self.with_reader(|source| source.read_at(offset, length))
     }
     fn read_checked(
         &self,
@@ -298,10 +376,25 @@ impl ContentSource for Snapshot {
         expected_length: u64,
         expected_version: &[u8],
     ) -> Result<Vec<u8>, Error> {
-        // Preserve the caller's original metadata even when source() reopens an
-        // evicted reader; the native lease enforces it before its validated ReadAt.
-        self.with_source(|source| {
-            source.read_checked(offset, length, expected_length, expected_version)
+        if self.policy == RevisionPolicy::Exact {
+            // Preserve the caller's original metadata even when source() reopens an
+            // evicted reader; the native lease enforces it before its validated ReadAt.
+            return self.with_source(|source| {
+                source.read_checked(offset, length, expected_length, expected_version)
+            });
+        }
+        // The caller's metadata is this capture's own. A reader reopened after the change
+        // time moved has its own revision, which `accepts` admits; the native lease then
+        // validates the read against that revision before and after reading.
+        if expected_length != self.length || expected_version != self.revision {
+            return Err(Error("Native file changed after capture".into()));
+        }
+        self.with_reader(|source| {
+            let (reader_length, reader_revision) = (source.length(), source.version());
+            if !self.accepts(reader_length, &reader_revision) {
+                return Err(Error("Native file changed after capture".into()));
+            }
+            source.read_checked(offset, length, reader_length, &reader_revision)
         })
     }
 }

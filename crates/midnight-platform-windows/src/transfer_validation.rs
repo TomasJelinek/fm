@@ -1,7 +1,7 @@
 //! Fresh handle-only revisions for independent Move proof reads.
 use super::destination::recovery::Revision;
 use super::*;
-use midnight_core::TransferReadGuard;
+use midnight_core::{TransferReadGuard, TransferRevisionPolicy};
 use std::{
     io::{Seek, SeekFrom},
     path::PathBuf,
@@ -15,9 +15,13 @@ struct ReadGuard {
     _namespace_owner: super::namespace::NativeOwner,
 }
 impl TransferReadGuard for ReadGuard {
+    /// Copy and Move verification only: a moved ChangeTime alone is no change (VIEW-05).
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
-        if Revision::of(&self.file, &self.path)? != self.revision {
+        if !self.revision.matches(
+            Revision::of(&self.file, &self.path)?,
+            TransferRevisionPolicy::AcceptChangeTimeOnly,
+        ) {
             return Err(invalid(
                 &self.path,
                 "retained file changed during validation",

@@ -281,7 +281,12 @@ impl CapturedTransferSources for Sources {
                 ProviderTarget::Native(path) => {
                     // The captured occurrence is the selected entry, including a
                     // link itself; a browsed referent is separate authority.
-                    let source = service.prepare_transfer_source_with_links(path, links, cancel)?;
+                    let source = service.prepare_transfer_source_with_policy(
+                        path,
+                        links,
+                        crate::copy_operations::TRANSFER_REVISIONS,
+                        cancel,
+                    )?;
                     if source.entry().item.path != *path || source.native_identity().is_none() {
                         return Err(failure("Provider returned a different native source."));
                     }
@@ -361,9 +366,16 @@ impl Sources {
         let mut roots = VecDeque::new();
         for (target, path) in self.lease.capture.targets.iter().zip(paths) {
             let prepared = if links == CopyLinkPolicy::Reject {
-                PreparedTransferMoveEntry::Ordinary(service.prepare_move_source(path, cancel)?)
+                PreparedTransferMoveEntry::Ordinary(
+                    crate::copy_operations::prepare_ordinary_move_source(service, path, cancel)?,
+                )
             } else {
-                service.prepare_move_source_with_links(path, links, cancel)?
+                service.prepare_move_source_with_policy(
+                    path,
+                    links,
+                    crate::copy_operations::TRANSFER_REVISIONS,
+                    cancel,
+                )?
             };
             let source = prepared.source();
             let capture_entry = match &prepared {

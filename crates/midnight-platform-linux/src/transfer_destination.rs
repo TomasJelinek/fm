@@ -168,6 +168,14 @@ impl TransferDirectory for Directory {
     ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
         recovery::prepare_target(self, name, cancel)
     }
+    fn prepare_target_with(
+        &self,
+        name: &OsStr,
+        revisions: midnight_core::TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
+        recovery::prepare_target_with(self, name, revisions, cancel)
+    }
     fn open_merge_directory(
         &self,
         name: &OsStr,

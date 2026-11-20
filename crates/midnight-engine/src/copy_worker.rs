@@ -305,7 +305,12 @@ impl Job {
             if !seen.insert(path) {
                 continue;
             }
-            let source = service.prepare_transfer_source_with_links(path, links, &cancel)?;
+            let source = service.prepare_transfer_source_with_policy(
+                path,
+                links,
+                TRANSFER_REVISIONS,
+                &cancel,
+            )?;
             if source.entry().item.path != *path {
                 return Err(error(
                     path,
@@ -1639,7 +1644,10 @@ impl Job {
 
     fn observe_target(&self, work: &mut EntryWork) -> Result<Option<TransferEntry>, FsError> {
         work.target = None;
-        match work.destination.prepare_target(&work.name, &self.cancel) {
+        match work
+            .destination
+            .prepare_target_with(&work.name, TRANSFER_REVISIONS, &self.cancel)
+        {
             Ok(target) => {
                 let entry = target.as_ref().map(|target| target.entry().clone());
                 work.target = target;

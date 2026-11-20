@@ -30,13 +30,26 @@ pub(crate) struct Snapshot {
 
 impl Snapshot {
     /// Compare executable identity under an uninterrupted read-data handle which
-    /// denies write/delete sharing. Only that lease permits ignoring ChangeTime;
-    /// ordinary captured content continues to use strict snapshot equality.
+    /// denies write/delete sharing. That lease permits ignoring ChangeTime; captured
+    /// content uses `matches` under its capture's explicit policy.
     pub(crate) fn matches_leased_executable(&self, after: &Self) -> bool {
-        self.volume == after.volume
-            && self.id == after.id
-            && self.length == after.length
-            && self.write == after.write
+        self.same_except_change_time(after)
+    }
+
+    /// Whether `current` is still this captured revision under `policy`.
+    pub(crate) fn matches(&self, current: &Self, policy: crate::RevisionPolicy) -> bool {
+        match policy {
+            crate::RevisionPolicy::Exact => self == current,
+            crate::RevisionPolicy::AcceptChangeTimeOnly => self.same_except_change_time(current),
+        }
+    }
+
+    /// Same volume, file ID, length and LastWriteTime; ChangeTime may differ.
+    fn same_except_change_time(&self, other: &Self) -> bool {
+        self.volume == other.volume
+            && self.id == other.id
+            && self.length == other.length
+            && self.write == other.write
     }
 
     pub(crate) fn version_bytes(&self) -> Vec<u8> {
@@ -246,6 +259,37 @@ pub(crate) mod test_support {
             id,
             write,
             change,
+        }
+    }
+}
+
+#[cfg(test)]
+mod revision_policy_tests {
+    use super::test_support::snapshot;
+    use crate::RevisionPolicy::{AcceptChangeTimeOnly, Exact};
+
+    #[test]
+    fn only_a_moved_change_time_is_accepted_and_only_when_asked() {
+        let captured = snapshot(3, 7, [5; 16], 11, 13);
+        for policy in [Exact, AcceptChangeTimeOnly] {
+            assert!(captured.matches(&captured.clone(), policy));
+        }
+        let drifted = snapshot(3, 7, [5; 16], 11, 14);
+        assert!(!captured.matches(&drifted, Exact));
+        assert!(captured.matches(&drifted, AcceptChangeTimeOnly));
+        // Length, volume, file ID and LastWriteTime each still count, with or without
+        // a moved ChangeTime.
+        for change in [13, 14] {
+            for current in [
+                snapshot(4, 7, [5; 16], 11, change),
+                snapshot(3, 8, [5; 16], 11, change),
+                snapshot(3, 7, [6; 16], 11, change),
+                snapshot(3, 7, [5; 16], 12, change),
+            ] {
+                for policy in [Exact, AcceptChangeTimeOnly] {
+                    assert!(!captured.matches(&current, policy), "{current:?}");
+                }
+            }
         }
     }
 }

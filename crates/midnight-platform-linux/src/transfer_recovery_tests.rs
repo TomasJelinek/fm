@@ -376,11 +376,152 @@ fn displayed_target_metadata_and_revision_cannot_straddle_a_concurrent_edit() {
     fs::write(&target, b"old").unwrap();
     let file =
         File::from(openat(CWD, &target, OFlags::PATH | OFlags::NOFOLLOW, Mode::empty()).unwrap());
-    let result = target_snapshot(&file, &target, || {
+    let result = target_snapshot(&file, &target, TransferRevisionPolicy::Exact, || {
         fs::write(&target, b"updated longer contents").unwrap()
     });
     assert!(
         result.is_err(),
         "conflict display and consent revision describe different versions"
     );
+}
+
+#[test]
+fn a_transfer_revision_accepts_only_a_moved_ctime_under_its_policy() {
+    use TransferRevisionPolicy::{AcceptChangeTimeOnly, Exact};
+    let pinned = Revision {
+        size: 3,
+        modified: (5, 6),
+        changed: (7, 8),
+        mode: 0o100644,
+    };
+    for policy in [Exact, AcceptChangeTimeOnly] {
+        assert!(pinned.matches(pinned, policy));
+    }
+    for changed in [(7, 9), (8, 8)] {
+        let drifted = Revision { changed, ..pinned };
+        assert!(!pinned.matches(drifted, Exact));
+        assert!(pinned.matches(drifted, AcceptChangeTimeOnly));
+    }
+    // Length, mtime (seconds or nanoseconds) and mode each still count, with or without
+    // a moved ctime.
+    for changed in [(7, 8), (7, 9)] {
+        for current in [
+            Revision {
+                size: 4,
+                changed,
+                ..pinned
+            },
+            Revision {
+                modified: (5, 7),
+                changed,
+                ..pinned
+            },
+            Revision {
+                modified: (6, 6),
+                changed,
+                ..pinned
+            },
+            Revision {
+                mode: 0o100600,
+                changed,
+                ..pinned
+            },
+        ] {
+            for policy in [Exact, AcceptChangeTimeOnly] {
+                assert!(!pinned.matches(current, policy), "{current:?}");
+            }
+        }
+    }
+}
+
+/// VIEW-05: a Copy or Move conflict pin, and the replacement's own checks through it,
+/// accept a target whose ctime alone moved while the decision was pending; an exact pin
+/// (user commands, checksum and file-list outputs, Rename) still refuses it.
+#[test]
+fn a_transfer_conflict_pin_replaces_a_target_whose_ctime_alone_moved() {
+    let Some(temp) = fixture() else {
+        return;
+    };
+    let target = temp.path().join("target");
+    fs::write(&target, b"old bytes").unwrap();
+    let directory = Directory::from_file(
+        File::from(openat(CWD, temp.path(), DIRECTORY, Mode::empty()).unwrap()),
+        temp.path().to_owned(),
+    )
+    .unwrap();
+    let cancel = Cancellation::default();
+    let pin = |policy| {
+        prepare_target_with(&directory, OsStr::new("target"), policy, &cancel)
+            .unwrap()
+            .unwrap()
+    };
+    let transfer = pin(TransferRevisionPolicy::AcceptChangeTimeOnly);
+    let exact = pin(TransferRevisionPolicy::Exact);
+    crate::test_support::move_ctime(&target);
+    assert!(exact.revalidate(&cancel).is_err(), "the ctime did not move");
+    transfer.revalidate(&cancel).unwrap();
+    let mut stage = directory
+        .stage_file_for_target(
+            OsStr::new("target"),
+            transfer,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    stage.write_all(b"new bytes").unwrap();
+    stage.sync(&cancel).unwrap();
+    let TransferPublication::Replaced { recovery, .. } = stage
+        .publish_replace(OsStr::new("target"), &cancel)
+        .unwrap()
+    else {
+        panic!("the consented target was not replaced");
+    };
+    assert_eq!(fs::read(&target).unwrap(), b"new bytes");
+    assert_eq!(fs::read(&recovery.path).unwrap(), b"old bytes");
+}
+
+/// Under the same policy, a new length, mtime, mode or file still counts.
+#[test]
+fn a_transfer_conflict_pin_still_refuses_every_other_change() {
+    use std::os::unix::fs::PermissionsExt;
+    for change in 0..4 {
+        let temp = crate::test_support::temporary("conflict-policy-");
+        let target = temp.path().join("target");
+        fs::write(&target, b"old bytes").unwrap();
+        let directory = Directory::from_file(
+            File::from(openat(CWD, temp.path(), DIRECTORY, Mode::empty()).unwrap()),
+            temp.path().to_owned(),
+        )
+        .unwrap();
+        let cancel = Cancellation::default();
+        let transfer = prepare_target_with(
+            &directory,
+            OsStr::new("target"),
+            TransferRevisionPolicy::AcceptChangeTimeOnly,
+            &cancel,
+        )
+        .unwrap()
+        .unwrap();
+        let modified = fs::metadata(&target).unwrap().modified().unwrap();
+        match change {
+            0 => fs::OpenOptions::new()
+                .append(true)
+                .open(&target)
+                .unwrap()
+                .write_all(b"!")
+                .unwrap(),
+            1 => fs::OpenOptions::new()
+                .write(true)
+                .open(&target)
+                .unwrap()
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .unwrap(),
+            2 => fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap(),
+            _ => {
+                fs::rename(&target, temp.path().join("held")).unwrap();
+                fs::write(&target, b"old bytes").unwrap();
+            }
+        }
+        assert!(transfer.revalidate(&cancel).is_err(), "change {change}");
+    }
 }

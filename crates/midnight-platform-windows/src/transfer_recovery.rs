@@ -1,7 +1,7 @@
 //! Recoverable Windows replacement intentionally has a namespace gap: capture the
 //! guarded original, then publish without replacement. A gap winner is never removed.
 use super::*;
-use midnight_core::TransferRecovery;
+use midnight_core::{TransferRecovery, TransferRevisionPolicy};
 use std::{mem::size_of, os::windows::ffi::OsStrExt, ptr};
 use windows_sys::{
     Wdk::{
@@ -97,7 +97,7 @@ impl Directory {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::transfer) struct Revision {
     size: u64,
     modified: u64,
@@ -106,6 +106,24 @@ pub(in crate::transfer) struct Revision {
     changed: i64,
 }
 impl Revision {
+    /// Whether `current` is still this pinned revision under `policy`. Accepting a moved
+    /// ChangeTime (VIEW-05) still requires the same length, LastWriteTime, creation time
+    /// and attributes; the caller checks the file ID separately.
+    pub(in crate::transfer) fn matches(
+        self,
+        current: Self,
+        policy: TransferRevisionPolicy,
+    ) -> bool {
+        match policy {
+            TransferRevisionPolicy::Exact => self == current,
+            TransferRevisionPolicy::AcceptChangeTimeOnly => {
+                Self {
+                    changed: current.changed,
+                    ..self
+                } == current
+            }
+        }
+    }
     pub(in crate::transfer) fn of(file: &File, path: &Path) -> Result<Self, FsError> {
         let metadata = file.metadata().map_err(|e| error(path, e))?;
         let mut basic = FILE_BASIC_INFO::default();
@@ -137,6 +155,7 @@ struct Target {
     file: File,
     entry: TransferEntry,
     revision: Revision,
+    policy: TransferRevisionPolicy,
     // Last: a live conflict/Move guard still retains its own native metadata handle.
     _namespace_owner: super::super::namespace::NativeOwner,
 }
@@ -156,7 +175,10 @@ impl TransferTarget for Target {
         )
         .map_err(|e| error(&self.entry.item.path, e))?;
         if identity(&visible, &self.entry.item.path)? != self.entry.identity
-            || Revision::of(&self.file, &self.entry.item.path)? != self.revision
+            || !self.revision.matches(
+                Revision::of(&self.file, &self.entry.item.path)?,
+                self.policy,
+            )
         {
             return Err(invalid(
                 &self.entry.item.path,
@@ -167,9 +189,21 @@ impl TransferTarget for Target {
     }
 }
 
+/// An exact consent pin: user commands, checksum and file-list outputs and Rename.
 pub(super) fn prepare_target(
     directory: &Directory,
     name: &OsStr,
+    cancel: &Cancellation,
+) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
+    prepare_target_with(directory, name, TransferRevisionPolicy::Exact, cancel)
+}
+
+/// A consent pin whose revalidation compares its revision under `policy`; Copy and Move
+/// conflict pins and Move sources accept a moved ChangeTime (VIEW-05).
+pub(super) fn prepare_target_with(
+    directory: &Directory,
+    name: &OsStr,
+    policy: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
     directory.revalidate(cancel)?;
@@ -187,11 +221,12 @@ pub(super) fn prepare_target(
         Err(failure) if failure.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(failure) => return Err(error(&path, failure)),
     };
-    let (entry, revision) = target_snapshot(&file, &path, || {})?;
+    let (entry, revision) = target_snapshot(&file, &path, policy, || {})?;
     let namespace_owner = super::super::namespace::owner(&[entry.identity]);
     Ok(Some(Arc::new(Target {
         entry,
         revision,
+        policy,
         file,
         name: name.to_owned(),
         directory: directory.clone(),
@@ -199,16 +234,19 @@ pub(super) fn prepare_target(
     })))
 }
 
+/// The displayed entry has no ChangeTime; under `AcceptChangeTimeOnly` one that moved
+/// while the entry was read still describes the same version.
 fn target_snapshot(
     file: &File,
     path: &Path,
+    policy: TransferRevisionPolicy,
     after_display_read: impl FnOnce(),
 ) -> Result<(TransferEntry, Revision), FsError> {
     let before = Revision::of(file, path)?;
     let display = entry(file, path)?;
     after_display_read();
     let revision = Revision::of(file, path)?;
-    if before != revision {
+    if !before.matches(revision, policy) {
         return Err(invalid(
             path,
             "destination changed while capturing conflict metadata",

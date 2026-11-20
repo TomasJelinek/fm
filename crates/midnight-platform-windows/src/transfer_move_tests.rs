@@ -1,8 +1,52 @@
-use super::prepare_native;
+use super::{prepare_native, prepare_native_with};
 use midnight_core::{
-    Cancellation, TransferMoveCapture, TransferMoveCaptureOutcome, TransferService,
+    Cancellation, TransferMoveCapture, TransferMoveCaptureOutcome, TransferRevisionPolicy,
+    TransferService,
 };
 use std::{fs, path::PathBuf};
+
+/// VIEW-05: a Move's source binding check and its finalization accept a source whose
+/// ChangeTime alone moved; Rename's exact capture still refuses it, and a new LastWriteTime
+/// still refuses the Move.
+#[test]
+fn a_move_capture_and_finalization_accept_only_a_moved_change_time() {
+    use crate::test_fixtures::move_file_time;
+    let (_temp, parent) = fixture();
+    let [moved, renamed, written] = ["moved", "renamed", "written"].map(|name| parent.join(name));
+    for path in [&moved, &renamed, &written] {
+        fs::write(path, b"verified original").unwrap();
+    }
+    let cancel = Cancellation::default();
+    let transfer = TransferRevisionPolicy::AcceptChangeTimeOnly;
+    let (moved_source, capture) = prepare_native_with(&moved, transfer, &cancel).unwrap();
+    let (renamed_source, exact) = prepare_native(&renamed, &cancel).unwrap();
+    let (written_source, rewritten) = prepare_native_with(&written, transfer, &cancel).unwrap();
+    move_file_time(&moved, false);
+    move_file_time(&renamed, false);
+    move_file_time(&written, true);
+    assert!(
+        exact.revalidate(&cancel).is_err(),
+        "the ChangeTime did not move"
+    );
+    assert!(rewritten.revalidate(&cancel).is_err());
+    drop((renamed_source, exact, written_source, rewritten));
+    capture.revalidate(&cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("capture failed")
+    };
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    move_file_time(&recovery.path, false);
+    finalizer.revalidate(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    drop(finalizer);
+    drop(moved_source);
+    drop(capture);
+    assert!(!recovery.path.exists());
+}
 
 #[test]
 fn native_drop_device_observes_actual_volume_without_capturing_a_source() {

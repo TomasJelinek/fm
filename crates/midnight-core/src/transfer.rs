@@ -80,6 +80,20 @@ pub struct TransferEntry {
     pub identity: TransferIdentity,
 }
 
+/// Which difference from a pinned native revision still counts as unchanged. Native
+/// revisions include the change time (Windows ChangeTime, Linux ctime), which also moves on
+/// metadata-only updates: endpoint protection, for example, adds an alternate data stream
+/// to some freshly written files one or two seconds after they are written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransferRevisionPolicy {
+    /// Every captured field, the change time included, must still match.
+    #[default]
+    Exact,
+    /// A new change time alone is accepted (VIEW-05); identity, length, modification time
+    /// and every other captured field must still match. Copy and Move use this policy.
+    AcceptChangeTimeOnly,
+}
+
 /// Replacement policies are separate capabilities; a provider must never weaken one into another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferReplacementPolicy {
@@ -166,6 +180,19 @@ pub trait TransferService: Send + Sync {
         ))
     }
 
+    /// `prepare_move_source_with_links` whose source, its Move capture and every Move child
+    /// compare their pinned revisions under `revisions`. A provider without native change
+    /// times keeps its exact revisions.
+    fn prepare_move_source_with_policy(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        _revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<crate::PreparedTransferMoveEntry, FsError> {
+        self.prepare_move_source_with_links(path, links, cancel)
+    }
+
     fn prepare_transfer_source(
         &self,
         path: &Path,
@@ -203,6 +230,18 @@ pub trait TransferService: Send + Sync {
                 transfer_unsupported(path, "directory link preparation is unsupported"),
             ),
         }
+    }
+    /// `prepare_transfer_source_with_links` whose source and children compare their pinned
+    /// revisions under `revisions`. A provider without native change times keeps its exact
+    /// revisions.
+    fn prepare_transfer_source_with_policy(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        _revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.prepare_transfer_source_with_links(path, links, cancel)
     }
     fn prepare_transfer_destination(
         &self,
@@ -486,6 +525,18 @@ pub trait TransferDirectory: Send + Sync {
             self.path(),
             "pinned transfer targets are unsupported",
         ))
+    }
+    /// `prepare_target` whose every later revalidation, including the provider's own
+    /// replacement checks, compares the pinned revision under `revisions`. Copy and Move
+    /// conflict pins accept a change-time-only drift; other consented outputs use
+    /// `prepare_target`. A provider without native change times keeps its exact revision.
+    fn prepare_target_with(
+        &self,
+        name: &OsStr,
+        _revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
+        self.prepare_target(name, cancel)
     }
     /// Open only an ordinary directory with the consented identity. The caller keeps its
     /// target pin alive and revalidates its revision immediately before this call.

@@ -1,7 +1,7 @@
 //! Recoverable replacement exchanges names, not expected identities. Displaced
 //! objects remain in a private directory; even an unexpected link/tree is never deleted.
 use super::*;
-use midnight_core::TransferRecovery;
+use midnight_core::{TransferRecovery, TransferRevisionPolicy};
 use rustix::fs::{RenameFlags, renameat_with};
 use std::ffi::OsString;
 
@@ -30,7 +30,7 @@ pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
         .unwrap_or(false)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::transfer) struct Revision {
     size: u64,
     modified: (i64, i64),
@@ -38,6 +38,24 @@ pub(in crate::transfer) struct Revision {
     mode: u32,
 }
 impl Revision {
+    /// Whether `current` is still this pinned revision under `policy`. Accepting a moved
+    /// ctime (VIEW-05) still requires the same length, mtime and mode; the caller checks
+    /// the device and inode separately.
+    pub(in crate::transfer) fn matches(
+        self,
+        current: Self,
+        policy: TransferRevisionPolicy,
+    ) -> bool {
+        match policy {
+            TransferRevisionPolicy::Exact => self == current,
+            TransferRevisionPolicy::AcceptChangeTimeOnly => {
+                Self {
+                    changed: current.changed,
+                    ..self
+                } == current
+            }
+        }
+    }
     pub(in crate::transfer) fn of(file: &File, path: &Path) -> Result<Self, FsError> {
         let metadata = file.metadata().map_err(|e| error(path, e))?;
         Ok(Self {
@@ -59,6 +77,7 @@ struct Target {
     file: File,
     entry: TransferEntry,
     revision: Revision,
+    policy: TransferRevisionPolicy,
 }
 impl TransferTarget for Target {
     fn entry(&self) -> &TransferEntry {
@@ -68,7 +87,10 @@ impl TransferTarget for Target {
         self.directory.revalidate(cancel)?;
         let visible = open_target(&self.directory, &self.name)?;
         if identity(&visible, &self.entry.item.path)? != self.entry.identity
-            || Revision::of(&self.file, &self.entry.item.path)? != self.revision
+            || !self.revision.matches(
+                Revision::of(&self.file, &self.entry.item.path)?,
+                self.policy,
+            )
         {
             return Err(invalid(
                 &self.entry.item.path,
@@ -92,9 +114,21 @@ fn open_target(directory: &Directory, name: &OsStr) -> Result<File, FsError> {
     .map_err(|e| error(&path, e.into()))
 }
 
+/// An exact consent pin: user commands, checksum and file-list outputs and Rename.
 pub(super) fn prepare_target(
     directory: &Directory,
     name: &OsStr,
+    cancel: &Cancellation,
+) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
+    prepare_target_with(directory, name, TransferRevisionPolicy::Exact, cancel)
+}
+
+/// A consent pin whose revalidation compares its revision under `policy`; Copy and Move
+/// conflict pins and Move sources accept a moved ctime (VIEW-05).
+pub(super) fn prepare_target_with(
+    directory: &Directory,
+    name: &OsStr,
+    policy: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
     directory.revalidate(cancel)?;
@@ -105,26 +139,30 @@ pub(super) fn prepare_target(
         Err(failure) => return Err(failure),
     };
     let path = directory.path.join(name);
-    let (entry, revision) = target_snapshot(&file, &path, || {})?;
+    let (entry, revision) = target_snapshot(&file, &path, policy, || {})?;
     Ok(Some(Arc::new(Target {
         entry,
         revision,
+        policy,
         file,
         name: name.to_owned(),
         directory: directory.clone(),
     })))
 }
 
+/// The displayed entry has no ctime; under `AcceptChangeTimeOnly` one that moved while the
+/// entry was read still describes the same version.
 fn target_snapshot(
     file: &File,
     path: &Path,
+    policy: TransferRevisionPolicy,
     after_display_read: impl FnOnce(),
 ) -> Result<(TransferEntry, Revision), FsError> {
     let before = Revision::of(file, path)?;
     let display = entry(file, path)?;
     after_display_read();
     let revision = Revision::of(file, path)?;
-    if before != revision {
+    if !before.matches(revision, policy) {
         return Err(invalid(
             path,
             "destination changed while capturing conflict metadata",

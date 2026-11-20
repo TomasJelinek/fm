@@ -67,6 +67,7 @@ prove removal. See [staging and cancellation](../superpowers/specs/2026-11-10-tr
 | Contract | Meaning |
 | --- | --- |
 | `prepare_target` | Capture a native target identity and provider-owned revision for a conflict. The pin remains worker-owned. |
+| `prepare_target_with` | `prepare_target` whose later revalidations, the provider's replacement checks included, apply an explicit `TransferRevisionPolicy` (see [change-time drift](#change-time-drift-view-05)). The default keeps the exact revision. |
 | `directory_merge` / `open_merge_directory` | Revalidate and open the consented ordinary directory without following a link. Never delete an existing tree. |
 | `conditional_overwrite` | Strong expected-identity replacement. Currently false on both adapters; ordinary rename is not compare-and-swap. |
 | `recoverable_replacement` | Separately selected replace-current-entry policy which preserves displaced objects in private recovery. |
@@ -95,6 +96,37 @@ The [current policy and API design](../superpowers/specs/2026-11-10-transfer-ver
 supersedes earlier unconditional SHA-256 and same-volume-copy descriptions below;
 full-hash proof discussions describe the default mode, and sampled proofs retain
 the same identity/revision/publication guards with bounded range reads.
+
+## Change-time drift (VIEW-05)
+
+Native revisions include the change time (Windows ChangeTime, Linux ctime). It also
+moves on metadata-only updates: on the Windows development machine endpoint
+protection moves it on freshly written files one or two seconds after they are
+written, with the file ID, length and LastWriteTime unchanged. Copy and Move compare
+their pinned revisions under `TransferRevisionPolicy::AcceptChangeTimeOnly`
+(`TRANSFER_REVISIONS` in the engine): a revision whose change time alone moved is
+unchanged, and every other captured field still counts.
+
+| Check | Copy and Move | Compared fields under that policy |
+| --- | --- | --- |
+| Conflict pin (`prepare_target_with`), including recoverable replacement and native Move replacement | `AcceptChangeTimeOnly` | Identity; Windows length, LastWriteTime, creation time and attributes; Linux length, mtime and mode |
+| Move capture of the source (its own binding pin) and Move children | `AcceptChangeTimeOnly` (`prepare_move_source_with_policy`) | As a conflict pin |
+| Revalidation of Copy sources (`prepare_transfer_source_with_policy`), Move sources and their children | Linux `AcceptChangeTimeOnly`; Windows has never compared ChangeTime here | Identity; length and modification time (Windows also creation time) |
+| Verification read guards, modified-time pins, planned-source namespace pins, Move finalization | Always `AcceptChangeTimeOnly`; only Copy and Move use them | As a conflict pin; Linux namespace pins compare length and mtime |
+
+Exact revisions remain for every other consumer of the same services:
+`prepare_target`, `prepare_transfer_source`, `prepare_transfer_source_with_links`,
+`prepare_move_source` and `prepare_move_source_with_links` keep their exact
+behaviour, so user-command scope pins, checksum manifest and file-list outputs,
+checksum sources, Rename (including its replacement capture) and drag previews are
+unchanged. The policy-taking methods default to their exact counterparts for
+providers without native change times.
+
+A same-length rewrite that restores the modification time differs from the pinned
+revision only in its change time, so these Copy and Move checks no longer detect it.
+On Windows, an open Copy or Move source handle denies write sharing; Linux Move
+removal keeps its read lease; a replaced conflict target stays in recovery.
+Directory-link stubs keep exact revisions.
 
 ## Conflict policies
 

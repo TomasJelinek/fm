@@ -209,6 +209,45 @@ async fn changed_target_requires_fresh_consent_even_for_replace_all() {
     h.close().await;
 }
 
+/// VIEW-05: a target whose change time alone moved while the dialog was open, as endpoint
+/// protection moves it on a freshly written file, is replaced on the original consent.
+/// Toggling the read-only attribute (Linux: the write bits) and restoring it moves only the
+/// NTFS ChangeTime or Linux ctime.
+#[tokio::test]
+async fn a_target_whose_change_time_alone_moved_is_replaced_on_the_original_consent() {
+    let temp = fixture();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    let target = destination.join("source");
+    fs::create_dir(&destination).unwrap();
+    fs::write(&source, b"new source").unwrap();
+    fs::write(&target, b"old target").unwrap();
+    let mut h = Harness::native();
+    h.controller
+        .enqueue(request(1, &[source], &destination))
+        .await;
+    let conflict = h.conflict(1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let writable = fs::metadata(&target).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    fs::set_permissions(&target, read_only).unwrap();
+    fs::set_permissions(&target, writable).unwrap();
+    h.controller
+        .decide(CopyDecision {
+            id: conflict.id,
+            version: conflict.version,
+            choice: CopyChoice::ReplaceRecoverable { all: false },
+        })
+        .await;
+    let done = h.terminal(1).await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.recovery_count, 1);
+    assert_eq!(fs::read(&done.recovery_paths[0]).unwrap(), b"old target");
+    assert_eq!(fs::read(&target).unwrap(), b"new source");
+    h.close().await;
+}
+
 #[tokio::test]
 async fn explicit_replacement_verifies_new_bytes_and_retains_the_original() {
     let temp = fixture();

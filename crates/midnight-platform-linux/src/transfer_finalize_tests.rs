@@ -254,3 +254,53 @@ fn a_replaced_stage_entry_is_never_unlinked_by_finalization() {
     assert_eq!(fs::read(moved).unwrap(), b"original");
     assert_eq!(fs::read(recovery.path).unwrap(), b"substitute");
 }
+
+/// VIEW-05: a Move's source binding check and its finalization accept a source whose ctime
+/// alone moved; Rename's exact capture still refuses it, and a new mtime still refuses the
+/// Move.
+#[test]
+fn a_move_capture_and_finalization_accept_only_a_moved_ctime() {
+    let Some((_temp, parent)) = fixture() else {
+        return;
+    };
+    let [moved, renamed, written] = ["moved", "renamed", "written"].map(|name| parent.join(name));
+    for path in [&moved, &renamed, &written] {
+        fs::write(path, b"verified original").unwrap();
+    }
+    let cancel = Cancellation::default();
+    let transfer = TransferRevisionPolicy::AcceptChangeTimeOnly;
+    let (moved_source, capture) = prepare_native_with(&moved, transfer, &cancel).unwrap();
+    let (renamed_source, exact) = prepare_native(&renamed, &cancel).unwrap();
+    let (written_source, rewritten) = prepare_native_with(&written, transfer, &cancel).unwrap();
+    crate::test_support::move_ctime(&moved);
+    crate::test_support::move_ctime(&renamed);
+    let modified = fs::metadata(&written).unwrap().modified().unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&written)
+        .unwrap()
+        .set_modified(modified + std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(exact.revalidate(&cancel).is_err(), "the ctime did not move");
+    assert!(rewritten.revalidate(&cancel).is_err());
+    drop((renamed_source, exact, written_source, rewritten));
+    capture.revalidate(&cancel).unwrap();
+    capture.preflight_finalization(&cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("not captured")
+    };
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    crate::test_support::move_ctime(&recovery.path);
+    finalizer.revalidate(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    let cleanup = capture.take_stage_cleanup().unwrap();
+    drop(finalizer);
+    drop(moved_source);
+    drop(capture);
+    cleanup.cleanup().unwrap();
+    assert!(!recovery.path.exists());
+}

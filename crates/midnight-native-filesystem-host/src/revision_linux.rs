@@ -1,11 +1,17 @@
 //! Linux v1 identity: device, inode, length and modification/change seconds and nanoseconds.
-pub(crate) fn matches(expected: &[u8], current: &[u8]) -> bool {
+use midnight_plugin_host::RevisionPolicy;
+
+/// The trailing 16 bytes are the ctime seconds and nanoseconds, which
+/// `AcceptChangeTimeOnly` leaves out.
+pub(crate) fn matches(expected: &[u8], current: &[u8], policy: RevisionPolicy) -> bool {
     super::matches_payload(
         expected,
         current,
         b"native.linux.read.v1",
         b"linux-file-v1",
         56,
+        16,
+        policy,
     )
 }
 

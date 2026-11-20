@@ -947,8 +947,13 @@ impl TransferNamespacePin for Pin {
                     if binding.delete_pending {
                         unknown = true;
                     }
+                    // Copy and Move source pins only: a moved ChangeTime alone is no
+                    // change (VIEW-05).
                     if let Some(revision) = binding.revision
-                        && destination::recovery::Revision::of(&file, &path)? != revision
+                        && !revision.matches(
+                            destination::recovery::Revision::of(&file, &path)?,
+                            midnight_core::TransferRevisionPolicy::AcceptChangeTimeOnly,
+                        )
                     {
                         return Err(invalid(&path, "original source revision changed"));
                     }

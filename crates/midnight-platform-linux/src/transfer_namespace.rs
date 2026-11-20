@@ -601,12 +601,17 @@ impl TransferNamespacePin for Pin {
         }
         let matches = match (state.expected, observed) {
             (None, None) => true,
+            // Copy and Move source pins accept a moved ctime alone (VIEW-05).
             (Some(expected), Some(actual)) => {
                 expected.identity == actual.identity
                     && expected.kind == actual.kind
                     && (!self.source
                         || actual.kind == EntryKind::Directory
-                        || expected.revision == actual.revision)
+                        || super::revision_matches(
+                            expected.revision,
+                            actual.revision,
+                            midnight_core::TransferRevisionPolicy::AcceptChangeTimeOnly,
+                        ))
             }
             _ => false,
         };

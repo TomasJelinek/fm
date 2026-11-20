@@ -106,26 +106,30 @@ impl State {
         // and the new provider's binding/revision checks must still agree.
         let active = match self.authority {
             Authority::Copy(links) => Active {
-                source: self.service.prepare_transfer_source_with_links(
+                source: self.service.prepare_transfer_source_with_policy(
                     &self.entry.item.path,
                     links,
+                    TRANSFER_REVISIONS,
                     cancel,
                 )?,
                 capture: None,
             },
             Authority::Move => {
-                let prepared = self
-                    .service
-                    .prepare_move_source(&self.entry.item.path, cancel)?;
+                let prepared = prepare_ordinary_move_source(
+                    self.service.as_ref(),
+                    &self.entry.item.path,
+                    cancel,
+                )?;
                 Active {
                     source: prepared.source,
                     capture: Some(prepared.capture),
                 }
             }
             Authority::MoveWithLinks(links) => {
-                let prepared = self.service.prepare_move_source_with_links(
+                let prepared = self.service.prepare_move_source_with_policy(
                     &self.entry.item.path,
                     links,
+                    TRANSFER_REVISIONS,
                     cancel,
                 )?;
                 let PreparedTransferMoveEntry::Ordinary(prepared) = prepared else {

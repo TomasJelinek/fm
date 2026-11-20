@@ -590,3 +590,75 @@ fn transfer_entries_report_raw_modified_times_for_lazy_display_formatting() {
         assert!(provider.format_datetime(modified).is_some(), "{entry:?}");
     }
 }
+
+/// Move only the ctime, as endpoint protection moves the change time of a freshly written
+/// file: change the mode and restore it.
+fn move_ctime(path: &Path) {
+    // Leave the coarse kernel clock past the previous ctime.
+    std::thread::sleep(Duration::from_millis(50));
+    let mode = fs::metadata(path).unwrap().permissions();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o400)).unwrap();
+    fs::set_permissions(path, mode).unwrap();
+}
+
+/// VIEW-05: a Copy source, its verification guard, modified-time pin and namespace pin
+/// accept a ctime that alone moved, and the copy verifies and publishes; an exact source
+/// (checksums, file lists) still refuses it, and a new mtime still fails the Copy source
+/// and each guard.
+#[test]
+fn a_copy_source_and_its_guards_accept_only_a_moved_ctime() {
+    use midnight_core::{CopyLinkPolicy, TransferRevisionPolicy};
+    let temp = fixture();
+    let path = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir(&target).unwrap();
+    fs::write(&path, b"original").unwrap();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let prepare = || {
+        provider
+            .prepare_transfer_source_with_policy(
+                &path,
+                CopyLinkPolicy::Reject,
+                TransferRevisionPolicy::AcceptChangeTimeOnly,
+                &cancel,
+            )
+            .unwrap()
+    };
+    let mut source = prepare();
+    let exact = provider.prepare_transfer_source(&path, &cancel).unwrap();
+    let guard = source.rewind_for_validation(&cancel).unwrap();
+    let modified = source.prepare_modified_time(&cancel).unwrap();
+    let pin = source.native_namespace_scope(&cancel).unwrap().unwrap();
+    move_ctime(&path);
+    assert!(exact.revalidate(&cancel).is_err(), "the ctime did not move");
+    source.revalidate(&cancel).unwrap();
+    guard.revalidate(&cancel).unwrap();
+    modified.revalidate(&cancel).unwrap();
+    pin.refresh(&cancel).unwrap();
+    drop((guard, modified, pin));
+    let destination = provider
+        .prepare_transfer_destination(&target, &cancel)
+        .unwrap();
+    let mut copy = VerifiedFileCopy::new(source, destination.stage_file(&cancel).unwrap()).unwrap();
+    while copy.phase() != CopyPhase::ReadyToPublish {
+        copy.step(&cancel).unwrap();
+    }
+    copy.publish(OsStr::new("copy"), &cancel).unwrap();
+    assert_eq!(fs::read(target.join("copy")).unwrap(), b"original");
+    let mut source = prepare();
+    let guard = source.rewind_for_validation(&cancel).unwrap();
+    let modified = source.prepare_modified_time(&cancel).unwrap();
+    let pin = source.native_namespace_scope(&cancel).unwrap().unwrap();
+    let time = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(time + Duration::from_secs(2))
+        .unwrap();
+    assert!(source.revalidate(&cancel).is_err());
+    assert!(guard.revalidate(&cancel).is_err());
+    assert!(modified.revalidate(&cancel).is_err());
+    assert!(pin.refresh(&cancel).is_err());
+}

@@ -12,6 +12,21 @@ use std::{
 
 static REVISIONS: AtomicU64 = AtomicU64::new(1);
 
+/// Which difference from a capture's native revision still counts as unchanged. A native
+/// revision includes the file's change time (NTFS ChangeTime, Linux ctime), which also
+/// moves on metadata-only updates: endpoint protection, for example, adds an alternate
+/// data stream to some freshly written files one or two seconds after they are written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RevisionPolicy {
+    /// Every captured field, the change time included, must still match.
+    #[default]
+    Exact,
+    /// A new change time alone is accepted (VIEW-05): identity, length and modification
+    /// time must still match (Windows: volume, file ID, length and LastWriteTime; Linux:
+    /// device, inode, length and mtime). Viewers read their content under this policy.
+    AcceptChangeTimeOnly,
+}
+
 /// Optional relative-content capability captured with directory/mount authority.
 /// Implementations enforce no-follow containment against held objects. Never part of a plugin ABI.
 pub trait ContentResources: Send + Sync + std::fmt::Debug {
@@ -73,6 +88,8 @@ pub trait ContentSource: Send + Sync + std::fmt::Debug {
 pub struct CapturedFile {
     path: PathBuf,
     snapshot: Option<native::Snapshot>,
+    /// How later native reads compare the current file with `snapshot`.
+    policy: RevisionPolicy,
     source: Option<Arc<dyn ContentSource>>,
     source_version: Vec<u8>,
     source_length: u64,
@@ -83,6 +100,7 @@ pub(crate) enum Reader {
     Native {
         file: File,
         snapshot: native::Snapshot,
+        policy: RevisionPolicy,
     },
     Provider {
         source: Arc<dyn ContentSource>,
@@ -123,7 +141,14 @@ impl CapturedFile {
         self.resources.clone()
     }
     /// Backend only. Opens briefly to obtain stable native identity, then closes.
+    /// Every later read requires the exact captured revision.
     pub fn capture(path: &Path) -> Result<Self, Error> {
+        Self::capture_with(path, RevisionPolicy::Exact)
+    }
+    /// `capture` whose later reads and revalidation compare the current file with the
+    /// captured revision under `policy`. The revision bytes (`stable_version`) are the
+    /// same for every policy.
+    pub fn capture_with(path: &Path, policy: RevisionPolicy) -> Result<Self, Error> {
         if !path.is_absolute() {
             return Err(Error("Captured path must be absolute".into()));
         }
@@ -135,6 +160,7 @@ impl CapturedFile {
         Ok(Self {
             path: path.into(),
             snapshot: Some(snapshot),
+            policy,
             source: None,
             source_version: Vec::new(),
             source_length: 0,
@@ -222,15 +248,17 @@ impl CapturedFile {
             .ok_or_else(|| Error("Missing content identity".into()))?;
         let file = native::open_read(&self.path)?;
         let current = native::snapshot(&file)?;
-        if current != *snapshot {
+        if !snapshot.matches(&current, self.policy) {
             return Err(native_changed("open", &self.path, snapshot, &current));
         }
         Ok(Reader::Native {
             file,
             snapshot: snapshot.clone(),
+            policy: self.policy,
         })
     }
     /// Capture a non-native content lease without fabricating a host filesystem path.
+    /// The source applies its own revision policy in `validate` and `read_checked`.
     pub fn from_source(source: Arc<dyn ContentSource>) -> Result<Self, Error> {
         let source_version = source.version();
         let source_length = source.length();
@@ -244,6 +272,7 @@ impl CapturedFile {
         Ok(Self {
             path: PathBuf::new(),
             snapshot: None,
+            policy: RevisionPolicy::Exact,
             source: Some(source),
             source_version,
             source_length,
@@ -273,11 +302,16 @@ impl Reader {
             return read_source(source.as_ref(), offset, length, *source_length, version);
         }
         check_read_bounds(offset, length)?;
-        let Self::Native { file, snapshot } = self else {
+        let Self::Native {
+            file,
+            snapshot,
+            policy,
+        } = self
+        else {
             return Err(Error("Invalid content reader".into()));
         };
         let current = native::snapshot(file)?;
-        if current != *snapshot {
+        if !snapshot.matches(&current, *policy) {
             return Err(native_changed("read_before", file, snapshot, &current));
         }
         let length = snapshot
@@ -288,7 +322,7 @@ impl Reader {
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut bytes)?;
         let current = native::snapshot(file)?;
-        if current != *snapshot {
+        if !snapshot.matches(&current, *policy) {
             return Err(native_changed("read_after", file, snapshot, &current));
         }
         Ok(bytes)

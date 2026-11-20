@@ -1,4 +1,8 @@
-use super::matches;
+use midnight_plugin_host::RevisionPolicy::{AcceptChangeTimeOnly, Exact};
+
+fn matches(expected: &[u8], current: &[u8]) -> bool {
+    super::matches(expected, current, Exact)
+}
 
 fn token(prefix: &[u8]) -> Vec<u8> {
     [prefix, &(0..48).collect::<Vec<u8>>()].concat()
@@ -95,4 +99,41 @@ fn find_capture_requires_exact_native_identity_and_content_revision() {
         &entry,
         &[b"unknown.v1".as_slice(), &payload].concat()
     ));
+}
+
+/// VIEW-05: a viewer read accepts a revision whose ChangeTime (the trailing 8 bytes)
+/// alone moved; the volume, file ID, length and LastWriteTime bytes still count.
+#[test]
+fn a_moved_change_time_alone_is_accepted_only_under_its_policy() {
+    let current = token(b"native.windows.read.v1");
+    let accepts =
+        |expected: &[u8], current: &[u8]| super::matches(expected, current, AcceptChangeTimeOnly);
+    for prefix in [b"windows-file-v1".as_slice(), b"native.windows.read.v1"] {
+        assert!(accepts(&token(prefix), &current));
+        for byte in 0..48 {
+            let mut changed = token(prefix);
+            changed[prefix.len() + byte] ^= 1;
+            assert_eq!(
+                accepts(&changed, &current),
+                byte >= 40,
+                "metadata byte {byte}"
+            );
+            assert!(!matches(&changed, &current), "metadata byte {byte}");
+        }
+        let valid = token(prefix);
+        for length in 0..valid.len() {
+            assert!(!accepts(&valid[..length], &current));
+        }
+        assert!(!accepts(&[valid.as_slice(), &[0]].concat(), &current));
+    }
+    for prefix in [
+        b"windows-file-v2".as_slice(),
+        b"native.windows.read.v2",
+        b"native.linux.read.v1",
+    ] {
+        assert!(!accepts(&token(prefix), &current));
+        assert!(!accepts(&token(prefix), &token(prefix)));
+    }
+    // A current revision must use the plugin's current prefix under either policy.
+    assert!(!accepts(&current, &token(b"windows-file-v1")));
 }

@@ -319,6 +319,57 @@ fn captured_file_detects_replacement_and_in_place_changes() {
     assert!(capture.open().is_err());
 }
 
+/// Move only the change time: the read-only attribute and NTFS ChangeTime on Windows, the
+/// mode and ctime on Linux. The in-process revision includes neither attributes nor mode.
+fn move_change_time(path: &std::path::Path) {
+    // Leave the clock past the write's timestamp, which may be as coarse as a tick.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let writable = std::fs::metadata(path).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(path, read_only).unwrap();
+    std::fs::set_permissions(path, writable).unwrap();
+}
+
+/// VIEW-05: a viewer capture reads on after a change-time-only drift; an exact capture,
+/// and every other change, still fail.
+#[test]
+fn a_viewer_capture_accepts_only_a_moved_change_time() {
+    let root = tempfile::tempdir().unwrap();
+    // No extension: endpoint protection on some machines rescans fresh `.txt` files.
+    let path = root.path().join("fresh");
+    std::fs::write(&path, b"original").unwrap();
+    let exact = CapturedFile::capture(&path).unwrap();
+    let viewer = CapturedFile::capture_with(&path, RevisionPolicy::AcceptChangeTimeOnly).unwrap();
+    assert_eq!(viewer.stable_version(), exact.stable_version());
+    let mut held = viewer.open().unwrap();
+    move_change_time(&path);
+    assert!(exact.revalidate().is_err(), "the change time did not move");
+    assert!(exact.read_at(0, 8).is_err());
+    viewer.revalidate().unwrap();
+    assert_eq!(viewer.read_at(0, 8).unwrap(), b"original");
+    // A reader opened before the drift checks before and after each read as well.
+    assert_eq!(held.read_at(0, 8).unwrap(), b"original");
+    // Same length, new write time.
+    std::fs::write(&path, b"replaced").unwrap();
+    assert!(viewer.revalidate().is_err());
+    assert!(viewer.read_at(0, 8).is_err());
+    assert!(held.read_at(0, 8).is_err());
+    drop(held);
+    // Another file under the same name, with the same length and write time.
+    let viewer = CapturedFile::capture_with(&path, RevisionPolicy::AcceptChangeTimeOnly).unwrap();
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::rename(&path, root.path().join("renamed")).unwrap();
+    std::fs::write(&path, b"replaced").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert!(viewer.revalidate().is_err());
+}
+
 #[test]
 fn native_broker_rejects_directories_and_preserves_large_offsets() {
     let root = fixture_root();

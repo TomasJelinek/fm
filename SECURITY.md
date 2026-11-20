@@ -637,7 +637,12 @@ see [recursive Move evidence](docs/verification/2026-11-08-recursive-move.md).
    point-in-time snapshot against concurrent writers; a stronger snapshot promise
    requires supported write exclusion or filesystem snapshots. In particular,
    same-length rewrites within one filesystem timestamp quantum can retain both
-   modification and change times and evade metadata revalidation. The digest
+   modification and change times and evade metadata revalidation. Copy and Move
+   also accept a pinned source, conflict target or Move capture whose change time
+   alone moved (VIEW-05), so a same-length rewrite that restores the modification
+   time goes undetected by them; an open Windows source handle denies write
+   sharing, Linux Move removal keeps its read lease and a replaced target stays in
+   recovery. User commands, checksums and Rename keep the change time. The digest
    proves the destination matches the source byte stream that was read, not the
    source's later contents. Report what was
    actually verified, never an unsupported stronger guarantee.
@@ -947,10 +952,15 @@ fields and conservative physical-device classifications.
   escapes or control pictures. Copy and search use the displayed text.
 - The native content broker provides LiveValidated reads, not a filesystem snapshot:
   it prepares identity, opens without following links, and checks revision before
-  and after reads. Replaced/changed files report an error. Reads are bounded to
-  256 KiB and use u64 offsets. Four live sessions share the host limits; decoded
-  pages, wire items, retained service replies and raster surfaces have separate
-  explicit budgets. Selection/copy is limited to the loaded page.
+  and after reads. Replaced/changed files report an error. Viewer captures accept a
+  revision whose change time alone moved (VIEW-05: same volume, file ID, length and
+  LastWriteTime on Windows; same device, inode, length and mtime on Linux), as
+  endpoint protection moves it on freshly written files; a same-length rewrite that
+  restores the modification time is then not detected while a file is displayed.
+  Reads are bounded to 256 KiB and use u64 offsets. Four live sessions share the
+  host limits; decoded pages, wire items, retained service replies and raster
+  surfaces have separate explicit budgets. Selection/copy is limited to the loaded
+  page.
 - Markdown returns semantic text blocks and inert link metadata. The host does not
   execute HTML/scripts or load remote images, styles, fonts or links. Source syntax
   definitions are packaged code, never executable configuration from the opened folder.

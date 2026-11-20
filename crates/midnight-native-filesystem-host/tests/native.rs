@@ -133,6 +133,49 @@ fn dynamic_provider_browses_reads_and_rejects_changed_source_without_fallback() 
     assert!(installed.capture(&source, &|| false).is_ok());
 }
 
+/// VIEW-05 through the actual native plugin, whose reader checks every read against its
+/// own revision (change time included): after only the change time moved, a viewer capture
+/// reads on and an exact capture fails; a write still fails both.
+#[test]
+#[ignore = "requires a protected independent native plugin installation"]
+fn installed_viewer_capture_reads_on_after_only_the_change_time_moved() {
+    use midnight_plugin_host::RevisionPolicy;
+    let installed =
+        midnight_native_filesystem_host::InstalledProvider::from_installation(installation(), None);
+    let fixture = tempfile::tempdir().unwrap();
+    // No extension: endpoint protection on some machines rescans fresh `.txt` files.
+    let source = fixture.path().join("fresh 文档");
+    std::fs::write(&source, b"original content").unwrap();
+    let viewer = installed
+        .capture_with(&source, RevisionPolicy::AcceptChangeTimeOnly, &|| false)
+        .unwrap();
+    let unread = installed
+        .capture_with(&source, RevisionPolicy::AcceptChangeTimeOnly, &|| false)
+        .unwrap();
+    let exact = installed.capture(&source, &|| false).unwrap();
+    assert_eq!(viewer.read_at(0, 8).unwrap(), b"original");
+    assert_eq!(exact.read_at(0, 8).unwrap(), b"original");
+    // The read-only attribute and NTFS ChangeTime on Windows, the mode and ctime on Linux:
+    // the native revision includes neither attributes nor mode.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let writable = std::fs::metadata(&source).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&source, read_only).unwrap();
+    std::fs::set_permissions(&source, writable).unwrap();
+    assert!(exact.read_at(0, 8).is_err(), "the change time did not move");
+    assert!(exact.revalidate().is_err());
+    assert_eq!(viewer.read_at(9, 7).unwrap(), b"content");
+    viewer.revalidate().unwrap();
+    assert_eq!(unread.read_at(0, 8).unwrap(), b"original");
+    // Same length, new write time.
+    std::fs::write(&source, b"changed  content").unwrap();
+    for capture in [&viewer, &unread] {
+        assert!(capture.read_at(0, 8).is_err());
+        assert!(capture.revalidate().is_err());
+    }
+}
+
 #[test]
 #[ignore = "requires a protected independent native plugin installation"]
 fn missing_duplicate_incompatible_and_removed_native_packages_fail_closed() {

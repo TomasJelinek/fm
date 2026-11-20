@@ -28,9 +28,10 @@ use windows_sys::Win32::{
         WinWorldSid,
     },
     Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_DATA,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
-        FILE_WRITE_DATA, READ_CONTROL, WRITE_DAC,
+        FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FileBasicInfo, GetFileInformationByHandleEx,
+        READ_CONTROL, SetFileInformationByHandle, WRITE_DAC,
     },
     System::{
         IO::DeviceIoControl,
@@ -388,4 +389,50 @@ pub fn unusual_name(stem: &str) -> OsString {
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "junction target is too long")
+}
+
+/// Move a file's NTFS ChangeTime, or with `write` its LastWriteTime, one second later and
+/// change nothing else, as endpoint protection moves the ChangeTime of a freshly written
+/// file when it adds an alternate data stream. Attribute-only access takes no part in
+/// sharing, so held transfer handles that deny writers do not prevent it.
+pub fn move_file_time(path: &Path, write: bool) {
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .unwrap();
+    let mut basic = FILE_BASIC_INFO::default();
+    // SAFETY: a live handle and a writable output of exactly the declared size.
+    check(unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&mut basic as *mut FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    })
+    .unwrap();
+    // Zero leaves a time unchanged; the attributes stay unchanged as well.
+    let moved = if write {
+        FILE_BASIC_INFO {
+            LastWriteTime: basic.LastWriteTime + 10_000_000,
+            ..Default::default()
+        }
+    } else {
+        FILE_BASIC_INFO {
+            ChangeTime: basic.ChangeTime + 10_000_000,
+            ..Default::default()
+        }
+    };
+    // SAFETY: a live handle with FILE_WRITE_ATTRIBUTES and an input of the declared size.
+    check(unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&moved as *const FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    })
+    .unwrap();
 }

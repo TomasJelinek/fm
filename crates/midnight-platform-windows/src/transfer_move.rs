@@ -2,7 +2,7 @@
 use super::*;
 use midnight_core::{
     PreparedTransferMove, PreparedTransferMoveEntry, TransferMoveCapture,
-    TransferMoveCaptureOutcome, TransferRecovery, TransferTarget,
+    TransferMoveCaptureOutcome, TransferRecovery, TransferRevisionPolicy, TransferTarget,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -19,29 +19,54 @@ mod finalization;
 #[path = "transfer_native_move.rs"]
 mod native_move;
 
-pub(super) fn prepare(path: &Path, cancel: &Cancellation) -> Result<PreparedTransferMove, FsError> {
-    let (source, capture) = prepare_native(path, cancel)?;
+/// `revisions` is the Move capture's comparison of the source's pinned revision: a Move
+/// accepts a moved ChangeTime (VIEW-05); Rename's replacement keeps it exact.
+pub(super) fn prepare(
+    path: &Path,
+    revisions: TransferRevisionPolicy,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMove, FsError> {
+    let (source, capture) = prepare_native_with(path, revisions, cancel)?;
     Ok(PreparedTransferMove {
         source: Box::new(source),
         capture,
     })
 }
 
+/// The exact Move capture, as Rename's replacement uses it.
+#[cfg(test)]
 fn prepare_native(
     path: &Path,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
+    prepare_native_with(path, TransferRevisionPolicy::Exact, cancel)
+}
+
+fn prepare_native_with(
+    path: &Path,
+    revisions: TransferRevisionPolicy,
+    cancel: &Cancellation,
+) -> Result<(source::Source, Arc<Capture>), FsError> {
     let (parent_file, parent_path, name) = open_root_location(path, cancel)?;
-    prepare_native_child(parent_file, parent_path, name, cancel)
+    prepare_native_child(parent_file, parent_path, name, revisions, cancel)
 }
 
 pub(super) fn prepare_with_links(
     path: &Path,
     links: CopyLinkPolicy,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMoveEntry, FsError> {
     let (parent_file, parent_path, name) = open_root_location(path, cancel)?;
-    prepare_child_with_links(parent_file, parent_path, name, None, links, cancel)
+    prepare_child_with_links(
+        parent_file,
+        parent_path,
+        name,
+        None,
+        links,
+        revisions,
+        cancel,
+    )
 }
 
 fn open_root_location<'a>(
@@ -79,6 +104,7 @@ pub(super) fn prepare_child_with_links(
     name: &OsStr,
     listed: Option<Native>,
     policy: CopyLinkPolicy,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMoveEntry, FsError> {
     let path = parent_path.join(name);
@@ -131,7 +157,7 @@ pub(super) fn prepare_child_with_links(
             capture,
         });
     }
-    let ordinary = prepare_child_with_policy(parent, parent_path, name, policy, cancel)?;
+    let ordinary = prepare_child_with_policy(parent, parent_path, name, policy, revisions, cancel)?;
     if ordinary.capture.entry().identity != original_identity {
         return Err(invalid(&path, "Move source changed while preparing"));
     }
@@ -142,6 +168,7 @@ pub(super) fn prepare_child(
     parent_file: Arc<File>,
     parent_path: std::path::PathBuf,
     name: &OsStr,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMove, FsError> {
     prepare_child_with_policy(
@@ -149,6 +176,7 @@ pub(super) fn prepare_child(
         parent_path,
         name,
         CopyLinkPolicy::Reject,
+        revisions,
         cancel,
     )
 }
@@ -158,10 +186,17 @@ fn prepare_child_with_policy(
     parent_path: PathBuf,
     name: &OsStr,
     policy: CopyLinkPolicy,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMove, FsError> {
-    let (source, capture) =
-        prepare_native_child_with_policy(parent_file, parent_path, name, policy, cancel)?;
+    let (source, capture) = prepare_native_child_with_policy(
+        parent_file,
+        parent_path,
+        name,
+        policy,
+        revisions,
+        cancel,
+    )?;
     Ok(PreparedTransferMove {
         source: Box::new(source),
         capture,
@@ -172,6 +207,7 @@ fn prepare_native_child(
     parent_file: Arc<File>,
     parent_path: std::path::PathBuf,
     name: &OsStr,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
     prepare_native_child_with_policy(
@@ -179,6 +215,7 @@ fn prepare_native_child(
         parent_path,
         name,
         CopyLinkPolicy::Reject,
+        revisions,
         cancel,
     )
 }
@@ -188,6 +225,7 @@ fn prepare_native_child_with_policy(
     parent_path: PathBuf,
     name: &OsStr,
     policy: CopyLinkPolicy,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
     let path = parent_path.join(name);
@@ -196,9 +234,11 @@ fn prepare_native_child_with_policy(
         parent_path.to_owned(),
     )?;
     let source =
-        source::Source::open_for_move(parent_file, parent_path.to_owned(), name, policy, cancel)?;
+        source::Source::open_for_move(parent_file, parent_path.to_owned(), name, policy, cancel)?
+            .with_move_revisions(revisions);
+    // The source's own binding pin; its revision policy is the Move's.
     let expected = parent
-        .prepare_target(name, cancel)?
+        .prepare_target_with(name, revisions, cancel)?
         .ok_or_else(|| invalid(&path, "Move source disappeared while preparing"))?;
     if expected.entry().identity != source.entry().identity {
         return Err(invalid(&path, "Move source changed while preparing"));

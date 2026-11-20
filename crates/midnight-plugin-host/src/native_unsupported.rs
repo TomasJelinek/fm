@@ -6,6 +6,9 @@ pub(crate) struct Snapshot {
     pub length: u64,
 }
 impl Snapshot {
+    pub(crate) fn matches(&self, current: &Self, _policy: crate::RevisionPolicy) -> bool {
+        self == current
+    }
     pub(crate) fn version_bytes(&self) -> Vec<u8> {
         Vec::new()
     }

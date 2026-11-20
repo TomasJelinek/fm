@@ -19,6 +19,8 @@ pub(super) struct Source {
     file: Arc<File>,
     readable: bool,
     stamp: (u64, i64, i64, i64, i64),
+    /// How `revalidate` compares `stamp`; children and Move children inherit it.
+    revisions: TransferRevisionPolicy,
     entries: Option<Dir>,
     move_enabled: bool,
     namespace: Arc<namespace::Bindings>,
@@ -32,6 +34,13 @@ pub(super) struct Source {
 impl Source {
     pub(super) fn enable_move(&mut self) {
         self.move_enabled = true;
+    }
+    /// Copy and Move sources accept a moved ctime alone (VIEW-05); sources opened by name
+    /// (checksums, file lists, viewer resources), drag previews and Rename keep the exact
+    /// default.
+    pub(super) fn with_revisions(mut self, revisions: TransferRevisionPolicy) -> Self {
+        self.revisions = revisions;
+        self
     }
     pub(super) fn native_file(&self) -> Arc<File> {
         self.file.clone()
@@ -139,7 +148,8 @@ impl Source {
             Some(namespace),
             self.traversal.clone(),
             cancel,
-        )?;
+        )?
+        .with_revisions(self.revisions);
         source.make_readable(cancel)?;
         Ok(source)
     }
@@ -187,6 +197,7 @@ impl Source {
             file,
             readable: false,
             stamp,
+            revisions: TransferRevisionPolicy::Exact,
             entries: None,
             move_enabled: false,
             namespace,
@@ -312,6 +323,7 @@ impl TransferSource for Source {
                     self.entry.item.path.clone(),
                     &name,
                     self.child_namespace()?,
+                    self.revisions,
                     cancel,
                 )
             })
@@ -346,6 +358,7 @@ impl TransferSource for Source {
                     &name,
                     Some(self.child_namespace()?),
                     traversal,
+                    self.revisions,
                     cancel,
                 )
             })
@@ -455,7 +468,9 @@ impl TransferSource for Source {
             return Err(invalid(path, "source identity changed"));
         }
         let metadata = self.file.metadata().map_err(|e| error(path, e))?;
-        if self.entry.item.kind == EntryKind::File && revision_of(&metadata) != self.stamp {
+        if self.entry.item.kind == EntryKind::File
+            && !revision_matches(self.stamp, revision_of(&metadata), self.revisions)
+        {
             return Err(invalid(path, "source content changed"));
         }
         Ok(())

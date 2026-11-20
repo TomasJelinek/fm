@@ -45,6 +45,17 @@ pub(crate) fn workspace_temporary(prefix: &str) -> tempfile::TempDir {
         .unwrap()
 }
 
+/// Move only the ctime of `path`, as endpoint protection moves the change time of a
+/// freshly written file: change its mode and restore it.
+pub(crate) fn move_ctime(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    // Leave the coarse kernel clock past the previous ctime.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mode = std::fs::metadata(path).unwrap().permissions();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400)).unwrap();
+    std::fs::set_permissions(path, mode).unwrap();
+}
+
 const ACCESS_ACL: &str = "system.posix_acl_access";
 
 /// Lets another user (nobody) write to `path` through a POSIX access ACL:

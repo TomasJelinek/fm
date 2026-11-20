@@ -3,7 +3,8 @@
 //! This is not an isolation boundary against root or another process of the same uid.
 use midnight_core::{
     Cancellation, CopyLinkPolicy, EntryKind, EntryMetadata, FsError, MutationItem,
-    TransferDirectory, TransferEntry, TransferIdentity, TransferService, TransferSource,
+    TransferDirectory, TransferEntry, TransferIdentity, TransferRevisionPolicy, TransferService,
+    TransferSource,
 };
 use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat, openat2};
 use std::{
@@ -83,7 +84,7 @@ impl TransferService for crate::LinuxFileSystem {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<midnight_core::PreparedTransferMove, FsError> {
-        move_source::prepare(path, cancel)
+        move_source::prepare(path, TransferRevisionPolicy::Exact, cancel)
     }
     fn prepare_move_source_with_links(
         &self,
@@ -91,14 +92,23 @@ impl TransferService for crate::LinuxFileSystem {
         links: CopyLinkPolicy,
         cancel: &Cancellation,
     ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
-        move_source::prepare_with_links(path, links, cancel)
+        move_source::prepare_with_links(path, links, TransferRevisionPolicy::Exact, cancel)
+    }
+    fn prepare_move_source_with_policy(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
+        move_source::prepare_with_links(path, links, revisions, cancel)
     }
     fn prepare_transfer_source(
         &self,
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
-        prepare_copy_source(path, None, cancel)
+        prepare_copy_source(path, None, TransferRevisionPolicy::Exact, cancel)
     }
     fn prepare_transfer_source_with_links(
         &self,
@@ -106,8 +116,17 @@ impl TransferService for crate::LinuxFileSystem {
         links: CopyLinkPolicy,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.prepare_transfer_source_with_policy(path, links, TransferRevisionPolicy::Exact, cancel)
+    }
+    fn prepare_transfer_source_with_policy(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
         let mode = match links {
-            CopyLinkPolicy::Reject => return self.prepare_transfer_source(path, cancel),
+            CopyLinkPolicy::Reject => return prepare_copy_source(path, None, revisions, cancel),
             CopyLinkPolicy::Preserve => {
                 return Err(FsError::from_io(
                     "transfer capability",
@@ -121,7 +140,12 @@ impl TransferService for crate::LinuxFileSystem {
             CopyLinkPolicy::FollowDirectoryContents => directory_links::DirectoryLinkMode::Follow,
             CopyLinkPolicy::EmptyDirectories => directory_links::DirectoryLinkMode::Empty,
         };
-        prepare_copy_source(path, Some(directory_links::Traversal::new(mode)), cancel)
+        prepare_copy_source(
+            path,
+            Some(directory_links::Traversal::new(mode)),
+            revisions,
+            cancel,
+        )
     }
     fn prepare_transfer_destination(
         &self,
@@ -141,6 +165,7 @@ impl TransferService for crate::LinuxFileSystem {
 fn prepare_copy_source(
     path: &Path,
     traversal: Option<directory_links::Traversal>,
+    revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<Box<dyn TransferSource>, FsError> {
     checked(cancel, path)?;
@@ -154,13 +179,10 @@ fn prepare_copy_source(
     let parent = Arc::new(File::from(
         openat(CWD, parent_path, DIRECTORY, Mode::empty()).map_err(|e| error(&path, e.into()))?,
     ));
-    Ok(Box::new(source::Source::open_root(
-        parent,
-        parent_path.to_owned(),
-        name,
-        traversal,
-        cancel,
-    )?))
+    Ok(Box::new(
+        source::Source::open_root(parent, parent_path.to_owned(), name, traversal, cancel)?
+            .with_revisions(revisions),
+    ))
 }
 fn absolute(path: &Path) -> Result<PathBuf, FsError> {
     if !path.is_absolute()
@@ -211,6 +233,20 @@ fn revision_of(metadata: &std::fs::Metadata) -> (u64, i64, i64, i64, i64) {
         metadata.ctime(),
         metadata.ctime_nsec(),
     )
+}
+/// Whether a `revision_of` tuple is still the pinned one under `policy`: accepting a moved
+/// ctime (VIEW-05) still requires the same length and mtime.
+fn revision_matches(
+    pinned: (u64, i64, i64, i64, i64),
+    current: (u64, i64, i64, i64, i64),
+    policy: TransferRevisionPolicy,
+) -> bool {
+    match policy {
+        TransferRevisionPolicy::Exact => pinned == current,
+        TransferRevisionPolicy::AcceptChangeTimeOnly => {
+            (pinned.0, pinned.1, pinned.2) == (current.0, current.1, current.2)
+        }
+    }
 }
 fn kind_of(metadata: &std::fs::Metadata) -> EntryKind {
     if metadata.is_file() {
