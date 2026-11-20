@@ -1,6 +1,17 @@
 //! Prepared native identities remain in the backend; this state is bounded UI data.
 use super::*;
 
+/// A change of files as its refusals name it.
+pub(super) fn mutation_action(kind: MutationKind) -> &'static str {
+    match kind {
+        MutationKind::Rename => "Rename",
+        MutationKind::CreateDirectory => "Create folder",
+        MutationKind::CreateFile => "New file",
+        MutationKind::EditMetadata => "Attributes, times and case",
+        MutationKind::Delete(_) => "Delete",
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct OperationsState {
     pub(super) next_id: u64,
@@ -14,6 +25,8 @@ pub(crate) struct OperationsState {
     pub(super) rename_versions: std::collections::HashMap<OperationId, u64>,
     pub(super) rename_deferred: std::collections::HashSet<(OperationId, u64)>,
     pub(super) rename_selected: Option<(OperationId, u64)>,
+    /// Delete failures waiting for the shared decision prompt.
+    pub(crate) delete_decisions: super::delete_decisions::DeleteDecisions,
     pub(crate) unconfirmed: std::collections::HashSet<OperationId>,
     /// A new empty file whose name the displayed folder already has: confirming the
     /// same name again replaces that file.
@@ -24,16 +37,87 @@ pub(crate) struct OperationsState {
     pub(crate) closing: bool,
     pub(super) refresh: Vec<(PaneId, PathBuf, Option<PathBuf>)>,
     pub(crate) settle: Settle,
+    /// Per pane, an action requested while a background re-read kept its rows.
+    pub(super) deferred: [Option<DeferredAction>; 2],
+    pub(crate) progress_windows: ProgressWindowJobs,
+}
+
+/// The jobs whose own progress window is open. That window shows how its job ended
+/// (cancelled, with errors or completed), so the main window adds no notice for it.
+/// The progress windows (`job_progress_windows.rs`) keep this current; the
+/// presenter only reads it.
+#[derive(Default)]
+pub(crate) struct ProgressWindowJobs(std::cell::RefCell<HashSet<crate::job_row_cache::Key>>);
+
+impl ProgressWindowJobs {
+    /// Replaces the set with the jobs whose progress window is open now.
+    pub(crate) fn set(&self, jobs: HashSet<crate::job_row_cache::Key>) {
+        *self.0.borrow_mut() = jobs;
+    }
+
+    pub(crate) fn contains(&self, job: crate::job_row_cache::Key) -> bool {
+        self.0.borrow().contains(&job)
+    }
+}
+
+/// A pane action requested while a background re-read keeps the pane's rows on
+/// screen without a loading state (`Pane::keeps_rows_in_background`). The
+/// Engine prepares operations and tree roots only against a committed listing,
+/// so the action runs once the re-read ends (`run_deferred_actions`), on the
+/// targets captured when it was requested, unless the pane left the folder.
+pub(super) struct DeferredAction {
+    folder: PathBuf,
+    kind: DeferredKind,
+}
+
+enum DeferredKind {
+    Operation(MutationKind, SelectedFiles),
+    Disclose { identity: String, recursive: bool },
+}
+
+/// How long after its confirmation a job may end and still hold panel input:
+/// a job that runs longer went on in the background while the user did other
+/// work, and its panels then update like any other background re-read.
+const WAITED_JOB: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How a pane's input waits for a file job's change (`Presenter::mutation_holds`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaneHold {
+    None,
+    /// A confirmed Rename, New file or New folder in the pane's folder still
+    /// runs: input waits for as long as it takes, and the pane describes the
+    /// job once it takes a while.
+    Job,
+    /// A completed job's re-read or tree refresh that shows the change is in
+    /// flight: the window bounds this wait and then says the pane is still
+    /// updating until the change appears.
+    Reread,
+}
+
+impl PaneHold {
+    /// The window's `mutation-hold` value.
+    pub(crate) fn code(self) -> i32 {
+        match self {
+            Self::None => 0,
+            Self::Job => 1,
+            Self::Reread => 2,
+        }
+    }
 }
 
 /// Panel input waits while a confirmed single-entry job (Rename, New file, New
-/// folder) runs, and after any completed file job while the panel re-reads that
-/// show its change are in flight. Stale rows cannot be acted on, and a completed
-/// change does not look as if it failed. The window bounds the wait.
-#[derive(Debug, Default)]
+/// folder) runs, and after a completed file job the user waited for while the
+/// panel re-reads that show its change are in flight. Only the panels showing
+/// the change wait (`mutation_holds`): stale rows cannot be acted on, and a
+/// completed change does not look as if it failed. The window bounds the
+/// re-read's wait, lets Escape end any wait, and replays the keys typed
+/// meanwhile (`shortcut_bridge`).
+#[derive(Debug)]
 pub(crate) struct Settle {
     /// The confirmed single-entry job input waits for.
     job: Option<OperationId>,
+    /// How the held pane describes that job, such as `Renaming “a” to “b”…`.
+    job_text: String,
     /// Panes whose queued refresh shows a completed change.
     hold: [bool; 2],
     /// Per pane, the in-flight re-read that shows it.
@@ -42,6 +126,43 @@ pub(crate) struct Settle {
     pub(super) tree: [Option<u64>; 2],
     /// Per native tree pane, the renamed or created entry to focus once published.
     pub(super) tree_reveal: [Option<PathBuf>; 2],
+    /// When each confirmed job was first reported running, by whether it is a
+    /// Copy or Move job (those are numbered apart from other file jobs).
+    started: HashMap<(bool, OperationId), std::time::Instant>,
+    /// See [`WAITED_JOB`].
+    pub(super) waited: std::time::Duration,
+}
+
+impl Default for Settle {
+    fn default() -> Self {
+        Self {
+            job: None,
+            job_text: String::new(),
+            hold: [false; 2],
+            reads: [None; 2],
+            tree: [None; 2],
+            tree_reveal: [None, None],
+            started: HashMap::new(),
+            waited: WAITED_JOB,
+        }
+    }
+}
+
+impl Settle {
+    /// A confirmed job (`copy`: a Copy or Move job) reported that it runs.
+    pub(super) fn job_running(&mut self, copy: bool, id: OperationId) {
+        self.started
+            .entry((copy, id))
+            .or_insert_with(std::time::Instant::now);
+    }
+
+    /// Whether the user waited for a job that just ended: it ended within
+    /// [`WAITED_JOB`] of running, or too soon to report that it runs.
+    pub(super) fn job_ended(&mut self, copy: bool, id: OperationId) -> bool {
+        self.started
+            .remove(&(copy, id))
+            .is_none_or(|started| started.elapsed() <= self.waited)
+    }
 }
 
 impl OperationsState {
@@ -105,6 +226,14 @@ impl Presenter {
         kind: MutationKind,
         send: &dyn Fn(Command) -> bool,
     ) {
+        // Search results fed to the panel cover its folder (the toolbar's New file).
+        if self.feed(pane).is_some() {
+            self.feed_mutation(pane, kind, send);
+            return;
+        }
+        if self.comparison_refuses(mutation_action(kind)) {
+            return;
+        }
         if kind == MutationKind::Rename && self.panes[pane.index()].tree_view().is_some() {
             self.request_tree_rename(pane, send);
             return;
@@ -133,7 +262,10 @@ impl Presenter {
         }
         let p = &self.panes[pane.index()];
         let deleting = matches!(kind, MutationKind::Delete(_));
-        if self.visible_directory(pane).is_none() || p.search_view_waiting() {
+        // A background re-read shows no loading state: wait for it rather than
+        // refuse silently (`run_deferred_actions`).
+        let deferred = p.keeps_rows_in_background() && p.native_capabilities();
+        if (!deferred && self.visible_directory(pane).is_none()) || p.search_view_waiting() {
             if deleting {
                 self.desktop.report(
                     "Delete unavailable",
@@ -167,7 +299,70 @@ impl Presenter {
                 })
                 .flatten(),
         };
+        if deferred {
+            self.defer_action(pane, DeferredKind::Operation(kind, files));
+            return;
+        }
         self.start_captured_operation(pane, kind, &files, send);
+    }
+
+    /// Run `kind` once the pane's background re-read ends; a later request
+    /// replaces an earlier one, as a second request would cancel its preparation.
+    fn defer_action(&mut self, pane: PaneId, kind: DeferredKind) {
+        let folder = self.panes[pane.index()].display_path().to_owned();
+        let old = self.operations.deferred[pane.index()].replace(DeferredAction { folder, kind });
+        self.retired.push(Box::new(old));
+    }
+
+    /// Defer a disclosure clicked while a background re-read keeps the rows.
+    pub(super) fn defer_disclosure(&mut self, pane: PaneId, identity: &str, recursive: bool) {
+        self.defer_action(
+            pane,
+            DeferredKind::Disclose {
+                identity: identity.to_owned(),
+                recursive,
+            },
+        );
+    }
+
+    /// Run each pane's deferred action once its background re-read committed
+    /// or failed, before another re-read of the pane can start. One whose pane
+    /// left the folder or started a visible load is dropped.
+    pub(super) fn run_deferred_actions(&mut self, send: &dyn Fn(Command) -> bool) {
+        for pane in [PaneId::Left, PaneId::Right] {
+            let p = &self.panes[pane.index()];
+            if self.operations.deferred[pane.index()].is_none() || p.keeps_rows_in_background() {
+                continue;
+            }
+            let Some(action) = self.operations.deferred[pane.index()].take() else {
+                continue;
+            };
+            if p.loading || !p.native_capabilities() || p.display_path() != action.folder {
+                self.retired.push(Box::new(action));
+                continue;
+            }
+            match action.kind {
+                DeferredKind::Operation(kind, files) => {
+                    // The Engine prepares against the listing the UI acknowledged;
+                    // the application acknowledges a commit only after this event.
+                    if let Some(visible) = self.visible_directory(pane) {
+                        let _ = send(Command::PaneCommitted(visible));
+                    }
+                    self.start_captured_operation(pane, kind, &files, send);
+                    self.retired.push(Box::new(files));
+                }
+                DeferredKind::Disclose {
+                    identity,
+                    recursive,
+                } => {
+                    if recursive {
+                        self.disclose_tree_recursive(pane, &identity, send);
+                    } else {
+                        self.disclose_tree(pane, &identity, send);
+                    }
+                }
+            }
+        }
     }
 
     pub(super) fn start_captured_operation(
@@ -306,10 +501,25 @@ impl Presenter {
                 Some(name)
             }
         };
-        let single_entry = matches!(
-            preview.kind,
-            MutationKind::Rename | MutationKind::CreateFile | MutationKind::CreateDirectory
-        );
+        let shown = |name: &str| midnight_core::visible_name(name).into_owned();
+        let job_text = match (preview.kind, name.as_deref()) {
+            (MutationKind::Rename, Some(new)) => Some(format!(
+                "Renaming “{}” to “{}”…",
+                shown(
+                    &preview
+                        .sample
+                        .first()
+                        .and_then(|item| item.path.file_name())
+                        .map_or_else(String::new, |old| old.to_string_lossy().into_owned())
+                ),
+                shown(new)
+            )),
+            (MutationKind::CreateFile, Some(new)) => Some(format!("Creating “{}”…", shown(new))),
+            (MutationKind::CreateDirectory, Some(new)) => {
+                Some(format!("Creating folder “{}”…", shown(new)))
+            }
+            _ => None,
+        };
         if send(Command::ConfirmOperation {
             id,
             new_name: name,
@@ -317,8 +527,11 @@ impl Presenter {
         }) {
             // A job queued behind another one may wait for it; never hold input
             // for that.
-            if single_entry && !self.other_mutation_live(id) {
+            if let Some(text) = job_text
+                && !self.other_mutation_live(id)
+            {
                 self.operations.settle.job = Some(id);
+                self.operations.settle.job_text = text;
             }
             self.operations.replace_name = None;
             self.operations.unconfirmed.remove(&id);
@@ -364,12 +577,59 @@ impl Presenter {
                 .any(|p| p.id != id && !p.state.is_terminal())
     }
 
-    /// Whether panel input waits for a file job's change to become visible.
+    /// Whether some panel's input waits for a file job's change to become visible.
+    #[cfg(test)]
     pub(crate) fn mutation_settling(&self) -> bool {
+        self.mutation_settling_panes().contains(&true)
+    }
+
+    /// Per pane, whether its input waits for a file job's change to become
+    /// visible (see `mutation_holds`).
+    #[cfg(test)]
+    pub(crate) fn mutation_settling_panes(&self) -> [bool; 2] {
+        self.mutation_holds().map(|hold| hold != PaneHold::None)
+    }
+
+    /// Per pane, how its input waits for a file job's change to become
+    /// visible: a confirmed Rename or creation in the folder it shows that
+    /// still runs, or the re-read or tree refresh that shows a completed
+    /// change. The other pane, the command line and the toolbars never wait.
+    pub(crate) fn mutation_holds(&self) -> [PaneHold; 2] {
         let settle = &self.operations.settle;
-        settle.job.is_some()
-            || settle.reads.iter().any(Option::is_some)
-            || settle.tree.iter().any(Option::is_some)
+        let job = settle
+            .job
+            .and_then(|id| {
+                self.operations
+                    .progress
+                    .iter()
+                    .find(|progress| progress.id == id)
+            })
+            .map(|progress| progress.source_directory.as_path());
+        [PaneId::Left, PaneId::Right].map(|pane| {
+            let p = &self.panes[pane.index()];
+            if job.is_some_and(|folder| {
+                p.native_capabilities()
+                    && (p.display_path() == folder
+                        || (p.tree_view().is_some() && folder.starts_with(p.display_path())))
+            }) {
+                PaneHold::Job
+            } else if settle.reads[pane.index()].is_some() || settle.tree[pane.index()].is_some() {
+                PaneHold::Reread
+            } else {
+                PaneHold::None
+            }
+        })
+    }
+
+    /// How a pane held by a running job describes it, such as
+    /// `Renaming “a” to “b”…`; empty without one.
+    pub(crate) fn mutation_job_text(&self) -> &str {
+        let settle = &self.operations.settle;
+        if settle.job.is_some() {
+            &settle.job_text
+        } else {
+            ""
+        }
     }
 
     /// Stop waiting for `id`'s job (every wait without one); its re-reads still
@@ -377,7 +637,10 @@ impl Presenter {
     pub(super) fn release_mutation_settle(&mut self, id: Option<OperationId>) {
         let settle = &mut self.operations.settle;
         match id {
-            Some(id) if settle.job == Some(id) => settle.job = None,
+            Some(id) if settle.job == Some(id) => {
+                settle.job = None;
+                settle.job_text.clear();
+            }
             Some(_) => {}
             None => *settle = Settle::default(),
         }
@@ -443,6 +706,8 @@ impl Presenter {
         self.cancel_tree_rename(None);
         self.cancel_tree_delete(None);
         self.retire_warning_viewer();
+        self.retired
+            .push(Box::new(mem::take(&mut self.operations.deferred)));
         self.operations.pending = None;
         self.operations.preview = None;
         self.copies.conflicts.clear();
@@ -453,6 +718,7 @@ impl Presenter {
         self.operations.rename_versions.clear();
         self.operations.rename_deferred.clear();
         self.operations.rename_selected = None;
+        self.retire_delete_decisions();
         self.release_mutation_settle(None);
         for job in &self.command_launches.jobs {
             if !job.finished {
@@ -498,6 +764,11 @@ impl Presenter {
                 self.release_mutation_settle(Some(conflict.id));
                 self.apply_rename_conflict(conflict);
             }
+            OperationEvent::DeleteFailure(failure) => {
+                // The failure prompt needs the user; the panel must not wait for it.
+                self.release_mutation_settle(Some(failure.id));
+                self.apply_delete_failure(failure);
+            }
             OperationEvent::Preview(preview) => {
                 if preview.kind != MutationKind::EditMetadata
                     && self.operations.pending == Some(preview.id)
@@ -532,8 +803,17 @@ impl Presenter {
                 {
                     self.operations.unconfirmed.remove(&progress.id);
                 }
+                if matches!(
+                    progress.state,
+                    OperationState::Queued
+                        | OperationState::Running
+                        | OperationState::CancelRequested
+                ) {
+                    self.operations.settle.job_running(false, progress.id);
+                }
                 if progress.state.is_terminal() {
                     self.retire_rename_decision(progress.id);
+                    self.retire_delete_decision(progress.id);
                     self.operations
                         .metadata_conflicts
                         .retain(|conflict| conflict.id != progress.id);
@@ -544,20 +824,37 @@ impl Presenter {
                         self.operations.pending = None;
                         self.operations.preview = None;
                     }
-                    let reveal = progress
-                        .renamed_to
-                        .as_ref()
-                        .filter(|destination| {
-                            destination.parent() == Some(progress.source_directory.as_path())
-                        })
-                        .cloned();
+                    // The entry the shown folder gained: the new name, or for a nested
+                    // new folder path (F7 `alpha/beta`) its first new folder, `alpha`.
+                    let reveal = progress.renamed_to.as_ref().and_then(|destination| {
+                        if destination.parent() == Some(progress.source_directory.as_path()) {
+                            return Some(destination.clone());
+                        }
+                        if progress.kind != MutationKind::CreateDirectory {
+                            return None;
+                        }
+                        let below = destination.strip_prefix(&progress.source_directory).ok()?;
+                        match below.components().next()? {
+                            std::path::Component::Normal(name) => {
+                                Some(progress.source_directory.join(name))
+                            }
+                            _ => None,
+                        }
+                    });
+                    // A panel held since a Rename's or creation's confirmation
+                    // waited for it, however long the job took.
+                    let held = self.operations.settle.job == Some(progress.id);
                     self.release_mutation_settle(Some(progress.id));
-                    // Only a completed change keeps input waiting, for its re-reads;
-                    // a failure is reported without holding the panel.
-                    let hold = matches!(
-                        progress.state,
-                        OperationState::Completed | OperationState::CompletedWithErrors
-                    );
+                    // Only a completed change the user waited for keeps input
+                    // waiting, for its re-reads; a failure is reported without
+                    // holding the panel, and a long job's panels update in place.
+                    let ended_soon = self.operations.settle.job_ended(false, progress.id);
+                    let waited = ended_soon || held;
+                    let hold = waited
+                        && matches!(
+                            progress.state,
+                            OperationState::Completed | OperationState::CompletedWithErrors
+                        );
                     for pane in [PaneId::Left, PaneId::Right] {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
                             if hold {
@@ -577,33 +874,14 @@ impl Presenter {
                             hold,
                         );
                     }
-                    let title = if progress.state == OperationState::CompletedWithErrors {
-                        "File operation completed with errors"
-                    } else {
-                        "File operation failed"
-                    };
-                    if !progress.errors.is_empty() {
-                        // Only targets that did not complete can leave partial changes.
-                        let partial = (progress.completed > 0 || progress.processed_entries > 0)
-                            && progress.completed < progress.total;
-                        self.desktop.report(
-                            title,
-                            crate::error_presentation::issues(&progress.errors, partial),
-                        );
-                    } else if !progress.message.is_empty()
-                        // A clean metadata edit just closes; the refreshed panel shows it.
-                        && !(progress.kind == MutationKind::EditMetadata
-                            && progress.state == OperationState::Completed)
+                    // The job's own open window shows how it ended, errors included;
+                    // a notice would repeat it. Only a job without one gets a notice.
+                    if !self
+                        .operations
+                        .progress_windows
+                        .contains(crate::job_row_cache::Key::Mutation(progress.id))
                     {
-                        if matches!(
-                            progress.state,
-                            OperationState::Failed | OperationState::CompletedWithErrors
-                        ) {
-                            self.desktop.report(title, progress.message.clone());
-                        } else {
-                            self.desktop
-                                .inform("File operation", progress.message.clone());
-                        }
+                        self.report_operation_outcome(&progress);
                     }
                 }
                 if let Some(old) = self
@@ -630,6 +908,37 @@ impl Presenter {
         }
         None
     }
+    /// The notice for a finished file operation that no window of its own shows.
+    fn report_operation_outcome(&mut self, progress: &OperationProgress) {
+        let title = if progress.state == OperationState::CompletedWithErrors {
+            "File operation completed with errors"
+        } else {
+            "File operation failed"
+        };
+        if !progress.errors.is_empty() {
+            // Only targets that did not complete can leave partial changes.
+            let partial = (progress.completed > 0 || progress.processed_entries > 0)
+                && progress.completed < progress.total;
+            self.desktop.report(
+                title,
+                crate::error_presentation::issues(&progress.errors, partial),
+            );
+        } else if !progress.message.is_empty()
+            // A clean metadata edit just closes; the refreshed panel shows it.
+            && !(progress.kind == MutationKind::EditMetadata
+                && progress.state == OperationState::Completed)
+        {
+            if matches!(
+                progress.state,
+                OperationState::Failed | OperationState::CompletedWithErrors
+            ) {
+                self.desktop.report(title, progress.message.clone());
+            } else {
+                self.desktop
+                    .inform("File operation", progress.message.clone());
+            }
+        }
+    }
     /// Queue one coalesced post-operation re-read of a native pane showing
     /// `directory`. A newer completion for the pane replaces an older target, so a
     /// pane that moved on while its previous re-read waited is still refreshed.
@@ -651,6 +960,8 @@ impl Presenter {
     }
 
     pub(super) fn refresh_operation_paths(&mut self, send: &dyn Fn(Command) -> bool) {
+        // An action that waited for a re-read runs before the next one starts.
+        self.run_deferred_actions(send);
         let changes = mem::take(&mut self.operations.refresh);
         // A completion's re-read holds input only when it starts now; one left
         // waiting (comparison, drag, full queue) runs later without a hold.
@@ -669,6 +980,14 @@ impl Presenter {
                 && p.pending
                     .as_ref()
                     .is_some_and(|request| request.keep_rows && request.path == directory);
+            // The superseded re-read may reveal an earlier job's renamed or
+            // created entry; that still applies unless this job reveals its own
+            // or the user moved the cursor since.
+            let superseded_target = p
+                .pending
+                .as_ref()
+                .filter(|request| supersede && !request.cursor_touched)
+                .and_then(|request| request.wanted_cursor.clone());
             if (p.loading && !supersede)
                 || self.background_refresh_blocked(pane)
                 || !self.navigate_impl(pane, directory.clone(), None, Reload::Background, send)
@@ -681,7 +1000,13 @@ impl Presenter {
                     Some(NavigationId(self.panes[pane.index()].generation));
             }
             let p = &mut self.panes[pane.index()];
-            p.preserve_viewport = destination.is_none();
+            let carried = superseded_target.filter(|target| {
+                destination.is_none()
+                    && p.pending
+                        .as_ref()
+                        .is_none_or(|request| request.wanted_cursor.as_ref() != Some(target))
+            });
+            p.preserve_viewport = destination.is_none() && carried.is_none();
             if let Some(destination) = &destination {
                 // A same-directory refresh retains old rows. Release their old
                 // caret so wanted_cursor can reveal the created/renamed entry.
@@ -691,7 +1016,7 @@ impl Presenter {
                 revealed.push(pane);
             }
             if let Some(request) = &mut p.pending {
-                request.wanted_cursor = destination;
+                request.wanted_cursor = destination.or(carried);
             }
         }
         // Clearing a quick search flushes selection work, which can re-enter this

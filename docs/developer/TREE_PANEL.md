@@ -791,7 +791,11 @@ folders are not an implicit recursive comparison. Names, size, modified time,
 unmatched-folder handling and time tolerance use the same backend comparison as
 flat panels. Both roots must be native; any virtual/provider entry is rejected,
 including virtual descendants of a native root. Display paths cannot authorize
-native access. No files are opened or modified by this metadata comparison.
+native access. No files are modified; files are read only with Compare contents.
+With Include subfolders the root folders are walked natively (see
+[COMPARE_DIRECTORIES.md](COMPARE_DIRECTORIES.md)), and the displayed descendant
+folders on the way to a difference are selected as well, through the same
+occurrence-based replacement.
 
 The result is correlated with both original panel paths, navigation IDs, displayed
 projections and settled selection revisions before either preview changes. A flat
@@ -858,8 +862,11 @@ operation path. Pane-directory actions such as terminal, bookmarks, creation and
 paste destinations keep their existing location authority. Native immediate-parent
 checks and the flat `SelectedFiles` contract are unchanged.
 
-Browsable container discovery/attachment and true archive-inside-archive targets
-remain pending. Navigation retires the tree and establishes a new flat selection
+Browsable container discovery/attachment remains pending: branches do not expand
+archive files, native or inside archives. Enter on an archive file in the panel's own
+folder opens it through the flat panel, including an
+[archive inside an archive](../ARCHIVE_FORMATS.md#archives-inside-archives); archive
+members in expanded branches below it do not open. Navigation retires the tree and establishes a new flat selection
 scope; it does not restore stale pre-tree marks. Native refresh retains the adopted
 session through the maintenance path described above.
 No production tree completion

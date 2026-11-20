@@ -9,6 +9,7 @@ export global HotPathsPresentation {
     in-out property <[BookmarkRow]> model;
     in-out property <ActionIcons> action-icons;
     in-out property <string> path;
+    in-out property <string> path-tail;
     callback assign-bookmark(string, string, int);
     callback remove-bookmark(string, string);
     callback add-bookmark(string);
@@ -39,6 +40,7 @@ export component EmbeddedHotPaths inherits Rectangle {
                 model: HotPathsPresentation.model;
                 action-icons: HotPathsPresentation.action-icons;
                 path: HotPathsPresentation.path;
+                path-tail: HotPathsPresentation.path-tail;
                 private property <string> occurrence;
                 init => { self.occurrence = HotPathsPresentation.token; self.begin(); }
                 move-dialog(dx, dy) => { manager-frame.move-by(dx, dy); }

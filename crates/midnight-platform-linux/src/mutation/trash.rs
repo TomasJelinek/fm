@@ -80,6 +80,7 @@ pub(super) fn move_entry(
             progress(&prepared.item.path);
             Ok(DeleteCompletion {
                 residue: staged.cleanup().err(),
+                skipped: 0,
             })
         }
         Err(failure) => Err(reservation.remove(&trash, staged.restore(prepared, failure))),

@@ -1,19 +1,24 @@
-use crate::{FontChoices, Frame, Palette, check_cancel, identity::DecodedText};
+use crate::{Frame, Palette, check_cancel, identity::DecodedText, typeface::Typeface};
 use midnight_core::{ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
 use midnight_viewer_render::{TextOptions, TextPage, TextRenderer, Viewport};
-use similar::{DiffTag, TextDiff};
-use std::{
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
-};
+use similar::{DiffOp, DiffTag};
+use std::sync::{Arc, atomic::AtomicBool};
 
+#[path = "text_align.rs"]
+mod align;
 #[path = "text_find.rs"]
 mod find;
 
-const MAX_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_LINES: usize = 100_000;
+/// Larger files, and pairs that are not text, are compared as bytes. Measurements are in
+/// docs/developer/FILE_COMPARISON.md.
+pub(crate) const MAX_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_LINES: usize = 1_000_000;
+/// Each visible row is shaped whole, so this bounds the work of one paint.
 const MAX_LINE_BYTES: usize = 16 * 1024;
+const READ_BLOCK: u32 = 256 * 1024;
+/// Reading reports its progress after each such amount.
+const PROGRESS_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TextEncoding {
@@ -34,29 +39,124 @@ impl TextEncoding {
     }
 }
 
+/// Why a file was not read as text.
+#[derive(Debug)]
+pub(crate) enum ReadError {
+    /// The content or its size is outside what text comparison admits; the pair is then
+    /// compared as bytes, with this reason shown.
+    Refused(String),
+    /// Reading failed: cancellation, an I/O error or a changed file. The comparison fails.
+    Failed(String),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(reason) | Self::Failed(reason) => output.write_str(reason),
+        }
+    }
+}
+
+/// One side's decoded text and the end offset of each of its lines, line breaks
+/// included. Offsets fit in `u32` because admitted text is far below 4 GiB.
+pub(crate) struct TextLines {
+    text: String,
+    ends: Vec<u32>,
+}
+
+impl TextLines {
+    /// Split admitted text, refusing more than `MAX_LINES` lines or a line longer than
+    /// `MAX_LINE_BYTES`.
+    /// The line ends of a refused text are never all kept: at most `MAX_LINES` of them.
+    fn split(text: String) -> Result<Self, String> {
+        let mut ends = Vec::new();
+        let mut offset = 0;
+        for line in text.split_inclusive('\n') {
+            if ends.len() == MAX_LINES {
+                return Err(format!(
+                    "text comparison supports up to {} lines per file",
+                    grouped(MAX_LINES as u64)
+                ));
+            }
+            if line.len() > MAX_LINE_BYTES {
+                return Err("text comparison supports lines up to 16 KiB".into());
+            }
+            offset += line.len();
+            ends.push(offset as u32);
+        }
+        Ok(Self { text, ends })
+    }
+
+    /// The lines of any text, without the limits (tests).
+    #[cfg(test)]
+    fn unchecked(text: String) -> Self {
+        let mut ends = Vec::new();
+        let mut offset = 0;
+        for line in text.split_inclusive('\n') {
+            offset += line.len();
+            ends.push(offset as u32);
+        }
+        Self { text, ends }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn get(&self, index: usize) -> Option<&str> {
+        let end = *self.ends.get(index)? as usize;
+        let start = index
+            .checked_sub(1)
+            .map_or(0, |previous| self.ends[previous] as usize);
+        self.text.get(start..end)
+    }
+
+    fn line(&self, index: usize) -> &str {
+        self.get(index).unwrap_or_default()
+    }
+}
+
 pub(crate) struct TextInput {
-    pub text: String,
+    pub lines: TextLines,
     pub encoding: TextEncoding,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+/// One aligned row: a line index on each side (`ABSENT` for none) and whether it changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Row {
-    left: Option<usize>,
-    right: Option<usize>,
+    left: u32,
+    right: u32,
     changed: bool,
+}
+
+const ABSENT: u32 = u32::MAX;
+
+impl Row {
+    fn side(&self, side: usize) -> Option<usize> {
+        let index = if side == 0 { self.left } else { self.right };
+        (index != ABSENT).then_some(index as usize)
+    }
+
+    fn left(&self) -> Option<usize> {
+        self.side(0)
+    }
+
+    fn right(&self) -> Option<usize> {
+        self.side(1)
+    }
 }
 
 pub(crate) struct TextComparison {
     find: find::TextFind,
-    lines: [Vec<String>; 2],
+    lines: [TextLines; 2],
     rows: Vec<Row>,
     differences: Vec<usize>,
     renderer: TextRenderer,
-    /// The chooser's catalog and selection; `None` until the catalog arrives, which keeps
-    /// the chooser disabled.
-    fonts: Option<FontChoices>,
-    /// The family painted while `fonts` is `None`.
-    family: String,
+    pub typeface: Typeface,
     pub top: usize,
     pub horizontal: f32,
     vertical_remainder: f32,
@@ -66,38 +166,58 @@ pub(crate) struct TextComparison {
     painted_width: u32,
     decoded_identity: DecodedText,
     pub encodings: Option<[TextEncoding; 2]>,
+    /// The line alignment ran out of time: some unchanged lines may show as changed.
+    approximate: bool,
 }
 
 /// Each 256 KiB block is admitted by the storage policy: shared on a confirmed local SSD,
 /// exclusive otherwise, so a long copy cannot hold back comparisons of SSD files.
+/// `progress` receives the bytes read so far after every few MiB of a large file.
 pub(crate) fn read(
     file: &CapturedFile,
     confirmed_ssd: bool,
     cancel: &AtomicBool,
-) -> Result<TextInput, String> {
-    if file.length() > MAX_BYTES {
-        return Err("Text comparison supports at most 4 MiB per file.".into());
+    progress: &mut dyn FnMut(u64),
+) -> Result<TextInput, ReadError> {
+    let length = file.length();
+    if length > MAX_BYTES {
+        return Err(ReadError::Refused(format!(
+            "text comparison supports files up to {} MiB",
+            MAX_BYTES >> 20
+        )));
     }
-    let mut bytes = Vec::with_capacity(file.length() as usize);
-    while (bytes.len() as u64) < file.length() {
-        check_cancel(cancel)?;
+    let mut bytes = Vec::with_capacity(length as usize);
+    let mut reported = 0;
+    while (bytes.len() as u64) < length {
+        check_cancel(cancel).map_err(ReadError::Failed)?;
         let budget = midnight_work_budget::shared_io();
         let _permit = budget
             .acquire(
                 midnight_work_budget::storage_admission(confirmed_ssd),
                 || cancel.load(std::sync::atomic::Ordering::Acquire),
             )
-            .ok_or("Comparison cancelled.")?;
-        let amount = (file.length() - bytes.len() as u64).min(256 * 1024) as u32;
+            .ok_or_else(|| ReadError::Failed("Comparison cancelled.".into()))?;
+        let amount = (length - bytes.len() as u64).min(u64::from(READ_BLOCK)) as u32;
         let block = file
             .read_at(bytes.len() as u64, amount)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ReadError::Failed(error.to_string()))?;
         if block.len() != amount as usize {
-            return Err("Compared file returned a short read.".into());
+            return Err(ReadError::Failed(
+                "Compared file returned a short read.".into(),
+            ));
+        }
+        // Most binary files show a control byte early: do not read them whole as text.
+        if bytes.is_empty() && binary_start(&block) {
+            return Err(ReadError::Refused(NOT_TEXT.into()));
         }
         bytes.extend(block);
+        if bytes.len() as u64 - reported >= PROGRESS_BYTES {
+            reported = bytes.len() as u64;
+            progress(reported);
+        }
     }
-    file.revalidate().map_err(|error| error.to_string())?;
+    file.revalidate()
+        .map_err(|error| ReadError::Failed(error.to_string()))?;
     let encoding = if bytes.starts_with(&[0xff, 0xfe]) {
         TextEncoding::Utf16LittleBom
     } else if bytes.starts_with(&[0xfe, 0xff]) {
@@ -107,16 +227,35 @@ pub(crate) fn read(
     } else {
         TextEncoding::Utf8
     };
+    let text = decode_owned(bytes).map_err(ReadError::Refused)?;
+    check_cancel(cancel).map_err(ReadError::Failed)?;
     Ok(TextInput {
-        text: decode(&bytes)?,
+        lines: TextLines::split(text).map_err(ReadError::Refused)?,
         encoding,
     })
 }
 
+const NOT_TEXT: &str = "not UTF-8 or UTF-16 text (binary or another encoding)";
+
+/// A first block without a UTF-16 byte order mark that holds a byte no admitted text has.
+fn binary_start(block: &[u8]) -> bool {
+    !(block.starts_with(&[0xff, 0xfe]) || block.starts_with(&[0xfe, 0xff]))
+        && block
+            .iter()
+            .any(|&byte| byte == 0x7f || (byte < 0x20 && !text_control(char::from(byte))))
+}
+
+/// Decode admitted text and check its lines, as `read` does after reading.
+#[cfg(test)]
 fn decode(bytes: &[u8]) -> Result<String, String> {
+    let text = decode_owned(bytes.to_vec())?;
+    TextLines::split(text).map(|lines| lines.text)
+}
+
+fn decode_owned(bytes: Vec<u8>) -> Result<String, String> {
     let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
         if !bytes.len().is_multiple_of(2) {
-            return Err("Invalid UTF-16 text: incomplete code unit.".into());
+            return Err("invalid UTF-16 text: incomplete code unit".into());
         }
         let little = bytes[0] == 0xff;
         let words: Vec<_> = bytes[2..]
@@ -131,54 +270,75 @@ fn decode(bytes: &[u8]) -> Result<String, String> {
                 }
             })
             .collect();
-        String::from_utf16(&words).map_err(|_| "Invalid UTF-16 text.")?
+        String::from_utf16(&words).map_err(|_| "invalid UTF-16 text")?
     } else {
-        let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
-        std::str::from_utf8(bytes).map_err(|_| "Text comparison requires UTF-8 or UTF-16 with a BOM; this file is binary or uses another encoding.")?.to_owned()
+        let mut bytes = bytes;
+        if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+            bytes.drain(..3);
+        }
+        String::from_utf8(bytes).map_err(|_| NOT_TEXT)?
     };
-    if text.chars().any(|c| c.is_control() && !text_control(c)) {
-        return Err("The selected file contains binary control characters.".into());
-    }
-    if text.split_inclusive('\n').take(MAX_LINES + 1).count() > MAX_LINES {
-        return Err("Text comparison supports at most 100,000 lines per file.".into());
-    }
-    if text
-        .split_inclusive('\n')
-        .any(|line| line.len() > MAX_LINE_BYTES)
-    {
-        return Err("Text comparison supports lines up to 16 KiB.".into());
+    if has_binary_control(&text) {
+        return Err("contains binary control characters".into());
     }
     Ok(text)
 }
 
+/// Whether `text` has a control character (`char::is_control`) that `text_control` does
+/// not admit, checked on its UTF-8 bytes eight at a time: C0 controls and DEL are single
+/// bytes, and the C1 controls U+0080–U+009F are 0xC2 0x80–0x9F.
+fn has_binary_control(text: &str) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let zero = |word: u64| word.wrapping_sub(ONES) & !word & HIGH != 0;
+    let bytes = text.as_bytes();
+    let binary = |index: usize| match bytes[index] {
+        byte if byte < 0x20 => !text_control(char::from(byte)),
+        0x7f => true,
+        0xc2 => bytes
+            .get(index + 1)
+            .is_some_and(|next| (0x80..=0x9f).contains(next)),
+        _ => false,
+    };
+    let (words, _) = bytes.as_chunks::<8>();
+    for (index, word) in words.iter().enumerate() {
+        let word = u64::from_le_bytes(*word);
+        // Any byte below 0x20, equal to 0x7F or equal to 0xC2 (never a false negative).
+        let candidate = word.wrapping_sub(ONES * 0x20) & !word & HIGH != 0
+            || zero(word ^ (ONES * 0x7f))
+            || zero(word ^ (ONES * 0xc2));
+        if candidate && (index * 8..index * 8 + 8).any(binary) {
+            return true;
+        }
+    }
+    (words.len() * 8..bytes.len()).any(binary)
+}
+
 impl TextComparison {
-    pub fn new(left: &str, right: &str, cancel: &AtomicBool) -> Result<Self, String> {
+    /// Compare two texts without the reading limits (tests and embedding).
+    #[cfg(test)]
+    pub fn new(
+        left: impl Into<String>,
+        right: impl Into<String>,
+        cancel: &AtomicBool,
+    ) -> Result<Self, String> {
+        Self::from_lines(
+            [
+                TextLines::unchecked(left.into()),
+                TextLines::unchecked(right.into()),
+            ],
+            cancel,
+        )
+    }
+
+    pub fn from_lines(lines: [TextLines; 2], cancel: &AtomicBool) -> Result<Self, String> {
         check_cancel(cancel)?;
-        // The deadline bounds the expensive algorithm; on expiry Similar returns a valid,
-        // potentially coarser edit sequence, never a claim that unmatched content is equal.
-        let diff = TextDiff::configure()
-            .timeout(Duration::from_millis(750))
-            .diff_lines(left, right);
-        check_cancel(cancel)?;
-        let lines =
-            [left, right].map(|text| text.split_inclusive('\n').map(str::to_owned).collect());
+        let alignment = align::align(&lines, cancel)?;
         let mut rows = Vec::new();
         let mut differences = Vec::new();
-        for op in diff.ops() {
+        for op in &alignment.ops {
             check_cancel(cancel)?;
-            let changed = op.tag() != DiffTag::Equal;
-            if changed {
-                differences.push(rows.len());
-            }
-            let old = op.old_range();
-            let new = op.new_range();
-            for index in 0..old.len().max(new.len()) {
-                rows.push(Row {
-                    left: (index < old.len()).then_some(old.start + index),
-                    right: (index < new.len()).then_some(new.start + index),
-                    changed,
-                });
-            }
+            push_rows(op, &mut rows, &mut differences);
         }
         Ok(Self {
             find: find::TextFind::default(),
@@ -186,8 +346,7 @@ impl TextComparison {
             rows,
             differences,
             renderer: TextRenderer::default(),
-            fonts: None,
-            family: "monospace".into(),
+            typeface: Typeface::default(),
             top: 0,
             horizontal: 0.0,
             vertical_remainder: 0.0,
@@ -196,26 +355,13 @@ impl TextComparison {
             painted_width: 0,
             decoded_identity: DecodedText::default(),
             encodings: None,
+            approximate: alignment.approximate,
         })
     }
 
-    /// Install the fixed-pitch catalog scanned by the service's font thread and resolve the
-    /// preferred family against it. Until then frames carry no font choices and paint in
-    /// the family of `set_family`, so the first frame never waits for the font scan.
-    pub fn set_font_catalog(&mut self, families: Arc<[String]>, preferred: &str) {
-        let selected = resolve_family(&families, preferred);
-        self.family.clone_from(&selected);
-        self.fonts = Some(FontChoices { families, selected });
-    }
-
-    /// The family to paint before the catalog arrives, resolved by a check of at most two
-    /// families (`FixedPitchFonts::resolve`).
-    pub fn set_family(&mut self, family: String) {
-        self.family = family;
-    }
-
     pub fn identity_turn(&mut self) -> Option<bool> {
-        self.decoded_identity.step(&self.lines)
+        self.decoded_identity
+            .step([self.lines[0].text(), self.lines[1].text()])
     }
 
     /// Whether `input` is exactly the text and encoding retained for `side`. Decoding is
@@ -223,10 +369,7 @@ impl TextComparison {
     pub fn retains(&self, side: usize, input: &TextInput) -> bool {
         self.encodings
             .is_some_and(|encodings| encodings[side] == input.encoding)
-            && self.lines[side]
-                .iter()
-                .map(String::as_str)
-                .eq(input.text.split_inclusive('\n'))
+            && self.lines[side].text() == input.lines.text()
     }
 
     pub fn find_pending(&self) -> bool {
@@ -317,10 +460,8 @@ impl TextComparison {
         palette: Palette,
         cancel: &AtomicBool,
     ) -> Result<Frame, String> {
-        let family = self
-            .fonts
-            .as_ref()
-            .map_or(self.family.as_str(), |fonts| fonts.selected.as_str());
+        let family = self.typeface.painted().to_owned();
+        let family = family.as_str();
         let (width, height) = (geometry.width, geometry.height);
         let mut pixels = palette.background.repeat(width as usize * height as usize);
         let row_height = (appearance.font_size * geometry.scale * 1.6)
@@ -365,16 +506,18 @@ impl TextComparison {
         }
         self.painted_width = width;
         let mut accessible_text = String::new();
-        for (visible, row) in self.rows.iter().skip(self.top).take(count).enumerate() {
+        for visible in 0..count.min(self.rows.len().saturating_sub(self.top)) {
             check_cancel(cancel)?;
-            for (side, line) in [row.left, row.right].into_iter().enumerate() {
+            let row = self.rows[self.top + visible];
+            for side in 0..2 {
                 let left = if side == 0 { 0 } else { width / 2 };
                 let side_width = if side == 0 {
                     width / 2
                 } else {
                     width - width / 2
                 };
-                let (value, prefix) = line
+                let (value, prefix) = row
+                    .side(side)
                     .map(|index| self.formatted_line(side, index, row.changed))
                     .unwrap_or_default();
                 let selection = self
@@ -386,20 +529,7 @@ impl TextComparison {
                 accessible_text.push_str(&value);
                 accessible_text.push(if side == 0 { '\t' } else { '\n' });
                 let background = if row.changed {
-                    let tint = if side == 0 {
-                        [180u8, 45, 45, 255]
-                    } else {
-                        [40u8, 150, 75, 255]
-                    };
-                    std::array::from_fn(|channel| {
-                        if channel == 3 {
-                            255
-                        } else {
-                            ((u16::from(palette.background[channel]) * 3
-                                + u16::from(tint[channel]))
-                                / 4) as u8
-                        }
-                    })
+                    changed_background(palette.background, side)
                 } else {
                     palette.background
                 };
@@ -441,15 +571,18 @@ impl TextComparison {
                 }
             }
         }
-        let status = format!(
+        let mut status = format!(
             "{} difference groups · row {} of {} · live-validated read",
             self.differences.len(),
             self.top + 1,
             self.rows.len()
         );
+        if self.approximate {
+            status.push_str(" · line matching timed out, so some unchanged lines show as changed");
+        }
         Ok(Frame {
             find: Arc::clone(&self.find.state),
-            fonts: self.fonts.clone(),
+            fonts: self.typeface.fonts.clone(),
             #[cfg(test)]
             text_family: Some(family.to_owned()),
             geometry_revision: 0,
@@ -463,25 +596,15 @@ impl TextComparison {
             accessible_text,
             status,
             image: false,
+            bytes: false,
+            bytes_only: false,
+            scanning: false,
             position: self.top as f64 / self.rows.len().saturating_sub(1).max(1) as f64,
         })
     }
 
-    pub fn change_font(&mut self, family: &str) -> bool {
-        let Some(fonts) = self.fonts.as_mut() else {
-            return false;
-        };
-        if fonts.selected == family
-            || (family != "monospace" && !fonts.families.iter().any(|name| name == family))
-        {
-            return false;
-        }
-        fonts.selected = family.into();
-        true
-    }
-
     fn formatted_line(&self, side: usize, index: usize, changed: bool) -> (String, usize) {
-        let text = &self.lines[side][index];
+        let text = self.lines[side].line(index);
         let ending = if text.ends_with("\r\n") {
             "  [CRLF]"
         } else if text.ends_with('\n') {
@@ -504,6 +627,67 @@ impl TextComparison {
             length,
         )
     }
+}
+
+fn push_rows(op: &DiffOp, rows: &mut Vec<Row>, differences: &mut Vec<usize>) {
+    let changed = op.tag() != DiffTag::Equal;
+    if changed {
+        differences.push(rows.len());
+    }
+    let old = op.old_range();
+    let new = op.new_range();
+    for index in 0..old.len().max(new.len()) {
+        rows.push(Row {
+            left: if index < old.len() {
+                (old.start + index) as u32
+            } else {
+                ABSENT
+            },
+            right: if index < new.len() {
+                (new.start + index) as u32
+            } else {
+                ABSENT
+            },
+            changed,
+        });
+    }
+}
+
+/// A changed row's background: the palette background tinted red (File A) or green
+/// (File B).
+pub(crate) fn changed_background(background: [u8; 4], side: usize) -> [u8; 4] {
+    tinted(background, side, 1, 4)
+}
+
+/// `background` blended with the side's tint at `weight` parts of `total`.
+pub(crate) fn tinted(background: [u8; 4], side: usize, weight: u16, total: u16) -> [u8; 4] {
+    let tint = if side == 0 {
+        [180u8, 45, 45, 255]
+    } else {
+        [40u8, 150, 75, 255]
+    };
+    std::array::from_fn(|channel| {
+        if channel == 3 {
+            255
+        } else {
+            ((u16::from(background[channel]) * (total - weight)
+                + u16::from(tint[channel]) * weight)
+                / total) as u8
+        }
+    })
+}
+
+/// `value` with thousands separators, for counts shown to people.
+pub(crate) fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut text = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
 }
 
 fn shaped_hit_bounds(page: &TextPage, range: std::ops::Range<usize>) -> Result<[f64; 2], String> {
@@ -559,306 +743,6 @@ fn visible_controls(text: &str) -> std::borrow::Cow<'_, str> {
     shown.into()
 }
 
-/// The catalog's name for the preferred family (ASCII case-insensitive), else Consolas,
-/// else generic monospace.
-pub(crate) fn resolve_family(families: &[String], preferred: &str) -> String {
-    if preferred == "monospace" {
-        return preferred.into();
-    }
-    families
-        .iter()
-        .find(|name| name.eq_ignore_ascii_case(preferred))
-        .or_else(|| {
-            families
-                .iter()
-                .find(|name| name.eq_ignore_ascii_case("Consolas"))
-        })
-        .cloned()
-        .unwrap_or_else(|| "monospace".into())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn installed_choice_wins_and_missing_family_falls_back_to_consolas_then_monospace() {
-        let names = ["Cascadia Mono".into(), "Consolas".into()];
-        assert_eq!(resolve_family(&names, "Cascadia Mono"), "Cascadia Mono");
-        assert_eq!(resolve_family(&names, "consolas"), "Consolas");
-        assert_eq!(resolve_family(&names, "Missing Mono"), "Consolas");
-        assert_eq!(resolve_family(&names, "monospace"), "monospace");
-        assert_eq!(resolve_family(&[], "Consolas"), "monospace");
-    }
-
-    #[test]
-    fn changing_font_preserves_diff_and_rejects_proportional_or_unknown_families() {
-        let mut diff = TextComparison::new("a\nb\n", "A\nB\n", &AtomicBool::new(false)).unwrap();
-        diff.fonts = Some(FontChoices {
-            families: vec!["Consolas".into(), "Cascadia Mono".into()].into(),
-            selected: "Consolas".into(),
-        });
-        diff.top = 1;
-        diff.horizontal = 24.0;
-        assert!(!diff.change_font("Arial"));
-        assert!(!diff.change_font("Missing Mono"));
-        assert!(diff.change_font("Cascadia Mono"));
-        assert_eq!(diff.fonts.as_ref().unwrap().selected, "Cascadia Mono");
-        assert_eq!(diff.top, 1);
-        assert_eq!(diff.horizontal, 24.0);
-        assert_eq!(diff.rows.len(), 2);
-        assert!(diff.change_font("monospace"));
-    }
-    #[test]
-    fn aligns_insertions_and_replacements_without_losing_unicode() {
-        let cancel = AtomicBool::new(false);
-        let diff = TextComparison::new(
-            "hello\nčeský 🐈\nlast\n",
-            "hello\n世界\nčeský 🐈\nLAST\n",
-            &cancel,
-        )
-        .unwrap();
-        assert_eq!(diff.rows.iter().filter(|row| row.changed).count(), 2);
-        assert!(
-            diff.rows
-                .iter()
-                .any(|row| row.left == Some(1) && row.right == Some(2) && !row.changed)
-        );
-        assert_eq!(diff.differences.len(), 2);
-    }
-    #[test]
-    fn empty_and_missing_newline_are_distinct() {
-        let cancel = AtomicBool::new(false);
-        assert!(
-            TextComparison::new("", "", &cancel)
-                .unwrap()
-                .rows
-                .is_empty()
-        );
-        assert_eq!(
-            TextComparison::new("a\n", "a", &cancel)
-                .unwrap()
-                .differences
-                .len(),
-            1
-        );
-    }
-    #[test]
-    fn form_feed_vertical_tab_and_ansi_escape_are_text_shown_as_control_pictures() {
-        let text = "page 1\u{0c}\n\u{1b}[31mred\u{1b}[0m\u{0b}x\n";
-        assert_eq!(decode(text.as_bytes()).unwrap(), text);
-        for binary in ["a\u{1}b", "a\u{7f}b", "a\u{85}b"] {
-            assert!(decode(binary.as_bytes()).is_err(), "{binary:?}");
-        }
-        assert_eq!(visible_controls("a\u{0c}b\u{1b}c\u{0b}"), "a␌b␛c␋");
-        assert_eq!(visible_controls("tab\tkept"), "tab\tkept");
-        let mut diff = TextComparison::new(text, "page 1\n", &AtomicBool::new(false)).unwrap();
-        let geometry = ViewerGeometry {
-            width: 400,
-            height: 100,
-            scale: 1.0,
-        };
-        let frame = diff
-            .paint(
-                geometry,
-                &appearance(12.0),
-                Palette::from(&appearance(12.0)),
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-        assert!(frame.accessible_text.contains("page 1␌"));
-        assert!(frame.accessible_text.contains("␛[31mred␛[0m␋x"));
-    }
-
-    #[test]
-    fn bidi_controls_are_shown_as_escapes() {
-        assert_eq!(
-            visible_controls("a\u{202e}b\u{2066}c\u{200f}d\u{1b}"),
-            "a\\u202Eb\\u2066c\u{200f}d␛"
-        );
-        for control in ('\u{202a}'..='\u{202e}').chain('\u{2066}'..='\u{2069}') {
-            let line = format!("x{control}y");
-            assert_eq!(
-                visible_controls(&line),
-                format!("x\\u{:04X}y", u32::from(control))
-            );
-        }
-        assert!(matches!(
-            visible_controls("RTL \u{200e}\u{200f}\u{61c} marks"),
-            std::borrow::Cow::Borrowed(_)
-        ));
-    }
-
-    #[test]
-    fn lines_that_differ_only_in_a_bidi_control_show_both_escapes_in_one_changed_row() {
-        let cancel = AtomicBool::new(false);
-        let mut diff = TextComparison::new("x\u{202e}y\n", "x\u{202c}y\n", &cancel).unwrap();
-        assert_eq!(diff.rows.len(), 1);
-        assert!(diff.rows[0].changed);
-        let geometry = ViewerGeometry {
-            width: 400,
-            height: 100,
-            scale: 1.0,
-        };
-        let frame = diff
-            .paint(
-                geometry,
-                &appearance(12.0),
-                Palette::from(&appearance(12.0)),
-                &cancel,
-            )
-            .unwrap();
-        assert!(frame.accessible_text.contains("x\\u202Ey"));
-        assert!(frame.accessible_text.contains("x\\u202Cy"));
-        assert!(
-            !frame
-                .accessible_text
-                .contains(midnight_core::is_explicit_bidi_control)
-        );
-    }
-
-    fn appearance(font_size: f32) -> ViewerAppearance {
-        ViewerAppearance {
-            family: "monospace".into(),
-            font_size,
-            foreground: [255; 4],
-            background: [0, 0, 0, 255],
-            selection: [40, 60, 90, 255],
-            accent: [90, 150, 220, 255],
-        }
-    }
-
-    #[test]
-    fn pages_advance_by_fully_visible_rows_at_every_font_size() {
-        let left: String = (0..400).map(|row| format!("row {row}\n")).collect();
-        let cancel = AtomicBool::new(false);
-        for (font_size, scale) in [(12.0, 1.0), (15.0, 1.0), (20.0, 1.0), (12.0, 2.0)] {
-            let mut diff = TextComparison::new(&left, &left, &cancel).unwrap();
-            let height = 300;
-            let geometry = ViewerGeometry {
-                width: 400,
-                height,
-                scale,
-            };
-            diff.paint(
-                geometry,
-                &appearance(font_size),
-                Palette::from(&appearance(font_size)),
-                &cancel,
-            )
-            .unwrap();
-            let row_height = (font_size * scale * 1.6).ceil();
-            let visible = (height as f32 / row_height).floor() as usize;
-            diff.scroll_pages(1);
-            assert_eq!(diff.top, visible, "font {font_size} at scale {scale}");
-            diff.scroll_pages(-1);
-            assert_eq!(diff.top, 0);
-            // Wheel pixels are logical; one painted row height scrolls exactly one row.
-            diff.scroll_pixels(-(row_height / scale));
-            assert_eq!(diff.top, 1, "font {font_size} at scale {scale}");
-        }
-    }
-
-    #[test]
-    fn rejects_binary_invalid_encoding_and_limits() {
-        assert!(decode(b"a\0b").is_err());
-        assert!(decode(&[0xff]).is_err());
-        assert!(decode(&[0xff, 0xfe, 1]).is_err());
-        assert!(decode(&vec![b'a'; MAX_LINE_BYTES + 1]).is_err());
-        assert_eq!(decode(&[0xff, 0xfe, 0xe9, 0]).unwrap(), "é");
-    }
-    #[test]
-    fn cancellation_and_navigation() {
-        assert!(TextComparison::new("a", "b", &AtomicBool::new(true)).is_err());
-        let mut diff =
-            TextComparison::new("a\nb\nc\n", "A\nb\nC\n", &AtomicBool::new(false)).unwrap();
-        diff.difference(false);
-        assert_eq!(diff.top, 2);
-        diff.difference(true);
-        assert_eq!(diff.top, 0);
-        diff.seek(f64::NAN);
-        assert_eq!(diff.top, 0);
-    }
-    #[test]
-    fn difference_navigation_stops_at_each_boundary_and_refocuses_after_scrolling() {
-        let mut diff = TextComparison::new(
-            "a\nb\nc\nd\ne\n",
-            "A\nb\nC\nd\nE\n",
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        diff.difference(true);
-        assert_eq!(diff.top, 0, "Previous must not wrap to the last group");
-        diff.difference(false);
-        assert_eq!(diff.top, 2);
-        diff.difference(false);
-        assert_eq!(diff.top, 4);
-        diff.difference_edge(false);
-        assert_eq!(diff.top, 0);
-        diff.difference_edge(true);
-        assert_eq!(diff.top, 4);
-        diff.difference(false);
-        assert_eq!(diff.top, 4, "Next must not wrap to the first group");
-        diff.scroll(-1);
-        diff.difference(false);
-        assert_eq!(diff.top, 4);
-        let mut empty = TextComparison::new("", "", &AtomicBool::new(false)).unwrap();
-        empty.difference(true);
-        empty.difference(false);
-        empty.difference_edge(false);
-        empty.difference_edge(true);
-        assert_eq!(empty.top, 0);
-    }
-    #[test]
-    fn captured_source_change_is_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("český.txt");
-        std::fs::write(&path, "before").unwrap();
-        let file = CapturedFile::capture(&path).unwrap();
-        std::fs::write(&path, "after mutation").unwrap();
-        assert!(read(&file, false, &AtomicBool::new(false)).is_err());
-    }
-
-    #[test]
-    fn confirmed_ssd_reads_share_the_io_gate_and_unknown_storage_stays_exclusive() {
-        use midnight_plugin_host::{ContentSource, Error};
-        #[derive(Debug)]
-        struct Observed(std::sync::Mutex<Vec<midnight_work_budget::Snapshot>>);
-        impl ContentSource for Observed {
-            fn length(&self) -> u64 {
-                2
-            }
-            fn display_name(&self) -> String {
-                "observed.txt".into()
-            }
-            fn version(&self) -> Vec<u8> {
-                vec![1]
-            }
-            fn validate(&self) -> Result<(), Error> {
-                Ok(())
-            }
-            fn read_at(&self, _: u64, _: u32) -> Result<Vec<u8>, Error> {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push(midnight_work_budget::shared_io().snapshot());
-                Ok(b"a\n".to_vec())
-            }
-        }
-        for confirmed_ssd in [true, false] {
-            let source = std::sync::Arc::new(Observed(Default::default()));
-            let file = CapturedFile::from_source(source.clone()).unwrap();
-            assert_eq!(
-                read(&file, confirmed_ssd, &AtomicBool::new(false))
-                    .unwrap()
-                    .text,
-                "a\n"
-            );
-            let snapshot = source.0.lock().unwrap()[0];
-            if confirmed_ssd {
-                assert!(!snapshot.exclusive && snapshot.active_shared >= 1);
-            } else {
-                assert!(snapshot.exclusive);
-            }
-        }
-    }
-}
+#[path = "text_tests.rs"]
+pub(crate) mod tests;

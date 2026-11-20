@@ -80,6 +80,47 @@ impl Pane {
             && (self.search.pending || self.search_projection().is_none())
     }
 
+    /// What the panel says below `..` while it shows no entry: a quick search without
+    /// matches (or still searching), entries that the panel filter all leaves out,
+    /// entries that are all hidden, or an empty folder. Empty while entries are shown
+    /// and while a network location keeps its rows back.
+    pub(crate) fn empty_message(&self, locale: &NumberLocale) -> String {
+        if self.display_len() > 0 || self.network_hides_rows() {
+            return String::new();
+        }
+        if self.search.filter && !self.search.query.is_empty() {
+            return if self.search_view_waiting() {
+                "Searching…"
+            } else {
+                "No matching names"
+            }
+            .into();
+        }
+        if self.search.panel_filter.enabled {
+            if self.search_view_waiting() {
+                return String::new();
+            }
+            match self.rows().len() {
+                0 => {}
+                1 => return "The only item here does not match the filter".into(),
+                listed => {
+                    return format!(
+                        "None of the {} items here match the filter",
+                        locale.format_u64(listed as u64)
+                    );
+                }
+            }
+        }
+        match self.hidden_count() {
+            0 => "This folder is empty".into(),
+            1 => "The only item here is hidden".into(),
+            hidden => format!(
+                "All {} items here are hidden",
+                locale.format_u64(hidden as u64)
+            ),
+        }
+    }
+
     fn search_projection(&self) -> Option<&SearchResult> {
         self.search
             .result

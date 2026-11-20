@@ -721,6 +721,19 @@ def authorization_helper(binary, target):
     return name, source, metadata
 
 
+HTML_SANDBOX_INSTALLER = "install-html-viewer-apparmor.sh"
+
+
+def copy_html_sandbox_installer(stage, root, target):
+    """Linux packages carry the one-time AppArmor step for the HTML viewer's Chromium sandbox."""
+    if "-linux-" not in target:
+        return None
+    destination = stage / HTML_SANDBOX_INSTALLER
+    shutil.copyfile(root / "scripts" / HTML_SANDBOX_INSTALLER, destination)
+    destination.chmod(0o755)
+    return HTML_SANDBOX_INSTALLER
+
+
 def copy_authorization_helper(stage, binary, target):
     name, source, metadata = authorization_helper(binary, target)
     destination = stage / name
@@ -784,6 +797,7 @@ def main():
     shutil.copyfile(args.binary, binary)
     binary.chmod(0o755)
     authorization = copy_authorization_helper(stage, args.binary, args.target)
+    sandbox_installer = copy_html_sandbox_installer(stage, root, args.target)
     shutil.copyfile(args.readme, stage / "README.txt")
     shutil.copyfile(root / "Cargo.lock", stage / "Cargo.lock")
     shutil.copyfile(root / "assets/branding/midnight-explorer.png", stage / "midnight-explorer.png")
@@ -818,7 +832,7 @@ def main():
                           if file.get("executable")]
     write_archive(stage, archive, binary.name, args.format,
                   [file["path"] for file in worker_files if file["executable"]] + viewer_executables
-                  + [authorization["path"]])
+                  + [authorization["path"]] + ([sandbox_installer] if sandbox_installer else []))
     print(archive)
 
 

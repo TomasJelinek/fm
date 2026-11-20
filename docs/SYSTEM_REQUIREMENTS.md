@@ -87,6 +87,55 @@ beside the executable. The HTML module includes the pinned CEF runtime; Linux
 also needs its system NSS/NSPR and ALSA libraries. CMake and Ninja are build tools,
 not application runtime requirements. Browser sandbox policy remains required.
 
+On Ubuntu 23.10 and later (including 24.04 and Linux Mint 22), AppArmor denies
+unprivileged user namespaces to programs without a profile that grants them
+(`kernel.apparmor_restrict_unprivileged_userns=1`). Chromium's sandbox needs them
+unless its `chrome-sandbox` helper is setuid root, so install the HTML viewer's
+AppArmor profile once per installation. The simplest way is the viewer itself: when it
+cannot show an HTML document for this reason, it says so in the page's place and offers
+**Install…** (Tab from the page reaches it and Return activates it). The notice names the
+viewer that the permission is for and, for an installation that can be changed without
+root (a per-user installation, an extracted package or a build folder), warns that a
+program placed at the viewer's path there could use user namespaces too. Install… asks for
+administrator authorization through polkit (`pkexec`; a desktop session's authentication
+agent shows the prompt), installs the profile and opens the document again. Cancelling
+or refusing the prompt changes nothing, and Install… stays available; without an
+authentication agent in the session the viewer says so and withdraws it. The button is
+only offered when `/usr/bin/pkexec` and the folders above it belong to root, and never for
+an installation below a folder that other users can write to (such as `/tmp`); nothing is
+checked or installed before an HTML document needed it. Otherwise install it as root,
+but never by running with `sudo` a copy of the script that you, or any program you run,
+can change, such as the one in an extracted package or a source checkout: that copy could
+have been replaced, and would then run as root.
+
+- A system-wide installation, copied by root to a folder only root can change (such as
+  `/opt/midnight-explorer`): `sudo /opt/midnight-explorer/install-html-viewer-apparmor.sh`.
+- An extracted package, a per-user installation or a source checkout: use Install…, which
+  runs no file of the installation as root, or install system-wide first.
+
+Where the kernel denies user namespaces to every program without administrator rights
+(`kernel.unprivileged_userns_clone=0` on Debian and Ubuntu kernels, or
+`user.max_user_namespaces=0`), no AppArmor profile helps: the viewer names the setting and
+offers no profile. An administrator can change that setting, or make the
+`chrome-sandbox` helper of an installation that only root can change setuid root.
+
+The profile, `midnight-explorer-html-viewer`, confines nothing and only grants `userns`
+to that installation's `viewers/midnight-viewer-html/midnight-viewer-html`, like
+Ubuntu's own browser profiles. `--print` shows it without installing and `--uninstall`
+removes it. One profile serves one installation; installing again replaces it. An
+installation that can be changed without root (a per-user installation or a build
+folder) lets any program placed at the viewer's path create user namespaces, so prefer
+a root-owned installation on shared computers. Install… writes the same profile as the
+script (one for every build of a source checkout), but runs no file of the installation
+as root; unlike the script it does not remove other files that define the profile by
+hand. Its paths may contain only letters, digits, spaces and `._+-@:`, and pass through no
+folder that users other than its owner can write to, as for the script. Without the
+profile, and without Install…, the HTML viewer explains this instead of showing the page.
+It names the command for its installation only when the script is no link and it and
+every folder above it belong to root and only root can change them; otherwise (a
+per-user installation or a build folder) it asks an administrator to install the profile
+as described here. Chromium never runs without its sandbox.
+
 Standard installations include the independent image and video thumbnailers in
 the executable-adjacent `thumbnailers/` directory. Keep its runtime libraries and
 notices with the helpers. The approved FFmpeg libraries are bundled there; users

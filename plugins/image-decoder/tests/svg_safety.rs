@@ -103,6 +103,30 @@ fn excessive_dimensions_and_nodes_are_refused_even_for_tiny_thumbnails() {
 }
 
 #[test]
+fn empty_and_non_markup_content_say_what_they_are() {
+    let empty = midnight_image_decoder::decode(&mut Cursor::new(Vec::<u8>::new()), None)
+        .expect_err("empty content");
+    assert_eq!(empty.to_string(), "The file is empty");
+    for content in [
+        b"plain text named like an image\n".as_slice(),
+        b"\xef\xbb\xbf  # heading",
+        &[0; 300],
+    ] {
+        let error = midnight_image_decoder::decode(&mut Cursor::new(content), None)
+            .expect_err("not an image");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "The content is not a recognized image format"
+        );
+    }
+    // Markup after a byte order mark and whitespace still reaches the SVG parser.
+    let svg = "\u{feff}\n <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"2\"/>";
+    let image = midnight_image_decoder::decode(&mut Cursor::new(svg), None).unwrap();
+    assert_eq!(image.dimensions(), (4, 2));
+}
+
+#[test]
 fn unknown_input_is_bounded_without_reading_an_entire_large_source() {
     struct Large {
         position: u64,

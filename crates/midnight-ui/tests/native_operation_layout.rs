@@ -94,6 +94,59 @@ fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
     }
 }
 
+/// One target is named in the summary and the question; a long name without spaces
+/// wraps inside the dialog, which keeps its width and its actions.
+#[test]
+fn a_long_single_delete_name_wraps_inside_the_dialog() {
+    let mut test = ui::TestUi::new();
+    test.apply_preferences(3, 0, "Segoe UI", 12, 15);
+    let warning = "Permanent deletion cannot be undone.";
+    let body = |name: &str| {
+        format!(
+            "1 folder\nName: {name}\nModified: 11/20/2026 01:17:41 PM\n\nPermanently delete the folder “{name}” and everything in it?"
+        )
+    };
+    let long = format!("20261120-052223-{}end", "folder-name-文档-👩🏽‍💻-".repeat(12));
+    for (width, height) in [(1040, 720), (420, 520)] {
+        test.resize(width, height);
+        let mut drawn = Vec::new();
+        for name in ["20261120-052223", long.as_str()] {
+            let form = test.form();
+            form.set_kind(2);
+            form.set_title_text("Permanently delete".into());
+            form.set_confirm_text("Permanently delete".into());
+            form.set_has_name(false);
+            form.set_dangerous(true);
+            form.set_warning(warning.into());
+            let body = body(name);
+            form.set_body(body.clone().into());
+            test.begin();
+            test.draw();
+            // A compact dialog draws the warning in the same text.
+            let text = find_text(test.popup(), &body)
+                .or_else(|| find_text(test.popup(), &format!("{warning}\n\n{body}")))
+                .expect("the summary and question are drawn");
+            let (origin, size) = ui::body(&ui::root_item(&test, "Cancel", AccessibleRole::Button));
+            let at = text.map_to_native_window(text.geometry().origin);
+            assert!(
+                at.x >= origin.x - 0.5
+                    && at.x + text.geometry().width() <= origin.x + size.width + 0.5,
+                "the text stays inside the {width} px dialog: {at:?} {:?}, {origin:?} {size:?}",
+                text.geometry()
+            );
+            for label in ["Permanently delete", "Cancel"] {
+                ui::assert_inside(&ui::root_item(&test, label, AccessibleRole::Button), label);
+            }
+            drawn.push(text.geometry().height());
+        }
+        assert!(
+            drawn[1] >= drawn[0] + 12.0,
+            "the long name wraps onto more rows instead of widening the dialog: {drawn:?}"
+        );
+        ui::snapshot(&test, &format!("delete-long-name-{width}"));
+    }
+}
+
 #[test]
 fn rename_initial_height_fits_its_summary_without_a_large_empty_body() {
     let mut test = ui::TestUi::new();

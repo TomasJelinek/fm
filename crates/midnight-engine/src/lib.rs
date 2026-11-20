@@ -70,7 +70,10 @@ mod folder_presence;
 mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
+mod hidden_entries;
+mod license_notices;
 mod listing_refresh;
+mod mask_selection;
 #[cfg(all(test, windows))]
 #[path = "../tests/support/checksum_verify_links_windows.rs"]
 mod native_test_links;
@@ -108,6 +111,7 @@ mod streaming_selection;
 #[cfg(test)]
 mod task_service_tests;
 mod transfer_composition;
+mod transfer_destination;
 mod transfer_leases;
 mod tree_actor;
 mod tree_clipboard;
@@ -125,6 +129,7 @@ mod tree_sizes;
 mod user_command_prepare;
 mod user_command_runtime;
 mod user_commands;
+mod verified_output;
 mod viewer_plugins;
 mod volume_information;
 mod volumes;
@@ -281,6 +286,11 @@ struct SnapshotState {
     committed: Option<CommittedSnapshot>,
     visible: Option<CommittedSnapshot>,
     pending: Option<NavigationId>,
+    /// Later listings and tree projections of this pane leave hidden entries out
+    /// (`Command::ShowHiddenEntries`).
+    hide_hidden: bool,
+    /// Hidden entries the committed listing left out, kept for its re-sorts.
+    committed_hidden: usize,
 }
 
 impl SnapshotState {
@@ -526,10 +536,18 @@ impl EngineServices {
         let mut actors = JoinSet::new();
         let mut resident_tasks = ResidentTasks::default();
         let external_comparator_service = self.user_commands.clone();
-        let mut find = find::Controller::new(
+        let comparison_services = comparison::Services {
+            find: self.find.clone(),
+            scope: Some(scope.clone()),
+        };
+        let find_archives = self.archive_capture.clone().map(|capture| {
+            Arc::new(find::InstalledArchives::new(capture)) as Arc<dyn find_worker::ArchiveSearch>
+        });
+        let mut find = find::Controller::with_archives(
             scope.clone(),
             resources.find,
             self.find,
+            find_archives,
             self.locale.clone(),
             self.outbox.clone(),
             &mut tasks,
@@ -542,6 +560,12 @@ impl EngineServices {
         let fonts = fonts::Controller::new(
             scope.clone(),
             self.settings.clone(),
+            self.outbox.clone(),
+            &mut tasks,
+        );
+        let license_notices = license_notices::Controller::new(
+            scope.clone(),
+            midnight_platform_common::license_notices::NoticeSources::beside_executable(),
             self.outbox.clone(),
             &mut tasks,
         );
@@ -645,8 +669,12 @@ impl EngineServices {
             snapshots.clone(),
             &mut tasks,
         );
-        let comparison =
-            comparison::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
+        let comparison = comparison::Controller::with_services(
+            snapshots.clone(),
+            self.outbox.clone(),
+            comparison_services,
+            &mut tasks,
+        );
         let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
         let filename_colors = filename_colors::Controller::new(self.outbox.clone(), &mut tasks);
         let mut file_lists = file_list_actor::Controller::new(
@@ -754,13 +782,19 @@ impl EngineServices {
             self.outbox.clone(),
             &mut tasks,
         );
+        let transfer_destination = transfer_destination::Controller::new(
+            scope.clone(),
+            self.filesystem.clone(),
+            self.outbox.clone(),
+            &mut tasks,
+        );
 
         loop {
             // Drain completions before accepting another continuously-ready command.
             while tasks.try_join_next().is_some() {}
             tokio::select! {
                 Some(prepared) = properties_ready.recv() => {
-                    desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, &mut tasks).await;
+                    desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, prepared.cancel, &mut tasks).await;
                 }
                 command = commands.recv() => {
                     let command = match command {
@@ -1008,6 +1042,7 @@ impl EngineServices {
                         Some(Command::ConfirmMetadata { id, revision, conflicts }) => operations.confirm_metadata(id, revision, conflicts).await,
                         Some(Command::ResolveMetadataConflict { id, token, choice }) => operations.resolve_metadata_conflict(id, token, choice).await,
                         Some(Command::DecideRename(decision)) => operations.decide_rename(decision).await,
+                        Some(Command::DecideDelete(decision)) => operations.decide_delete(decision).await,
                         Some(Command::CompareDirectories(request)) => comparison.compare(request),
                         Some(Command::CancelComparison(id)) => comparison.cancel(id),
                         Some(Command::ValidatePanelFilter(request)) => filters.validate(request),
@@ -1047,6 +1082,13 @@ impl EngineServices {
                             }
                         },
                         Some(Command::CompleteInternalDropPreview { id, revision, target }) => drag_drop.complete_preview(id, revision, target).await,
+                        Some(Command::ShowHiddenEntries(show)) => {
+                            for state in snapshots.lock().unwrap_or_else(|error| error.into_inner()).iter_mut() {
+                                state.hide_hidden = !show;
+                            }
+                            // Checks of a listing's rows leave out what it left out.
+                            if let Some(watcher) = &watcher { watcher.set_hide_hidden(!show); }
+                        }
                         Some(Command::Search(request)) => search.query(request),
                         Some(Command::CancelSearch { pane, revision }) => search.cancel(pane, revision),
                         None | Some(Command::Shutdown) => break,
@@ -1075,6 +1117,7 @@ impl EngineServices {
                         Some(Command::ListFontFamilies) => {
                             fonts.list();
                         }
+                        Some(Command::ReadLicenseNotice(request)) => license_notices.request(*request),
                         Some(Command::LoadPreferences) => {
                             if let Some(settings) = &settings { settings.load(); }
                             else {
@@ -1123,9 +1166,9 @@ impl EngineServices {
                         Some(Command::ReadCapturedFileClipboard { request, source, cancel }) => {
                             clipboard.read_captured_files(request, source, cancel, &mut resident_tasks).await;
                         }
-                        Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks).await,
-                        Some(Command::ShowSelectionProperties { request, selection, view, fallback }) => {
-                            selection::prepare_properties(selection::PropertiesInput { request, selection, view, fallback },
+                        Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, Cancellation::default(), &mut tasks).await,
+                        Some(Command::ShowSelectionProperties { request, selection, view, fallback, cancel }) => {
+                            selection::prepare_properties(selection::PropertiesInput { request, selection, view, fallback, cancel },
                                 properties_budget.clone(), self.outbox.clone(), properties_sender.clone(), &mut tasks).await;
                         }
                         Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, false, &mut tasks).await,
@@ -1222,6 +1265,7 @@ impl EngineServices {
                             }
                         }
                         Some(Command::QueryVolumeInformation(request)) => volume_information.query(request),
+                        Some(Command::CheckTransferDestination(request)) => transfer_destination.check(request),
                         Some(Command::ListVolumes) => {
                             volumes.refresh();
                         }
@@ -1243,7 +1287,7 @@ impl EngineServices {
                             let continued_sizes = keep_scan.then(|| size_requests[pane.index()].as_ref().expect("validated scan").sizes.clone()).or(continued_entry_sizes);
                             if !keep_scan && let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
                             if let Some(old) = requests[pane.index()].take() { old.cancel(); }
-                            let (source, shown) = {
+                            let (source, shown, hide_hidden, source_hidden) = {
                                 let mut snapshots = snapshots.lock().unwrap_or_else(|error| error.into_inner());
                                 let state = &mut snapshots[pane.index()];
                                 let source = if resort {
@@ -1263,7 +1307,7 @@ impl EngineServices {
                                 let shown = refresh.then(|| state.visible.as_ref().filter(|visible| visible.path == path)
                                     .map(|visible| visible.entries.clone())).flatten();
                                 state.pending = Some(navigation);
-                                (source, shown)
+                                (source, shown, state.hide_hidden, state.committed_hidden)
                             };
                             let cancel = Cancellation::default();
                             let filesystem = self.filesystem.clone();
@@ -1292,7 +1336,7 @@ impl EngineServices {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
-                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, shown, continued_sizes, selection_stream, navigation_fallback, watch });
+                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, source_hidden, hide_hidden, shown, continued_sizes, selection_stream, navigation_fallback, watch });
                                 })).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
@@ -1376,7 +1420,9 @@ impl EngineServices {
         path_picker.shutdown();
         drop(search);
         fonts.shutdown();
+        license_notices.shutdown();
         drop(volume_information);
+        drop(transfer_destination);
         if let Some(settings) = settings {
             settings.shutdown();
             let _ =
@@ -1441,6 +1487,10 @@ struct ListingTask {
     icons: mpsc::Sender<IconKey>,
     snapshots: Snapshots,
     source: Option<CommittedSnapshot>,
+    /// Hidden entries the re-sorted `source` listing left out.
+    source_hidden: usize,
+    /// Leave hidden entries out of this listing (`hidden_entries`).
+    hide_hidden: bool,
     /// The rows the UI shows for `path`, listed again in place
     /// (`listing_refresh`).
     shown: Option<Arc<[Entry]>>,
@@ -1467,6 +1517,8 @@ fn list_directory(task: ListingTask) {
         icons,
         snapshots,
         source,
+        source_hidden,
+        hide_hidden,
         shown,
         continued_sizes,
         watch,
@@ -1487,6 +1539,7 @@ fn list_directory(task: ListingTask) {
                 sizes: source.sizes,
             },
             None,
+            source_hidden,
         );
         return;
     }
@@ -1500,6 +1553,7 @@ fn list_directory(task: ListingTask) {
     let mut entries = Vec::new();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut watch = watch;
+    let mut hidden = 0_usize;
     let mut emit = |mut entry: Entry| {
         if cancel.is_cancelled() {
             return false;
@@ -1508,6 +1562,10 @@ fn list_directory(task: ListingTask) {
         // rest is listed.
         if let Some(watch) = watch.take() {
             watch.listing_read(pane, navigation);
+        }
+        if hide_hidden && hidden_entries::is_hidden(&entry) {
+            hidden += 1;
+            return true;
         }
         if icon_types.len() < 128 {
             let key = IconKey::for_entry(&entry);
@@ -1688,6 +1746,7 @@ fn list_directory(task: ListingTask) {
             sizes: continued_sizes.unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
         },
         base,
+        hidden,
     );
 }
 
@@ -1706,6 +1765,8 @@ fn publish_listing(
     // The rows the UI shows for this folder, which the listing is described
     // as edits of (`Event::ListingChanges`).
     base: Option<Arc<[Entry]>>,
+    // Hidden entries this listing left out (`DirectoryIndex::hidden`).
+    hidden: usize,
 ) {
     if cancel.is_cancelled() {
         return;
@@ -1759,9 +1820,10 @@ fn publish_listing(
         // Nothing the UI shows changed: it keeps the very same rows.
         snapshot.entries = base.clone();
     }
-    let index = Arc::new(midnight_core::DirectoryIndex::from_entries(
-        &snapshot.entries,
-    ));
+    let index = Arc::new(midnight_core::DirectoryIndex {
+        hidden,
+        ..midnight_core::DirectoryIndex::from_entries(&snapshot.entries)
+    });
     let navigation = snapshot.navigation;
     let entries = snapshot.entries.clone();
     let retired_root = {
@@ -1782,6 +1844,7 @@ fn publish_listing(
         cached[pane.index()].network_navigation = None;
         cached[pane.index()].network = None;
         cached[pane.index()].committed = Some(snapshot);
+        cached[pane.index()].committed_hidden = hidden;
         cached[pane.index()].pending = None;
         retired
     };

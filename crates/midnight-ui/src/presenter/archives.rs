@@ -14,7 +14,43 @@ pub(super) struct ArchivePane {
     totals: ArchiveSelectionTotals,
     pub(super) selection_pending: bool,
     pub(super) selection_revision: SelectionRevision,
+    /// The mounted folder of the listing in flight, kept for its recovery.
+    requested: Option<ArchiveLocation>,
+    recovery: Recovery,
+    /// An archive inside an archive that is being opened, for its status-bar progress.
+    opening: Option<Opening>,
 }
+
+/// A failed mounted listing may mean that the archive's session stopped (a stalled
+/// provider worker is stopped by its watchdog), and every later request through that
+/// session would fail too. The pane then never lists through it again: it re-opens
+/// the archive once, and leaves the archive if that fails as well. An archive inside
+/// an archive is not re-opened: the pane returns to the folder that contains it.
+#[derive(Clone, Default)]
+enum Recovery {
+    #[default]
+    None,
+    /// List this folder again through a fresh session.
+    Reopen(ArchiveLocation),
+    /// That listing is in flight.
+    Reopening,
+    /// The re-open failed: return to the native folder that contains the archive.
+    Leave,
+    /// The failed session read an archive inside another archive: list the enclosing
+    /// folder, with the cursor on that archive.
+    Parent(ArchiveParent),
+}
+
+/// An archive inside an archive whose member is being staged by `navigation`.
+#[derive(Clone)]
+struct Opening {
+    navigation: NavigationId,
+    name: String,
+    size: Option<u64>,
+    /// The progress this pane put in the status bar, removed when the open ends.
+    status: Option<String>,
+}
+
 impl ArchivePane {
     pub(super) fn clear_tree_selection(&mut self, retired: &mut Vec<DeferredDrop>) {
         retired.push(Box::new(mem::take(&mut self.selected)));
@@ -35,8 +71,142 @@ impl ArchivePane {
             totals: ArchiveSelectionTotals::default(),
             selection_pending: false,
             selection_revision: SelectionRevision(0),
+            requested: None,
+            recovery: Recovery::None,
+            opening: None,
         }
     }
+    /// Keep the addresses of the shown and remembered folders without their session:
+    /// listing one of them then opens the archive again instead of using that session.
+    /// Folders of archives inside archives keep their own sessions: their addresses do
+    /// not open them again, and going up from them reaches their enclosing folders.
+    fn forget_session(&mut self, retired: &mut Vec<DeferredDrop>) {
+        for location in std::iter::once(&mut self.location).chain(&mut self.history) {
+            if location.mount.is_some() && location.parent().is_none() {
+                let unavailable = ArchiveLocation::unavailable(location.address.clone());
+                retired.push(Box::new(mem::replace(location, unavailable)));
+            }
+        }
+    }
+    /// The folders that path parts navigate to, outermost first: the folders of each
+    /// enclosing archive down to the one that holds the next archive, then this
+    /// archive's own folders.
+    pub(super) fn path_locations(&self) -> Vec<ArchiveLocation> {
+        let mut levels: Vec<ArchiveLocation> = self
+            .location
+            .enclosing()
+            .into_iter()
+            .map(|parent| parent.location)
+            .collect();
+        levels.reverse();
+        levels.push(self.location.clone());
+        let mut parts = Vec::new();
+        for level in levels {
+            for (index, (node, _)) in level.trail.iter().enumerate() {
+                let mut part = level.clone();
+                part.directory = *node;
+                part.trail.truncate(index + 1);
+                part.address.components.truncate(index);
+                parts.push(part);
+            }
+        }
+        parts
+    }
+    /// The location saved for this pane in tabs and Hot Paths: archives inside
+    /// archives are opened for the session only, so the folder of the outermost
+    /// archive that leads here is kept instead.
+    pub(super) fn saved_address(&self) -> ArchiveAddress {
+        self.location.outermost().address
+    }
+    /// A remembered root of the archive opened from `member`, whose session can be
+    /// entered again instead of staging the member once more.
+    fn remembered_inner_root(&self, member: VirtualEntryId) -> Option<ArchiveLocation> {
+        let mut root = self
+            .history
+            .iter()
+            .find(|location| {
+                location
+                    .parent()
+                    .is_some_and(|parent| parent.member == member)
+            })?
+            .clone();
+        root.directory = 1;
+        root.trail.truncate(1);
+        root.address.components.clear();
+        Some(root)
+    }
+    /// Forget the remembered folders of archives inside archives that `left` names.
+    /// Each such session keeps a worker of the bounded nested allowance, so the folders
+    /// of archives this pane has left go before another one opens. The history position
+    /// stays on the same entry, or on the nearest earlier one that remains.
+    fn forget_inner_sessions(
+        &mut self,
+        left: impl Fn(&ArchiveLocation) -> bool,
+        retired: &mut Vec<DeferredDrop>,
+    ) {
+        let current = self.history_index;
+        let mut index = 0;
+        for (position, location) in mem::take(&mut self.history).into_iter().enumerate() {
+            if location.parent().is_some() && left(&location) {
+                retired.push(Box::new(location));
+                continue;
+            }
+            if position <= current {
+                index = self.history.len();
+            }
+            self.history.push(location);
+        }
+        if self.history.is_empty() {
+            self.history.push(self.location.clone());
+        }
+        self.history_index = index.min(self.history.len() - 1);
+    }
+    /// The archive sessions of this pane's location: its own and its enclosing ones.
+    fn shown_sessions(&self) -> Vec<u64> {
+        std::iter::once(self.location.mount_id())
+            .chain(
+                self.location
+                    .enclosing()
+                    .into_iter()
+                    .map(|parent| parent.location.mount_id()),
+            )
+            .flatten()
+            .collect()
+    }
+}
+
+/// Where the cursor goes when `target` encloses `current`: on the folder, or on the
+/// archive inside an archive, that leads back to `current`.
+fn cursor_toward(current: &ArchiveLocation, target: &ArchiveLocation) -> Option<VirtualEntryId> {
+    let mount = target.mount_id()?;
+    let levels = std::iter::once((current.clone(), None)).chain(
+        current
+            .enclosing()
+            .into_iter()
+            .map(|parent| (parent.location, Some(parent.member))),
+    );
+    for (level, member) in levels {
+        if level.mount_id() != Some(mount) {
+            continue;
+        }
+        if level.trail.len() < target.trail.len()
+            || !level
+                .trail
+                .iter()
+                .zip(&target.trail)
+                .all(|(old, new)| old.0 == new.0)
+        {
+            return None;
+        }
+        return match level.trail.get(target.trail.len()) {
+            Some((entry, _)) => Some(VirtualEntryId {
+                mount,
+                entry: *entry,
+            }),
+            None => member,
+        };
+    }
+    None
 }
 
 impl Presenter {
@@ -52,13 +222,29 @@ impl Presenter {
     }
     /// Activation follows the user's association while backend discovery settles.
     /// An unavailable provider reports an internal error instead of launching an OS handler.
+    /// A readable archive member with an enabled archive name opens as an archive inside
+    /// its archive.
     pub(super) fn configured_archive_format(&self, entry: &Entry) -> Option<ArchiveFormat> {
-        if entry.virtual_node.is_some() || entry.kind != EntryKind::File {
+        if entry.kind != EntryKind::File
+            || entry
+                .virtual_node
+                .as_ref()
+                .is_some_and(|node| !node.readable)
+        {
             return None;
         }
         entry
             .archive_extensions
             .enabled_format(&self.preferences.values)
+    }
+    /// The enabled, installed archive format of an archive member's name.
+    fn member_archive_format(&self, node: &ArchiveNode) -> Option<ArchiveFormat> {
+        if node.kind != EntryKind::File {
+            return None;
+        }
+        ArchiveExtensionHints::from_path(Path::new(&node.display_name))
+            .enabled_format(&self.preferences.values)
+            .filter(|format| self.archive_formats.contains(format))
     }
     pub(super) fn archive_navigate(
         &mut self,
@@ -88,22 +274,13 @@ impl Presenter {
             ArchiveAction::List(location) if location.mount.is_none() => Some(location.clone()),
             _ => None,
         };
+        let requested = match &action {
+            ArchiveAction::List(location) if location.mount.is_some() => Some(location.clone()),
+            _ => None,
+        };
         let wanted_cursor = match (&p.archive, &action) {
-            (Some(archive), ArchiveAction::List(location))
-                if location.mount_id().is_some()
-                    && archive.location.mount_id() == location.mount_id()
-                    && archive.location.trail.len() > location.trail.len()
-                    && archive
-                        .location
-                        .trail
-                        .iter()
-                        .zip(&location.trail)
-                        .all(|(old, new)| old.0 == new.0) =>
-            {
-                Some(VirtualEntryId {
-                    mount: location.mount_id().expect("validated mounted archive"),
-                    entry: archive.location.trail[location.trail.len()].0,
-                })
+            (Some(archive), ArchiveAction::List(location)) => {
+                cursor_toward(&archive.location, location)
             }
             _ => None,
         };
@@ -134,16 +311,63 @@ impl Presenter {
             a.selection_pending = false;
             a.requested_history = None;
             a.wanted_cursor = wanted_cursor;
+            self.retired
+                .push(Box::new(mem::replace(&mut a.requested, requested)));
+            // A newer request supersedes a pending recovery.
+            self.retired.push(Box::new(mem::take(&mut a.recovery)));
             if let Some(location) = unavailable {
-                a.location = location;
+                self.retired
+                    .push(Box::new(mem::replace(&mut a.location, location)));
             }
         }
         if let Some(scan) = p.size_scan.take() {
             send(Command::CancelFolderSizes { pane, scan });
         }
+        // A newer request supersedes an archive inside an archive being opened.
+        self.end_opening(pane);
         self.search_navigation_accepted(pane, !same, send);
         drag_drop::invalidate(&self.drag_drop.targets);
         true
+    }
+    /// Remove the status-bar progress of an open that ended or was superseded.
+    fn end_opening(&mut self, pane: PaneId) {
+        let opening = self.panes[pane.index()]
+            .archive
+            .as_mut()
+            .and_then(|archive| archive.opening.take());
+        if opening
+            .and_then(|opening| opening.status)
+            .is_some_and(|status| status == self.desktop.status)
+        {
+            self.desktop.status.clear();
+        }
+    }
+    /// Show how much of the member an archive inside an archive has staged.
+    fn archive_progress(&mut self, pane: PaneId, navigation: NavigationId, staged: u64) {
+        let p = &mut self.panes[pane.index()];
+        if p.generation != navigation.0 {
+            return;
+        }
+        let Some(opening) = p
+            .archive
+            .as_mut()
+            .and_then(|archive| archive.opening.as_mut())
+            .filter(|opening| opening.navigation == navigation)
+        else {
+            return;
+        };
+        let mib = |bytes: u64| self.number_locale.format_u64(bytes.div_ceil(1024 * 1024));
+        let status = match opening.size.filter(|size| *size >= staged) {
+            Some(size) => format!(
+                "Opening {}: {} of {} MiB…",
+                opening.name,
+                mib(staged),
+                mib(size)
+            ),
+            None => format!("Opening {}: {} MiB…", opening.name, mib(staged)),
+        };
+        self.desktop.status = status.clone();
+        opening.status = Some(status);
     }
     pub(super) fn apply_archive_event(&mut self, event: Event) -> Option<Event> {
         match event {
@@ -190,26 +414,72 @@ impl Presenter {
                 self.retired.push(Box::new(view));
             }
             Event::ArchiveAvailability(formats) => self.archive_formats = formats,
+            Event::ArchiveProgress {
+                pane,
+                navigation,
+                staged,
+            } => self.archive_progress(pane, navigation, staged),
             Event::ArchiveListed {
                 pane,
                 navigation,
                 result,
             } => {
-                let p = &mut self.panes[pane.index()];
-                if navigation.0 != p.generation {
+                if navigation.0 != self.panes[pane.index()].generation {
                     self.retired.push(Box::new(result));
                     return None;
                 }
+                self.end_opening(pane);
+                let p = &mut self.panes[pane.index()];
                 p.loading = false;
                 p.archive_request = false;
                 match result {
                     Err(error) => {
                         p.sort = p.committed_sort;
+                        let mut leaving = false;
+                        let mut enclosing = false;
                         if let Some(a) = &mut p.archive {
                             a.requested_history = None;
                             a.wanted_cursor = None;
+                            let requested = a.requested.take();
+                            let reopening = matches!(a.recovery, Recovery::Reopening);
+                            // A recovery may hold an enclosing archive's session.
+                            self.retired.push(Box::new(mem::take(&mut a.recovery)));
+                            // A cancelled request says nothing about the session.
+                            if error.kind != std::io::ErrorKind::Interrupted {
+                                if let Some(parent) =
+                                    requested.as_ref().and_then(ArchiveLocation::parent)
+                                {
+                                    // An archive inside an archive is not re-opened, and
+                                    // its stopped session is not entered again.
+                                    let failed = requested.as_ref().and_then(|r| r.mount_id());
+                                    a.forget_inner_sessions(
+                                        |location| location.mount_id() == failed,
+                                        &mut self.retired,
+                                    );
+                                    a.recovery = Recovery::Parent(parent);
+                                    enclosing = true;
+                                } else if let Some(requested) = &requested {
+                                    a.forget_session(&mut self.retired);
+                                    a.recovery = Recovery::Reopen(ArchiveLocation::unavailable(
+                                        requested.address.clone(),
+                                    ));
+                                } else if reopening {
+                                    a.recovery = Recovery::Leave;
+                                    leaving = true;
+                                }
+                            }
+                            self.retired.push(Box::new(requested));
                         }
                         p.set_error(error.to_string(), &mut self.retired);
+                        if leaving || enclosing {
+                            self.desktop.report(
+                                "Archive unavailable",
+                                format!(
+                                    "{}\n\nThe panel returns to the folder that contains the archive.",
+                                    crate::error_presentation::describe(&error)
+                                ),
+                            );
+                        }
                     }
                     Ok(listing) => {
                         self.retired.push(Box::new(p.network.take()));
@@ -257,7 +527,13 @@ impl Presenter {
                                 archive.totals = ArchiveSelectionTotals::default();
                             }
                             archive.selection_pending = false;
-                            archive.location = listing.location;
+                            self.retired.push(Box::new(archive.requested.take()));
+                            self.retired
+                                .push(Box::new(mem::take(&mut archive.recovery)));
+                            self.retired.push(Box::new(mem::replace(
+                                &mut archive.location,
+                                listing.location,
+                            )));
                         } else {
                             p.archive = Some(ArchivePane {
                                 sizes: Default::default(),
@@ -271,6 +547,9 @@ impl Presenter {
                                 totals: ArchiveSelectionTotals::default(),
                                 selection_pending: false,
                                 selection_revision: SelectionRevision(0),
+                                requested: None,
+                                recovery: Recovery::None,
+                                opening: None,
                             });
                         }
                         self.retired
@@ -313,18 +592,73 @@ impl Presenter {
             location.address.components.pop();
             location.directory = location.trail.last().map_or(1, |v| v.0);
             self.archive_navigate(pane, ArchiveAction::List(location), send)
+        } else if let Some(parent) = location.parent() {
+            // The root of an archive inside an archive: its enclosing folder, with the
+            // cursor on it (`cursor_toward`).
+            self.archive_navigate(pane, ArchiveAction::List(parent.location), send)
         } else {
-            let origin = archive.origin.clone();
-            let container = archive.location.address.container.clone();
-            if !self.navigate(pane, origin, None, send) {
-                return false;
+            self.leave_archive(pane, send)
+        }
+    }
+    /// Return to the native folder that contains the archive, cursor on the archive.
+    fn leave_archive(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) -> bool {
+        let Some(archive) = &self.panes[pane.index()].archive else {
+            return false;
+        };
+        let origin = archive.origin.clone();
+        let container = archive.location.address.container.clone();
+        if !self.navigate(pane, origin, None, send) {
+            return false;
+        }
+        let p = &mut self.panes[pane.index()];
+        if let Some(request) = &mut p.pending {
+            request.wanted_cursor = Some(container);
+        }
+        p.parent_cursor = false;
+        true
+    }
+    /// Carry out the recovery of a failed mounted listing (see `Recovery`). A refused
+    /// request stays owed and is retried with the other background refreshes.
+    pub(super) fn recover_archive(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        let p = &self.panes[pane.index()];
+        let Some(archive) = p.archive.as_ref().filter(|_| !p.loading) else {
+            return;
+        };
+        match &archive.recovery {
+            Recovery::Reopen(location) => {
+                let location = location.clone();
+                if self.archive_navigate_impl(
+                    pane,
+                    ArchiveAction::List(location),
+                    Reload::Background,
+                    send,
+                ) && let Some(archive) = &mut self.panes[pane.index()].archive
+                {
+                    archive.recovery = Recovery::Reopening;
+                }
             }
-            let p = &mut self.panes[pane.index()];
-            if let Some(request) = &mut p.pending {
-                request.wanted_cursor = Some(container);
+            Recovery::Leave => {
+                if self.leave_archive(pane, send)
+                    && let Some(archive) = &mut self.panes[pane.index()].archive
+                {
+                    archive.recovery = Recovery::None;
+                }
             }
-            p.parent_cursor = false;
-            true
+            Recovery::Parent(parent) => {
+                let ArchiveParent {
+                    location, member, ..
+                } = parent.clone();
+                if self.archive_navigate_impl(
+                    pane,
+                    ArchiveAction::List(location),
+                    Reload::Background,
+                    send,
+                ) && let Some(archive) = &mut self.panes[pane.index()].archive
+                {
+                    archive.wanted_cursor = Some(member);
+                }
+            }
+            Recovery::None | Recovery::Reopening => {}
         }
     }
     pub(super) fn archive_open(
@@ -348,6 +682,9 @@ impl Presenter {
             return false;
         };
         if node.kind != EntryKind::Directory {
+            if let Some(format) = self.member_archive_format(&node) {
+                return self.open_member_archive(pane, *node, format, send);
+            }
             self.desktop.report(
                 "Archive member",
                 "Use F3 to view this member or F5 to copy it to a native folder. External launch inside an archive is unavailable.".into(),
@@ -363,6 +700,77 @@ impl Presenter {
             return false;
         }
         self.archive_navigate(pane, ArchiveAction::List(location), send)
+    }
+    /// Enter on an archive member whose name is an enabled archive: open it as an
+    /// archive inside this archive, listed from its root in this pane.
+    fn open_member_archive(
+        &mut self,
+        pane: PaneId,
+        node: ArchiveNode,
+        format: ArchiveFormat,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let Some(archive) = &self.panes[pane.index()].archive else {
+            return false;
+        };
+        let location = archive.location.clone();
+        let refusal = if location.mount_id() != Some(node.id.mount) {
+            Some((
+                "Archive unavailable",
+                "This archive is no longer open. Open it again to open the archives inside it."
+                    .to_owned(),
+            ))
+        } else if !node.readable {
+            Some((
+                "Archive member",
+                "This archive member is unreadable: links, unsafe names, encryption and \
+                 unsupported compression cannot be opened by the read-only provider."
+                    .to_owned(),
+            ))
+        } else if location.depth() >= MAX_ARCHIVE_DEPTH {
+            Some(("Archive nesting limit", archive_depth_message()))
+        } else {
+            None
+        };
+        if let Some((title, message)) = refusal {
+            self.desktop.report(title, message);
+            return false;
+        }
+        // An inner archive this pane still remembers is entered through its session.
+        if let Some(root) = archive.remembered_inner_root(node.id) {
+            return self.archive_navigate(pane, ArchiveAction::List(root), send);
+        }
+        let Some(archive) = &mut self.panes[pane.index()].archive else {
+            return false;
+        };
+        let shown = archive.shown_sessions();
+        archive.forget_inner_sessions(
+            |location| {
+                location
+                    .mount_id()
+                    .is_some_and(|mount| !shown.contains(&mount))
+            },
+            &mut self.retired,
+        );
+        let (name, size) = (node.display_name.clone(), node.size);
+        let parent = ArchiveParent {
+            location,
+            member: node.id,
+            name: node.display_name,
+        };
+        if !self.archive_navigate(pane, ArchiveAction::OpenMember { parent, format }, send) {
+            return false;
+        }
+        let p = &mut self.panes[pane.index()];
+        if let Some(archive) = &mut p.archive {
+            archive.opening = Some(Opening {
+                navigation: NavigationId(p.generation),
+                name,
+                size,
+                status: None,
+            });
+        }
+        true
     }
     pub(crate) fn native_action_allowed(&mut self, pane: PaneId) -> bool {
         if self.panes[pane.index()].native_capabilities() {

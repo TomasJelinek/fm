@@ -11,7 +11,7 @@ use owned_windows::Windows as ChildWindows;
 use slint::{
     ComponentHandle,
     platform::{
-        Key, WindowAdapter,
+        Key, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
@@ -333,6 +333,104 @@ fn clicking_after_breadcrumb_edits_path_and_enter_submits_unicode() {
     key(&ui.window, Key::Escape);
     assert_eq!(paths.borrow().len(), 1);
     assert_eq!(ui.window.get_left_path_draft(), "C:\\folder");
+}
+
+#[test]
+fn replacing_a_file_with_an_empty_one_needs_the_button_not_another_enter() {
+    let (mut ui, windows) = main_with_children();
+    let path = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("fixture");
+    let state = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let sink = commands.clone();
+    install(
+        &ui.window,
+        state.clone(),
+        Rc::new(move |command| {
+            sink.borrow_mut().push(command);
+            true
+        }),
+    );
+    let navigation = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Navigate {
+                pane: PaneId::Left,
+                navigation,
+                ..
+            } => Some(*navigation),
+            _ => None,
+        })
+        .unwrap();
+    let entry = Entry::new(EntryId(1), path.join("文档.txt"), EntryKind::File);
+    state.borrow_mut().apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation,
+        index: Arc::new(DirectoryIndex::from_entries(std::slice::from_ref(&entry))),
+        entries: vec![entry].into(),
+    });
+    refresh(&ui.window, &state.borrow());
+    ui.window.invoke_focus_files();
+    commands.borrow_mut().clear();
+    chord_current(&ui, &windows, &[Key::Shift], Key::F4);
+    let creation = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::PrepareOperation(request) => Some(request.clone()),
+            _ => None,
+        })
+        .expect("Shift+F4 prepares a new empty file");
+    state
+        .borrow_mut()
+        .apply(Event::Operation(OperationEvent::Preview(Arc::new(
+            OperationPreview {
+                id: creation.id,
+                kind: creation.kind,
+                files: 0,
+                folders: 0,
+                file_bytes: Some(0),
+                sample: vec![],
+            },
+        ))));
+    refresh(&ui.window, &state.borrow());
+    ui.draw();
+    let confirmed = || {
+        commands
+            .borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::ConfirmOperation {
+                    replace_existing, ..
+                } => Some(*replace_existing),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    key_current(&ui, &windows, "文档.txt");
+    key_current(&ui, &windows, Key::Return);
+    assert!(
+        confirmed().is_empty(),
+        "an existing name is asked about first"
+    );
+    assert!(ui.window.get_operation_dangerous());
+    assert_eq!(ui.window.get_operation_title(), "Replace file");
+    // A reflexive second Enter and a held Enter in the name field replace nothing.
+    key_current(&ui, &windows, Key::Return);
+    current(&ui, &windows)
+        .window()
+        .dispatch_event(WindowEvent::KeyPressRepeated {
+            text: Key::Return.into(),
+        });
+    assert!(
+        confirmed().is_empty(),
+        "only the Replace file button replaces"
+    );
+    assert_eq!(ui.window.get_operation_token(), creation.id.0.to_string());
+    // The button itself, here reached from the keyboard, does.
+    chord_current(&ui, &windows, &[Key::Shift], Key::Tab);
+    key_current(&ui, &windows, Key::Return);
+    assert_eq!(confirmed(), [true]);
 }
 
 fn main_with_children() -> (TestUi, ChildWindows) {

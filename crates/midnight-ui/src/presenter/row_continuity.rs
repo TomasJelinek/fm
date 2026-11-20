@@ -5,8 +5,8 @@
 //! the edited rows change: the row model applies the edits instead of
 //! replacing every row.
 
-use super::{Pane, Request};
-use midnight_core::{Entry, NavigationId, RowEdit};
+use super::{DeferredDrop, Pane, Request};
+use midnight_core::{DirectoryIndex, Entry, NavigationId, RowEdit};
 use std::sync::Arc;
 
 /// The edits a committed background listing made to the shown rows.
@@ -48,6 +48,17 @@ impl Pane {
                 .is_some_and(|request| request.background)
     }
 
+    /// A background re-read is pending and the pane keeps showing its plain
+    /// rows, with their presentation hints, until it commits.
+    pub(crate) fn keeps_rows_in_background(&self) -> bool {
+        self.loading
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|request| request.background)
+            && self.rows_epoch().is_some()
+    }
+
     fn rows_epoch(&self) -> Option<RowsEpoch> {
         self.rows_epoch
             .filter(|epoch| epoch.held_for == self.generation)
@@ -82,11 +93,16 @@ impl Pane {
     }
 
     /// Called before `generation` advances to `navigation`. A background
-    /// re-read of the shown plain rows keeps their identities; any other
-    /// navigation ends that.
+    /// re-read of the shown plain rows keeps their identities and the last
+    /// in-place edits (which still describe the shown rows for presentation
+    /// that has not caught up, such as filename colors); any other navigation
+    /// ends both.
     pub(super) fn rows_navigation_accepted(&mut self, navigation: NavigationId, background: bool) {
-        self.row_edits = None;
-        self.rows_epoch = (background && self.plain_rows()).then(|| {
+        let held = background && self.plain_rows();
+        if !held {
+            self.row_edits = None;
+        }
+        self.rows_epoch = held.then(|| {
             let epoch = self.rows_epoch().unwrap_or(RowsEpoch {
                 generation: self.generation,
                 displayed: self.displayed_generation(),
@@ -116,7 +132,13 @@ impl Pane {
     /// rows. A background re-read whose rows are the shown ones, or that the
     /// backend described as edits of them, updates the rows in place and keeps
     /// their identities; any other listing replaces them.
-    pub(super) fn rows_committing(&mut self, request: &Request, entries: &Arc<[Entry]>) {
+    pub(super) fn rows_committing(
+        &mut self,
+        request: &Request,
+        entries: &Arc<[Entry]>,
+        index: &Arc<DirectoryIndex>,
+        retired: &mut Vec<DeferredDrop>,
+    ) {
         let changes = request.changes.as_ref();
         let in_place = request.background
             && self.rows_epoch().is_some()
@@ -130,10 +152,16 @@ impl Pane {
             self.row_edits = None;
             return;
         }
-        self.row_edits = changes.map(|changes| RowEdits {
-            before: self.entries.as_ptr() as usize,
-            after: entries.as_ptr() as usize,
-            edits: changes.edits.clone(),
-        });
+        // Folder hints of unchanged folders stay (`carry_folder_presence`).
+        self.carry_folder_presence(request.navigation, entries, index, retired);
+        // Without edits the rows are the very same, and the last edits still
+        // describe how they came about.
+        if let Some(changes) = changes {
+            self.row_edits = Some(RowEdits {
+                before: self.entries.as_ptr() as usize,
+                after: entries.as_ptr() as usize,
+                edits: changes.edits.clone(),
+            });
+        }
     }
 }

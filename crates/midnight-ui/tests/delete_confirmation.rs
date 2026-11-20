@@ -99,7 +99,10 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(body.contains("2 files"));
     assert!(body.contains("Files size: 3 000 bytes"), "{body}");
     assert!(!body.contains("0 folders"));
-    assert!(body.contains("system Trash"));
+    assert!(
+        body.contains("Move these 2 items to the system Trash?"),
+        "{body}"
+    );
     assert!(!ui.window.get_operation_dangerous());
     snapshot(&windows, "delete-multiple-files");
 
@@ -114,6 +117,13 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         "{body}"
     );
     assert!(!body.contains(sample[0].path.to_string_lossy().as_ref()));
+    // One target: the question names it by its kind.
+    assert!(
+        body.ends_with(
+            "Move the file “žluťoučký 文档 🦀.txt” to the Trash? If the Trash is unavailable, it stays in place."
+        ),
+        "{body}"
+    );
     snapshot(&windows, "delete-single-file");
 
     preview.kind = MutationKind::Delete(DeleteMode::Permanent);
@@ -124,7 +134,17 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(body.contains("2 files and 3 folders"), "{body}");
     assert!(body.contains("Files size: 3 000 bytes"), "{body}");
-    assert!(body.contains("cannot be undone"));
+    assert!(
+        body.contains("Permanently delete these 5 items and folder contents?"),
+        "{body}"
+    );
+    // The warning line says it; the question does not repeat it.
+    assert!(
+        ui.window
+            .get_operation_warning()
+            .contains("cannot be undone")
+    );
+    assert!(!body.contains("cannot be undone"), "{body}");
     assert!(!body.contains("žluťoučký"));
     assert!(ui.window.get_operation_dangerous());
     snapshot(&windows, "delete-mixed-permanent");
@@ -145,11 +165,28 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         body.contains("Modified: 6. listopadu 2026 9:05 PM"),
         "{body}"
     );
+    assert!(
+        body.ends_with("Permanently delete the folder “složka 文档 🦀” and everything in it?"),
+        "{body}"
+    );
     snapshot(&windows, "delete-single-folder");
+
+    // A directory link counts with the folders, yet it is named as a link.
+    preview.sample[0].kind = EntryKind::DirectoryLink;
+    let body = show(&ui, &windows, &state, &commands, preview.clone());
+    assert!(body.starts_with("1 link\nName: složka 文档 🦀\n"), "{body}");
+    assert!(
+        body.ends_with(
+            "Permanently delete the link “složka 文档 🦀”? What it points to is not deleted."
+        ),
+        "{body}"
+    );
+    preview.sample[0].kind = EntryKind::Directory;
 
     preview.folders = 2;
     let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(body.contains("2 folders"), "{body}");
+    assert!(body.contains("these 2 items"), "{body}");
     assert!(!body.contains("složka"));
 
     preview.files = u64::MAX;
@@ -163,6 +200,8 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         "{body}"
     );
     assert!(body.contains("Files size: Unavailable"), "{body}");
+    // The total overflows: the question still asks about every item.
+    assert!(body.contains("Permanently delete these items"), "{body}");
 
     preview.files = 1;
     preview.folders = 0;
@@ -172,6 +211,10 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(body.contains("Size: Unavailable"), "{body}");
     assert!(body.contains("Modified: Unavailable"), "{body}");
     assert!(!body.contains("0 bytes"));
+    assert!(
+        body.ends_with("Permanently delete the file “žluťoučký 文档 🦀.txt”?"),
+        "{body}"
+    );
 
     preview.sample[0].metadata.modified = Some(std::time::UNIX_EPOCH);
     let body = show(&ui, &windows, &state, &commands, preview);

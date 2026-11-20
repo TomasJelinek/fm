@@ -9,7 +9,12 @@ for these operations or enqueue an unbounded history of obsolete positions.
 The shared `PositionBar` retains the pointer's original grab offset, track length
 and thumb extent for the duration of a drag. It paints the local target directly.
 A stationary grab/release does not reload content. A changed content context,
-resize or pointer cancellation ends the old gesture.
+resize or pointer cancellation ends the old gesture. An image's context is its
+surface, which changes with its zoom, viewport or page. A document in the Continuous
+layout gets a new surface for every page its view reaches, so its context is the
+document, zoom and viewport instead: frames painted for earlier steps of a drag
+across pages do not end it, and it lands where the thumb is released
+(`image_camera::position_context`).
 
 Markdown uses the same asynchronous viewport pipeline. Its independent plugin
 counts semantic block lines, rather than only literal newlines, before cropping
@@ -151,6 +156,13 @@ without uploading all pixels for every input event. The visible camera and a
 pending requested camera are separate: a thumb can point at a target whose pixels
 are still loading. A visible camera advances only when its required tiles exist.
 Surface identity and sequence checks prevent a late reply from moving a new view.
+A scrollbar target that still waits for its tiles outlives a new surface: the camera
+maps the waiting thumb positions onto the new surface's extent and asks the new
+surface for them, so a frame painted for an earlier drag step cannot leave the view
+behind the released thumb. Home and End (`viewer.first`, `viewer.last`) move the camera
+the same way to the image's start or end along the direction it scrolls in: down when
+it is taller than the view, else across. The backend's Seek would not move it, since
+the camera, not the backend, owns a retained image's view (`image_key_tests`).
 Decoder work and tile caching remain on backend workers. The UI texture cache
 copies each newly arriving 256×256 tile into a Slint buffer on the event loop (at
 most 128 tiles, 32 MiB, per frame) and reuses it by tile identity, so panning
@@ -163,7 +175,11 @@ bounds, which the backend tile cache uses too, are defined once in `midnight-cor
 `midnight-viewer-ui/tests/position_bar.rs` checks actual software-rendered thumb
 pixels for both axes, grab offsets, reversals, stale metrics and cancellation.
 The viewer UI's presentation tests exercise the real manager callbacks and
-delayed frames. Engine tests check bounded ingress, input barriers and exact
+delayed frames. `scrollbar_drag_tests` drags the real vertical bar of a PDF in four
+pointer steps while the backend answers each step, with a new surface per step in
+the Continuous layout, forward and back, and in the Paged layout; the camera test
+`the_released_thumb_wins_over_a_new_surface_painted_for_an_earlier_drag_step`
+covers tiled images. Engine tests check bounded ingress, input barriers and exact
 viewport completion. Opening regressions compare actual body/gutter marker bounds
 before and after source controls appear, including retained activation and hit
 testing. Placement tests check captured DPI before the first physical sizing and

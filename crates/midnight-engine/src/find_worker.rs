@@ -5,8 +5,11 @@ mod content;
 mod duplicates;
 use content::ContentMatch;
 use midnight_core::*;
+#[path = "find_archive_search.rs"]
+pub(crate) mod archive;
 #[path = "find_predicate.rs"]
 mod predicate;
+pub(crate) use archive::ArchiveSearch;
 use std::{
     io,
     mem::size_of,
@@ -45,6 +48,10 @@ impl CurrentDirectory {
 /// duplicate candidate that joins no group or whose group the result limit omits.
 /// A group is formatted before its strings are charged, so the one group that the
 /// retained-bytes budget refuses (which ends the search) is formatted unpublished.
+#[allow(
+    dead_code,
+    reason = "test seam: the integration tests compile this worker standalone"
+)]
 pub(crate) fn search_with_location(
     service: &dyn FindService,
     locale: Option<&dyn LocaleService>,
@@ -70,10 +77,69 @@ pub(crate) fn search_with_location(
 /// once per `progress_interval` (tests drive the cadence without real waits).
 #[allow(
     clippy::too_many_arguments,
-    reason = "the production seam plus its test cadence"
+    dead_code,
+    reason = "the test seam plus its cadence; the integration tests compile this worker standalone"
 )]
 pub(crate) fn search_with_progress_interval(
     service: &dyn FindService,
+    locale: Option<&dyn LocaleService>,
+    request: &FindRequest,
+    cancel: &Cancellation,
+    emit: &mut dyn FnMut(FindUpdate) -> bool,
+    location: &CurrentDirectory,
+    accepted_at: SystemTime,
+    progress_interval: Duration,
+) -> FindSummary {
+    search(
+        service,
+        None,
+        locale,
+        request,
+        cancel,
+        emit,
+        location,
+        accepted_at,
+        progress_interval,
+    )
+}
+
+/// `search_with_location` that also searches inside the archives it finds when the
+/// request asks for it and `archives` can open them.
+#[allow(
+    clippy::too_many_arguments,
+    dead_code,
+    reason = "the production seam with its archive provider; test copies of this worker may not call it"
+)]
+pub(crate) fn search_with_archives(
+    service: &dyn FindService,
+    archives: Option<&dyn ArchiveSearch>,
+    locale: Option<&dyn LocaleService>,
+    request: &FindRequest,
+    cancel: &Cancellation,
+    emit: &mut dyn FnMut(FindUpdate) -> bool,
+    location: &CurrentDirectory,
+    accepted_at: SystemTime,
+) -> FindSummary {
+    search(
+        service,
+        archives,
+        locale,
+        request,
+        cancel,
+        emit,
+        location,
+        accepted_at,
+        PROGRESS_INTERVAL,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared body of the seams above"
+)]
+fn search(
+    service: &dyn FindService,
+    archives: Option<&dyn ArchiveSearch>,
     locale: Option<&dyn LocaleService>,
     request: &FindRequest,
     cancel: &Cancellation,
@@ -96,6 +162,7 @@ pub(crate) fn search_with_progress_interval(
         failed: false,
         last_progress: Instant::now(),
         progress_interval,
+        archives_reported: false,
     };
     if cancel.is_cancelled() {
         work.cancelled = true;
@@ -134,7 +201,7 @@ pub(crate) fn search_with_progress_interval(
             work.error(find_error(
                 Path::new(""),
                 io::ErrorKind::InvalidInput,
-                message,
+                &message,
             ));
             return work.finish();
         }
@@ -287,30 +354,37 @@ pub(crate) fn search_with_progress_interval(
                             work.progress_if_due();
                             continue;
                         }
-                        if work.progress.results >= request.limits.max_results as u64 {
-                            work.budget(FindBudget::Results);
-                            break 'roots;
-                        }
                         let entry = work.localized(source.entry());
-                        if !work.reserve(
-                            entry_cost(&entry)
-                                + size_of::<FindResult>()
-                                + 2 * size_of::<Arc<FindResult>>(),
-                        ) {
-                            break 'roots;
-                        }
-                        work.progress.results += 1;
-                        work.batch.push(Arc::new(FindResult {
-                            id: FindResultId(work.progress.results),
-                            entry,
-                            duplicate_group: None,
-                            duplicate_group_size: 0,
-                        }));
-                        if work.batch.len() == FIND_BATCH_SIZE && !work.flush() {
+                        if !work.publish(entry, None) {
                             break 'roots;
                         }
                     }
                     Err(error) => work.error(error),
+                }
+            }
+            // Search inside archives: the members of an archive file, whether or not
+            // the archive itself matched.
+            if request.archives
+                && !request.duplicates
+                && source.entry().kind == EntryKind::File
+                && archive::eligible(source.entry())
+            {
+                let searched = match archives {
+                    Some(archives) => archive::search(
+                        archives,
+                        source.as_mut(),
+                        &filter,
+                        &mut content,
+                        &mut work,
+                        accepted_at,
+                    ),
+                    None => {
+                        work.archives_unavailable();
+                        true
+                    }
+                };
+                if !searched {
+                    break 'roots;
                 }
             }
             if request.recursive && source.entry().kind == EntryKind::Directory {
@@ -392,8 +466,58 @@ struct Work<'a> {
     failed: bool,
     last_progress: Instant,
     progress_interval: Duration,
+    /// Search inside archives was requested without an archive provider; said once.
+    archives_reported: bool,
 }
 impl Work<'_> {
+    /// Charges and batches one result. False when the search must end (result
+    /// or memory limit, or the receiver stopped).
+    fn publish(&mut self, entry: FindEntry, archive: Option<Arc<FindArchiveMember>>) -> bool {
+        if self.progress.results >= self.request.limits.max_results as u64 {
+            self.budget(FindBudget::Results);
+            return false;
+        }
+        let member = archive.as_ref().map_or(0, |member| {
+            size_of::<FindArchiveMember>()
+                + entry_cost(&member.container)
+                + member.name.len()
+                + member
+                    .folder
+                    .components
+                    .iter()
+                    .map(|part| part.len() + size_of::<Vec<u8>>())
+                    .sum::<usize>()
+                + member.folder.source_version.len()
+                + member.folder.provider.len()
+        });
+        if !self.reserve(
+            entry_cost(&entry)
+                + member
+                + size_of::<FindResult>()
+                + 2 * size_of::<Arc<FindResult>>(),
+        ) {
+            return false;
+        }
+        self.progress.results += 1;
+        self.batch.push(Arc::new(FindResult {
+            id: FindResultId(self.progress.results),
+            entry,
+            duplicate_group: None,
+            duplicate_group_size: 0,
+            archive,
+        }));
+        !(self.batch.len() == FIND_BATCH_SIZE && !self.flush())
+    }
+    fn archives_unavailable(&mut self) {
+        if !self.archives_reported {
+            self.archives_reported = true;
+            self.error(find_error(
+                Path::new(""),
+                io::ErrorKind::Unsupported,
+                "Search inside archives is unavailable: no archive provider is installed.",
+            ));
+        }
+    }
     /// A published copy of a result or duplicate group member with its localized
     /// time. Nodes that never match and candidates that join no group are not
     /// formatted: a name search over a million nodes formats only its results.

@@ -4,15 +4,23 @@
 //! only move the cursor. `std::io::BufReader` discards its buffer on every seek,
 //! which made ZIP local-header probes, TAR header walks and zstd frame peeks
 //! refetch a whole 256 KiB window per entry.
-use crate::storage::ReadSeek;
-use midnight_filesystem_api::MAX_READ;
-use std::io::{self, BufRead, Read, Seek, SeekFrom};
+use crate::{Failure, storage::ReadSeek};
+use midnight_filesystem_api::{ErrorCode, MAX_READ};
+use std::{
+    cell::RefCell,
+    io::{self, BufRead, Read, Seek, SeekFrom},
+    rc::Rc,
+};
 
 /// Largest window; equals the protocol's bounded source/spool read.
 const MAX_WINDOW: usize = MAX_READ as usize;
 /// Window used after a jump. It doubles while reads continue sequentially, so
 /// scattered metadata probes do not each transfer a full maximum window.
 const JUMP_WINDOW: usize = 16 * 1024;
+
+/// The first failed read or seek of the source since the archive last cleared it.
+/// Decoders may wrap the error they got in their own; the archive reports this one.
+pub(crate) type Failures = Rc<RefCell<Option<Failure>>>;
 
 pub struct Window {
     inner: Box<dyn ReadSeek>,
@@ -27,6 +35,7 @@ pub struct Window {
     /// End and size of the previous inner read; they classify the next one.
     last_end: Option<u64>,
     window: usize,
+    failure: Failures,
 }
 
 impl Window {
@@ -42,7 +51,29 @@ impl Window {
             inner_position: None,
             last_end: None,
             window: MAX_WINDOW,
+            failure: Failures::default(),
         }
+    }
+
+    pub(crate) fn failures(&self) -> Failures {
+        self.failure.clone()
+    }
+
+    /// An error of the source itself, not of the archive's bytes: it becomes a typed
+    /// `Failure` (a host reply keeps its own code; anything else is `Io`) and, the
+    /// first time, the operation's failure. A retryable interruption stays as it is.
+    fn failed(&self, error: io::Error) -> io::Error {
+        if error.kind() == io::ErrorKind::Interrupted {
+            return error;
+        }
+        let failure = Failure::of(&error).cloned().unwrap_or_else(|| Failure {
+            code: ErrorCode::Io,
+            message: error.to_string(),
+        });
+        self.failure
+            .borrow_mut()
+            .get_or_insert_with(|| failure.clone());
+        io::Error::new(error.kind(), failure)
     }
 
     fn buffered(&self) -> Option<usize> {
@@ -65,11 +96,16 @@ impl Window {
         // Until a seek and read succeed, the inner position is unknown: a failed or
         // interrupted call forces the next one to seek again.
         let known = self.inner_position.take();
-        if known != Some(self.position) {
-            self.inner.seek(SeekFrom::Start(self.position))?;
+        if known != Some(self.position)
+            && let Err(error) = self.inner.seek(SeekFrom::Start(self.position))
+        {
+            return Err(self.failed(error));
         }
         let count = match direct {
-            Some(output) => self.inner.read(output)?,
+            Some(output) => match self.inner.read(output) {
+                Ok(count) => count,
+                Err(error) => return Err(self.failed(error)),
+            },
             None => {
                 // The refill overwrites the buffer from its start; forget the old range
                 // first, so a read that fails part-way cannot serve mixed bytes later.
@@ -77,7 +113,10 @@ impl Window {
                 if self.buffer.len() < size {
                     self.buffer.resize(size, 0);
                 }
-                let count = self.inner.read(&mut self.buffer[..size])?;
+                let count = match self.inner.read(&mut self.buffer[..size]) {
+                    Ok(count) => count,
+                    Err(error) => return Err(self.failed(error)),
+                };
                 self.start = self.position;
                 self.filled = count;
                 count

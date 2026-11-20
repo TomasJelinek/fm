@@ -68,21 +68,15 @@ impl Presenter {
                 self.retired.push(Box::new(error));
             }
             ChecksumManifestUpdate::Finished(result) => {
-                let last = s
-                    .save
-                    .take()
-                    .map(|save| (save.algorithm, save.destination, save.acknowledged));
+                let last = s.save.take();
+                s.save_message.clear();
                 match result {
                     Ok(receipt) => {
                         s.error.clear();
-                        s.save_message = format!(
-                            "Saved and verified {} bytes\n{}\n{} included · {} excluded",
-                            self.number_locale.format_u64(receipt.verified_bytes),
-                            receipt.path.display(),
-                            self.number_locale.format_u64(receipt.included),
-                            self.number_locale.format_u64(receipt.excluded)
-                        );
-                        if let Some(parent) = receipt.path.parent() {
+                        // The window reports where it went and what it replaced.
+                        let parent = receipt.path.parent().map(Path::to_owned);
+                        s.saved = Some(receipt);
+                        if let Some(parent) = parent {
                             for pane in [PaneId::Left, PaneId::Right] {
                                 // As after transfers and file operations, an adopted
                                 // native tree reconciles its loaded branches; a flat
@@ -92,34 +86,34 @@ impl Presenter {
                                 {
                                     continue;
                                 }
-                                self.queue_operation_refresh(pane, parent, None, false);
+                                self.queue_operation_refresh(pane, &parent, None, false);
                             }
                         }
                     }
-                    Err(error)
-                        if error.kind == std::io::ErrorKind::AlreadyExists && last.is_some() =>
-                    {
+                    Err(error) if error.kind == std::io::ErrorKind::AlreadyExists => {
                         // Ask instead of failing: the user may want the file replaced.
-                        let (algorithm, destination, acknowledged) = last.unwrap();
-                        let name = destination
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        s.save_message.clear();
-                        s.save_prompt = Some(SavePrompt {
-                            algorithm,
-                            destination,
-                            acknowledged,
-                            overwrite: true,
-                            message: format!(
-                                "{} already exists. Replace it?",
-                                crate::shown_text(&name)
-                            ),
-                        });
+                        // The question keeps this run's exact acknowledgement.
+                        if let Some(save) = last {
+                            let name = save
+                                .destination
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            s.save_prompt = Some(SavePrompt {
+                                generation: event.generation,
+                                algorithm: save.algorithm,
+                                destination: save.destination,
+                                acknowledged: save.acknowledged,
+                                overwrite: true,
+                                message: format!(
+                                    "{} already exists. Replace it?",
+                                    crate::shown_text(&name)
+                                ),
+                            });
+                        }
                         self.retired.push(Box::new(error));
                     }
                     Err(error) => {
-                        s.save_message.clear();
                         s.error = crate::error_presentation::describe(&error);
                         self.retired.push(Box::new(error));
                     }

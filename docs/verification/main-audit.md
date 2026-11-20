@@ -7,8 +7,8 @@ The audit starts at `origin/main`, commit
 `codex/main-deep-audit` branch at
 `<worktree>`. Documentation/inventory
 commit `1dbe4c761104120876dbab596e2970bf36cf4a69` precedes the audit fixes.
-Verified source commit: **962ebb5049f51d7b2e268c213fb4436d5308b621**. The newer dirty source checkout at
-`D:/experiments/dev/FM` was outside scope and was not used as the source of fixes.
+Verified source commit: **962ebb5049f51d7b2e268c213fb4436d5308b621**. The newer dirty primary source checkout
+was outside scope and was not used as the source of fixes.
 
 This main snapshot implements browsing, panel prefix search, selection,
 preferences, native

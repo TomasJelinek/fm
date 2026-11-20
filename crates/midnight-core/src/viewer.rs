@@ -339,7 +339,22 @@ pub enum ViewerInput {
     Copy {
         frame: u64,
     },
+    /// Install the permission that the shown `ViewerSandboxNotice` offers, with
+    /// administrator authorization, then open the document again.
+    InstallSandboxPermission,
     Close,
+}
+
+/// Shown instead of an HTML page whose browser the system refused Chromium's sandbox
+/// (Linux: AppArmor restricts unprivileged user namespaces): why, or how the latest
+/// installation of the one-time permission that allows it ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewerSandboxNotice {
+    pub message: String,
+    /// The viewer offers Install…, which sends `ViewerInput::InstallSandboxPermission`.
+    pub installable: bool,
+    /// An installation waits for authorization or runs; Install… is unavailable meanwhile.
+    pub installing: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -432,6 +447,9 @@ pub enum ViewerOutput {
         surface: ViewerSurfaceId,
         message: String,
     },
+    /// Show this notice instead of the page; `None` removes it when another document
+    /// opens. The latest one replaces any earlier one that is still queued.
+    SandboxNotice(Option<ViewerSandboxNotice>),
     Status(String),
     CopyText(String),
     Closed,

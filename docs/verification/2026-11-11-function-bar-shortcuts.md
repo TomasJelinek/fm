@@ -61,7 +61,7 @@ The updated application was reopened normally after these checks.
 
 ## Artifact and limits
 
-Executable: D:/experiments/dev/FM/_build/debug/me.exe, 96,123,904 bytes.
+Executable: `_build/debug/me.exe`, 96,123,904 bytes.
 SHA-256: 47a89e92edc2cbe2740d91ba0539f79d9c7f16b0356b0cf2ddbf67cf1164083a.
 
 Matching protected runtime:

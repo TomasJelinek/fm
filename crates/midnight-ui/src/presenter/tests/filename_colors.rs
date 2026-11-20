@@ -470,3 +470,59 @@ fn removing_last_rule_cancels_backend_work_and_releases_the_previous_snapshot() 
     );
     p.flush_filename_colors(&|_| panic!("cancel must not repeat after it is accepted"));
 }
+
+#[test]
+fn colors_of_rows_a_background_reread_edits_in_place_stay_until_matched_again() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.preferences_loaded(Ok(colored_preferences()));
+    let generation = begin(&mut p, PaneId::Left, "left");
+    let mut grown = Entry::new(EntryId(2), "left/b.rs".into(), EntryKind::File);
+    grown.metadata.size = Some(1);
+    let shown = vec![
+        Entry::new(EntryId(1), "left/a.rs".into(), EntryKind::File),
+        grown.clone(),
+    ];
+    finish(&mut p, PaneId::Left, generation, shown.clone());
+    let first = request(&mut p);
+    deliver(&mut p, first);
+    let style = |p: &Presenter, entry: &Entry| p.filename_style(PaneId::Left, entry);
+    assert!(style(&p, &shown[0]).is_some());
+
+    // A watch hint re-reads the folder in the background; one file grew.
+    let sent = RefCell::new(None);
+    assert!(p.refresh_if_changed(PaneId::Left, generation, &|command| {
+        if let Command::Refresh { navigation, .. } = command {
+            *sent.borrow_mut() = Some(navigation);
+        }
+        true
+    }));
+    let refresh = sent.into_inner().expect("a background Refresh");
+    assert!(
+        style(&p, &shown[0]).is_some(),
+        "pending rows keep their colors"
+    );
+    grown.metadata.size = Some(2);
+    let listed = vec![shown[0].clone(), grown];
+    p.apply(Event::ListingChanges {
+        pane: PaneId::Left,
+        navigation: refresh,
+        base: p.panes[0].entries.clone(),
+        edits: Arc::from([RowEdit::Changed { row: 1 }]),
+    });
+    finish(&mut p, PaneId::Left, refresh, listed.clone());
+    assert!(
+        p.panes[0].row_edits().is_some(),
+        "the rows were edited in place"
+    );
+    assert!(
+        style(&p, &listed[0]).is_some(),
+        "an in-place commit keeps the colors until the new rows are matched"
+    );
+    let second = request(&mut p);
+    assert!(
+        style(&p, &listed[0]).is_some(),
+        "requesting the new match keeps the colors meanwhile"
+    );
+    deliver(&mut p, second);
+    assert!(style(&p, &listed[1]).is_some());
+}

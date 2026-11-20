@@ -675,17 +675,6 @@ async fn metadata_preview_captures_native_locale_on_worker_for_current_and_propo
         fn number_locale(&self) -> Result<NumberLocale, FsError> {
             Ok(NumberLocale::default())
         }
-        fn datetime_input_format(&self) -> Option<DateTimeInputFormat> {
-            assert_ne!(
-                std::thread::current().id(),
-                self.0,
-                "locale discovery must use a worker"
-            );
-            Some(DateTimeInputFormat {
-                pattern: "%d. %m. %Y %H:%M:%S".into(),
-                am_pm: ["".into(), "".into()],
-            })
-        }
         fn format_datetime(&self, _: std::time::SystemTime) -> Option<LocalizedDateTime> {
             assert_ne!(
                 std::thread::current().id(),
@@ -718,10 +707,7 @@ async fn metadata_preview_captures_native_locale_on_worker_for_current_and_propo
     );
     harness.controller.prepare(harness.request.clone()).await;
     let initial = harness.preview(0).await;
-    assert_eq!(
-        initial.time_input_format.as_ref().unwrap().pattern,
-        "%d. %m. %Y %H:%M:%S"
-    );
+    assert!(initial.patch_calendars.is_empty(), "nothing is set yet");
     let current = initial.sample[0].current.modified.unwrap();
     assert_eq!(initial.localized_times[&current].date, "native date");
     // One captured root: its own times seed the editors, in the native zone.
@@ -747,6 +733,12 @@ async fn metadata_preview_captures_native_locale_on_worker_for_current_and_propo
         .await;
     let reviewed = harness.preview(1).await;
     assert_eq!(reviewed.localized_times[&proposed].time, "native time");
+    // The review compares the typed offset with the local one at the set instant.
+    assert_eq!(
+        reviewed.patch_calendars[&proposed].day,
+        (1_700_000_000 / 86_400 % 28 + 1) as u8
+    );
+    assert_eq!(reviewed.patch_calendars.len(), 1);
     assert_eq!(reviewed.sample[0].proposed.modified, Some(proposed));
     assert_eq!(reviewed.id, initial.id);
 }

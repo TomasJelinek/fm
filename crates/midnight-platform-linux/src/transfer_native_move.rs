@@ -218,7 +218,9 @@ fn execute_in(
     }
     qualify(&target)?;
     target.check_recovery_parent(cancel)?;
-    if source.is_link() && replace.is_some() {
+    // A preserved link (its own entry kind is Symlink) can replace a file or link
+    // like a file does; the original of a followed directory link cannot.
+    if source.is_link() && replace.is_some() && entry.item.kind != EntryKind::Symlink {
         return Err(unsupported(
             &target.path().join(name),
             "native directory link Move requires a vacant destination name",
@@ -248,6 +250,9 @@ fn execute_in(
             return Err(failure);
         }
     };
+    // Moving a folder into another folder rewrites its ".." entry, which needs write
+    // permission on the folder itself: an owned folder has it until this returns.
+    let _writable = writable_for_rename(source);
     let captured = (|| {
         if source.is_link() {
             source.revalidate(cancel)?;
@@ -260,7 +265,7 @@ fn execute_in(
             original_name,
             RenameFlags::NOREPLACE,
         )
-        .map_err(|failure| error(&entry.item.path, failure.into()))
+        .map_err(|failure| capture_error(source, failure))
     })();
     if let Err(failure) = captured {
         let mut recovery = Vec::new();
@@ -313,7 +318,7 @@ fn execute_in(
         return Ok(restore(
             source,
             stage,
-            error(&target.path().join(name), failure.into()),
+            move_error(&target.path().join(name), failure.into()),
             change,
         ));
     }
@@ -322,6 +327,19 @@ fn execute_in(
     Ok(committed(
         source, &target, name, stage, replaced, sync, change,
     ))
+}
+
+/// The pinned destination as this provider's directory, for recreating a link that
+/// moves to another filesystem.
+pub(super) fn bind_link_destination(
+    expected: &dyn TransferDirectory,
+    original: &directory_links::OriginalLink,
+    parent: &destination::Directory,
+    cancel: &Cancellation,
+) -> Result<destination::Directory, FsError> {
+    let target = bind_destination(expected, MoveSource::Link { original, parent }, cancel)?;
+    qualify(&target)?;
+    Ok(target)
 }
 
 fn bind_destination(
@@ -397,8 +415,16 @@ fn validate_target(
     match (current, replace) {
         (None, None) => Ok(None),
         (Some(current), Some((expected, TransferReplacementPolicy::RecoverableCurrentEntry))) => {
-            if source.item.kind != EntryKind::File
-                || current.entry().item.kind != EntryKind::File
+            let replaceable = match source.item.kind {
+                EntryKind::File => current.entry().item.kind == EntryKind::File,
+                // A link replaces a file or another link, never a folder.
+                EntryKind::Symlink => matches!(
+                    current.entry().item.kind,
+                    EntryKind::File | EntryKind::Symlink
+                ),
+                _ => false,
+            };
+            if !replaceable
                 || expected.entry().item.path != path
                 || current.entry().identity != expected.entry().identity
                 || current.entry().identity == source.identity
@@ -561,7 +587,7 @@ fn committed(
                 identity: observed_identity,
             });
             if let Err(failure) = sync(&stage, target) {
-                error = combined(error, "publication durability", failure);
+                error = combined(error, "saving the moved link", failure);
             }
             if let Err(failure) = clean_stage(source, stage, change, &mut recovery) {
                 error = combined(error, "empty staging cleanup", failure);
@@ -661,6 +687,74 @@ fn sync_each(
 fn combined(mut error: FsError, context: &str, extra: FsError) -> FsError {
     error.message.push_str(&format!("; {context}: {extra}"));
     error
+}
+
+const READ_ONLY_FOLDER: &str = "Permission denied: the folder is read-only. Linux moves a folder \
+into another folder only when the folder itself is writable, because its link to its parent \
+folder changes. The folder was left in place; make it writable, or copy it instead.";
+
+/// Why the source could not be taken into its private stage. The parent was just
+/// writable enough to hold the stage, so a refused folder is usually read-only itself.
+fn capture_error(source: MoveSource<'_>, failure: rustix::io::Errno) -> FsError {
+    use rustix::fs::{Access, AtFlags, accessat};
+    let entry = source.entry();
+    let read_only_folder = failure == rustix::io::Errno::ACCESS
+        && entry.item.kind == EntryKind::Directory
+        && !source.is_link()
+        && accessat(
+            source.parent().native_file(),
+            source.name(),
+            Access::WRITE_OK,
+            AtFlags::EACCESS,
+        ) == Err(rustix::io::Errno::ACCESS);
+    let failure = if read_only_folder {
+        io::Error::new(io::ErrorKind::PermissionDenied, READ_ONLY_FOLDER)
+    } else {
+        failure.into()
+    };
+    move_error(&entry.item.path, failure)
+}
+
+/// Owner write added to an owned folder for its renames (see `execute_in`). Dropping
+/// it gives the folder its own mode back, wherever the folder is by then.
+struct WritableForRename {
+    folder: Arc<File>,
+    mode: rustix::fs::RawMode,
+}
+
+impl Drop for WritableForRename {
+    fn drop(&mut self) {
+        // The folder is ours and its mode was just changed the same way.
+        let _ = chmod_retained(&self.folder, self.mode);
+    }
+}
+
+fn writable_for_rename(source: MoveSource<'_>) -> Option<WritableForRename> {
+    let MoveSource::Ordinary(capture) = source else {
+        return None;
+    };
+    if capture.entry.item.kind != EntryKind::Directory {
+        return None;
+    }
+    // The retained descriptor is the captured folder itself, not its name.
+    let folder = capture._file.clone();
+    let stat = rustix::fs::fstat(&*folder).ok()?;
+    let mode = stat.st_mode & 0o7777;
+    if stat.st_uid != rustix::process::geteuid().as_raw() || mode & 0o200 != 0 {
+        return None;
+    }
+    chmod_retained(&folder, mode | 0o200).ok()?;
+    Some(WritableForRename { folder, mode })
+}
+
+/// `fchmod` refuses the retained O_PATH descriptor. Its /proc entry names exactly
+/// that inode, never a path that another process could replace.
+fn chmod_retained(file: &File, mode: rustix::fs::RawMode) -> rustix::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    rustix::fs::chmod(
+        format!("/proc/self/fd/{}", file.as_raw_fd()).as_str(),
+        Mode::from_raw_mode(mode),
+    )
 }
 
 #[cfg(test)]

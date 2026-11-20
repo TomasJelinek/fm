@@ -193,6 +193,23 @@ fn created_file_is_focused_and_revealed_after_refresh_from_existing_or_parent_cu
 }
 
 #[test]
+fn a_nested_new_folder_path_focuses_its_first_new_folder_after_refresh() {
+    let mut p = ready();
+    let top = p.panes[0].path.join("alpha");
+    created_entry_refresh(
+        &mut p,
+        top.join("beta").join("gamma"),
+        MutationKind::CreateDirectory,
+    );
+    let navigation = NavigationId(p.panes[0].generation);
+    let mut entries = p.panes[0].entries.to_vec();
+    entries.push(Entry::new(EntryId(99), top, EntryKind::Directory));
+    finish(&mut p, PaneId::Left, navigation, entries);
+    assert_eq!(p.panes[0].cursor, Some(EntryId(99)));
+    assert!(!p.panes[0].preserve_viewport, "it is scrolled into view");
+}
+
+#[test]
 fn created_file_reveal_leaves_search_but_respects_a_new_cursor_choice_during_refresh() {
     let mut p = ready();
     p.preferences.values.quick_search_filter = true;
@@ -874,4 +891,282 @@ fn completed_copy_move_and_delete_refresh_at_once_and_hold_input_until_shown() {
             assert!(!p.mutation_settling(), "{name} {done}: released once shown");
         }
     }
+}
+
+/// A transfer between the two panels: `source` on the left, `destination` on the right.
+fn two_folders() -> (Presenter, PathBuf, PathBuf) {
+    let mut p = ready();
+    let source = p.panes[0].path.clone();
+    let destination = test_root().join("operations-target");
+    let navigation = begin(&mut p, PaneId::Right, destination.to_str().unwrap());
+    finish(&mut p, PaneId::Right, navigation, vec![]);
+    (p, source, destination)
+}
+
+fn transfer(
+    intent: TransferIntent,
+    state: CopyOperationState,
+    source: &Path,
+    destination: &Path,
+) -> CopyProgress {
+    let mut progress = CopyProgress::queued(OperationId(1), destination.to_owned(), 1, intent);
+    progress.source_directories = vec![source.to_owned()];
+    progress.state = state;
+    progress
+}
+
+/// A Copy leaves its sources unchanged: only the panel showing its destination
+/// waits. A Move changes both panels.
+#[test]
+fn a_copy_holds_only_its_destination_panel_and_a_move_both() {
+    for (intent, held) in [
+        (TransferIntent::Copy, [false, true]),
+        (TransferIntent::Move, [true, true]),
+    ] {
+        let (mut p, source, destination) = two_folders();
+        let running = transfer(intent, CopyOperationState::Running, &source, &destination);
+        p.copies.progress.push(Arc::new(running));
+        let sent = RefCell::new(Vec::new());
+        let done = transfer(intent, CopyOperationState::Completed, &source, &destination);
+        p.apply_with_sender(
+            Event::Copy(CopyEvent::Progress(Arc::new(done))),
+            &|command| {
+                sent.borrow_mut().push(command);
+                true
+            },
+        );
+        assert_eq!(p.mutation_settling_panes(), held, "{intent:?}");
+        // Both panels are still re-read at once.
+        assert_eq!(reads_of(&sent, PaneId::Left).len(), 1, "{intent:?}");
+        assert_eq!(reads_of(&sent, PaneId::Right).len(), 1, "{intent:?}");
+    }
+}
+
+/// A job that ran longer than the user waits for (a long copy finishing while
+/// they work elsewhere) re-reads its panels in place without holding them.
+#[test]
+fn a_job_that_ran_long_refreshes_its_panels_without_holding_them() {
+    let (mut p, source, destination) = two_folders();
+    p.operations.settle.waited = std::time::Duration::ZERO;
+    let running = transfer(
+        TransferIntent::Move,
+        CopyOperationState::Running,
+        &source,
+        &destination,
+    );
+    p.copies.progress.push(Arc::new(running.clone()));
+    // The job reports that it runs, and ends later.
+    p.apply_with_sender(Event::Copy(CopyEvent::Progress(Arc::new(running))), &|_| {
+        true
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let sent = RefCell::new(Vec::new());
+    let done = transfer(
+        TransferIntent::Move,
+        CopyOperationState::Completed,
+        &source,
+        &destination,
+    );
+    p.apply_with_sender(
+        Event::Copy(CopyEvent::Progress(Arc::new(done))),
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    assert_eq!(p.mutation_settling_panes(), [false, false]);
+    assert_eq!(reads_of(&sent, PaneId::Left).len(), 1);
+    assert_eq!(reads_of(&sent, PaneId::Right).len(), 1);
+}
+
+/// A confirmed Rename holds the panel showing its folder, not the other one.
+#[test]
+fn a_confirmed_rename_holds_only_the_panel_showing_its_folder() {
+    let (mut p, _, _) = two_folders();
+    confirmed_rename(&mut p);
+    assert_eq!(p.mutation_settling_panes(), [true, false]);
+}
+
+/// A Rename holds its panel as a running job for as long as it runs, however
+/// long that takes, and then until the re-read that shows it; the window
+/// bounds only that second wait (`left-mutation-hold`). A failure releases
+/// the panel at once.
+#[test]
+fn a_rename_holds_its_panel_while_it_runs_however_long_and_then_for_its_reread() {
+    use crate::presenter::operations::PaneHold;
+    let (mut p, directory, _) = two_folders();
+    // Every job counts as running long, so only the hold since the
+    // confirmation can make the completion's re-read hold input too.
+    p.operations.settle.waited = std::time::Duration::ZERO;
+    let id = confirmed_rename(&mut p);
+    assert_eq!(p.mutation_holds(), [PaneHold::Job, PaneHold::None]);
+    assert_eq!(
+        p.mutation_job_text(),
+        "Renaming “文档.txt” to “renamed.txt”…"
+    );
+    let Event::Operation(OperationEvent::Progress(mut running)) =
+        rename_finished(id, &directory, OperationState::Completed)
+    else {
+        unreachable!("a progress event");
+    };
+    let report = Arc::make_mut(&mut running);
+    report.state = OperationState::Running;
+    report.completed = 0;
+    report.processed_entries = 0;
+    report.renamed_to = None;
+    p.apply_with_sender(Event::Operation(OperationEvent::Progress(running)), &|_| {
+        true
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    assert_eq!(p.mutation_holds(), [PaneHold::Job, PaneHold::None]);
+
+    let sent = RefCell::new(Vec::new());
+    p.apply_with_sender(
+        rename_finished(id, &directory, OperationState::Completed),
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    assert_eq!(
+        p.mutation_holds(),
+        [PaneHold::Reread, PaneHold::None],
+        "the user waited for it, so its re-read holds the panel too"
+    );
+    assert_eq!(p.mutation_job_text(), "");
+    let reads = reads_of(&sent, PaneId::Left);
+    let [read] = reads[..] else {
+        panic!("one re-read of the left panel: {reads:?}");
+    };
+    let renamed = Entry::new(EntryId(9), directory.join("renamed.txt"), EntryKind::File);
+    p.apply_with_sender(listed(PaneId::Left, read, vec![renamed]), &|_| true);
+    assert_eq!(p.mutation_holds(), [PaneHold::None, PaneHold::None]);
+
+    let (mut p, directory, _) = two_folders();
+    let id = confirmed_rename(&mut p);
+    p.apply_with_sender(
+        rename_finished(id, &directory, OperationState::Failed),
+        &|_| true,
+    );
+    assert_eq!(p.mutation_holds(), [PaneHold::None, PaneHold::None]);
+    assert_eq!(p.mutation_job_text(), "");
+}
+
+/// The background re-read of `pane` started by a watch hint, and its navigation.
+fn watch_reread(p: &mut Presenter, pane: PaneId) -> NavigationId {
+    let committed = p.panes[pane.index()].successful_generation.unwrap();
+    assert!(p.refresh_if_changed(pane, committed, &|_| true));
+    assert!(p.panes[pane.index()].keeps_rows_in_background());
+    NavigationId(p.panes[pane.index()].generation)
+}
+
+/// F8 while a watch re-read keeps the rows waits for that re-read instead of
+/// being refused, then prepares the target it was pressed on.
+#[test]
+fn an_operation_requested_during_a_background_reread_runs_on_its_target_once_it_ends() {
+    let mut p = ready();
+    let read = watch_reread(&mut p, PaneId::Left);
+    let sent = RefCell::new(Vec::new());
+    let record = |command: Command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.start_operation(
+        PaneId::Left,
+        MutationKind::Delete(DeleteMode::Trash),
+        &record,
+    );
+    assert!(
+        sent.borrow().is_empty(),
+        "nothing is prepared on a pending listing"
+    );
+    assert!(p.desktop.notice.is_none(), "nor refused");
+    // The cursor moves on before the re-read commits; F8 keeps its target.
+    p.panes[0].cursor = Some(EntryId(2));
+    let rows = p.panes[0].entries.to_vec();
+    p.apply_with_sender(listed(PaneId::Left, read, rows), &record);
+    let commands = sent.borrow();
+    let acknowledged = commands
+        .iter()
+        .position(|command| {
+            matches!(command, Command::PaneCommitted(visible) if visible.navigation == read)
+        })
+        .expect("the committed listing is acknowledged first");
+    let prepared = commands
+        .iter()
+        .position(|command| {
+            matches!(command, Command::PrepareOperation(request)
+                if request.focused == Some(EntryId(1)) && request.source.navigation == read)
+        })
+        .expect("prepared on the entry F8 was pressed on");
+    assert!(acknowledged < prepared);
+}
+
+#[test]
+fn a_waiting_operation_is_dropped_when_its_panel_leaves_the_folder() {
+    let mut p = ready();
+    watch_reread(&mut p, PaneId::Left);
+    p.start_operation(PaneId::Left, MutationKind::Rename, &|_| true);
+    let elsewhere = test_root().join("elsewhere");
+    let navigation = begin(&mut p, PaneId::Left, elsewhere.to_str().unwrap());
+    let sent = RefCell::new(Vec::new());
+    let other = Entry::new(EntryId(1), elsewhere.join("other.txt"), EntryKind::File);
+    p.apply_with_sender(listed(PaneId::Left, navigation, vec![other]), &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::PrepareOperation(_))),
+        "a Rename meant for the old folder never runs in another"
+    );
+}
+
+#[test]
+fn opening_an_entry_during_a_background_reread_uses_the_shown_rows() {
+    let mut p = ready();
+    let folder = p.panes[0].path.clone();
+    watch_reread(&mut p, PaneId::Left);
+    assert!(p.panes[0].has_parent());
+    let sent = RefCell::new(Vec::new());
+    assert!(p.open(PaneId::Left, 0, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    assert!(sent.borrow().iter().any(|command| matches!(command,
+        Command::Navigate { pane: PaneId::Left, path, .. } if Some(path.as_path()) == folder.parent())));
+}
+
+/// A second completion whose re-read supersedes the first job's revealing
+/// re-read keeps the first job's renamed entry as the cursor target.
+#[test]
+fn a_later_completion_keeps_an_earlier_jobs_reveal() {
+    let mut p = ready();
+    let directory = p.panes[0].path.clone();
+    let id = confirmed_rename(&mut p);
+    p.apply_with_sender(
+        rename_finished(id, &directory, OperationState::Completed),
+        &|_| true,
+    );
+    let revealing = NavigationId(p.panes[0].generation);
+    // A Delete elsewhere in the folder completes before that re-read commits.
+    let mut deleted = (*p.operations.progress[0]).clone();
+    deleted.id = OperationId(id.0 + 10);
+    deleted.kind = MutationKind::Delete(DeleteMode::Trash);
+    deleted.renamed_to = None;
+    p.apply_with_sender(
+        Event::Operation(OperationEvent::Progress(Arc::new(deleted))),
+        &|_| true,
+    );
+    let superseding = NavigationId(p.panes[0].generation);
+    assert!(superseding > revealing, "the second job re-reads again");
+    let renamed = Entry::new(EntryId(9), directory.join("renamed.txt"), EntryKind::File);
+    let rows = vec![
+        Entry::new(EntryId(3), directory.join("a-first.txt"), EntryKind::File),
+        renamed.clone(),
+    ];
+    p.apply_with_sender(listed(PaneId::Left, superseding, rows), &|_| true);
+    assert_eq!(p.panes[0].cursor, Some(renamed.id));
 }

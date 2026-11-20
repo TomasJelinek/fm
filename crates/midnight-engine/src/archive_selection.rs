@@ -72,6 +72,27 @@ pub(crate) fn apply(
                 }
             }
         }
+        ArchiveSelectionAction::Mask(mask) => {
+            // Also compiled by the standalone archive selection tests.
+            let matcher = midnight_platform_common::filter::CompiledFilter::new(&mask.filter())
+                .map_err(error)?;
+            // Displayed members only; their listed names are the provider captions.
+            for entry in entries
+                .iter()
+                .filter(|entry| view.by_id.contains_key(&entry.id))
+            {
+                let directory =
+                    matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
+                if !mask.includes(directory) || !matcher.matches(&entry.name) {
+                    continue;
+                }
+                if mask.select {
+                    result.insert(entry.id);
+                } else {
+                    result.remove(&entry.id);
+                }
+            }
+        }
     }
     let mut totals = ArchiveSelectionTotals::default();
     for entry in entries.iter().filter(|entry| result.contains(&entry.id)) {

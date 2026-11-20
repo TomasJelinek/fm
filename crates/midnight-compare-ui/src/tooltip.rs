@@ -26,6 +26,9 @@ pub(super) fn install(open: &Rc<OpenWindow>) -> Result<PostWindowEventObserver, 
         };
         set_bounds(&open, size);
         let placement = open.window.global::<TooltipPlacement>();
+        // Tooltip frames snap to whole device pixels of this scale (`snap`); after
+        // dispatch it already reflects a ScaleFactorChanged event.
+        placement.set_scale(window.scale_factor());
         match event {
             WindowEvent::PointerMoved { position }
             | WindowEvent::PointerPressed { position, .. }
@@ -61,12 +64,8 @@ fn synchronize_anchors(open: &OpenWindow) -> bool {
 }
 
 pub(super) fn synchronize(open: &OpenWindow) -> bool {
-    set_bounds(
-        open,
-        open.window
-            .window()
-            .size()
-            .to_logical(open.window.window().scale_factor()),
-    );
+    let scale = open.window.window().scale_factor();
+    open.window.global::<TooltipPlacement>().set_scale(scale);
+    set_bounds(open, open.window.window().size().to_logical(scale));
     synchronize_anchors(open)
 }

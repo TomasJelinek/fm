@@ -338,6 +338,34 @@ fn far_future_roles_are_reserved_as_tiny_hints_for_the_actual_viewport() {
             "===",
             STYLE_STRING,
         ),
+        (
+            "property.css",
+            format!("a {{ {}: red }}\n", "p".repeat(300000)),
+            100000,
+            "ppp",
+            STYLE_TYPE,
+        ),
+        (
+            "function.css",
+            format!("a {{ b: {}(1) }}\n", "f".repeat(300000)),
+            100000,
+            "fff",
+            STYLE_FUNCTION,
+        ),
+        (
+            "Makefile",
+            format!("{} more: dep\n", "t".repeat(300000)),
+            100000,
+            "ttt",
+            STYLE_FUNCTION,
+        ),
+        (
+            "variables.mk",
+            format!("{} := value\n", "v".repeat(300000)),
+            100000,
+            "vvv",
+            STYLE_TYPE,
+        ),
     ] {
         for backwards in [false, true] {
             let anchor = if backwards { anchor + 512 } else { anchor };
@@ -361,6 +389,13 @@ fn malformed_unterminated_future_roles_finish_at_eof_without_endless_not_ready()
         ("entity.xml", format!("&{}", "a".repeat(90000)), None),
         ("opener.lua", format!("[{}", "=".repeat(90000)), None),
         ("scalar.yaml", "a".repeat(90000), Some(STYLE_STRING)),
+        (
+            "property.css",
+            format!("a {{ {}", "a".repeat(90000)),
+            Some(STYLE_TYPE),
+        ),
+        ("value.css", format!("a {{ b: {}", "a".repeat(90000)), None),
+        ("GNUmakefile", "a".repeat(90000), None),
     ] {
         let target = viewport(1000, false);
         let mut host = Host::new(input.as_bytes(), entry);

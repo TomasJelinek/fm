@@ -48,6 +48,7 @@ mod search_cursor;
 #[cfg(test)]
 mod tests;
 mod video_actor;
+mod video_discovery;
 mod viewport;
 mod window_worker;
 mod worker;
@@ -85,6 +86,10 @@ pub struct Service {
     windows: Arc<AtomicUsize>,
     raster_budget: Arc<raster_budget::Budget>,
     fonts: Arc<OnceLock<Arc<[String]>>>,
+    /// Installed video support, discovered on demand (see `video_installation`).
+    video: Arc<
+        video_discovery::Discovered<midnight_media_host::video_installation::VideoInstallation>,
+    >,
     catalog_preparation: Arc<catalog_startup::Preparation>,
     image_startup: image_startup::Startup,
     image_policy: Arc<Mutex<Option<image_startup::Policy>>>,
@@ -287,6 +292,7 @@ impl Service {
             windows: Arc::new(AtomicUsize::new(0)),
             raster_budget: Arc::new(raster_budget::Budget::default()),
             fonts: Arc::new(OnceLock::new()),
+            video: Arc::default(),
             catalog_preparation: Arc::default(),
             image_startup,
             image_policy: Arc::default(),
@@ -301,8 +307,10 @@ impl Service {
         self.catalog_preparation.start(|| {
             let service = self.clone();
             self.handle.spawn_blocking(move || {
-                let _ =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.catalogs()));
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = service.catalogs();
+                    service.video_installation();
+                }));
             });
         });
     }
@@ -347,6 +355,18 @@ impl Service {
         self.handle.spawn_blocking(move || {
             let catalogs = service.catalogs();
             service.configure_image_spare(policy, catalogs);
+            // Startup also prepares what every viewer opening otherwise loads first: the
+            // installed video support and the system font database (one-time costs that
+            // took seconds on a busy disk).
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                service.video_installation();
+                drop(midnight_viewer_render::TextRenderer::default());
+                if service.fonts.get().is_none()
+                    && let Some(names) = midnight_viewer_render::installed_families(|| false)
+                {
+                    let _ = service.fonts.set(names);
+                }
+            }));
         });
     }
 
@@ -481,6 +501,28 @@ impl Service {
             preferences,
             palette,
             fonts: self.fonts.clone(),
+        })
+    }
+
+    /// Installed video support for routing, discovered on a backend worker and kept once
+    /// found. Discovery validates every file of the video package (726 in a development
+    /// installation), which added about 90 ms to every viewer opening of any kind. A failed
+    /// discovery (a package being replaced, a busy disk) is tried again by a later opening,
+    /// at most once every few seconds (`video_discovery`), instead of leaving video
+    /// unavailable until restart. Launching still revalidates the package and pins its code
+    /// (`LaunchPins`).
+    fn video_installation(
+        &self,
+    ) -> Option<midnight_media_host::video_installation::VideoInstallation> {
+        self.video.get(std::time::Instant::now(), || {
+            midnight_plugin_host::installed_executable()
+                .ok()
+                .and_then(|executable| {
+                    midnight_media_host::video_installation::VideoInstallation::discover(
+                        &executable,
+                    )
+                    .ok()
+                })
         })
     }
 

@@ -14,6 +14,8 @@ duplicate-identity providers cannot be selected. Missing plugin preferences surv
 uninstallation and take effect only if the same valid ID is installed again.
 
 Extensions are case insensitive literal suffixes, including compound suffixes.
+An entry also matches a file whose whole name it is (added 20 November 2026), so the
+Source viewer's `makefile` entry routes `Makefile`, which has no extension.
 The editor accepts `rs`, `.rs` and `*.rs`, separated by spaces, commas or semicolons.
 Wildcards, paths and control characters are rejected. Specific matches beat Basic
 fallback; longer suffixes beat shorter suffixes, then the explicit user order,

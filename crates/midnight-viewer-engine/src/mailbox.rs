@@ -187,6 +187,9 @@ impl Mailbox {
                 ViewerOutput::ImageUnavailable { .. } => {
                     matches!(pending[index], ViewerOutput::ImageUnavailable { .. })
                 }
+                ViewerOutput::SandboxNotice(_) => {
+                    matches!(pending[index], ViewerOutput::SandboxNotice(_))
+                }
                 ViewerOutput::CopyText(_) => matches!(pending[index], ViewerOutput::CopyText(_)),
                 ViewerOutput::WebState { .. } => {
                     matches!(pending[index], ViewerOutput::WebState { .. })
@@ -224,6 +227,7 @@ impl Mailbox {
         let palette = matches!(output, ViewerOutput::PaletteApplied { .. });
         let failure = matches!(output, ViewerOutput::VerticalPositionUnavailable { .. });
         let media_retired = matches!(output, ViewerOutput::MediaRetired { .. });
+        let notice = matches!(output, ViewerOutput::SandboxNotice(_));
         let reserved = usize::from(
             !frame
                 && !pending
@@ -249,8 +253,9 @@ impl Mailbox {
                     .iter()
                     .any(|old| matches!(old, ViewerOutput::PaletteApplied { .. })),
         );
-        // Coalesced position failures and media retirement each have their own
-        // slot: neither ordinary output nor one another can lose these fences.
+        // Coalesced position failures, media retirement and the sandbox notice each have
+        // their own slot: neither ordinary output nor one another can lose these fences,
+        // or the notice whose Install… action the window offers.
         let occupied = pending.len()
             - usize::from(
                 pending
@@ -261,8 +266,13 @@ impl Mailbox {
                 pending
                     .iter()
                     .any(|old| matches!(old, ViewerOutput::MediaRetired { .. })),
+            )
+            - usize::from(
+                pending
+                    .iter()
+                    .any(|old| matches!(old, ViewerOutput::SandboxNotice(_))),
             );
-        if failure || media_retired || occupied < 8 - reserved {
+        if failure || media_retired || notice || occupied < 8 - reserved {
             match &output {
                 ViewerOutput::Frame(_) => self.finish_open(Ok(())),
                 ViewerOutput::ImageUnavailable { message, .. } => {
@@ -405,6 +415,49 @@ fn raster_rebase_delivery_survives_full_event_pressure_and_coalesces_to_latest()
     });
     mailbox.put(ViewerOutput::Closed);
     assert!(matches!(mailbox.take().as_slice(), [ViewerOutput::Closed]));
+}
+
+#[cfg(test)]
+#[test]
+fn a_sandbox_notice_survives_full_event_pressure_and_the_latest_replaces_it() {
+    let notice = |message: &str| {
+        ViewerOutput::SandboxNotice(Some(midnight_core::ViewerSandboxNotice {
+            message: message.into(),
+            installable: true,
+            installing: false,
+        }))
+    };
+    let mailbox = Mailbox::default();
+    mailbox.put(notice("refused"));
+    for _ in 0..100 {
+        mailbox.put(ViewerOutput::WebShortcut(
+            midnight_core::viewer_web::HostShortcut::Find,
+        ));
+    }
+    mailbox.put(notice("waiting"));
+    let notices: Vec<_> = mailbox
+        .take()
+        .into_iter()
+        .filter(|output| matches!(output, ViewerOutput::SandboxNotice(_)))
+        .collect();
+    assert!(
+        matches!(notices.as_slice(), [ViewerOutput::SandboxNotice(Some(notice))]
+            if notice.message == "waiting"),
+        "{notices:?}"
+    );
+    // Removing it is never lost either.
+    for _ in 0..100 {
+        mailbox.put(ViewerOutput::WebShortcut(
+            midnight_core::viewer_web::HostShortcut::Find,
+        ));
+    }
+    mailbox.put(ViewerOutput::SandboxNotice(None));
+    assert!(
+        mailbox
+            .take()
+            .iter()
+            .any(|output| matches!(output, ViewerOutput::SandboxNotice(None)))
+    );
 }
 
 #[cfg(test)]

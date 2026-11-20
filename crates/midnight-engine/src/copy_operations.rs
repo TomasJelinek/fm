@@ -1061,14 +1061,14 @@ async fn execute_input(
                 .await;
         }
         if let Some(blockers) = busy {
-            // Granted peers refused this change: wait (holding no disk slot) until one
-            // of them changes, then repeat the step instead of asking. This job's own
-            // turns never end the wait.
+            // Granted peers refused this change: only this item waits (holding no disk
+            // slot) until one of them changes, then the step repeats instead of asking.
+            // This job's own turns never end the wait.
             io.release();
             set_resource_wait(
                 &status,
                 Some(throughput),
-                Some(TransferWaitReason::Resources),
+                Some(TransferWaitReason::SameFolders),
             );
             match &watch {
                 Some(watch) => wait_for_peers(watch, &blockers, &cancel, outbox).await,
@@ -1174,11 +1174,15 @@ async fn wait_for_pause(
     }
 }
 
+/// A wait for the disk slot shorter than this is another job's step, not shown as waiting.
+const DISK_WAIT_SHOWN: Duration = Duration::from_millis(250);
+
 /// Every native step runs under the job's own held disk slot. Before a step: wait while
-/// paused (holding no slot), yield the slot while a call-scoped request is queued (so a
-/// checksum, thumbnail or folder-size read waits for one step, not for this whole job),
-/// and readmit it through the FIFO gate. Returns false when cancelled; checked teardown
-/// then reclaims the slot without queuing.
+/// paused (holding no slot), yield the slot while anything else is queued for it (another
+/// transfer, or a checksum, thumbnail or folder-size read), and readmit it through the
+/// FIFO gate. Jobs sharing the configured limit thus interleave step by step; none waits
+/// for a whole job. Returns false when cancelled; checked teardown then reclaims the slot
+/// without queuing.
 async fn ready_for_io(
     io: &midnight_work_budget::Permit,
     cancel: &Cancellation,
@@ -1197,12 +1201,22 @@ async fn ready_for_io(
             return true;
         }
         let previous = snapshot(status).wait_reason;
-        set_resource_wait(
-            status,
-            Some(throughput),
-            Some(TransferWaitReason::Resources),
-        );
-        let admitted = interruptible(io.reacquire(), cancel, outbox).await;
+        let reacquire = io.reacquire();
+        tokio::pin!(reacquire);
+        let queued = async {
+            if tokio::time::timeout(DISK_WAIT_SHOWN, &mut reacquire)
+                .await
+                .is_err()
+            {
+                set_resource_wait(
+                    status,
+                    Some(throughput),
+                    Some(TransferWaitReason::DiskCapacity),
+                );
+                (&mut reacquire).await;
+            }
+        };
+        let admitted = interruptible(queued, cancel, outbox).await;
         set_resource_wait(status, Some(throughput), previous);
         if admitted.is_some() {
             return true;
@@ -1237,18 +1251,17 @@ const NAMESPACE_RETRY_SPACING: Duration = Duration::from_millis(25);
 /// at least this often while a job waits for a namespace grant or change.
 const NAMESPACE_REVALIDATE: Duration = Duration::from_secs(1);
 
-/// A refused namespace grant waits for the registry instead of polling: any change after
-/// `since`, or (`structural`) only a grant, removal or quarantine. The caller holds no
-/// disk slot here; cancellation and pause end the wait at once.
+/// A job refused as a whole waits for the registry instead of polling: until a claim is
+/// granted, removed or quarantined after `since`. The caller holds no disk slot here;
+/// cancellation and pause end the wait at once.
 async fn wait_for_namespace(
     watch: &crate::copy_namespace::Watch,
     since: crate::copy_namespace::Seen,
-    structural: bool,
     cancel: &Cancellation,
     outbox: &CopyOutbox,
 ) {
     let started = tokio::time::Instant::now();
-    let changed = interruptible(watch.changed(since, structural), cancel, outbox);
+    let changed = interruptible(watch.changed(since, true), cancel, outbox);
     let _ = tokio::time::timeout(NAMESPACE_REVALIDATE, changed).await;
     if !cancel.is_cancelled() && !cancel.pause_requested() {
         tokio::time::sleep_until(started + NAMESPACE_RETRY_SPACING).await;
@@ -1304,10 +1317,13 @@ async fn acquire_leases(
             Ok(share) => share,
             Err(tokio::sync::TryAcquireError::Closed) => break Err(closing()),
             Err(tokio::sync::TryAcquireError::NoPermits) => {
+                // Copies take one share each; only a whole-namespace operation (Delete,
+                // Rename, a new folder, a saved list) holds or queues for the rest, and
+                // the fair semaphore keeps a later copy behind it.
                 set_resource_wait(
                     status,
                     Some(throughput),
-                    Some(TransferWaitReason::Resources),
+                    Some(TransferWaitReason::OtherOperation),
                 );
                 match interruptible(namespace.clone().acquire_owned(), cancel, outbox).await {
                     Some(Ok(share)) => share,
@@ -1321,10 +1337,11 @@ async fn acquire_leases(
         let disk = match gate.try_acquire_retained(admission) {
             Some(disk) => disk,
             None => {
+                // Running jobs yield their slots at their next step boundary.
                 set_resource_wait(
                     status,
                     Some(throughput),
-                    Some(TransferWaitReason::Resources),
+                    Some(TransferWaitReason::DiskCapacity),
                 );
                 match interruptible(gate.acquire_retained(admission), cancel, outbox).await {
                     Some(disk) => disk,

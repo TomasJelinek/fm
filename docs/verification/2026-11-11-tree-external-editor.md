@@ -7,7 +7,7 @@ This closes only the F4 external-editor portion of TREE-01. Rename, deletion,
 metadata, checksums, comparison and context-menu consumers remain separate work.
 
 F4 keeps its existing focused-file contract, independent of selection. The local
-Salamander reference (`D:/experiments/salamander-main/src/fileswn5.cpp:1228`,
+Salamander reference (`<salamander-source>/src/fileswn5.cpp:1228`,
 `CFilesWindow::EditFile`) likewise obtains the caret file and rejects non-disk
 panel editing. Its ANSI/path-length and shell-command construction are not copied.
 

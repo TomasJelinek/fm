@@ -17,7 +17,7 @@ rebuilds its bounded map; no history, source scanning, or extra provider request
 
 ## Constraints and ownership
 
-- Authoritative repository D:/experiments/dev/FM, starting at 6f06ec4; no commits by this agent.
+- Authoritative repository: the primary checkout, starting at 6f06ec4; no commits by this agent.
 - Preserve exact pixel rendering, layout, source revisions, bounded reads, and plugin ABI.
 - Root approved narrow internal renderer/core metadata changes; root owns lifecycle files.
 - All generated output remains under `_build/`; coordinate Cargo and native quiet leases.

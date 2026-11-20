@@ -39,6 +39,32 @@ fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
     None
 }
 
+/// Whether every visible caption below `item` gets the width it needs.
+fn captions_fit(item: &ItemRc, adapter: &Rc<dyn slint::platform::WindowAdapter>) -> bool {
+    use slint::private_unstable_api::re_exports::{ComplexText, Orientation, SimpleText};
+    let mut pending = vec![item.clone()];
+    while let Some(item) = pending.pop() {
+        if item.is_visible()
+            && (item.downcast::<SimpleText>().is_some() || item.downcast::<ComplexText>().is_some())
+        {
+            let needed = item
+                .borrow()
+                .as_ref()
+                .layout_info(Orientation::Horizontal, -1.0, adapter, &item)
+                .preferred;
+            if needed > item.geometry().width() + 0.5 {
+                return false;
+            }
+        }
+        let mut child = item.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            pending.push(next);
+        }
+    }
+    true
+}
+
 fn draw(
     native: &MinimalSoftwareWindow,
     window: &ComparatorWindow,
@@ -358,6 +384,11 @@ fn image_mode_buttons_select_and_preserve_acknowledged_composition_until_ready()
                 assert!(
                     item.is_visible(),
                     "{name} must be visible without opening a menu"
+                );
+                let adapter: Rc<dyn slint::platform::WindowAdapter> = native.clone();
+                assert!(
+                    captions_fit(&item, &adapter),
+                    "{name} cuts its caption at {width}x{height}, font {font_size}"
                 );
                 let rect = item.geometry();
                 let origin = item.map_to_native_window(rect.origin);

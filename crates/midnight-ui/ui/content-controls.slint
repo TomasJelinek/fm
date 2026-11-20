@@ -13,6 +13,9 @@ export component ThemedLineEdit inherits Rectangle {
     in property <TextHorizontalAlignment> horizontal-alignment: TextHorizontalAlignment.left;
     in property <length> font-size: Theme.font-size;
     in property <length> control-height: Theme.control-height;
+    // Room kept free at the field's end for a control placed inside it (an inline
+    // clear): the text, caret and placeholder end before it.
+    in property <length> end-inset;
     out property <bool> has-focus: edit.has-focus;
     out property <string> preedit: edit.preedit-text;
     out property <int> cursor-position-byte-offset: edit.cursor-position-byte-offset;
@@ -77,7 +80,7 @@ export component ThemedLineEdit inherits Rectangle {
         }
         viewport := Rectangle {
             x: 6px; y: 1px;
-            width: max(1px, parent.width - 12px); height: max(1px, parent.height - 2px);
+            width: max(1px, parent.width - 12px - root.end-inset); height: max(1px, parent.height - 2px);
             clip: true;
             changed width => { root.reveal-caret(); }
             Text {

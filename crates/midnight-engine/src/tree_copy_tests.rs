@@ -50,7 +50,14 @@ impl CapturedTransferSources for Paths {
         if links == CopyLinkPolicy::Reject {
             return self.prepare(service, cancel);
         }
-        assert_eq!(self.1, TransferIntent::Copy);
+        if self.1 != TransferIntent::Copy {
+            // This fixture has no Move authority for links.
+            return Err(FsError::from_io(
+                "prepare captured transfer",
+                Path::new(""),
+                io::ErrorKind::Unsupported.into(),
+            ));
+        }
         self.0
             .iter()
             .map(|path| service.prepare_transfer_source_with_links(path, links, cancel))
@@ -906,7 +913,7 @@ fn legacy_captured_input_keeps_reject_policy() {
 }
 
 #[tokio::test]
-async fn captured_preserve_rejects_forged_move_and_required_time_before_preparation() {
+async fn captured_preserve_without_move_authority_or_with_required_time_never_stages_a_link() {
     for (intent, metadata) in [
         (TransferIntent::Move, TransferMetadataPolicy::ContentOnly),
         (
@@ -936,8 +943,11 @@ async fn captured_preserve_rejects_forged_move_and_required_time_before_preparat
                 .iter()
                 .any(|error| error.kind == io::ErrorKind::Unsupported)
         );
-        assert_eq!(fixture.control.source_opens.load(Ordering::SeqCst), 0);
-        assert_eq!(fixture.control.destination_opens.load(Ordering::SeqCst), 0);
+        if intent == TransferIntent::Move {
+            // The captured provider refused Move authority before opening anything.
+            assert_eq!(fixture.control.source_opens.load(Ordering::SeqCst), 0);
+            assert_eq!(fixture.control.destination_opens.load(Ordering::SeqCst), 0);
+        }
         assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 0);
         h.close().await;
     }

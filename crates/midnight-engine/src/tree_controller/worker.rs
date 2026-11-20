@@ -234,7 +234,22 @@ impl Worker {
             _ => None,
         }
     }
+    /// The pane's current Show hidden files choice (`Command::ShowHiddenEntries`).
+    fn hide_hidden(&self, pane: midnight_core::PaneId) -> bool {
+        self.snapshots.lock().unwrap_or_else(|e| e.into_inner())[pane.index()].hide_hidden
+    }
     fn handle(&mut self, input: Input) {
+        // Every build this input causes uses the current hidden-files choice.
+        if let Some(pane) = self
+            .session
+            .as_ref()
+            .map(|session| session.projection().stamp.pane)
+        {
+            let hide = self.hide_hidden(pane);
+            if let Some(session) = &mut self.session {
+                session.set_hide_hidden(hide);
+            }
+        }
         match input {
             Input::Closed => unreachable!(),
             Input::Reset(generation) => {
@@ -632,6 +647,7 @@ impl Worker {
         let Some(ready) = pending.ready else {
             return;
         };
+        let hide_hidden = self.hide_hidden(pending.root.pane);
         let generation = self.generation.as_ref().expect("active generation");
         let result = ready
             .open(&self.native, &generation.cancel)
@@ -644,6 +660,7 @@ impl Worker {
                     ProjectionOptions {
                         sort: generation.sort,
                         locale: self.locale.clone(),
+                        hide_hidden,
                         ..Default::default()
                     },
                     &generation.cancel,
@@ -710,6 +727,17 @@ impl Worker {
             Ok(None) => {}
         }
         self.flush_notices();
+        self.finish_refresh_pass();
+    }
+    /// Reply to a finished refresh pass, but never ahead of a publication of
+    /// that pass still parked behind an unacknowledged view (`emit`): the UI
+    /// ends a file job's input hold on the reply and reveals a renamed entry
+    /// only in a published view. The Commit that sends the parked publication
+    /// is followed by another `pump`, which replies then.
+    fn finish_refresh_pass(&mut self) {
+        if self.pending_publication.is_some() {
+            return;
+        }
         if let Some(event) = self.session.as_mut().and_then(Session::finish_refresh) {
             self.emit_refreshed(event);
         }

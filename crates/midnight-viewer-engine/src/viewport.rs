@@ -138,9 +138,34 @@ pub(crate) struct Continuation {
     reference: u64,
     offset: f32,
     horizontal: f32,
+    /// Source range of the page that a scroll past its edge leaves (`bounded_by`).
+    left: Option<std::ops::Range<u64>>,
 }
 
 impl Continuation {
+    /// Remember the page this scroll leaves, so that a reply which cannot pass its edge
+    /// continues at that edge (`seam`).
+    pub fn bounded_by(mut self, page: &crate::page::Page) -> Self {
+        self.left = Some(page.start..page.end);
+        self
+    }
+
+    /// Where to continue when `reply`, the provider's answer to this continuation, does
+    /// not reach past the edge of the page the scroll left. A provider keeps layout units
+    /// such as a table whole, so a unit taller than the request window cannot always
+    /// share a page with its neighbour, and an anchor inside it yields the same window
+    /// again. The viewer then asks once for the page that starts at that edge (or ends
+    /// there, backwards), which shows the neighbouring content without skipping any, as
+    /// a page step would.
+    pub fn seam(&self, reply: &crate::page::Page) -> Option<u64> {
+        let left = self.left.as_ref()?;
+        if self.backwards {
+            (reply.before && reply.start >= left.start).then_some(left.start)
+        } else {
+            (reply.after && reply.end <= left.end).then_some(left.end)
+        }
+    }
+
     pub fn capture(
         page: &crate::page::Page,
         shaped: &midnight_viewer_render::TextPage,
@@ -306,6 +331,7 @@ impl Continuation {
             reference,
             offset: origin[1] - caret.y0 as f32,
             horizontal: origin[0],
+            left: None,
         })
     }
 

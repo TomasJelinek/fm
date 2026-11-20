@@ -1,18 +1,19 @@
 //! A session-specific acknowledgement from the existing independent supervisor.
 //! No archive/Copy retirement queue or fresh I/O acquisition participates in this wait.
-use super::{ACTIVE, Mount, Stop, Supervision};
+use super::{
+    ACTIVE, MAX_ACTIVE, MAX_SEARCH_ACTIVE, Mount, NESTED_ACTIVE, SEARCH_ACTIVE, Stop, Supervision,
+};
 use midnight_core::{ArchiveMount, FsError};
 use std::{
     io,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 #[cfg(test)]
 use std::{
     path::Path,
-    sync::atomic::AtomicUsize,
     time::{Duration, Instant},
 };
 
@@ -173,20 +174,56 @@ impl CapturedInput {
     }
 }
 
+/// The allowances of mounts that may be active at once. Each has its own process-wide
+/// count, so one use never takes the mounts that another needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Allowance {
+    /// Archives opened from native files for panels, tabs and viewers (`MAX_ACTIVE`).
+    Native,
+    /// Archives inside archives (`nested::MAX_NESTED_ACTIVE`), so that browsing them in
+    /// one panel leaves the other panel its archives.
+    Nested,
+    /// Private sessions of searches inside archives (`MAX_SEARCH_ACTIVE`), so that Find
+    /// and the panels never refuse each other's archives.
+    Search,
+}
+impl Allowance {
+    /// The process-wide count of active mounts in this allowance, and its limit.
+    fn count(self) -> (&'static AtomicUsize, usize) {
+        match self {
+            Self::Native => (&ACTIVE, MAX_ACTIVE),
+            Self::Nested => (&NESTED_ACTIVE, crate::nested::MAX_NESTED_ACTIVE),
+            Self::Search => (&SEARCH_ACTIVE, MAX_SEARCH_ACTIVE),
+        }
+    }
+    fn refusal(self, limit: usize) -> io::Error {
+        io::Error::other(match self {
+            Self::Native => "Two archive mounts are already active; close one first".into(),
+            Self::Nested => format!(
+                "{limit} archives inside archives are already open; leave one of them first"
+            ),
+            Self::Search => {
+                format!("{limit} archives are already open for searches; stop a search first")
+            }
+        })
+    }
+}
+
 pub(super) struct Accounting {
+    /// The allowance this mount is counted in.
+    allowance: Allowance,
     #[cfg(test)]
     local: Option<Arc<AtomicUsize>>,
 }
 impl Accounting {
-    pub(super) fn reserve() -> io::Result<Self> {
-        ACTIVE
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < 2).then_some(active + 1)
-            })
-            .map_err(|_| {
-                io::Error::other("Two archive mounts are already active; close one first")
-            })?;
+    /// Count one more mount in `allowance`, refused while all of it is in use.
+    pub(super) fn reserve(allowance: Allowance) -> io::Result<Self> {
+        let (active, limit) = allowance.count();
+        if !reserve_in(active, limit) {
+            return Err(allowance.refusal(limit));
+        }
         Ok(Self {
+            allowance,
             #[cfg(test)]
             local: None,
         })
@@ -194,8 +231,19 @@ impl Accounting {
     #[cfg(test)]
     pub(super) fn for_test(local: Arc<AtomicUsize>) -> Self {
         local.fetch_add(1, Ordering::AcqRel);
-        Self { local: Some(local) }
+        Self {
+            allowance: Allowance::Native,
+            local: Some(local),
+        }
     }
+}
+/// Count one more mount in `active`, unless it already counts `limit`.
+fn reserve_in(active: &AtomicUsize, limit: usize) -> bool {
+    active
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < limit).then_some(count + 1)
+        })
+        .is_ok()
 }
 impl Drop for Accounting {
     fn drop(&mut self) {
@@ -204,7 +252,7 @@ impl Drop for Accounting {
             local.fetch_sub(1, Ordering::AcqRel);
             return;
         }
-        ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        self.allowance.count().0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

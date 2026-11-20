@@ -2,13 +2,16 @@ use crate::discovery::{Deliver, FixedPitchFonts, ImageViewers};
 use crate::file_choice::{self, Picker, resolve};
 use crate::{
     Command, ExternalCompareLauncher, FileChoice, IdentityVerdict, Inbox, Input, Mailbox, Message,
-    NativeCapture, Output, OwnedFileComparatorPolicy, StorageHint, check_cancel,
+    NativeCapture, Output, OwnedFileComparatorPolicy, StorageHint,
+    binary::BinaryComparison,
+    check_cancel,
     external_compare::{self, Attempt},
     identity::{IdentityTurn, WholeInput},
     images::Images,
     revalidation,
     routing::{self, BuiltInPlan, BuiltInTarget, Target},
-    text::TextComparison,
+    text::{ReadError, TextComparison, TextInput},
+    typeface::Typeface,
 };
 use midnight_core::{
     Cancellation, ExternalCompareSessionCredit, FileCompareLaunch, ViewerAppearance, ViewerGeometry,
@@ -23,9 +26,18 @@ use std::{
     time::Duration,
 };
 
+/// A text pair and, once the Hex view was shown, the byte comparison of the same files.
+struct TextPair {
+    text: TextComparison,
+    bytes: Option<BinaryComparison>,
+    hex: bool,
+}
+
 enum Content {
-    Text(Box<TextComparison>),
+    Text(Box<TextPair>),
     Images(Box<Images>),
+    /// A pair compared only as bytes; its scan also decides the identity verdict.
+    Bytes(Box<BinaryComparison>),
 }
 
 impl Content {
@@ -35,18 +47,20 @@ impl Content {
         confirmed_ssd: bool,
     ) -> Option<WholeInput> {
         match self {
-            Self::Text(text) => text
+            Self::Text(pair) => pair
+                .text
                 .identity_turn()
                 .map(|equal| WholeInput::new(sources, Some(equal), confirmed_ssd)),
             Self::Images(_) => Some(WholeInput::new(sources, None, confirmed_ssd)),
+            Self::Bytes(_) => None,
         }
     }
 
     /// The retained text; images retain decoded pixels, not their source bytes.
     fn text(&self) -> Option<&TextComparison> {
         match self {
-            Self::Text(text) => Some(text),
-            Self::Images(_) => None,
+            Self::Text(pair) => Some(&pair.text),
+            Self::Images(_) | Self::Bytes(_) => None,
         }
     }
 
@@ -59,8 +73,8 @@ impl Content {
         };
         status.push_str(" · ");
         status.push_str(label);
-        if let Self::Text(text) = self
-            && let Some([left, right]) = text.encodings
+        if let Self::Text(pair) = self
+            && let Some([left, right]) = pair.text.encodings
         {
             status.push_str(" · File A ");
             status.push_str(left.label());
@@ -68,6 +82,100 @@ impl Content {
             status.push_str(right.label());
         }
     }
+
+    /// The byte comparison on screen, if any.
+    fn shown_bytes(&mut self) -> Option<&mut BinaryComparison> {
+        match self {
+            Self::Bytes(bytes) => Some(bytes.as_mut()),
+            Self::Text(pair) if pair.hex => pair.bytes.as_mut(),
+            _ => None,
+        }
+    }
+
+    /// The byte comparison whose scan still runs, shown or not.
+    fn scanning(&mut self) -> Option<&mut BinaryComparison> {
+        match self {
+            Self::Bytes(bytes) => Some(bytes.as_mut()),
+            Self::Text(pair) => pair.bytes.as_mut(),
+            Self::Images(_) => None,
+        }
+        .filter(|bytes| !bytes.scan.complete())
+    }
+
+    fn typefaces(&mut self) -> Vec<&mut Typeface> {
+        match self {
+            Self::Text(pair) => {
+                let TextPair { text, bytes, .. } = pair.as_mut();
+                std::iter::once(&mut text.typeface)
+                    .chain(bytes.as_mut().map(|bytes| &mut bytes.typeface))
+                    .collect()
+            }
+            Self::Bytes(bytes) => vec![&mut bytes.typeface],
+            Self::Images(_) => Vec::new(),
+        }
+    }
+}
+
+/// The work a worker turn does while no input waits: the scan of a shown byte comparison
+/// first, then whole-input identity, then the scan of a hidden one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Background {
+    Scan,
+    Identity,
+}
+
+fn background(content: &mut Content, identity: IdentityVerdict) -> Option<Background> {
+    let shown = content
+        .shown_bytes()
+        .is_some_and(|bytes| !bytes.scan.complete());
+    let scanning = content.scanning().is_some();
+    if shown || (scanning && matches!(content, Content::Bytes(_))) {
+        Some(Background::Scan)
+    } else if identity == IdentityVerdict::Pending && !matches!(content, Content::Bytes(_)) {
+        Some(Background::Identity)
+    } else if scanning {
+        Some(Background::Scan)
+    } else {
+        None
+    }
+}
+
+/// Read both captured files as text, publishing the progress of large ones. `Ok(Err)`
+/// names the file and the reason text comparison refused (the pair is then compared as
+/// bytes); `Err` is a failed read, which fails the comparison.
+fn read_texts(
+    sources: &mut [CapturedFile; 2],
+    recapture: impl Fn(usize) -> Result<CapturedFile, String>,
+    ssd: [bool; 2],
+    generation: u64,
+    output: &Mailbox,
+    cancel: &AtomicBool,
+) -> Result<Result<[TextInput; 2], String>, String> {
+    let mut texts = Vec::with_capacity(2);
+    for (side, source) in sources.iter_mut().enumerate() {
+        let name = if side == 0 { "File A" } else { "File B" };
+        let length = source.length();
+        let mut progress = |read: u64| {
+            output.put(
+                generation,
+                Output::Status(format!(
+                    "Reading {name}: {} of {} MiB…",
+                    read >> 20,
+                    length.div_ceil(1 << 20)
+                )),
+            );
+        };
+        match revalidation::read_text(source, || recapture(side), ssd[side], cancel, &mut progress)
+        {
+            Ok(text) => texts.push(text),
+            Err(ReadError::Refused(reason)) => return Ok(Err(format!("{name}: {reason}"))),
+            Err(ReadError::Failed(error)) => return Err(error),
+        }
+    }
+    let [left, right]: [TextInput; 2] = texts
+        .try_into()
+        .map_err(|_| "Text comparison needs two files.".to_owned())?;
+    Ok(Ok([left, right]))
 }
 
 struct Viewport {
@@ -254,9 +362,10 @@ pub(crate) fn run(
                                         generation,
                                         &context,
                                         plan,
+                                        viewers_unavailable.as_deref(),
                                     )
                                     .map_err(|message| {
-                                        match viewers_unavailable {
+                                        match &viewers_unavailable {
                                             Some(reason) => format!("{message}\n{reason}"),
                                             None => message,
                                         }
@@ -349,6 +458,7 @@ fn compare(
     generation: u64,
     context: &Context<'_>,
     plan: BuiltInPlan,
+    viewers_unavailable: Option<&str>,
 ) -> Result<Option<Command>, String> {
     let receiver = context.receiver;
     let output = context.output;
@@ -386,32 +496,63 @@ fn compare(
                 cancel,
             )?))
         }
-        BuiltInPlan::Text => {
+        plan @ (BuiltInPlan::Text | BuiltInPlan::Bytes(_)) => {
             // The scan overlaps the reads and diff, and is shared by the service.
             let request = capture.inbox.font_request();
             let catalog = capture
                 .fonts
                 .request(cancel, capture.font_delivery(request));
-            output.put(
-                generation,
-                Output::Status("Reading and comparing text…".into()),
-            );
-            let mut read = |side: usize| {
-                let recapture = || capture.open(&paths[side]);
-                revalidation::read_text(&mut sources[side], recapture, ssd[side], cancel)
+            let refused = match plan {
+                BuiltInPlan::Bytes(reason) => Err(reason),
+                _ => {
+                    output.put(
+                        generation,
+                        Output::Status("Reading and comparing text…".into()),
+                    );
+                    // A source whose change time alone moved during its read is read
+                    // once more from a fresh capture (`revalidation::read_text`).
+                    let recapture = |side: usize| capture.open(&paths[side]);
+                    read_texts(&mut sources, recapture, ssd, generation, output, cancel)?
+                }
             };
-            let left = read(0)?;
-            let right = read(1)?;
-            let mut text = TextComparison::new(&left.text, &right.text, cancel)?;
-            text.encodings = Some([left.encoding, right.encoding]);
-            match catalog {
-                Some(families) => text.set_font_catalog(families, &appearance.family),
+            let mut content = match refused {
+                Ok([left, right]) => {
+                    if left.lines.len() + right.lines.len() > 100_000 {
+                        output.put(generation, Output::Status("Matching lines…".into()));
+                    }
+                    let mut text = TextComparison::from_lines([left.lines, right.lines], cancel)?;
+                    text.encodings = Some([left.encoding, right.encoding]);
+                    Content::Text(Box::new(TextPair {
+                        text,
+                        bytes: None,
+                        hex: false,
+                    }))
+                }
+                Err(reason) => {
+                    let reason = match viewers_unavailable {
+                        Some(viewers) => format!("{reason}; {viewers}"),
+                        None => reason,
+                    };
+                    Content::Bytes(Box::new(BinaryComparison::new(&sources, ssd, Some(reason))))
+                }
+            };
+            let family = match &catalog {
+                Some(_) => None,
                 None => {
-                    text.set_family(capture.fonts.resolve(&appearance.family, cancel));
                     awaiting_fonts = Some(request);
+                    Some(capture.fonts.resolve(&appearance.family, cancel))
+                }
+            };
+            for typeface in content.typefaces() {
+                match (&catalog, &family) {
+                    (Some(families), _) => {
+                        typeface.set_font_catalog(families.clone(), &appearance.family)
+                    }
+                    (None, Some(family)) => typeface.set_family(family.clone()),
+                    (None, None) => {}
                 }
             }
-            Content::Text(Box::new(text))
+            content
         }
     };
     viewport.geometry = bounded(viewport.geometry);
@@ -420,21 +561,23 @@ fn compare(
     let mut first_frame = true;
     let mut identity = IdentityVerdict::Pending;
     let mut whole_input = None;
-    let mut last_identity_turn = IdentityTurn::Blocked;
+    let mut last_turn = IdentityTurn::Blocked;
     loop {
         check_cancel(cancel)?;
         if let Some(reply) = capture.inbox.check(awaiting_fonts)? {
             awaiting_fonts = None;
-            if let (Some(families), Content::Text(text)) = (reply, &mut content) {
-                text.set_font_catalog(families, &appearance.family);
-                dirty = true;
+            if let Some(families) = reply {
+                for typeface in content.typefaces() {
+                    typeface.set_font_catalog(families.clone(), &appearance.family);
+                    dirty = true;
+                }
             }
         }
         #[cfg(test)]
         capture.turn();
-        let find_pending = if let Content::Text(text) = &mut content {
-            dirty |= text.find_turn(cancel)?;
-            text.find_pending()
+        let find_pending = if let Content::Text(pair) = &mut content {
+            dirty |= pair.text.find_turn(cancel)?;
+            pair.text.find_pending()
         } else {
             false
         };
@@ -449,15 +592,35 @@ fn compare(
                 capture,
                 ssd,
             )?;
+            let hex_shown = matches!(&content, Content::Text(pair) if pair.hex);
             let mut frame = match &mut content {
-                Content::Text(text) => {
-                    text.paint(viewport.geometry, appearance, requested.palette, cancel)?
-                }
+                Content::Text(pair) => match pair.bytes.as_mut().filter(|_| hex_shown) {
+                    Some(bytes) => bytes.paint(
+                        viewport.geometry,
+                        appearance,
+                        requested.palette,
+                        &sources,
+                        cancel,
+                    )?,
+                    None => {
+                        pair.text
+                            .paint(viewport.geometry, appearance, requested.palette, cancel)?
+                    }
+                },
                 Content::Images(images) => images.paint(viewport.geometry, cancel)?,
+                Content::Bytes(bytes) => bytes.paint(
+                    viewport.geometry,
+                    appearance,
+                    requested.palette,
+                    &sources,
+                    cancel,
+                )?,
             };
             frame.geometry_revision = viewport.revision;
             frame.comparison_generation = generation;
             frame.identity = identity;
+            frame.bytes_only = matches!(content, Content::Bytes(_));
+            frame.scanning = content.scanning().is_some();
             content.describe_identity(identity, &mut frame.status);
             check_cancel(cancel)?;
             revalidate(
@@ -485,15 +648,20 @@ fn compare(
             }
             dirty = !published;
         }
-        let identity_ready = !first_frame
-            && !dirty
-            && identity == IdentityVerdict::Pending
-            && output.is_current(generation)
-            && !output.frame_waiting(generation);
+        // Initial presentation and its mailbox consumption precede any whole-file reads
+        // (identity or byte scan). No extra worker, thread or queue is needed.
+        let ready = |content: &mut Content, dirty: bool| {
+            (!first_frame
+                && !dirty
+                && output.is_current(generation)
+                && !output.frame_waiting(generation))
+            .then(|| background(content, identity))
+            .flatten()
+        };
         let poll = if find_pending {
             InputPoll::NonBlocking
         } else {
-            InputPoll::after_turn(last_identity_turn, identity_ready)
+            InputPoll::after_turn(last_turn, ready(&mut content, dirty).is_some())
         };
         let first = match poll.receive(receiver) {
             Ok(message) => Some(message),
@@ -516,59 +684,145 @@ fn compare(
             if command.generation != generation {
                 continue;
             }
-            dirty |= apply(
-                command.input,
-                &mut content,
-                &mut viewport.geometry,
-                &mut viewport.revision,
-            );
+            dirty |= apply(command.input, &mut content, viewport, &sources, ssd);
         }
-        // Initial image presentation and its mailbox consumption precede any
-        // whole-file identity reads. No extra worker, thread or queue is needed.
-        last_identity_turn = IdentityTurn::Blocked;
-        if !first_frame
-            && !dirty
-            && identity == IdentityVerdict::Pending
-            && output.is_current(generation)
-            && !output.frame_waiting(generation)
-        {
-            if whole_input.is_none() {
-                whole_input = content.identity_turn(&sources, ssd[0] && ssd[1]);
-            }
-            last_identity_turn = if let Some(verifier) = whole_input.as_mut() {
-                match verifier.step(&sources, cancel, || output.is_current(generation)) {
-                    Ok(turn) => turn,
-                    // Replacing a source whose change time alone moved, with unchanged
-                    // content, restarts verification on the new pair. Other failures stand.
-                    Err(error) => {
-                        let replaced = output.is_current(generation)
-                            && revalidate(
-                                &mut sources,
-                                &content,
-                                &mut whole_input,
-                                paths,
-                                capture,
-                                ssd,
-                            )
-                            .unwrap_or(false);
-                        if !replaced {
-                            return Err(error);
+        last_turn = IdentityTurn::Blocked;
+        match ready(&mut content, dirty) {
+            Some(Background::Scan) => {
+                let primary = matches!(content, Content::Bytes(_));
+                let shown = content.shown_bytes().is_some();
+                let Some(bytes) = content.scanning() else {
+                    continue;
+                };
+                last_turn = bytes
+                    .scan
+                    .step(&sources, cancel, || output.is_current(generation))?;
+                let moved = bytes.resolve_pending();
+                let progress = bytes.scan.progress_due();
+                match last_turn {
+                    IdentityTurn::Complete(verdict) => {
+                        if primary {
+                            identity = verdict;
                         }
-                        IdentityTurn::Advanced
+                        dirty |= shown || primary;
+                        // Whole-input identity may still be pending for a text pair.
+                        last_turn = IdentityTurn::Advanced;
                     }
+                    IdentityTurn::Advanced => dirty |= shown && (moved || progress),
+                    IdentityTurn::Blocked => {}
                 }
-            } else {
-                // An incomplete decoded-text turn always advanced its bounded
-                // cursors; unlike unavailable I/O admission, it needs no wait.
-                IdentityTurn::Advanced
-            };
-            if let IdentityTurn::Complete(verdict) = last_identity_turn {
-                identity = verdict;
-                dirty = true;
             }
+            Some(Background::Identity) => {
+                if whole_input.is_none() {
+                    whole_input = content.identity_turn(&sources, ssd[0] && ssd[1]);
+                }
+                last_turn = if let Some(verifier) = whole_input.as_mut() {
+                    match verifier.step(&sources, cancel, || output.is_current(generation)) {
+                        Ok(turn) => turn,
+                        // Replacing a source whose change time alone moved, with unchanged
+                        // content, restarts verification on the new pair. Other failures
+                        // stand.
+                        Err(error) => {
+                            let replaced = output.is_current(generation)
+                                && revalidate(
+                                    &mut sources,
+                                    &content,
+                                    &mut whole_input,
+                                    paths,
+                                    capture,
+                                    ssd,
+                                )
+                                .unwrap_or(false);
+                            if !replaced {
+                                return Err(error);
+                            }
+                            IdentityTurn::Advanced
+                        }
+                    }
+                } else {
+                    // An incomplete decoded-text turn always advanced its bounded
+                    // cursors; unlike unavailable I/O admission, it needs no wait.
+                    IdentityTurn::Advanced
+                };
+                if let IdentityTurn::Complete(verdict) = last_turn {
+                    identity = verdict;
+                    dirty = true;
+                    // A hidden byte scan may still have work.
+                    last_turn = IdentityTurn::Advanced;
+                }
+            }
+            None => {}
         }
     }
     Ok(None)
+}
+
+/// Rows of text or bytes: the navigation both views share.
+trait Rows {
+    fn scroll_pixels(&mut self, x: f32, y: f32);
+    fn scroll_rows(&mut self, rows: i64);
+    fn scroll_pages(&mut self, pages: i32);
+    fn seek(&mut self, amount: f64);
+    fn difference(&mut self, backwards: bool);
+    fn difference_edge(&mut self, last: bool);
+}
+
+impl Rows for TextComparison {
+    fn scroll_pixels(&mut self, x: f32, y: f32) {
+        TextComparison::scroll_pixels(self, y);
+        self.horizontal = (self.horizontal - x).clamp(0.0, 262144.0);
+    }
+    fn scroll_rows(&mut self, rows: i64) {
+        self.scroll(rows);
+    }
+    fn scroll_pages(&mut self, pages: i32) {
+        TextComparison::scroll_pages(self, pages);
+    }
+    fn seek(&mut self, amount: f64) {
+        TextComparison::seek(self, amount);
+    }
+    fn difference(&mut self, backwards: bool) {
+        TextComparison::difference(self, backwards);
+    }
+    fn difference_edge(&mut self, last: bool) {
+        TextComparison::difference_edge(self, last);
+    }
+}
+
+impl Rows for BinaryComparison {
+    fn scroll_pixels(&mut self, x: f32, y: f32) {
+        BinaryComparison::scroll_pixels(self, y);
+        self.horizontal = (self.horizontal - x).clamp(0.0, 262144.0);
+    }
+    fn scroll_rows(&mut self, rows: i64) {
+        self.scroll(rows);
+    }
+    fn scroll_pages(&mut self, pages: i32) {
+        BinaryComparison::scroll_pages(self, pages);
+    }
+    fn seek(&mut self, amount: f64) {
+        BinaryComparison::seek(self, amount);
+    }
+    fn difference(&mut self, backwards: bool) {
+        BinaryComparison::difference(self, backwards);
+    }
+    fn difference_edge(&mut self, last: bool) {
+        BinaryComparison::difference_edge(self, last);
+    }
+}
+
+/// Navigation of a text or byte view; false for every other input.
+fn navigate(rows: &mut dyn Rows, input: Input) -> bool {
+    match input {
+        Input::Scroll { x, y } if x.is_finite() && y.is_finite() => rows.scroll_pixels(x, y),
+        Input::Lines(lines) => rows.scroll_rows(i64::from(lines)),
+        Input::Pages(pages) => rows.scroll_pages(pages),
+        Input::Seek(value) => rows.seek(value),
+        Input::Difference { backwards } => rows.difference(backwards),
+        Input::DifferenceEdge { last } => rows.difference_edge(last),
+        _ => return false,
+    }
+    true
 }
 
 /// Revalidate both sources (`revalidation::revalidate`). A replaced source discards
@@ -594,42 +848,59 @@ fn revalidate(
 fn apply(
     input: Input,
     content: &mut Content,
-    geometry: &mut ViewerGeometry,
-    geometry_revision: &mut u64,
+    viewport: &mut Viewport,
+    sources: &[CapturedFile; 2],
+    ssd: [bool; 2],
 ) -> bool {
+    let geometry = viewport.geometry;
     if let Input::Resize(value, revision) = input {
-        *geometry = bounded(value);
-        *geometry_revision = revision;
+        viewport.geometry = bounded(value);
+        viewport.revision = revision;
         match content {
             Content::Images(images) => images.invalidate(),
-            Content::Text(text) => text.reveal_visible_find_on_resize(),
+            Content::Text(pair) => pair.text.reveal_visible_find_on_resize(),
+            Content::Bytes(_) => {}
         }
         return true;
     }
+    if let Input::FontFamily(family) = &input {
+        // Text and its Hex view paint in the same family.
+        let mut changed = false;
+        for typeface in content.typefaces() {
+            changed |= typeface.change_font(family);
+        }
+        return changed;
+    }
     match (content, input) {
-        (Content::Text(text), Input::FindStep { delta, revision }) => {
-            text.advance_find(delta, revision);
+        (Content::Text(pair), Input::Bytes(show)) => {
+            if show && pair.bytes.is_none() {
+                let mut bytes = BinaryComparison::new(sources, ssd, None);
+                bytes.typeface = pair.text.typeface.clone();
+                pair.bytes = Some(bytes);
+            }
+            return std::mem::replace(&mut pair.hex, show) != show;
+        }
+        (Content::Text(pair), Input::FindStep { delta, revision }) => {
+            pair.text.advance_find(delta, revision);
         }
         (
-            Content::Text(text),
+            Content::Text(pair),
             Input::Find {
                 query,
                 backwards,
                 revision,
             },
         ) => {
-            text.begin_find(query, backwards, revision);
+            pair.text.begin_find(query, backwards, revision);
         }
-        (Content::Text(text), Input::FontFamily(family)) => return text.change_font(&family),
-        (Content::Text(text), Input::Scroll { x, y }) if x.is_finite() && y.is_finite() => {
-            text.scroll_pixels(y);
-            text.horizontal = (text.horizontal - x).clamp(0.0, 262144.0);
+        (Content::Text(pair), input) => {
+            let hex = pair.hex;
+            return match pair.bytes.as_mut().filter(|_| hex) {
+                Some(bytes) => navigate(bytes, input),
+                None => navigate(&mut pair.text, input),
+            };
         }
-        (Content::Text(text), Input::Lines(lines)) => text.scroll(i64::from(lines)),
-        (Content::Text(text), Input::Pages(pages)) => text.scroll_pages(pages),
-        (Content::Text(text), Input::Seek(value)) => text.seek(value),
-        (Content::Text(text), Input::Difference { backwards }) => text.difference(backwards),
-        (Content::Text(text), Input::DifferenceEdge { last }) => text.difference_edge(last),
+        (Content::Bytes(bytes), input) => return navigate(bytes.as_mut(), input),
         (Content::Images(images), Input::Mode(mode)) => images.set_mode(mode),
         (Content::Images(images), Input::Zoom(factor)) => images.zoom(factor),
         (Content::Images(images), Input::ActualPixels) => images.actual(),

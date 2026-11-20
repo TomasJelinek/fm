@@ -398,7 +398,7 @@ impl Stage {
         if !supported(&self.directory) {
             return Err(unsupported(
                 &self.path,
-                "recovery publication requires local fixed NTFS",
+                "keeping a replaced item recoverable requires a local fixed NTFS volume",
             ));
         }
         self.directory.revalidate(cancel)?;

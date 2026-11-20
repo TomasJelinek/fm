@@ -1,3 +1,13 @@
+// A shown file or folder name keeps a left-to-right base direction, as names do in
+// file managers with a left-to-right interface: `עברית.txt` must not show as
+// `txt.עברית` because its first strong character is right-to-left. The isolation
+// marks (U+2066, U+2069) exist only in drawn text, never in names, paths or edits.
+export global NameText {
+    pure public function ltr(text: string) -> string {
+        return text == "" ? "" : "\u{2066}" + text + "\u{2069}";
+    }
+}
+
 // A presentation-only path label. The complete text remains available to the
 // host and accessibility; clipping never creates an operation or clipboard path.
 export component OmissionText inherits Text {
@@ -8,19 +18,37 @@ export component OmissionText inherits Text {
 
 export component PathText inherits Rectangle {
     in property <string> text;
+    // The end of `text` that a shortened label keeps, normally the last component
+    // with the separator before it: the middle is omitted instead, so paths with a
+    // common parent stay distinct. Without one, the end is omitted.
+    in property <string> tail;
     in property <brush> foreground: black;
     in property <length> font-size;
     in property <int> font-weight: 400;
     in property <TextVerticalAlignment> vertical-alignment: center;
     private property <bool> shortened: label.preferred-width > root.width;
+    private property <bool> keeps-tail: root.shortened && root.tail != "" && root.tail != root.text
+        && root.text.ends-with(root.tail);
+    // A tail wider than the label is itself cut at its end, after a leading marker.
+    private property <bool> tail-cut: root.keeps-tail
+        && tail-label.preferred-width + dots.preferred-width > root.width;
+    private property <length> tail-width: !root.keeps-tail ? 0px
+        : root.tail-cut ? max(0px, root.width - 2 * dots.preferred-width) : tail-label.preferred-width;
+    // The start before the marker; room for less than a few characters leaves it out.
+    private property <length> head-room: max(0px, root.width - dots.preferred-width - root.tail-width
+        - (root.tail-cut ? dots.preferred-width : 0px));
+    private property <length> head-width: !root.keeps-tail
+        ? max(0px, root.width - (root.shortened ? dots.preferred-width : 0px))
+        : root.head-room >= 2 * root.font-size ? root.head-room : 0px;
     min-width: dots.preferred-width;
     preferred-width: label.preferred-width;
     preferred-height: label.preferred-height;
     accessible-role: AccessibleRole.text;
     accessible-label: root.text;
     label := Text {
+        visible: !root.keeps-tail || root.head-width > 0px;
         x: 0px; y: 0px;
-        width: max(0px, root.width - (root.shortened ? dots.preferred-width : 0px));
+        width: root.head-width;
         height: root.height;
         text: root.text; color: root.foreground;
         font-size: root.font-size; font-weight: root.font-weight;
@@ -29,6 +57,24 @@ export component PathText inherits Rectangle {
     }
     dots := OmissionText {
         visible: root.shortened;
+        x: root.keeps-tail ? root.head-width : max(0px, root.width - self.width); y: 0px;
+        width: self.preferred-width; height: root.height;
+        text: "..."; color: root.foreground;
+        font-size: root.font-size; font-weight: root.font-weight;
+        vertical-alignment: root.vertical-alignment;
+        accessible-role: none;
+    }
+    tail-label := Text {
+        visible: root.keeps-tail;
+        x: root.head-width + dots.preferred-width; y: 0px;
+        width: root.tail-width; height: root.height;
+        text: root.tail; color: root.foreground;
+        font-size: root.font-size; font-weight: root.font-weight;
+        vertical-alignment: root.vertical-alignment;
+        overflow: clip; accessible-role: none;
+    }
+    OmissionText {
+        visible: root.tail-cut;
         x: max(0px, root.width - self.width); y: 0px;
         width: self.preferred-width; height: root.height;
         text: "..."; color: root.foreground;

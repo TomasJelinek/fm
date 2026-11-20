@@ -1,11 +1,29 @@
-import { ScrollStrip } from "scroll-strip.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { PathEditor } from "path-editor.slint";
 import { Theme } from "theme.slint";
 import { Tip } from "controls.slint";
 import { PathPartRow } from "navigation-models.slint";
 import { PathToken } from "path-token.slint";
-import { OmissionText } from "path-text.slint";
+import { NameText, OmissionText } from "path-text.slint";
+
+// Stands for the collapsed middle components; it edits the complete path.
+component PathOmission inherits Rectangle {
+    in property <string> path;
+    in property <length> text-size;
+    in property <bool> highlighted;
+    callback activated();
+    background: root.highlighted ? Theme.hover : transparent;
+    border-radius: 2px;
+    accessible-role: button; accessible-label: "Edit full folder path";
+    accessible-action-default => { root.activated(); }
+    OmissionText {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        color: root.highlighted ? Theme.accent : Theme.text; font-size: root.text-size;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    TouchArea { clicked => { root.activated(); } }
+    Tip { text: root.path; }
+}
 
 // Paths are parsed by the backend. Each token contains a whole component,
 // preserving its Unicode shaping; the UI never reconstructs an operation path.
@@ -14,6 +32,9 @@ export component PathNavigation inherits Rectangle {
     in property <length> text-size: Theme.font-size;
     in property <string> path;
     in property <[PathPartRow]> parts;
+    // The component that a shortened path keeps whole besides the last one: in an
+    // archive, the archive's own name (-1: none).
+    in property <int> anchor: -1;
     in property <string> hint;
     in-out property <string> text <=> editor.text;
     out property <bool> has-focus: editor.has-focus;
@@ -22,7 +43,58 @@ export component PathNavigation inherits Rectangle {
     private property <bool> edit-mode;
     private property <int> hovered-index: -1;
     private property <int> revision;
-    private property <length> end-offset: min(0px, trail.visible-width - trail.content-width);
+    // A path that does not fit shows whole components only: up to two leading ones
+    // (the root first), one omission marker for the middle, then the longest suffix
+    // that fits. Nothing overlaps and no component is cut, except the last one, which
+    // always shows and is shortened at its end when even it alone is too wide.
+    // The anchor shows too: the leading components give way to a suffix that reaches
+    // it, and when even that does not fit, it stands between two markers, followed by
+    // the suffix that fits, as long as it and the last component both fit whole.
+    // At least 32px stay free for opening the editor.
+    private property <int> count: root.parts.length;
+    private property <length> room: max(0px, trail.width - 32px);
+    private property <length> omission-width: omission-metrics.preferred-width + 4px;
+    // The shown components join into the shown path (each label is the part of its
+    // prefix after the previous one), so prefixes measure suffix widths.
+    private property <length> full-width: full-metrics.preferred-width;
+    private property <bool> collapsed: root.count > 1 && root.full-width > root.room;
+    private property <length> first-width: first-metrics.preferred-width;
+    private property <length> pair-width: first-metrics.preferred-width + second-metrics.preferred-width;
+    private property <length> last-width: last-metrics.preferred-width;
+    private property <int> plain-lead-count: root.count >= 4 && root.pair-width <= trail.width * 0.35
+            && root.pair-width + root.omission-width + root.last-width <= root.room ? 2
+        : root.count >= 3 && root.first-width <= trail.width * 0.35
+            && root.first-width + root.omission-width + root.last-width <= root.room ? 1
+        : 0;
+    private property <length> plain-lead-width: root.plain-lead-count == 2 ? root.pair-width
+        : root.plain-lead-count == 1 ? root.first-width : 0px;
+    // The first component leads and the last always shows: neither needs anchoring.
+    private property <bool> anchor-inside: root.anchor > 0 && root.anchor < root.count - 1;
+    private property <length> anchor-width: anchor-metrics.preferred-width;
+    // The anchor and every later component, as shown.
+    private property <length> anchor-suffix-width: root.full-width - anchor-parent-metrics.preferred-width;
+    // Components between the anchor and the last one, omitted behind a second marker.
+    private property <bool> anchor-gap: root.anchor + 1 < root.count - 1;
+    private property <bool> anchor-alone-fits: root.omission-width + root.anchor-width
+        + (root.anchor-gap ? root.omission-width : 0px) + root.last-width <= root.room;
+    // The leading components and the suffix that fits after them leave the anchor out.
+    private property <bool> anchor-dropped: root.collapsed && root.anchor-inside
+        && root.anchor >= root.plain-lead-count
+        && root.anchor-suffix-width > root.room - root.plain-lead-width - root.omission-width;
+    private property <int> lead-count: !root.collapsed ? root.count
+        : !root.anchor-dropped ? root.plain-lead-count
+        : root.plain-lead-count == 2
+            && root.first-width + root.omission-width + root.anchor-suffix-width <= root.room ? 1
+        : root.anchor-suffix-width + root.omission-width <= root.room || root.anchor-alone-fits ? 0
+        : root.plain-lead-count;
+    // Not even the suffix from the anchor fits: the anchor stands between two markers.
+    private property <bool> anchored: root.anchor-dropped && root.lead-count == 0
+        && root.anchor-suffix-width + root.omission-width > root.room && root.anchor-alone-fits;
+    private property <length> lead-width: root.lead-count == 2 ? root.pair-width
+        : root.lead-count == 1 ? root.first-width : 0px;
+    private property <length> suffix-room: root.anchored
+        ? root.room - root.omission-width - root.anchor-width - (root.anchor-gap ? root.omission-width : 0px)
+        : root.room - root.lead-width - root.omission-width;
     callback navigate(string);
     callback selected-part(string);
     callback copy-part(string);
@@ -33,12 +105,11 @@ export component PathNavigation inherits Rectangle {
     background: Theme.surface;
     changed path => {
         editor.invalidate-paste();
-        editor.text = root.path; root.hovered-index = -1; trail.content-x = root.end-offset;
+        editor.text = root.path; root.hovered-index = -1;
     }
     changed parts => {
-        root.revision += 1; root.hovered-index = -1; trail.content-x = root.end-offset;
+        root.revision += 1; root.hovered-index = -1;
     }
-    changed end-offset => { trail.content-x = root.end-offset; }
     init => { editor.text = root.path; }
     public function focus-editor() {
         editor.invalidate-paste();
@@ -49,56 +120,74 @@ export component PathNavigation inherits Rectangle {
         editor.invalidate-paste();
         root.edit-mode = false; editor.text = root.path;
     }
-    trail := ScrollStrip {
+    full-metrics := Text {
+        visible: false; font-size: root.text-size;
+        text: root.count > 0 ? root.parts[root.count - 1].prefix : "";
+    }
+    first-metrics := Text {
+        visible: false; font-size: root.text-size;
+        text: root.count > 0 ? NameText.ltr(root.parts[0].label) : "";
+    }
+    second-metrics := Text {
+        visible: false; font-size: root.text-size;
+        text: root.count > 1 ? NameText.ltr(root.parts[1].label) : "";
+    }
+    last-metrics := Text {
+        visible: false; font-size: root.text-size;
+        text: root.count > 0 ? NameText.ltr(root.parts[root.count - 1].label) : "";
+    }
+    anchor-metrics := Text {
+        visible: false; font-size: root.text-size;
+        text: root.anchor-inside ? NameText.ltr(root.parts[root.anchor].label) : "";
+    }
+    anchor-parent-metrics := Text {
+        visible: false; font-size: root.text-size;
+        text: root.anchor-inside ? root.parts[root.anchor - 1].prefix : "";
+    }
+    omission-metrics := OmissionText { visible: false; font-size: root.text-size; }
+    trail := Rectangle {
         visible: !root.edit-mode;
         x: 3px; y: 1px; width: parent.width - 6px; height: parent.height - 2px;
-        mouse-drag-pan-enabled: true;
-        content-x: root.end-offset;
+        clip: true;
         HorizontalLayout {
             spacing: 0px; alignment: start;
             if root.parts.length == 0 : Text {
                 text: root.path; color: Theme.text; font-size: root.text-size;
-                vertical-alignment: center;
+                vertical-alignment: center; overflow: elide;
+                min-width: 0px; horizontal-stretch: 1;
             }
-            for part[index] in root.parts : PathToken {
-                part: part; revision: root.revision; text-size: root.text-size;
-                height: trail.visible-height;
-                highlighted: root.hovered-index >= index;
-                selected(identity) => { root.selected-part(identity); }
-                copied(identity) => { root.copy-part(identity); }
-                hovered(over) => {
-                    if over { root.hovered-index = index; }
-                    else if root.hovered-index == index { root.hovered-index = -1; }
+            // Without leading components the marker opens the trail.
+            if root.collapsed && root.lead-count == 0 : PathOmission {
+                width: root.omission-width; height: trail.height;
+                path: root.path; text-size: root.text-size;
+                highlighted: root.hovered-index >= 0;
+                activated => { root.focus-editor(); }
+            }
+            for part[index] in root.parts : Rectangle {
+                // This component and every later one, as shown.
+                private property <length> suffix-width: index == 0 ? root.full-width
+                    : root.full-width - parent-metrics.preferred-width;
+                private property <bool> shown: !root.collapsed || index < root.lead-count
+                    || index == root.count - 1 || (root.anchored && index == root.anchor)
+                    || self.suffix-width <= root.suffix-room;
+                // The last leading component, and an anchor before omitted ones, carry
+                // the marker after them.
+                private property <bool> marks-omission: (root.collapsed && index == root.lead-count - 1)
+                    || (root.anchored && root.anchor-gap && index == root.anchor);
+                visible: self.shown;
+                width: !self.shown ? 0px : token.width + (self.marks-omission ? root.omission-width : 0px);
+                height: trail.height;
+                parent-metrics := Text {
+                    visible: false; font-size: root.text-size;
+                    text: root.collapsed && index > 0 ? root.parts[index - 1].prefix : "";
                 }
-            }
-            Rectangle {
-                min-width: 32px; horizontal-stretch: 1;
-                height: trail.visible-height;
-                accessible-role: button; accessible-label: "Edit folder path";
-                accessible-action-default => { root.focus-editor(); }
-                TouchArea { clicked => { root.focus-editor(); } }
-                Tip { text: ShortcutHints.hint("Enter a folder path", "panel.path") + ". Enter opens it; Escape cancels."; }
-            }
-        }
-    }
-    // Pin the beginning over the clipped trail; the suffix remains right-aligned.
-    // Both displays share backend identities. The ellipsis only opens the editor.
-    if !root.edit-mode && trail.content-x < 0px : Rectangle {
-        x: 3px; y: 1px; height: parent.height - 2px;
-        width: leading.width + dots.width;
-        background: Theme.surface;
-        // Covered text must never receive a click through a gap in this overlay.
-        TouchArea { clicked => { root.focus-editor(); } }
-        leading := Rectangle {
-            x: 0px; y: 0px;
-            width: min(root.width * 0.35, leading-layout.preferred-width);
-            height: parent.height; clip: true;
-            leading-layout := HorizontalLayout {
-                x: 0px; y: 0px;
-                height: leading.height; spacing: 0px; alignment: start;
-                for index in min(2, root.parts.length) : PathToken {
-                    part: root.parts[index]; revision: root.revision; text-size: root.text-size;
-                    height: trail.visible-height; highlighted: root.hovered-index >= index;
+                token := PathToken {
+                    x: 0px; y: 0px; height: parent.height;
+                    width: index == root.count - 1
+                        ? min(self.natural-width, max(0px, root.collapsed ? root.suffix-room : root.room))
+                        : self.natural-width;
+                    part: part; revision: root.revision; text-size: root.text-size;
+                    highlighted: root.hovered-index >= index;
                     selected(identity) => { root.selected-part(identity); }
                     copied(identity) => { root.copy-part(identity); }
                     hovered(over) => {
@@ -106,23 +195,22 @@ export component PathNavigation inherits Rectangle {
                         else if root.hovered-index == index { root.hovered-index = -1; }
                     }
                 }
-                if root.parts.length == 0 : Text {
-                    text: root.path; font-size: root.text-size; color: Theme.text;
-                    vertical-alignment: center;
+                if self.marks-omission : PathOmission {
+                    x: token.width; y: 0px; width: root.omission-width; height: parent.height;
+                    path: root.path; text-size: root.text-size;
+                    // A hovered later component's prefix includes the collapsed ones.
+                    highlighted: root.hovered-index > index;
+                    activated => { root.focus-editor(); }
                 }
             }
-        }
-        dots := Rectangle {
-            x: leading.width; height: parent.height; width: dots-text.preferred-width + 4px;
-            accessible-role: button; accessible-label: "Edit full folder path";
-            accessible-action-default => { root.focus-editor(); }
-            dots-text := OmissionText {
-                x: 0px; y: 0px; width: parent.width; height: parent.height;
-                text: "..."; color: Theme.text; font-size: root.text-size;
-                horizontal-alignment: center; vertical-alignment: center;
+            Rectangle {
+                min-width: 32px; horizontal-stretch: 1;
+                height: trail.height;
+                accessible-role: button; accessible-label: "Edit folder path";
+                accessible-action-default => { root.focus-editor(); }
+                TouchArea { clicked => { root.focus-editor(); } }
+                Tip { text: ShortcutHints.hint("Enter a folder path", "panel.path") + ". Enter opens it; Escape cancels."; }
             }
-            TouchArea { clicked => { root.focus-editor(); } }
-            Tip { text: root.path; }
         }
     }
     FocusScope {

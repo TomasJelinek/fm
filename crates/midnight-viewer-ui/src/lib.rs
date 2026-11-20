@@ -9,11 +9,15 @@ mod document_layout_tests;
 #[cfg(test)]
 mod find_action_tests;
 mod image_camera;
+#[cfg(test)]
+mod image_key_tests;
 mod image_motion;
 #[cfg(test)]
 mod image_presentation_tests;
 mod image_tiles;
 mod image_zoom;
+#[cfg(test)]
+mod kinetic_tests;
 #[cfg(test)]
 mod layout_handshake_tests;
 mod media_controls;
@@ -34,6 +38,11 @@ mod raster_rebase;
 mod raster_rebase_tests;
 #[cfg(test)]
 mod raster_render_tests;
+mod sandbox_notice;
+#[cfg(test)]
+mod sandbox_notice_tests;
+#[cfg(test)]
+mod scrollbar_drag_tests;
 mod scrolling;
 mod text_position;
 #[cfg(test)]
@@ -43,6 +52,8 @@ mod web_input;
 mod web_input_tests;
 #[cfg(test)]
 mod web_popup_tests;
+#[cfg(test)]
+mod web_wheel_tests;
 
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
@@ -190,6 +201,7 @@ impl OpenWindow {
         {
             return false;
         }
+        // A refused browser never paints, so its notice's Install… passes too.
         if self.layout.borrow().awaiting_frame
             && !matches!(
                 input,
@@ -199,6 +211,7 @@ impl OpenWindow {
                     | ViewerInput::NextFile
                     | ViewerInput::PreviousFile
                     | ViewerInput::RetainedRaster(_)
+                    | ViewerInput::InstallSandboxPermission
                     | ViewerInput::Close
             )
         {
@@ -1209,13 +1222,16 @@ fn present_controlled_outputs(
                 window.set_caption(midnight_core::visible_name(&frame.caption).as_ref().into());
                 window.set_status(midnight_core::visible_name(&frame.status).as_ref().into());
                 if image_mode {
-                    window.set_position_context(
-                        format!(
-                            "image:{}",
-                            frame.image.as_ref().map_or(0, |info| info.surface.0)
-                        )
-                        .into(),
-                    );
+                    if let Some(info) = &frame.image {
+                        window.set_position_context(
+                            image_camera::position_context(
+                                frame.generation,
+                                info,
+                                [frame.width, frame.height],
+                            )
+                            .into(),
+                        );
+                    }
                     if frame.tiles.is_some() {
                         image_motion::present(open);
                     } else {
@@ -1265,6 +1281,7 @@ fn present_controlled_outputs(
             ViewerOutput::Status(message) => {
                 window.set_status(midnight_core::visible_name(message).as_ref().into())
             }
+            ViewerOutput::SandboxNotice(notice) => sandbox_notice::present(open, notice.as_ref()),
             ViewerOutput::ImageUnavailable {
                 generation,
                 surface,
@@ -1352,23 +1369,68 @@ fn observe_native_content(
         return false;
     }
     // Every native transition must update auxiliary press/gesture bookkeeping,
-    // including a release that the browser or retained image consumes below.
-    let ancillary_consumed = ancillary.observe(open.window.window(), event, None);
+    // including a release that the browser or retained image consumes below. It
+    // runs first: the ancillary observer delivers touchpad reports to the content
+    // itself, and a new gesture must cancel older motion before its first report.
     image_motion::bookkeeping(open, event);
-    if web_input::observe(open, event, shortcuts) {
-        ancillary.cancel();
+    let ancillary_consumed = ancillary.observe(open.window.window(), event, None);
+    // Touchpad lines (X11) reach the content's pixel path without wheel easing.
+    let touchpad = ancillary.source() == midnight_ui_input::WheelSource::Touchpad;
+    if web_input::observe_native(open, event, shortcuts, touchpad) {
+        ancillary.cancel_wheel();
         return true;
     }
-    if image_motion::route(open, event) {
+    if image_motion::route(open, event, touchpad) {
         ancillary.cancel();
         return true;
     }
     ancillary_consumed
 }
 
+/// Touchpad momentum continues only on the viewed content: a browser surface gets it
+/// natively and every other mode through the content's scroll handler, like the
+/// finger motion before it. Toolbar controls and popups get none.
+fn bind_kinetic(open: &Rc<OpenWindow>, scroll: &mut midnight_ui_input::NativeScroll) {
+    let weak = Rc::downgrade(open);
+    scroll.set_kinetic_sink(Box::new(move |event| {
+        weak.upgrade().is_some_and(|open| {
+            open.window.get_web_mode() && web_input::observe_native(&open, event, true, true)
+        })
+    }));
+    let contains = Rc::downgrade(open);
+    let position = Rc::downgrade(open);
+    scroll.set_kinetic_surface(midnight_ui_input::KineticSurface {
+        contains: Box::new(move |point| {
+            contains.upgrade().is_some_and(|open| {
+                let window = &open.window;
+                let (left, top) = (window.get_content_left(), window.get_content_top());
+                point.x >= left
+                    && point.y >= top
+                    && point.x < left + window.get_content_width()
+                    && point.y < top + window.get_content_height()
+                    && !media_controls::is_active(window)
+                    && !midnight_ui_input::popup_open(window.window())
+            })
+        }),
+        position: Box::new(move || {
+            position.upgrade().map_or([None; 2], |open| {
+                if open.window.get_web_mode() {
+                    web_input::content_position(&open)
+                } else {
+                    scrolling::momentum_position(
+                        open.window.get_horizontal_position(),
+                        open.window.get_position(),
+                    )
+                }
+            })
+        }),
+    });
+}
+
 fn bind(open: &Rc<OpenWindow>) {
     bind_image(open);
     web_input::bind(open);
+    sandbox_notice::bind(open);
     preferences::bind(open);
     let weak = Rc::downgrade(open);
     open.window.on_change_wrap(move |wrap| {
@@ -1411,6 +1473,7 @@ fn bind(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     let native_state = native.clone();
     let mut ancillary_scroll = midnight_ui_input::NativeScroll::new(&open.window);
+    bind_kinetic(open, &mut ancillary_scroll);
     open.window.window().on_winit_window_event(move |_, event| {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
@@ -1652,6 +1715,11 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
         if !open.window.get_image_mode() && !open.window.get_web_mode() {
             return raster_motion::admit_raw(open, x, y);
         }
+    }
+    if let ViewerInput::Seek(position) = input
+        && open.window.get_tiled()
+    {
+        return image_motion::seek_end(open, position);
     }
     let changing = matches!(
         input,

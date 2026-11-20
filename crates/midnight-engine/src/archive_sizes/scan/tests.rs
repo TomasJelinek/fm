@@ -213,10 +213,43 @@ fn stale_source_and_cancel_never_finish_or_publish_complete_data() {
 }
 
 #[test]
+fn folders_beyond_the_former_budgets_are_counted_completely() {
+    // A scan once stopped at 100,000 members and at 8 MiB of names; neither is
+    // limited now. First 100,001 files in one folder.
+    let mut mount = Mount::default();
+    mount.rows.insert(
+        2,
+        (3..100_004)
+            .map(|id| node(id, 2, EntryKind::File, Some(2)))
+            .collect(),
+    );
+    let (ok, sizes) = run(&mount, &[node(2, 1, EntryKind::Directory, None)]);
+    assert!(ok);
+    let size = &sizes[&2];
+    assert_eq!((size.files, size.bytes, size.errors), (100_001, 200_002, 0));
+    assert!(size.finished);
+    // Then 65 members whose raw names and labels take 64 KiB each: 8 MiB and 128 KiB.
+    let mut named = Mount::default();
+    named.rows.insert(
+        2,
+        (3..68)
+            .map(|id| ArchiveNode {
+                raw_name: vec![b'n'; MAX_NAME].into(),
+                display_name: "n".repeat(MAX_NAME),
+                ..node(id, 2, EntryKind::File, Some(1))
+            })
+            .collect(),
+    );
+    let (ok, sizes) = run(&named, &[node(2, 1, EntryKind::Directory, None)]);
+    assert!(ok);
+    assert_eq!((sizes[&2].files, sizes[&2].errors), (65, 0));
+}
+
+#[test]
 fn oversized_metadata_and_invalid_roots_fail_without_unbounded_traversal() {
     let mut mount = Mount::default();
     let mut huge = node(3, 2, EntryKind::Directory, None);
-    huge.raw_name = vec![b'x'; MAX_NAMES + 1].into();
+    huge.raw_name = vec![b'x'; MAX_NAME + 1].into();
     mount.rows.insert(2, vec![huge]);
     let (ok, sizes) = run(&mount, &[node(2, 1, EntryKind::Directory, None)]);
     assert!(ok);

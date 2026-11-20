@@ -154,6 +154,8 @@ pub(super) fn sources(request: &CompareRequest) -> Snapshots {
             committed: Some(snapshot.clone()),
             visible: Some(snapshot),
             pending: None,
+            hide_hidden: false,
+            committed_hidden: 0,
         }
     }))
 }

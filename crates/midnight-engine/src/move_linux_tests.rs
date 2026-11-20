@@ -24,6 +24,107 @@ fn drive(job: &mut worker::Job) {
     panic!("Move did not finish within bounded fixture steps");
 }
 
+/// The test process's umask, as the kernel reports it.
+fn umask() -> u32 {
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Umask:"))
+        .unwrap();
+    u32::from_str_radix(value.trim(), 8).unwrap()
+}
+
+#[test]
+fn linux_copy_and_cross_device_move_publish_the_source_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+    for moving in [false, true] {
+        let (_temp, parent) = protected_fixture();
+        let tools = parent.join("tools");
+        fs::create_dir(&tools).unwrap();
+        let script = tools.join("run.sh");
+        fs::write(&script, b"#!/bin/sh\n").unwrap();
+        let notes = tools.join("notes.txt");
+        fs::write(&notes, b"notes").unwrap();
+        // A setuid script and a sticky folder: like `cp` without `-p`, only the
+        // read, write and execute bits are copied, masked by the umask.
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o4755)).unwrap();
+        fs::set_permissions(&notes, fs::Permissions::from_mode(0o640)).unwrap();
+        fs::set_permissions(&tools, fs::Permissions::from_mode(0o1750)).unwrap();
+        // Copy creates folders only inside a parent that other users cannot change.
+        let destination = parent.join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
+        let sources = [tools.clone()];
+        let mut job = if moving {
+            prepare_move(&sources, &destination, Cancellation::default()).0
+        } else {
+            let request = request(1, &sources, &destination);
+            let status = Arc::new(Mutex::new(initial(&request.clone().into())));
+            let service = midnight_platform::LocalFileSystem::new(None);
+            worker::Job::prepare(request, &service, Cancellation::default(), status).unwrap()
+        };
+        drive(&mut job);
+        let done = job.finish();
+        assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+        let copied = destination.join("tools");
+        assert_eq!(mode(&copied.join("run.sh")), 0o755 & !umask(), "{moving}");
+        assert_eq!(
+            mode(&copied.join("notes.txt")),
+            0o640 & !umask(),
+            "{moving}"
+        );
+        assert_eq!(mode(&copied), 0o750 & !umask(), "{moving}");
+        assert_eq!(fs::read(copied.join("run.sh")).unwrap(), b"#!/bin/sh\n");
+        assert_eq!(tools.exists(), !moving);
+    }
+}
+
+#[test]
+fn linux_move_of_an_owned_read_only_folder_asks_nothing_and_keeps_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_temp, parent) = protected_fixture();
+    let folder = parent.join("locked-folder");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("inside.txt"), b"inside\n").unwrap();
+    let destination = parent.join("destination");
+    fs::create_dir(&destination).unwrap();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
+    let request = request(1, std::slice::from_ref(&folder), &destination);
+    let status = Arc::new(Mutex::new(initial(&CopyInput::move_paths(request.clone()))));
+    // The same filesystem: a native rename. Linux moves a folder into another folder
+    // only while the folder itself is writable, so an owned one is, just for that.
+    let service = midnight_platform::LocalFileSystem::new(None);
+    let mut job =
+        worker::Job::prepare_move(request, &service, Cancellation::default(), status).unwrap();
+    let asked = (0..1000).find_map(|_| match job.step() {
+        worker::Step::Continue => None,
+        worker::Step::Done => Some(None),
+        worker::Step::Failure(failure) => Some(Some(failure)),
+        worker::Step::Conflict(conflict) => panic!("unexpected conflict: {conflict:?}"),
+    });
+    let moved = destination.join("locked-folder");
+    let kept = fs::metadata(&moved).map(|moved| moved.permissions().mode() & 0o7777);
+    // Writable again, so the fixture can be removed.
+    for path in [&folder, &moved] {
+        if path.exists() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    assert!(matches!(asked, Some(None)), "{asked:?}");
+    let done = job.finish();
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.native_entries_moved, 1, "{done:?}");
+    assert_eq!(kept.unwrap(), 0o555);
+    assert_eq!(fs::read(moved.join("inside.txt")).unwrap(), b"inside\n");
+    assert!(!folder.exists());
+    assert_eq!(
+        fs::read_dir(&parent).unwrap().count(),
+        2,
+        "no stage is left behind"
+    );
+}
+
 #[test]
 fn linux_move_refuses_an_existing_writer_before_any_publication() {
     let (_temp, parent) = protected_fixture();

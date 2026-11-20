@@ -7,6 +7,17 @@ mod tests;
 
 impl Presenter {
     pub fn file_compare_launch(&self, active: PaneId) -> Result<FileCompareLaunch, String> {
+        let active_pane = &self.panes[active.index()];
+        let panes: &[PaneId] = if compare_selection_len(active_pane) == 2 {
+            std::slice::from_ref(&active)
+        } else {
+            &[PaneId::Left, PaneId::Right]
+        };
+        // A compared panel's selection and focus belong to the folder hidden
+        // under search results fed to it.
+        if panes.iter().any(|pane| self.feed(*pane).is_some()) {
+            return Err(find::feed::refusal("Compare files"));
+        }
         let disabled_plugins = self
             .viewer_plugins
             .startup_disabled
@@ -21,12 +32,6 @@ impl Presenter {
             } else {
                 "Comparator settings are still loading."
             })?;
-        let active_pane = &self.panes[active.index()];
-        let panes: &[PaneId] = if compare_selection_len(active_pane) == 2 {
-            std::slice::from_ref(&active)
-        } else {
-            &[PaneId::Left, PaneId::Right]
-        };
         let mut sources = Vec::with_capacity(panes.len());
         for id in panes {
             let pane = &self.panes[id.index()];

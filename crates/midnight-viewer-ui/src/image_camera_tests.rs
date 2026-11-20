@@ -109,6 +109,64 @@ fn scrollbar_keeps_latest_absolute_thumb_and_cached_seek_is_immediate() {
 }
 
 #[test]
+fn the_released_thumb_wins_over_a_new_surface_painted_for_an_earlier_drag_step() {
+    let mut camera = Camera::default();
+    let info = info();
+    camera.receive(&info, 1.0, grid(&info, info.origin));
+    // Drags aim at 75 % across, then through 50 % to 75 % down; none of it is retained
+    // yet, so each step waits for the backend.
+    camera.seek(0, 0.75);
+    camera.seek(1, 0.5);
+    let early = camera.request().unwrap();
+    camera.seek(1, 0.75);
+    let late = camera.request().unwrap();
+    assert!(late.1 > early.1);
+    assert_eq!((camera.position(0), camera.position(1)), (0.75, 0.75));
+    // The backend changed its surface (another page, zoom or viewport) while painting
+    // the earlier step: a new frame shows that step, on a viewport 100 px shorter.
+    let mut moved = info.clone();
+    moved.surface = ViewerSurfaceId(4);
+    moved.origin = early.2;
+    moved.visible_source = [900.0, 500.0];
+    moved.pan_sequence = 0;
+    assert_eq!(camera.incoming(&moved), Some((early.2, true)));
+    camera.receive(&moved, 1.0, grid(&moved, early.2));
+    assert_eq!(
+        camera.origin, early.2,
+        "the new surface shows what it painted"
+    );
+    // The thumb stays where it was released and the camera asks the new surface for it.
+    assert_eq!((camera.position(0), camera.position(1)), (0.75, 0.75));
+    let (surface, sequence, target) = camera.request().unwrap();
+    assert_eq!(surface, ViewerSurfaceId(4));
+    assert!(sequence > late.1);
+    assert_eq!(target, [(6000.0 - 900.0) * 0.75, (4000.0 - 500.0) * 0.75]);
+    // Frames of the new surface painted before that request cannot pull it back.
+    let mut stale = moved.clone();
+    stale.pan_sequence = sequence - 1;
+    assert_eq!(camera.incoming(&stale), None);
+    // The answer lands exactly on the released thumb.
+    let mut answer = moved.clone();
+    answer.origin = target;
+    answer.pan_sequence = sequence;
+    assert_eq!(camera.incoming(&answer), Some((target, true)));
+    camera.receive(&answer, 1.0, grid(&answer, target));
+    assert_eq!(camera.origin, target);
+    assert!(!camera.active());
+    assert_eq!(
+        (camera.displayed_position(0), camera.displayed_position(1)),
+        (0.75, 0.75)
+    );
+    // A surface change without a waiting drag simply shows the new frame.
+    let mut fresh = answer.clone();
+    fresh.surface = ViewerSurfaceId(5);
+    fresh.origin = [100.0, 200.0];
+    camera.receive(&fresh, 1.0, grid(&fresh, fresh.origin));
+    assert_eq!(camera.origin, [100.0, 200.0]);
+    assert!(!camera.active());
+}
+
+#[test]
 fn boundaries_resize_and_file_switch_cancel_stale_motion_without_reusing_sequences() {
     let mut camera = Camera::default();
     let mut info = info();

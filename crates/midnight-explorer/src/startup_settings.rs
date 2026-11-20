@@ -1,18 +1,45 @@
 //! Admit native preference writes only after the first window is successfully shown.
 use crate::startup_gate::{Gate, WaitError};
 use midnight_core::{ComparatorValidationProof, FsError, SettingsService, UserPreferences};
-use std::{io, path::Path, sync::Arc, time::Duration};
+use std::{
+    io,
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+/// Read the saved preferences once before the first window: the renderer needs
+/// their text fitting before any window exists. The engine's first load reuses
+/// this value instead of reading and decoding the file again, and it compiles the
+/// comparator patterns on its own worker. A failure is logged here; the engine
+/// then reads again and reports it to the user as usual.
+pub(crate) fn prefetch(native: &dyn SettingsService) -> Option<UserPreferences> {
+    match native.load_preferences_for_acceptance() {
+        Ok(preferences) => Some(preferences),
+        Err(error) => {
+            eprintln!("Midnight Explorer: saved preferences could not be read at startup: {error}");
+            None
+        }
+    }
+}
 
 pub(crate) fn for_startup(
     native: Arc<dyn SettingsService>,
     gate: Arc<Gate>,
+    prefetched: Option<UserPreferences>,
 ) -> Arc<dyn SettingsService> {
-    Arc::new(StartupSettings { native, gate })
+    Arc::new(StartupSettings {
+        native,
+        gate,
+        prefetched: Mutex::new(prefetched),
+    })
 }
 
 struct StartupSettings {
     native: Arc<dyn SettingsService>,
     gate: Arc<Gate>,
+    /// The startup read, answered once to the engine's first load.
+    prefetched: Mutex<Option<UserPreferences>>,
 }
 
 impl StartupSettings {
@@ -47,7 +74,15 @@ impl SettingsService for StartupSettings {
     }
 
     fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
-        self.native.load_preferences_for_acceptance()
+        let prefetched = self
+            .prefetched
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        match prefetched {
+            Some(preferences) => Ok(preferences),
+            None => self.native.load_preferences_for_acceptance(),
+        }
     }
 
     fn save_preferences(&self, preferences: UserPreferences) -> Result<(), FsError> {
@@ -82,14 +117,26 @@ mod tests {
         reads: AtomicUsize,
         writes: AtomicUsize,
         prepared_writes: AtomicUsize,
+        unreadable: bool,
     }
     impl SettingsService for RecordingSettings {
         fn font_families(&self) -> Result<Vec<String>, FsError> {
             Ok(vec!["Installed family".into()])
         }
         fn load_preferences(&self) -> Result<UserPreferences, FsError> {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            Ok(UserPreferences::default())
+            let read = self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.unreadable {
+                return Err(FsError::from_io(
+                    "load preferences",
+                    Path::new("settings.json"),
+                    io::ErrorKind::InvalidData.into(),
+                ));
+            }
+            // Each native read decodes the file anew.
+            Ok(UserPreferences {
+                font_family: format!("read {read}"),
+                ..UserPreferences::default()
+            })
         }
         fn save_preferences(&self, _: UserPreferences) -> Result<(), FsError> {
             self.writes.fetch_add(1, Ordering::SeqCst);
@@ -110,10 +157,41 @@ mod tests {
     }
 
     #[test]
+    fn the_startup_read_answers_the_engines_first_load_without_a_second_decode() {
+        let owner = Owner::new();
+        let native = Arc::new(RecordingSettings::default());
+        let prefetched = prefetch(native.as_ref());
+        assert_eq!(native.reads.load(Ordering::SeqCst), 1);
+        let settings = for_startup(native.clone(), owner.gate(), prefetched);
+        let first = settings.load_preferences_for_acceptance().unwrap();
+        assert_eq!(first.font_family, "read 0");
+        assert_eq!(native.reads.load(Ordering::SeqCst), 1, "decoded once");
+        // Later loads read the file again.
+        let later = settings.load_preferences_for_acceptance().unwrap();
+        assert_eq!(later.font_family, "read 1");
+        assert_eq!(native.reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_failed_startup_read_leaves_the_engines_load_to_report_it() {
+        let owner = Owner::new();
+        let native = Arc::new(RecordingSettings {
+            unreadable: true,
+            ..RecordingSettings::default()
+        });
+        let prefetched = prefetch(native.as_ref());
+        assert!(prefetched.is_none());
+        let settings = for_startup(native.clone(), owner.gate(), prefetched);
+        let error = settings.load_preferences_for_acceptance().unwrap_err();
+        assert_eq!(error.kind, io::ErrorKind::InvalidData);
+        assert_eq!(native.reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn startup_settings_reads_pass_immediately_and_save_once_after_reveal() {
         let owner = Owner::new();
         let native = Arc::new(RecordingSettings::default());
-        let settings = for_startup(native.clone(), owner.gate());
+        let settings = for_startup(native.clone(), owner.gate(), None);
         assert_eq!(settings.font_families().unwrap(), ["Installed family"]);
         let preferences = settings.load_preferences().unwrap();
         assert_eq!(native.reads.load(Ordering::SeqCst), 1);
@@ -137,7 +215,7 @@ mod tests {
     fn startup_settings_failed_first_reveal_never_writes_existing_preferences() {
         let owner = Owner::new();
         let native = Arc::new(RecordingSettings::default());
-        let settings = for_startup(native.clone(), owner.gate());
+        let settings = for_startup(native.clone(), owner.gate(), None);
         let (done, received) = mpsc::channel();
         let worker = thread::spawn(move || {
             done.send(settings.save_preferences(UserPreferences::default()))
@@ -159,7 +237,7 @@ mod tests {
     fn startup_prepared_save_waits_for_reveal_and_forwards_the_proof_once() {
         let owner = Owner::new();
         let native = Arc::new(RecordingSettings::default());
-        let settings = for_startup(native.clone(), owner.gate());
+        let settings = for_startup(native.clone(), owner.gate(), None);
         let (started, entered) = mpsc::channel();
         let (done, received) = mpsc::channel();
         let worker = thread::spawn(move || {
@@ -188,7 +266,7 @@ mod tests {
     fn startup_prepared_save_refuses_forwarding_when_first_reveal_fails() {
         let owner = Owner::new();
         let native = Arc::new(RecordingSettings::default());
-        let settings = for_startup(native.clone(), owner.gate());
+        let settings = for_startup(native.clone(), owner.gate(), None);
         let (started, entered) = mpsc::channel();
         let (done, received) = mpsc::channel();
         let worker = thread::spawn(move || {

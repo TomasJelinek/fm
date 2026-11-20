@@ -23,11 +23,14 @@ fn only_ticked_folders_are_searched_and_unticking_all_never_starts_a_search() {
     let id = p.create_find(PaneId::Left).unwrap();
     let first = p.finds.sessions[&id].roots[0].path.clone();
     let second = std::env::temp_dir().join("second 文档");
+    assert_eq!(p.finds.sessions[&id].added_root, (0, 0));
     p.add_find_root(id, &second.to_string_lossy());
     assert_eq!(
         p.finds.sessions[&id].roots,
         [FindRoot::new(first.clone()), FindRoot::new(second.clone())]
     );
+    // The window chooses the added folder and closes its Add entry.
+    assert_eq!(p.finds.sessions[&id].added_root, (1, 1));
     p.set_find_root_searched(id, 0, false);
     assert_eq!(started_roots(&mut p, id), Some(vec![second.clone()]));
     p.apply(Event::Find(Box::new(FindEvent {
@@ -53,6 +56,11 @@ fn only_ticked_folders_are_searched_and_unticking_all_never_starts_a_search() {
     assert_eq!(p.finds.sessions[&id].roots.len(), 2);
     assert!(p.finds.sessions[&id].roots[0].searched);
     assert!(p.finds.sessions[&id].error.is_empty());
+    assert_eq!(
+        p.finds.sessions[&id].added_root,
+        (2, 0),
+        "the listed folder is chosen, so the entry closes too"
+    );
     assert_eq!(started_roots(&mut p, id), Some(vec![first]));
     // A running search keeps its folder list.
     p.set_find_root_searched(id, 0, false);
@@ -76,12 +84,17 @@ fn unticked_folders_still_count_toward_the_root_limit() {
     }
     assert_eq!(p.finds.sessions[&id].roots.len(), MAX_FIND_ROOTS);
     assert!(p.finds.sessions[&id].error.is_empty());
+    let added = p.finds.sessions[&id].added_root;
     p.add_find_root(
         id,
         &std::env::temp_dir().join("one too many").to_string_lossy(),
     );
     assert_eq!(p.finds.sessions[&id].roots.len(), MAX_FIND_ROOTS);
     assert!(!p.finds.sessions[&id].error.is_empty());
+    assert_eq!(
+        p.finds.sessions[&id].added_root, added,
+        "a refused folder keeps the entry open"
+    );
 }
 
 #[test]
@@ -119,6 +132,7 @@ fn browse_adds_the_exact_chosen_folder_only_to_its_own_open_window() {
         p.finds.sessions[&id].roots.last(),
         Some(&FindRoot::new(chosen.clone()))
     );
+    assert_eq!(p.finds.sessions[&id].added_root, (1, 1));
     assert_eq!(p.finds.sessions[&other].roots.len(), 1);
     // A repeated answer for the finished request changes nothing.
     p.apply(Event::PathPicked {

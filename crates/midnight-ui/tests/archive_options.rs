@@ -226,6 +226,77 @@ fn plus_reveals_focused_input_and_enter_stages_a_removable_extension() {
 }
 
 #[test]
+fn escape_in_the_extension_field_cancels_only_that_edit_and_then_closes_options() {
+    let mut ui = archive_options();
+    let window = ui.window.clone_strong();
+    let view = window.global::<ArchiveOptionsView>();
+    // An unsaved change on the page, which closing Options would discard.
+    submit_extension(&mut ui, "staged");
+    open_extension_input(&mut ui);
+    ui::key(&ui.window, "draft");
+    assert_eq!(view.get_draft(), "draft");
+    ui::key(&ui.window, slint::platform::Key::Escape);
+    settle(&mut ui);
+    assert!(
+        ui.window.get_options_open(),
+        "Escape in the field cancels only the field edit"
+    );
+    assert!(!has_archive_control(
+        &ui,
+        "Custom archive extension",
+        AccessibleRole::TextInput
+    ));
+    assert!(has_archive_control(
+        &ui,
+        "Add custom archive extension",
+        AccessibleRole::Button
+    ));
+    assert_eq!(view.get_draft(), "");
+    assert!(
+        view.get_custom_extensions()
+            .iter()
+            .any(|extension| extension == "staged"),
+        "the page's unsaved changes survive the cancelled edit"
+    );
+    // Focus returns to the plus, so Enter opens a fresh edit.
+    ui::key(&ui.window, slint::platform::Key::Return);
+    settle(&mut ui);
+    assert!(has_archive_control(
+        &ui,
+        "Custom archive extension",
+        AccessibleRole::TextInput
+    ));
+    ui::key(&ui.window, slint::platform::Key::Escape);
+    settle(&mut ui);
+    assert!(ui.window.get_options_open());
+    ui::key(&ui.window, slint::platform::Key::Escape);
+    settle(&mut ui);
+    assert!(
+        !ui.window.get_options_open(),
+        "the next Escape closes Options"
+    );
+
+    // An open editor whose field lost focus still closes before Options.
+    ui.window.invoke_show_options();
+    settle(&mut ui);
+    open_extension_input(&mut ui);
+    ui::chord(
+        &ui.window,
+        &[slint::platform::Key::Shift],
+        slint::platform::Key::Tab,
+    );
+    settle(&mut ui);
+    assert!(view.get_adding());
+    ui::key(&ui.window, slint::platform::Key::Escape);
+    settle(&mut ui);
+    assert!(ui.window.get_options_open());
+    assert!(!view.get_adding());
+    ui::key(&ui.window, slint::platform::Key::Escape);
+    settle(&mut ui);
+    assert!(!ui.window.get_options_open());
+}
+
+#[test]
 fn wheel_reveals_last_archive_checkbox_after_resizing_options() {
     let mut ui = archive_options();
     let window = ui.window.clone_strong();

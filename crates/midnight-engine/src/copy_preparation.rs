@@ -65,6 +65,23 @@ impl Preparation {
         self.tracker = Some(tracker);
     }
 
+    /// Whether `path` is one of several planned native roots, which Skip can leave out
+    /// before anything is copied. Captured and archive sources stay whole.
+    pub(super) fn skippable_root(&self, path: &Path) -> bool {
+        matches!(&self.planned, Some(PlannedInput::Native(request, _))
+            if request.clipboard.paths.len() > 1
+                && request.clipboard.paths.iter().any(|root| root == path))
+    }
+
+    /// Skip: plan the job again without the root at `path`. A namespace plan that is
+    /// already installed keeps claiming it, which only waits for more than needed.
+    pub(super) fn skip_root(&mut self, path: &Path) {
+        if let Some(PlannedInput::Native(request, _)) = &mut self.planned {
+            request.clipboard.paths.retain(|root| root != path);
+        }
+        self.endpoints = None;
+    }
+
     /// Read-only endpoint capture. The caller must grant the complete union before
     /// attempt; an absent capability is an opaque endpoint, never an empty claim.
     pub(super) fn pin_endpoints(
@@ -145,15 +162,10 @@ impl Preparation {
         let mut endpoints = Vec::new();
         for root in roots {
             root.revalidate(cancel)?;
-            let pin = if links == CopyLinkPolicy::FollowDirectoryContents
-                && root.entry().item.kind == EntryKind::Directory
-            {
-                // A nested link can escape this directory's own read scope.
-                // Keep its original source pin but claim opaque exclusion.
-                None
-            } else {
-                root.native_namespace_scope(cancel)?
-            };
+            // A followed directory claims its own folder like any source. A nested link
+            // can lead outside it; such reads are not protected against another job's
+            // writes there (only reads: a followed source is never changed).
+            let pin = root.native_namespace_scope(cancel)?;
             endpoints.push((access, pin));
             let name = root.entry().item.path.file_name().ok_or_else(|| {
                 error(
@@ -461,7 +473,7 @@ impl PlannedInput {
                     service
                         .source(
                             path,
-                            if *moved && links.materializes_directory_links() {
+                            if *moved && links != CopyLinkPolicy::Reject {
                                 Authority::MoveWithLinks(links)
                             } else if *moved {
                                 Authority::Move
@@ -902,6 +914,10 @@ impl TransferSource for SharedSource {
         self.source()?.link_representation(cancel)
     }
 
+    fn link_not_followed(&self) -> Option<String> {
+        self.source().ok()?.link_not_followed()
+    }
+
     fn open_child(
         &self,
         name: &OsStr,
@@ -961,6 +977,13 @@ impl TransferSource for SharedSource {
         cancel: &Cancellation,
     ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
         self.source()?.next_child(cancel)
+    }
+
+    fn next_child_or_failure(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferChild>, FsError> {
+        self.source()?.next_child_or_failure(cancel)
     }
 }
 

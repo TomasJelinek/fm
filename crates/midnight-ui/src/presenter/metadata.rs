@@ -10,6 +10,11 @@ pub(crate) struct MetadataState {
     pub(crate) busy: bool,
     pub(crate) error: String,
     pub(crate) preview: Option<Arc<MetadataPreview>>,
+    /// UTC offsets typed for the last reviewed draft's set times (created, modified,
+    /// accessed), in seconds east of UTC.
+    pub(crate) typed_offsets: [Option<i32>; 3],
+    /// The moments that each row's Now button filled in (created, modified, accessed).
+    pub(crate) now_values: [Option<LocalCalendarTime>; 3],
 }
 
 impl MetadataState {
@@ -56,6 +61,11 @@ impl Presenter {
         case: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.feed_refuses(pane, "Attributes, times and case")
+            || self.comparison_refuses("Attributes, times and case")
+        {
+            return;
+        }
         if self.panes[pane.index()].tree_view().is_some() {
             self.request_tree_metadata(pane, case, send);
             return;
@@ -103,6 +113,7 @@ impl Presenter {
         &mut self,
         token: &str,
         patch: Result<MetadataPatch, String>,
+        typed_offsets: [Option<i32>; 3],
         send: &dyn Fn(Command) -> bool,
     ) {
         if !self.metadata.matches(token) || self.operations.closing {
@@ -127,6 +138,7 @@ impl Presenter {
         }) {
             self.metadata.dirty = false;
             self.metadata.busy = true;
+            self.metadata.typed_offsets = typed_offsets;
         } else {
             self.metadata.error = "The command queue is busy. Try Preview again.".into();
         }

@@ -4,7 +4,9 @@
 mod render;
 use crate::support::ui;
 use i_slint_core::{
-    accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+    accessibility::{AccessibilityAction, AccessibleStringProperty},
+    item_tree::ItemRc,
+    items::AccessibleRole,
     window::WindowInner,
 };
 use midnight_core::*;
@@ -12,10 +14,11 @@ use midnight_ui::Presenter;
 use slint::{ComponentHandle, platform::Key};
 use std::{
     cell::RefCell,
+    collections::HashMap,
     path::PathBuf,
     rc::Rc,
     sync::Arc,
-    time::{Duration, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 struct Editor {
@@ -36,6 +39,7 @@ fn calendar(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> 
         hour,
         minute,
         second,
+        nanosecond: 0,
         offset_seconds: 3600,
     }
 }
@@ -118,15 +122,30 @@ impl Editor {
     }
 
     fn preview(&mut self, revision: u64, patch: MetadataPatch) {
+        self.preview_with(revision, patch, HashMap::new());
+    }
+
+    /// The worker's preview, with the native-zone calendars of the patch's set times.
+    fn preview_with(
+        &mut self,
+        revision: u64,
+        patch: MetadataPatch,
+        patch_calendars: HashMap<SystemTime, LocalCalendarTime>,
+    ) {
         let preview = MetadataPreview {
             id: self.id,
             revision,
             patch,
             localized_times: Default::default(),
+            patch_calendars,
             time_input_format: self.format.clone(),
             time_defaults: MetadataTimeDefaults {
                 now: Some(calendar(2026, 11, 19, 10, 0, 0)),
-                modified: Some(calendar(2026, 1, 2, 3, 4, 5)),
+                // The file's time has sub-seconds that the fields do not show.
+                modified: Some(LocalCalendarTime {
+                    nanosecond: 789_000_000,
+                    ..calendar(2026, 1, 2, 3, 4, 5)
+                }),
                 ..Default::default()
             },
             capabilities: MetadataCapabilities {
@@ -198,11 +217,33 @@ impl Editor {
             .collect()
     }
 
-    /// Review, answer with the worker's preview of exactly that patch, then Apply.
-    fn review_and_apply(&mut self) -> MetadataPatch {
+    /// The accessible state of a checkbox or spin box in the topmost popup.
+    fn state(&self, label: &str, role: AccessibleRole, what: AccessibleStringProperty) -> String {
+        ui::popup_item(&self.test.window, label, role)
+            .accessible_string_property(what)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn checked(&self, label: &str) -> String {
+        self.state(
+            label,
+            AccessibleRole::Checkbox,
+            AccessibleStringProperty::Checked,
+        )
+    }
+
+    /// Run an accessibility action, as a screen reader does, on a topmost-popup control.
+    fn act(&mut self, label: &str, role: AccessibleRole) {
+        ui::popup_item(&self.test.window, label, role)
+            .accessible_action(&AccessibilityAction::Default);
+        self.test.draw();
+    }
+
+    /// Review: the revision and patch that the draft sent to the worker.
+    fn review(&mut self) -> (u64, MetadataPatch) {
         self.click("Review changes", AccessibleRole::Button);
-        let (revision, patch) = self
-            .commands
+        self.commands
             .borrow()
             .iter()
             .rev()
@@ -212,7 +253,12 @@ impl Editor {
                 } => Some((*revision, patch.clone())),
                 _ => None,
             })
-            .expect("Review sends the typed draft");
+            .expect("Review sends the typed draft")
+    }
+
+    /// Review, answer with the worker's preview of exactly that patch, then Apply.
+    fn review_and_apply(&mut self) -> MetadataPatch {
+        let (revision, patch) = self.review();
         self.preview(revision, patch.clone());
         self.click("Apply", AccessibleRole::Button);
         let id = self.id;
@@ -243,7 +289,13 @@ fn at(seconds: u64) -> TimeEdit {
 fn typed_date_time_and_offset_with_an_arrow_step_apply_the_exact_instant() {
     let mut editor = Editor::open();
     let header = editor.texts();
-    assert!(header.iter().any(|text| text == "report.txt"), "{header:?}");
+    // The single item's name is shown in left-to-right isolation marks.
+    assert!(
+        header
+            .iter()
+            .any(|text| text == "\u{2066}report.txt\u{2069}"),
+        "{header:?}"
+    );
     assert!(
         !header.iter().any(|text| text.contains("selected items")
             || text.contains("name conflicts")
@@ -296,6 +348,205 @@ fn calendar_and_time_picker_start_from_the_files_time_and_keep_the_dialog_open()
     let patch = editor.review_and_apply();
     // 2026-01-03 03:05:05 +01:00
     assert_eq!(patch.modified, at(1_767_405_905));
+}
+
+#[test]
+fn mouse_clicks_inside_the_pickers_keep_them_open() {
+    let mut editor = Editor::open();
+    editor.click("Times", AccessibleRole::Button);
+    editor.click("Change Modified", AccessibleRole::Checkbox);
+    editor.click("Modified: choose date", AccessibleRole::Button);
+    editor.click("Next month", AccessibleRole::Button);
+    assert!(
+        editor.texts().iter().any(|text| text == "February 2026"),
+        "the calendar stays open on the next month: {:?}",
+        editor.texts()
+    );
+    editor.click("Next month", AccessibleRole::Button);
+    assert!(editor.texts().iter().any(|text| text == "March 2026"));
+    editor.click("2026-03-14", AccessibleRole::Button);
+    assert!(
+        ui::try_popup_item(&editor.test.window, "Next month", AccessibleRole::Button).is_none(),
+        "choosing a day closes the calendar"
+    );
+    assert_eq!(editor.value("Modified date"), "2026-03-14");
+    editor.click("Modified: choose time", AccessibleRole::Button);
+    editor.click("Increase Hour", AccessibleRole::Button);
+    editor.click("Increase Hour", AccessibleRole::Button);
+    editor.key(Key::Escape);
+    assert_eq!(editor.value("Modified time"), "05:04:05");
+    let patch = editor.review_and_apply();
+    // 2026-03-14 05:04:05 +01:00
+    assert_eq!(patch.modified, at(1_773_461_045));
+}
+
+#[test]
+fn the_change_box_shows_whether_the_row_will_be_applied() {
+    let mut editor = Editor::open();
+    editor.click("Times", AccessibleRole::Button);
+    editor.click("Change Modified", AccessibleRole::Checkbox);
+    assert_eq!(editor.checked("Change Modified"), "true");
+    editor.click("Change Modified", AccessibleRole::Checkbox);
+    assert_eq!(editor.checked("Change Modified"), "false");
+    // Typing into the unticked row selects it again, and the box says so.
+    editor.type_into("Modified date", "2025-12-24");
+    assert_eq!(editor.checked("Change Modified"), "true");
+    editor.click("Change Modified", AccessibleRole::Checkbox);
+    assert_eq!(editor.checked("Change Modified"), "false");
+    editor.click("Modified: Now", AccessibleRole::Button);
+    assert_eq!(
+        editor.checked("Change Modified"),
+        "true",
+        "Now ticks it too"
+    );
+    assert!(matches!(
+        editor.review_and_apply().modified,
+        TimeEdit::Set(_)
+    ));
+}
+
+/// The instant that a row's three fields show, to the second.
+fn shown(editor: &Editor, label: &str) -> SystemTime {
+    let text = format!(
+        "{} {} {}",
+        editor.value(&format!("{label} date")),
+        editor.value(&format!("{label} time")),
+        editor.value(&format!("{label} UTC offset"))
+    );
+    let parsed = chrono::DateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S %:z")
+        .unwrap_or_else(|error| panic!("{label} shows {text}: {error}"));
+    UNIX_EPOCH + Duration::from_secs(u64::try_from(parsed.timestamp()).unwrap())
+}
+
+#[test]
+fn now_shows_the_current_local_time_in_its_row_and_apply_sets_that_moment() {
+    let mut editor = Editor::open();
+    editor.click("Times", AccessibleRole::Button);
+    // The mouse on Modified, the keyboard on Accessed and a screen reader on Created.
+    let mut moments = Vec::new();
+    let before = SystemTime::now();
+    editor.click("Modified: Now", AccessibleRole::Button);
+    moments.push(("Modified", before, SystemTime::now()));
+    editor.click("Accessed UTC offset", AccessibleRole::TextInput);
+    editor.key(Key::Tab);
+    let before = SystemTime::now();
+    editor.key(Key::Space);
+    moments.push(("Accessed", before, SystemTime::now()));
+    let before = SystemTime::now();
+    editor.act("Created: Now", AccessibleRole::Button);
+    moments.push(("Created", before, SystemTime::now()));
+    let mut seconds = Vec::new();
+    for (label, before, after) in &moments {
+        assert_eq!(
+            editor.checked(&format!("Change {label}")),
+            "true",
+            "{label}"
+        );
+        // The worker's local offset in the fixture is +01:00.
+        assert_eq!(editor.value(&format!("{label} UTC offset")), "+01:00");
+        let second = shown(&editor, label);
+        assert!(
+            second + Duration::from_secs(1) > *before && second <= *after,
+            "{label} shows the moment it was pressed: {second:?}"
+        );
+        seconds.push(second);
+    }
+    // Review and Apply send exactly those moments, sub-seconds included.
+    let patch = editor.review_and_apply();
+    for ((label, before, after), (edit, second)) in moments.iter().zip([
+        (patch.modified, seconds[0]),
+        (patch.accessed, seconds[1]),
+        (patch.created, seconds[2]),
+    ]) {
+        let TimeEdit::Set(applied) = edit else {
+            panic!("{label} applies {edit:?}");
+        };
+        assert!(
+            applied >= *before && applied <= *after,
+            "{label}: the moment Now was pressed"
+        );
+        assert!(
+            applied >= second && applied < second + Duration::from_secs(1),
+            "{label}: the second its fields show"
+        );
+    }
+}
+
+#[test]
+fn the_first_picker_click_on_an_empty_time_steps_it() {
+    let mut editor = Editor::open();
+    editor.click("Times", AccessibleRole::Button);
+    assert_eq!(
+        editor.value("Modified time"),
+        "",
+        "an unticked row is empty"
+    );
+    editor.click("Modified: choose time", AccessibleRole::Button);
+    editor.click("Increase Hour", AccessibleRole::Button);
+    editor.key(Key::Escape);
+    assert_eq!(editor.value("Modified time"), "04:04:05");
+    assert_eq!(editor.checked("Change Modified"), "true");
+}
+
+#[test]
+fn the_calendar_answers_screen_reader_actions_and_names_its_cursor() {
+    let mut editor = Editor::open();
+    editor.click("Times", AccessibleRole::Button);
+    editor.click("Change Modified", AccessibleRole::Checkbox);
+    editor.click("Modified: choose date", AccessibleRole::Button);
+    let cursor = |editor: &Editor| {
+        editor.state(
+            "Modified calendar date",
+            AccessibleRole::Spinbox,
+            AccessibleStringProperty::Value,
+        )
+    };
+    assert_eq!(cursor(&editor), "2026-01-02");
+    editor.key(Key::RightArrow);
+    assert_eq!(cursor(&editor), "2026-01-03");
+    editor.act("Next month", AccessibleRole::Button);
+    assert!(editor.texts().iter().any(|text| text == "February 2026"));
+    assert_eq!(cursor(&editor), "2026-02-03");
+    editor.act("2026-02-10", AccessibleRole::Button);
+    assert_eq!(editor.value("Modified date"), "2026-02-10");
+}
+
+#[test]
+fn a_ticked_but_unedited_time_keeps_its_sub_seconds() {
+    let mut editor = Editor::open();
+    editor.click("Times", AccessibleRole::Button);
+    editor.click("Change Modified", AccessibleRole::Checkbox);
+    assert_eq!(editor.value("Modified time"), "03:04:05");
+    // 2026-01-02 03:04:05.789 +01:00, exactly as the worker captured it.
+    assert_eq!(
+        editor.review_and_apply().modified,
+        TimeEdit::Set(UNIX_EPOCH + Duration::from_millis(1_767_319_445_789))
+    );
+}
+
+#[test]
+fn review_notes_an_offset_that_is_not_local_time_on_the_new_date() {
+    let mut editor = Editor::open();
+    editor.click("Times", AccessibleRole::Button);
+    // The file's January time has the winter offset; only its date moves into summer.
+    editor.type_into("Modified date", "2026-07-15");
+    let (revision, patch) = editor.review();
+    // 2026-07-15 03:04:05 +01:00
+    let set = UNIX_EPOCH + Duration::from_secs(1_784_081_045);
+    assert_eq!(patch.modified, TimeEdit::Set(set));
+    let summer = LocalCalendarTime {
+        offset_seconds: 7200,
+        ..calendar(2026, 7, 15, 4, 4, 5)
+    };
+    editor.preview_with(revision, patch, HashMap::from([(set, summer)]));
+    let review = editor.test.window.get_metadata_preview_text();
+    assert!(
+        review.contains(
+            "Modified uses UTC offset +01:00, but local time on 2026-07-15 is UTC+02:00: \
+             the file will show 04:04:05 local time."
+        ),
+        "{review}"
+    );
 }
 
 #[test]

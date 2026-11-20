@@ -231,7 +231,13 @@ async fn incomplete_copy_predecessors_preserve_the_source_and_require_reconfirma
                 }
             }
             drop(gate);
-            assert_ne!(h.terminal(1).await.state, CopyOperationState::Completed);
+            // A skipped name completes the copy without an error, but it is still
+            // not a complete copy: the fence below refuses the later mutation.
+            let copy = h.terminal(1).await;
+            assert!(
+                copy.state != CopyOperationState::Completed || copy.skipped > 0,
+                "{outcome}: {copy:?}"
+            );
         }
         let result = mutations.terminal().await;
         mutations.controller.shutdown();
@@ -339,10 +345,10 @@ async fn claiming_an_earlier_native_slot_after_a_later_copy_preserves_native_fir
             break;
         }
     }
-    assert_eq!(
-        h.terminal(1).await.state,
-        CopyOperationState::CompletedWithErrors
-    );
+    let skipped = h.terminal(1).await;
+    // The skipped name was the user's choice, not an error.
+    assert_eq!(skipped.state, CopyOperationState::Completed);
+    assert_eq!((skipped.skipped, skipped.failed), (1, 0));
     h.close().await;
     assert_eq!(fs::read(target.join("same name")).unwrap(), b"native first");
 }

@@ -36,7 +36,7 @@ impl VerifiedFileCopy {
         if self.phase != CopyPhase::Published || !self.proof_eligible {
             return Err(failure(
                 path,
-                "Move validation requires successful publication and all required durability steps",
+                "Move validation requires a completely copied and saved file",
             ));
         }
         let identity = {
@@ -103,7 +103,10 @@ impl VerifiedFileProof {
         check_cancel(cancel, path)?;
         let _permit = io_permit(cancel, path)?;
         if self.stage.revalidate_publication(cancel)? != self.identity {
-            return Err(failure(path, "published destination identity changed"));
+            return Err(failure(
+                path,
+                "the copied file at the destination was replaced",
+            ));
         }
         self.check_modified_time(cancel)?;
         Ok(())
@@ -115,7 +118,7 @@ impl VerifiedFileProof {
         {
             return Err(failure(
                 &self.source.entry().item.path,
-                "required modified time changed after publication",
+                "the required modified time changed after the file was copied",
             ));
         }
         Ok(())
@@ -139,7 +142,10 @@ impl VerifiedFileProof {
         let _permit = io_permit(cancel, path)?;
         self.check_modified_time(cancel)?;
         if self.stage.revalidate_publication(cancel)? != self.identity {
-            return Err(failure(path, "published destination identity changed"));
+            return Err(failure(
+                path,
+                "the copied file at the destination was replaced",
+            ));
         }
         self.guard = Some(self.source.rewind_for_validation(cancel)?);
         self.source_guard = None;
@@ -212,14 +218,17 @@ impl VerifiedFileProof {
                         .map_err(|e| io_error(&path, e))?
                         != offset
                     {
-                        return Err(failure(&path, "published file verification seek failed"));
+                        return Err(failure(
+                            &path,
+                            "the copied file could not be read at the position being verified",
+                        ));
                     }
                     self.stage.len()?
                 };
                 if length != self.length {
                     return Err(failure(
                         &path,
-                        "retained file length changed after publication",
+                        "a file's length changed after it was copied",
                     ));
                 }
             }
@@ -242,7 +251,7 @@ impl VerifiedFileProof {
         {
             return Err(failure(
                 &path,
-                "retained first/middle/last block changed after publication",
+                "a file's first, middle or last block changed after it was copied",
             ));
         }
         if count != 0 {
@@ -255,7 +264,7 @@ impl VerifiedFileProof {
                 .checked_add(count as u64)
                 .ok_or_else(|| failure(&path, "proof byte count overflow"))?;
             if self.read > self.length {
-                return Err(failure(&path, "retained file grew after publication"));
+                return Err(failure(&path, "a file grew after it was copied"));
             }
             if !sampled {
                 self.hash.update(&buffer[..count]);
@@ -272,7 +281,10 @@ impl VerifiedFileProof {
             if self.phase == FileProofPhase::Destination
                 && self.stage.revalidate_publication(cancel)? != self.identity
             {
-                return Err(failure(&path, "published destination identity changed"));
+                return Err(failure(
+                    &path,
+                    "the copied file at the destination was replaced",
+                ));
             }
         }
         if self.read
@@ -285,7 +297,7 @@ impl VerifiedFileProof {
         {
             return Err(failure(
                 &path,
-                "retained file checksum or length changed after publication",
+                "a file's checksum or length changed after it was copied",
             ));
         }
         if self.phase == FileProofPhase::Source {

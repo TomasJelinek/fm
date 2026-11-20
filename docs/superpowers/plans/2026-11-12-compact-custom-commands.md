@@ -8,7 +8,7 @@
 
 **Tech stack:** Existing Rust presenter and Slint widgets; no dependencies.
 
-**Reference:** `D:/experiments/salamander-main/src/dialogs4.cpp`, `CCfgPageUserMenu::EnableButtons`, `LoadControls`, `StoreControls`, and `WM_INITDIALOG` near lines 2080–2290. Its editable ordered list has header actions and selection-specific details; separators disable command controls. The user explicitly requested this arrangement and delegated routine implementation choices.
+**Reference:** `<salamander-source>/src/dialogs4.cpp`, `CCfgPageUserMenu::EnableButtons`, `LoadControls`, `StoreControls`, and `WM_INITDIALOG` near lines 2080–2290. Its editable ordered list has header actions and selection-specific details; separators disable command controls. The user explicitly requested this arrangement and delegated routine implementation choices.
 
 - [x] Inspect prior behavior and preserve identity/drag/cancel policy. Existing rows are two lines/42px minimum and the full-width New/Delete/Up/Down grid is below the list.
 - [x] Add real software-window regression for one-line rows and compact actions above the list. Isolated RED attempt cannot link stale UI against rebuilt core; no behavior failure is claimed from that attempt.

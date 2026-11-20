@@ -43,6 +43,14 @@ text without those decorations. Limits and bounded-context/plain-text fallbacks
 are documented in the [plugin README](../../plugins/midnight-viewer-markdown/README.md).
 Remote images, HTML execution, mathematics and diagrams are not implemented.
 
+Selected text keeps its syntax or Markdown hue: a glyph color that would show at
+less than 4.5:1 contrast (WCAG) against the selection color, as painted over the
+viewport background, is lightened or darkened only as far as needed, decided per
+glyph cluster (black or white when no lightness of that hue reaches 4.5:1).
+Unselected text and underline/strikethrough lines keep their colors; the text
+comparator's find highlight follows the same rule, and the HTML and image viewers
+are unaffected.
+
 Source gutters are separate prepared annotations, outside the text selection and
 clipboard content. Their width remains stable while scrolling because the source
 byte length bounds its possible line count. Soft wrapping does not create new
@@ -172,8 +180,10 @@ generated bounded page, not the complete workbook or document.
 
 ## Source highlighting and dense pages
 
-The independent Source plugin has 20 lexical profiles, including actual Lua and
-YAML styles; see its [catalogue](../../plugins/midnight-viewer-source/README.md).
+The independent Source plugin has 25 lexical profiles, including actual Lua, YAML,
+CSS and Makefile styles; see its [catalogue](../../plugins/midnight-viewer-source/README.md).
+`Makefile` and `GNUmakefile` reach it through whole-name association entries
+(`makefile`, `gnumakefile`); see [viewer file types](../VIEWER_ASSOCIATIONS.md).
 Lua keeps matched long-bracket strings/comments and short-string escape state.
 YAML distinguishes mapping keys, quoted/plain/block scalars and flow punctuation;
 C++ retains custom raw-string delimiters. These are lexical profiles, not semantic

@@ -4,6 +4,7 @@ use super::*;
 mod events;
 mod output;
 mod picker;
+mod report;
 mod verification;
 
 pub(crate) const MAX_CHECKSUM_WINDOWS: usize = 4;
@@ -46,7 +47,10 @@ pub(crate) struct ChecksumSession {
     pub run: Option<Arc<ChecksumRun>>,
     pub error: String,
     pub save: Option<ChecksumSave>,
+    /// What the running save is doing.
     pub save_message: String,
+    /// The last completed save of this run: where it went and what it replaced.
+    pub saved: Option<ChecksumManifestReceipt>,
     pub suggested: PathBuf,
     pub manifest_suggested: PathBuf,
     pub verification: Option<PathBuf>,
@@ -62,10 +66,13 @@ pub(crate) struct ChecksumSession {
 }
 
 /// Asked in the window instead of failing: partial results, or an existing file to replace.
+/// It belongs to the run it asks about; a new run discards it.
 pub(crate) struct SavePrompt {
+    pub generation: ChecksumGeneration,
     pub algorithm: ChecksumAlgorithm,
     pub destination: PathBuf,
-    pub acknowledged: bool,
+    /// The exact partial counts the question showed; the save sends these, never a recount.
+    pub acknowledged: Option<ChecksumPartialAcknowledgement>,
     pub overwrite: bool,
     pub message: String,
 }
@@ -74,17 +81,9 @@ pub(crate) struct ChecksumSave {
     pub id: ChecksumManifestId,
     pub algorithm: ChecksumAlgorithm,
     pub destination: PathBuf,
-    pub acknowledged: bool,
+    pub acknowledged: Option<ChecksumPartialAcknowledgement>,
     pub accepted: bool,
     pub stopping: bool,
-}
-
-pub(crate) struct ChecksumSaveForm {
-    pub generation: u64,
-    pub algorithm: ChecksumAlgorithm,
-    pub destination: String,
-    pub acknowledge: bool,
-    pub overwrite: bool,
 }
 
 impl ChecksumSession {
@@ -104,6 +103,15 @@ impl ChecksumSession {
             .get(usize::try_from(id.checked_sub(1)?).ok()?)
             .filter(|row| row.id.0 == id)
             .map(AsRef::as_ref)
+    }
+
+    /// A new run makes every answer about the previous one obsolete: its save
+    /// question, a destination chosen for it and the report of its last save.
+    fn forget_saves(&mut self) {
+        self.save_prompt = None;
+        self.save_pending = None;
+        self.save_message.clear();
+        self.saved = None;
     }
 
     pub fn export_counts(
@@ -170,27 +178,54 @@ fn is_checksum_file(path: &Path) -> bool {
         })
 }
 
-/// The checksum file among the captured files: any selected one, else the lone cursor file.
-fn selected_checksum_file(files: &SelectedFiles) -> Option<PathBuf> {
-    if files.selection.is_empty() {
-        return files
-            .fallback
-            .as_ref()
-            .filter(|p| is_checksum_file(p))
-            .cloned();
-    }
+/// The focused file when it is a checksum file and is selected, or nothing is.
+fn focused_checksum_file(files: &SelectedFiles) -> Option<PathBuf> {
     files
-        .selection
-        .basis()
-        .by_path
-        .keys()
-        .filter(|path| is_checksum_file(path) && files.selection.contains_path(path))
-        .min()
+        .fallback
+        .as_ref()
+        .filter(|path| {
+            is_checksum_file(path)
+                && (files.selection.is_empty() || files.selection.contains_path(path))
+        })
+        .cloned()
+}
+
+/// The checksum file among the captured files, found from the selection itself and never
+/// by scanning the folder's index on the UI thread: the focused one, else the first
+/// selected one in display order. Only as many selected rows are looked at as one
+/// calculation could hold; the bitset skips unselected rows 64 at a time.
+fn selected_checksum_file(pane: &Pane, files: &SelectedFiles) -> Option<PathBuf> {
+    if let Some(focused) = focused_checksum_file(files) {
+        return Some(focused);
+    }
+    let selection = &files.selection;
+    if selection.is_empty() || !Arc::ptr_eq(selection.basis(), pane.display_index()) {
+        return None;
+    }
+    selection
+        .bits()
+        .iter()
+        .enumerate()
+        .flat_map(|(word, bits)| {
+            let mut remaining = *bits;
+            std::iter::from_fn(move || {
+                let bit = (remaining != 0).then(|| remaining.trailing_zeros() as usize)?;
+                remaining &= remaining - 1;
+                Some(word * 64 + bit)
+            })
+        })
+        .take(ChecksumLimits::default().max_rows)
+        .filter_map(|position| pane.display_entry(position))
+        .map(|entry| &entry.path)
+        .find(|path| is_checksum_file(path))
         .cloned()
 }
 
 impl Presenter {
     pub(crate) fn request_checksums(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.feed_refuses(pane, "Checksums") {
+            return;
+        }
         if self.panes[pane.index()].tree_view().is_some() {
             self.request_tree_checksums(pane, send);
             return;
@@ -234,12 +269,13 @@ impl Presenter {
 
     pub(super) fn open_captured_checksums(
         &mut self,
-        _pane: PaneId,
+        pane: PaneId,
         directory: PathBuf,
         files: SelectedFiles,
         send: &dyn Fn(Command) -> bool,
     ) -> Option<ChecksumJobId> {
-        self.open_checksum_sources(directory, files, None, send)
+        let manifest = selected_checksum_file(&self.panes[pane.index()], &files);
+        self.open_checksum_session(directory, files, None, manifest, send)
     }
 
     pub(super) fn open_checksum_sources(
@@ -247,6 +283,19 @@ impl Presenter {
         directory: PathBuf,
         files: SelectedFiles,
         tree_sources: Option<Arc<dyn CapturedChecksumFiles>>,
+        send: &dyn Fn(Command) -> bool,
+    ) -> Option<ChecksumJobId> {
+        // A captured tree names a checksum file only through its focused row.
+        let manifest = focused_checksum_file(&files);
+        self.open_checksum_session(directory, files, tree_sources, manifest, send)
+    }
+
+    fn open_checksum_session(
+        &mut self,
+        directory: PathBuf,
+        files: SelectedFiles,
+        tree_sources: Option<Arc<dyn CapturedChecksumFiles>>,
+        manifest: Option<PathBuf>,
         send: &dyn Fn(Command) -> bool,
     ) -> Option<ChecksumJobId> {
         if self.checksums.sessions.len() >= MAX_CHECKSUM_WINDOWS || self.operations.closing {
@@ -265,7 +314,6 @@ impl Presenter {
         let algorithms = self.preferences.values.checksum_algorithms;
         // A checksum file in the selection (or under the cursor) means the user wants to
         // verify it, so the window opens on Verify with that file chosen.
-        let manifest = selected_checksum_file(&files);
         let verify_initial = manifest.is_some()
             || (tree_sources.is_none() && files.selection.is_empty() && files.fallback.is_none());
         let algorithm = preferred_algorithm(algorithms);
@@ -295,6 +343,7 @@ impl Presenter {
                 error: String::new(),
                 save: None,
                 save_message: String::new(),
+                saved: None,
                 streamed: Vec::new(),
             },
         );
@@ -356,7 +405,7 @@ impl Presenter {
         s.running = true;
         s.stopping = false;
         s.error.clear();
-        s.save_message.clear();
+        s.forget_saves();
         s.progress = ChecksumProgress::default();
         self.retired.push(Box::new(mem::take(&mut s.streamed)));
         self.retired.push(Box::new(s.run.take()));

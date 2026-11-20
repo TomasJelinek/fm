@@ -75,6 +75,9 @@ struct EntryWork {
     replacement_prepared: bool,
     native_fallback: bool,
     move_preflight_done: bool,
+    /// The last attempt failed while a Move took or checked the source, before any
+    /// copying, so its failure is not reported as creating a destination folder.
+    source_move_failed: bool,
     force_prompt: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -110,6 +113,11 @@ pub(super) struct Job {
     roots: VecDeque<Box<dyn TransferSource>>,
     protected_roots: HashSet<TransferIdentity>,
     stack: Vec<Frame>,
+    /// The name of a child that the top folder's enumeration reached but could not
+    /// open, while its failure waits for a decision (`failures::Context::Child`).
+    failed_child: Option<OsString>,
+    /// The child that Retry opened again; the top folder's enumeration takes it next.
+    reopened_child: Option<Box<dyn TransferSource>>,
     current: Option<EntryWork>,
     conflict: Option<CopyConflict>,
     failure: Option<CopyFailure>,
@@ -271,13 +279,11 @@ impl Job {
         metadata: TransferMetadataPolicy,
         links: CopyLinkPolicy,
     ) -> Result<Self, FsError> {
-        if links != CopyLinkPolicy::Reject {
-            link_job::validate_options(&request.destination, &status, metadata, links)?;
-        }
         let links = input::source_link_policy(links, metadata);
         if links == CopyLinkPolicy::Reject {
             return Self::prepare_with_metadata(request, service, cancel, status, metadata);
         }
+        link_job::validate_options(&request.destination, &status, metadata, links)?;
         Self::prepare_native(request, service, cancel, status, links)
     }
 
@@ -376,13 +382,11 @@ impl Job {
         metadata: TransferMetadataPolicy,
         links: CopyLinkPolicy,
     ) -> Result<Self, FsError> {
-        if links != CopyLinkPolicy::Reject {
-            link_job::validate_options(&path, &status, metadata, links)?;
-        }
         let links = input::source_link_policy(links, metadata);
         if links == CopyLinkPolicy::Reject {
             return Self::prepare_sources(path, roots, service, cancel, status, metadata);
         }
+        link_job::validate_options(&path, &status, metadata, links)?;
         Self::prepare_captured(path, roots, service, cancel, status, metadata, links)
     }
 
@@ -433,8 +437,7 @@ impl Job {
             if !matches!(
                 source.entry().item.kind,
                 EntryKind::File | EntryKind::Directory
-            ) && !(links == CopyLinkPolicy::Preserve
-                && link_job::is_link_kind(source.entry().item.kind))
+            ) && !(links.recreates_links() && link_job::is_link_kind(source.entry().item.kind))
             {
                 return Err(error(
                     &path,
@@ -568,6 +571,8 @@ impl Job {
             roots,
             protected_roots,
             stack: vec![],
+            failed_child: None,
+            reopened_child: None,
             current: None,
             conflict: None,
             failure: None,
@@ -613,7 +618,8 @@ impl Job {
                 && conflict.version == decision.version
                 && match decision.choice {
                     CopyChoice::Retry => {
-                        self.links == CopyLinkPolicy::Preserve
+                        self.links.recreates_links()
+                            && self.move_work.is_none()
                             && self
                                 .current
                                 .as_ref()
@@ -919,26 +925,39 @@ impl Job {
                             })
                             .transpose()
                     })
+                    .map(|child| child.map(Ok))
             } else {
-                frame.source.next_child(&self.cancel).and_then(|child| {
-                    child
-                        .map(|source| {
-                            // Followed contents use Copy readers and cannot produce Move
-                            // captures, even if an ordinary provider could grant them.
-                            if let Some(move_work) = self.move_work.as_mut() {
-                                move_work.admit_projected_child(
-                                    &*source,
-                                    &frame.source.entry().item.path,
-                                    active_projection_bytes,
-                                )?;
-                            }
-                            Ok((source, EntryRemoval::Copy))
-                        })
-                        .transpose()
+                // Retry opened the child whose failure paused this folder again.
+                let child = match self.reopened_child.take() {
+                    Some(source) => Ok(Some(Ok(source))),
+                    None => frame.source.next_child_or_failure(&self.cancel),
+                };
+                child.and_then(|child| match child {
+                    None => Ok(None),
+                    Some(Err(failed)) => Ok(Some(Err(failed))),
+                    Some(Ok(source)) => {
+                        // Followed contents use Copy readers and cannot produce Move
+                        // captures, even if an ordinary provider could grant them.
+                        if let Some(move_work) = self.move_work.as_mut() {
+                            move_work.admit_projected_child(
+                                &*source,
+                                &frame.source.entry().item.path,
+                                active_projection_bytes,
+                            )?;
+                        }
+                        Ok(Some(Ok((source, EntryRemoval::Copy))))
+                    }
                 })
             };
             match next {
-                Ok(Some((source, removal))) => Some((source, frame.destination.clone(), removal)),
+                Ok(Some(Ok((source, removal)))) => {
+                    Some((source, frame.destination.clone(), removal))
+                }
+                // Only this child pauses; Skip continues with the next one.
+                Ok(Some(Err(failed))) => {
+                    self.failed_child = Some(failed.name);
+                    return self.wait_for_failure(failed.error, failures::Context::Child);
+                }
                 Ok(None) => {
                     // Removal retries must not advance an already consumed iterator.
                     // This remains true even if its provider is not fused after EOF.
@@ -995,6 +1014,17 @@ impl Job {
                             return self
                                 .wait_for_failure(error, failures::Context::DirectoryRemoval);
                         }
+                    }
+                    // A folder this copy created stayed private while its contents were
+                    // written; now it gets the source folder's permissions, or those of
+                    // any new folder (0777 before the umask) for a source without them.
+                    let frame = self.stack.last().expect("completed traversal frame");
+                    let mode = frame.source.entry().item.metadata.unix_mode;
+                    if let Err(error) = frame
+                        .destination
+                        .set_published_permissions(mode.unwrap_or(0o777), &self.cancel)
+                    {
+                        self.record_decided_error(error);
                     }
                     if completed_before == (self.progress.failed, self.progress.skipped) {
                         self.progress.completed_directories += 1;
@@ -1067,6 +1097,7 @@ impl Job {
             replacement_prepared: false,
             native_fallback: false,
             move_preflight_done: false,
+            source_move_failed: false,
             force_prompt: false,
         });
         Step::Continue
@@ -1218,6 +1249,7 @@ impl Job {
     }
 
     fn prepare_entry(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {
+        work.source_move_failed = false;
         // A decision can return here only for an entry whose source is still owned; a
         // consumed source (for example after a Move proof) must fail, not panic in the seal.
         work.source
@@ -1231,7 +1263,10 @@ impl Job {
             })?
             .revalidate(&self.cancel)?;
         self.reject_followed_ancestor(work)?;
-        if link_job::is_link_kind(work.entry.item.kind) {
+        // Copy recreates a link from its representation. Move moves the link itself
+        // through its own capture (a rename, or a recreation across volumes).
+        let link = link_job::is_link_kind(work.entry.item.kind);
+        if link && self.move_work.is_none() {
             return self.prepare_link(work);
         }
         if work.consent.is_none()
@@ -1241,6 +1276,7 @@ impl Job {
             // rename, and a distinct hard-link alias without inferring from text.
             if work.removal.native_move_identity(work.native_identity()) == Some(target.identity) {
                 let moved = self.try_native_move(work);
+                work.source_move_failed = moved.is_err();
                 if self.at_final_name(moved)? {
                     return Ok(Action::Done);
                 }
@@ -1248,11 +1284,23 @@ impl Job {
             return Ok(Action::Conflict(target));
         }
         let moved = self.try_native_move(work);
+        work.source_move_failed = moved.is_err();
         if self.at_final_name(moved)? {
             return Ok(Action::Done);
         }
+        if link {
+            // A link has no content to copy and verify; there is no fallback.
+            work.source_move_failed = true;
+            return Err(error(
+                &work.entry.item.path,
+                io::ErrorKind::Unsupported,
+                "This location cannot move the link itself; the link was left in place.",
+            ));
+        }
         let prepared_identity = work.native_identity();
-        self.prepare_move_copy(work)?;
+        let prepared = self.prepare_move_copy(work);
+        work.source_move_failed = prepared.is_err();
+        prepared?;
         if prepared_identity != work.native_identity() {
             self.reject_followed_ancestor(work)?;
         }
@@ -1282,7 +1330,7 @@ impl Job {
                     )?;
                     // A nested merge can enter a followed referent belonging
                     // to an active frame or another selected root.
-                    if self.links == CopyLinkPolicy::FollowDirectoryContents {
+                    if self.links.follows_directory_links() {
                         for identity in self
                             .stack
                             .iter()
@@ -1480,8 +1528,9 @@ impl Job {
                     // The file was published, so it counts as completed (never as a
                     // Move proof); the unconfirmed durability remains an error.
                     self.progress.files_completed += 1;
+                    // A Move keeps this file's source, so "copied" holds for both.
                     error.message = format!(
-                        "Target published at {}; durability is unconfirmed: {}",
+                        "Copied to {}; durability is unconfirmed: {}",
                         path.display(),
                         error.message
                     );
@@ -1587,16 +1636,28 @@ impl Job {
             && !self.protected_roots.contains(&target.identity);
         let guarded = work.target.is_some() && distinct;
         let target_kind = target.item.kind;
+        let source_kind = work.entry().item.kind;
+        // A link replaces a file or another link (never a folder): Move by its own
+        // native rename or recreation, Copy by a recoverable link publication.
+        let replaceable = if link_job::is_link_kind(source_kind) {
+            matches!(target_kind, EntryKind::File | EntryKind::Symlink)
+                && if self.move_work.is_some() {
+                    capabilities.recoverable_replacement || native_replacement
+                } else {
+                    capabilities.link_replacement
+                }
+        } else {
+            source_kind == EntryKind::File
+                && target_kind == EntryKind::File
+                && (capabilities.recoverable_replacement || native_replacement)
+        };
         let mut conflict = CopyConflict {
             id: self.progress.id,
             version,
             source: work.entry().item.clone(),
             target: target.item,
             destination: work.destination.path().join(&work.name),
-            can_replace: guarded
-                && (capabilities.recoverable_replacement || native_replacement)
-                && work.entry().item.kind == EntryKind::File
-                && target_kind == EntryKind::File,
+            can_replace: guarded && replaceable,
             can_merge: guarded
                 && capabilities.directory_merge
                 && work.entry().item.kind == EntryKind::Directory
@@ -1625,7 +1686,7 @@ impl Job {
         Step::Conflict(Arc::new(conflict))
     }
     fn reject_followed_ancestor(&self, work: &EntryWork) -> Result<(), FsError> {
-        if self.links == CopyLinkPolicy::FollowDirectoryContents
+        if self.links.follows_directory_links()
             && work.entry.item.kind == EntryKind::Directory
             && let Some(identity) = work.native_identity()
             && self
@@ -1883,61 +1944,55 @@ fn terminal_progress(mut progress: CopyProgress, cancel: &Cancellation) -> CopyP
         && progress.failed == 0
         && progress.skipped == 0;
     let cancelled = cancel.is_cancelled() && !completed_cleanly;
+    // A skip the user chose (an existing destination left as it is) is not an error:
+    // only failures decide between success and errors. A failure the user then
+    // skipped is still counted in `failed`.
     progress.state = if cancelled {
         CopyOperationState::Cancelled
-    } else if progress.failed == 0 && progress.skipped == 0 {
+    } else if progress.failed == 0 {
         CopyOperationState::Completed
-    } else if progress.failed > 0
-        && progress.files_completed == 0
+    } else if progress.files_completed == 0
         && progress.directories_created == 0
         && progress.native_entries_moved == 0
     {
         CopyOperationState::Failed
-    } else if progress.files_completed > 0
-        || progress.directories_created > 0
-        || progress.native_entries_moved > 0
-        || progress.skipped > 0
-    {
-        CopyOperationState::CompletedWithErrors
     } else {
-        CopyOperationState::Failed
+        CopyOperationState::CompletedWithErrors
     };
-    progress.message = progress
-        .errors
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
+    // One line each, so no notice built from it starts with an empty line.
+    let mut lines: Vec<String> = progress.errors.iter().map(ToString::to_string).collect();
     let omitted = progress.failed.saturating_sub(progress.errors.len() as u64);
     if omitted > 0 {
-        progress.message.push_str(&format!(
-            "\n{omitted} earlier error details omitted from the bounded diagnostic history."
+        lines.push(format!(
+            "{omitted} earlier error details omitted from the bounded diagnostic history."
         ));
     }
     if progress.skipped > 0 {
-        progress.message.push_str(&format!(
-            "\n{} entries or subtrees skipped; source data retained.",
+        lines.push(format!(
+            "{} entries or subtrees skipped; source data retained.",
             progress.skipped
         ));
     }
     if cancelled {
-        progress
-            .message
-            .push_str(if progress.intent == TransferIntent::Move {
-                "\nMove cancelled; completed moves and already published destinations remain."
+        lines.push(
+            if progress.intent == TransferIntent::Move {
+                "Move cancelled; completed moves remain, and files already copied to the destination are kept."
             } else {
-                "\nCopy cancelled; already published files are retained."
-            });
+                "Copy cancelled; files already copied are kept."
+            }
+            .into(),
+        );
     }
     if progress.recovery_count > 0 {
-        progress.message.push_str(&format!(
-            "\n{} recovery files retained. See the recovery locations in job details.",
+        lines.push(format!(
+            "{} recovery files retained. See the recovery locations in job details.",
             progress.recovery_count
         ));
     }
     if progress.intent == TransferIntent::Move {
-        progress.message.push_str(&format!("\n{} entries moved by native rename; {} verified source files removed; {} temporary source locations need attention. Unfinished sources were restored unless an error above reports otherwise. Earlier completed moves remain after later errors or cancellation. Open readers can delay storage reclamation. Merged source directories are removed only after completed children and an empty-directory check.", progress.native_entries_moved, progress.source_files_removed, progress.source_residual_count));
+        lines.push(format!("{} entries moved by native rename; {} verified source files removed; {} temporary source locations need attention. Unfinished sources were restored unless an error above reports otherwise. Earlier completed moves remain after later errors or cancellation. Open readers can delay storage reclamation. Merged source directories are removed only after completed children and an empty-directory check.", progress.native_entries_moved, progress.source_files_removed, progress.source_residual_count));
     }
+    progress.message = lines.join("\n");
     progress.clone()
 }
 
@@ -1986,6 +2041,43 @@ mod terminal_tests {
             let incomplete = terminal_progress(progress, &cancel);
             assert_eq!(incomplete.state, CopyOperationState::Cancelled);
             assert!(incomplete.message.contains("cancelled"));
+            // Users read "copied" or "moved", never the internal "published".
+            assert!(
+                incomplete.message.contains("already copied"),
+                "{incomplete:?}"
+            );
+            assert!(!incomplete.message.contains("publish"), "{incomplete:?}");
+            assert!(!incomplete.message.starts_with('\n'), "{incomplete:?}");
+        }
+    }
+
+    #[test]
+    fn chosen_skips_complete_the_job_and_only_failures_are_errors() {
+        let cancel = Cancellation::default();
+        for intent in [TransferIntent::Copy, TransferIntent::Move] {
+            let mut progress =
+                CopyProgress::queued(OperationId(1), Path::new("target").into(), 2, intent);
+            // One root copied; two existing names were skipped at the user's choice.
+            progress.completed_roots = 1;
+            progress.files_completed = 1;
+            progress.skipped = 2;
+            let skipped = terminal_progress(progress.clone(), &cancel);
+            assert_eq!(skipped.state, CopyOperationState::Completed, "{intent:?}");
+            assert!(skipped.message.starts_with("2 entries or subtrees skipped"));
+            // A failure, even one the user then skipped, still makes it an error.
+            progress.failed = 1;
+            progress.errors.push(FsError::from_io(
+                "copy file",
+                Path::new("target/a"),
+                io::ErrorKind::PermissionDenied.into(),
+            ));
+            let failed = terminal_progress(progress, &cancel);
+            assert_eq!(
+                failed.state,
+                CopyOperationState::CompletedWithErrors,
+                "{intent:?}"
+            );
+            assert!(failed.message.starts_with("copy file:"), "{failed:?}");
         }
     }
 }

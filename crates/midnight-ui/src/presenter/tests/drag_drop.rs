@@ -269,6 +269,124 @@ fn late_internal_acceptance_cannot_clear_marks_from_a_new_source_navigation() {
 }
 
 #[test]
+fn a_drop_sooner_than_the_minimum_drag_duration_cancels_and_one_at_it_proceeds() {
+    use crate::presenter::drag_drop::MIN_DRAG_DURATION;
+    use std::time::Duration;
+    let (mut p, _) = loaded();
+    let other = test_root().join("target");
+    let navigation = begin(&mut p, PaneId::Right, other.to_str().unwrap());
+    finish(
+        &mut p,
+        PaneId::Right,
+        navigation,
+        vec![Entry::new(
+            EntryId(9),
+            other.join("folder 資料"),
+            EntryKind::Directory,
+        )],
+    );
+    let folder = {
+        let right = &p.panes[1];
+        let entry = right.entry_by_id(EntryId(9)).unwrap();
+        (right.parent_offset(), right.row_identity(entry))
+    };
+    set_selected(&mut p, PaneId::Left, &[EntryId(1), EntryId(2)]);
+    let selected = p.panes[0].selected.clone();
+    let quick = MIN_DRAG_DURATION - Duration::from_millis(1);
+    for (held, onto_folder, intent) in [
+        (quick, false, InternalDropIntent::Auto),
+        (quick, true, InternalDropIntent::Move),
+        (MIN_DRAG_DURATION, false, InternalDropIntent::Move),
+        (MIN_DRAG_DURATION, true, InternalDropIntent::Copy),
+    ] {
+        let sent = RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            true
+        };
+        assert!(p.begin_file_drag(PaneId::Left, 2, &identity(&p, 2), &send));
+        assert!(
+            p.quick_drag_note(PaneId::Left).is_none(),
+            "a new drag outdates the note"
+        );
+        let id = DragId(p.drag_drop.lifecycle.active().unwrap().id);
+        p.apply_with_sender(
+            Event::DragDrop(DragDropEvent::Prepared { id, item_count: 2 }),
+            &send,
+        );
+        let cursor = p.panes[0].cursor;
+        let row = onto_folder.then_some((folder.0, folder.1.as_str()));
+        let target = p.preview_internal_drag_target(PaneId::Right, row).unwrap();
+        sent.borrow_mut().clear();
+        let noted = p.release_file_drag_held(held, Some(target.clone()), intent, &send);
+        let sent = sent.into_inner();
+        let drops: Vec<_> = sent
+            .iter()
+            .filter_map(|command| match command {
+                Command::InternalDrop(request) => Some(request),
+                _ => None,
+            })
+            .collect();
+        let note = p.panel_details(PaneId::Left).remove(0);
+        if held < MIN_DRAG_DURATION {
+            assert_eq!(noted, Some(PaneId::Left), "{held:?}");
+            assert!(drops.is_empty(), "a quick release transfers nothing");
+            assert!(
+                !sent
+                    .iter()
+                    .any(|command| matches!(command, Command::StartDrag(_)))
+            );
+            assert!(
+                sent.iter()
+                    .any(|command| matches!(command, Command::CancelDrag(actual) if *actual == id)),
+                "the prepared sources are released"
+            );
+            assert!(p.drag_drop.lifecycle.active().is_none());
+            assert!(p.drag_drop.hover.is_none() && !p.drag_drop.pointer_down);
+            assert_eq!(p.panes[0].cursor, cursor);
+            assert!(Arc::ptr_eq(&p.panes[0].selected, &selected));
+            assert_eq!(note.label, "Drag");
+            assert_eq!(note.value, "Drag cancelled: released within 0.4 s");
+            assert!(
+                p.panel_details(PaneId::Right)
+                    .iter()
+                    .all(|field| field.label != "Drag"),
+                "only the source panel notes it"
+            );
+        } else {
+            assert_eq!(noted, None);
+            assert_eq!(drops.len(), 1, "{held:?} drops as before");
+            assert_eq!(drops[0].id, id);
+            assert_eq!(drops[0].intent, intent, "Ctrl and Shift choices are kept");
+            assert!(match (&drops[0].destination, &target) {
+                (
+                    InternalDropDestination::PanelEntry {
+                        pane,
+                        entry: dropped,
+                        ..
+                    },
+                    InternalDropDestination::PanelEntry { entry, .. },
+                ) => *pane == PaneId::Right && dropped == entry && *entry == EntryId(9),
+                (
+                    InternalDropDestination::PaneRoot { pane, navigation },
+                    InternalDropDestination::PaneRoot {
+                        navigation: wanted, ..
+                    },
+                ) => *pane == PaneId::Right && navigation == wanted,
+                _ => false,
+            });
+            assert_ne!(note.label, "Drag");
+        }
+    }
+    // A release without a gesture (a drag already ended) notes nothing.
+    assert_eq!(
+        p.release_file_drag_held(Duration::ZERO, None, InternalDropIntent::Auto, &|_| true),
+        None
+    );
+    assert!(p.quick_drag_note(PaneId::Left).is_none());
+}
+
+#[test]
 fn stale_rows_parent_and_changed_projection_never_prepare_a_drag() {
     let (mut p, _) = loaded();
     let token = identity(&p, 1);

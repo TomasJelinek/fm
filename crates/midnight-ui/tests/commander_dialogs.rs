@@ -100,7 +100,7 @@ fn comparison_opened_at_minimum_size_keeps_keyboard_draft_and_escape() {
     let submissions = Rc::new(RefCell::new(Vec::new()));
     let captured = submissions.clone();
     test.window
-        .on_submit_comparison(move |size, time, case, tolerance, directories| {
+        .on_submit_comparison(move |size, time, case, tolerance, directories, _, _| {
             captured
                 .borrow_mut()
                 .push((size, time, case, tolerance, directories));
@@ -160,7 +160,7 @@ fn comparison_dialog_keeps_draft_and_actions_visible_at_large_fonts() {
     let submissions = Rc::new(RefCell::new(Vec::new()));
     let captured = submissions.clone();
     test.window
-        .on_submit_comparison(move |size, time, case, tolerance, directories| {
+        .on_submit_comparison(move |size, time, case, tolerance, directories, _, _| {
             captured
                 .borrow_mut()
                 .push((size, time, case, tolerance, directories));
@@ -217,4 +217,114 @@ fn comparison_dialog_keeps_draft_and_actions_visible_at_large_fonts() {
             assert!(!test.window.get_comparison_view().open);
         }
     }
+}
+
+/// Every visible text of the open dialog popup.
+fn popup_texts(window: &midnight_ui::MainWindow) -> Vec<String> {
+    use i_slint_core::{
+        item_tree::ItemRc,
+        window::{WindowInner, WindowKind},
+    };
+    let inner = WindowInner::from_pub(window.window());
+    let popups = inner.active_popups();
+    let popup = popups
+        .iter()
+        .rev()
+        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+        .expect("an open dialog popup");
+    ui::visible_text_values(ItemRc::new_root(popup.component.clone()))
+        .into_iter()
+        .map(|text| text.to_string())
+        .collect()
+}
+
+/// A check box's accessible property in the open dialog popup.
+fn checkbox(
+    window: &midnight_ui::MainWindow,
+    label: &str,
+    which: AccessibleStringProperty,
+) -> String {
+    ui::popup_item(window, label, AccessibleRole::Checkbox)
+        .accessible_string_property(which)
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn contents_and_subfolders_are_submitted_and_subfolders_disable_unmatched_directories() {
+    let mut test = ui::TestUi::new();
+    test.resize(1040, 820);
+    let submissions = Rc::new(RefCell::new(Vec::new()));
+    let captured = submissions.clone();
+    test.window
+        .on_submit_comparison(move |_, _, _, _, directories, contents, subfolders| {
+            captured
+                .borrow_mut()
+                .push((directories, contents, subfolders));
+        });
+    test.window.set_comparison_view(ComparisonView {
+        open: true,
+        by_size: true,
+        by_modified: true,
+        by_content: true,
+        unmatched_directories: true,
+        tolerance_seconds: "2".into(),
+        ..Default::default()
+    });
+    settle(&mut test);
+    assert_eq!(
+        checkbox(
+            &test.window,
+            "Compare contents",
+            AccessibleStringProperty::Checked
+        ),
+        "true"
+    );
+    assert_eq!(
+        checkbox(
+            &test.window,
+            "Include subfolders",
+            AccessibleStringProperty::Checked
+        ),
+        "false"
+    );
+    assert_eq!(
+        checkbox(
+            &test.window,
+            "Select unmatched directories",
+            AccessibleStringProperty::Enabled
+        ),
+        "true"
+    );
+    assert!(
+        popup_texts(&test.window)
+            .iter()
+            .any(|text| text.starts_with("Metadata and contents")),
+        "the subtitle says what is compared"
+    );
+    ui::click_popup(&test.window, "Include subfolders", AccessibleRole::Checkbox);
+    settle(&mut test);
+    assert_eq!(
+        checkbox(
+            &test.window,
+            "Select unmatched directories",
+            AccessibleStringProperty::Enabled
+        ),
+        "false",
+        "with subfolders, one-sided folders always count"
+    );
+    ui::click_popup(&test.window, "Compare", AccessibleRole::Button);
+    assert_eq!(submissions.borrow().last(), Some(&(true, true, true)));
+    // A running comparison shows its progress line instead of a bare "Comparing…".
+    let mut model = test.window.get_comparison_view();
+    model.busy = true;
+    model.progress = "Comparing contents: 1 of 4 files · 2 KiB of 8 KiB…".into();
+    test.window.set_comparison_view(model);
+    settle(&mut test);
+    assert!(
+        popup_texts(&test.window)
+            .iter()
+            .any(|text| text.starts_with("Comparing contents: 1 of 4 files")),
+        "the reopened dialog shows the progress"
+    );
 }

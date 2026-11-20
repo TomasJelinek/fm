@@ -32,7 +32,8 @@ impl Presenter {
         let panel = &self.panes[pane.index()];
         let result = self.colors.results[pane.index()].as_ref()?;
         if panel.showing_stream()
-            || !panel_snapshot(&result.request, pane, panel, &self.colors.rules)
+            || !(panel_snapshot(&result.request, pane, panel, &self.colors.rules)
+                || continued(&result.request, pane, panel, &self.colors.rules))
         {
             return None;
         }
@@ -125,8 +126,17 @@ impl Presenter {
                 self.colors.next = id;
                 self.retired
                     .push(Box::new(self.colors.inputs[pane.index()].replace(request)));
-                self.retired
-                    .push(Box::new(self.colors.results[pane.index()].take()));
+                // Rows a background re-read updated in place keep their colors
+                // until the new match replaces them.
+                if !self.colors.results[pane.index()]
+                    .as_ref()
+                    .is_some_and(|result| {
+                        continued(&result.request, pane, panel, &self.colors.rules)
+                    })
+                {
+                    self.retired
+                        .push(Box::new(self.colors.results[pane.index()].take()));
+                }
             }
         }
     }
@@ -199,6 +209,25 @@ fn tree_current(pane: PaneId, panel: &Pane) -> bool {
             && tree.root.navigation == tree.stamp.navigation
             && Arc::ptr_eq(&tree.root.entries, &panel.entries)
     })
+}
+
+/// Whether `request` matched the flat rows that the pane's last in-place
+/// commit edited into its current rows: their entries kept their identities,
+/// so the styles still apply until a match of the current rows replaces them.
+fn continued(
+    request: &FilenameColorsRequest,
+    pane: PaneId,
+    panel: &Pane,
+    rules: &Arc<[FilenameColorRule]>,
+) -> bool {
+    request.pane == pane
+        && request.tree.is_none()
+        && panel.tree_view().is_none()
+        && Arc::ptr_eq(&request.rules, rules)
+        && panel.row_edits().is_some_and(|edits| {
+            edits.before == request.source.as_ptr() as usize
+                && edits.after == panel.entries.as_ptr() as usize
+        })
 }
 
 fn panel_snapshot(

@@ -29,8 +29,8 @@ impl PrivateSpoolDirectory {
     /// Create append-only private storage without changing ordinary sealed Spool semantics.
     pub fn create_append_only(&self) -> io::Result<AppendSpool> {
         Ok(AppendSpool {
-            file: Arc::new(Mutex::new(native::create(&self.0)?)),
-            root: self.0.clone(),
+            file: Arc::new(Mutex::new(self.create_file()?)),
+            root: self.root.clone(),
             length: 0,
             failed: false,
         })

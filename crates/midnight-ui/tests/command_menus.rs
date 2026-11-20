@@ -7,7 +7,7 @@ use i_slint_core::{
     items::AccessibleRole,
     window::{WindowInner, WindowKind},
 };
-use midnight_ui::{MainWindow, Presenter, install};
+use midnight_ui::{MainWindow, Presenter, UserCommandRow, install};
 use slint::{
     ComponentHandle, Image, Rgb8Pixel, SharedPixelBuffer,
     platform::{Key, PointerEventButton, WindowEvent, software_renderer::MinimalSoftwareWindow},
@@ -64,6 +64,125 @@ fn center(item: &ItemRc) -> slint::LogicalPosition {
         point.x + rect.size.width / 2.0,
         point.y + rect.size.height / 2.0,
     )
+}
+
+/// Press and release the left button at the center of a menu row.
+fn press(window: &MainWindow, label: &str) {
+    let position = center(&menu_button(window, label));
+    for event in [
+        WindowEvent::PointerMoved { position },
+        WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        },
+        WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        },
+    ] {
+        window.window().dispatch_event(event);
+    }
+}
+
+#[test]
+fn f9_lists_the_custom_commands_runs_the_chosen_one_and_points_to_options_without_any() {
+    let test = ui::TestUi::bare();
+    let window = test.window.clone_strong();
+    let native = test.native.clone();
+    window.set_preferences_ready(true);
+    native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(WIDTH as f32, HEIGHT as f32),
+    });
+    let mut pixels = vec![Rgb8Pixel::default(); WIDTH * HEIGHT];
+
+    // Without Custom Commands: an empty state that leads to their Options page. (F9
+    // reaches the menu through the installed key bridge, which this bare window lacks.)
+    window.invoke_show_app_menu(1);
+    draw(&native, &mut pixels);
+    assert!(
+        ui::popup_item(
+            &window,
+            "No Custom Commands configured.",
+            AccessibleRole::Text
+        )
+        .is_visible()
+    );
+    press(&window, "Set up Custom Commands");
+    draw(&native, &mut pixels);
+    assert!(window.get_options_open(), "Set up opens Options");
+    assert_eq!(
+        window.get_options_topic_index(),
+        9,
+        "on its Custom Commands page"
+    );
+    window.invoke_cancel_options();
+    draw(&native, &mut pixels);
+
+    let runs = Rc::new(RefCell::new(Vec::new()));
+    let captured = runs.clone();
+    window.on_execute_user_command(move |id, revision| {
+        captured
+            .borrow_mut()
+            .push((id.to_string(), revision.to_string()));
+    });
+    window.set_user_commands(
+        Rc::new(slint::VecModel::from(vec![
+            UserCommandRow {
+                identity: "build".into(),
+                revision: "7".into(),
+                name: "Build 文档".into(),
+                label: "Build".into(),
+                hint: "Build the project".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            UserCommandRow {
+                separator: true,
+                ..Default::default()
+            },
+            UserCommandRow {
+                identity: "deploy".into(),
+                revision: "7".into(),
+                name: "Deploy".into(),
+                enabled: false,
+                ..Default::default()
+            },
+        ]))
+        .into(),
+    );
+    window.invoke_show_app_menu(1);
+    draw(&native, &mut pixels);
+    assert!(
+        ui::try_popup_item(
+            &window,
+            "No Custom Commands configured.",
+            AccessibleRole::Text
+        )
+        .is_none(),
+        "the empty state is gone"
+    );
+    let build = menu_button(&window, "Build 文档");
+    let close = menu_button(&window, "Close");
+    assert!(
+        center(&build).y < center(&close).y,
+        "Custom Commands come before Close"
+    );
+    let deploy = menu_button(&window, "Deploy");
+    assert_eq!(
+        deploy
+            .accessible_string_property(AccessibleStringProperty::Enabled)
+            .as_deref(),
+        Some("false"),
+        "a disabled command is listed but cannot run"
+    );
+    press(&window, "Deploy");
+    assert!(runs.borrow().is_empty());
+    press(&window, "Build 文档");
+    draw(&native, &mut pixels);
+    assert_eq!(runs.borrow().as_slice(), [("build".into(), "7".into())]);
+    assert!(!ui::has_popup(&window), "running a command closes the menu");
+    window.hide().unwrap();
 }
 
 #[test]

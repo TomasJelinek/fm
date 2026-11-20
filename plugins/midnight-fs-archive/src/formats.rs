@@ -16,10 +16,7 @@ const PARSED_FIELDS: [u16; 7] = [0x0001, 0x000a, 0x5455, 0x6375, 0x7075, 0x9901,
 impl Archive {
     pub(crate) fn zip(&mut self, source: Reader) -> Result<(), Error> {
         let source = Shared(Rc::new(RefCell::new(source)));
-        let mut zip = zip::ZipArchive::new(source.clone()).map_err(zip_error)?;
-        if zip.len() > self.limits.max_entries {
-            return Err(Error::limit());
-        }
+        let mut zip = zip::ZipArchive::new(source.clone()).map_err(not_zip)?;
         // zip keeps the last record of each name, so the newest record it parsed
         // always survives: its offset ends the record walk.
         let mut last = None;
@@ -28,12 +25,7 @@ impl Archive {
             last = last.max(Some(raw.central_header_start()));
         }
         let records = match last {
-            Some(last) => indexed_records(
-                source,
-                zip.central_directory_start(),
-                last,
-                self.limits.max_entries,
-            )?,
+            Some(last) => indexed_records(source, zip.central_directory_start(), last)?,
             None => HashMap::new(),
         };
         if records.len() != zip.len() {
@@ -71,17 +63,12 @@ impl Archive {
             let modified = timestamps::zip_modified(raw.extra_data_fields(), raw.last_modified());
             drop(raw);
             let id = self.add(&name, &display, kind, None, readable)?;
-            if let Some(node) = self.node_mut(id) {
-                node.modified = modified;
+            if let Some(member) = self.member_mut(id) {
+                member.modified = modified;
             }
             if readable {
-                self.total = self.total.checked_add(size).ok_or_else(Error::limit)?;
-                if self.total > self.limits.max_total {
-                    return Err(Error::limit());
-                }
-                let node = self.nodes.last_mut().ok_or_else(Error::limit)?;
-                node.size = Some(size);
-                self.zip_members.insert(node.id, index);
+                let id = self.indexed_size(size)?;
+                self.zip_members.push((id, index));
             }
         }
         self.zip = Some(zip);
@@ -102,18 +89,19 @@ struct Record {
 /// Walk exactly the records zip parsed, from the directory start through its newest
 /// surviving record at `last`, and index them the same way, so such a name can be
 /// listed but unreadable. The caller checks the result against zip's own entries,
-/// and any disagreement refuses the mount instead of guessing.
+/// and any disagreement refuses the mount instead of guessing. Every step advances
+/// by at least one fixed record header without passing `last`, so the walk ends
+/// within the directory however many records it holds.
 fn indexed_records(
     mut source: Shared,
     start: u64,
     last: u64,
-    max_records: usize,
 ) -> Result<HashMap<Box<[u8]>, Record>, Error> {
     let mut records: HashMap<Box<[u8]>, Record> = HashMap::new();
     let mut header = [0; CENTRAL_RECORD];
     let (mut name, mut extra) = (Vec::new(), Vec::new());
     let mut offset = start;
-    for _ in 0..max_records {
+    loop {
         source.seek(SeekFrom::Start(offset))?;
         source.read_exact(&mut header)?;
         if header[..4] != CENTRAL_HEADER {
@@ -146,7 +134,6 @@ fn indexed_records(
             .filter(|next| *next <= last)
             .ok_or_else(ambiguous)?;
     }
-    Err(Error::limit())
 }
 
 /// The name zip 8.6 indexes a central record by (`zip::read::parse_extra_field`): its
@@ -219,7 +206,24 @@ impl Seek for Shared {
     }
 }
 
+/// Opening found no ZIP structure. The host shows the first line as the reason and the
+/// reader's own wording below it as details.
+fn not_zip(error: zip::result::ZipError) -> Error {
+    match error {
+        zip::result::ZipError::InvalidArchive(_) => Error::new(
+            ErrorCode::Corrupt,
+            format!("This file is not a valid ZIP archive.\n{error}"),
+        ),
+        error => zip_error(error),
+    }
+}
+
 pub(crate) fn zip_error(error: zip::result::ZipError) -> Error {
+    if let zip::result::ZipError::Io(io) = &error
+        && let Some(failure) = Failure::of(io)
+    {
+        return failure.clone().into();
+    }
     let code = match error {
         zip::result::ZipError::UnsupportedArchive(_) => ErrorCode::Unsupported,
         _ => ErrorCode::Corrupt,
@@ -302,26 +306,17 @@ mod tests {
                 .windows(4)
                 .position(|window| window == CENTRAL_HEADER)
                 .unwrap() as u64;
-        let walk = |last: u64, max_records: usize| {
+        let walk = |last: u64| {
             let length = bytes.len() as u64;
             let reader = Reader::new(Box::new(io::Cursor::new(bytes.clone())), length);
-            indexed_records(
-                Shared(Rc::new(RefCell::new(reader))),
-                start,
-                last,
-                max_records,
-            )
+            indexed_records(Shared(Rc::new(RefCell::new(reader))), start, last)
         };
-        let records = walk(second, 2).unwrap();
+        let records = walk(second).unwrap();
         assert_eq!(records[b"b".as_slice()].last, second);
         assert_eq!(records[b"a".as_slice()].count, 1);
         // Zip's newest record must end the walk exactly on a record boundary.
-        assert_eq!(
-            walk(second - 1, 4).err().unwrap().code,
-            ErrorCode::Unsupported
-        );
+        assert_eq!(walk(second - 1).err().unwrap().code, ErrorCode::Unsupported);
         // Past its records the walk meets the end-of-directory record and fails too.
-        assert!(walk(bytes.len() as u64, 4).is_err());
-        assert_eq!(walk(second, 1).err().unwrap().code, ErrorCode::Limit);
+        assert!(walk(bytes.len() as u64).is_err());
     }
 }

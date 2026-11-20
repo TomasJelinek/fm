@@ -1,7 +1,7 @@
 //! Bounded native change hints and polling, owned entirely by backend workers.
 
 use crate::{
-    Outbox,
+    Outbox, hidden_entries,
     retirement::{RetirementLease, WorkerOwned},
     spawn_resident,
     task_lifetime::TaskLifetime,
@@ -77,6 +77,17 @@ struct Timing {
     quiet: Duration,
     maximum: Duration,
     poll: Duration,
+    /// How often a flat folder whose native registration failed is checked
+    /// while the registration is retried: about this often for up to 4,000
+    /// entries, less often for larger ones (`unwatched_poll`).
+    unwatched: Duration,
+    /// The wait before a failed native registration of a flat folder is tried
+    /// again; it doubles after each failure, up to `poll`.
+    retry: Duration,
+    /// How long a flat folder's registration may keep failing before
+    /// `PollingOnly` is reported: a retry usually succeeds, and checks find
+    /// changes meanwhile.
+    report: Duration,
     /// The least time between two hints of a flat target whose folder keeps
     /// changing; twice its last check when that took longer, up to four
     /// times this.
@@ -91,12 +102,17 @@ struct Timing {
 
 /// Bursts settle after 150 ms of quiet, at most 500 ms after their first event;
 /// a folder that keeps changing is hinted at most once a second; polling
-/// catches missed notifications every 15 s. A worker restarts at most once a
-/// minute after its first restart.
+/// catches missed notifications every 15 s. A folder without notifications is
+/// checked about every second while its registration is retried after 1, 2,
+/// 4, 8 and then every 15 s; only a minute of failures is reported. A worker
+/// restarts at most once a minute after its first restart.
 const PRODUCTION_TIMING: Timing = Timing {
     quiet: Duration::from_millis(150),
     maximum: Duration::from_millis(500),
     poll: Duration::from_secs(15),
+    unwatched: Duration::from_secs(1),
+    retry: Duration::from_secs(1),
+    report: Duration::from_secs(60),
     cooldown: Duration::from_secs(1),
     restart: Duration::from_secs(60),
 };
@@ -121,6 +137,9 @@ struct Visible {
     /// cannot use lists the directory again without a fence, which costs at
     /// most one check.
     fence: Option<Fence>,
+    /// The rows leave hidden entries out (Show hidden files is off), as the
+    /// listing that produced them did, so checks of them leave them out too.
+    hide: bool,
 }
 
 /// A flat change count when a listing of its directory started.
@@ -137,6 +156,9 @@ struct Started {
     /// Recorded for a listing of a directory whose change counter is
     /// published: a target's, or a folder's subscribed while it was listed.
     fence: Option<Fence>,
+    /// The listing leaves hidden entries out; `None` for a resort of the UI's
+    /// rows, which keep the choice they were listed with.
+    hide: Option<bool>,
     /// The listing read entries of the directory (`Reporter::listing_read`).
     read: bool,
     /// It ended without rows to accept; the pane shows its previous rows.
@@ -158,6 +180,9 @@ struct Listings {
     /// published before it subscribes.
     prepared: Option<Published>,
     started: Option<Started>,
+    /// Listings dispatched from now on leave hidden entries out
+    /// (`Controller::set_hide_hidden`).
+    hide: bool,
 }
 
 struct Shared {
@@ -312,15 +337,32 @@ impl Controller {
     /// (see `Target::retarget` and `Target::adopt`). A target watching the rows
     /// still shown keeps counting until the listing is accepted, whatever
     /// folder it lists, and watches them again if the listing fails (see
-    /// `Reporter::listing_failed`).
+    /// `Reporter::listing_failed`). The listing's rows are checked with the
+    /// Show hidden files choice it was dispatched with (`set_hide_hidden`).
     pub(crate) fn listing_started(&self, pane: PaneId, navigation: NavigationId, path: &Path) {
         self.started(pane, navigation, path, true);
     }
 
     /// Like `listing_started` for a flat Resort of the UI's rows, which were
-    /// listed earlier and therefore record no fence.
+    /// listed earlier and therefore record no fence and keep the Show hidden
+    /// files choice they were listed with.
     pub(crate) fn resort_started(&self, pane: PaneId, navigation: NavigationId, path: &Path) {
         self.started(pane, navigation, path, false);
+    }
+
+    /// Called by the backend when Show hidden files changes
+    /// (`Command::ShowHiddenEntries`), before it dispatches a listing with the
+    /// new choice. A check compares the folder with the accepted rows, so it
+    /// leaves out exactly what their listing left out: rows accepted before
+    /// keep the choice they were listed with until rows listed with the new one
+    /// are accepted (the UI lists every pane again after a change).
+    pub(crate) fn set_hide_hidden(&self, hide: bool) {
+        for listings in &self.listings {
+            listings
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .hide = hide;
+        }
     }
 
     pub(crate) fn reporter(&self) -> Reporter {
@@ -346,10 +388,12 @@ impl Controller {
                     })
             })
             .flatten();
+        let hide = listing.then_some(listings.hide);
         listings.started = Some(Started {
             navigation,
             path: path.to_path_buf(),
             fence,
+            hide,
             read: false,
             failed: false,
         });
@@ -359,13 +403,20 @@ impl Controller {
     pub(crate) fn set_visible(&self, visible: VisibleDirectory) {
         // Left in place: until the worker sees this acceptance, it still tells
         // from that record whether the pane is listing its directory again.
-        let fence = self.listings[visible.pane.index()]
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .started
-            .as_ref()
-            .filter(|started| started.navigation == visible.navigation)
-            .and_then(|started| started.fence.clone());
+        let (fence, listed_hide, current_hide) = {
+            let listings = self.listings[visible.pane.index()]
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let started = listings
+                .started
+                .as_ref()
+                .filter(|started| started.navigation == visible.navigation);
+            (
+                started.and_then(|started| started.fence.clone()),
+                started.and_then(|started| started.hide),
+                listings.hide,
+            )
+        };
         let shared = &self.panes[visible.pane.index()];
         let mut state = shared
             .state
@@ -386,6 +437,19 @@ impl Controller {
         {
             return;
         }
+        // A dispatched listing's rows have the choice it recorded. A resort's
+        // rows, or rows whose record a newer dispatch replaced, were listed as
+        // the shown rows of their folder were, else with the current choice; if
+        // that guess is wrong, the hint it causes lists the folder again.
+        let hide = listed_hide
+            .or_else(|| {
+                state
+                    .visible
+                    .as_ref()
+                    .filter(|old| old.directory.path == visible.path)
+                    .map(|old| old.hide)
+            })
+            .unwrap_or(current_hide);
         state.cancel.cancel();
         state.cancel = Cancellation::default();
         state.navigation = visible.navigation;
@@ -394,6 +458,7 @@ impl Controller {
         state.visible = Some(Visible {
             directory: visible,
             fence,
+            hide,
         });
         drop(state);
         shared.wake();
@@ -504,6 +569,9 @@ struct Target {
     /// Constant-space multiset signature of the accepted rows (`None` only if
     /// it could not be represented, which makes every probe a change).
     baseline: Option<[u8; 32]>,
+    /// Probes leave hidden entries out, as the accepted rows do; set with
+    /// `baseline`, so both always describe the same entries.
+    hide: bool,
     /// Change count: native notifications and probes that found a change.
     dirty: Arc<AtomicU64>,
     observed: u64,
@@ -514,6 +582,11 @@ struct Target {
     accepted_at: u64,
     active: Arc<AtomicBool>,
     _subscription: Option<Box<dyn WatchSubscription>>,
+    /// The failed native registration, retried until it succeeds.
+    retry: Option<Retry>,
+    /// How many rows the accepted listing has, which sets how often a folder
+    /// without notifications is checked.
+    entries: usize,
     debounce: Debouncer,
     poll_at: Instant,
     /// When the last hint was sent; kept while the target watches listings
@@ -523,7 +596,69 @@ struct Target {
     probe_cost: Duration,
 }
 
+/// A failed native registration of a flat folder and when to try it again.
+/// The folder is checked often meanwhile (`unwatched_poll`), and a success
+/// switches to notifications without a status; only a registration that
+/// keeps failing for `Timing::report` is reported as `PollingOnly`.
+struct Retry {
+    at: Instant,
+    /// The wait after the next failure.
+    delay: Duration,
+    /// When the registrations of this target began to fail.
+    since: Instant,
+}
+
+/// How often the rows of a folder without native notifications are checked:
+/// every `Timing::unwatched` for up to 4,000 entries, proportionally less often
+/// for larger folders up to the regular `poll`, and never more often than ten
+/// times as long as the last check took, so checking costs at most a tenth of
+/// the time.
+fn unwatched_poll(timing: Timing, entries: usize, probe_cost: Duration) -> Duration {
+    let blocks = u32::try_from(entries.div_ceil(4_000).max(1)).unwrap_or(u32::MAX);
+    timing
+        .unwatched
+        .saturating_mul(blocks)
+        .min(timing.poll.max(timing.unwatched))
+        .max(probe_cost.saturating_mul(10))
+}
+
 impl Target {
+    /// How long until the rows are checked again.
+    fn poll_interval(&self, timing: Timing) -> Duration {
+        if self.retry.is_some() {
+            unwatched_poll(timing, self.entries, self.probe_cost)
+        } else {
+            timing.poll
+        }
+    }
+
+    /// Registers the folder again once a failed registration is due; returns
+    /// the status to report.
+    fn retry_registration(
+        &mut self,
+        worker: &Worker,
+        supervision: &mut Supervision,
+    ) -> Option<WatchStatus> {
+        if self
+            .retry
+            .as_ref()
+            .is_none_or(|retry| Instant::now() < retry.at)
+        {
+            return None;
+        }
+        let registration = subscribe(worker, supervision, &self.path, &self.dirty, &self.active);
+        let (subscription, retry, status) =
+            outcome(registration, self.retry.as_ref(), worker.timing);
+        if subscription.is_some() {
+            // Changes since the last check were not counted: check at once.
+            self.poll_at = Instant::now();
+        }
+        // Destruction can join native watcher threads; it stays on this worker.
+        drop(std::mem::replace(&mut self._subscription, subscription));
+        self.retry = retry;
+        status
+    }
+
     /// When the pending burst may be hinted: once it settled, and no sooner
     /// than the cooldown after the previous hint.
     fn hint_deadline(&self, timing: Timing) -> Option<Instant> {
@@ -576,26 +711,27 @@ impl Target {
             self.accepted_at = fence.value;
         }
         let activity = version != self.accepted_at;
-        let (subscription, status) = outcome(subscribe(
-            worker,
-            supervision,
-            &self.path,
-            &self.dirty,
-            &self.active,
-        ));
+        let (subscription, retry, status) = outcome(
+            subscribe(worker, supervision, &self.path, &self.dirty, &self.active),
+            self.retry.as_ref(),
+            worker.timing,
+        );
         // Destruction can join native watcher threads; it stays on this worker.
         drop(std::mem::replace(&mut self._subscription, subscription));
+        self.retry = retry;
         self.revision = revision;
         self.navigation = visible.directory.navigation;
         self.cancel = cancel;
         self.baseline = accepted_signature(&visible.directory.entries);
+        self.hide = visible.hide;
+        self.entries = visible.directory.entries.len();
         self.observed = version;
         self.debounce = Debouncer::default();
         let now = Instant::now();
         self.poll_at = if activity || (fence.is_none() && self.poll_at <= now) {
             now
         } else {
-            now + worker.timing.poll
+            now + self.poll_interval(worker.timing)
         };
         status
     }
@@ -631,26 +767,36 @@ impl Target {
             .fence
             .filter(|fence| Arc::ptr_eq(&fence.counter, &dirty))
             .map_or(0, |fence| fence.value);
-        let (subscription, status) = match prepared.subscription.take() {
+        let (subscription, retry, status) = match prepared.subscription.take() {
             Some(Ok(subscription)) if version == 0 => {
-                (Some(subscription), Some(WatchStatus::Native))
+                (Some(subscription), None, Some(WatchStatus::Native))
             }
             Some(Ok(replaced)) => {
-                let again = outcome(subscribe(worker, supervision, &path, &dirty, &active));
+                let again = outcome(
+                    subscribe(worker, supervision, &path, &dirty, &active),
+                    None,
+                    worker.timing,
+                );
                 // Destruction can join native watcher threads; it stays here.
                 drop(replaced);
                 again
             }
-            Some(Err(_)) => outcome(subscribe(worker, supervision, &path, &dirty, &active)),
-            None => (None, None),
+            Some(Err(_)) => outcome(
+                subscribe(worker, supervision, &path, &dirty, &active),
+                None,
+                worker.timing,
+            ),
+            None => (None, None, None),
         };
         worker.publish(&path, &dirty);
         let now = Instant::now();
-        let target = Self {
+        let mut target = Self {
             revision,
             pane: visible.directory.pane,
             navigation: visible.directory.navigation,
             baseline: accepted_signature(&visible.directory.entries),
+            hide: visible.hide,
+            entries: visible.directory.entries.len(),
             path,
             cancel,
             dirty,
@@ -658,15 +804,15 @@ impl Target {
             accepted_at,
             active,
             _subscription: subscription,
+            retry,
             debounce: Debouncer::default(),
-            poll_at: if version == accepted_at {
-                now + worker.timing.poll
-            } else {
-                now
-            },
+            poll_at: now,
             hinted_at: None,
             probe_cost: Duration::ZERO,
         };
+        if version == accepted_at {
+            target.poll_at = now + target.poll_interval(worker.timing);
+        }
         (target, status)
     }
 
@@ -804,14 +950,36 @@ fn subscribe(
     )
 }
 
-/// The subscription of a registration outcome and the status it means.
+/// The subscription of a registration outcome, the retry a failure schedules
+/// (continuing `failing`, the target's earlier failure, so its backoff and
+/// start carry on), and the status it means: `Native` clears an earlier
+/// status, and a failure is reported only once registrations kept failing for
+/// `Timing::report` (the report skips a status the view already shows).
 fn outcome(
     registration: Option<Result<Box<dyn WatchSubscription>, FsError>>,
-) -> (Option<Box<dyn WatchSubscription>>, Option<WatchStatus>) {
+    failing: Option<&Retry>,
+    timing: Timing,
+) -> (
+    Option<Box<dyn WatchSubscription>>,
+    Option<Retry>,
+    Option<WatchStatus>,
+) {
     match registration {
-        None => (None, None),
-        Some(Ok(subscription)) => (Some(subscription), Some(WatchStatus::Native)),
-        Some(Err(error)) => (None, Some(WatchStatus::PollingOnly(error))),
+        None => (None, None, None),
+        Some(Ok(subscription)) => (Some(subscription), None, Some(WatchStatus::Native)),
+        Some(Err(error)) => {
+            let now = Instant::now();
+            let (delay, since) =
+                failing.map_or((timing.retry, now), |retry| (retry.delay, retry.since));
+            let retry = Retry {
+                at: now + delay,
+                delay: delay.saturating_mul(2).min(timing.poll.max(timing.retry)),
+                since,
+            };
+            let status = (now.saturating_duration_since(since) >= timing.report)
+                .then_some(WatchStatus::PollingOnly(error));
+            (None, Some(retry), status)
+        }
     }
 }
 
@@ -820,7 +988,11 @@ fn outcome(
 fn register(
     worker: &Worker,
     supervision: &mut Supervision,
-    visible: VisibleDirectory,
+    Visible {
+        directory: visible,
+        hide,
+        ..
+    }: Visible,
     revision: u64,
     cancel: Cancellation,
     check: bool,
@@ -834,19 +1006,19 @@ fn register(
     // folder that read the folder before its preparation took effect).
     worker.publish(&visible.path, &dirty);
     let active = Arc::new(AtomicBool::new(true));
-    let (subscription, status) = outcome(subscribe(
-        worker,
-        supervision,
-        &visible.path,
-        &dirty,
-        &active,
-    ));
+    let (subscription, retry, status) = outcome(
+        subscribe(worker, supervision, &visible.path, &dirty, &active),
+        None,
+        worker.timing,
+    );
     let now = Instant::now();
-    let target = Target {
+    let mut target = Target {
         revision,
         pane: visible.pane,
         navigation: visible.navigation,
         baseline: accepted_signature(&visible.entries),
+        hide,
+        entries: visible.entries.len(),
         path: visible.path,
         cancel,
         dirty,
@@ -854,11 +1026,15 @@ fn register(
         accepted_at: 0,
         active,
         _subscription: subscription,
+        retry,
         debounce: Debouncer::default(),
-        poll_at: if check { now } else { now + worker.timing.poll },
+        poll_at: now,
         hinted_at: None,
         probe_cost: Duration::ZERO,
     };
+    if !check {
+        target.poll_at = now + target.poll_interval(worker.timing);
+    }
     (target, status)
 }
 
@@ -1165,7 +1341,7 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
                         register(
                             worker,
                             supervision,
-                            visible.directory,
+                            visible,
                             revision,
                             cancel,
                             std::mem::take(&mut resumed),
@@ -1220,6 +1396,13 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
             supervision.park(None);
             continue;
         };
+        if let Some(status) = target.retry_registration(worker, supervision) {
+            let view = WatchedView::Flat {
+                pane: worker.pane,
+                navigation: target.navigation,
+            };
+            supervision.record(view, status);
+        }
         // Read before the probe below reads the directory.
         let version = target.dirty.load(Ordering::Acquire);
         if version != target.observed {
@@ -1231,7 +1414,12 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
             // stay until UI acceptance, so later checks repeat an ignored hint,
             // and a failed refresh once its target is re-armed (see `rearm`).
             let started = Instant::now();
-            let changed = match probe(worker.filesystem.as_ref(), &target.path, &target.cancel) {
+            let changed = match probe(
+                worker.filesystem.as_ref(),
+                &target.path,
+                target.hide,
+                &target.cancel,
+            ) {
                 Ok(current) => target.baseline != Some(current),
                 Err(()) => true,
             };
@@ -1242,7 +1430,7 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
                 // without a fence are checked at once (see `retarget`).
                 continue;
             }
-            target.poll_at = Instant::now() + timing.poll;
+            target.poll_at = Instant::now() + target.poll_interval(timing);
             if changed {
                 // Counted like a notification, so a listing that started
                 // before this probe is checked again when it is accepted.
@@ -1274,6 +1462,10 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
         let deadline = target
             .hint_deadline(timing)
             .map_or(target.poll_at, |deadline| deadline.min(target.poll_at));
+        let deadline = target
+            .retry
+            .as_ref()
+            .map_or(deadline, |retry| deadline.min(retry.at));
         supervision.park(Some(deadline.saturating_duration_since(Instant::now())));
     }
     // Prefer normal scope destruction on this native worker. The startup-owned
@@ -1325,7 +1517,17 @@ fn accepted_signature(entries: &[Entry]) -> Option<[u8; 32]> {
     Some(accepted.digest(false))
 }
 
-fn probe(filesystem: &dyn FileSystem, path: &Path, cancel: &Cancellation) -> Result<[u8; 32], ()> {
+/// The `accepted_signature` of what a listing of `path` would show now. With
+/// `hide`, hidden entries are left out by the listings' own rule
+/// (`hidden_entries`), decided on the enumerated entry as a listing decides,
+/// so a folder whose hidden entries the accepted rows lack is not a change,
+/// and neither is a change of those entries alone.
+fn probe(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    hide: bool,
+    cancel: &Cancellation,
+) -> Result<[u8; 32], ()> {
     let mut current = signature::Signature::default();
     let mut failed = false;
     filesystem
@@ -1340,6 +1542,9 @@ fn probe(filesystem: &dyn FileSystem, path: &Path, cancel: &Cancellation) -> Res
             if !valid_child {
                 failed = true;
                 return false;
+            }
+            if hide && hidden_entries::is_hidden(&entry) {
+                return !cancel.is_cancelled();
             }
             signature::listing_metadata(filesystem, &mut entry);
             if current.add(&entry).is_err() {

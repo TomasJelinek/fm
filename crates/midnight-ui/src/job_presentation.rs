@@ -5,6 +5,8 @@ use crate::*;
 mod file_meter;
 #[path = "job_progress_meter.rs"]
 mod meter;
+#[path = "job_outcome.rs"]
+mod outcome;
 
 #[cfg(test)]
 #[path = "job_presentation_tests.rs"]
@@ -127,13 +129,33 @@ fn mutation_artwork(kind: MutationKind) -> (ActionIcon, i32) {
     }
 }
 
+/// The Jobs list names a pause as the progress window does, optionally with the
+/// phase that the pause holds: "Paused · verifying SHA-256".
+fn pause_state(state: &str, phase: bool, paused: bool, pause_requested: bool) -> String {
+    match (paused, pause_requested) {
+        (true, true) if phase => {
+            let mut letters = state.chars();
+            let first: String = letters
+                .next()
+                .into_iter()
+                .flat_map(char::to_lowercase)
+                .collect();
+            format!("Paused · {first}{}", letters.as_str())
+        }
+        (true, true) => "Paused".into(),
+        (true, false) => "Resuming...".into(),
+        (false, true) => "Pausing...".into(),
+        (false, false) => state.into(),
+    }
+}
+
 fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
     let meter = meter::deletion(progress, &p.number_locale);
     let deletion = matches!(progress.kind, MutationKind::Delete(_));
     let active = !progress.state.is_terminal();
     let cancellable = active && progress.state != OperationState::CancelRequested;
     let show_pause = !deletion || cancellable;
-    let state = match progress.state {
+    let phase = match progress.state {
         OperationState::Preparing => "Preparing",
         OperationState::AwaitingConfirmation => "Awaiting confirmation",
         OperationState::Queued => "Queued",
@@ -143,6 +165,17 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         OperationState::Completed => "Completed",
         OperationState::CompletedWithErrors => "Completed with errors",
         OperationState::Failed => "Failed",
+    };
+    // Only a running Delete can pause; its "Running" phase says nothing more.
+    let state = if deletion && cancellable {
+        pause_state(
+            phase,
+            progress.state != OperationState::Running,
+            progress.paused,
+            progress.pause_requested,
+        )
+    } else {
+        phase.to_string()
     };
     let (icon, kind) = mutation_artwork(progress.kind);
     let metadata = p
@@ -170,6 +203,11 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
     } else {
         SharedString::default()
     };
+    let outcome = match progress.kind {
+        MutationKind::Delete(mode) => outcome::deletion(progress, mode, &p.number_locale),
+        _ => outcome::change(progress),
+    };
+    let issues = outcome::mutation_issues(progress, &p.number_locale);
     OperationRow {
         identity: if progress.kind == MutationKind::Rename {
             format!("rename-job:{}", progress.id.0).into()
@@ -216,10 +254,11 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         file_progress: 0.0,
         file_progress_label: SharedString::default(),
         file_progress_title: SharedString::default(),
+        file_percent: SharedString::default(),
         verification_view: false,
         waiting: meter.waiting,
         activity_label: if deletion && !active {
-            state.into()
+            phase.into()
         } else {
             meter.activity_label.into()
         },
@@ -228,8 +267,11 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         icon: p.desktop.image(&IconKey::action(icon), IconPlace::Action),
         transfer_directory: Default::default(),
         transfer_name: Default::default(),
-        transfer_totals: Default::default(),
-        transfer_outcome: Default::default(),
+        // "Items deleted: 3 of 10" for a Delete; nothing for other changes.
+        transfer_totals: meter.totals,
+        transfer_outcome: outcome.into(),
+        issues: issues.rows,
+        issue_summary: issues.summary,
         transfer_speed_chart: Default::default(),
         speed_chart: if deletion {
             p.job_charts
@@ -287,6 +329,13 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             S::CompletedWithErrors => "Completed with errors",
             S::Failed => "Failed",
         }
+    };
+    let state = if progress.state.is_terminal()
+        || matches!(progress.state, S::CancelRequested | S::WaitingForDecision)
+    {
+        state.to_string()
+    } else {
+        pause_state(state, true, progress.paused, progress.pause_requested)
     };
     let mut summary = format!(
         "{} files · {} skipped · {} errors",
@@ -356,6 +405,7 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         detail.push_str(&copy_presentation::failure_details(failure));
     }
     append_recovery(&mut detail, progress, &p.number_locale);
+    append_notes(&mut detail, progress, &p.number_locale);
     let failed = (progress.state.is_terminal()
         && (progress.source_residual_count > 0
             || progress.source_removal_durability_unconfirmed > 0))
@@ -363,22 +413,14 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         || progress.failed > 0
         || !progress.errors.is_empty()
         || matches!(progress.state, S::Failed | S::CompletedWithErrors);
-    let transfer_outcome = if progress.state.is_terminal()
-        && (progress.state != S::Completed
-            || failed
-            || progress.closure.is_some()
-            || progress.skipped > 0)
-    {
-        let counts = copy_completion_counts(progress, &p.number_locale);
-        if progress.closure.is_some() {
-            detail.push_str("\n\n");
-            detail.push_str(&counts);
-            append_omitted_errors(&mut detail, progress, &p.number_locale);
-        }
-        copy_outcome(counts, progress, &p.number_locale).into()
-    } else {
-        SharedString::default()
-    };
+    let transfer_outcome = outcome::transfer(progress, failed, &p.number_locale);
+    if progress.closure.is_some() {
+        // Copy details repeat how the job ended, as its window says it.
+        detail.push_str("\n\n");
+        detail.push_str(&transfer_outcome);
+        append_omitted_errors(&mut detail, progress, &p.number_locale);
+    }
+    let issues = outcome::transfer_issues(progress, &p.number_locale);
     let (transfer_directory, transfer_name) = progress
         .current_path
         .as_deref()
@@ -418,6 +460,7 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         file_progress: file.fraction,
         file_progress_label: file.label,
         file_progress_title: file.title,
+        file_percent: file.percent,
         verification_view,
         waiting: waiting.is_some(),
         activity_label: copy_activity(progress, meter.discovering).into(),
@@ -429,7 +472,9 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         transfer_directory,
         transfer_name,
         transfer_totals: meter.totals,
-        transfer_outcome,
+        transfer_outcome: transfer_outcome.into(),
+        issues: issues.rows,
+        issue_summary: issues.summary,
         speed_chart: if !progress.state.is_terminal()
             && progress.phase == CopyOperationPhase::Verifying
         {
@@ -486,69 +531,26 @@ fn copy_activity(progress: &CopyProgress, discovering: bool) -> &'static str {
     }
 }
 
-fn copy_completion_counts(progress: &CopyProgress, locale: &NumberLocale) -> String {
-    let mut summary = format!(
-        "Selected items completed: {}",
-        locale.format_u64(progress.completed_roots)
-    );
-    if let Some(receipt) = progress.closure {
-        summary.push_str(&format!(
-            " · Not completed: {}",
-            locale.format_u64(receipt.unfinished_roots)
+/// Informational notes, such as a link copied as a link because it could not be
+/// followed. They are not errors and do not change the job's outcome.
+fn append_notes(detail: &mut String, progress: &CopyProgress, locale: &NumberLocale) {
+    if progress.note_count == 0 {
+        return;
+    }
+    detail.push_str("\n\nNotes");
+    for note in &progress.notes {
+        detail.push_str(&format!("\n{note}"));
+    }
+    let omitted = progress
+        .note_count
+        .saturating_sub(progress.notes.len() as u64);
+    if omitted > 0 {
+        detail.push_str(&format!(
+            "\n{} more {} not shown.",
+            locale.format_u64(omitted),
+            if omitted == 1 { "note is" } else { "notes are" }
         ));
     }
-    if progress.skipped > 0 {
-        summary.push_str(&format!(
-            " · Skipped: {}",
-            locale.format_u64(progress.skipped)
-        ));
-    }
-    if progress.failed > 0 {
-        summary.push_str(&format!(
-            " · Errors: {}",
-            locale.format_u64(progress.failed)
-        ));
-    }
-    if let Some(receipt) = progress.closure {
-        if let Some(files) = receipt.uncommitted_files {
-            summary.push_str(&format!(
-                "\nFiles published: {} · Not published: {}",
-                locale.format_u64(progress.files_completed),
-                locale.format_u64(files)
-            ));
-        }
-        if let Some(bytes) = receipt.uncommitted_bytes {
-            summary.push_str(&format!(
-                "\nBytes published: {} · Not published: {}",
-                locale.format_u64(progress.completed_bytes),
-                locale.format_u64(bytes)
-            ));
-        }
-    }
-    summary
-}
-
-fn copy_outcome(mut summary: String, progress: &CopyProgress, locale: &NumberLocale) -> String {
-    if !progress.message.is_empty() {
-        summary.push_str(&format!("\n\n{}", progress.message));
-    }
-    if progress.source_delete_pending > 0 {
-        summary.push_str(&format!(
-            "\n\nSource removals accepted by Windows: {}. Open handles may delay storage release.",
-            locale.format_u64(progress.source_delete_pending)
-        ));
-    }
-    if progress.source_removal_durability_unconfirmed > 0 {
-        summary.push_str(&format!(
-            "\n\nSource changes without a confirmed durability flush: {}",
-            locale.format_u64(progress.source_removal_durability_unconfirmed)
-        ));
-    }
-    append_move_residuals(&mut summary, progress);
-    append_recovery(&mut summary, progress, locale);
-    error_presentation::append_issues(&mut summary, &progress.errors);
-    append_omitted_errors(&mut summary, progress, locale);
-    summary
 }
 
 fn append_omitted_errors(text: &mut String, progress: &CopyProgress, locale: &NumberLocale) {

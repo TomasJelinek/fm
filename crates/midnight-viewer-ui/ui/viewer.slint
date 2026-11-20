@@ -1,6 +1,7 @@
 import { Button, Palette } from "std-widgets.slint";
 import { Theme } from "../../midnight-ui/ui/theme.slint";
 import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
+import { HintedActionButton } from "../../midnight-ui/ui/hinted-inputs.slint";
 import { WrappingCheckBox } from "../../midnight-ui/ui/wrapping-check-box.slint";
 import { CompactPicker } from "../../midnight-ui/ui/controls.slint";
 import { ThemedLineEdit, ThemedSpinBox } from "../../midnight-ui/ui/content-controls.slint";
@@ -79,6 +80,13 @@ export component ViewerWindow inherits Window {
     in-out property <bool> web-network;
     in-out property <bool> web-scripts;
     in property <bool> web-policy-change-allowed: false;
+    // Shown in the page's place when the system refused the HTML viewer's browser its
+    // sandbox. The backend decides the text and whether Install… is offered.
+    in property <bool> sandbox-notice-visible;
+    in property <string> sandbox-notice;
+    in property <bool> sandbox-installable;
+    in property <bool> sandbox-installing;
+    callback install-sandbox-permission();
     in property <bool> source-mode;
     in property <bool> markdown-mode;
     in property <bool> font-available: true;
@@ -327,6 +335,38 @@ export component ViewerWindow inherits Window {
                             }
                             if root.scroll(-event.delta-x / 1px, -event.delta-y / 1px) { return accept; }
                             reject
+                        }
+                    }
+                    // In the page's place. Tab from the content reaches Install…, which
+                    // follows the content in the focus order; Return activates it.
+                    if root.sandbox-notice-visible: Rectangle {
+                        width: max(0px, min(canvas.width - 16px, max(260px, root.effective-ui-size * 34)));
+                        height: max(0px, min(canvas.height - 16px, notice-text.height + 28px
+                            + (root.sandbox-installable ? root.control-height + 12px : 0px)));
+                        x: (canvas.width - self.width) / 2;
+                        y: max(8px, (canvas.height - self.height) / 3);
+                        clip: true;
+                        background: Theme.surface;
+                        border-width: 1px; border-color: Theme.frame; border-radius: 6px;
+                        notice-text := Text {
+                            x: 14px; y: 14px;
+                            width: max(0px, parent.width - 28px);
+                            height: self.preferred-height;
+                            text: root.sandbox-notice; wrap: word-wrap;
+                            color: Theme.text; font-size: root.effective-ui-size;
+                        }
+                        if root.sandbox-installable: HorizontalLayout {
+                            x: 14px; y: notice-text.y + notice-text.height + 12px;
+                            width: max(0px, parent.width - 28px); height: root.control-height;
+                            alignment: start;
+                            HintedActionButton {
+                                font-size: root.effective-ui-size; control-height: root.control-height;
+                                compact: root.compact; primary: true;
+                                text: "Install…"; enabled: !root.sandbox-installing;
+                                accessible-description: "Install the HTML viewer's AppArmor profile with administrator authorization";
+                                hint: "Asks for administrator authorization, then installs the AppArmor profile that lets this installation's HTML viewer use Chromium's sandbox, and opens the page again.";
+                                clicked => { root.install-sandbox-permission(); }
+                            }
                         }
                     }
                 }

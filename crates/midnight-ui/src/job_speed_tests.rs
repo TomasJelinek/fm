@@ -23,6 +23,7 @@ fn snapshot() -> Arc<OperationThroughput> {
         transfer_per_second: 0.0,
         verification_per_second: 2048.0,
         items_per_second: 0.5,
+        ..Default::default()
     })
 }
 
@@ -157,7 +158,7 @@ fn submillisecond_completed_work_has_a_visible_point_without_inventing_duration(
 }
 
 #[test]
-fn entire_history_shrinks_horizontally_and_retains_old_peaks_in_vertical_scale() {
+fn entire_history_shrinks_horizontally_and_a_short_history_scales_to_its_peak() {
     let mut source = OperationThroughput {
         samples: vec![
             ThroughputSample {
@@ -213,6 +214,7 @@ fn verification_view_uses_readback_for_its_only_series_and_scale() {
         transfer_per_second: 1_048_576.0,
         verification_per_second: 512.0,
         items_per_second: 100.0,
+        ..Default::default()
     });
     let cache = Charts::default();
     let locale = NumberLocale::default();
@@ -376,4 +378,117 @@ fn verification_cache_refreshes_locale_and_releases_only_unretained_job_history(
     assert!(weak.upgrade().is_some());
     cache.retain(std::iter::empty());
     assert!(weak.upgrade().is_none());
+}
+
+const MIB: f64 = 1024.0 * 1024.0;
+
+/// `count` consecutive samples of `step` milliseconds each, at `rate(index)` bytes
+/// per second (index from 1); a long job's history arrives combined like this.
+fn writes(count: u64, step: u64, rate: impl Fn(u64) -> f64) -> OperationThroughput {
+    OperationThroughput {
+        samples: (1..=count)
+            .map(|index| ThroughputSample {
+                start_millis: (index - 1) * step,
+                elapsed_millis: index * step,
+                transfer_per_second: rate(index),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        transfer_per_second: rate(count),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_single_spike_raises_the_scale_briefly_and_then_stays_clipped_in_the_history() {
+    // 20 MiB/s, with one quarter second at 1 GiB/s ten seconds in.
+    let spiky = |tick| if tick == 40 { 1024.0 * MIB } else { 20.0 * MIB };
+    let locale = NumberLocale::default();
+    let at_spike = build(&writes(40, 250, spiky), View::Transfer, &locale);
+    assert_eq!(at_spike.scale, "1.1 GiB/s", "the spike itself is in view");
+    let soon = build(&writes(48, 250, spiky), View::Transfer, &locale);
+    assert_eq!(soon.scale, "281.6 MiB/s", "two seconds on: a quarter");
+    let later = build(&writes(80, 250, spiky), View::Transfer, &locale);
+    assert_eq!(later.scale, "22.0 MiB/s", "ten seconds on: sustained");
+    assert!(
+        later.primary.contains("L 500.00 0.00"),
+        "the spike runs along the top edge: {}",
+        later.primary
+    );
+    assert!(later.primary.ends_with("L 1000.00 9.09"));
+    assert!(later.area.contains("L 500.00 0.00"));
+}
+
+#[test]
+fn the_scale_follows_the_last_minute_and_ignores_a_few_peaks_in_it() {
+    let locale = NumberLocale::default();
+    // One-second samples: two minutes at 100 MiB/s, then 70 s at 10 MiB/s. The
+    // scale follows the slower speed and the earlier part runs along the top.
+    let slower = |second| {
+        if second <= 120 {
+            100.0 * MIB
+        } else {
+            10.0 * MIB
+        }
+    };
+    let chart = build(&writes(190, 1000, slower), View::Transfer, &locale);
+    assert_eq!(chart.scale, "11.0 MiB/s");
+    assert!(
+        chart.primary.starts_with("M 0.00 0.00 L"),
+        "{}",
+        chart.primary
+    );
+    assert!(chart.primary.ends_with("L 1000.00 9.09"));
+    // Three short peaks in the last minute, a while ago, leave it alone.
+    let peaks = |tick| {
+        if [100, 150, 200].contains(&tick) {
+            900.0 * MIB
+        } else {
+            30.0 * MIB
+        }
+    };
+    let chart = build(&writes(240, 250, peaks), View::Transfer, &locale);
+    assert_eq!(chart.scale, "33.0 MiB/s");
+    // Readback shares the scale with the writes.
+    let mut readback = writes(240, 250, |_| 30.0 * MIB);
+    readback.samples = readback
+        .samples
+        .iter()
+        .map(|sample| ThroughputSample {
+            verification_per_second: 60.0 * MIB,
+            ..*sample
+        })
+        .collect::<Vec<_>>()
+        .into();
+    assert_eq!(
+        build(&readback, View::Transfer, &locale).scale,
+        "66.0 MiB/s"
+    );
+}
+
+#[test]
+fn a_pause_or_stall_holds_the_scale_instead_of_collapsing_it() {
+    let locale = NumberLocale::default();
+    // 10 s at 20 MiB/s, then 50 s recorded idle (a pause, a wait or a long sync).
+    let paused = |tick| if tick <= 40 { 20.0 * MIB } else { 0.0 };
+    let chart = build(&writes(240, 250, paused), View::Transfer, &locale);
+    assert_eq!(chart.scale, "22.0 MiB/s");
+    assert!(chart.primary.contains("L 166.67 9.09"), "{}", chart.primary);
+    assert!(chart.primary.ends_with("L 1000.00 100.00"));
+    // A spike just before the pause keeps the scale it raised until work resumes.
+    let spiked = |tick| match tick {
+        40 => 1024.0 * MIB,
+        1..=39 => 20.0 * MIB,
+        _ => 0.0,
+    };
+    let chart = build(&writes(240, 250, spiked), View::Transfer, &locale);
+    assert_eq!(chart.scale, "1.1 GiB/s");
+    let resumed = |tick| match tick {
+        40 => 1024.0 * MIB,
+        1..=39 | 201..=240 => 20.0 * MIB,
+        _ => 0.0,
+    };
+    let chart = build(&writes(240, 250, resumed), View::Transfer, &locale);
+    assert_eq!(chart.scale, "22.0 MiB/s", "ten seconds of work after it");
 }

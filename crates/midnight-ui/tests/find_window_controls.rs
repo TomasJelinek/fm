@@ -3,7 +3,10 @@
 use crate::support::modeless;
 
 use i_slint_core::{
-    accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+    accessibility::AccessibleStringProperty,
+    item_tree::ItemRc,
+    items::{AccessibleRole, TouchArea},
+    window::WindowInner,
 };
 use midnight_ui::{FindRootRow, FindRow, FindWindow};
 use slint::{
@@ -172,8 +175,10 @@ fn search_folders_add_tick_choose_and_remove_through_one_list() {
     );
     modeless::click(&native, "Browse…");
     assert_eq!(browsed.get(), 1);
-    // A listed addition chooses the new folder and closes the entry.
+    // The host answers an accepted Add with its folder's row: that folder is chosen
+    // and the entry closes, with keyboard focus still in the window.
     roots.push(row("/srv/typed folder", true));
+    window.invoke_root_added(2);
     modeless::draw(&native, 860, 620, "find-folders-added");
     assert!(
         modeless::accessible_item(&native, AccessibleRole::TextInput, "Folder to add").is_none()
@@ -182,6 +187,10 @@ fn search_folders_add_tick_choose_and_remove_through_one_list() {
         value(&item(&native, AccessibleRole::Combobox, "Search folders")),
         "/srv/typed folder"
     );
+    key(&native, Key::F1.into());
+    assert!(window.get_show_help(), "F1 still reaches the window");
+    key(&native, Key::Escape.into());
+    assert!(!window.get_show_help());
     // A running search freezes the list and its buttons.
     window.set_running(true);
     modeless::draw(&native, 860, 620, "find-folders-running");
@@ -253,23 +262,36 @@ fn syntax_help_shows_examples_for_the_mode_and_uses_a_clicked_example() {
     key(&native, Key::F1.into());
     modeless::draw(&native, 860, 620, "find-help-f1");
     assert!(!window.get_show_help());
-    key(&native, Key::F1.into());
-    assert!(window.get_show_help());
     // Each mode has its own examples: Tab to the mode chooser, then pick Expression.
     key(&native, Key::Tab.into());
     key(&native, Key::DownArrow.into());
     key(&native, Key::DownArrow.into());
-    modeless::draw(&native, 860, 620, "find-help-expression");
     assert_eq!(
         value(&item(&native, AccessibleRole::Combobox, "Find match mode")),
         "Expression"
     );
+    key(&native, Key::F1.into());
+    assert!(window.get_show_help());
+    modeless::draw(&native, 860, 620, "find-help-expression");
     item(&native, AccessibleRole::Text, "Expression syntax");
     item(
         &native,
         AccessibleRole::Button,
         "kind = file and size >= 10MiB",
     );
+    // Linux reports no attributes: the help says so and offers the dot-name test.
+    let attributes = item(
+        &native,
+        AccessibleRole::Button,
+        "attributes has hidden or attributes has system",
+    );
+    assert!(
+        attributes
+            .accessible_string_property(AccessibleStringProperty::Description)
+            .is_some_and(|meaning| meaning.contains("Windows only")),
+        "attribute tests are marked Windows only"
+    );
+    item(&native, AccessibleRole::Button, "name like \".*\"");
     modeless::click(&native, "Close help");
     assert!(!window.get_show_help());
     window.set_show_help(true);
@@ -308,6 +330,10 @@ fn right_edge(item: &ItemRc) -> f32 {
     item.map_to_native_window(rect.origin).x + rect.width()
 }
 
+fn left_edge(item: &ItemRc) -> f32 {
+    item.map_to_native_window(item.geometry().origin).x
+}
+
 #[test]
 fn every_result_column_resizes_by_dragging_its_header_separator() {
     let (window, native) = open();
@@ -341,49 +367,38 @@ fn every_result_column_resizes_by_dragging_its_header_separator() {
     }
     window.set_column_widths(widths);
     modeless::draw(&native, 860, 620, "find-columns");
-    for (index, title) in ["Name", "Extension", "Path", "Size", "Modified"]
-        .into_iter()
-        .enumerate()
-    {
-        let header = item(&native, AccessibleRole::Button, &format!("Sort by {title}"));
-        let next = ["Extension", "Path", "Size", "Modified"]
-            .get(index)
-            .map(|next| item(&native, AccessibleRole::Button, &format!("Sort by {next}")));
-        let next_x = next.as_ref().map(|next| center(next).x);
-        let before = right_edge(&header);
-        let grip = slint::LogicalPosition::new(before + 5.0, center(&header).y);
+    let header = |title: &str| item(&native, AccessibleRole::Button, &format!("Sort by {title}"));
+    // Path takes the spare width: the table ends at the list's edge, after Modified,
+    // its separator and the row padding.
+    let list_right = right_edge(&item(&native, AccessibleRole::List, "Find results"));
+    assert!((right_edge(&header("Modified")) + 16.0 - list_right).abs() <= 1.0);
+    assert!(header("Path").geometry().width() > 300.0);
+    // Path last: while it fills, the other columns take their width from it.
+    for title in ["Name", "Extension", "Size", "Modified", "Path"] {
+        let before = header(title).geometry().width();
+        let next_x = left_edge(&header("Extension"));
+        let grip =
+            slint::LogicalPosition::new(right_edge(&header(title)) + 5.0, center(&header(title)).y);
         drag(&native, grip, 40.0);
         modeless::draw(&native, 860, 620, "find-columns-dragged");
-        let header = item(&native, AccessibleRole::Button, &format!("Sort by {title}"));
         assert!(
-            (right_edge(&header) - before - 40.0).abs() <= 1.0,
+            (header(title).geometry().width() - before - 40.0).abs() <= 1.0,
             "{title} widens with the drag"
         );
-        if let Some(next_x) = next_x {
-            let next = item(
-                &native,
-                AccessibleRole::Button,
-                &format!(
-                    "Sort by {}",
-                    ["Extension", "Path", "Size", "Modified"][index]
-                ),
-            );
+        if title == "Name" {
             assert!(
-                (center(&next).x - next_x - 40.0).abs() <= 1.0,
-                "later columns follow {title}"
+                (left_edge(&header("Extension")) - next_x - 40.0).abs() <= 1.0,
+                "later columns follow"
             );
         }
     }
     let widths = window.get_column_widths();
-    for width in [
-        widths.name,
-        widths.extension,
-        widths.path,
-        widths.size,
-        widths.modified,
-    ] {
+    for width in [widths.name, widths.extension, widths.size, widths.modified] {
         assert!((width - 120.0).abs() <= 1.0, "dragged width {width}");
     }
+    // The Path drag started from its shown width, so the table now scrolls.
+    assert!(widths.path > 300.0, "dragged Path width {}", widths.path);
+    assert!(right_edge(&header("Modified")) + 16.0 > list_right + 39.0);
     assert!(sorts.borrow().is_empty(), "a separator drag never sorts");
     // Shrinking stops at a readable minimum.
     let header = item(&native, AccessibleRole::Button, "Sort by Name");
@@ -398,5 +413,252 @@ fn every_result_column_resizes_by_dragging_its_header_separator() {
     window.set_rows(rows().into());
     modeless::draw(&native, 860, 620, "find-columns-new-results");
     assert_eq!(window.get_column_widths().name, name);
+    window.hide().unwrap();
+}
+
+fn result_rows(count: usize) -> Rc<VecModel<FindRow>> {
+    Rc::new(VecModel::from(
+        (0..count)
+            .map(|index| FindRow {
+                token: format!("1:{index}").into(),
+                name: format!("file {index}.txt").into(),
+                extension: "txt".into(),
+                path: "/home/user".into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
+fn touch_areas(item: &ItemRc) -> usize {
+    let mut count = usize::from(item.downcast::<TouchArea>().is_some());
+    let mut child = item.first_child();
+    while let Some(next) = child {
+        child = next.next_sibling();
+        count += touch_areas(&next);
+    }
+    count
+}
+
+fn first_list_item(item: ItemRc) -> Option<ItemRc> {
+    if item.accessible_role() == AccessibleRole::ListItem {
+        return Some(item);
+    }
+    let mut child = item.first_child();
+    while let Some(next) = child {
+        child = next.next_sibling();
+        if let Some(found) = first_list_item(next) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[test]
+fn only_the_header_has_column_separators() {
+    let (window, native) = open();
+    window.set_rows(result_rows(2).into());
+    modeless::draw(&native, 860, 620, "find-row-items");
+    let root = ItemRc::new_root(WindowInner::from_pub(native.window()).component());
+    let row = first_list_item(root).expect("a result row");
+    // The row's own selection area only: separators belong to the header.
+    assert_eq!(touch_areas(&row), 1);
+    // Rows keep the header's column positions with a plain gap.
+    for (header, text) in [("Name", "file 0.txt"), ("Extension", "txt")] {
+        let header = item(
+            &native,
+            AccessibleRole::Button,
+            &format!("Sort by {header}"),
+        );
+        let text = item(&native, AccessibleRole::Text, text);
+        assert!((left_edge(&text) - left_edge(&header)).abs() <= 1.0);
+    }
+    window.hide().unwrap();
+}
+
+#[test]
+fn the_host_chooses_each_added_folder_and_counts_ticked_folders() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let main = midnight_ui::MainWindow::new().unwrap();
+    let root = std::env::temp_dir();
+    let state = Rc::new(RefCell::new(midnight_ui::Presenter::new(
+        root.clone(),
+        root.clone(),
+    )));
+    midnight_ui::install(&main, state.clone(), Rc::new(|_| true));
+    main.show().unwrap();
+    modeless::draw(&windows.borrow()[0], 1000, 700, "find-host-main");
+    main.invoke_find_files(0);
+    let find = windows.borrow()[1].clone();
+    modeless::draw(&find, 860, 620, "find-host");
+    let first = value(&item(&find, AccessibleRole::Combobox, "Search folders"));
+    let typed = root.join("typed 文档").to_string_lossy().into_owned();
+    for (path, label) in [
+        (typed.as_str(), "Search folders (2)"),
+        // Adding a listed folder again chooses it as well.
+        (first.as_str(), "Search folders (2)"),
+    ] {
+        modeless::click(&find, "Add");
+        modeless::draw(&find, 860, 620, "find-host-adding");
+        key(&find, path.into());
+        key(&find, Key::Return.into());
+        modeless::draw(&find, 860, 620, "find-host-added");
+        assert!(
+            modeless::accessible_item(&find, AccessibleRole::TextInput, "Folder to add").is_none(),
+            "an accepted Add closes the entry: {path}"
+        );
+        assert_eq!(
+            value(&item(&find, AccessibleRole::Combobox, "Search folders")),
+            path
+        );
+        item(&find, AccessibleRole::Text, label);
+    }
+    // An untick through the open list updates its row in place: the list stays open.
+    let folders = item(&find, AccessibleRole::Combobox, "Search folders");
+    modeless::click_item(&find, &folders, "Search folders");
+    modeless::draw(&find, 860, 620, "find-host-list");
+    let added = popup_item(&find, AccessibleRole::Checkbox, &typed);
+    modeless::click_item(&find, &added, &typed);
+    modeless::draw(&find, 860, 620, "find-host-unticked");
+    assert!(!checked(&popup_item(
+        &find,
+        AccessibleRole::Checkbox,
+        &typed
+    )));
+    item(&find, AccessibleRole::Text, "Search folders (1 of 2)");
+    main.invoke_close_find_windows();
+    state.borrow_mut().retire_all();
+}
+
+#[test]
+fn escape_closes_an_open_overlay_first_and_focus_survives_it() {
+    let (window, native) = open();
+    let closed = Rc::new(Cell::new(0));
+    window.on_close_session({
+        let closed = closed.clone();
+        move || closed.set(closed.get() + 1)
+    });
+    window.set_roots(Rc::new(VecModel::from(vec![row("/srv", true)])).into());
+    window.set_rows(result_rows(3).into());
+    window.invoke_begin();
+    modeless::draw(&native, 860, 620, "find-overlays");
+    // F1 from the query moves focus into the help: keys no longer reach the hidden rows.
+    key(&native, Key::F1.into());
+    modeless::draw(&native, 860, 620, "find-overlays-help");
+    key(&native, Key::DownArrow.into());
+    assert_eq!(
+        window.get_selected_row(),
+        -1,
+        "the hidden results keep their row"
+    );
+    key(&native, Key::Escape.into());
+    assert!(!window.get_show_help());
+    assert_eq!(closed.get(), 0, "Escape closed only the help");
+    // Focus went to the results that the help covered.
+    modeless::draw(&native, 860, 620, "find-overlays-closed");
+    key(&native, Key::DownArrow.into());
+    assert_eq!(window.get_selected_row(), 0);
+    // Close help returns focus to the results as well.
+    modeless::click(&native, "Help");
+    modeless::draw(&native, 860, 620, "find-overlays-help-again");
+    modeless::click(&native, "Close help");
+    modeless::draw(&native, 860, 620, "find-overlays-help-closed");
+    key(&native, Key::DownArrow.into());
+    assert_eq!(window.get_selected_row(), 1);
+    // The Add entry also closes on Escape, and focus moves to Search folders.
+    modeless::click(&native, "Add");
+    modeless::draw(&native, 860, 620, "find-overlays-adding");
+    key(&native, Key::Escape.into());
+    modeless::draw(&native, 860, 620, "find-overlays-added");
+    assert!(
+        modeless::accessible_item(&native, AccessibleRole::TextInput, "Folder to add").is_none()
+    );
+    assert_eq!(closed.get(), 0, "Escape closed only the Add entry");
+    key(&native, Key::F1.into());
+    assert!(window.get_show_help(), "F1 still reaches the window");
+    modeless::draw(&native, 860, 620, "find-overlays-help-third");
+    key(&native, Key::Escape.into());
+    modeless::draw(&native, 860, 620, "find-overlays-done");
+    assert_eq!(closed.get(), 0);
+    // Without an overlay, Escape closes the window.
+    key(&native, Key::Escape.into());
+    assert_eq!(closed.get(), 1);
+    window.hide().unwrap();
+}
+
+#[test]
+fn a_short_running_search_with_large_text_shows_its_status_under_the_results() {
+    let (window, native) = open();
+    window.invoke_apply_preferences(0, 0, "".into(), 24, 24);
+    let progress = "Searching · 3 found · 120 examined";
+    window.set_progress(progress.into());
+    window.set_running(true);
+    modeless::draw(&native, 700, 300, "find-compact-running");
+    // The query area gives its height to the results; the status line stays usable.
+    let line = item(&native, AccessibleRole::Button, progress);
+    let top = line.map_to_native_window(line.geometry().origin).y;
+    assert!(
+        top >= 0.0 && top + line.geometry().height() <= 300.0,
+        "status line at {top}"
+    );
+    modeless::click_item(&native, &line, progress);
+    assert!(window.get_show_details());
+    window.hide().unwrap();
+}
+
+#[test]
+fn the_folder_list_fits_a_short_window_and_keeps_the_browsed_row_visible() {
+    let (window, native) = open();
+    let labels: Vec<String> = (0..16)
+        .map(|index| format!("/srv/folder {index:02}"))
+        .collect();
+    window.set_roots(
+        Rc::new(VecModel::from(
+            labels
+                .iter()
+                .map(|label| row(label, true))
+                .collect::<Vec<_>>(),
+        ))
+        .into(),
+    );
+    // The host keeps the popup surface at the window size.
+    let placement = window.global::<midnight_ui::TooltipPlacement>();
+    placement.set_surface_width(700.0);
+    placement.set_surface_height(400.0);
+    modeless::draw(&native, 700, 400, "find-folders-short");
+    let folders = item(&native, AccessibleRole::Combobox, "Search folders");
+    modeless::click_item(&native, &folders, "Search folders");
+    modeless::draw(&native, 700, 400, "find-folders-short-open");
+    key(&native, Key::End.into());
+    modeless::draw(&native, 700, 400, "find-folders-short-end");
+    // click_item asserts that the row is inside the window.
+    let last = popup_item(&native, AccessibleRole::Checkbox, &labels[15]);
+    let top = last.map_to_native_window(last.geometry().origin).y;
+    assert!(top + last.geometry().height() <= 400.0, "last row at {top}");
+    modeless::click_item(&native, &last, &labels[15]);
+    window.hide().unwrap();
+}
+
+#[test]
+fn a_narrow_touch_window_gives_the_folder_entry_its_own_line() {
+    let (window, native) = open();
+    window.invoke_apply_preferences(0, 1, "".into(), 13, 17);
+    window.set_roots(Rc::new(VecModel::from(vec![row("/srv", true)])).into());
+    modeless::draw(&native, 320, 620, "find-narrow-adding");
+    modeless::click(&native, "Add");
+    modeless::draw(&native, 320, 620, "find-narrow-adding-open");
+    let entry = item(&native, AccessibleRole::TextInput, "Folder to add");
+    let browse = item(&native, AccessibleRole::Button, "Browse…");
+    assert!(
+        entry.geometry().width() >= 120.0,
+        "the path field is usable: {:?}",
+        entry.geometry()
+    );
+    assert!(
+        center(&browse).y > center(&entry).y,
+        "Browse is under the path"
+    );
+    assert!(right_edge(&browse) <= 320.0);
     window.hide().unwrap();
 }

@@ -181,6 +181,17 @@ impl ArchiveMount for NavigationArchive {
         self.source()
             .persistent_member_identity(entry, expected_source_version)
     }
+    fn parent(&self) -> Option<midnight_core::ArchiveParent> {
+        self.source().parent()
+    }
+    fn stage_member(
+        &self,
+        entry: u64,
+        cancelled: &dyn Fn() -> bool,
+        progress: &dyn Fn(u64),
+    ) -> Result<Arc<dyn midnight_core::ArchiveContent>, FsError> {
+        self.source().stage_member(entry, cancelled, progress)
+    }
 }
 
 #[cfg(test)]

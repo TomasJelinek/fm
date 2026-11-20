@@ -14,7 +14,7 @@ The existing binary was staged as `scroll-pacing-baseline-abdaa338.exe` beside t
 registration and application settings were unchanged. Reports and QA scripts are under
 `_build/qa/d3d-scroll-20261112/`.
 
-The BAT reproduction uses the supplied `<source-checkout>/ovclash/build.bat`, Text mode,
+The BAT reproduction uses the supplied `<external-project>/build.bat`, Text mode,
 acknowledged normalized start 0.7, Segoe UI 13, native parent, and 1000×700 logical pixels
 (2250×1575 physical at scale 2.25). It posts three native wheel notches to the owned viewer.
 Spatial proof and GPU readback are disabled. The original performance gates remain unchanged.
@@ -72,7 +72,7 @@ the original guard outcomes.
 
 - `locked-stacks.*`: 169 stacks, total suspension 385 ms, maximum 10 ms. The BAT mode/seek
   readiness gate fails during this capture, so it establishes opening behavior only.
-- `locked-md-stacks.*`: exact supplied `<source-checkout>/ovclash/AGENTS.md`, initial
+- `locked-md-stacks.*`: exact supplied `<external-project>/AGENTS.md`, initial
   position zero without a mode change or explicit seek; 190 stacks, total suspension 409 ms,
   maximum 10 ms. Native wheel gestures run and the original jump guard fails. This is valid
   active-motion attribution, not a performance pass.

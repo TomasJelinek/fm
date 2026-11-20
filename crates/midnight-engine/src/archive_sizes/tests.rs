@@ -124,6 +124,15 @@ fn root(
     if reverse {
         entries.reverse();
     }
+    root_listing(snapshots, mount, navigation, entries)
+}
+/// The archive root listing `entries`, published as the left pane's tree root.
+fn root_listing(
+    snapshots: &Snapshots,
+    mount: Arc<dyn ArchiveMount>,
+    navigation: u64,
+    entries: Vec<Entry>,
+) -> TreeRootSnapshot {
     let listing = ArchiveListing {
         location: ArchiveLocation {
             mount: Some(mount),
@@ -764,6 +773,62 @@ async fn sorting_does_not_cancel_active_capture_but_explicit_cancel_does() {
         "cancellation cannot complete an unread root"
     );
     assert_eq!(cancelled.errors, 0, "cancellation is not a read error");
+    assert_eq!(mount.reads.load(Ordering::Relaxed), 0);
+    controller.shutdown().await;
+}
+#[tokio::test]
+async fn a_folder_of_more_than_100000_subfolders_is_sized_completely() {
+    // Folder sizes once refused a listing of more than 100,000 members and kept at
+    // most 100,000 folder sizes of an archive. The long interval publishes only the
+    // final sizes, once the scan has finished.
+    let (_owner, controller, snapshots, mut events) =
+        setup_with_interval(Duration::from_secs(3600));
+    let mut mount = Mount::default();
+    for id in 2..100_003 {
+        mount
+            .rows
+            .insert(id, vec![node(id + 200_000, id, EntryKind::File, Some(id))]);
+    }
+    let mount = Arc::new(mount);
+    let entries = (2..100_003)
+        .map(|id| Entry::from_archive(node(id, 1, EntryKind::Directory, None)))
+        .collect();
+    let ready = root_listing(&snapshots, mount.clone(), 1, entries);
+    controller
+        .submit(Command::Compute {
+            root: ready,
+            scan: FolderSizeScanId(1),
+            selection: None,
+        })
+        .await;
+    let result = finished(&controller, &mut events, 1).await;
+    assert!(
+        !result
+            .iter()
+            .any(|event| matches!(event, Event::Rejected { .. })),
+        "{result:?}"
+    );
+    let sizes = result
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::Snapshot { sizes, .. } => Some(sizes.clone()),
+            _ => None,
+        })
+        .expect("the final sizes");
+    assert_eq!(sizes.len(), 100_001);
+    for id in 2..100_003 {
+        let size = sizes
+            .get(VirtualEntryId {
+                mount: 23,
+                entry: id,
+            })
+            .unwrap();
+        assert!(
+            size.finished && size.errors == 0 && size.bytes == id,
+            "{id}: {size:?}"
+        );
+    }
     assert_eq!(mount.reads.load(Ordering::Relaxed), 0);
     controller.shutdown().await;
 }

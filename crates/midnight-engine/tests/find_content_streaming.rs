@@ -16,7 +16,7 @@ fn matches_once(
         Err(error) => content::ContentMatch::Failed(find_error(
             &source.entry().path,
             io::ErrorKind::InvalidInput,
-            error,
+            &error,
         )),
     }
 }
@@ -100,6 +100,7 @@ fn practical_default_content_scan_finds_a_late_match_above_the_old_whole_file_li
             text: "needle".into(),
             case_sensitive: true,
             whole_words: false,
+            regex: false,
         },
         FindLimits::default(),
         &mut progress,
@@ -122,6 +123,7 @@ fn bom_scalars_and_case_folding_work_when_every_read_is_one_byte() {
             text: "STRASSE 文档".into(),
             case_sensitive: false,
             whole_words: false,
+            regex: false,
         },
         FindLimits::default(),
         &mut FindProgress::default(),
@@ -142,6 +144,7 @@ fn finding_a_match_does_not_hide_malformed_or_incomplete_utf8_later_in_the_file(
                 text: "needle".into(),
                 case_sensitive: true,
                 whole_words: false,
+                regex: false,
             },
             FindLimits::default(),
             &mut FindProgress::default(),
@@ -166,6 +169,7 @@ fn streaming_content_limits_remain_explicit() {
             text: "needle".into(),
             case_sensitive: true,
             whole_words: false,
+            regex: false,
         },
         limits,
         &mut FindProgress::default(),
@@ -190,6 +194,7 @@ fn scan(
             text: text.into(),
             case_sensitive: false,
             whole_words,
+            regex: false,
         },
         FindLimits::default(),
         &mut FindProgress::default(),
@@ -294,6 +299,7 @@ fn content_matcher_throughput_probe() {
             text: "needle".into(),
             case_sensitive,
             whole_words: false,
+            regex: false,
         };
         let started = Instant::now();
         for _ in 0..3 {

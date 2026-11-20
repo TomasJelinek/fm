@@ -5,12 +5,18 @@ import { ScrollView } from "scroll-view.slint";
 // Match the SDK ListView shell and export an alias to retain that optimization.
 component ListView inherits ScrollView {
     in property <length> row-height;
+    // Also draw the bands the viewport cuts at its edges. The thumbnail grid's
+    // bands are too tall to leave blank; list views show whole rows only.
+    in property <bool> partial-bands;
     callback user-scrolled();
 
     private property <int> first-complete-band: ceil(-root.content-y / root.row-height);
     private property <int> past-complete-band: floor((root.visible-height - root.content-y) / root.row-height);
+    private property <int> first-partial-band: floor(-root.content-y / root.row-height);
+    private property <int> past-partial-band: ceil((root.visible-height - root.content-y) / root.row-height);
 
-    private property <bool> align-single-band: root.visible-height >= root.row-height
+    private property <bool> align-single-band: !root.partial-bands
+        && root.visible-height >= root.row-height
         && root.visible-height < 2 * root.row-height;
     // The band at the viewport midpoint is already materialized. It includes
     // the first and last bands at the native scroll bounds and retains a fully
@@ -22,6 +28,9 @@ component ListView inherits ScrollView {
 
     pure public function band-visible(band: int) -> bool {
         if root.align-single-band { return band == root.compact-band; }
+        if root.partial-bands {
+            return band >= root.first-partial-band && band < root.past-partial-band;
+        }
         // Use the native clip if even one row is taller than the pane.
         return root.visible-height < root.row-height
             || (band >= root.first-complete-band && band < root.past-complete-band);

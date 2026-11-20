@@ -60,6 +60,7 @@ enum Message {
     ConfirmMetadata(OperationId, u64, MetadataConflictPolicy, Arc<Predecessors>),
     ResolveMetadataConflict(OperationId, u64, MetadataConflictPolicy),
     DecideRename(CopyDecision),
+    DecideDelete(CopyDecision),
     Wake,
 }
 
@@ -238,7 +239,7 @@ impl Controller {
         name: Option<String>,
         replace_existing: bool,
     ) {
-        if let Some(predecessors) = self.capture_confirmation(id) {
+        if let Some(predecessors) = self.capture_confirmation(id, replace_existing) {
             self.send_confirmation(
                 id,
                 Message::Confirm(id, name, replace_existing, predecessors),
@@ -257,7 +258,9 @@ impl Controller {
         delivery.queued = self.sender.send(message).await.is_ok();
     }
 
-    fn capture_confirmation(&self, id: OperationId) -> Option<Arc<Predecessors>> {
+    /// `replaces` marks a confirmed new file that replaces an existing one: like every
+    /// change of an existing entry, it waits for the copies outstanding now.
+    fn capture_confirmation(&self, id: OperationId, replaces: bool) -> Option<Arc<Predecessors>> {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         let job = registry.get_mut(&id)?;
         let status = job.status.lock().unwrap_or_else(|e| e.into_inner());
@@ -265,10 +268,12 @@ impl Controller {
             return None;
         }
         let predecessors = Arc::new(
-            if matches!(
-                status.kind,
-                MutationKind::CreateDirectory | MutationKind::CreateFile
-            ) {
+            if !replaces
+                && matches!(
+                    status.kind,
+                    MutationKind::CreateDirectory | MutationKind::CreateFile
+                )
+            {
                 Predecessors::default()
             } else {
                 self.copies.snapshot()
@@ -294,7 +299,7 @@ impl Controller {
         revision: u64,
         conflicts: MetadataConflictPolicy,
     ) {
-        if let Some(predecessors) = self.capture_confirmation(id) {
+        if let Some(predecessors) = self.capture_confirmation(id, false) {
             self.send_confirmation(
                 id,
                 Message::ConfirmMetadata(id, revision, conflicts, predecessors),
@@ -315,6 +320,9 @@ impl Controller {
     }
     pub(crate) async fn decide_rename(&self, decision: CopyDecision) {
         let _ = self.sender.send(Message::DecideRename(decision)).await;
+    }
+    pub(crate) async fn decide_delete(&self, decision: CopyDecision) {
+        let _ = self.sender.send(Message::DecideDelete(decision)).await;
     }
     pub(crate) async fn set_paused(&self, id: OperationId, paused: bool) {
         let progress = {
@@ -412,6 +420,8 @@ async fn run(
     let mut timer = tokio::time::interval(Duration::from_millis(50));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut rename_states: HashMap<OperationId, Arc<rename::ConflictState>> = HashMap::new();
+    let mut delete_states: HashMap<OperationId, Arc<worker::delete::DecisionState>> =
+        HashMap::new();
     let mut accepting = true;
     loop {
         let idle = registry
@@ -440,9 +450,8 @@ async fn run(
                         if let Err(error) = job.confirm_with(name, replace_existing, services.transfer.clone()) {
                             disposing.spawn(job.status.clone(), job.failure(error));
                         } else {
-                            if !matches!(job.progress().kind, MutationKind::CreateDirectory | MutationKind::CreateFile) {
-                                job.predecessors = predecessors;
-                            }
+                            // Empty unless the confirmed change touches an existing entry.
+                            job.predecessors = predecessors;
                             job.set_state(OperationState::Queued);
                             publish(&outbox, &job.progress()).await;
                             queued.push_back(job);
@@ -485,6 +494,9 @@ async fn run(
                 Some(Message::DecideRename(decision)) => {
                     if let Some(state) = rename_states.get(&decision.id) { state.resolve(decision); }
                 }
+                Some(Message::DecideDelete(decision)) => {
+                    if let Some(state) = delete_states.get(&decision.id) { state.resolve(decision); }
+                }
                 Some(Message::Wake) => {}
                 None => { accepting = false; cancel.cancel(); }
             },
@@ -513,6 +525,9 @@ async fn run(
                         }
                         if job.progress().kind == MutationKind::Rename {
                             rename_states.insert(id, job.rename_conflicts.clone());
+                        }
+                        if matches!(job.progress().kind, MutationKind::Delete(_)) {
+                            delete_states.insert(id, job.delete_decisions.clone());
                         }
                         prepared.insert(job.progress().id, job);
                     }
@@ -615,6 +630,12 @@ async fn run(
                 .contains_key(id)
         });
         rename_states.retain(|id, _| {
+            registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(id)
+        });
+        delete_states.retain(|id, _| {
             registry
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

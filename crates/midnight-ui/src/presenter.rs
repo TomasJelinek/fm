@@ -15,6 +15,7 @@ mod copy_dialog;
 #[cfg(test)]
 mod copy_errors_tests;
 mod copy_selection;
+pub(crate) mod delete_decisions;
 mod desktop;
 mod directory_link_tooltip;
 pub(crate) mod row_continuity;
@@ -46,12 +47,14 @@ mod job_controls;
 mod job_history;
 pub(crate) mod keyboard;
 pub(crate) mod keyboard_editor;
+pub(crate) mod mask_selection;
 mod metadata;
 mod navigation_fallback;
 mod network_neighborhood;
 mod operations;
 mod panel_details;
 mod panel_navigation;
+pub(crate) mod panel_visibility;
 mod panel_warnings;
 #[cfg(test)]
 mod panel_warnings_tests;
@@ -275,6 +278,7 @@ pub struct Presenter {
     pub(crate) settings_picker: settings_picker::State,
     pub(crate) viewer_plugins: viewer_plugins::ViewerPluginsState,
     pub(crate) fonts: fonts::FontsState,
+    pub(crate) about_notice: crate::about_licenses::NoticeState,
     pub(crate) keyboard: keyboard::KeyboardState,
     pub(crate) operations: operations::OperationsState,
     pub(crate) job_charts: crate::job_speed::Charts,
@@ -282,6 +286,8 @@ pub struct Presenter {
     pub(crate) metadata: metadata::MetadataState,
     pub(crate) comparison: comparison::ComparisonState,
     pub(crate) filter_dialog: filter::FilterDialogState,
+    pub(crate) mask_dialog: mask_selection::MaskDialogState,
+    pub(crate) hidden_entries: panel_visibility::HiddenEntriesState,
     pub(crate) colors: filename_colors::ColorState,
     pub(crate) copies: copies::CopiesState,
     pub(crate) finds: find::FindState,
@@ -333,6 +339,7 @@ impl Presenter {
             settings_picker: settings_picker::State::default(),
             viewer_plugins: viewer_plugins::ViewerPluginsState::default(),
             fonts: fonts::FontsState::default(),
+            about_notice: Default::default(),
             keyboard: keyboard::KeyboardState::default(),
             operations: operations::OperationsState::default(),
             job_charts: crate::job_speed::Charts::default(),
@@ -340,6 +347,8 @@ impl Presenter {
             metadata: metadata::MetadataState::default(),
             comparison: comparison::ComparisonState::default(),
             filter_dialog: filter::FilterDialogState::default(),
+            mask_dialog: mask_selection::MaskDialogState::default(),
+            hidden_entries: panel_visibility::HiddenEntriesState::default(),
             colors: filename_colors::ColorState::default(),
             copies: copies::CopiesState::default(),
             finds: find::FindState::default(),
@@ -443,10 +452,15 @@ impl Presenter {
 
     /// Retry retained watch hints and post-operation refreshes once unblocked.
     fn flush_background_refreshes(&mut self, send: &dyn Fn(Command) -> bool) {
+        // Actions waiting for a re-read run before another re-read starts.
+        self.run_deferred_actions(send);
+        self.flush_hidden_entries(send);
         for pane in [PaneId::Left, PaneId::Right] {
-            // An archive panel whose tree session was dropped still owes its re-list.
+            // An archive panel whose tree session was dropped still owes its re-list,
+            // and one whose listing failed its re-open or return to native.
             if self.panes[pane.index()].archive.is_some() {
                 self.leave_unavailable_tree(pane, send);
+                self.recover_archive(pane, send);
             }
             let p = &self.panes[pane.index()];
             // A hint survives a loading re-sort (it reuses the committed rows) and
@@ -470,6 +484,8 @@ impl Presenter {
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
         self.release_mutation_settle(None);
+        self.retired
+            .push(Box::new(mem::take(&mut self.operations.deferred)));
         self.cancel_tree_editor(None);
         self.cancel_tree_rename(None);
         self.cancel_tree_metadata(None);
@@ -726,7 +742,16 @@ impl Presenter {
         // current; any other transition closes it with the tree presentation.
         if same_native_view {
             self.follow_panel_filter_refresh(pane, navigation);
+            // A background re-read keeps the flat rows' folder hints on screen
+            // and carries them over when it commits (`row_continuity`).
+            let kept = (mode == Reload::Background
+                && self.panes[pane.index()].tree_view().is_none())
+            .then(|| mem::take(&mut self.panes[pane.index()].folder_presence));
             self.clear_tree_presentation(pane, Some(navigation));
+            if let Some(kept) = kept {
+                let cleared = mem::replace(&mut self.panes[pane.index()].folder_presence, kept);
+                self.retired.push(Box::new(cleared));
+            }
         } else {
             self.clear_tree(pane, Some(navigation));
         }
@@ -915,6 +940,10 @@ impl Presenter {
             self.find_validated(*result, send);
             return;
         }
+        if let Event::TransferDestinationChecked(checked) = event {
+            self.transfer_destination_checked(*checked, send);
+            return;
+        }
         let Some(event) = self.dispatch_drag_event(event, send) else {
             return;
         };
@@ -954,6 +983,7 @@ impl Presenter {
         self.flush_selection(send);
         self.flush_drag_commands(send);
         self.flush_comparison(send);
+        self.flush_find_panels();
         // A manifest destination was just chosen: save to it now.
         self.begin_pending_checksum_saves(send);
         self.dispatch_open_directories(send);
@@ -994,6 +1024,10 @@ impl Presenter {
         } = event
         {
             self.apply_rectangle_summary(pane, token, totals);
+            return;
+        }
+        if let Event::LicenseNoticeReady(notice) = event {
+            self.about_notice.receive(notice);
             return;
         }
         if let Event::DiagnosticTextReady { request, result } = event {
@@ -1076,9 +1110,12 @@ impl Presenter {
         }
         if matches!(
             &event,
-            Event::FindResultValidated(_) | Event::FindFileCaptured(_)
+            Event::FindResultValidated(_)
+                | Event::FindFileCaptured(_)
+                | Event::TransferDestinationChecked(_)
         ) {
-            // A validated navigation needs the sender; retire unhandled payloads.
+            // A validated navigation or a checked transfer destination needs the
+            // sender; retire unhandled payloads.
             self.retired.push(Box::new(event));
             return;
         }
@@ -1399,7 +1436,7 @@ impl Presenter {
                         note_new_folders(&mut p.size_scan_new_folders, &p.index, &index);
                     }
                 }
-                p.rows_committing(&request, &entries);
+                p.rows_committing(&request, &entries, &index, &mut self.retired);
                 self.retired
                     .push(Box::new(mem::replace(&mut p.entries, entries)));
                 self.retired
@@ -1638,7 +1675,10 @@ impl Presenter {
         if self.panes[pane.index()].network.is_some() {
             return self.network_open(pane, row, send);
         }
-        if self.panes[pane.index()].loading {
+        // A background re-read keeps the committed rows on screen; opening one
+        // of them navigates or launches it as before the re-read began.
+        let p = &self.panes[pane.index()];
+        if p.loading && !p.keeps_rows_in_background() {
             return false;
         }
         if self.panes[pane.index()].tree_view().is_some()

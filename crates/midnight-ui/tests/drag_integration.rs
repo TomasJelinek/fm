@@ -22,6 +22,10 @@ use std::{
     time::Duration,
 };
 
+/// The bridge's `MIN_DRAG_DURATION` (src/presenter/drag_drop.rs): a release sooner than
+/// this after the press that started the drag cancels it.
+const DRAG_HOLD: Duration = Duration::from_millis(400);
+
 struct Harness {
     ui: ui::TestUi,
     /// The 16 ms repeating drag-bridge timer (src/drag_bridge.rs) follows this clock.
@@ -137,7 +141,16 @@ impl Harness {
         self.start_item("file 文档.bin")
     }
 
+    /// Start dragging `name`, holding the button as long as a deliberate drag takes,
+    /// so that a later release drops.
     fn start_item(&mut self, name: &str) -> DragId {
+        let id = self.flick_item(name);
+        ui::advance(&self.clock, DRAG_HOLD);
+        id
+    }
+
+    /// Press `name` and move it past the drag threshold at once, with no time passing.
+    fn flick_item(&mut self, name: &str) -> DragId {
         let start = ui::root_position(&self.ui.window, name, AccessibleRole::ListItem);
         self.ui
             .window
@@ -364,6 +377,102 @@ fn internal_drop_highlights_the_exact_folder_and_captures_its_identity() {
             .iter()
             .any(|command| matches!(command, Command::StartDrag(_) | Command::OpenEntry { .. }))
     );
+}
+
+#[test]
+fn drops_sooner_than_the_minimum_drag_duration_on_the_other_panel_or_a_folder_are_cancelled() {
+    use slint::Model;
+    let mut h = Harness::new();
+    let quick = DRAG_HOLD - Duration::from_millis(1);
+    // The left panel's cursor and marks, as the window shows them.
+    let marks = |h: &Harness| {
+        refresh(&h.ui.window, &h.presenter.borrow());
+        let rows = h.ui.window.get_left_rows();
+        let marks = (0..rows.row_count())
+            .map(|row| rows.row_data(row).unwrap().selected)
+            .collect::<Vec<_>>();
+        (h.ui.window.get_left_cursor(), marks)
+    };
+    for onto_folder in [false, true] {
+        for held in [quick, DRAG_HOLD] {
+            let id = h.flick_item("file 文档.bin");
+            h.prepared(id);
+            // Empty content of the other panel targets its folder; a folder row itself.
+            let position = if onto_folder {
+                h.target()
+            } else {
+                slint::LogicalPosition::new(
+                    h.ui.window.get_right_list_left() + 70.0,
+                    h.ui.window.get_right_list_top()
+                        + h.ui.window.get_right_view_row_height() * 4.5,
+                )
+            };
+            h.ui.window
+                .window()
+                .dispatch_event(WindowEvent::PointerMoved { position });
+            h.ui.draw();
+            let preview = if onto_folder {
+                h.preview_request(id, PaneId::Right, EntryId(2), InternalDropIntent::Auto)
+            } else {
+                h.root_preview_request(id, PaneId::Right)
+            };
+            h.preview_result(&preview, position, Some(TransferIntent::Move));
+            assert_eq!(h.ui.window.get_drag_feedback_state(), 4);
+            assert_eq!(h.ui.window.get_drag_hover_pane(), 1);
+            assert_eq!(
+                h.ui.window.get_drag_hover_row(),
+                if onto_folder { 1 } else { -1 }
+            );
+            let before = marks(&h);
+            ui::advance(&h.clock, held);
+            h.ui.window
+                .window()
+                .dispatch_event(WindowEvent::PointerReleased {
+                    position,
+                    button: PointerEventButton::Left,
+                });
+            let drops = h
+                .commands
+                .borrow()
+                .iter()
+                .filter_map(|command| match command {
+                    Command::InternalDrop(request) if request.id == id => {
+                        Some(request.destination.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert!(!h.ui.window.get_drag_active());
+            assert_eq!(h.ui.window.get_drag_hover_pane(), -1);
+            assert_eq!(h.ui.window.get_drag_hover_row(), -1);
+            assert_eq!(h.ui.window.get_drag_feedback_state(), 0);
+            let noted =
+                h.ui.window
+                    .get_left_details()
+                    .row_data(0)
+                    .is_some_and(|field| field.value == "Drag cancelled: released within 0.4 s");
+            if held < DRAG_HOLD {
+                assert!(drops.is_empty(), "a release {held:?} after the press");
+                assert!(h.commands.borrow().iter().any(|command| {
+                    matches!(command, Command::CancelDrag(actual) if *actual == id)
+                }));
+                assert!(noted, "the source panel's status line says why");
+                assert_eq!(marks(&h), before, "selection and cursor stay");
+            } else {
+                assert_eq!(drops.len(), 1, "a release {held:?} after the press");
+                assert!(match &drops[0] {
+                    InternalDropDestination::PanelEntry { pane, entry, .. } => {
+                        onto_folder && *pane == PaneId::Right && *entry == EntryId(2)
+                    }
+                    InternalDropDestination::PaneRoot { pane, .. } => {
+                        !onto_folder && *pane == PaneId::Right
+                    }
+                    _ => false,
+                });
+                assert!(!noted, "the new drag removed the note");
+            }
+        }
+    }
 }
 
 #[test]

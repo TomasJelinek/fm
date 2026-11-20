@@ -76,13 +76,18 @@ impl Broker {
                     | Message::StageProgress { .. }
                     | Message::StageSeal { .. }
             );
+            // The host's code travels with the error: a failed source read is never
+            // taken for a corrupt archive.
             return Err(io::Error::new(
                 if code == api::ErrorCode::Cancelled && checkpoint {
                     io::ErrorKind::Interrupted
                 } else {
                     io::ErrorKind::Other
                 },
-                diagnostic,
+                crate::Failure {
+                    code,
+                    message: diagnostic,
+                },
             ));
         }
         Ok(reply)
@@ -210,12 +215,13 @@ fn invalid() -> io::Error {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
-    struct Reply;
+    /// A host that answers every worker request with `Failed` of this code.
+    struct Reply(api::ErrorCode);
     impl Transport for Reply {
         fn exchange(&mut self, message: &Message) -> io::Result<Message> {
             Ok(Message::Failed {
                 request: message.request(),
-                code: api::ErrorCode::Cancelled,
+                code: self.0,
                 message: "canceled".into(),
             })
         }
@@ -226,11 +232,14 @@ mod cancellation_tests {
             unreachable!()
         }
     }
-    fn broker() -> Broker {
+    fn broker_replying(code: api::ErrorCode) -> Broker {
         Broker {
-            transport: Rc::new(RefCell::new(Box::new(Reply))),
+            transport: Rc::new(RefCell::new(Box::new(Reply(code)))),
             request: Rc::new(Cell::new(7)),
         }
+    }
+    fn broker() -> Broker {
+        broker_replying(api::ErrorCode::Cancelled)
     }
     #[test]
     fn cooperative_staging_failure_reaches_format_as_cancellation() {
@@ -251,5 +260,30 @@ mod cancellation_tests {
         let mut source = broker().source(4);
         let error = source.read(&mut [0; 4]).unwrap_err();
         assert_ne!(error.kind(), io::ErrorKind::Interrupted);
+    }
+    /// A host failure reply to a source read is the host's own failure, never a
+    /// corrupt archive, whichever decoder met it.
+    #[test]
+    fn a_failed_source_read_keeps_the_hosts_code() {
+        use api::{ErrorCode, Format};
+        for code in [
+            ErrorCode::Cancelled,
+            ErrorCode::SourceChanged,
+            ErrorCode::Io,
+        ] {
+            for format in [Format::TarGzip, Format::Zip, Format::Tar, Format::SevenZip] {
+                let error = crate::Archive::open_stream(
+                    format,
+                    broker_replying(code).source(4096),
+                    4096,
+                    Rc::new(crate::storage::MemoryStorage::default()),
+                    crate::Limits::default(),
+                )
+                .err()
+                .unwrap();
+                assert_eq!(error.code, code, "{format:?}: {error}");
+                assert_eq!(error.message, "canceled", "{format:?}");
+            }
+        }
     }
 }

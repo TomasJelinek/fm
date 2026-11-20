@@ -87,6 +87,30 @@ fn malformed_and_excessive_dimensions_fail_without_pixels() {
     assert!(image.render(viewport(1, 1, f64::NAN, 0.0, 0.0)).is_err());
 }
 
+/// The decoder's error text becomes the reason after the host's "damaged or incomplete".
+#[test]
+fn rejected_content_gives_a_short_reason_for_the_status_line() {
+    let reason = |bytes: Vec<u8>| {
+        let error = midnight_viewer_image::decode(&mut Cursor::new(bytes))
+            .err()
+            .expect("rejected content");
+        midnight_image_viewer_sdk::api::FailureReason::sanitize(&error.to_string())
+            .map(|reason| reason.as_str().to_owned())
+    };
+    assert_eq!(reason(Vec::new()).as_deref(), Some("The file is empty"));
+    assert_eq!(
+        reason(b"plain text with an image name".to_vec()).as_deref(),
+        Some("The content is not a recognized image format")
+    );
+    // A PNG cut in half, like a partial download, keeps image-rs's wording (README).
+    let gradient = RgbaImage::from_fn(160, 120, |x, y| Rgba([x as u8, y as u8, 90, 255]));
+    let png = encoded(gradient).into_inner();
+    assert_eq!(
+        reason(png[..png.len() / 2].to_vec()).as_deref(),
+        Some("unexpected end of file")
+    );
+}
+
 #[test]
 fn exif_orientation_changes_dimensions_before_viewport_sampling() {
     let original = image::RgbImage::from_pixel(40, 20, image::Rgb([100, 40, 10]));

@@ -93,15 +93,30 @@ examples that create windows without it keep `Subpixel`.
   stem of `l` on whole pixels, otherwise the automatic hinter with stem adjustment
   plus the contrast curve. zeno, swash's rasterizer, draws the result. Because a
   fitted outline is drawn for a whole-pixel advance, glyphs inside a word follow
-  each other at their fitted advances; the pen returns to the rounded layout
-  position after every blank, on another baseline, after a glyph that was not
-  fitted, and whenever it would be more than one pixel from the layout.
+  each other at their fitted advances. At small sizes those are often wider than
+  the layout's, so a glyph moves a pixel back where its pen would lead the layout
+  by more than half a pixel or its fitted advance would end more than half a
+  pixel past where layout starts the next glyph (read ahead in the run; a mark
+  that layout puts over the glyph does not count), and a pixel forward where
+  the pen would lag by more than one. A word starts on the rounded layout
+  position after a blank, on
+  another baseline and after a glyph that was not fitted; after a blank it starts
+  no earlier than keeps that blank at least its layout width less half a pixel.
+  Until 20 November 2026 the pen only had to stay within one pixel of the layout
+  either way, so words grew into the blank after them: on About dialog text laid
+  out from every tenth-pixel start, 1,708 of 5,580 blanks (DejaVu Sans at 11 to
+  14 px, its bold at 20 and 26 px, Noto Sans at 11 to 13 px) were drawn more than
+  half a pixel narrow, at worst 2.5 px narrow (a 3.5 px blank drawn as 1 px).
+  With the current rule none is; the same samples have 1,085 instead of 962 of
+  27,450 neighboring glyph pairs whose bitmaps overlap, most of the added ones in
+  Noto Sans at 11 and 12 px, whose automatically hinted advances run wide.
 
 Stroked text, glyphs drawn as paths (rotated, large or non-solid text), color
 glyphs and every font with color glyph tables keep the upstream path in all three
 fittings. Text layout, measurement, carets and selections are not part of this
-crate and keep using linear advances, so with `Fitted` ink can sit up to one pixel
-from its layout position. A word is followed from the first glyph of a
+crate and keep using linear advances, so with `Fitted` ink can sit a pixel, and
+at the start of a word after a blank about a pixel and a half, from its layout
+position. A word is followed from the first glyph of a
 `fill_glyph_run` call. Slint 1.18.1 leaves out the glyphs of unelided text that
 lie more than a line height outside the clip, so a word that crosses the left
 clip edge, as in a scrolled line edit, can be placed one pixel differently from
@@ -119,10 +134,12 @@ from the repository root:
 cargo test --manifest-path vendor/femtovg/Cargo.toml --lib --no-default-features --features swash --locked --target-dir _build text::fitting
 ```
 
-The pen and contrast tests need nothing else. Two tests of the fitted rasterizer
-read DejaVu Sans from `/usr/share/fonts/truetype/dejavu`, because the vendored
-tree ships no font, and are ignored by default; add `-- --include-ignored` on a
-machine that has it.
+The pen and contrast tests need nothing else. Three tests read DejaVu Sans from
+`/usr/share/fonts/truetype/dejavu`, because the vendored tree ships no font, and
+are ignored by default; add `-- --include-ignored` on a machine that has it. Two
+check the fitted rasterizer; the third lays About dialog text out at 11 to 14 px
+from every tenth-pixel start and checks that each blank keeps at least its layout
+width less half a pixel.
 
 The WGPU source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`,
 `wgpu/uploads.rs` and `wgpu/viewports.rs`, with its tests in `wgpu/*_tests.rs` and

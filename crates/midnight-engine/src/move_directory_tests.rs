@@ -151,11 +151,9 @@ fn recursive_move_merge_skip_retains_skipped_child_and_ancestors() {
         }
     }
     let done = job.finish();
-    assert_eq!(
-        done.state,
-        CopyOperationState::CompletedWithErrors,
-        "{done:?}"
-    );
+    // The skipped file was the user's choice, not an error.
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.skipped, 1, "{done:?}");
     assert_eq!(done.source_files_removed, 1);
     assert_eq!(
         done.failed, 0,

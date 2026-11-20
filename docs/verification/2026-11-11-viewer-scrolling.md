@@ -4,8 +4,8 @@
 
 The native Windows probe used the supplied files:
 
-- `<source-checkout>/ovclash/AGENTS.md` (213,103 bytes).
-- `<source-checkout>/ovclash/build.bat` (22,632 bytes).
+- `<external-project>/AGENTS.md` (213,103 bytes).
+- `<external-project>/build.bat` (22,632 bytes).
 
 The user geometry was reproduced at 1,340 × 820 logical / 3,015 × 1,845 physical
 pixels, 225% scaling, Segoe UI 13. Viewer typography retained its defaults.
@@ -50,7 +50,7 @@ as `echo rem` remains ordinary text. There are no new dependencies.
 
 ## Targeted verification
 
-All commands ran in `D:/experiments/dev/FM`, with output under `_build/` and the
+All commands ran in the primary checkout, with output under `_build/` and the
 repository Windows toolchain environment. Cargo used `--locked --offline`.
 
 - Markdown independent plugin: all 61 tests passed, including five new large-table

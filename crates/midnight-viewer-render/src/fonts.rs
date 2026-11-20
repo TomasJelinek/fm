@@ -61,6 +61,38 @@ impl Catalog {
     }
 }
 
+/// A font context backed by the process's one system font database. Every viewer window
+/// has its own renderer; building a context loads the fontconfig configuration and cache
+/// and indexes every installed family (about 28 ms in a debug build), while a clone
+/// shares that database. Backend workers only: the first call does the loading.
+///
+/// The clones share the database's lock too, which fontique unwraps: a panic inside
+/// fontique while it holds that lock (a malformed font, say) would make every later lookup
+/// of every window panic. A database whose lock no longer works is therefore replaced
+/// here, for this and every later renderer, instead of being handed out again.
+pub(crate) fn shared_context() -> FontContext {
+    static CONTEXT: OnceLock<Mutex<FontContext>> = OnceLock::new();
+    let mut shared = CONTEXT
+        .get_or_init(|| Mutex::new(FontContext::default()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut context = shared.clone();
+    if !usable(&mut context) {
+        *shared = FontContext::default();
+        context = shared.clone();
+    }
+    context
+}
+
+/// Whether the system font database behind `context` still answers: a lookup that no
+/// clone has cached goes through its lock.
+fn usable(context: &mut FontContext) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        context.collection.family(parley::fontique::FamilyId::new());
+    }))
+    .is_ok()
+}
+
 /// Whether a saved family name denotes a renderer-supported CSS generic family.
 pub fn is_generic_family(family: &str) -> bool {
     parley::GenericFamily::parse(family).is_some()
@@ -71,8 +103,10 @@ pub fn installed_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>>
     INSTALLED.get(&cancelled, || discover_installed(&cancelled))
 }
 
+/// The renderers' own database (`shared_context`), so that the chooser lists exactly the
+/// families they can lay out, without loading the system's fonts a second time.
 fn discover_installed(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
-    let mut names = catalog_names(&mut FontContext::default());
+    let mut names = catalog_names(&mut shared_context());
     if cancelled() {
         return None;
     }
@@ -110,7 +144,7 @@ pub fn monospace_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>>
 }
 
 fn discover_monospace(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
-    let mut fonts = FontContext::default();
+    let mut fonts = shared_context();
     let mut names = Vec::new();
     for name in catalog_names(&mut fonts) {
         if cancelled() {
@@ -168,7 +202,7 @@ fn first_fixed_pitch(
     if candidates.is_empty() || cancelled() {
         return None;
     }
-    let mut fonts = FontContext::default();
+    let mut fonts = shared_context();
     let names = catalog_names(&mut fonts);
     for candidate in candidates {
         // The catalog keeps the first qualifying name of each case-insensitive group.

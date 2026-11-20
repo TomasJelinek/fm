@@ -116,6 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 revision,
                                 patch,
                                 localized_times: Default::default(),
+                                patch_calendars: Default::default(),
                                 time_input_format: None,
                                 time_defaults: Default::default(),
                                 capabilities: MetadataCapabilities {

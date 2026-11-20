@@ -205,6 +205,10 @@ pub struct TreeProjection {
     pub layout_revision: TreeLayoutRevision,
     pub rows: Arc<[TreeDisplayRow]>,
     pub index: Arc<TreeDisplayIndex>,
+    /// Hidden entries this projection leaves out because hidden files are not
+    /// shown: left-out rows at every depth (their loaded contents go uncounted),
+    /// plus those the captured root listing left out until the root is listed again.
+    pub hidden: usize,
 }
 
 impl TreeProjection {
@@ -383,7 +387,14 @@ impl TreeProjection {
                 native_root_files,
                 directory,
             }),
+            hidden: 0,
         })
+    }
+
+    /// Record how many hidden entries the backend left out of these rows.
+    pub fn with_hidden(mut self, hidden: usize) -> Self {
+        self.hidden = hidden;
+        self
     }
 
     /// Backend comparison for gesture stability; metadata/disclosure changes alone are harmless.
@@ -690,6 +701,9 @@ pub enum TreeSelectionAction {
         mode: SelectionMode,
     },
     Bulk(SelectionOperation),
+    /// Select or deselect every selectable displayed row whose name matches,
+    /// expanded descendants included; context-only ancestors never change.
+    Mask(Arc<crate::MaskSelection>),
     Rebase,
 }
 

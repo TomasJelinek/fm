@@ -1,5 +1,17 @@
-//! Convert keyboard navigation into backend viewport movements.
+//! Convert keyboard navigation into backend viewport movements, and tell touchpad
+//! momentum where the content stands.
 use midnight_core::ViewerInput;
+
+/// The content position per axis (0 at the start, 1 at the end) for touchpad momentum,
+/// which stops an axis whose position stops changing: given only at an edge. Between the
+/// edges a text page can take a while to arrive from the backend, and the shown position
+/// then stands still although the document goes on; momentum must not take that pause
+/// for the document's end.
+pub(super) fn momentum_position(horizontal: f32, vertical: f32) -> [Option<f64>; 2] {
+    const EDGE: f32 = 1e-6;
+    [horizontal, vertical]
+        .map(|position| (position <= EDGE || position >= 1.0 - EDGE).then_some(f64::from(position)))
+}
 
 pub(super) fn keyboard(action: &str, content_height: f32, scale: f32) -> Option<ViewerInput> {
     let (x, y) = match action {

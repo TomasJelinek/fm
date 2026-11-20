@@ -27,6 +27,7 @@ export component FileColumnHeading inherits Rectangle {
         y: (root.height - self.height) / 2;
         native-icon: root.descending ? root.icons.sort-descending : root.icons.sort-ascending;
         fallback-icon: root.descending ? FallbackIcons.sort-descending : FallbackIcons.sort-ascending;
+        glyph: true;
         width: Theme.icon-size; height: Theme.icon-size;
     }
     accessible-role: button; accessible-label: "Sort by " + root.sort-label;

@@ -61,7 +61,7 @@ fixtures record dispatch; no new OS editor interoperability claim is made.
 
 ## Built application and startup
 
-The debug entry point is `D:/experiments/dev/FM/_build/debug/me.exe`:
+The debug entry point is `_build/debug/me.exe`:
 
 - Size: 96,190,464 bytes.
 - SHA-256: `ae5544ac4cc47e86aeceda6f6b56d07a3826af58e099f80c4a0ec534c8c04c6e`.

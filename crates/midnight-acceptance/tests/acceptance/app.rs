@@ -7,8 +7,10 @@
 //! deliberate and documented in docs/developer/ACCEPTANCE.md: settings are in memory
 //! (the user's profile is never read or written), browsing uses the host-native
 //! `LocalFileSystem` service rather than the installed native filesystem plugin, and
-//! desktop launching, clipboard, drag-and-drop, editors, user commands, viewers,
-//! comparators and thumbnails are not installed.
+//! desktop launching, clipboard and drag-and-drop are not installed. Editors and user
+//! commands are opt-in (`Config::editor`, `Config::user_commands`), and
+//! `Config::plugins` opts a staged viewer scenario into the installed native filesystem
+//! plugin (archives included), viewers, comparators and thumbnails (`viewers_support`).
 // Production's owned-command reclaimer. Test targets compile with cfg(test), so its
 // unit-test module comes along (never run here); allow what that leaves unused.
 #[allow(dead_code, unused_imports)]
@@ -156,6 +158,80 @@ impl PathPickerService for ScriptedPicker {
     }
 }
 
+/// Stands in for the desktop clipboard, which a headless run has none of: what Copy
+/// (Ctrl+C) and Cut (Ctrl+X) put there stays in this process, and Paste (Ctrl+V)
+/// reads it back, as the native clipboard adapter would. Opt-in (`Config::clipboard`).
+#[derive(Default)]
+pub struct MemoryClipboard {
+    files: std::sync::Mutex<Option<FileClipboard>>,
+    text: std::sync::Mutex<Option<String>>,
+}
+
+impl MemoryClipboard {
+    /// The file list on the clipboard, if any.
+    pub fn files(&self) -> Option<FileClipboard> {
+        self.files.lock().expect("clipboard files").clone()
+    }
+
+    /// The text on the clipboard (Copy details, a copied path), if any.
+    #[allow(dead_code)] // For scenarios that check copied text by content.
+    pub fn text(&self) -> Option<String> {
+        self.text.lock().expect("clipboard text").clone()
+    }
+}
+
+struct MemoryClipboardSession(Arc<MemoryClipboard>);
+
+impl ClipboardSession for MemoryClipboardSession {
+    fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
+        *self.0.text.lock().expect("clipboard text") = Some(text.to_owned());
+        Ok(())
+    }
+
+    fn read_text(&mut self) -> Result<String, FsError> {
+        Ok(self
+            .0
+            .text
+            .lock()
+            .expect("clipboard text")
+            .clone()
+            .unwrap_or_default())
+    }
+
+    fn copy_files(&mut self, files: &FileClipboard) -> Result<(), FsError> {
+        *self.0.files.lock().expect("clipboard files") = Some(files.clone());
+        Ok(())
+    }
+
+    fn read_files(&mut self) -> Result<FileClipboard, FsError> {
+        self.0
+            .files
+            .lock()
+            .expect("clipboard files")
+            .clone()
+            .ok_or_else(|| {
+                FsError::from_io(
+                    "file clipboard",
+                    Path::new(""),
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no files on the clipboard"),
+                )
+            })
+    }
+
+    fn owns_clipboard(&self) -> bool {
+        false
+    }
+}
+
+/// The service the Engine opens a [`MemoryClipboard`] session from.
+struct MemoryClipboardService(Arc<MemoryClipboard>);
+
+impl ClipboardService for MemoryClipboardService {
+    fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
+        Ok(Box::new(MemoryClipboardSession(self.0.clone())))
+    }
+}
+
 /// The last few events and commands, for failure messages.
 type Trace = Rc<RefCell<VecDeque<String>>>;
 
@@ -209,6 +285,28 @@ pub struct Config {
     pub height: usize,
     /// Show sizes as exact bytes instead of the readable default.
     pub size_bytes: bool,
+    /// Browse through the installed native filesystem plugin (archives included) and
+    /// install viewers, comparators and thumbnails, keeping their state (the thumbnail
+    /// cache) in this folder. Needs a staged process: see `viewers_stage`.
+    pub plugins: Option<PathBuf>,
+    /// Opt-in: settings that outlive this run (restarts load what it saved).
+    pub settings: Option<Arc<crate::options_support::SettingsStore>>,
+    /// Opt-in: install the native Custom Command launcher, as the application does.
+    pub user_commands: bool,
+    /// Opt-in: install the native external editor launcher (F4), as the application does.
+    pub editor: bool,
+    /// Opt-in: an in-process clipboard (`MemoryClipboard`) for Ctrl+C, Ctrl+X and Ctrl+V.
+    pub clipboard: bool,
+    /// Opt-in: restore the saved tab session (with `settings`), as a start without paths
+    /// on the command line does. Off, the configured paths win, as with explicit paths.
+    pub restore_tabs: bool,
+    /// Opt-in: start as `run_window` does with `--left`/`--right` given (true) or not
+    /// (false) per panel: `set_tab_restore_overrides(explicit)`.
+    pub explicit_paths: Option<[bool; 2]>,
+    /// Opt-in: the application's own settings store (`LocalFileSystem`) instead of the
+    /// in-memory one, as production loads and saves preferences. Only in a staged process,
+    /// whose `XDG_CONFIG_HOME` is a private scratch profile.
+    pub real_settings: bool,
 }
 
 impl Config {
@@ -221,6 +319,14 @@ impl Config {
             width: 1340,
             height: 820,
             size_bytes: false,
+            plugins: None,
+            settings: None,
+            user_commands: false,
+            editor: false,
+            clipboard: false,
+            restore_tabs: false,
+            explicit_paths: None,
+            real_settings: false,
         }
     }
 }
@@ -257,6 +363,10 @@ pub struct App {
     pub last_click: Option<(Instant, slint::LogicalPosition)>,
     /// The last few events, for failure messages.
     trace: Trace,
+    /// Viewers, comparators and thumbnails, when `Config::plugins` asked for them.
+    pub plugins: Option<super::viewers_support::Plugins>,
+    /// The in-process clipboard, when `Config::clipboard` asked for one.
+    pub clipboard: Option<Arc<MemoryClipboard>>,
 }
 
 impl App {
@@ -284,11 +394,25 @@ impl App {
         };
         preferences.tabs[0].paths = vec![config.left.clone()];
         preferences.tabs[1].paths = vec![config.right.clone()];
-        let mut engine = Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            local.clone(),
-            events_send,
-        );
+        // Viewer scenarios browse through the installed native filesystem plugin.
+        let mut native = config
+            .plugins
+            .as_ref()
+            .map(|_| super::viewers_support::Native::new(&local));
+        let mut engine = match native.as_mut() {
+            Some(native) => native.engine(
+                Engine::lifetime().expect("engine cleanup worker"),
+                events_send,
+            ),
+            None => Engine::new(
+                Engine::lifetime().expect("engine cleanup worker"),
+                local.clone(),
+                events_send,
+            ),
+        };
+        if let Some(native) = &native {
+            native.configure(&mut engine);
+        }
         engine
             .configure_navigation_fallback()
             .unwrap()
@@ -304,15 +428,23 @@ impl App {
             .install(local.clone());
         engine.configure_mutations().unwrap().install(local.clone());
         engine.configure_watch().unwrap().install(local.clone());
+        install_opt_in_services(&mut engine, &config, &local);
+        let clipboard = config
+            .clipboard
+            .then(|| Arc::new(MemoryClipboard::default()));
+        if let Some(clipboard) = &clipboard {
+            engine
+                .configure_clipboard()
+                .unwrap()
+                .install(Arc::new(MemoryClipboardService(clipboard.clone())));
+        }
         let picker = Arc::new(ScriptedPicker::default());
         engine
             .configure_path_picker()
             .unwrap()
             .install(picker.clone());
-        engine
-            .configure_settings()
-            .unwrap()
-            .install(Arc::new(Settings(preferences)));
+        let (settings, saved_tabs) = settings_service(&config, preferences, &local);
+        engine.configure_settings().unwrap().install(settings);
         let (commands, receive) = engine.command_channel(32).unwrap();
         let retire_queue = reclaim::start(runtime.handle(), Arc::new(|| {}));
         let command_reclaim = command_reclaim::CommandReclaim::new(retire_queue.clone());
@@ -328,6 +460,21 @@ impl App {
             config.left.clone(),
             config.right.clone(),
         )));
+        // As `run_window` does with or without `--left`/`--right`: a restored panel takes
+        // the saved tab session, an explicit one keeps its path. Without either option
+        // the presenter keeps its defaults, as earlier runs did.
+        let overrides = if config.restore_tabs {
+            Some([false; 2])
+        } else {
+            config.explicit_paths
+        };
+        if let Some(explicit) = overrides {
+            presenter.borrow_mut().set_tab_restore_overrides(explicit);
+        }
+        // The panels whose saved tabs the first read restores (as new tabs): those with a
+        // saved session and no path of their own.
+        let explicit = overrides.unwrap_or([false; 2]);
+        let relisted = [0, 1].map(|slot| saved_tabs[slot] && !explicit[slot]);
         let trace: Trace = Rc::default();
         let begin = command_reclaim.factory(commands.clone());
         let observed = trace.clone();
@@ -353,6 +500,21 @@ impl App {
             send.clone(),
             begin_owned.clone(),
         );
+        let plugins = native
+            .as_ref()
+            .zip(config.plugins.as_ref())
+            .map(|(native, state)| {
+                super::viewers_support::Plugins::install(
+                    native,
+                    &window,
+                    &presenter,
+                    send.clone(),
+                    runtime.handle(),
+                    local.clone(),
+                    picker.clone(),
+                    state,
+                )
+            });
         let startup_tabs = active_tabs(&presenter.borrow());
         let mut app = Self {
             window,
@@ -379,20 +541,45 @@ impl App {
             manifests: Vec::new(),
             last_click: None,
             trace,
+            plugins,
+            clipboard,
         };
         app.resize(config.width, config.height);
         // Installing requests the preferences; their tab restore lists both panes again.
         // Production keeps the window hidden until then, so wait before any input.
-        app.until("startup preferences and both listings", |app| {
+        let ready = |app: &Self| {
             let presenter = app.presenter.borrow();
             presenter.window_geometry_ready()
                 && active_tabs(&presenter)
                     .iter()
                     .zip(&startup_tabs)
-                    .all(|(active, startup)| active != startup)
+                    .zip(&relisted)
+                    .all(|((active, startup), relisted)| !relisted || active != startup)
                 && !app.window.get_left_loading()
                 && !app.window.get_right_loading()
-        });
+        };
+        let deadline = Instant::now() + WAIT;
+        while !ready(&app) {
+            if Instant::now() >= deadline {
+                let presenter = app.presenter.borrow();
+                panic!(
+                    "startup did not finish within {WAIT:?}: window geometry ready {}, active \
+                     tabs {:?} (at construction {startup_tabs:?}, relisted {relisted:?}), \
+                     loading {} / {}; panels {:?} / {:?}",
+                    presenter.window_geometry_ready(),
+                    active_tabs(&presenter),
+                    app.window.get_left_loading(),
+                    app.window.get_right_loading(),
+                    app.location(PaneId::Left),
+                    app.location(PaneId::Right)
+                );
+            }
+            app.settle();
+            app.idle(Duration::from_millis(5));
+        }
+        if let Some(plugins) = &app.plugins {
+            plugins.settings_applied(&app.presenter);
+        }
         app
     }
 
@@ -480,10 +667,23 @@ impl App {
             .map(|visible| visible.path.clone())
     }
 
-    /// The displayed notice (title and body), when one is open.
+    /// The last few events and commands (newest last), for diagnostics.
+    pub fn recent_events(&self) -> Vec<String> {
+        self.trace.borrow().iter().cloned().collect()
+    }
+
+    /// The displayed notice (title and body), when one is open. The window keeps the
+    /// last message title after the notice closes; the notice presentation's token says
+    /// whether it is shown.
     pub fn notice(&self) -> Option<(String, String)> {
-        let title = self.window.get_message_title().to_string();
-        (!title.is_empty()).then(|| (title, self.window.get_message_body().to_string()))
+        let notice = self.window.global::<midnight_ui::NoticePresentation>();
+        if notice.get_token().is_empty() {
+            return None;
+        }
+        Some((
+            notice.get_title().to_string(),
+            notice.get_body().to_string(),
+        ))
     }
 
     fn record(&mut self, event: &Event) {
@@ -646,7 +846,7 @@ impl App {
             }
             if Instant::now() >= deadline {
                 panic!(
-                    "timed out after {limit:?} waiting for {what}\n  left: {:?} loading={} error={:?}\n  right: {:?} loading={} error={:?}\n  notice: {:?}\n  modal={} tool windows={}\n  last copy: {:?}\n  last operation: {:?}\n  recent events:\n    {}",
+                    "timed out after {limit:?} waiting for {what}\n  left: {:?} loading={} error={:?}\n  right: {:?} loading={} error={:?}\n  notice: {:?}\n  modal={} tool windows={}{}\n  last copy: {:?}\n  last operation: {:?}\n  recent events:\n    {}",
                     self.location(PaneId::Left),
                     self.loading(PaneId::Left),
                     self.error(PaneId::Left),
@@ -656,6 +856,7 @@ impl App {
                     self.notice(),
                     self.window.get_embedded_modal_open(),
                     self.tool_windows().len(),
+                    self.describe_tool_windows(),
                     self.copies.last().map(|progress| progress.state),
                     self.operations.last().map(|progress| progress.state),
                     self.trace
@@ -670,6 +871,32 @@ impl App {
                 runtime.block_on(async { tokio::time::sleep(Duration::from_millis(5)).await });
             }
         }
+    }
+
+    /// What each open tool window shows (texts and buttons, shortened), for timeouts.
+    fn describe_tool_windows(&self) -> String {
+        let short = |text: &String| {
+            let line = text.replace('\n', " / ");
+            match line.char_indices().nth(120) {
+                Some((end, _)) => format!("{}…", &line[..end]),
+                None => line,
+            }
+        };
+        self.tool_windows()
+            .iter()
+            .map(|window| {
+                let texts: Vec<String> = super::inspect::visible_texts(window.window())
+                    .iter()
+                    .take(10)
+                    .map(short)
+                    .collect();
+                let buttons = super::inspect::labels(
+                    window.window(),
+                    i_slint_core::items::AccessibleRole::Button,
+                );
+                format!("\n    window: texts {texts:?}; buttons {buttons:?}")
+            })
+            .collect()
     }
 
     /// Render the main window into the run's screenshots and record it.
@@ -719,6 +946,10 @@ impl App {
         let Some(runtime) = self.runtime.take() else {
             return Ok(());
         };
+        let plugins = self.plugins.take();
+        if let Some(plugins) = &plugins {
+            plugins.close();
+        }
         midnight_ui::close_tool_windows(&self.window);
         self.presenter.borrow_mut().retire_all();
         let mut retired = self.presenter.borrow_mut().take_retired();
@@ -775,6 +1006,11 @@ impl App {
                 }
                 let _ = tokio::time::timeout(ENGINE_SHUTDOWN, reclaim::barrier(&queue)).await;
             });
+        }
+        if let Some(plugins) = plugins
+            && let Err(error) = plugins.finish(&runtime)
+        {
+            errors.push(error);
         }
         let _ = self.window.hide();
         runtime.shutdown_timeout(Duration::from_secs(3));
@@ -837,4 +1073,61 @@ pub fn render(window: &MinimalSoftwareWindow) -> (usize, usize, Vec<slint::Rgb8P
         renderer.render(&mut pixels, width);
     });
     (width, height, pixels)
+}
+
+/// The settings service of a run: the application's own store (opt-in), the opt-in
+/// store shared across restarts, otherwise in-memory preferences whose saves are
+/// forgotten. Also which panels have a saved tab session the first read restores.
+fn settings_service(
+    config: &Config,
+    preferences: UserPreferences,
+    local: &Arc<LocalFileSystem>,
+) -> (Arc<dyn SettingsService>, [bool; 2]) {
+    let restorable = |preferences: &UserPreferences| {
+        preferences
+            .tabs
+            .each_ref()
+            .map(|tabs| tabs.validate().is_ok() && tabs.paths.get(tabs.active).is_some())
+    };
+    if config.real_settings {
+        // The real store writes `$XDG_CONFIG_HOME/midnight-explorer`: only a staged
+        // process has a private one.
+        assert!(
+            std::env::var_os("MIDNIGHT_ACCEPTANCE_STAGED").is_some()
+                && std::env::var_os("XDG_CONFIG_HOME").is_some(),
+            "Config::real_settings needs a staged process with a private XDG_CONFIG_HOME"
+        );
+        // Read once before the start, as production's startup read does; the engine's
+        // first load then reads the store again, asynchronously.
+        let stored = SettingsService::load_preferences_for_acceptance(local.as_ref()).ok();
+        return (
+            local.clone(),
+            stored.as_ref().map_or([false; 2], restorable),
+        );
+    }
+    match &config.settings {
+        Some(store) => {
+            let service = store.service(preferences);
+            (service, restorable(&store.current()))
+        }
+        None => {
+            let saved = restorable(&preferences);
+            (Arc::new(Settings(preferences)), saved)
+        }
+    }
+}
+
+/// Opt-in production services, installed exactly as `run_window` installs them. They
+/// launch the programs a scenario configured, so only scenarios that configure
+/// harmless commands inside their work folder enable them.
+fn install_opt_in_services(engine: &mut Engine, config: &Config, local: &Arc<LocalFileSystem>) {
+    if config.user_commands {
+        engine
+            .configure_user_commands()
+            .unwrap()
+            .install(local.clone());
+    }
+    if config.editor {
+        engine.configure_editor().unwrap().install(local.clone());
+    }
 }

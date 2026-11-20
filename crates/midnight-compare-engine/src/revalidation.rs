@@ -10,7 +10,7 @@
 //! pixels, not their bytes) still report the file as changed.
 use crate::{
     check_cancel,
-    text::{self, TextComparison, TextInput},
+    text::{self, ReadError, TextComparison, TextInput},
 };
 use midnight_plugin_host::CapturedFile;
 use std::sync::atomic::AtomicBool;
@@ -69,7 +69,7 @@ pub(crate) fn revalidate(
         };
         let unchanged = retained.and_then(|text| {
             let fresh = drifted(source, || recapture(side))?;
-            let input = text::read(&fresh, confirmed_ssd[side], cancel).ok()?;
+            let input = text::read(&fresh, confirmed_ssd[side], cancel, &mut |_| {}).ok()?;
             text.retains(side, &input).then_some(fresh)
         });
         let Some(fresh) = unchanged else {
@@ -84,14 +84,16 @@ pub(crate) fn revalidate(
 
 /// The initial text read. A read that failed because the source's revision drifted only in
 /// its change time is repeated once on the fresh capture, which then replaces the source:
-/// nothing was derived from the interrupted read. Any other failure stands.
+/// nothing was derived from the interrupted read. Any other failure stands, and content
+/// that text comparison refuses stays a refusal (the pair is then compared as bytes).
 pub(crate) fn read_text(
     source: &mut CapturedFile,
     recapture: impl FnOnce() -> Result<CapturedFile, String>,
     confirmed_ssd: bool,
     cancel: &AtomicBool,
-) -> Result<TextInput, String> {
-    let error = match text::read(source, confirmed_ssd, cancel) {
+    progress: &mut dyn FnMut(u64),
+) -> Result<TextInput, ReadError> {
+    let error = match text::read(source, confirmed_ssd, cancel, progress) {
         Ok(input) => return Ok(input),
         Err(error) => error,
     };
@@ -101,10 +103,10 @@ pub(crate) fn read_text(
         .err()
         .and_then(|_| drifted(source, recapture));
     let Some(fresh) = fresh else {
-        check_cancel(cancel)?;
+        check_cancel(cancel).map_err(ReadError::Failed)?;
         return Err(error);
     };
-    let input = text::read(&fresh, confirmed_ssd, cancel)?;
+    let input = text::read(&fresh, confirmed_ssd, cancel, progress)?;
     *source = fresh;
     Ok(input)
 }

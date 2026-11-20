@@ -56,9 +56,13 @@ impl Presenter {
                         .any(|(pending, _)| *pending == revision))
             {
                 self.comparison.tree_pending[slot] = None;
-                self.comparison.error =
+                // The panel does not show this result, so neither does the status line.
+                self.retired.push(Box::new(self.comparison.reported.take()));
+                self.report_comparison(
+                    "Directory comparison cancelled",
                     "A panel changed before comparison selection could be applied. Compare again."
-                        .into();
+                        .into(),
+                );
             }
         }
         if self.comparison.pending.is_none() && !self.comparison.waiting {

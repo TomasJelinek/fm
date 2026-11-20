@@ -5,6 +5,10 @@ use crate::{
 };
 
 pub(crate) fn dispatch(window: &MainWindow, pane: i32, action: FileKey) -> i32 {
+    // A panel that shows search results (Feed to panel) takes its actions first.
+    if let Some(handled) = crate::find_windows::feed::dispatch(window, pane, &action) {
+        return handled;
+    }
     match action {
         FileKey::Native => return 0,
         FileKey::Consumed => return 1,
@@ -13,14 +17,14 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, action: FileKey) -> i32 {
         FileKey::ErasePrevious => return 4,
         FileKey::ClearAndInsert => return 5,
         FileKey::TryDrive(letter) => {
-            let search_active = if pane == 0 {
-                window.get_left_search_active()
-            } else {
-                window.get_right_search_active()
-            };
-            return i32::from(
-                window.invoke_drive_letter(pane, letter.to_string().into()) || !search_active,
-            );
+            // A drive with this letter opens (Windows). Without one, which is always
+            // so on Linux, the key is the typed uppercase letter on every platform: it
+            // starts or extends the filename search, as any typed character does.
+            if window.invoke_drive_letter(pane, letter.to_string().into()) {
+                return 1;
+            }
+            return crate::find_windows::feed::dispatch(window, pane, &FileKey::Native)
+                .unwrap_or(0);
         }
         FileKey::Bulk(operation) => window.invoke_bulk_selection(pane, operation),
         FileKey::Sort(column) => window.invoke_sort(pane, column),

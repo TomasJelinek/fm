@@ -40,7 +40,7 @@ unsupported precision fails and earlier completed copies may remain.
 
 ## Recorded evidence so far
 
-- Baseline: `0ab38de`, authoritative `D:/experiments/dev/FM`.
+- Baseline: `0ab38de`, in the authoritative primary checkout.
 - Internal failure RED: two expected failures because embedded forms did not
   create a native host or cancel a failed prepared operation; one existing
   unrelated readonly-archive control passed. Log:

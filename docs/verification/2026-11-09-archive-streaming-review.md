@@ -92,7 +92,7 @@ Windows command (PowerShell, protected test installation access):
 Native Linux command from PowerShell:
 
 ```powershell
-wsl -d Ubuntu-24.04 -- bash -lc 'set -o pipefail; bash /mnt/d/experiments/dev/FM/_build/archive-streaming-review/final-host-linux.sh 2>&1 | tee /mnt/d/experiments/dev/FM/_build/archive-streaming-review/final-host-linux.log'
+wsl -d Ubuntu-24.04 -- bash -lc 'set -o pipefail; bash <repo>/_build/archive-streaming-review/final-host-linux.sh 2>&1 | tee <repo>/_build/archive-streaming-review/final-host-linux.log'
 ```
 
 The copied Linux runner differs only in where it records its temporary installed

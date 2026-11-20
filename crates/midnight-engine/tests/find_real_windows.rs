@@ -64,6 +64,7 @@ fn actual_windows_read_sharing_failure_is_incomplete_and_a_new_search_recovers()
         text: "needle".into(),
         case_sensitive: true,
         whole_words: false,
+        regex: false,
     });
     let (summary, rows) = run(&query);
     assert_eq!(

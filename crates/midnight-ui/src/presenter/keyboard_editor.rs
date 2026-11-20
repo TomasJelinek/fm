@@ -40,6 +40,8 @@ pub(crate) struct ShortcutInspection {
     pub(crate) used_by: String,
     pub(crate) issue: String,
     pub(crate) can_assign: bool,
+    /// Restore command would change the command's shortcuts or discard a captured one.
+    pub(crate) can_restore: bool,
 }
 
 pub(crate) fn matches_filter(action: &ShortcutDefinition, filter: &str) -> bool {
@@ -121,6 +123,8 @@ impl Presenter {
             used_by: String::new(),
             issue: String::new(),
             can_assign: false,
+            can_restore: self.keyboard.editor.candidate.is_some()
+                || self.shortcut_restorable(&action.id),
         };
         let Some(chord) = &self.keyboard.editor.candidate else {
             return inspection;
@@ -151,6 +155,32 @@ impl Presenter {
             Err(error) => inspection.issue = error,
         }
         inspection
+    }
+
+    /// Whether restoring the command's defaults changes its shortcuts: it has saved
+    /// ones and they differ from what the defaults give beside the other commands.
+    fn shortcut_restorable(&self, action: &str) -> bool {
+        let values = &self.preferences.values;
+        if !values
+            .shortcuts
+            .iter()
+            .any(|binding| binding.action == action)
+        {
+            return false;
+        }
+        let others = values
+            .shortcuts
+            .iter()
+            .filter(|binding| binding.action != action)
+            .cloned()
+            .collect::<Vec<_>>();
+        match ShortcutMap::with_user_commands(&others, &values.user_commands) {
+            Ok(restored) => {
+                restored.bindings(action) != self.keyboard.snapshot.map.bindings(action)
+            }
+            // Restore command then says why the defaults cannot return.
+            Err(_) => true,
+        }
     }
 
     fn shortcut_assignment(&self) -> Result<Assignment, String> {

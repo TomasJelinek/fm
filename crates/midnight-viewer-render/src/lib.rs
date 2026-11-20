@@ -7,6 +7,7 @@ use parley::{
 };
 use std::{borrow::Cow, ops::Range};
 
+mod contrast;
 mod document;
 mod fonts;
 pub use document::{DocumentBlock, DocumentKind, DocumentStyle};
@@ -67,11 +68,20 @@ pub enum LayoutError {
     InvalidFont,
 }
 
-#[derive(Default)]
 pub struct TextRenderer {
     fonts: FontContext,
     layouts: LayoutContext<[u8; 4]>,
     glyphs: glyphs::GlyphPainter,
+}
+
+impl Default for TextRenderer {
+    fn default() -> Self {
+        Self {
+            fonts: fonts::shared_context(),
+            layouts: LayoutContext::default(),
+            glyphs: glyphs::GlyphPainter::default(),
+        }
+    }
 }
 
 pub struct TextPage {

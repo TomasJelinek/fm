@@ -185,6 +185,7 @@ impl Presenter {
             .sessions
             .values_mut()
             .find_map(|s| s.viewer.take())
+            .or_else(|| self.finds.feed_viewer.take())
     }
 }
 

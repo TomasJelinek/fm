@@ -248,3 +248,18 @@ fn cancellation_is_checked_even_for_a_cached_catalog() {
             .is_none()
     );
 }
+
+/// Renderers share one system font database instead of loading their own; sharing
+/// must not change which installed families they see.
+#[test]
+fn shared_contexts_see_the_installed_families_of_a_fresh_context() {
+    use super::{catalog_names, shared_context};
+    use parley::FontContext;
+    let sorted = |mut names: Vec<String>| {
+        names.sort();
+        names
+    };
+    let shared = sorted(catalog_names(&mut shared_context()));
+    assert_eq!(shared, sorted(catalog_names(&mut shared_context())));
+    assert_eq!(shared, sorted(catalog_names(&mut FontContext::default())));
+}

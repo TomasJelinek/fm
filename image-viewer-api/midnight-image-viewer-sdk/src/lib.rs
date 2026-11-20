@@ -104,7 +104,8 @@ fn session<R: Read, W: Write, I: Image>(
     };
     let image = match decode(&mut Broker::new(input, output, source_length)) {
         Ok(image) if image.metadata().validate().is_ok() => image,
-        _ => return api::write_message(output, &api::Message::Failure),
+        Ok(_) => return fail(output, "The image dimensions exceed the viewer's limits"),
+        Err(error) => return fail(output, &error.to_string()),
     };
     api::write_message(output, &api::Message::Metadata(image.metadata()))?;
     loop {
@@ -118,10 +119,24 @@ fn session<R: Read, W: Write, I: Image>(
             Ok(frame) if frame.width == viewport.width && frame.height == viewport.height => {
                 api::Message::Rgba { id, frame }
             }
-            _ => return api::write_message(output, &api::Message::Failure),
+            Ok(_) => return fail(output, "The view was drawn at the wrong size"),
+            Err(error) => return fail(output, &error.to_string()),
         };
         api::write_message(output, &message)?;
     }
+}
+
+/// End a session with `Failure` and then the sanitized reason trailer, the session's
+/// last output. Hosts before API 0.3.0 stop reading at `Failure` and never see the
+/// trailer; newer hosts read it until the stream ends, then stop the worker.
+fn fail(output: &mut impl Write, reason: &str) -> io::Result<()> {
+    let mut bytes = Vec::with_capacity(32 + api::MAX_REASON_BYTES);
+    api::write_message(&mut bytes, &api::Message::Failure)?;
+    if let Some(reason) = api::FailureReason::sanitize(reason) {
+        api::write_message(&mut bytes, &api::Message::FailureReason(reason))?;
+    }
+    output.write_all(&bytes)?;
+    output.flush()
 }
 
 #[cfg(test)]

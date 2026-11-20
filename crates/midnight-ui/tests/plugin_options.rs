@@ -1170,6 +1170,76 @@ fn archive_empty_state_waits_for_the_shared_loading_cycle() {
 }
 
 #[test]
+fn rescan_says_what_it_found_even_when_nothing_is_installed() {
+    let mut h = Harness::new();
+    let status = |h: &Harness| {
+        h.ui.window
+            .global::<ViewerPluginsView>()
+            .get_rescan_status()
+            .to_string()
+    };
+    let rescan = |h: &mut Harness,
+                  viewers: Vec<ViewerPluginInfo>,
+                  filesystems: Result<Vec<FilesystemPluginInfo>, String>,
+                  thumbnailers: Vec<ThumbnailerPluginInfo>| {
+        h.click("Rescan all plugins", AccessibleRole::Button);
+        assert_eq!(status(h), "", "a running rescan reports nothing yet");
+        for event in [
+            Event::ViewerPluginsListed(Ok(viewers)),
+            Event::FilesystemPluginsListed(filesystems),
+            Event::ThumbnailerPluginsListed(Ok(thumbnailers)),
+        ] {
+            h.presenter.borrow_mut().apply(event);
+        }
+        refresh(&h.ui.window, &h.presenter.borrow());
+        h.settle();
+        status(h)
+    };
+    assert_eq!(
+        status(&h),
+        "",
+        "the listing that opening Options asks for reports nothing"
+    );
+    h.sent.borrow_mut().clear();
+    let found = rescan(&mut h, Vec::new(), Ok(Vec::new()), Vec::new());
+    assert_eq!(h.rescans(), 1);
+    assert_eq!(found, "Rescanned: no plugins found.");
+    assert!(h.popup_text().contains(&found), "{}", h.popup_text());
+    let found = rescan(
+        &mut h,
+        complete_viewer_catalog(0),
+        Ok(filesystem_catalog()),
+        thumbnailers(),
+    );
+    assert_eq!(
+        found,
+        "Rescanned: found 7 viewer, 2 filesystem, 3 archive and 2 thumbnailer plugins; \
+         3 packages are unavailable."
+    );
+    let found = rescan(
+        &mut h,
+        complete_viewer_catalog(0)[..1].to_vec(),
+        Ok(Vec::new()),
+        Vec::new(),
+    );
+    assert_eq!(found, "Rescanned: found 1 viewer plugin.");
+    let found = rescan(
+        &mut h,
+        Vec::new(),
+        Err("Filesystem catalog unavailable".into()),
+        Vec::new(),
+    );
+    assert_eq!(found, "Rescanned; some plugin lists could not be read.");
+    assert_eq!(h.rescans(), 4);
+    // Options opened again lists the plugins anew without a report.
+    h.click("Cancel", AccessibleRole::Button);
+    h.ui.window.invoke_show_options();
+    h.ui.window.set_options_topic_index(5);
+    h.settle();
+    assert_eq!(status(&h), "");
+}
+
+#[test]
 fn archive_associations_navigation_preserves_the_options_draft_without_sending_commands() {
     let mut h = Harness::new();
     h.filesystem_catalog(filesystem_catalog());

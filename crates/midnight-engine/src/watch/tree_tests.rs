@@ -4,7 +4,7 @@ use crate::{
     tree_actor::{Session, WorkerBudget},
     tree_projection::ProjectionOptions,
 };
-use midnight_core::{TreeEvent, TreeRequestId, TreeRootSnapshot};
+use midnight_core::{TreeEvent, TreeRefreshRequest, TreeRequestId, TreeRootSnapshot};
 
 fn scope(files: &Arc<Files>, path: &str) -> (Session, tree::TreeScope) {
     let visible = files.visible(PaneId::Left, 4, path);
@@ -15,12 +15,28 @@ fn scope_from_visible(
     files: Arc<dyn midnight_core::FileSystem>,
     visible: VisibleDirectory,
 ) -> (Session, tree::TreeScope) {
+    let mut session = session_from_visible(files, visible, 0, ProjectionOptions::default());
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    let scope = session.watch_scope().unwrap().unwrap();
+    (session, scope)
+}
+
+/// An inline tree adopted from the rows of a flat listing, which left `hidden`
+/// hidden entries out.
+fn session_from_visible(
+    files: Arc<dyn midnight_core::FileSystem>,
+    visible: VisibleDirectory,
+    hidden: usize,
+    options: ProjectionOptions,
+) -> Session {
     let root = TreeRootSnapshot {
         pane: visible.pane,
         navigation: visible.navigation,
-        index: Arc::new(midnight_core::DirectoryIndex::from_entries(
-            &visible.entries,
-        )),
+        index: Arc::new(midnight_core::DirectoryIndex {
+            hidden,
+            ..midnight_core::DirectoryIndex::from_entries(&visible.entries)
+        }),
         entries: visible.entries,
     };
     let native = NativeProvider::new(files);
@@ -28,20 +44,16 @@ fn scope_from_visible(
     let opened = native
         .capture_root(&visible.path, &root.entries, &cancel)
         .unwrap();
-    let mut session = Session::new(
+    Session::new(
         root,
         opened,
         Arc::default(),
         WorkerBudget::new(Arc::new(tokio::sync::Semaphore::new(1))),
-        ProjectionOptions::default(),
+        options,
         &cancel,
         crate::ReportArena::testing(),
     )
-    .unwrap();
-    let view = session.projection().clone();
-    assert!(session.commit(&view));
-    let scope = session.watch_scope().unwrap().unwrap();
-    (session, scope)
+    .unwrap()
 }
 
 async fn tree_changed(events: &mut mpsc::Receiver<Event>) -> midnight_core::TreeViewStamp {
@@ -931,6 +943,9 @@ fn link_watch_timing() -> Timing {
         quiet: Duration::ZERO,
         maximum: Duration::ZERO,
         poll: Duration::ZERO,
+        unwatched: Duration::ZERO,
+        retry: Duration::ZERO,
+        report: Duration::ZERO,
         restart: Duration::ZERO,
         cooldown: Duration::ZERO,
     }
@@ -1466,5 +1481,149 @@ fn the_replaced_batch_counts_until_its_subscription_is_released() {
     let old = runtime.native.callbacks.lock().unwrap()[0].1.clone();
     old(u32::MAX);
     runtime.tick(files.as_ref(), 1);
+    assert!(runtime.changed().is_none());
+}
+
+/// A maintenance pass of `session`, as the UI requests it for a hint, and the
+/// watch scope of its accepted result.
+fn maintain(session: &mut Session) -> tree::TreeScope {
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    let request = TreeRefreshRequest {
+        view,
+        request: session.last_request.checked_next().unwrap(),
+    };
+    session
+        .refresh_loaded(&request, &Cancellation::default())
+        .unwrap();
+    let refreshed = (0..16)
+        .find_map(|_| {
+            if let Some(job) = session.take_work().unwrap() {
+                session.apply(job.run(), &Cancellation::default()).unwrap();
+            }
+            session.finish_refresh()
+        })
+        .expect("the maintenance pass finishes");
+    assert!(
+        matches!(refreshed, TreeEvent::Refreshed { result: Ok(()), .. }),
+        "{refreshed:?}"
+    );
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    session.watch_scope().unwrap().unwrap()
+}
+
+/// A tree adopted with Show hidden files off: the root's rows are the pane's flat
+/// listing, which left the root's hidden entries out, while the model lists an
+/// expanded branch with its hidden entries (only the projection leaves them out).
+/// Checks compare each target with exactly what its accepted listing holds, so
+/// both stay quiet across polls; once a maintenance pass lists the root again,
+/// with its hidden entries, its checks keep them too.
+#[test]
+fn hidden_entries_left_out_of_an_adopted_tree_are_left_out_of_its_checks() {
+    let files = Arc::new(Files::default());
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("_build/watch-tree-hidden");
+    let branch = root.join("branch");
+    // Hidden on every platform: a dot-name with the hidden attribute.
+    let entry = |id: u64, path: PathBuf, kind: EntryKind, hidden: bool, length: u64| {
+        let mut entry = Entry::new(EntryId(id), path, kind);
+        entry.metadata = EntryMetadata {
+            size: (kind == EntryKind::File).then_some(length),
+            modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(length)),
+            native_attributes: Some(if hidden { 0x2 } else { 0x20 }),
+            ..EntryMetadata::default()
+        };
+        entry
+    };
+    let put = |path: &PathBuf, entries: Vec<Entry>| {
+        files
+            .directories
+            .lock()
+            .unwrap()
+            .insert(path.clone(), entries);
+    };
+    let hidden_folder = root.join(".hidden-folder");
+    let root_entries = |dotfile: u64, shown: u64| {
+        vec![
+            entry(1, root.join("shown-📄.txt"), EntryKind::File, false, shown),
+            entry(2, root.join(".設定-hidden"), EntryKind::File, true, dotfile),
+            entry(3, branch.clone(), EntryKind::Directory, false, 0),
+            entry(4, hidden_folder.clone(), EntryKind::Directory, true, 0),
+        ]
+    };
+    let branch_entries = |inner: u64| {
+        vec![
+            entry(5, branch.join("inner.txt"), EntryKind::File, false, 3),
+            entry(6, branch.join(".inner"), EntryKind::Directory, true, inner),
+        ]
+    };
+    put(&root, root_entries(1, 7));
+    put(&branch, branch_entries(0));
+    put(&hidden_folder, Vec::new());
+    put(&branch.join(".inner"), Vec::new());
+    // The pane's flat listing with Show hidden files off.
+    let mut visible = files.visible(PaneId::Left, 4, root.to_str().unwrap());
+    let mut rows = visible.entries.to_vec();
+    let hidden = crate::hidden_entries::retain_visible(&mut rows, true);
+    assert_eq!(hidden, 2);
+    visible.entries = rows.into();
+    let mut session = session_from_visible(
+        files.clone(),
+        visible,
+        hidden,
+        ProjectionOptions {
+            hide_hidden: true,
+            ..ProjectionOptions::default()
+        },
+    );
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    // Watched from now on: the expansion observes its whole directory.
+    session.watch_scope().unwrap();
+    expand_link_watch_row(&mut session, "branch", 1, false);
+    let view = session.projection().clone();
+    assert!(session.commit(&view));
+    let scope = session.watch_scope().unwrap().unwrap();
+    assert_eq!(scope.targets.len(), 2, "the root and the expanded branch");
+    let polls = 3 * scope.targets.len();
+    let mut runtime = LinkWatchRuntime::new(&scope);
+    runtime.tick(files.as_ref(), polls);
+    assert!(
+        runtime.changed().is_none(),
+        "hidden entries the accepted rows leave out are no change"
+    );
+    // A change of a hidden root entry alone changes nothing the tree shows.
+    put(&root, root_entries(2, 7));
+    runtime.tick(files.as_ref(), polls);
+    assert!(runtime.changed().is_none(), "a hidden root entry changed");
+    // A change of a shown root entry is found.
+    put(&root, root_entries(2, 8));
+    runtime.tick(files.as_ref(), polls);
+    assert_eq!(runtime.changed(), Some(scope.stamp));
+    // The maintenance pass lists the root again, hidden entries included, and
+    // its checks keep them from now on.
+    let relisted = maintain(&mut session);
+    runtime.acknowledge(&relisted, session.last_request.0);
+    runtime.tick(files.as_ref(), polls);
+    assert!(
+        runtime.changed().is_none(),
+        "the root listed again with its hidden entries is checked with them"
+    );
+    put(&root, root_entries(3, 8));
+    runtime.tick(files.as_ref(), polls);
+    assert_eq!(runtime.changed(), Some(relisted.stamp));
+    let relisted = maintain(&mut session);
+    runtime.acknowledge(&relisted, session.last_request.0);
+    runtime.tick(files.as_ref(), polls);
+    assert!(runtime.changed().is_none());
+    // The branch's model lists its hidden folder, so its change is found.
+    put(&branch, branch_entries(9));
+    runtime.tick(files.as_ref(), polls);
+    assert_eq!(runtime.changed(), Some(relisted.stamp));
+    let relisted = maintain(&mut session);
+    runtime.acknowledge(&relisted, session.last_request.0);
+    runtime.tick(files.as_ref(), polls);
     assert!(runtime.changed().is_none());
 }

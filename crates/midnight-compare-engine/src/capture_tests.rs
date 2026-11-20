@@ -20,6 +20,9 @@ mod identity_lifecycle;
 #[path = "image_identity_tests.rs"]
 mod image_identity;
 
+#[path = "capture_bytes_tests.rs"]
+mod bytes;
+
 #[derive(Debug)]
 struct Memory {
     bytes: &'static [u8],
@@ -73,6 +76,32 @@ impl ContentSource for Memory {
 
 fn memory(bytes: &'static [u8], reads: &Arc<AtomicUsize>) -> Result<CapturedFile, String> {
     source(bytes, reads, None)
+}
+
+/// Captured content whose reads fail: the comparison fails after its font request.
+#[derive(Debug)]
+struct Unreadable;
+
+impl ContentSource for Unreadable {
+    fn length(&self) -> u64 {
+        16
+    }
+    fn display_name(&self) -> String {
+        "unreadable.txt".into()
+    }
+    fn version(&self) -> Vec<u8> {
+        vec![1]
+    }
+    fn validate(&self) -> Result<(), Error> {
+        Ok(())
+    }
+    fn read_at(&self, _: u64, _: u32) -> Result<Vec<u8>, Error> {
+        Err(Error("the medium was removed".into()))
+    }
+}
+
+fn unreadable() -> Result<CapturedFile, String> {
+    CapturedFile::from_source(Arc::new(Unreadable)).map_err(|error| error.to_string())
 }
 
 fn source(
@@ -626,16 +655,15 @@ fn a_failed_image_viewer_discovery_is_explained_and_retried_by_the_next_comparis
                 Ok(Vec::new())
             }
         });
-    // Without the viewer list the images were compared as text; the failure says why.
+    // Without the viewer list the images are not text, so their bytes are compared; the
+    // summary says why.
     let first = open(&service, launch(&images)).unwrap();
-    let failed = choice(&first);
-    assert!(failed.is_error);
+    let bytes = frame(&first);
+    assert!(bytes.bytes && bytes.bytes_only);
     assert!(
-        failed
-            .message
-            .contains("viewer packages are being replaced"),
+        bytes.status.contains("viewer packages are being replaced"),
         "{}",
-        failed.message
+        bytes.status
     );
     assert_eq!(discoveries.load(Ordering::SeqCst), 1);
     assert!(
@@ -826,7 +854,7 @@ fn a_comparison_after_a_failed_one_gets_the_catalog_of_the_same_scan() {
     let failing = binary.clone();
     let capture: NativeCapture = Arc::new(move |path, _| {
         if failing.iter().any(|side| side == path) {
-            memory(b"control \x01 byte\n", &reads)
+            unreadable()
         } else {
             memory(b"same\nline\n", &reads)
         }
@@ -973,7 +1001,7 @@ fn a_failed_scan_of_an_earlier_comparison_does_not_answer_the_next_one() {
     let opened = text[0].clone();
     let capture: NativeCapture = Arc::new(move |path, _| {
         if failing.iter().any(|side| side == path) {
-            return memory(b"control \x01 byte\n", &reads);
+            return unreadable();
         }
         if path == opened {
             entered.send(()).unwrap();
@@ -1006,7 +1034,7 @@ fn a_failed_scan_of_an_earlier_comparison_does_not_answer_the_next_one() {
         })
         .with_font_check(|_, _| None);
     let session = open_in_family(&service, launch(&binary), "Wide Mono").unwrap();
-    // The first comparison requested the catalog, then failed on the binary content.
+    // The first comparison requested the catalog, then failed to read its content.
     assert!(choice(&session).is_error);
     session.send(Input::Compare(text)).unwrap();
     entry.recv_timeout(Duration::from_secs(15)).unwrap();

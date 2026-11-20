@@ -1,6 +1,6 @@
 # Text viewer opening and scrolling, 11 November 2026
 
-This pass addresses the reported opening jump in `ClashApiCommon.cpp` and choppy
+This pass addresses the reported opening jump in a supplied C++ source file and choppy
 Markdown/JSON scrolling. The supplied C++ (12,033 bytes), Markdown (5,692 bytes)
 and JSON (2,659 bytes) files were opened read-only. Their contents, application
 preferences and plugin ABI were not modified.

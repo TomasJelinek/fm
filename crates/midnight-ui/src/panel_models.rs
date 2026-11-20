@@ -95,8 +95,13 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .wrapping_add(presenter.panes[1].generation) as i32,
     );
     for pane in [PaneId::Left, PaneId::Right] {
-        let paths = presenter
-            .path_parts(pane)
+        let parts = presenter.path_parts(pane);
+        let anchor = parts
+            .iter()
+            .position(|part| part.keep_whole)
+            .and_then(|index| i32::try_from(index).ok())
+            .unwrap_or(-1);
+        let paths = parts
             .into_iter()
             .map(|part| PathPartRow {
                 identity: part.identity.into(),
@@ -105,6 +110,9 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             })
             .collect();
         refresh_details(window, details_rows(presenter, pane), pane);
+        let empty = presenter.panes[pane.index()]
+            .empty_message(&presenter.number_locale)
+            .into();
         if pane == PaneId::Left {
             navigation_models::update(
                 window.get_left_path_parts(),
@@ -112,6 +120,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 |row| row.identity.clone(),
                 |model| window.set_left_path_parts(model),
             );
+            window.set_left_path_anchor(anchor);
+            window.set_left_empty_message(empty);
         } else {
             navigation_models::update(
                 window.get_right_path_parts(),
@@ -119,6 +129,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 |row| row.identity.clone(),
                 |model| window.set_right_path_parts(model),
             );
+            window.set_right_path_anchor(anchor);
+            window.set_right_empty_message(empty);
         }
     }
 }

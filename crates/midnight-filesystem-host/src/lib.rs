@@ -1,6 +1,7 @@
 //! Host-owned discovery, source validation, process supervision and archive session.
 #![forbid(unsafe_code)]
 mod discovery;
+mod nested;
 mod session;
 mod staging;
 pub use discovery::{Catalog, Package};

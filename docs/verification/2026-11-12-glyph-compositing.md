@@ -28,7 +28,7 @@ functional regression in already-correct pixels to manufacture a red test.
 
 ## Fresh attribution and candidate
 
-All runs use the actual `<source-checkout>/ovclash/AGENTS.md`, SHA-256
+All runs use the actual `<external-project>/AGENTS.md`, SHA-256
 `6656eea6ce179c31d7c2c1e08ab24443bf44afc4fae5dcc0e9e8462229d633ad`, Segoe UI 13,
 and current protected plugins beside
 `<user-profile>/MidnightExplorer-20261112-eta-17e2147a/me.exe`. Only uniquely
@@ -104,7 +104,7 @@ Every Cargo command uses `--config $sdkConfig --target-dir _build --locked --off
 - Candidate: `cargo test ... -p midnight-viewer-render --lib --test raster --test source_continuity`:
   14/14 pass, including full framebuffer/cached-font/selection/source-rebase checks.
 - Baseline/candidate: `cargo build ... -p midnight-viewer-engine --example seek_latency`.
-- Probe: `glyph-seek-{baseline,candidate}-20261112.exe <source-checkout>/ovclash/AGENTS.md`,
+- Probe: `glyph-seek-{baseline,candidate}-20261112.exe <external-project>/AGENTS.md`,
   with `MIDNIGHT_VIEWER_SEEK_SCALE=1` or `2.25`, and trace variables as described above.
 
 Artifacts are under `_build/qa/glyph-compositing-20261112/`: baseline/candidate
@@ -140,8 +140,8 @@ Markdown, BAT Source, BAT Text, JSON and XML in D3D and software, then MD/JSON/X
 scrollbar drags in both, plus one sustained Markdown D3D run. The supplied files
 have sizes 213103, 22632, 2659 and 3865 bytes. Ordinary cases use a 1000x700 logical
 window (2250x1575 physical at scale 2.25); sustained Markdown uses 1340x820 logical.
-The text paths are the Markdown above, `<source-checkout>/ovclash/build.bat`,
-`D:/temp/ovclash/results/2026-09-07-mfg/manifest.json` and
+The text paths are the Markdown above, `<external-project>/build.bat`,
+`<external-project>/results/<run>/manifest.json` and
 `C:/Windows/System32/WwanFeatureTests.xml`.
 
 The original numeric gate passes **15/17**, not 17/17. Both BAT Text cases fail

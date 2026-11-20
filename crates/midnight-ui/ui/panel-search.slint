@@ -3,6 +3,7 @@ import { Theme } from "theme.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
+import { NameText } from "path-text.slint";
 
 
 export struct SearchTextEdit { text: string, cursor: int }
@@ -23,11 +24,14 @@ export component PrefixName inherits Rectangle {
     private property <bool> measuring-start;
     private property <length> prefix-start-x;
     private property <length> prefix-end-x;
+    // The name is drawn left to right (NameText.ltr); its opening isolation mark takes
+    // three UTF-8 bytes before the name's own offsets.
+    private property <int> offset: root.text == "" ? 0 : 3;
     function update-highlight() {
         root.measuring-start = true;
-        label.set-selection-offsets(root.prefix-end, 0);
+        label.set-selection-offsets(root.offset + root.prefix-end, root.offset);
         root.measuring-start = false;
-        label.set-selection-offsets(0, root.prefix-end);
+        label.set-selection-offsets(root.offset, root.offset + root.prefix-end);
     }
     changed text => { root.update-highlight(); }
     changed prefix-end => { root.update-highlight(); }
@@ -38,7 +42,7 @@ export component PrefixName inherits Rectangle {
         y: 0px;
         width: root.wrapped ? parent.width : max(parent.width, self.preferred-width);
         height: parent.height;
-        text: root.text;
+        text: NameText.ltr(root.text);
         font-family: Theme.font-family;
         font-size: Theme.font-size;
         font-weight: root.font-weight;

@@ -31,7 +31,7 @@ replace a size limit by a whole-input allocation or restore the JPEG adapter.
 | MEDIA-03 | Fix thumbnail flicker/reload; deeply review cache and presentation. | Repeated scrolling in Screenshots path below; stable completed images, cache reuse and no stale clearing of newer images. |
 | CMP-03 | Compact convenient comparison; prominent equality/difference count. | Text/image modes, equal files, many changes, keyboard navigation and resizing. |
 | PERF-03 | Reduce startup wait for restored folder contents. | Actual native startup timing; correct saved folders/theme/geometry without a default-view flash. |
-| DEL-03 | Name a single file/folder in deletion dialog; fix permanent-delete error5 on exact QQQ below. | Owned ordinary/read-only/cloud/reparse fixtures first, then user-authorized application deletion of QQQ only; do not weaken identity/ACL checks or follow arbitrary junctions. |
+| DEL-03 | Name a single file/folder in deletion dialog; fix permanent-delete error5 on the exact test folder below. | Owned ordinary/read-only/cloud/reparse fixtures first, then user-authorized application deletion of that folder only; do not weaken identity/ACL checks or follow arbitrary junctions. |
 | LOC-03 | Alphabetically sort drives/special paths by section; remove extra right button padding; put Network on drive bar. | Locale-aware ordering, compact centered icons and per-panel activation. |
 | MD-02 | Restore rendered Markdown instead of plain text. | Actual F3 selects installed renderer and shows headings/tables/styles, including archive members. |
 | ERR-04 | Copy displayed panel errors to clipboard. | Full details/path copied explicitly, close available in compact/full panels. |
@@ -41,11 +41,11 @@ replace a size limit by a whole-input allocation or restore the JPEG adapter.
 
 ## Reproduction inputs and initial evidence
 
-- `D:\experiments\godot\Godot_v4.7.2-stable_win64.exe.zip` exists and is
+- A local copy of `Godot_v4.7.2-stable_win64.exe.zip` exists and is
   86,013,866 bytes, larger than the current 64 MiB archive mount ceiling.
 - `<user-profile>/OneDrive\Pictures\Screenshots`
   is the requested native thumbnail performance/flicker reproduction directory.
-- `<user-profile>/OneDrive\Pictures\Backgrounds\QQQ`
+- `<user-profile>/OneDrive\<test-folder>`
   exists with Directory, Archive, ReparsePoint and Compressed flags. The actual
   tag, permissions and failing native call still require investigation.
 - Ordinary archive mutation guards already exist in presenter/backend. Their
@@ -54,7 +54,7 @@ replace a size limit by a whole-input allocation or restore the JPEG adapter.
 ## Completion ledger
 
 - DEL-03 backend: Read-only permanent-delete error5 reproduced and fixed, 39
-  mutation/permission/transfer tests passed; exact user-requested QQQ successfully
+  mutation/permission/transfer tests passed; exact user-requested test folder successfully
   deleted with the product backend. [Evidence](../../verification/2026-11-09-readonly-delete.md).
   Single-folder confirmation now includes name/date and passed its real UI
   regression. Committed and pushed as `eb86033`; packaged application checks

@@ -36,18 +36,32 @@ mod archives_tests;
 #[cfg(test)]
 mod file_list_tests;
 #[cfg(test)]
+mod panel_visibility_tests;
+#[cfg(test)]
 mod previews_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 34;
+const CURRENT_PREFERENCES_VERSION: u32 = 35;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    show_hidden_files: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    mask_selection: Option<StoredMaskSelection>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -188,6 +202,14 @@ struct StoredPreferences {
         skip_serializing_if = "Option::is_none"
     )]
     panel_filter_history: Option<Vec<StoredPanelFilter>>,
+}
+
+/// Schema 35: the last Select/Deselect by mask choices.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredMaskSelection {
+    pattern: String,
+    folders: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -450,11 +472,34 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
     {
         return Err(invalid("missing schema 34 preferences"));
     }
+    // Version 35 is written only for a hidden-files or mask choice; schema 34
+    // fields stay optional in it.
+    if stored.version == 35 && stored.show_hidden_files.is_none() && stored.mask_selection.is_none()
+    {
+        return Err(invalid("missing schema 35 preferences"));
+    }
     let glyph_fitting = match (stored.version, stored.glyph_fitting.as_deref()) {
-        (1..=33, None) | (34, None) => midnight_core::GlyphFitting::default(),
-        (34, Some(name)) => midnight_core::GlyphFitting::from_name(name)
-            .ok_or_else(|| invalid("unknown glyph fitting"))?,
+        (1..=CURRENT_PREFERENCES_VERSION, None) => midnight_core::GlyphFitting::default(),
+        (34..=CURRENT_PREFERENCES_VERSION, Some(name)) => {
+            midnight_core::GlyphFitting::from_name(name)
+                .ok_or_else(|| invalid("unknown glyph fitting"))?
+        }
         _ => return Err(invalid("unexpected glyph fitting")),
+    };
+    let show_hidden_files = match (stored.version, stored.show_hidden_files) {
+        (1..=CURRENT_PREFERENCES_VERSION, None) => true,
+        (35..=CURRENT_PREFERENCES_VERSION, Some(show)) => show,
+        _ => return Err(invalid("unexpected hidden files preference")),
+    };
+    let mask_selection = match (stored.version, stored.mask_selection) {
+        (1..=CURRENT_PREFERENCES_VERSION, None) => {
+            midnight_core::MaskSelectionPreferences::default()
+        }
+        (35..=CURRENT_PREFERENCES_VERSION, Some(mask)) => midnight_core::MaskSelectionPreferences {
+            pattern: mask.pattern,
+            folders: mask.folders,
+        },
+        _ => return Err(invalid("unexpected selection mask preference")),
     };
     let thumbnail_size = match (stored.version, stored.thumbnail_size) {
         (1..=24, None) => midnight_core::DEFAULT_THUMBNAIL_SIZE,
@@ -812,6 +857,8 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
         desktop_font_size,
         touch_font_size,
         quick_search_filter,
+        show_hidden_files,
+        mask_selection,
         size_display,
         remember_command_history,
         command_history,
@@ -897,7 +944,13 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let glyph_choices = preferences.glyph_fitting != midnight_core::GlyphFitting::default();
     let comparator_choices = !preferences.file_comparators.rules.is_empty();
     let thumbnailer_choices = !preferences.thumbnailer_associations.overrides.is_empty();
-    let comparator_fields = comparator_choices || thumbnailer_choices || glyph_choices;
+    let hidden_choices = !preferences.show_hidden_files;
+    let mask_choices =
+        preferences.mask_selection != midnight_core::MaskSelectionPreferences::default();
+    let panel_choices = hidden_choices || mask_choices;
+    // Schema 35 keeps every field that versions 33 and 34 require.
+    let comparator_fields =
+        comparator_choices || thumbnailer_choices || glyph_choices || panel_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -957,6 +1010,11 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
+        show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
+        mask_selection: mask_choices.then(|| StoredMaskSelection {
+            pattern: preferences.mask_selection.pattern.clone(),
+            folders: preferences.mask_selection.folders,
+        }),
         file_comparators: comparator_fields.then(|| preferences.file_comparators.into()),
         thumbnailer_associations: thumbnailer_choices.then(|| {
             thumbnailer_associations::StoredAssociations(
@@ -1004,7 +1062,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if thumbnailer_choices || glyph_choices {
+        version: if panel_choices {
+            35
+        } else if thumbnailer_choices || glyph_choices {
             34
         } else if comparator_choices {
             33

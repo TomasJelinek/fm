@@ -82,7 +82,7 @@ packages in:
 `<user-profile>/MidnightExplorer-20261112-progress-final-0cad3979/`
 
 The protected runtime is registered for the exact build hash, so
-`D:/experiments/dev/FM/_build/debug/me.exe` locates these qualified packages too.
+`_build/debug/me.exe` locates these qualified packages too.
 No source-directory or ancestor ACL was weakened. Backend startup, native-renderer
 UI startup and explicit software-renderer UI startup each exited successfully with
 empty stderr. User preferences were unchanged. Both main-window snapshots and

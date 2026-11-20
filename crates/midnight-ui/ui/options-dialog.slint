@@ -9,13 +9,16 @@ import { EditorOptions, EditorOptionsView } from "editor-options.slint";
 import { ComparatorOptions, ComparatorOptionsView } from "comparator-options.slint";
 import { PluginOptions } from "plugin-options.slint";
 import { ThumbnailOptions } from "thumbnail-options.slint";
-import { ArchiveOptions } from "archive-options.slint";
+import { ArchiveOptions, ArchiveOptionsView } from "archive-options.slint";
+import { ArgumentEditing } from "argument-editor.slint";
 import { ColorOptions, ColorOptionsView } from "color-options.slint";
 import { UserCommandOptions, UserCommandSettingsView } from "user-command-options.slint";
 import { DialogHeader, PopupFocus } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { PanelChoices } from "select-mask-dialog.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
 
 component OptionPicker inherits Rectangle {
     in property <string> label;
@@ -160,11 +163,17 @@ export component OptionsBody inherits Rectangle {
         root.comparator-error-top = -1px;
         if root.topic-index == 10 && ComparatorOptionsView.error == "" { content.content-y = 0px; }
         UserCommandSettingsView.drag-cancel(); ColorOptionsView.picker-field = -1; UserCommandSettingsView.picker-context(root.topic-index);
+        // Leaving a page closes its inline editors, which are no longer shown.
+        ArchiveOptionsView.adding = false; ArgumentEditing.escape-cancels = false;
     }
     function close-options() {
         if root.options-saving { return; }
         UserCommandSettingsView.drag-cancel(); ColorOptionsView.picker-field = -1; root.close();
     }
+    // An open inline editor gets Escape first and cancels only its own edit (the
+    // archive extension field says so); the next Escape closes Options.
+    private property <bool> archive-extension-open: root.topic-index == 7 && ArchiveOptionsView.adding;
+    private property <bool> inline-edit-open: root.archive-extension-open || ArgumentEditing.escape-cancels;
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
     init => {
@@ -187,6 +196,7 @@ export component OptionsBody inherits Rectangle {
         if event.text == Key.Escape && !KeyboardEditorView.capturing {
             if ColorOptionsView.picker-field >= 0 { ColorOptionsView.picker-field = -1; return accept; }
             if UserCommandSettingsView.drag-active { UserCommandSettingsView.drag-cancel(); return accept; }
+            if root.inline-edit-open && !root.options-busy { return reject; }
             root.close-options(); return accept;
         }
         if root.options-busy { return accept; }
@@ -197,6 +207,12 @@ export component OptionsBody inherits Rectangle {
             && !root.page-busy && ColorOptionsView.picker-field < 0 && !KeyboardEditorView.capturing
             && !PopupFocus.key-moved-focus() {
             root.confirm(); return accept;
+        }
+        // Escape left to an inline editor whose field does not have focus.
+        if event.text == Key.Escape && !KeyboardEditorView.capturing {
+            if root.archive-extension-open { ArchiveOptionsView.draft = ""; ArchiveOptionsView.adding = false; return accept; }
+            ArgumentEditing.escape-cancels = false;
+            root.close-options(); return accept;
         }
         reject
     }
@@ -308,6 +324,12 @@ export component OptionsBody inherits Rectangle {
                     checked <=> root.quick-search-filter; min-height: Theme.control-height;
                     toggled => { root.search-filter-changed(self.checked); }
                     hint: "Typing in a panel searches filename prefixes. Enable this to hide nonmatching files instead of moving among matches.";
+                }
+                WrappingCheckBox {
+                    text: "Show hidden files";
+                    checked <=> PanelChoices.show-hidden-files; min-height: Theme.control-height;
+                    toggled => { PanelChoices.show-hidden-files-changed(self.checked); }
+                    hint: ShortcutHints.hint("List hidden entries in both panels and inline trees: names starting with a dot on Linux and macOS, entries with the hidden attribute on Windows.", "panel.hidden-files");
                 }
                 WrappingCheckBox {
                     text: "Always show file sizes in bytes";

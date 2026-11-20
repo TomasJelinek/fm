@@ -8,6 +8,9 @@ fn handle() -> Handle {
                 quiet: Duration::from_secs(1),
                 maximum: Duration::from_secs(3),
                 poll: Duration::from_secs(15),
+                unwatched: Duration::from_secs(1),
+                retry: Duration::from_secs(1),
+                report: Duration::from_secs(60),
                 restart: Duration::from_secs(60),
                 cooldown: Duration::ZERO,
             })))

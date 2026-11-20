@@ -86,6 +86,17 @@ impl Pane {
         }
     }
 
+    /// Whether folder rows show their presence hints: as long as disclosure is
+    /// available, and while a background re-read keeps the shown rows.
+    pub(crate) fn root_disclosure_shown(&self) -> bool {
+        self.root_disclosure_available()
+            || (self.keeps_rows_in_background()
+                && self.network.is_none()
+                && !self.network_request
+                && self.search.query.is_empty()
+                && !self.search.panel_filter.enabled)
+    }
+
     pub(crate) fn root_disclosure_available(&self) -> bool {
         !self.loading
             && self.network.is_none()
@@ -256,6 +267,12 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         let p = &self.panes[pane.index()];
+        // A background re-read keeps showing the rows and their expanders; a
+        // tree opens on its listing once it commits.
+        if p.keeps_rows_in_background() && p.tree_view().is_none() && p.root_disclosure_shown() {
+            self.defer_disclosure(pane, identity, recursive);
+            return;
+        }
         if p.loading || p.network.is_some() || p.network_request {
             return;
         }

@@ -1,6 +1,6 @@
 # Documentation map
 
-This index covers Midnight Explorer 0.2. Current feature availability and known
+This index covers Midnight Explorer 0.3. Current feature availability and known
 limitations are tracked in [Feature status](FEATURE_STATUS.md); dated design
 plans and old verification reports do not establish current functionality.
 

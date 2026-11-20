@@ -103,3 +103,76 @@ fn real_sandboxed_worker_lists_reads_and_refuses_a_cancelled_open() {
     install(root.path(), Path::new(&worker), "duplicate");
     assert!(Catalog::discover(root.path()).unwrap().packages.is_empty());
 }
+
+/// Archives far beyond the former 100,000-member limits open and list completely
+/// in the sandboxed worker under its memory policy, and Stop still ends an opening
+/// promptly. `MIDNIGHT_ARCHIVE_LARGE` lists archives that the archive plugin's
+/// `measure_index_memory` generated and kept (`MIDNIGHT_ARCHIVE_MEMORY_KEEP`), with
+/// `MIDNIGHT_ARCHIVE_LARGE_MEMBERS` members each, 1,000 to a folder.
+#[test]
+#[ignore = "requires ARCHIVE_WORKER and generated archives in MIDNIGHT_ARCHIVE_LARGE"]
+fn real_sandboxed_worker_lists_archives_of_millions_of_members() {
+    use midnight_core::EntryKind;
+    use std::time::{Duration, Instant};
+    let root = tempfile::tempdir_in(
+        std::env::var_os("ARCHIVE_TEST_INSTALL_ROOT").expect("private installation root"),
+    )
+    .unwrap();
+    let worker = std::env::var_os("ARCHIVE_WORKER").unwrap();
+    install(root.path(), Path::new(&worker), "archives");
+    let catalog = Catalog::discover(root.path()).unwrap();
+    let members: usize = std::env::var("MIDNIGHT_ARCHIVE_LARGE_MEMBERS")
+        .expect("member count")
+        .parse()
+        .unwrap();
+    let cancel = Cancellation::default();
+    for source in std::env::split_paths(&std::env::var_os("MIDNIGHT_ARCHIVE_LARGE").unwrap()) {
+        let name = source.display().to_string();
+        let (package, format) = catalog.choose(&source).unwrap();
+        let start = Instant::now();
+        let mount = open(package, format, &source, &cancel)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let opened = start.elapsed();
+        let start = Instant::now();
+        let (mut files, mut folders, mut pending) = (0, 0, vec![1]);
+        while let Some(directory) = pending.pop() {
+            for node in mount.list(directory, &cancel).unwrap() {
+                if node.kind == EntryKind::Directory {
+                    folders += 1;
+                    pending.push(node.id.entry);
+                } else {
+                    files += 1;
+                }
+            }
+        }
+        let listed = start.elapsed();
+        assert_eq!(
+            (files, folders),
+            (members, members.div_ceil(1000)),
+            "{name}"
+        );
+        mount.release_on_worker().unwrap();
+        // Stop 100 ms into an opening, while the worker indexes the archive.
+        let stop = Cancellation::default();
+        let stopper = stop.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            stopper.cancel();
+            Instant::now()
+        });
+        let outcome = open(package, format, &source, &stop);
+        let returned = Instant::now();
+        let stopped = canceller.join().unwrap();
+        let stop = match outcome {
+            Err(error) => {
+                assert_eq!(error.kind, std::io::ErrorKind::Interrupted, "{name}");
+                format!("Stop ended the opening after {:.2?}", returned - stopped)
+            }
+            Ok(mount) => {
+                mount.release_on_worker().unwrap();
+                "opened before Stop".into()
+            }
+        };
+        eprintln!("{name}: opened in {opened:.2?}, listed in {listed:.2?}; {stop}");
+    }
+}

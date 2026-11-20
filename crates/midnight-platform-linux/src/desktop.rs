@@ -317,6 +317,7 @@ fn terminal_command_with_shell(
 
 fn terminal_host_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
+    crate::open_files::with_original_open_file_limit(&mut command);
     match executable.file_name().and_then(|name| name.to_str()) {
         Some("gnome-terminal") => {
             command.args(["--wait", "--"]);
@@ -352,6 +353,13 @@ fn is_executable(path: &Path) -> bool {
 impl PropertyService for LinuxFileSystem {
     fn show_properties(&self, _paths: &[PathBuf]) -> Result<bool, FsError> {
         Ok(false)
+    }
+
+    fn property_details(
+        &self,
+        path: &Path,
+    ) -> Result<Option<midnight_core::PropertyDetails>, FsError> {
+        crate::metadata::details(path).map(Some)
     }
 }
 

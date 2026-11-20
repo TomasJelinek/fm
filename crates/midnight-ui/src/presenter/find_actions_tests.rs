@@ -41,6 +41,7 @@ fn fixture(kind: EntryKind) -> (Presenter, FindSessionId, FindEntry) {
                 entry: entry.clone(),
                 duplicate_group: None,
                 duplicate_group_size: 0,
+                archive: None,
             })]
             .into(),
         ),

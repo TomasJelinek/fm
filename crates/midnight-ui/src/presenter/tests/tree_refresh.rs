@@ -372,17 +372,11 @@ fn saved_checksum_manifest_reconciles_an_adopted_tree_instead_of_reading_it_flat
         .unwrap();
     super::super::checksums_tests::finish(&mut p, id, ChecksumCompletion::Completed);
     let queued = RefCell::new(None);
-    let form = checksums::ChecksumSaveForm {
-        generation: p.checksums.sessions[&id].generation.0,
-        algorithm: ChecksumAlgorithm::Sha256,
-        destination: "checksums.sha256".into(),
-        acknowledge: false,
-        overwrite: false,
-    };
-    assert!(p.save_checksum_manifest(id, form, &|command| {
+    p.checksums.sessions.get_mut(&id).unwrap().suggested = root.join("checksums.sha256");
+    p.begin_checksum_save(id, ChecksumAlgorithm::Sha256, &|command| {
         *queued.borrow_mut() = Some(command);
         true
-    }));
+    });
     let Some(Command::SaveChecksumManifest {
         save_id,
         job,

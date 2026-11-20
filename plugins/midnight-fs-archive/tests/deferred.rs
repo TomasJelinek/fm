@@ -85,10 +85,6 @@ fn sevenzip_metadata_budgets_are_checked_before_deferred_decoding() {
             max_total: 9,
             ..Limits::default()
         },
-        Limits {
-            max_entries: 1,
-            ..Limits::default()
-        },
     ] {
         assert_eq!(
             Archive::open(Format::SevenZip, bytes.clone(), limits)

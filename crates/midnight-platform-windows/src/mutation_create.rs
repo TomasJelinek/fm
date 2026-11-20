@@ -204,6 +204,21 @@ fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {
 }
 
 impl PreparedDirectory for WindowsDirectory {
+    fn transfer_identity(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferIdentity, FsError> {
+        checked(cancel, &self.path)?;
+        // Transfers identify the folder only by its stable FileIdInfo form; a volume
+        // without it (FAT) refuses here rather than compare a legacy index.
+        let identity = native::identity(&self.directory)
+            .map_err(|e| failure("read base identity", &self.path, e))?;
+        Ok(midnight_core::TransferIdentity {
+            device: identity.volume,
+            object: identity.id,
+        })
+    }
+
     fn create_file(&self, name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
         checked(cancel, &self.path)?;
         validate_name(name).map_err(|e| failure("validate create empty file", &self.path, e))?;

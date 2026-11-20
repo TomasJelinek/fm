@@ -119,6 +119,82 @@ fn sandboxed_pdf_pages_use_retained_source_and_reject_revision_change() {
     session.close_checked().unwrap();
 }
 
+/// One 20 x 20 pt page with `content`, with a complete cross-reference table.
+fn one_page(content: &str) -> Arc<Captured> {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 4 0 R >>".to_owned(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+    ];
+    let mut bytes = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(bytes.len());
+        bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = bytes.len();
+    bytes.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+    for offset in offsets {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(
+        format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    Arc::new(Captured {
+        bytes,
+        changed: AtomicBool::new(false),
+        reads: AtomicUsize::new(0),
+    })
+}
+
+#[test]
+#[ignore = "Requires MIDNIGHT_PDF_VIEWER_TEST_APPLICATION in a trusted private installation"]
+fn refusals_carry_the_parser_and_renderer_reasons() {
+    let provider = provider();
+    let cancel = AtomicBool::new(false);
+    let error = ImageSession::open(
+        &provider,
+        Arc::new(Captured {
+            bytes: b"not a PDF".to_vec(),
+            changed: AtomicBool::new(false),
+            reads: AtomicUsize::new(0),
+        }),
+        &cancel,
+        Duration::from_secs(15),
+    )
+    .err()
+    .expect("text is not a document");
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    assert_eq!(
+        error.to_string(),
+        "This document is damaged or incomplete: the PDF structure is invalid or incomplete"
+    );
+    // An undecodable inline image opens, but its page cannot be drawn.
+    let mut session = ImageSession::open(
+        &provider,
+        one_page("q 20 0 0 20 0 0 cm BI /W 4 /H 4 /BPC 8 /CS /RGB /F /DCT ID notajpeg EI Q"),
+        &cancel,
+        Duration::from_secs(15),
+    )
+    .unwrap();
+    let error = session
+        .render_page(0, viewport(), &cancel, Duration::from_secs(15))
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "This page could not be drawn: the page contains content this viewer cannot draw"
+    );
+    assert!(
+        session
+            .render_page(0, viewport(), &cancel, Duration::from_secs(5))
+            .is_err()
+    );
+}
+
 #[test]
 #[ignore = "Requires MIDNIGHT_PDF_VIEWER_TEST_APPLICATION in a trusted private installation"]
 fn cancelled_pdf_session_cannot_be_reused() {

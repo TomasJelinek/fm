@@ -9,6 +9,8 @@ use slint::platform::{
 };
 use std::{cell::Cell, path::PathBuf, sync::Arc};
 
+#[path = "scroll_input_kinetic_tests.rs"]
+mod kinetic_tests;
 #[path = "scroll_input_toolbar_tests.rs"]
 mod toolbar_tests;
 
@@ -31,6 +33,8 @@ struct Harness {
     presenter: Rc<RefCell<Presenter>>,
     state: Rc<RefCell<InputState>>,
     timer: Rc<slint::Timer>,
+    auxiliary: RefCell<NativeScroll>,
+    kinetic_shown: Cell<bool>,
     pixels: RefCell<Vec<slint::Rgb8Pixel>>,
 }
 
@@ -76,8 +80,31 @@ impl Harness {
         panic!("panel scrolling did not settle within {max} frames");
     }
 
+    /// The production order of the native hook: shared tracking, panel routing,
+    /// then auxiliary routing and momentum.
     fn input(&self, event: WindowEvent) -> bool {
-        observe(&self.window, &self.state, &self.timer, &event)
+        let source = self
+            .auxiliary
+            .borrow_mut()
+            .track(self.window.window(), &event);
+        let replaced = observe(
+            &self.window,
+            &self.state,
+            &self.timer,
+            &event,
+            source == midnight_ui_input::WheelSource::Touchpad,
+        );
+        let mut shown = self.kinetic_shown.get();
+        let auxiliary = route_auxiliary(
+            &self.window,
+            &self.state,
+            &self.auxiliary,
+            &event,
+            replaced,
+            &mut shown,
+        );
+        self.kinetic_shown.set(shown);
+        replaced || auxiliary
     }
 
     fn point(&self, x: f32, y: f32) {
@@ -170,6 +197,7 @@ fn harness() -> Harness {
         });
     let state = Rc::new(RefCell::new(InputState::default()));
     let timer = wheel_timer(&window, &state);
+    let auxiliary = RefCell::new(NativeScroll::new(&window).synthesize_momentum(true));
     let h = Harness {
         window,
         native,
@@ -177,6 +205,8 @@ fn harness() -> Harness {
         presenter,
         state,
         timer,
+        auxiliary,
+        kinetic_shown: Cell::new(false),
         pixels: RefCell::new(vec![slint::Rgb8Pixel::default(); 1340 * 820]),
     };
     h.draw();

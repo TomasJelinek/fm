@@ -8,7 +8,7 @@ they do not establish universal 60 Hz presentation.
 
 ## Cause and scope
 
-Investigation started from `1c1b0b6` in `D:/experiments/dev/FM`, following the
+Investigation started from `1c1b0b6` in the primary checkout, following the
 [foreground refill qualification](2026-11-12-foreground-scroll-resume.md). Its
 remaining JSON content gap reached 105.554 ms. The retained camera rejected a
 thumb target beyond current pixel coverage even when both document ends and its
@@ -130,7 +130,7 @@ retained separately; no weaker derived gate replaces the original assertions.
 
 Inputs and SHA-256 values, unchanged before/after:
 
-- `D:/temp/ovclash/results/2026-09-07-mfg/manifest.json`:
+- `<external-project>/results/<run>/manifest.json`:
   `CA5E4B26FEBA253568C17A62869471A2AEB2646D194593F18D2F9611263D21E7`.
 - `C:/Windows/System32/WwanFeatureTests.xml`:
   `92396D10906CD3E606AB1598B69927AB895C7BEF2D6D0C1A1C613C579DA37C08`.
@@ -171,9 +171,9 @@ one refresh period in some frames.
 
 The two additional exact-file hashes are:
 
-- `<source-checkout>/ovclash/build.bat`:
+- `<external-project>/build.bat`:
   `8EF5E6ACB593E5352778286868A8406B665CC403ABB7BDBB04FBD34870F0CED6`.
-- `<source-checkout>/ovclash/AGENTS.md`:
+- `<external-project>/AGENTS.md`:
   `6656EEA6CE179C31D7C2C1E08AB24443BF44AFC4FAE5DCC0E9E8462229D633AD`.
 
 Raw files are `pending-final-bat-text-07.*` and `pending-final-md-drag.*` under

@@ -28,7 +28,12 @@ name = "midnight-html-linux-launcher"
 path = "src/main.rs"
 required-features = ["native-cef"]
 
-# Keep Chromium's CPU pixel conversion/composition responsive in development
-# without changing optimization or iteration settings for dependencies.
+# Keep Chromium's CPU pixel conversion/composition responsive in development.
 [profile.dev.package.midnight-viewer-html]
 opt-level = 2
+
+# The development application loads development plugin builds; optimize the CEF
+# bindings and the SDK like every other viewer plugin's dependencies.
+# Measurements: docs/verification/2026-11-20-viewer-speed.md.
+[profile.dev.package."*"]
+opt-level = 3

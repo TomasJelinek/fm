@@ -41,6 +41,9 @@ struct Record {
     session: DialogSession,
     theme: ThemeRevision,
     automatic: bool,
+    /// The Copy, Move, Delete or other file job this window shows, as the
+    /// presenter keys it.
+    job: Option<crate::job_row_cache::Key>,
     copy_id: Option<OperationId>,
     copy_observed: bool,
     copy_confirmation: Option<CopyConfirmation>,
@@ -217,6 +220,27 @@ impl Windows {
                 self.open(p, row, true);
             }
         }
+        self.publish_open_jobs(p);
+    }
+    /// Tells the presenter which jobs have an open window: such a window shows how
+    /// the job ended, so the main window does not repeat that as a notice.
+    fn publish_open_jobs(&self, p: &Presenter) {
+        let jobs = self
+            .records
+            .borrow()
+            .values()
+            .filter_map(|record| record.job)
+            .collect();
+        p.operations.progress_windows.set(jobs);
+    }
+    /// [`Self::publish_open_jobs`] after a window closed outside a refresh. Only an
+    /// event being applied holds the presenter; the next refresh then publishes.
+    fn publish_open_jobs_now(&self) {
+        if let Some(state) = self.state.upgrade()
+            && let Ok(p) = state.try_borrow()
+        {
+            self.publish_open_jobs(&p);
+        }
     }
     fn open(self: &Rc<Self>, p: &Presenter, row: OperationRow, automatic: bool) {
         if self.closing.get() || p.operations.closing || !self.owner.is_ready() {
@@ -325,6 +349,19 @@ impl Windows {
             .strip_prefix("copy-job:")
             .and_then(|id| id.parse().ok())
             .map(OperationId);
+        // A Delete or creation row's identity is its job number alone; a Rename's
+        // and a metadata edit's carry a prefix.
+        let job = match row.kind {
+            0 => copy_id.map(crate::job_row_cache::Key::Copy),
+            1..=5 => ["rename-job:", "metadata-job:"]
+                .into_iter()
+                .find_map(|prefix| row.identity.strip_prefix(prefix))
+                .unwrap_or(row.identity.as_str())
+                .parse()
+                .ok()
+                .map(|id| crate::job_row_cache::Key::Mutation(OperationId(id))),
+            _ => None,
+        };
         self.records.borrow_mut().insert(
             row.identity,
             Record {
@@ -333,11 +370,13 @@ impl Windows {
                 session,
                 theme: theme(p),
                 automatic,
+                job,
                 copy_id,
                 copy_observed: copy_id.is_some_and(|id| p.copy_control_available(id)),
                 copy_confirmation: None,
             },
         );
+        self.publish_open_jobs(p);
         Ok(())
     }
     fn request_close(&self, id: &SharedString, session: DialogSession) {
@@ -538,7 +577,12 @@ impl Windows {
             }
             return;
         }
-        self.dismiss(id, Some(session));
+        // As a Copy's, the window stays to show how the job ends, so no notice
+        // has to report it.
+        if let Some(record) = self.records.borrow().get(id) {
+            record.window.set_cancel_confirmation(false);
+            record.window.set_close_error(SharedString::default());
+        }
     }
     fn interactive(&self, id: &SharedString, session: DialogSession) -> bool {
         self.current(id, session)
@@ -561,6 +605,7 @@ impl Windows {
         let record = self.records.borrow_mut().remove(id);
         if let Some(record) = record {
             record.host.close(record.window.window());
+            self.publish_open_jobs_now();
         }
     }
     pub(super) fn close_all(&self) {
@@ -569,5 +614,6 @@ impl Windows {
         for record in records.into_values() {
             record.host.close(record.window.window());
         }
+        self.publish_open_jobs_now();
     }
 }

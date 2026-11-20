@@ -5,6 +5,8 @@ use super::*;
 pub(crate) struct CopiesState {
     pub(super) selection: copy_selection::CopySelections,
     pub(crate) draft: Option<copy_dialog::CopyDraft>,
+    /// The draft's typed destination while the backend checks that it is a folder.
+    pub(crate) destination_check: Option<copy_dialog::DestinationCheck>,
     pub(super) tree_pending: Option<tree_copy::Pending>,
     pub(crate) progress: Vec<Arc<CopyProgress>>,
     // Only live worker snapshots, excluding optimistic submission/drop rows.
@@ -131,6 +133,10 @@ impl Presenter {
         }
         if token.starts_with("copy-error:") {
             self.decide_copy_failure(token, choice, send);
+            return;
+        }
+        if token.starts_with("delete-error:") {
+            self.decide_delete(token, choice, send);
             return;
         }
         let Some(index) = self
@@ -275,14 +281,23 @@ impl Presenter {
                 } else {
                     self.copies.backend_observed.insert(progress.id);
                 }
+                if !progress.state.is_terminal() {
+                    self.operations.settle.job_running(true, progress.id);
+                }
                 let mut tree_holds = Vec::new();
                 let mut affected = Vec::new();
+                // A Copy leaves its sources as they were; only its destination
+                // shows a change, while a Move changes both.
+                let copy = progress.intent == TransferIntent::Copy;
                 if progress.state.is_terminal() {
-                    // A completed transfer holds input until its panels show it.
-                    let hold = matches!(
-                        progress.state,
-                        CopyOperationState::Completed | CopyOperationState::CompletedWithErrors
-                    );
+                    // A completed transfer the user waited for holds input until
+                    // its panels show it; a long one's panels update in place.
+                    let waited = self.operations.settle.job_ended(true, progress.id);
+                    let hold = waited
+                        && matches!(
+                            progress.state,
+                            CopyOperationState::Completed | CopyOperationState::CompletedWithErrors
+                        );
                     for pane in [PaneId::Left, PaneId::Right] {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
                             if hold {
@@ -292,7 +307,8 @@ impl Presenter {
                         }
                         let shown = &self.panes[pane.index()];
                         let directory = shown.display_path();
-                        if directory == progress.destination_directory
+                        let destination = directory == progress.destination_directory;
+                        if destination
                             || progress
                                 .source_directories
                                 .iter()
@@ -303,50 +319,25 @@ impl Presenter {
                                 shown,
                                 directory,
                                 None,
-                                hold,
+                                hold && (destination || !copy),
                                 &mut self.retired,
                             );
                         }
                     }
-                    if !progress.errors.is_empty() {
-                        self.desktop.report(
-                            if progress.intent == TransferIntent::Copy {
-                                "Copy failed"
-                            } else {
-                                "Move needs attention"
-                            },
-                            crate::error_presentation::issues(
-                                &progress.errors,
-                                progress.files_completed > 0,
-                            ),
-                        );
-                    } else if !progress.message.is_empty() {
-                        if matches!(
-                            progress.state,
-                            CopyOperationState::Failed | CopyOperationState::CompletedWithErrors
-                        ) {
-                            self.desktop.report(
-                                if progress.intent == TransferIntent::Copy {
-                                    "Copy failed"
-                                } else {
-                                    "Move needs attention"
-                                },
-                                progress.message.clone(),
-                            );
-                        } else if progress.state != CopyOperationState::Completed {
-                            self.desktop.inform(
-                                if progress.intent == TransferIntent::Copy {
-                                    "Copy"
-                                } else {
-                                    "Move"
-                                },
-                                progress.message.clone(),
-                            );
-                        }
+                    // The job's own open window shows how it ended, errors included;
+                    // a notice would repeat it. Only a job without one gets a notice.
+                    if !self
+                        .operations
+                        .progress_windows
+                        .contains(crate::job_row_cache::Key::Copy(progress.id))
+                    {
+                        report_copy_outcome(&mut self.desktop, &progress);
                     }
                 }
                 if !tree_holds.is_empty() {
-                    affected.extend(progress.source_directories.iter().cloned());
+                    if !copy {
+                        affected.extend(progress.source_directories.iter().cloned());
+                    }
                     affected.push(progress.destination_directory.clone());
                 }
                 *old = progress;
@@ -367,6 +358,32 @@ impl Presenter {
                 .iter()
                 .any(|p| p.id == *id && !p.state.is_terminal())
         });
+    }
+}
+
+/// The notice for a finished Copy or Move that no window of its own shows: its
+/// errors, or else its cancellation. A completion needs none.
+fn report_copy_outcome(desktop: &mut super::desktop::DesktopState, progress: &CopyProgress) {
+    let copy = progress.intent == TransferIntent::Copy;
+    let failed = if copy {
+        "Copy failed"
+    } else {
+        "Move needs attention"
+    };
+    if !progress.errors.is_empty() {
+        desktop.report(
+            failed,
+            crate::error_presentation::issues(&progress.errors, progress.files_completed > 0),
+        );
+    } else if !progress.message.is_empty() {
+        if matches!(
+            progress.state,
+            CopyOperationState::Failed | CopyOperationState::CompletedWithErrors
+        ) {
+            desktop.report(failed, progress.message.clone());
+        } else if progress.state != CopyOperationState::Completed {
+            desktop.inform(if copy { "Copy" } else { "Move" }, progress.message.clone());
+        }
     }
 }
 

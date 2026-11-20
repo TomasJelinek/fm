@@ -173,7 +173,7 @@ recorded in the [26ff61f2 runtime receipts](#previous-windows-launch-qualified-r
 
 The earlier Find diagnostic receipt (`_build/verification/backend-find-result-revision-20261113/build-owned-20261113T002043Z/runtime-result.json`)
 records **13/0/0**, including read-only probes of the exact reported
-`<source-checkout>/ovclash/source/DynamicMatrixCacheLimit.h`. Its hash, size
+`<external-project>/source/<header>.h`. Its hash, size
 and mtime were unchanged; raw path, kind, identity and all six revision words
 matched, and repeated validation was accepted. The original Open report remains
 unreproduced: its old build and captured metadata are unknown. No production Find

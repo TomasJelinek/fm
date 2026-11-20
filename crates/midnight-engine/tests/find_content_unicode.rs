@@ -67,6 +67,7 @@ fn query(text: &str) -> FindContentQuery {
         text: text.into(),
         case_sensitive: false,
         whole_words: true,
+        regex: false,
     }
 }
 

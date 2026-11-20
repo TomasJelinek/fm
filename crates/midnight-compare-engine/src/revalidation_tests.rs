@@ -169,8 +169,9 @@ fn retained(sources: &[CapturedFile; 2]) -> TextComparison {
     let cancel = AtomicBool::new(false);
     let inputs = sources
         .each_ref()
-        .map(|source| text::read(source, false, &cancel).unwrap());
-    let mut text = TextComparison::new(&inputs[0].text, &inputs[1].text, &cancel).unwrap();
+        .map(|source| text::read(source, false, &cancel, &mut |_| {}).unwrap());
+    let mut text =
+        TextComparison::new(inputs[0].lines.text(), inputs[1].lines.text(), &cancel).unwrap();
     text.encodings = Some(inputs.each_ref().map(|input| input.encoding));
     text
 }
@@ -346,7 +347,17 @@ fn initial_text(
     source: &mut CapturedFile,
     recapture: impl FnOnce() -> Result<CapturedFile, String>,
 ) -> Result<String, String> {
-    read_text(source, recapture, false, &AtomicBool::new(false)).map(|input| input.text)
+    read_text(
+        source,
+        recapture,
+        false,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .map(|input| input.lines.text().to_owned())
+    .map_err(|error| match error {
+        ReadError::Refused(reason) | ReadError::Failed(reason) => reason,
+    })
 }
 
 #[test]
@@ -367,5 +378,6 @@ fn an_initial_read_keeps_every_other_failure() {
         unreachable!("a valid source is not captured again")
     })
     .unwrap_err();
-    assert!(error.contains("binary control characters"), "{error}");
+    // An early control byte refuses the content as text (the pair is compared as bytes).
+    assert!(error.contains("not UTF-8 or UTF-16 text"), "{error}");
 }

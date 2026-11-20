@@ -206,6 +206,109 @@ impl Fixture {
         );
         crate::refresh(&self.window, &self.presenter.borrow());
     }
+
+    /// The middle of the row named `name` in `pane`'s list, in window coordinates.
+    fn row(&self, pane: PaneId, name: &str) -> slint::LogicalPosition {
+        use i_slint_core::{
+            accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+        };
+        let (left, width) = match pane {
+            PaneId::Left => (
+                self.window.get_left_list_left(),
+                self.window.get_left_list_width(),
+            ),
+            PaneId::Right => (
+                self.window.get_right_list_left(),
+                self.window.get_right_list_width(),
+            ),
+        };
+        let mut items = vec![ItemRc::new_root(
+            WindowInner::from_pub(self.window.window()).component(),
+        )];
+        while let Some(item) = items.pop() {
+            let mut child = item.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                items.push(current);
+            }
+            if item.accessible_role() != AccessibleRole::ListItem
+                || item
+                    .accessible_string_property(AccessibleStringProperty::Label)
+                    .is_none_or(|label| label.as_str() != name)
+            {
+                continue;
+            }
+            let rect = item.geometry();
+            let origin = item.map_to_native_window(rect.origin);
+            let middle = slint::LogicalPosition::new(
+                origin.x + rect.size.width / 2.0,
+                origin.y + rect.size.height / 2.0,
+            );
+            if middle.x >= left && middle.x < left + width {
+                return middle;
+            }
+        }
+        panic!("no {name:?} row in the {pane:?} panel");
+    }
+
+    fn pointer(&self, event: slint::platform::WindowEvent) {
+        self.window.window().dispatch_event(event);
+    }
+
+    /// Apply a backend event, recording what the presenter sends back.
+    fn apply(&self, event: Event) {
+        self.presenter
+            .borrow_mut()
+            .apply_with_sender(event, &|command| {
+                self.sent.borrow_mut().push(command);
+                true
+            });
+    }
+
+    /// Press the left panel's file, move it past the drag threshold at once and let
+    /// the backend prepare it; no time passes. Earlier commands are forgotten.
+    fn start_drag(&self) -> DragId {
+        let source = self.row(PaneId::Left, "file 文档.txt");
+        self.sent.borrow_mut().clear();
+        // The window sees the press; the row starts dragging past its threshold.
+        self.pointer(slint::platform::WindowEvent::PointerPressed {
+            position: source,
+            button: PointerEventButton::Left,
+        });
+        self.pointer(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(source.x + 16.0, source.y),
+        });
+        let id = self
+            .sent
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::PrepareDrag { id, .. } => Some(*id),
+                _ => None,
+            })
+            .expect("the threshold crossing prepares a drag");
+        self.apply(Event::DragDrop(DragDropEvent::Prepared {
+            id,
+            item_count: 1,
+        }));
+        id
+    }
+
+    /// Whether the left panel's status line starts with the quick-drag note.
+    fn noted(&self) -> bool {
+        use slint::Model;
+        self.window
+            .get_left_details()
+            .row_data(0)
+            .is_some_and(|field| field.value == "Drag cancelled: released within 0.4 s")
+    }
+
+    fn sent_cancel(&self, id: DragId) -> bool {
+        self.sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::CancelDrag(actual) if *actual == id))
+    }
 }
 
 impl Drop for Fixture {
@@ -401,4 +504,153 @@ fn bridges_of_two_windows_on_one_thread_republish_only_their_own_targets() {
     assert!(!second_bridge.turn_scheduled.get());
     slint::platform::update_timers_and_animations();
     assert_eq!(first.targets().1, [PaneId::Left, PaneId::Right]);
+}
+
+#[test]
+fn a_drop_sooner_than_the_minimum_drag_duration_after_its_press_is_cancelled() {
+    use slint::Model;
+    let fixture = Fixture::new();
+    let button = PointerEventButton::Left;
+    let quick = MIN_DRAG_DURATION - Duration::from_millis(1);
+    for held in [quick, MIN_DRAG_DURATION] {
+        let target = fixture.row(PaneId::Right, "folder");
+        let id = fixture.start_drag();
+        fixture.pointer(WindowEvent::PointerMoved { position: target });
+        let revision = fixture
+            .sent
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::PreviewInternalDrop(request) if request.id == id => Some(request.revision),
+                _ => None,
+            })
+            .expect("hovering the other panel's folder checks it");
+        fixture.apply(Event::DragDrop(DragDropEvent::InternalPreview {
+            id,
+            revision,
+            intent: Some(TransferIntent::Copy),
+        }));
+        fixture.window.invoke_drag_moved(target.x, target.y);
+        assert_eq!(fixture.window.get_drag_feedback_state(), 3);
+        assert_eq!(fixture.window.get_drag_hover_pane(), 1);
+        assert_eq!(fixture.window.get_drag_hover_row(), 1);
+        let (cursor, selected) = {
+            let p = fixture.presenter.borrow();
+            (p.panes[0].cursor, p.panes[0].selected.clone())
+        };
+        fixture.advance(held);
+        fixture.pointer(WindowEvent::PointerReleased {
+            position: target,
+            button,
+        });
+        let drops = fixture
+            .sent
+            .borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::InternalDrop(request) if request.id == id => {
+                    Some(request.destination.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!fixture.window.get_drag_active());
+        assert_eq!(fixture.window.get_drag_hover_pane(), -1);
+        assert_eq!(fixture.window.get_drag_hover_row(), -1);
+        assert_eq!(fixture.window.get_drag_feedback_state(), 0);
+        if held < MIN_DRAG_DURATION {
+            assert!(
+                drops.is_empty(),
+                "a release {held:?} after the press drops nothing"
+            );
+            assert!(fixture.sent_cancel(id));
+            {
+                let p = fixture.presenter.borrow();
+                assert_eq!(p.panes[0].cursor, cursor);
+                assert!(Arc::ptr_eq(&p.panes[0].selected, &selected));
+            }
+            assert!(fixture.noted(), "the source panel says why");
+            assert!(
+                fixture
+                    .window
+                    .get_right_details()
+                    .iter()
+                    .all(|field| field.label != "Drag")
+            );
+            fixture.advance(QUICK_NOTE);
+            fixture.advance(IDLE_POLL);
+            assert!(!fixture.noted(), "the note retires");
+        } else {
+            assert!(matches!(
+                drops.as_slice(),
+                [InternalDropDestination::PanelEntry {
+                    pane: PaneId::Right,
+                    entry: EntryId(1),
+                    ..
+                }]
+            ));
+            assert!(!fixture.noted());
+        }
+    }
+}
+
+#[test]
+fn other_applications_get_a_drag_only_once_it_has_lasted_the_minimum_duration() {
+    let fixture = Fixture::new();
+    let quick = MIN_DRAG_DURATION - Duration::from_millis(1);
+    for release_outside in [true, false] {
+        let id = fixture.start_drag();
+        // A software window has no native drag source; pretend this one has.
+        fixture.presenter.borrow_mut().drag_drop.supported = Some(true);
+        let outside = slint::LogicalPosition::new(-20.0, 100.0);
+        fixture.pointer(WindowEvent::PointerMoved { position: outside });
+        fixture.advance(quick);
+        let phase = |fixture: &Fixture| {
+            let p = fixture.presenter.borrow();
+            p.drag_drop.lifecycle.active().map(|gesture| gesture.phase)
+        };
+        assert_eq!(phase(&fixture), Some(Phase::Ready), "still this window's");
+        assert!(!fixture.sent_cancel(id));
+        if release_outside {
+            // The window still holds the pointer and sees the release.
+            fixture.pointer(WindowEvent::PointerReleased {
+                position: outside,
+                button: PointerEventButton::Left,
+            });
+            assert!(fixture.noted(), "released too soon outside the window");
+        } else {
+            // The handoff runs on the next poll. The software window cannot release
+            // a native grab, so the bridge cancels the drag the operating system took.
+            fixture.advance(ACTIVE_POLL + Duration::from_millis(1));
+            assert!(!fixture.noted(), "handed over, not released too soon");
+        }
+        assert_eq!(phase(&fixture), None);
+        assert!(fixture.sent_cancel(id));
+        assert!(
+            !fixture
+                .sent
+                .borrow()
+                .iter()
+                .any(|command| matches!(command, Command::InternalDrop(_)))
+        );
+        fixture.advance(QUICK_NOTE + IDLE_POLL);
+    }
+}
+
+#[test]
+fn search_results_over_a_panel_withdraw_its_drop_rectangle() {
+    let fixture = Fixture::new();
+    assert!(rectangles(&fixture.window).iter().all(Option::is_some));
+    // The list covers the left panel's rows; the folder under it takes no drop.
+    fixture
+        .window
+        .global::<crate::FeedPresentation>()
+        .set_left(crate::FeedView {
+            open: true,
+            ..Default::default()
+        });
+    let [left, right] = rectangles(&fixture.window);
+    assert!(left.is_none());
+    assert!(right.is_some());
 }

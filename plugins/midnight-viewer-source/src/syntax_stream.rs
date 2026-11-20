@@ -89,7 +89,13 @@ pub(super) fn stream(
                 }
                 STYLE_STRING
             }
-            Mode::Xml(_) | Mode::Lua(_) | Mode::Yaml(_) | Mode::Usda(_) => {
+            Mode::Xml(_)
+            | Mode::Lua(_)
+            | Mode::Yaml(_)
+            | Mode::Usda(_)
+            | Mode::Css(_)
+            | Mode::Make(_)
+            | Mode::Csv(_) => {
                 current.mode = Mode::Normal;
                 continue;
             }

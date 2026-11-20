@@ -4,7 +4,10 @@ use midnight_compare_engine::FindQuery;
 
 impl OpenWindow {
     pub(super) fn find(&self, backwards: bool) {
-        if self.window.get_choosing_files() || self.window.get_image_mode() {
+        if self.window.get_choosing_files()
+            || self.window.get_image_mode()
+            || self.window.get_bytes_mode()
+        {
             return;
         }
         if self.window.get_query().is_empty() {

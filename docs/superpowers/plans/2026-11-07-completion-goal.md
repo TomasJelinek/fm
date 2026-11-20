@@ -88,7 +88,7 @@ or failures justify it, rather than rebuilding unchanged plugins for every task.
 - [x] Fix shortcut updates on OneDrive cloud-placeholder Desktop without weakening
   executable/plugin trust or following symlink/junction destinations.
 - [ ] Close additional audited gaps, update documentation/hotkeys/APIs/licenses,
-  perform independent review, rebuild/test releases and commit/push under TomasJelinek.
+  perform independent review, rebuild/test releases and commit/push under the maintainer's account.
 
 Each substantial deliverable gets a focused implementation plan with exact files,
 interfaces and regression cases before production changes. Tests cover real owned
@@ -101,7 +101,7 @@ the assigned work is actually complete; report real external validation dependen
 Reviewed delivery: `41a08b1c38062f29a2428b25bce2aead98535baa` contains the
 redirected/cloud Desktop shortcut fix, native tests and verification record.
 Fresh Windows regression passed before commit; push to `codex/viewer-plugins`
-was verified under GitHub account TomasJelinek. Other goal changes remain separate.
+was verified under the maintainer's GitHub account. Other goal changes remain separate.
 
 - `goal_design_audit`: requirement/code matrix only, `docs/IMPLEMENTATION_BACKLOG.md`.
 - `goal_keyboard_crash`: keyboard-specific diagnostic/presenter/tests; shared UI

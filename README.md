@@ -13,9 +13,18 @@ are in the [independent provider README](plugins/midnight-viewer-html/README.md)
 F3 handles `.html`, `.htm` and `.xhtml`; Ctrl+F searches and Escape closes the
 viewer. HTML starts offline with JavaScript disabled. Windows rendering is
 qualified; the Linux browser runtime still requires native qualification.
+On Ubuntu 23.10 and later (24.04, Mint 22), AppArmor denies Chromium's sandbox the
+user namespaces it needs. The first HTML document that this stops shows why in the
+page's place, with an **Install…** button that installs the viewer's AppArmor profile
+after administrator authorization (polkit) and opens the document again; nothing is
+installed before that. Alternatively run `sudo scripts/install-html-viewer-apparmor.sh`
+once in a source checkout (it covers every build under `_build/`), or
+`sudo ./install-html-viewer-apparmor.sh` in an extracted release. Without a trusted
+`/usr/bin/pkexec` the viewer only explains this, naming the command only for a
+root-owned installation; Chromium never runs without its sandbox. See [system requirements](docs/SYSTEM_REQUIREMENTS.md).
 
-Product version **0.2** (Cargo SemVer `0.2.0`); the native window title shows
-`Midnight Explorer 0.2 — File Manager`. The displayed version is derived from the package version.
+Product version **0.3** (Cargo SemVer `0.3.0`); the native window title shows
+`Midnight Explorer 0.3 — File Manager`. The displayed version is derived from the package version.
 
 Prebuilt Windows/Linux previews are published on the
 [GitHub Releases page](https://github.com/TomasJelinek/fm/releases).
@@ -36,8 +45,9 @@ history, sorting, selection, mouse/keyboard navigation, and background metadata/
 queries, native watches, a command editor and appearance preferences. Internal
 file operations include confirmed rename, recursive directory creation, empty-file
 creation (toolbar or Shift+F4), and queued deletion (system Trash by default,
-permanent deletion with Shift). Empty-file creation accepts a name and never
-overwrites an existing entry.
+permanent deletion with Shift). Empty-file creation accepts a name; the name of an
+existing file is asked about first, and only the Replace file button replaces it,
+keeping the original in a recovery folder whose path the completion notice shows.
 Explicitly opened documents use host associations; on Linux, executable programs
 run directly and executable shell scripts run in a terminal,
 and explicitly submitted shell commands run with
@@ -52,10 +62,18 @@ destination, then delete that exact source before continuing. Recursive ordinary
 folders use the same per-file checks and remove emptied source folders last.
 There is no source-recovery mode or journal. See the
 [current accepted follow-ups](docs/superpowers/specs/2026-11-07-panel-viewer-followups.md).
-Link/provider moves, link copying and full metadata preservation remain pending
-(the engine has an internal link-preserving Copy path that no UI command or public
-API exposes yet); required modified-time preservation currently accepts regular
-files only.
+On Linux, symbolic links are transferred as links. F5 with **Follow links**
+cleared recreates every link, including a dangling one or one that points to itself,
+as a link with exactly the same target text (relative targets stay relative). With
+it checked (the default), a link to a folder is copied as that folder with its
+contents and a link to a file as the file; a link that cannot be followed (missing
+or unreadable target, another filesystem, or a folder that contains the link) is
+copied as a link, and the job details say why. F6 always moves the link itself: a
+rename on the same volume, otherwise the link is recreated at the destination and
+then removed from the source. Windows keeps its directory-link options (junctions and
+directory symbolic links followed or created as empty folders). Provider moves and
+full metadata preservation remain pending; required modified-time preservation
+currently accepts regular files only.
 See [the transfer capabilities and implementation limits](docs/developer/TRANSFERS.md).
 On Linux, Copy and cross-volume Move write only to filesystems with anonymous
 `O_TMPFILE` files (ext4, XFS, Btrfs, tmpfs): FAT/exFAT/NTFS media and NFS/SMB,
@@ -67,7 +85,22 @@ live mount. See [system requirements](docs/SYSTEM_REQUIREMENTS.md).
 Copy/Move pauses for supported Retry/Skip/Cancel decisions on I/O errors, including
 an unavailable destination or a full disk. Retry preserves the verification policy captured when the job started;
 Skip All applies only to the same error type and phase in that job. Decide later
-keeps the pending decision available from Jobs. Copy, Move and Delete share one
+keeps the pending decision available from Jobs. On Linux, a file or folder inside a
+copied folder that cannot be opened (for example one you may not read) pauses on its
+own: Retry opens it again, and Skip leaves out only that item while the rest of the
+folder is still copied. Likewise, one of several selected items that cannot be
+prepared offers Skip, and the other selected items are still copied. A Move on one
+volume of a folder you own works even when the
+folder is write-protected (Linux needs the folder itself writable to move it into
+another folder): it gets owner write permission only while it is renamed and keeps
+its own permissions afterwards. Changing a source's permissions after a failed Move,
+to fix it, no longer stops its Retry. Delete pauses the same way on each
+item it cannot remove: Retry, Skip (that item and the folders that contain it stay,
+and the job goes on with everything else), Skip all errors (the job's later failures
+are skipped without asking) or Cancel job. On Linux, write-protected folders that you
+own inside the tree you confirmed for deletion are made writable as they are emptied,
+so they no longer stop it; the folder that contains the selection and anything owned
+by another user are never changed. Copy, Move and Delete share one
 progress-window component, with a separate modeless window for each operation.
 The speed chart also shows overall completion; current-file writes have their own
 meter. Discovery precedes known totals, and Pause/Resume waits for safe backend
@@ -281,6 +314,14 @@ The default build is debug. The frame rendering libraries use optimization level
 even in debug, and generated/UI code uses level 1. Backend/application code retains
 normal debug behavior. Release still optimizes the full application. The first build after
 changing these profiles recompiles the affected dependencies under `_build`.
+
+Debug builds also produce debug viewer plugins and a debug archive worker, which the
+debug application loads. Each of these workspaces therefore optimizes all its
+dependencies (image and archive decoders, PDF, text and CEF bindings, SDKs) at level 3
+in its `dev` profile and its own crate at level 1, or 2 for the image and PDF pixel
+loops. Debug assertions, overflow checks and symbols remain. Unoptimized decoders had
+made a 3840×2160 JPEG take 8.5 s to open instead of 0.8 s
+([measurements](docs/verification/2026-11-20-viewer-speed.md)).
 
 Run either executable directly, or let Cargo build and run it. `build.bat` also
 deploys the completed Windows bundle to a new private installation and registers
@@ -693,6 +734,25 @@ editor scope and shortcuts reserved for later stages.
   Ctrl+I inverts files only; Ctrl+Shift+I inverts top-level files and folders.
   This works inside archives too. The parent `..` is excluded; text editors retain
   normal editing. These shortcuts can be reassigned in Options.
+- Ctrl+= or keypad + opens **Select files**, and Ctrl+− or keypad − **Deselect
+  files** (no numeric keypad needed): type
+  masks with the panel filter's syntax (`*.txt;*.md`, `?`, `|` before exclusions,
+  letter case ignored) and press Enter. The dialog starts with the last mask (`*` at
+  first) and its **Include folders** choice, which is saved with the settings. Only
+  shown rows change, and marks on rows that do not match stay. In inline trees the
+  subfolders of expanded branches take part too when Include folders is chosen.
+  Keypad * inverts files, and folders as well when Include folders is chosen
+  (without a keypad, Ctrl+I or Ctrl+Shift+I). The number-row + − * keys type into
+  filename search; F10 → Selection offers the same three commands.
+- Ctrl+H (**Show hidden files**) hides or shows dot-names on Linux and macOS and
+  entries with the hidden attribute on Windows, in both panels, archives and inline
+  trees. It is also in F10 → Panels and navigation, each panel's View menu and
+  Options → General, and is saved; hidden entries are shown by default. The panel
+  re-reads in place: the cursor moves to the nearest shown row, marks on hidden
+  entries are dropped and the status line counts the hidden entries. Operations, Ctrl+A, folder sizes
+  without a selection and Compare directories work on the shown entries; a selected
+  folder is still copied, moved, deleted or measured with all its contents. Find
+  searches hidden entries too.
 - Type in the file pane to search filename prefixes, always Unicode
   case-insensitively. The matching prefix is colored; Up/Down visits matches and
   Escape exits. Options can filter the list while typing instead of just jumping.
@@ -773,7 +833,11 @@ editor scope and shortcuts reserved for later stages.
   Keyboard and Custom Commands. It offers readable
   or exact-byte sizes, history persistence/Clear, 26 themes including Slate Blue,
   Slate Teal and Slate Violet, Desktop/Touch spacing, an installed font family and
-  independent Desktop/Touch base sizes (8–32px). The [theme design](docs/superpowers/specs/2026-11-06-theme-expansion-design.md)
+  independent Desktop/Touch base sizes (8–32px). Appearance → **Text rendering**
+  chooses how glyphs meet the pixel grid: Sharp (fitted, the default), Balanced
+  (snapped) or Smooth (subpixel). It applies after a restart; the
+  `MIDNIGHT_GLYPH_FITTING` environment variable (`fitted`, `snapped` or `subpixel`)
+  overrides it for one run. The [theme design](docs/superpowers/specs/2026-11-06-theme-expansion-design.md)
   and [palette provenance](docs/THEME_PROVENANCE.md) describe the catalog. Preview
   is immediate and reversible. **OK** validates all pages, saves asynchronously
   and closes after success. **Cancel**, Escape and X discard all edits and restore
@@ -826,24 +890,44 @@ editor scope and shortcuts reserved for later stages.
   and workload limits. See the [settings verification](docs/verification/2026-11-07-custom-command-settings.md)
   for Windows/Linux input, scrolling and persistence checks.
 - Panel scrolling animates discrete wheel input in pixels and gently settles on
-  a row after input and inertia stop. Native touch/trackpad physics are preserved.
+  a row after input and inertia stop. Windows and macOS keep their own touchpad
+  momentum; on Linux, which reports none after the lift, a touchpad flick keeps
+  scrolling panels, viewers and the comparator with momentum that slows down and
+  stops at once on a click, key or new wheel or touchpad movement (see
+  [kinetic scrolling](docs/developer/SCROLLING.md#touchpad-momentum-kinetic-scrolling)).
   Native drive icons precede captions and dropdown choices; special folders show
   their containing volume, while detected native network paths show Network.
 - Each panel's details strip shows the focused name, exact byte size, date/time,
   attributes and Unix permissions where available. Click a field to copy it.
 
-- Alt+Enter: properties of selected items or the focused file/folder.
+- Alt+Enter: properties of selected items or the focused file/folder. Windows
+  opens its Properties dialog. Linux shows a read-only summary. For one item: its
+  type, size, owner and group (names, or numeric ids for accounts that
+  `/etc/passwd` and `/etc/group` do not list), permissions, created time (when the
+  filesystem records it, otherwise "not available"), modified and accessed times; a
+  folder's files, folders and total size are then counted in the background
+  ("Calculating…" until they arrive; closing the summary stops the count; links in
+  it are not followed and other filesystems are not entered). For a selection: the
+  number of files, folders and other items with the total size of its files.
 - `.` in the drive dropdown, or click **. As Other Panel**: open the opposite
   panel's current folder. Enter in files opens the focused folder or file.
 - Shift+drive letter: switch the focused file pane on Windows.
 - F2: rename the focused item. A regular-file name collision uses the shared
   overwrite prompt; replacement requires confirmation of that exact destination.
-  Self, hardlink, directory and link replacement remain protected.
+  Self, hardlink, directory and link replacement remain protected. While the rename
+  runs and until the new name is listed (at most 3 seconds after it completes) the
+  panel holds its input, then replays the keys typed meanwhile; a rename that takes
+  longer than half a second says `Renaming “a” to “b”…` in the status line, and
+  Escape releases the panel at once
+  ([operation progress](docs/developer/OPERATION_PROGRESS.md)).
   F7: create an absolute or relative folder path,
   including `..` and missing intermediate folders. Paths may leave the active panel.
 - Shift+F4 or the shared toolbar's **New empty file** button: enter a filename and press
-  Enter to create a zero-byte file. Escape cancels; existing entries are never
-  overwritten. The new file is focused when creation finishes.
+  Enter to create a zero-byte file. Escape cancels. For the name of a file the panel
+  lists, the dialog asks first: only its **Replace file** button (not another Enter)
+  replaces that file with an empty one, and the original is kept in a recovery folder
+  whose path the completion notice shows. Folders and links are never replaced. The
+  new file is focused when creation finishes.
 - Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
   explicitly confirm permanent deletion. A Trash failure never permanently deletes.
   One file shows its name, exact size and modified date/time. Multiple entries show
@@ -865,8 +949,21 @@ editor scope and shortcuts reserved for later stages.
   two displayed native directories on the backend, selecting
   missing, larger or newer files. Size and modified time are enabled by default,
   with a two-second timestamp tolerance. Name-case matching and unmatched
-  directories are configurable. Matching metadata does **not** verify file contents;
-  content and recursive comparison are planned extensions.
+  directories are configurable. Matching metadata does **not** verify file contents:
+  **Compare contents** reads same-sized files that the metadata calls equal byte by
+  byte and selects both when they differ. **Include subfolders** compares
+  same-named folders recursively and selects a folder on the side where it contains
+  differences (an expanded tree also selects the differing subfolders it shows).
+  The dialog closes at Compare; the status line shows progress and the result, and
+  Ctrl+F10 again offers Cancel. See [Compare directories](docs/developer/COMPARE_DIRECTORIES.md).
+- Alt+F7 **Find** searches names (masks, regular expressions or metadata
+  expressions), sizes, dates and contents; the content query can be a regular
+  expression matched per line. **Search inside archives** also matches archive
+  members, in every archive however large, until the search ends or you press Stop
+  (Go to file opens the archive at the member), and **Feed to panel** shows
+  the results as a list in the panel, where View, Edit, Copy, Move, Delete and
+  marks act on the real files and Backspace returns to the folder. See
+  [Find](docs/developer/FIND.md).
 - Ctrl+F12 opens a saved per-panel file filter. Choose wildcard masks, a Rust
   regular expression, or the supported metadata expression language, with explicit
   case sensitivity. Help/F1 explains each mode with examples. Directories remain visible;
@@ -877,8 +974,16 @@ editor scope and shortcuts reserved for later stages.
   its same-name counterpart in the other panel. An explicit selection in the other
   panel takes priority. Automatic matching uses the exact native name among visible
   files; select both files explicitly to compare different names or letter case.
-  Text pairs show line differences; image
-  pairs provide Side-by-Side, Swipe and Onion Skin controls.
+  Text pairs show line differences (files up to 32 MiB and 1,000,000 lines of at
+  most 16 KiB each); image pairs provide Side-by-Side, Swipe and Onion Skin
+  controls. Binary files, larger text files and other pairs are compared byte by
+  byte in a side-by-side hex view
+  (offsets, hex bytes and characters, differing bytes marked) with a summary of the
+  sizes, the first difference and the number of differing bytes and regions; the
+  **Hex** button shows the bytes of a text pair too. F7/N and Shift+F7/P (or the
+  difference buttons) move between differences, Alt+Home/Alt+End to the first and
+  last one. A long byte comparison runs in the background and shows its progress;
+  Escape closes the window and cancels it.
 - F3 opens PDFs with the installed independent PDF viewer. Ctrl+PageUp/Down or
   the page buttons switch pages; Fit, zoom and pan are shared with image viewing.
   Each new PDF opens fitted to the window. Page changes retain manual zoom/100%;
@@ -910,9 +1015,12 @@ editor scope and shortcuts reserved for later stages.
   current time when the items differ). Type freely, press Up/Down to change the
   part under the cursor, or use the calendar and time pickers (Alt+Down from a
   field; on a 12-hour clock the time picker has an AM/PM column). A date or time
-  keeps the form it was typed in. The offset is used exactly as shown; Now uses
-  the moment of review. A change that completes without
-  problems closes without a summary; only failures, skips or cancellation report.
+  keeps the form it was typed in. The offset is used exactly as shown, and the
+  review says when it is not local time on that date (for example a summer date
+  moved into winter); a ticked time left as it started keeps its exact value. Now
+  fills a row with the current local date, time and offset and ticks it; Apply
+  sets exactly that moment. A change that completes without problems closes
+  without a summary; only failures, skips or cancellation report.
 - Click the blank area after the top breadcrumb to enter a custom path; Enter
   navigates and Escape cancels. Breadcrumb navigation/copy gestures remain available.
 - Panel view picker: independent Brief, Detailed and large-icon Thumbnails modes.
@@ -920,7 +1028,8 @@ editor scope and shortcuts reserved for later stages.
   Left/Right between cells and Up/Down between grid rows. Page Up/Down moves a
   visible page. Active prefix search retains its existing match navigation.
   Installed thumbnailer plugins provide cached previews for supported image/video
-  formats; see the [thumbnail design](docs/superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
+  formats and the first page of PDFs (password-protected or damaged PDFs keep the
+  placeholder); see the [thumbnail design](docs/superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
   **Options → Previews → Allow previews inside archives** is enabled by default,
   including for older saved settings. Turning it off hides archive-member previews
   and removes them from background scheduling. Network archives also require
@@ -949,7 +1058,7 @@ editing and IME behavior are protected. The [shortcut reference](docs/KEYBOARD_S
 lists defaults. Numbered tab and Hot Path bindings use physical digits across layouts.
 
 Options, tabs, bookmarks, panel filters, enabled command history, viewer preferences
-and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 32) in the native
+and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 35) in the native
 `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
@@ -1036,11 +1145,15 @@ once its listing has read its first entries and is checked the same way when it 
 shown; a change to entries already read before the subscription took effect waits
 for the 15-second check. A refresh during which no notification arrives is not
 followed by another listing, and re-sorting rows that a check found current does
-not check them again. If native notifications cannot be registered for a panel's
-folder or its expanded branches (for example when the system's watch limit is
-reached), a line above the panel's details bar says that the folder is only
-checked periodically, and its tooltip gives the reason; a refresh registers the
-folder again, and an expanded tree retries with a later refresh, expansion or
+not check them again. On Linux all watches share one inotify instance. If native
+notifications cannot be registered for a panel's folder (for example when the
+system's watch limit is reached), the folder is checked about every second (less
+often for large folders) while the registration is retried after 1, 2, 4 and 8
+seconds and then every 15 seconds; a retry that succeeds switches back to
+notifications silently. Only when registrations keep failing for a minute does a
+line above the panel's details bar say that live updates are unavailable and the
+folder is checked regularly, with the reason in its tooltip. Expanded branches
+report a failed registration at once and retry with a later refresh, expansion or
 collapse, at most once per check interval. If a panel's watcher fails, it restarts
 at once, and afterwards at most once a minute; until then that line says that
 automatic refresh is paused. Neither is a panel error or a dialog. In tree mode, a
@@ -1228,8 +1341,17 @@ retain typed provider addresses, and F3 reads member content through the broker.
 Members have opaque identities; duplicate names remain distinct (ZIP records that
 the reader indexes under one name are listed once, unreadable). Missing providers
 or changed sources retain unavailable saved tabs with a diagnostic. Mutations,
-external editing, passwords, nested archives and RAR are unavailable. F5 copies
+external editing, passwords and RAR are unavailable. F5 copies
 members out through the verified background copy queue.
+Enter on an archive member that is itself an archive (a ZIP or tar.gz inside a ZIP,
+or any supported format inside another) opens it in the same panel, up to 4 archive
+levels deep: the path bar shows the whole path (`outer.zip/inner.zip/folder`),
+Backspace and `..` go up through the levels with the inner archive under the cursor,
+and F3, F5 and history work at every level. The member is staged and verified through
+its enclosing archive (in memory when small, otherwise in a private spool file), with
+progress in the status bar and cancellation by navigating away; such archives are
+opened for the session only, so tabs and Hot Paths keep the outermost archive's folder.
+Details and limits are in [archives inside archives](docs/ARCHIVE_FORMATS.md#archives-inside-archives).
 Decoded content has no artificial size ceiling; the free space of the private spool
 volume bounds it, and staging stops before that volume falls below a free-space
 reserve of max(1 GiB, 2% of its capacity). Full
@@ -1247,8 +1369,9 @@ comparison and explicit overwrite policy before publication.
 
 F3 opens the independent image viewer for PNG, JPEG, GIF, WebP, BMP, ICO and TIFF,
 Markdown for `.md`/`.markdown`/`.mdown`/`.mkd`, source highlighting for the package's
-[supported language catalogue](plugins/midnight-viewer-source/README.md), and the basic
-text/hex viewer for other files. Alt+F3 always requests the basic plugin's Text mode,
+[supported language catalogue](plugins/midnight-viewer-source/README.md) (including
+`.csv` and `.tsv`, coloured column by column), and the basic text/hex viewer for other
+files. Alt+F3 always requests the basic plugin's Text mode,
 including for binary input. The mode selector changes between modes supported by
 the current plugin. Unknown or budget-limited syntax stays readable as plain text.
 
@@ -1274,6 +1397,8 @@ Images use the same `image` and `moxcms` libraries as image thumbnails, with ori
 pixels decoded once in a restricted worker. Use Fit, 1:1, +/−, Ctrl+mouse wheel,
 Ctrl+Plus/Equal, Ctrl+Minus, Ctrl+0 and Ctrl+1 to zoom. Drag to pan. Animated formats
 initially show the first frame. This viewer does not require or enlarge a thumbnail.
+A damaged or unsupported image or PDF names the decoder's reason in the status, for
+example "This image is damaged or incomplete: unexpected end of file".
 
 Plugins are independent Cargo projects in `plugins/`, with their own tests and locks.
 Only built packages under `viewers/<package>/plugin.toml` (text/source/Markdown) or

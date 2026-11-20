@@ -5,6 +5,7 @@ mod render;
 use crate::support::ui;
 
 use i_slint_core::{
+    accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
     items::{AccessibleRole, ComplexText, SimpleText},
     model::{ModelChangeListener, ModelChangeListenerBox},
@@ -392,16 +393,18 @@ impl ModelChangeListener for RowNotifications {
 }
 
 fn filename_text(item: ItemRc, name: &str) -> Option<(ItemRc, Brush)> {
+    // The row draws its name inside left-to-right isolation marks.
+    let shown = format!("\u{2066}{name}\u{2069}");
     if item.is_visible() {
         if let Some(text) = item.downcast::<SimpleText>() {
             let text = text.as_pin_ref();
-            if text.text() == name {
+            if text.text() == shown.as_str() {
                 return Some((item.clone(), text.color()));
             }
         }
         if let Some(text) = item.downcast::<ComplexText>() {
             let text = text.as_pin_ref();
-            if text.text() == name {
+            if text.text() == shown.as_str() {
                 return Some((item.clone(), text.color()));
             }
         }
@@ -987,4 +990,49 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
         .unwrap();
     assert_eq!(saved.filename_colors.len(), 2);
     assert_eq!(saved.filename_colors[0].expression, "文档*");
+}
+
+#[test]
+fn discard_changes_is_enabled_only_with_rule_edits_or_an_error_to_discard() {
+    let mut test = ui::TestUi::new();
+    let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
+    presenter
+        .borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
+    midnight_ui::install(&test.window, presenter.clone(), Rc::new(|_: Command| true));
+    test.window.invoke_show_options();
+    test.draw();
+    popup_scroll::click(&mut test, "Colors", AccessibleRole::Button);
+    test.draw();
+    let window = test.window.clone_strong();
+    let view = window.global::<ColorOptionsView>();
+    let enabled = || {
+        ui::popup_item(&window, "Discard changes", AccessibleRole::Button)
+            .accessible_string_property(AccessibleStringProperty::Enabled)
+            .is_some_and(|value| value == "true")
+    };
+    let labels = || view.get_labels().iter().collect::<Vec<_>>();
+    let saved = labels();
+    assert!(!enabled(), "the saved rules leave nothing to discard");
+    popup_scroll::click(&mut test, "Add rule", AccessibleRole::Button);
+    test.draw();
+    assert!(view.get_dirty());
+    assert!(enabled(), "an added rule can be discarded");
+    popup_scroll::click(&mut test, "Discard changes", AccessibleRole::Button);
+    test.draw();
+    assert_eq!(labels(), saved);
+    assert!(!enabled(), "nothing is left to discard");
+    // An edit refused for its length keeps the saved rules and shows why; Discard
+    // changes clears that notice.
+    let mut draft = view.get_draft();
+    draft.expression = "*".repeat(midnight_core::MAX_FILTER_BYTES + 1).into();
+    view.invoke_edit(draft);
+    test.draw();
+    assert!(!view.get_dirty());
+    assert!(view.get_error().starts_with("Edit not applied"));
+    assert!(enabled(), "the notice can be discarded");
+    popup_scroll::click(&mut test, "Discard changes", AccessibleRole::Button);
+    test.draw();
+    assert!(view.get_error().is_empty());
+    assert!(!enabled());
 }

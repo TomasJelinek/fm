@@ -87,7 +87,18 @@ fn prepare(
     Ok(command)
 }
 
-pub(crate) fn validate_program(executable: &Path) -> Result<(), FsError> {
+/// Why a configured program cannot be launched. The editor and Custom Commands share the
+/// rule and word it for their own program.
+pub(crate) enum ProgramIssue {
+    /// Not an absolute .exe or .com path.
+    Unsupported,
+    /// Not a file.
+    NotFile,
+    /// The path cannot be inspected; `NotFound` when nothing is there.
+    Unavailable(io::Error),
+}
+
+pub(crate) fn check_program(executable: &Path) -> Result<(), ProgramIssue> {
     let extension = executable
         .extension()
         .and_then(|value| value.to_str())
@@ -97,27 +108,34 @@ pub(crate) fn validate_program(executable: &Path) -> Result<(), FsError> {
             .iter()
             .any(|allowed| extension.eq_ignore_ascii_case(allowed))
     {
-        return Err(error(
-            executable,
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Choose an absolute .exe or .com editor path; shell scripts are unsupported.",
-            ),
-        ));
+        return Err(ProgramIssue::Unsupported);
     }
     if !fs::metadata(executable)
-        .map_err(|cause| error(executable, cause))?
+        .map_err(ProgramIssue::Unavailable)?
         .is_file()
     {
-        return Err(error(
-            executable,
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Editor executable is not a file.",
-            ),
-        ));
+        return Err(ProgramIssue::NotFile);
     }
     Ok(())
+}
+
+pub(crate) fn validate_program(executable: &Path) -> Result<(), FsError> {
+    check_program(executable).map_err(|issue| {
+        error(
+            executable,
+            match issue {
+                ProgramIssue::Unsupported => io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Choose an absolute .exe or .com editor path; shell scripts are unsupported.",
+                ),
+                ProgramIssue::NotFile => io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Editor executable is not a file.",
+                ),
+                ProgramIssue::Unavailable(cause) => cause,
+            },
+        )
+    })
 }
 
 fn error(path: &Path, cause: io::Error) -> FsError {

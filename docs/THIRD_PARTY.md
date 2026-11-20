@@ -131,6 +131,33 @@ This removed the app's last prettyplease dependency. The current tables were
 checked against fresh Windows and Ubuntu captures for the app and renderer
 workspaces.
 
+On 20 November 2026 the independent image thumbnailer
+(`plugins/midnight-thumbnail-image`) gained first-page PDF thumbnails with the PDF
+viewer's renderer: a direct `hayro` 0.9.0 (Apache-2.0 OR MIT) dependency with the same
+features (`embed-fonts`, `embed-cmaps`, default features off). Its lockfile adds 41
+packages, every one already pinned by the PDF viewer at the same version and license
+(the Hayro crates, vello_cpu/vello_common 0.3.0, pic-scale 0.7.12, brotli 8.0.4,
+read-fonts 0.46.0 and skrifa 0.49.0 beside the decoder's 0.41.0/0.44.0, and their
+dependencies); no existing entry changes version. In the thumbnailer's graph moxcms
+0.8.1 gains `in_place` and flate2 1.1.11 its `zlib-rs` backend, the features the PDF
+viewer selects. No new package, version or license enters the inventory: 43 rows gain
+the `thumbnail-image` scope (40 of the 41 additions, all but `glifo` 0.4.0, which no
+captured tree selects and the inventory does not list, plus `euclid` 0.22.14,
+`hashbrown` 0.17.1 and `zlib-rs` 0.6.8, which the lockfile already held but the graph
+selects only now), and `hayro` gains `midnight-thumbnail-image` as a declarer. The tables stay at **654 records / 536 names /
+69 direct records**. Linux-host captures of the thumbnailer for both targets
+(`cargo metadata --locked --offline --filter-platform <target>` and `cargo tree --locked
+--offline --workspace --target <target> --edges normal,build,dev --prefix none`) were
+selected with the generator's own code; rendering the previous rows with its `render`
+reproduces the committed tables byte for byte, and the same code wrote the changed rows.
+This is a targeted refresh, not a full 46-pair recapture or generator `--check`.
+The About list therefore names the image thumbnails beside the PDF viewer for these
+libraries. The thumbnail package keeps the notices that crate packages omit, from the
+plugin's own `notices/` folder (the PDF viewer's reviewed copies): the embedded Foxit
+standard fonts' and Adobe CMaps' BSD-3-Clause notices, the CC0 color-data and JPEG 2000
+profile notices, Hayro's upstream NOTICE and alloc-stdlib 0.2.4's BSD-3-Clause license.
+`scripts/thumbnail-notices.py` adds that folder under `licenses/`.
+
 The first generator attempt exposed older `midnight-plugin-api`/`midnight-plugin-sdk`
 0.1.0 releases in the independent Basic/conformance graphs. These are project
 code, not unknown-license third parties. The narrow generator repair recognizes
@@ -576,12 +603,12 @@ This table is a guide; the linked inventories above contain every selected crate
 | serde 1.0.229 / serde_json 1.0.154 / toml 0.9.12 | Data/settings/manifest serialization | MIT OR Apache-2.0 |
 | sha2 0.10.9 | SHA-256 copy/readback verification, protected Windows plugin runtimes and standalone SHA-256/SHA-512 checksum backend | MIT OR Apache-2.0 |
 | md-5 0.10.6 / sha1 0.10.6 | MD5/SHA-1 compatibility calculations in the standalone checksum backend; not authentication or copy verification | MIT OR Apache-2.0; MIT branch selected |
-| crc32fast 1.5.4 | SFV/CRC32 compatibility calculations; also an existing PNG/compression dependency | MIT OR Apache-2.0; MIT branch selected |
+| crc32fast 1.5.4 | SFV/CRC32 compatibility calculations and verification of private spool reads; also an existing PNG/compression dependency | MIT OR Apache-2.0; MIT branch selected |
 | notify 8.2.1 | Linux filesystem event watching (Windows uses its own `ReadDirectoryChangesW` service) | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
 | zip 8.6.0 | Read-only ZIP archive provider and host Office package parsing | MIT |
 | quick-xml 0.41.0 | Host Office XML parsing; existing transitive consumers | MIT |
-| hayro 0.9.0 and its parser/interpreter crates | Isolated PDF rendering | Apache-2.0 OR MIT; pinned notices and embedded font/CMap licenses accompany the PDF plugin |
+| hayro 0.9.0 and its parser/interpreter crates | Isolated PDF rendering and first-page PDF thumbnails | Apache-2.0 OR MIT; pinned notices and embedded font/CMap licenses accompany the PDF viewer and image thumbnail packages |
 | similar 2.7.0 | Bounded text comparison | Apache-2.0 |
 | sevenz-rust2 0.23.0 / lzma-rust2 0.21.0 | Read-only 7z and XZ decoding | Apache-2.0 |
 | bzip2 0.6.1 / libbz2-rs-sys 0.2.6 | Pure Rust BZIP2 stream decoding | MIT OR Apache-2.0 / bzip2-1.0.6 |
@@ -618,7 +645,9 @@ no new package, paid alternative or nightly feature is introduced.
 The Windows and native Linux application graphs were recaptured and the complete
 inventory regenerated and checked: 490 package records and 458 names remain,
 with 61 direct package/version records after promoting `crc32fast` to a direct
-dependency.
+dependency. `midnight-worker-platform` uses the same locked version with the same
+`std` feature to verify private spool reads (2026-11-20); this adds a dependency edge,
+not a package, version, feature or license.
 
 The native Browse/Read API and author SDK use only `std`. Independent Windows
 and Linux filesystem packages reuse windows-sys 0.61.2/windows-link 0.2.1 and
@@ -718,6 +747,32 @@ The package generator refuses missing required plugin notices. This development
 inventory supplements those per-artifact notices, rather than replacing them.
 Midnight Explorer's own application/API distribution license has not been selected;
 these dependency reports do not grant a new license to project-owned code.
+
+The About dialog's Licenses tab is built from the [machine-readable inventory](dependencies/cargo-licenses.csv)
+when the application is compiled: the records of the running platform's target whose
+scopes a release ships (application, viewer, filesystem, archive, network and
+thumbnail packages; not renderer tests, the ABI conformance project, the public
+API/SDK workspaces or the macOS filesystem package), one row per package version
+naming the components that use it. Like the release notice, it conservatively
+includes build- and test-time libraries. It adds the bundled components outside
+Cargo recorded here: the Rust standard library, FFmpeg, dav1d, CEF, the Noto Sans
+fonts, the Unicode case-folding data, the PDF viewer's embedded Foxit fonts and
+Adobe CMaps, and the four palette references. Regenerating the inventory therefore
+updates the tab; a `midnight-ui` unit test fails when an inventory record is no
+longer pinned by the lockfile of a component that ships it, and another checks the
+bundled versions against these records. Opening a library (View license for the
+selected row, the open mark at the end of a row, a double-click or Enter) asks a
+backend worker for its notices. Release builds read only the `licenses` folder and
+`THIRD-PARTY.json` beside the program (debug builds may also read a developer's
+Cargo registry); links are never followed, every read is capped before it starts
+and one library shows at most 128 KiB of notice text. Authors come from the package
+manifests that `THIRD-PARTY.json` records, otherwise from concrete copyright lines
+of its notices: lines that start with "Copyright" or © and carry a year, © or (c),
+or start with "(c)" and a year, without license templates such as
+`Copyright [yyyy] [name of copyright owner]`, license prose such as Apache's
+"copyright license to reproduce", or repeats that differ only in spacing or case.
+The dialog lists one author per line. Notices that ship inside a plugin package are
+named there instead.
 
 Video decoding currently enables VP8/VP9, Theora, FFV1 and raw video with
 Matroska/WebM, AVI and Ogg containers. This is not a promise of MP4/H.264 support.

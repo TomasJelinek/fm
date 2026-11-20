@@ -1,10 +1,19 @@
 //! Captured drag selections and admitted drops retain their identities under backpressure.
+use super::panel_details::PanelDetail;
 use super::*;
 use crate::drag_lifecycle::{DragLifecycle, Phase, SourceStamp};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Duration};
 
 #[path = "drag_preview.rs"]
 pub(crate) mod preview;
+
+/// The shortest in-app drag: a release sooner than this after the pointer press that
+/// started the drag is taken for an accident and cancels it, wherever it ends (no
+/// transfer, no dialog, no Move). A click whose pointer slips past the six-pixel drag
+/// threshold, or a flick let go at once, is over well within 400 ms, while carrying
+/// files to the other panel, onto a folder row or out to another application takes
+/// longer. Timing from the press means that holding the button before moving counts.
+pub(crate) const MIN_DRAG_DURATION: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
 pub(crate) struct DragDropState {
@@ -26,6 +35,10 @@ pub(crate) struct DragDropState {
     accepted: VecDeque<(DropToken, OperationId, TransferVerification)>,
     rejected: VecDeque<DropToken>,
     last_drop_token: u64,
+    /// The panel whose status line says that its last drag was released too soon
+    /// (`MIN_DRAG_DURATION`), with that note's number.
+    quick_note: Option<(PaneId, u64)>,
+    quick_notes: u64,
 }
 
 struct DragOrigin {
@@ -71,6 +84,8 @@ impl Presenter {
             || self.drag_drop.tree.destination.is_some()
             || self.drag_drop.origins.len() >= 32
             || self.selection_actions[pane.index()].is_some()
+            // The rows under search results fed to the panel are hidden.
+            || self.feed(pane).is_some()
         {
             return false;
         }
@@ -132,6 +147,8 @@ impl Presenter {
         self.drag_drop.gesture_fallback = false;
         self.drag_drop.item_count = 0;
         self.drag_drop.hover = None;
+        // A new drag outdates the note about the previous one.
+        self.drag_drop.quick_note = None;
         self.active = pane;
         self.focus_display_row(pane, row);
         self.drag_drop.origins.insert(
@@ -278,6 +295,67 @@ impl Presenter {
         self.flush_drag_commands(send);
     }
 
+    /// The pointer released the in-app drag `held` after the press that started it.
+    /// Sooner than [`MIN_DRAG_DURATION`] cancels the drag wherever it ends, as Escape
+    /// does, and notes that on the source panel's status line, whose panel is returned;
+    /// selection and cursor stay as they are. Later releases drop as `release_file_drag`.
+    pub(crate) fn release_file_drag_held(
+        &mut self,
+        held: Duration,
+        target: Option<InternalDropDestination>,
+        intent: InternalDropIntent,
+        send: &dyn Fn(Command) -> bool,
+    ) -> Option<PaneId> {
+        if held >= MIN_DRAG_DURATION {
+            self.release_file_drag(target, intent, send);
+            return None;
+        }
+        self.retired.push(Box::new(target));
+        // A release cannot end an operating-system drag that already runs.
+        let source = self
+            .drag_drop
+            .lifecycle
+            .active()
+            .filter(|gesture| gesture.phase != Phase::Native)
+            .map(|gesture| {
+                if gesture.source.pane == 0 {
+                    PaneId::Left
+                } else {
+                    PaneId::Right
+                }
+            });
+        self.release_file_drag(None, intent, send);
+        let pane = source?;
+        self.drag_drop.quick_notes = self.drag_drop.quick_notes.wrapping_add(1);
+        self.drag_drop.quick_note = Some((pane, self.drag_drop.quick_notes));
+        Some(pane)
+    }
+
+    /// Retires the note of a drag released too soon; returns the panel that showed it.
+    pub(crate) fn clear_quick_drag_note(&mut self) -> Option<PaneId> {
+        self.drag_drop.quick_note.take().map(|(pane, _)| pane)
+    }
+
+    /// The status-line field of `pane` while it notes that its drag was released too
+    /// soon (`release_file_drag_held`).
+    pub(crate) fn quick_drag_note(&self, pane: PaneId) -> Option<PanelDetail> {
+        let (source, note) = self.drag_drop.quick_note?;
+        let limit = MIN_DRAG_DURATION.as_secs_f64();
+        (source == pane).then(|| PanelDetail {
+            identity: format!(
+                "detail:{}:quick-drag:{note}",
+                self.panes[pane.index()].generation
+            ),
+            label: "Drag",
+            value: format!("Drag cancelled: released within {limit} s"),
+            explanation: format!(
+                "A drop less than {limit} s after pressing the mouse button is taken for an \
+                 accident, so nothing was copied or moved. Keep the button pressed a moment \
+                 longer to drop."
+            ),
+        })
+    }
+
     pub(crate) fn preview_internal_drag_target(
         &self,
         pane: PaneId,
@@ -287,6 +365,8 @@ impl Presenter {
         let navigation = p.successful_generation?;
         if self.operations.closing
             || self.drag_drop.closed
+            // Search results fed to the panel cover its folder and rows.
+            || self.feed(pane).is_some()
             || p.loading
             || !p.native_capabilities()
             || !p.search_allows_activation()
@@ -413,7 +493,9 @@ impl Presenter {
                 && !self.drag_drop.closed
                 && !p.loading
                 && p.native_capabilities()
-                && p.path.is_absolute())
+                && p.path.is_absolute()
+                // Nothing is dropped into a folder hidden under search results.
+                && self.feed(pane).is_none())
             .then_some((pane, navigation, p.path.as_path(), rect))
         });
         let mut snapshot = self
@@ -744,7 +826,7 @@ impl Presenter {
             DragDropEvent::DropAccepted {
                 drag,
                 token,
-                pane: _,
+                pane,
                 item_count,
                 destination,
                 intent,
@@ -762,6 +844,9 @@ impl Presenter {
                     || self.drag_drop.closed
                     || item_count == 0
                     || !destination.is_absolute()
+                    // Admitted against targets published before search results
+                    // covered the panel's folder.
+                    || self.feed(pane).is_some()
                     || self.drag_drop.accepted.len() >= 32
                     || (drag.is_some() && origins.is_none())
                 {

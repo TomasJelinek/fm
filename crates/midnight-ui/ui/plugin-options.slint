@@ -41,6 +41,8 @@ export global ViewerPluginsView {
     in property <bool> thumbnailer-extension-override;
     in property <string> thumbnailer-extension-error;
     in property <bool> pending;
+    // What the last Rescan found, shown beside it; empty before one finishes.
+    in property <string> rescan-status;
     in property <bool> settings-ready;
     in property <bool> restart-needed;
     in property <string> error;
@@ -396,7 +398,13 @@ export component PluginOptions inherits Rectangle {
         }
     }
     HorizontalLayout {
-        Rectangle { horizontal-stretch: 1; }
+        spacing: 8px;
+        // A rescan that changes nothing still says what it found.
+        Text {
+            horizontal-stretch: 1; vertical-alignment: center;
+            text: ViewerPluginsView.rescan-status;
+            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        }
         HintedActionButton {
             text: ViewerPluginsView.pending ? "Rescanning…" : "Rescan all plugins";
             enabled: !ViewerPluginsView.pending;

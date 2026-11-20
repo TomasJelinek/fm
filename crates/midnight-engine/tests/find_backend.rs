@@ -175,6 +175,7 @@ fn strict_utf8_bom_unicode_folding_and_matches_crossing_chunks() {
         text: "STRASSE 文档".into(),
         case_sensitive: false,
         whole_words: false,
+        regex: false,
     });
     let (summary, results) = execute(&query);
     assert_eq!(names(&results), vec![path]);
@@ -221,6 +222,7 @@ fn result_node_depth_retention_and_content_limits_report_incomplete() {
         text: "needle".into(),
         case_sensitive: true,
         whole_words: false,
+        regex: false,
     });
     let (summary, results) = execute(&query);
     assert!(results.is_empty());
@@ -853,4 +855,67 @@ fn synthetic_name_search_localization_measurement() {
             times[times.len() / 2]
         );
     }
+}
+
+#[test]
+fn regular_expression_content_matches_within_lines_and_explains_an_invalid_pattern() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    fs::write(root.join("todo.rs"), "fn main() {\n    // TODO: tidy\n}\n").unwrap();
+    fs::write(root.join("fixme.txt"), "line one\r\nFIXME later\r\n").unwrap();
+    fs::write(root.join("split.txt"), "TO\nDO and FIX\nME").unwrap();
+    fs::write(root.join("plural.txt"), "TODOS are plural").unwrap();
+    let mut wide = vec![0xff, 0xfe];
+    for unit in "x\r\nTODO\r\n".encode_utf16() {
+        wide.extend(unit.to_le_bytes());
+    }
+    fs::write(root.join("wide.txt"), wide).unwrap();
+    let mut query = request(vec![root.to_owned()]);
+    let pattern = |text: &str, case_sensitive, whole_words| FindContentQuery {
+        text: text.into(),
+        case_sensitive,
+        whole_words,
+        regex: true,
+    };
+    query.content = Some(pattern(r"^\s*(//\s*)?(TODO|FIXME)\b", true, false));
+    let (summary, results) = execute(&query);
+    assert_eq!(summary.completion, FindCompletion::Completed);
+    assert_eq!(
+        names(&results),
+        [
+            root.join("fixme.txt"),
+            root.join("todo.rs"),
+            root.join("wide.txt")
+        ],
+        "a match never spans lines; CRLF and UTF-16 lines match"
+    );
+    query.content = Some(pattern("todo|fixme", false, true));
+    assert_eq!(
+        names(&execute(&query).1),
+        [
+            root.join("fixme.txt"),
+            root.join("todo.rs"),
+            root.join("wide.txt")
+        ],
+        "whole words exclude TODOS; case folding includes TODO"
+    );
+    query.content = Some(FindContentQuery {
+        regex: false,
+        ..pattern("todo|fixme", false, false)
+    });
+    assert!(
+        execute(&query).1.is_empty(),
+        "the same text without Regular expression is literal"
+    );
+    query.content = Some(pattern("(unclosed", false, false));
+    let (summary, results) = execute(&query);
+    assert!(results.is_empty());
+    assert_eq!(summary.completion, FindCompletion::Failed);
+    assert!(
+        summary.diagnostics[0]
+            .message
+            .contains("Invalid content regular expression"),
+        "{:?}",
+        summary.diagnostics
+    );
 }

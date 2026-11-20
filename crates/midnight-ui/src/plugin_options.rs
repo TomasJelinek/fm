@@ -8,6 +8,7 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let view = window.global::<ViewerPluginsView>();
     let state = &presenter.viewer_plugins;
     view.set_pending(state.pending || state.filesystems_pending || state.thumbnailers_pending);
+    view.set_rescan_status(presenter.plugin_rescan_status().into());
     view.set_thumbnailer_error(crate::shown_text(&state.thumbnailer_error));
     view.set_thumbnailer_selected(
         presenter
@@ -254,7 +255,7 @@ pub(crate) fn install(
         if presenter.save_viewer_extension_draft(sender.as_ref())
             && presenter.stage_thumbnailer_extension_draft()
         {
-            presenter.request_viewer_plugins(sender.as_ref());
+            presenter.rescan_plugins(sender.as_ref());
         }
         drop(presenter);
         crate::refresh_properties(&window, &state.borrow(), false);

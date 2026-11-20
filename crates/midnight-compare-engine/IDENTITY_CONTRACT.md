@@ -34,12 +34,13 @@ a session, frames older than the active comparison generation are stale.
   the captured sources, with source identity/revision validation.
 - IdenticalText: the entire decoded text is equal, but the raw files differ. The
   status identifies each side's actual UTF-8/BOM or UTF-16 byte order/BOM encoding.
-- Different: a validated raw-byte witness for image inputs, or unequal complete
-  decoded text for text inputs. Equal displayed pixels never imply file identity.
+- Different: a validated raw-byte witness for image inputs and pairs compared as
+  bytes (a differing byte or a length difference), or unequal complete decoded text
+  for text inputs. Equal displayed pixels never imply file identity.
 
 Initial Pending frame publication and mailbox consumption precede all added
-whole-input identity work. Decoded text proof visits at most 256 spans and
-compares at most 64 KiB in one turn over text already retained for rendering.
+whole-input identity work. Decoded text proof compares at most 64 KiB of the two
+texts already retained for rendering in one turn.
 Raw verification reads at most 64 KiB per source per turn (128 KiB of transient
 buffers), with immediate-only process-wide I/O admission. It rechecks the current
 attempt between reads and validates both captured revisions before a verdict.
@@ -52,6 +53,13 @@ Verification runs on the existing backend comparison worker;
 there is no identity thread or unbounded work/result queue. Source replacement,
 retry, close and validation failure discard pending work and its verdict. Native
 paths remain raw `PathBuf` values and are never reconstructed from display names.
+
+A pair compared only as bytes (not admitted as text, or not two images) gets its
+verdict from the byte comparison's own scan instead of a second raw pass: at most
+256 KiB per source per turn (the native filesystem's largest read, 512 KiB of
+transient buffers), with the same immediate-only I/O admission, current-attempt
+checks between reads and validation of both captured revisions before the verdict.
+The Hex view of a text pair scans the same way but never changes the text's verdict.
 
 This is a LiveValidated read, not an immutable filesystem snapshot. Metadata
 checks have the same concurrent-writer limits as the captured-content service.

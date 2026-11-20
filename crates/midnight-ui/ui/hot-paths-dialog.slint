@@ -13,6 +13,7 @@ export component HotPathsDialog inherits Rectangle {
     in property <[BookmarkRow]> model;
     in property <ActionIcons> action-icons;
     in property <string> path;
+    in property <string> path-tail;
     private property <int> draft-slot;
     private property <string> selected-identity;
     private property <int> revision;
@@ -36,7 +37,8 @@ export component HotPathsDialog inherits Rectangle {
         + 8px + max(Theme.control-height, add-current.preferred-height)
         + 10px + max(Theme.control-height, bookmark-close.preferred-height);
     private property <length> row-height: max(44px, Theme.font-size + Theme.small-font + 12px);
-    private property <length> list-height: root.row-height * clamp(root.model.length, 1, 5);
+    // No saved path: the hint below is the empty state, not a blank row.
+    private property <length> list-height: root.row-height * clamp(root.model.length, 0, 5);
     // Narrow managers put Apply shortcut below the shortcut picker.
     private property <bool> stacked: root.width < max(440px, Theme.font-size * 25);
     private property <string> hint: root.model.length == 0
@@ -79,7 +81,9 @@ export component HotPathsDialog inherits Rectangle {
             VScrollView {
                 min-height: 0px; vertical-stretch: 1;
                 content-width: self.visible-width;
-                VerticalLayout { spacing: 8px;
+                // Spare height of a taller dialog stays below the controls instead of
+                // opening gaps between them.
+                VerticalLayout { spacing: 8px; alignment: start;
                     ListView {
                         height: root.list-height;
                         for bookmark[index] in root.model : Rectangle {
@@ -94,7 +98,8 @@ export component HotPathsDialog inherits Rectangle {
                             forward-focus: bookmark-focus;
                             VerticalLayout {
                                 padding-left: 8px; padding-right: Theme.control-height + 8px; spacing: 0px;
-                                PathText { text: bookmark.path; foreground: Theme.text; font-size: Theme.font-size; }
+                                // Long paths omit their middle: saved folders often share a parent.
+                                PathText { text: bookmark.path; tail: bookmark.path-tail; foreground: Theme.text; font-size: Theme.font-size; }
                                 Text { text: bookmark.slot > 0 ? root.slot-label(bookmark.slot) : "No numbered shortcut"; color: Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; overflow: elide; }
                             }
                             bookmark-focus := FocusScope {
@@ -159,7 +164,8 @@ export component HotPathsDialog inherits Rectangle {
                         }
                     }
                     current-path := PathText {
-                        text: "Current folder: " + root.path; foreground: Theme.secondary-text; font-size: Theme.small-font;
+                        text: "Current folder: " + root.path; tail: root.path-tail;
+                        foreground: Theme.secondary-text; font-size: Theme.small-font;
                         Tooltip { TipBody { text: root.path; } }
                     }
                     add-current := HintedActionButton {

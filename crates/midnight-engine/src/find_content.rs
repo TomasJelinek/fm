@@ -4,6 +4,8 @@ use std::{io, path::Path};
 
 #[path = "find_text_decoder.rs"]
 mod decoder;
+#[path = "find_text_lines.rs"]
+mod lines;
 #[path = "find_text_matcher.rs"]
 mod matcher;
 
@@ -15,19 +17,54 @@ pub(super) enum ContentMatch {
     Cancelled,
 }
 
+/// Literal text (KMP over the decoded stream) or a regular expression per line.
+enum Query {
+    Literal(matcher::Matcher),
+    Pattern(lines::Lines),
+}
+impl Query {
+    fn reset(&mut self) {
+        match self {
+            Self::Literal(matcher) => matcher.reset(),
+            Self::Pattern(lines) => lines.reset(),
+        }
+    }
+    fn consume(&mut self, text: &str) {
+        match self {
+            Self::Literal(matcher) => matcher.consume(text),
+            Self::Pattern(lines) => lines.consume(text),
+        }
+    }
+    fn finish(&mut self) -> bool {
+        match self {
+            Self::Literal(matcher) => matcher.finish(),
+            Self::Pattern(lines) => lines.finish(),
+        }
+    }
+}
+
 pub(super) struct PreparedContent {
-    matcher: matcher::Matcher,
+    matcher: Query,
     decoder: decoder::Decoder,
     chunk: Vec<u8>,
 }
 
 impl PreparedContent {
-    pub(super) fn new(query: &FindContentQuery) -> Result<Self, &'static str> {
+    /// An invalid regular expression is refused here, with the library's reason.
+    pub(super) fn new(query: &FindContentQuery) -> Result<Self, String> {
         if query.text.is_empty() || query.text.len() > 4096 || query.text.contains('\0') {
-            return Err("Find content must contain 1 to 4096 UTF-8 bytes without NUL.");
+            return Err("Find content must contain 1 to 4096 UTF-8 bytes without NUL.".into());
         }
+        let matcher = if query.regex {
+            Query::Pattern(
+                lines::Lines::new(query)
+                    .map_err(|error| format!("Invalid content regular expression: {error}"))?,
+            )
+        } else {
+            Query::Literal(matcher::Matcher::new(query))
+        };
         Ok(Self {
-            matcher: matcher::Matcher::new(query),
+            matcher,
             decoder: decoder::Decoder::default(),
             chunk: vec![0; READ_BYTES],
         })

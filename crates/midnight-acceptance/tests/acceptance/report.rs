@@ -18,6 +18,9 @@ pub enum Status {
     Warn,
     Fail,
     Skip,
+    /// Every check passed except checks of announced behavior that is not implemented
+    /// yet (each named, with its reason, in the message and notes). Not a failure.
+    Pending,
     Timeout,
     NotRun,
 }
@@ -29,9 +32,22 @@ impl Status {
             Self::Warn => "WARN",
             Self::Fail => "FAIL",
             Self::Skip => "SKIP",
+            Self::Pending => "PENDING",
             Self::Timeout => "TIMEOUT",
             Self::NotRun => "NOT RUN",
         }
+    }
+
+    /// A scenario's `Err` message: `SKIP:` and `PENDING:` prefixes choose those
+    /// statuses, anything else is a failure. Returns the status and the message without
+    /// its prefix.
+    pub fn of_error(message: &str) -> (Self, String) {
+        for (prefix, status) in [("SKIP:", Self::Skip), ("PENDING:", Self::Pending)] {
+            if let Some(rest) = message.strip_prefix(prefix) {
+                return (status, rest.trim().to_owned());
+            }
+        }
+        (Self::Fail, message.to_owned())
     }
 
     pub fn is_failure(self, strict_review: bool) -> bool {
@@ -123,26 +139,52 @@ pub fn run_id() -> String {
     )
 }
 
+/// A run folder's name: `YYYYMMDD-HHMMSS`, or `YYYYMMDD-HHMMSS-N` when a run that
+/// started in the same second already took the plain name.
 fn is_run_name(name: &str) -> bool {
     let bytes = name.as_bytes();
-    bytes.len() == 15
+    let stamp = bytes.len() >= 15
         && bytes[8] == b'-'
-        && bytes
+        && bytes[..15]
             .iter()
             .enumerate()
-            .all(|(index, byte)| index == 8 || byte.is_ascii_digit())
+            .all(|(index, byte)| index == 8 || byte.is_ascii_digit());
+    stamp
+        && match bytes.get(15..) {
+            Some([]) => true,
+            Some([b'-', suffix @ ..]) => {
+                !suffix.is_empty() && suffix.iter().all(u8::is_ascii_digit)
+            }
+            _ => false,
+        }
+}
+
+/// Create this run's own folder below `root`, which must be an absolute folder other
+/// than a filesystem root: `root/<run id>`, made with `create_dir`, so it never is an
+/// existing folder. Everything the run deletes later is inside it. Returns the
+/// canonical path.
+pub fn create_run(root: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(root)
+        .map_err(|error| format!("cannot create {}: {error}", root.display()))?;
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve {}: {error}", root.display()))?;
+    if root.parent().is_none() {
+        return Err(format!(
+            "{} is a filesystem root; name a folder for the run folders",
+            root.display()
+        ));
+    }
+    super::fixtures::create_fresh(&root, &run_id())
 }
 
 /// Keep the newest [`KEPT_RUNS`] run directories next to `current` (including it).
-/// Only the default location `_build/acceptance` is pruned: a run placed elsewhere
-/// with `--run-dir` never deletes its siblings.
+/// Only the default location `_build/acceptance` is pruned (the caller decides): a run
+/// placed elsewhere with `--run-dir` never deletes its siblings.
 pub fn prune_old_runs(current: &Path) {
     let Some(parent) = current.parent() else {
         return;
     };
-    if !parent.ends_with("_build/acceptance") {
-        return;
-    }
     let mut runs: Vec<PathBuf> = fs::read_dir(parent)
         .into_iter()
         .flatten()
@@ -236,7 +278,7 @@ pub fn write(
 @media (prefers-color-scheme: dark){{:root{{--bg:#14181c;--fg:#e3e8ed;--muted:#9aa7b4;--line:#2c343c;--pass:#6fcf7a;--warn:#f0b35a;--fail:#ff8a80;--card:#1c2228}}}}\
 body{{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;margin:0 auto;max-width:1400px;padding:16px}}\
 table{{border-collapse:collapse;width:100%}}td,th{{border-bottom:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}}\
-.PASS{{color:var(--pass)}}.WARN{{color:var(--warn)}}.FAIL,.TIMEOUT,.NOTRUN{{color:var(--fail)}}.SKIP{{color:var(--muted)}}\
+.PASS{{color:var(--pass)}}.WARN,.PENDING{{color:var(--warn)}}.FAIL,.TIMEOUT,.NOTRUN{{color:var(--fail)}}.SKIP{{color:var(--muted)}}\
 .grid{{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}}\
 figure{{background:var(--card);border:1px solid var(--line);border-radius:6px;margin:0;padding:8px}}\
 figure img{{max-width:100%;height:auto;display:block}}figcaption{{font-size:12px;color:var(--muted);overflow-wrap:anywhere}}\
@@ -388,10 +430,39 @@ Review strictness: {}.</p><table><tr><th>Scenario</th><th>Area</th><th>Result</t
         }
     }
     let _ = fs::write(run_dir.join("review-flags.tsv"), flags);
-    if let Some(parent) = run_dir.parent() {
-        let _ = fs::write(parent.join("LATEST"), format!("{}\n", run_dir.display()));
-    }
+    update_latest(run_dir);
     index
+}
+
+/// Record `run_dir` in `LATEST` beside it. An existing `LATEST` is replaced only when
+/// it is a pointer a run wrote: a small regular file holding one absolute path that
+/// ends in a run folder's name (a run in Docker writes its container path). Anything
+/// else there is the user's and stays as it is.
+fn update_latest(run_dir: &Path) {
+    let Some(root) = run_dir.parent() else {
+        return;
+    };
+    let latest = root.join("LATEST");
+    let replaceable = match fs::symlink_metadata(&latest) {
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        Ok(metadata) => {
+            metadata.is_file()
+                && metadata.len() <= 4096
+                && fs::read_to_string(&latest).is_ok_and(|text| {
+                    let line = text.strip_suffix('\n').unwrap_or(&text);
+                    let named = Path::new(line);
+                    !line.contains('\n')
+                        && named.is_absolute()
+                        && named
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(is_run_name)
+                })
+        }
+    };
+    if replaceable {
+        let _ = fs::write(&latest, format!("{}\n", run_dir.display()));
+    }
 }
 
 pub fn print_summary(
@@ -409,7 +480,9 @@ pub fn print_summary(
             outcome.duration.as_secs_f64(),
             outcome.headline()
         );
-        if outcome.status.is_failure(strict_review) && outcome.message.lines().count() > 1 {
+        if (outcome.status.is_failure(strict_review) || outcome.status == Status::Pending)
+            && outcome.message.lines().count() > 1
+        {
             for line in outcome.message.lines().skip(1).take(12) {
                 println!("{:<38}{line}", "");
             }
@@ -426,9 +499,10 @@ pub fn print_summary(
         .filter(|(_, outcome)| outcome.status.is_failure(strict_review))
         .count();
     println!(
-        "{} passed, {} warned, {} skipped, {failed} failed of {} in {:.1} s",
+        "{} passed, {} warned, {} pending, {} skipped, {failed} failed of {} in {:.1} s",
         count(Status::Pass),
         count(Status::Warn),
+        count(Status::Pending),
         count(Status::Skip),
         results.len(),
         elapsed.as_secs_f64()

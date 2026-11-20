@@ -139,7 +139,7 @@ using admitted pixel replies rather than bulk reading the cloud folder.
 
 ## Salamander source review
 
-Read the local `D:\experiments\salamander-main` sources requested by the user:
+Read the local `<salamander-source>` sources requested by the user:
 
 - `src/icncache.h` and `src/icncache.cpp` (especially GetIconsAndThumbsFrom around
   lines 605–644): directory-owned raw pixel buffers, transferred completed images

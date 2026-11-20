@@ -27,8 +27,6 @@ mod manifest;
 mod verify;
 #[path = "checksum_worker.rs"]
 mod worker;
-#[allow(unused_imports)] // The checksum test crate includes this module without the engine.
-pub(crate) use manifest::replace_with_empty_file;
 pub use manifest::save_manifest;
 
 type Key = (ChecksumJobId, ChecksumGeneration);

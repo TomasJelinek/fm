@@ -1,0 +1,93 @@
+import { DialogFrame, PopupFocus } from "dialog-frame.slint";
+import { Theme } from "theme.slint";
+import { ColorPickerDialog } from "color-picker.slint";
+import { ColorOptionsView } from "color-options.slint";
+import { KeyboardEditorView, ShortcutReplacementDialog } from "keyboard-editor.slint";
+
+// The popups over the open Options dialog: whether a shortcut already in use
+// replaces the other command's (Keyboard), and the picker of the filename color
+// being edited (Colors). Each opens when its view asks while Options is open.
+// Placed inside the Options popup, covering the window.
+export component OptionsPopups {
+    in property <bool> options-open;
+    private property <string> replacement-request: KeyboardEditorView.replacement-token;
+    private property <bool> replacement-options-open: root.options-open;
+    private property <string> presented-replacement-token;
+    private property <string> presented-replacement-body;
+    changed replacement-request => { root.update-shortcut-replacement(); }
+    changed replacement-options-open => { root.update-shortcut-replacement(); }
+    function update-shortcut-replacement() {
+        PopupFocus.update();
+        if root.replacement-request != "" && root.options-open {
+            if root.presented-replacement-token != root.replacement-request {
+                shortcut-replacement-popup.close();
+                root.presented-replacement-body = KeyboardEditorView.replacement-body;
+                root.presented-replacement-token = root.replacement-request;
+                shortcut-replacement-popup.show();
+            }
+        } else {
+            shortcut-replacement-popup.close();
+            root.presented-replacement-token = "";
+            root.presented-replacement-body = "";
+        }
+        PopupFocus.update();
+    }
+    private property <int> picker-field: ColorOptionsView.picker-field;
+    private property <color> picker-initial;
+    private property <int> picker-generation;
+    changed picker-field => {
+        PopupFocus.update();
+        if root.picker-field >= 0 && root.options-open {
+            root.picker-initial = root.picker-field == 0
+                ? (ColorOptionsView.preview-foreground-set ? ColorOptionsView.preview-foreground : Theme.text)
+                : (ColorOptionsView.preview-background-set ? ColorOptionsView.preview-background : Theme.pane-background);
+            root.picker-generation += 1;
+            color-picker-popup.show();
+        } else { color-picker-popup.close(); }
+        PopupFocus.update();
+    }
+    shortcut-replacement-popup := PopupWindow {
+        close-policy: no-auto-close;
+        x: 0px; y: 0px; preferred-width: root.width; preferred-height: root.height;
+        replacement-frame := DialogFrame {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            private property <string> occurrence-token;
+            init => {
+                self.occurrence-token = root.presented-replacement-token;
+                self.reset();
+            }
+            desired-width: max(560px, Theme.font-size * 26);
+            desired-height: max(300px, Theme.font-size * 13);
+            dismiss-on-outside: false; dim: true;
+            dismiss => { KeyboardEditorView.decide-replacement(self.occurrence-token, false); }
+            replacement-body := ShortcutReplacementDialog {
+                token: root.presented-replacement-token;
+                body: root.presented-replacement-body;
+                decide(token, replace) => { KeyboardEditorView.decide-replacement(token, replace); }
+            }
+        }
+    }
+    color-picker-popup := PopupWindow {
+        close-policy: no-auto-close;
+        x: 0px; y: 0px;
+        preferred-width: root.width; preferred-height: root.height;
+        color-picker-frame := DialogFrame {
+            // Popup WindowItem dimensions may retain their opening size. Anchor
+            // the frame explicitly so Slint cannot center it in those old bounds.
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            desired-width: max(480px, Theme.font-size * 22);
+            desired-height: max(600px, Theme.font-size * 28);
+            dismiss-on-outside: false; dim: true;
+            color-picker-body := ColorPickerDialog {
+                title: root.picker-field == 0 ? "Foreground color" : "Background color";
+                initial: root.picker-initial; generation: root.picker-generation;
+                moved(dx, dy) => { color-picker-frame.move-by(dx, dy); }
+                accepted(value) => {
+                    ColorOptionsView.choose-color(root.picker-field, value);
+                    ColorOptionsView.picker-field = -1;
+                }
+                cancelled => { ColorOptionsView.picker-field = -1; }
+            }
+        }
+    }
+}

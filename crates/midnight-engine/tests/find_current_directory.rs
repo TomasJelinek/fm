@@ -237,6 +237,7 @@ async fn nested_status(read: bool) {
         text: "needle".into(),
         case_sensitive: true,
         whole_words: false,
+        regex: false,
     });
     send.send(Command::StartFind(Box::new(request)))
         .await

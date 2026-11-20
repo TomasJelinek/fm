@@ -30,6 +30,7 @@ export component TerminalControl inherits Rectangle {
             height: root.height - 2px;
             icon: root.shell-icons[root.current-index];
             native-icon: root.shell-icons[root.current-index];
+            action-glyph: false;
             hint: "Open " + root.model[root.current-index] + "\nWorking folder: " + root.working-directory;
             enabled: root.ready;
             clicked => { root.launch(); }

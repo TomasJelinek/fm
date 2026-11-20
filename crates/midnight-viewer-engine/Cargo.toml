@@ -9,6 +9,8 @@ publish.workspace = true
 midnight-media-host = { path = "../midnight-media-host" }
 midnight-media-output = { path = "../midnight-media-output" }
 midnight-core.workspace = true
+# Installs the HTML viewer's AppArmor profile when the user asks (Linux only; nothing elsewhere).
+midnight-elevation = { path = "../midnight-elevation" }
 midnight-office-preview = { path = "../midnight-office-preview" }
 midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
 midnight-web-viewer-host = { path = "../midnight-web-viewer-host" }

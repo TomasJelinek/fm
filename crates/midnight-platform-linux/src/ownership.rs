@@ -316,6 +316,32 @@ impl VerdictCache {
     }
 }
 
+/// The account name of `uid` in `/etc/passwd`, when that file lists it. Accounts
+/// that only a directory service knows are not looked up; callers show the number.
+pub(crate) fn user_name(uid: u32) -> Option<String> {
+    account_name("/etc/passwd", uid)
+}
+
+/// The name of group `gid` in `/etc/group`, as `user_name` does for users.
+pub(crate) fn group_name(gid: u32) -> Option<String> {
+    account_name("/etc/group", gid)
+}
+
+/// The first well-formed record whose numeric id (the third field of both
+/// `passwd(5)` and `group(5)`) is `id`. Malformed and NIS lines are skipped.
+fn account_name(file: &str, id: u32) -> Option<String> {
+    let content = read_account_file(file)?;
+    content.split(|byte| *byte == b'\n').find_map(|line| {
+        if line.starts_with(b"#") || line.starts_with(b"+") || line.starts_with(b"-") {
+            return None;
+        }
+        let mut fields = line.split(|byte| *byte == b':');
+        let name = fields.next().filter(|name| !name.is_empty())?;
+        let number_field = fields.nth(1)?;
+        (number(number_field) == Some(id)).then(|| String::from_utf8_lossy(name).into_owned())
+    })
+}
+
 fn read_account_file(path: &str) -> Option<Vec<u8>> {
     const MAX_ACCOUNT_FILE: u64 = 4 * 1024 * 1024;
     let mut bytes = Vec::new();

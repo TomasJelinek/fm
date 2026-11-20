@@ -57,6 +57,7 @@ fn touch(
             force: None,
             id: 1,
         }),
+        false,
     );
     window
         .window()

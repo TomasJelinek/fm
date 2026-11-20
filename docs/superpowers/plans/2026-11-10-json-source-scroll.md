@@ -19,7 +19,7 @@ SDK and read-only installed-plugin probe. No new dependency or Slint changes.
 ## Evidence and scope
 
 The exact read-only user file is
-`D:\temp\ovclash\results\2026-09-07-mfg\manifest.json`, 2659 bytes,
+`<external-project>\results\<run>\manifest.json`, 2659 bytes,
 SHA256 `CA5E4B26FEBA253568C17A62869471A2AEB2646D194593F18D2F9611263D21E7`.
 Its identical captured copy is `_build/qa/json-scroll/fixtures/user-manifest.json`.
 

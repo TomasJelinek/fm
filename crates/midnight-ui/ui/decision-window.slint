@@ -19,6 +19,9 @@ export component DecisionWindow inherits DialogWindow {
     in property <bool> failure-mode;
     in property <bool> can-retry;
     in property <bool> can-skip;
+    in property <string> failure-title: "Copy/Move needs attention";
+    in property <string> skip-all-text: "Skip all this error type";
+    in property <string> skip-all-hint: "Skip later failures of this kind at this step in this job only. Name conflicts still need a separate decision.";
     callback decide(int, string);
     callback later();
     callback request-dismiss();
@@ -48,6 +51,7 @@ export component DecisionWindow inherits DialogWindow {
             native-icon: root.native-icon; allow-alternate-name: root.allow-alternate-name;
             can-replace: root.can-replace; can-merge: root.can-merge;
             failure-mode: root.failure-mode; can-retry: root.can-retry; can-skip: root.can-skip;
+            failure-title: root.failure-title; skip-all-text: root.skip-all-text; skip-all-hint: root.skip-all-hint;
             decide(choice, name) => { root.decide(choice, name); }
             later => { root.later(); }
         }

@@ -179,6 +179,35 @@ fn find_host_tracks_its_own_cursor_and_client_bounds_without_updating_main() {
 }
 
 #[test]
+fn tooltip_frames_follow_the_window_scale_and_round_up_to_device_pixels() {
+    let (natives, _) = setup();
+    let main = MainWindow::new().unwrap();
+    install(&main).unwrap();
+    main.show().unwrap();
+    resize(main.window(), &natives.borrow()[0], 1340., 900.);
+    let placement = main.global::<TooltipPlacement>();
+    main.window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.25 });
+    main.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(40., 50.),
+    });
+    assert_eq!(placement.get_scale(), 1.25);
+    for value in [100.9_f32, 100.8, 57.3, 120.0, 1.0] {
+        let snapped = placement.invoke_snap_up(value);
+        let device = snapped * 1.25;
+        assert!(
+            (device - device.round()).abs() < 1e-3,
+            "{value} -> {snapped} is not on the device-pixel grid"
+        );
+        assert!(snapped + 1e-3 >= value, "{value} shrank to {snapped}");
+        assert!(snapped - value < 0.8 + 1e-3, "{value} grew to {snapped}");
+    }
+    // Nearest rounding took 0.1px from a 100.9px hint: enough to wrap its last word.
+    assert!(placement.invoke_snap(100.9) < 100.9);
+    main.hide().unwrap();
+}
+
+#[test]
 fn actual_find_hint_is_offset_and_clamped_to_the_find_host() {
     let (natives, time) = setup();
     let find = FindWindow::new().unwrap();

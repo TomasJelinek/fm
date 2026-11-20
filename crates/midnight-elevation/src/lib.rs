@@ -1,4 +1,5 @@
-//! A bounded, authenticated, one-shot elevated directory reader.
+//! Bounded operations with operating-system authorization: a one-shot elevated directory
+//! reader and, on Linux, installing the HTML viewer's AppArmor profile ([`SandboxProfile`]).
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod helper;
@@ -9,6 +10,29 @@ mod native;
 #[path = "linux.rs"]
 mod native;
 mod protocol;
+#[cfg(target_os = "linux")]
+#[path = "sandbox_profile_linux.rs"]
+mod sandbox_profile;
+#[cfg(not(target_os = "linux"))]
+#[path = "sandbox_profile_other.rs"]
+mod sandbox_profile;
+pub use sandbox_profile::SandboxProfile;
+
+/// Why installing a [`SandboxProfile`] did not complete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SandboxProfileError {
+    /// The administrator dismissed or refused the authorization; nothing changed.
+    Declined,
+    /// No trusted system authorization is available (any more), so the profile can only
+    /// be installed as described in the system requirements.
+    Unavailable,
+    /// No polkit authentication agent runs in this session, so nobody can be asked for the
+    /// authorization here: asking again cannot help, and the profile can only be installed
+    /// as described in the system requirements.
+    NoAgent,
+    /// The installation could not complete; the text says why.
+    Failed(String),
+}
 
 use midnight_core::{Cancellation, ElevatedDirectoryService, Entry, EntryId, EntryKind, FsError};
 use native::HELPER_REQUIREMENT;

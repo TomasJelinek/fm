@@ -1,14 +1,221 @@
-//! The third-party library list of the About dialog, read from the dependency
-//! inventory that ships with the sources so the two cannot drift apart.
-use crate::{LicenseRow, MainWindow};
+//! The About dialog's third-party list and library details.
+//!
+//! The list is the current dependency inventory (`docs/dependencies/cargo-licenses.csv`)
+//! restricted to the components a release ships for this platform, plus the
+//! bundled components outside Cargo that `docs/THIRD_PARTY.md` records. Like the
+//! release notice, it conservatively includes build- and test-time libraries. A
+//! library's license text and authors come from the backend
+//! (`Command::ReadLicenseNotice`); this module reads no files.
+use crate::{AboutView, LicenseRow, MainWindow, Presenter};
+use midnight_core::{Command, LicenseNotice, LicenseNoticeId, LicenseNoticeRequest};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::OnceLock};
 
-const INVENTORY: &str = include_str!("../../../docs/third-party-inventory.csv");
+const INVENTORY: &str = include_str!("../../../docs/dependencies/cargo-licenses.csv");
+const COLUMNS: [&str; 7] = [
+    "name",
+    "version",
+    "license",
+    "source",
+    "scopes",
+    "targets",
+    "direct_by",
+];
+
+/// The inventory's target label for this platform's release.
+#[cfg(windows)]
+const TARGET: &str = "Windows";
+#[cfg(not(windows))]
+const TARGET: &str = "Linux";
+
+/// Inventory scopes a release package ships, and the component each one is.
+/// Renderer tests, the ABI conformance project, the public API/SDK workspaces and
+/// the macOS filesystem package are not shipped.
+const SHIPPED: [(&str, &str); 14] = [
+    ("app", "Midnight Explorer"),
+    ("native-linux", "native file system plugin"),
+    ("native-windows", "native file system plugin"),
+    ("network", "network plugin"),
+    ("archive", "archive plugin"),
+    ("basic", "text and binary viewer"),
+    ("source", "source viewer"),
+    ("markdown", "Markdown viewer"),
+    ("html-viewer", "HTML viewer"),
+    ("image-viewer", "image viewer"),
+    ("image-decoder", "image decoder"),
+    ("pdf-viewer", "PDF viewer"),
+    ("thumbnail-image", "image thumbnails"),
+    ("thumbnail-video", "video thumbnails and playback"),
+];
+
+/// A shipped component outside Cargo, as `docs/THIRD_PARTY.md` records it.
+struct Bundled {
+    name: &'static str,
+    version: &'static str,
+    license: &'static str,
+    used_by: &'static str,
+    authors: &'static str,
+    /// Its notices' folder under the release package's `licenses`, if they are there.
+    folder: Option<&'static str>,
+    /// Where its notices ship.
+    notices: &'static str,
+}
+
+const BUNDLED: [Bundled; 12] = [
+    Bundled {
+        name: "Rust standard library",
+        version: "1.99.1",
+        license: "MIT OR Apache-2.0",
+        used_by: "every program in the package",
+        authors: "The Rust Project Developers",
+        folder: Some("rust"),
+        notices: "Release packages keep its notices in licenses/rust/.",
+    },
+    Bundled {
+        name: "FFmpeg",
+        version: "9.0.2",
+        license: "LGPL-2.1-or-later",
+        used_by: "video thumbnails and playback",
+        authors: "The FFmpeg developers",
+        folder: None,
+        notices: "The video thumbnail package keeps FFmpeg's license, its corresponding \
+                  source and the exact build configuration in notices/ffmpeg-9.0.2/.",
+    },
+    Bundled {
+        name: "dav1d",
+        version: "1.5.4",
+        license: "BSD-2-Clause",
+        used_by: "AVIF images in the image viewer and image thumbnails",
+        authors: "VideoLAN and dav1d authors",
+        folder: None,
+        notices: "The image viewer and image thumbnail packages keep its license with \
+                  their notices.",
+    },
+    Bundled {
+        name: "Chromium Embedded Framework",
+        version: "156.0.26",
+        license: "BSD-3-Clause",
+        used_by: "HTML viewer",
+        authors: "Marshall A. Greenblatt; portions Google Inc.",
+        folder: None,
+        notices: "The HTML viewer package keeps CEF's LICENSE.txt and Chromium's \
+                  CREDITS.html, which lists Chromium's separately licensed components, \
+                  including LGPL and MPL parts.",
+    },
+    Bundled {
+        name: "Noto Sans fonts",
+        version: "",
+        license: "OFL-1.1",
+        used_by: "text in SVG images (image viewer and image thumbnails)",
+        authors: "Google LLC; The Noto Project Authors",
+        folder: None,
+        notices: "The unmodified Regular, Arabic and Hebrew fonts. The image viewer and \
+                  image thumbnail packages keep the SIL Open Font License and the fonts' \
+                  copyright notices.",
+    },
+    Bundled {
+        name: "Unicode case-folding data",
+        version: "17.0.0",
+        license: "Unicode-3.0",
+        used_by: "case-insensitive search in the text and binary viewer",
+        authors: "Unicode, Inc.",
+        folder: None,
+        notices: "The text and binary viewer package keeps UNICODE-LICENSE.txt.",
+    },
+    Bundled {
+        name: "Foxit standard PDF fonts",
+        version: "",
+        license: "BSD-3-Clause",
+        used_by: "PDF viewer and image thumbnails, embedded by hayro-font 0.5.0",
+        authors: "PDFium Authors",
+        folder: None,
+        notices: "The PDF viewer and image thumbnail packages keep the fonts' original notice.",
+    },
+    Bundled {
+        name: "Adobe CMaps",
+        version: "",
+        license: "BSD-3-Clause",
+        used_by: "PDF viewer and image thumbnails, embedded by hayro-cmap 0.1.1",
+        authors: "Adobe",
+        folder: None,
+        notices: "The PDF viewer and image thumbnail packages keep the CMaps' original notice.",
+    },
+    Bundled {
+        name: "Tokyo Night palette",
+        version: "cdc07ac",
+        license: "Apache-2.0",
+        used_by: "Tokyo Night theme",
+        authors: "folke (tokyonight.nvim)",
+        folder: Some("themes/folke"),
+        notices: "Release packages keep its license in licenses/themes/folke/.",
+    },
+    Bundled {
+        name: "One Dark palette",
+        version: "47bec7a",
+        license: "MIT",
+        used_by: "One Dark theme",
+        authors: "Joshua Dick",
+        folder: Some("themes/joshdick"),
+        notices: "Release packages keep its license in licenses/themes/joshdick/.",
+    },
+    Bundled {
+        name: "Rosé Pine palette",
+        version: "ff48305",
+        license: "MIT",
+        used_by: "Rosé Pine and Rosé Pine Dawn themes",
+        authors: "Rosé Pine",
+        folder: Some("themes/rose-pine"),
+        notices: "Release packages keep its license in licenses/themes/rose-pine/.",
+    },
+    Bundled {
+        name: "Catppuccin palette",
+        version: "d09787d",
+        license: "MIT",
+        used_by: "Catppuccin Latte theme",
+        authors: "Catppuccin",
+        folder: Some("themes/catppuccin"),
+        notices: "Release packages keep its license in licenses/themes/catppuccin/.",
+    },
+];
+
+/// One row of the About list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Library {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) license: String,
+    /// The shipped components that use it.
+    pub(crate) used_by: String,
+    bundled: Option<usize>,
+}
+
+impl Library {
+    fn bundled(&self) -> Option<&'static Bundled> {
+        self.bundled.map(|index| &BUNDLED[index])
+    }
+
+    fn title(&self) -> String {
+        if self.version.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} {}", self.name, self.version)
+        }
+    }
+
+    /// The backend request for its notices, or `None` when none ship with the program.
+    fn request(&self, id: LicenseNoticeId) -> Option<LicenseNoticeRequest> {
+        let folder = match self.bundled() {
+            Some(bundled) => Some(bundled.folder?.to_owned()),
+            None => None,
+        };
+        Some(LicenseNoticeRequest {
+            id,
+            name: self.name.clone(),
+            version: self.version.clone(),
+            folder,
+        })
+    }
+}
 
 /// Splits one CSV record; quoted fields may hold commas and doubled quotes.
 fn fields(line: &str) -> Vec<String> {
@@ -31,325 +238,294 @@ fn fields(line: &str) -> Vec<String> {
     out
 }
 
-/// Name, version and license of every library, sorted and without repeats.
-pub(crate) fn parse(inventory: &str) -> Vec<(String, String, String)> {
-    let mut rows: Vec<_> = inventory
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let mut columns = fields(line).into_iter();
-            let (name, version) = (columns.next()?, columns.next()?);
-            let license = columns.nth(1)?;
-            (!name.is_empty()).then_some((name, version, license))
-        })
-        .collect();
-    rows.sort_by_key(|(name, version, _)| (name.to_lowercase(), version.clone()));
-    rows.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-    rows
+/// The libraries a release for `target` ships, one row per name and version with
+/// the components that use it, plus the bundled components; sorted by name. An
+/// inventory with other columns gives no Cargo rows (a test guards the format).
+pub(crate) fn libraries_for(inventory: &str, target: &str) -> Vec<Library> {
+    let mut lines = inventory.lines();
+    let header_matches = lines.next().is_some_and(|header| fields(header) == COLUMNS);
+    let mut libraries: Vec<Library> = Vec::new();
+    let mut known: HashMap<(String, String), usize> = HashMap::new();
+    for line in lines.filter(|_| header_matches) {
+        let columns = fields(line);
+        let [name, version, license, _source, scopes, targets, _direct] = columns.as_slice() else {
+            continue;
+        };
+        if name.is_empty() || !targets.split("; ").any(|label| label == target) {
+            continue;
+        }
+        let components: Vec<&str> = scopes
+            .split("; ")
+            .filter_map(|scope| SHIPPED.iter().find(|(shipped, _)| *shipped == scope))
+            .map(|(_, component)| *component)
+            .collect();
+        if components.is_empty() {
+            continue;
+        }
+        let index = *known
+            .entry((name.clone(), version.clone()))
+            .or_insert_with(|| {
+                libraries.push(Library {
+                    name: name.clone(),
+                    version: version.clone(),
+                    license: license.clone(),
+                    used_by: String::new(),
+                    bundled: None,
+                });
+                libraries.len() - 1
+            });
+        let library = &mut libraries[index];
+        for component in components {
+            if !library.used_by.split(", ").any(|known| known == component) {
+                if !library.used_by.is_empty() {
+                    library.used_by.push_str(", ");
+                }
+                library.used_by.push_str(component);
+            }
+        }
+    }
+    libraries.extend(BUNDLED.iter().enumerate().map(|(index, bundled)| Library {
+        name: bundled.name.into(),
+        version: bundled.version.into(),
+        license: bundled.license.into(),
+        used_by: bundled.used_by.into(),
+        bundled: Some(index),
+    }));
+    libraries.sort_by_cached_key(|library| (library.name.to_lowercase(), library.version.clone()));
+    libraries
 }
 
-pub(crate) fn matching(
-    rows: &[(String, String, String)],
-    query: &str,
-) -> Vec<(String, String, String)> {
+/// This platform's list, parsed once.
+fn libraries() -> &'static [Library] {
+    static LIBRARIES: OnceLock<Vec<Library>> = OnceLock::new();
+    LIBRARIES.get_or_init(|| libraries_for(INVENTORY, TARGET))
+}
+
+/// Indices of the libraries whose name, license or component contains `query`.
+pub(crate) fn matching(libraries: &[Library], query: &str) -> Vec<usize> {
     let query = query.trim().to_lowercase();
-    rows.iter()
-        .filter(|(name, _, license)| {
+    libraries
+        .iter()
+        .enumerate()
+        .filter(|(_, library)| {
             query.is_empty()
-                || name.to_lowercase().contains(&query)
-                || license.to_lowercase().contains(&query)
+                || [&library.name, &library.license, &library.used_by]
+                    .iter()
+                    .any(|text| text.to_lowercase().contains(&query))
         })
-        .cloned()
+        .map(|(index, _)| index)
         .collect()
 }
 
-fn show(window: &MainWindow, rows: &[(String, String, String)], total: usize) {
-    let model: Vec<LicenseRow> = rows
+fn show(view: &AboutView, query: &str) {
+    let all = libraries();
+    let shown = matching(all, query);
+    let rows: Vec<LicenseRow> = shown
         .iter()
-        .map(|(name, version, license)| LicenseRow {
-            name: name.as_str().into(),
-            version: version.as_str().into(),
-            license: license.as_str().into(),
+        .map(|&index| LicenseRow {
+            name: all[index].name.as_str().into(),
+            version: all[index].version.as_str().into(),
+            license: all[index].license.as_str().into(),
         })
         .collect();
-    window.set_license_rows(ModelRc::from(Rc::new(VecModel::from(model))));
-    window.set_license_summary(SharedString::from(if rows.len() == total {
-        format!("{total} libraries")
-    } else {
-        format!("{} of {total} libraries", rows.len())
-    }));
+    view.set_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+    view.set_summary(
+        if shown.len() == all.len() {
+            format!("{} libraries and components", all.len())
+        } else {
+            format!("{} of {} libraries and components", shown.len(), all.len())
+        }
+        .into(),
+    );
 }
 
-/// Directories that may hold `<name>-<version>/` license folders: the `licenses`
-/// folder shipped beside the executable, then a developer's cargo sources.
-fn roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    if let Some(dir) = &exe_dir {
-        roots.push(dir.join("licenses"));
+/// The detail request the About dialog awaits and the backend's answer. The
+/// Presenter owns it, so the answer arrives with the other backend events.
+#[derive(Debug, Default)]
+pub(crate) struct NoticeState {
+    next: u64,
+    awaited: Option<(LicenseNoticeId, usize)>,
+    answer: Option<Box<LicenseNotice>>,
+}
+
+impl NoticeState {
+    fn begin(&mut self, library: usize) -> LicenseNoticeId {
+        self.next += 1;
+        let id = LicenseNoticeId(self.next);
+        self.awaited = Some((id, library));
+        self.answer = None;
+        id
     }
-    let mut registries: Vec<PathBuf> = exe_dir
-        .iter()
-        .flat_map(|dir| dir.ancestors())
-        .map(|dir| dir.join(".tools/docker/cargo/registry/src"))
-        .collect();
-    if let Some(home) = std::env::var_os("CARGO_HOME") {
-        registries.push(PathBuf::from(home).join("registry/src"));
+
+    fn cancel(&mut self) {
+        self.awaited = None;
+        self.answer = None;
     }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        registries.push(PathBuf::from(home).join(".cargo/registry/src"));
-    }
-    for registry in registries {
-        if let Ok(entries) = fs::read_dir(registry) {
-            roots.extend(entries.flatten().map(|entry| entry.path()));
+
+    /// Keep the answer to the awaited request; drop answers to older ones.
+    pub(crate) fn receive(&mut self, notice: Box<LicenseNotice>) {
+        if self.awaited.is_some_and(|(id, _)| id == notice.id) {
+            self.answer = Some(notice);
         }
     }
-    roots
 }
 
-fn find(roots: &[PathBuf], name: &str, version: &str) -> Option<PathBuf> {
-    let folder = format!("{name}-{version}");
-    roots
-        .iter()
-        .map(|root| root.join(&folder))
-        .find(|path| path.is_dir())
-}
-
-const MAX_TEXT_BYTES: usize = 256 * 1024;
-
-fn is_notice(name: &str) -> bool {
-    let name = name.to_lowercase();
-    ["license", "licence", "copying", "copyright", "notice"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-}
-
-/// Every notice file of the folder, one level deep, in name order.
-fn notice_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if !is_notice(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
-        if path.is_dir() {
-            files.extend(
-                fs::read_dir(&path)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|inner| inner.path())
-                    .filter(|inner| inner.is_file()),
-            );
-        } else if path.is_file() {
-            files.push(path);
-        }
-    }
-    files.sort();
-    files
-}
-
-/// `authors = ["A <a@b>", ...]` of a Cargo manifest, without a TOML parser.
-fn manifest_authors(manifest: &str) -> Vec<String> {
-    let Some(start) = manifest.find("authors") else {
-        return Vec::new();
-    };
-    let rest = &manifest[start..];
-    let Some(open) = rest.find('[') else {
-        return Vec::new();
-    };
-    let end = rest[open..].find(']').map_or(rest.len(), |end| open + end);
-    let mut authors = Vec::new();
-    let mut quoted = rest[open..end].split('"');
-    quoted.next();
-    while let (Some(author), Some(_)) = (quoted.next(), quoted.next()) {
-        authors.push(author.to_owned());
-    }
-    authors
-}
-
-pub(crate) struct Detail {
-    pub(crate) authors: String,
-    pub(crate) text: String,
-}
-
-/// The license text and authors of one library folder.
-pub(crate) fn read_detail(dir: &Path) -> Detail {
-    let mut text = String::new();
-    let mut authors: Vec<String> = fs::read_to_string(dir.join("Cargo.toml"))
-        .map(|manifest| manifest_authors(&manifest))
-        .unwrap_or_default();
-    for file in notice_files(dir) {
-        let Ok(bytes) = fs::read(&file) else { continue };
-        let content = String::from_utf8_lossy(&bytes[..bytes.len().min(64 * 1024)]).into_owned();
-        for line in content.lines() {
-            let line = line.trim();
-            if line.to_lowercase().starts_with("copyright") && !authors.iter().any(|a| a == line) {
-                authors.push(line.to_owned());
-            }
-        }
-        if text.len() < MAX_TEXT_BYTES {
-            if !text.is_empty() {
-                text.push_str("\n\n");
-            }
-            let name = file.file_name().map(|n| n.to_string_lossy().into_owned());
-            text.push_str(&format!("──── {} ────\n\n", name.unwrap_or_default()));
-            text.push_str(content.trim_end());
-        }
-    }
-    authors.truncate(24);
-    Detail {
-        authors: authors.join("\n"),
-        text,
-    }
-}
-
-/// Authors the release inventory (`THIRD-PARTY.json` beside the executable) records.
-fn inventory_authors(name: &str, version: &str) -> Vec<String> {
-    let Some(path) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("THIRD-PARTY.json")))
-    else {
-        return Vec::new();
-    };
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(serde_json::Value::Array(entries)) = serde_json::from_str(&text) else {
-        return Vec::new();
-    };
-    entries
-        .iter()
-        .find(|entry| entry["name"] == name && entry["version"] == version)
-        .and_then(|entry| entry["authors"].as_array())
-        .map(|authors| {
+/// The heading of the authors block and its lines, one per author or copyright
+/// statement. `None` while the notice loads: no heading, and the block is hidden.
+fn authors_block(authors: Option<&[String]>) -> (&'static str, Vec<SharedString>) {
+    match authors {
+        None => ("", Vec::new()),
+        Some([]) => ("Authors: not stated in its license files.", Vec::new()),
+        Some(authors) => (
+            "Authors",
             authors
                 .iter()
-                .filter_map(|author| author.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
+                .map(|author| SharedString::from(author.as_str()))
+                .collect(),
+        ),
+    }
 }
 
-fn open_detail(window: &MainWindow, roots: &[PathBuf], name: &str, version: &str, license: &str) {
-    let mut detail = find(roots, name, version).map(|dir| read_detail(&dir));
-    if let Some(detail) = detail.as_mut() {
-        let mut authors = inventory_authors(name, version);
-        authors.extend(detail.authors.lines().map(str::to_owned));
-        authors.dedup();
-        detail.authors = authors.join("\n");
-    }
-    window.set_license_detail_title(format!("{name} {version}").into());
-    window.set_license_detail_license(license.into());
-    match detail {
-        Some(detail) if !detail.text.is_empty() => {
-            window.set_license_detail_authors(if detail.authors.is_empty() {
-                "Not stated in the license files.".into()
-            } else {
-                detail.authors.into()
-            });
-            window.set_license_detail_text(detail.text.into());
-        }
-        _ => {
-            window.set_license_detail_authors("".into());
-            window.set_license_detail_text(
-                format!(
-                    "The license text of {name} {version} is not installed with this build. \
-                     Release packages keep it under licenses/{name}-{version}/. The declared \
-                     license is {license}."
-                )
-                .into(),
-            );
-        }
-    }
-    window.set_license_detail_open(true);
+fn show_authors(view: &AboutView, authors: Option<&[String]>) {
+    let (heading, lines) = authors_block(authors);
+    view.set_detail_authors_heading(heading.into());
+    view.set_detail_authors(ModelRc::from(Rc::new(VecModel::from(lines))));
 }
 
-pub(crate) fn install(window: &MainWindow) {
-    let rows = Rc::new(parse(INVENTORY));
-    show(window, &rows, rows.len());
+/// A bundled component's authors, one per line.
+fn bundled_authors(bundled: &Bundled) -> Vec<String> {
+    bundled.authors.split("; ").map(str::to_owned).collect()
+}
+
+/// The detail text when its notices are not installed with the program.
+fn missing_text(library: &Library) -> String {
+    match library.bundled() {
+        Some(bundled) => bundled.notices.into(),
+        None => format!(
+            "The license text of {} is not installed with this build. Release packages keep \
+             the license and copyright notices of the libraries the program uses in the \
+             licenses folder beside it; plugin packages keep their own. The declared \
+             license is {}.",
+            library.title(),
+            library.license
+        ),
+    }
+}
+
+/// Show an answered notice once; later refreshes find nothing left to load.
+pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
+    let state = &presenter.about_notice;
+    let (Some((id, index)), Some(answer)) = (state.awaited, state.answer.as_deref()) else {
+        return;
+    };
+    let view = window.global::<AboutView>();
+    let Some(library) = libraries().get(index) else {
+        return;
+    };
+    if !view.get_detail_loading() || answer.id != id {
+        return;
+    }
+    view.set_detail_loading(false);
+    let authors = match library.bundled() {
+        Some(bundled) => bundled_authors(bundled),
+        None => answer.authors.clone(),
+    };
+    show_authors(&view, Some(&authors));
+    let mut text = if answer.text.is_empty() {
+        missing_text(library)
+    } else {
+        answer.text.clone()
+    };
+    if answer.truncated {
+        text.push_str("\n\n[Longer notices are cut short here.]");
+    }
+    view.set_detail_text(text.into());
+}
+
+/// Fill the detail view for `library` and ask the backend for its notices.
+fn open(
+    window: &MainWindow,
+    presenter: &RefCell<Presenter>,
+    send: &dyn Fn(Command) -> bool,
+    index: usize,
+) {
+    let library = &libraries()[index];
+    // The detail replaces the list and its filter: retire the filter's hint first.
+    crate::tooltip::dismiss(window.window());
+    let view = window.global::<AboutView>();
+    view.set_detail_title(library.title().into());
+    view.set_detail_license(library.license.as_str().into());
+    view.set_detail_used_by(library.used_by.as_str().into());
+    view.set_detail_loading(false);
+    show_authors(&view, None);
+    let request = presenter.try_borrow_mut().ok().map(|mut state| {
+        let id = state.about_notice.begin(index);
+        let request = library.request(id);
+        if request.is_none() {
+            state.about_notice.cancel();
+        }
+        request
+    });
+    match request {
+        Some(Some(request)) => {
+            view.set_detail_loading(true);
+            view.set_detail_text("Loading the license text…".into());
+            if !send(Command::ReadLicenseNotice(Box::new(request))) {
+                view.set_detail_loading(false);
+                view.set_detail_text(UNAVAILABLE.into());
+                if let Ok(mut state) = presenter.try_borrow_mut() {
+                    state.about_notice.cancel();
+                }
+            }
+        }
+        // Its notices ship with a plugin package, not beside the program.
+        Some(None) => {
+            let authors = library.bundled().map(bundled_authors).unwrap_or_default();
+            show_authors(&view, Some(&authors));
+            view.set_detail_text(missing_text(library).into());
+        }
+        None => view.set_detail_text(UNAVAILABLE.into()),
+    }
+    view.set_detail_open(true);
+}
+
+const UNAVAILABLE: &str = "The license text could not be requested. Go back and try again.";
+
+pub(crate) fn install(
+    window: &MainWindow,
+    presenter: Rc<RefCell<Presenter>>,
+    send: Rc<dyn Fn(Command) -> bool>,
+) {
+    let view = window.global::<AboutView>();
+    show(&view, &view.get_query());
     let weak = window.as_weak();
-    let all = rows.clone();
-    window.on_license_filter(move |query| {
+    view.on_filter(move |query| {
         if let Some(window) = weak.upgrade() {
-            show(&window, &matching(&rows, &query), rows.len());
+            let view = window.global::<AboutView>();
+            // The rows change, so no row is selected until the user picks one.
+            view.set_current(-1);
+            show(&view, &query);
         }
     });
     let weak = window.as_weak();
-    window.on_license_open(move |name, version| {
-        let Some(window) = weak.upgrade() else { return };
-        let license = all
-            .iter()
-            .find(|(n, v, _)| n == name.as_str() && v == version.as_str())
-            .map(|(_, _, license)| license.as_str())
-            .unwrap_or_default();
-        open_detail(&window, &roots(), &name, &version, license);
+    view.on_retire_hints(move || {
+        if let Some(window) = weak.upgrade() {
+            crate::tooltip::dismiss(window.window());
+        }
+    });
+    let weak = window.as_weak();
+    view.on_open(move |name, version| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        if let Some(index) = libraries().iter().position(|library| {
+            library.name == name.as_str() && library.version == version.as_str()
+        }) {
+            open(&window, &presenter, send.as_ref(), index);
+        }
     });
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_shipped_inventory_lists_every_library_with_a_license() {
-        let rows = parse(INVENTORY);
-        assert!(rows.len() > 400, "{} libraries", rows.len());
-        assert!(rows.iter().all(|(name, version, license)| {
-            !name.is_empty() && !version.is_empty() && !license.is_empty()
-        }));
-        assert!(rows.iter().any(|(name, _, _)| name == "slint"));
-    }
-
-    #[test]
-    fn a_library_folder_yields_its_license_text_and_authors() {
-        let root = std::env::temp_dir().join(format!("about-licenses-{}", std::process::id()));
-        let dir = root.join("demo-1.2.3");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            dir.join("LICENSE-MIT"),
-            "MIT License\n\nCopyright (c) 2020 Ada Lovelace\n",
-        )
-        .unwrap();
-        fs::write(dir.join("README.md"), "not a notice").unwrap();
-        fs::write(
-            dir.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nauthors = [\"Ada <ada@example.org>\",\n \"Grace\"]\n",
-        )
-        .unwrap();
-        assert_eq!(
-            find(std::slice::from_ref(&root), "demo", "1.2.3"),
-            Some(dir.clone())
-        );
-        assert_eq!(find(std::slice::from_ref(&root), "demo", "9"), None);
-        let detail = read_detail(&dir);
-        assert!(
-            detail.text.contains("──── LICENSE-MIT ────") && !detail.text.contains("not a notice")
-        );
-        assert_eq!(
-            detail.authors.lines().collect::<Vec<_>>(),
-            [
-                "Ada <ada@example.org>",
-                "Grace",
-                "Copyright (c) 2020 Ada Lovelace"
-            ]
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn quoted_fields_keep_their_commas_and_filters_match_name_or_license() {
-        assert_eq!(fields(r#"a,"b,c","d""e""#), ["a", "b,c", r#"d"e"#]);
-        let rows = vec![
-            ("Serde".into(), "1".into(), "MIT OR Apache-2.0".into()),
-            ("zlib".into(), "2".into(), "Zlib".into()),
-        ];
-        assert_eq!(matching(&rows, " ser ").len(), 1);
-        assert_eq!(matching(&rows, "SERDE").len(), 1);
-        assert_eq!(matching(&rows, "zlib").len(), 1);
-        assert_eq!(matching(&rows, "mit").len(), 1);
-        assert_eq!(matching(&rows, "").len(), 2);
-    }
-}
+#[path = "about_licenses_tests.rs"]
+mod tests;

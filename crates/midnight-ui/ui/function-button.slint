@@ -28,20 +28,31 @@ export component FunctionButton inherits Rectangle {
     height: Theme.bottom-height;
     min-width: max(Theme.touch ? 44px : 40px, Theme.icon-size + 12px);
     preferred-width: max(root.min-width, caption-metrics.preferred-width + Theme.icon-size + 12px);
+    // The caption gives up its icon first, then shrinks to the readable minimum. A
+    // caption that still does not fit whole yields to the key alone: a cell never shows
+    // a cut caption such as "F7 Crea…". Very narrow cells always show the key alone.
     private property <bool> full-caption: caption-metrics.preferred-width <= root.width - Theme.icon-size - 12px;
-    private property <bool> key-only: !root.full-caption && root.compact-text != "" && root.width < 56px;
-    private property <bool> show-icon: root.has-icon && !root.key-only && root.full-caption;
+    // The text box is 8px narrower than the cell. A preferred width is the text's width
+    // rounded up to a whole pixel, and Slint elides only a line that ends a whole pixel
+    // or more beyond its box, so a caption whose preferred width exceeds the box by one
+    // pixel still draws whole ("F10 Menu" needs 74px in a 73px box at Touch density).
+    private property <bool> caption-fits: root.full-caption
+        || (root.width >= 56px && fitted-metrics.preferred-width <= root.width - 7px);
+    private property <bool> key-only: !root.caption-fits && root.compact-text != "";
+    private property <bool> show-icon: root.has-icon && root.full-caption;
     private property <length> caption-icon-width: root.show-icon ? Theme.icon-size + 4px : 0px;
     // Fit compact keys to host font metrics without increasing footer layout minima.
     // Keep normal-density text readable and leave smaller user font choices intact.
     // Whole sizes: glyphs are hinted per size, so a fractional one gives neighbouring
     // keys different stem weights.
     private property <length> compact-font-size: floor(clamp(
-        Theme.font-size * max(0px, root.width - root.caption-icon-width - 9px)
+        Theme.font-size * max(0px, root.width - 9px)
             / max(1px, compact-metrics.preferred-width),
         min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size) / 1px) * 1px;
-    private property <length> caption-font-size: floor(clamp(
-        Theme.font-size * max(0px, root.width - root.caption-icon-width - 9px)
+    // A caption that fits beside its icon keeps the full size; one without the icon
+    // shrinks to its cell, never below the readable minimum.
+    private property <length> caption-font-size: root.full-caption ? Theme.font-size : floor(clamp(
+        Theme.font-size * max(0px, root.width - 9px)
             / max(1px, caption-metrics.preferred-width),
         min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size) / 1px) * 1px;
     caption-metrics := Text { visible: false; text: root.caption; font-size: Theme.font-size; }
@@ -60,9 +71,12 @@ export component FunctionButton inherits Rectangle {
     // layout metrics, avoiding a preferred-width binding cycle.
     Rectangle {
         width: parent.width - 8px; height: parent.height; x: 4px;
+        // The caption at its reduced size. Its size depends on the cell width, so it
+        // stays inside this explicitly sized box, out of the cell's layout metrics.
+        fitted-metrics := Text { visible: false; text: root.caption; font-size: root.caption-font-size; }
         NativeActionImage {
             visible: root.show-icon;
-            native-icon: root.native-icon; fallback-icon: root.fallback-icon;
+            native-icon: root.native-icon; fallback-icon: root.fallback-icon; glyph: true;
             action-enabled: root.enabled; width: Theme.icon-size; height: Theme.icon-size;
             x: root.full-caption || root.compact-text != "" ? 0px : (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
@@ -88,8 +102,10 @@ export component FunctionButton inherits Rectangle {
             }
             reject
         }
+        // Enabled on an unassigned key too: passed on, its press would focus the
+        // window's shortcut scope and take the keyboard from the file list. Only an
+        // armed press acts.
         area := TouchArea {
-            enabled: root.enabled || root.pointer-armed || (root.pointer-snapshot && root.snapshot-action != "");
             pointer-event(event) => {
                 // A scrolling parent can deliver pointer-up before clicked.
                 // Keep the pressed action until click, outside release or cancellation.

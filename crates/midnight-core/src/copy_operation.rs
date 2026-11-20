@@ -12,12 +12,23 @@ pub enum TransferStartPolicy {
     WaitForEarlier,
 }
 
+/// Why a transfer is not making progress right now. Shown in its window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferWaitReason {
     /// An explicit opt-in dependency on earlier transfers.
     EarlierTransfers,
-    /// Actual execution-capacity or namespace waits.
+    /// Execution capacity without a more specific reason.
     Resources,
+    /// Every configured disk I/O slot is in use. Running transfers hand theirs over step
+    /// by step, so this is brief unless other work keeps the disk busy.
+    DiskCapacity,
+    /// Another transfer is using the same files or folders: only the overlapping item
+    /// waits, or, when this job would read what that one changes (or a footprint is
+    /// unknown), the job waits for it to finish.
+    SameFolders,
+    /// A file operation that needs every folder to itself (Delete, Rename, a new folder,
+    /// a saved file list or checksum file) is running or was started earlier.
+    OtherOperation,
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +189,10 @@ pub struct CopyProgress {
     /// Zero means no current copied-file attempt. Each new attempt or retry gets a
     /// monotonically increasing nonzero ID within this job; pause preserves it.
     pub verification_pass_id: u64,
+    /// How long the current copied-file attempt has been running, measured by the
+    /// backend without paused or waiting time; zero without a current attempt. A
+    /// window shows a file's own progress only once it takes a while.
+    pub current_file_active_millis: u64,
     /// Successful file publications; discovery is an independent metadata snapshot.
     pub files_completed: u64,
     pub directories_created: u64,
@@ -223,8 +238,26 @@ pub struct CopyProgress {
     pub message: String,
     /// At most 16 details. `failed` retains the complete error count.
     pub errors: Vec<FsError>,
+    /// Informational notes for the job details, never errors: for example a link
+    /// that Copy recreated as a link because it could not follow it. At most 16;
+    /// `note_count` keeps the exact number.
+    pub notes: Vec<String>,
+    pub note_count: u64,
     /// Present on terminal cancellation, partial completion or recorded issues.
     pub closure: Option<CopyClosureReceipt>,
+}
+
+/// The most notes a Copy/Move snapshot carries; `CopyProgress::note_count` is exact.
+pub const MAX_COPY_NOTES: usize = 16;
+
+impl CopyProgress {
+    /// Record one informational note, keeping the first `MAX_COPY_NOTES`.
+    pub fn add_note(&mut self, note: String) {
+        self.note_count = self.note_count.saturating_add(1);
+        if self.notes.len() < MAX_COPY_NOTES {
+            self.notes.push(note);
+        }
+    }
 }
 
 impl CopyProgress {
@@ -256,6 +289,7 @@ impl CopyProgress {
             current_file_copied: 0,
             current_file_verified: 0,
             verification_pass_id: 0,
+            current_file_active_millis: 0,
             files_completed: 0,
             directories_created: 0,
             native_entries_moved: 0,
@@ -280,6 +314,8 @@ impl CopyProgress {
             destination_directory: destination,
             message: String::new(),
             errors: vec![],
+            notes: vec![],
+            note_count: 0,
             closure: None,
         }
     }
@@ -307,6 +343,9 @@ pub enum CopyErrorStage {
     Publishing,
     Enumerating,
     CreatingDirectory,
+    /// A Move could not take the source from its folder (a native rename or a
+    /// Move-only source check) before anything was copied.
+    MovingSource,
     RemovingSource,
     Cleanup,
 }

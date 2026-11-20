@@ -9,7 +9,7 @@ Uniform 60 Hz remains unproven.
 
 ## Valid foreground baseline
 
-Repository at investigation start: `7251ec2`, `D:/experiments/dev/FM`. The preserved probe is
+Repository at investigation start: `7251ec2`, in the primary checkout. The preserved probe is
 `scroll-pacing-baseline-abdaa338.exe` in the qualified lifetime runtime, SHA-256
 `abdaa33884cc14a657ebb5024446e67beb85927fafc5c7ae3ff496eaceb2f85e`. Production viewer sources
 are unchanged between the earlier `5388a97` evidence and this investigation; the intervening
@@ -45,8 +45,8 @@ above are preserved: JSON/XML's largest gap is the final exact-raster repaint af
 has stopped, with unchanged pixel offset and a roughly 1.5e-8 normalized float adjustment.
 It is not evidence of a 73 ms moving-content stall. No secondary calculation replaces the guard.
 
-Exact paths are `<source-checkout>/ovclash/build.bat`, that directory's `AGENTS.md`,
-`D:/temp/ovclash/results/2026-09-07-mfg/manifest.json`, and
+Exact paths are `<external-project>/build.bat`, that directory's `AGENTS.md`,
+`<external-project>/results/<run>/manifest.json`, and
 `C:/Windows/System32/WwanFeatureTests.xml`. Geometry remains 1000×700 logical at scale 2.25,
 Segoe UI 13, DX12, with spatial/GPU readback disabled. Raw reports, source hashes, process
 metadata and `idle-foreground-summary.json` are under `_build/qa/d3d-scroll-20261112/`.

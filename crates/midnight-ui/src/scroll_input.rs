@@ -97,9 +97,21 @@ impl InputState {
         self.pressed.active() || self.wheel.active()
     }
 
-    /// Only replace unphased line wheel input. Pixel/gesture input keeps the
-    /// backend's native touchpad tracking and momentum unchanged.
+    #[cfg(test)]
     fn observe(&mut self, event: &WindowEvent, scale: f32, now: Duration) -> bool {
+        self.observe_source(event, scale, now, false)
+    }
+
+    /// Only replace unphased line wheel input over a panel. The window's
+    /// NativeScroll delivers touchpad pixel input and adds momentum; an unphased
+    /// touchpad line stream (X11) is delivered here without wheel easing.
+    fn observe_source(
+        &mut self,
+        event: &WindowEvent,
+        scale: f32,
+        now: Duration,
+        touchpad: bool,
+    ) -> bool {
         self.pressed.observe(event);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -118,6 +130,10 @@ impl InputState {
                 }
                 let cursor = cursor.to_logical::<f32>(f64::from(scale));
                 self.wheel_position = Some(slint::LogicalPosition::new(cursor.x, cursor.y));
+                if touchpad {
+                    // Finger motion follows the finger; Slint's line distance.
+                    return self.wheel.push_direct(x * 60.0, y * 60.0, now);
+                }
                 // Match Winit's normal line distance for text rows. Use at
                 // least one band per notch in the taller thumbnail view.
                 return self
@@ -208,6 +224,7 @@ fn observe(
     state: &Rc<RefCell<InputState>>,
     timer: &slint::Timer,
     event: &WindowEvent,
+    touchpad: bool,
 ) -> bool {
     // Winit's raw touch events have no public WindowEvent representation in the
     // pinned Slint hook. Capture before its Flickable can defer child down.
@@ -270,7 +287,7 @@ fn observe(
             }
         });
         state.target = target;
-        let replaced = state.observe(event, scale, now(window));
+        let replaced = state.observe_source(event, scale, now(window), touchpad);
         if state.target.is_none() {
             state.wheel.cancel();
         }
@@ -337,6 +354,7 @@ pub(crate) fn install(window: &MainWindow) {
         }
     });
     let mut shortcuts = crate::native_shortcuts::ShortcutState::default();
+    let mut kinetic_shown = false;
     window.window().on_winit_window_event(move |_, event| {
         let Some(window) = weak.upgrade() else {
             return EventResult::Propagate;
@@ -350,6 +368,9 @@ pub(crate) fn install(window: &MainWindow) {
                 return EventResult::PreventDefault;
             }
         }
+        // The shared kinetic tracker sees every event first; panel routing below
+        // delivers touchpad lines unchanged and momentum frames arrive as wheels.
+        let source = auxiliary_scroll.borrow_mut().track(window.window(), event);
         let embedded_modal = window.get_embedded_modal_open();
         let replaced = if embedded_modal {
             window.global::<crate::PopupFocus>().invoke_update();
@@ -361,16 +382,49 @@ pub(crate) fn install(window: &MainWindow) {
             false
         } else {
             crate::drag_bridge::observe_native(&window, event);
-            observe(&window, &state, &timer, event)
+            observe(
+                &window,
+                &state,
+                &timer,
+                event,
+                source == midnight_ui_input::WheelSource::Touchpad,
+            )
         };
-        // Panel identity/routing gets first refusal. Only the remaining native
-        // scrollbar and command-strip paths need auxiliary interpolation.
-        let auxiliary_replaced = if replaced {
-            auxiliary_scroll.borrow_mut().cancel();
-            false
-        } else {
-            let command = (window.get_command_path_content_width()
-                > window.get_command_path_width())
+        let auxiliary_replaced = route_auxiliary(
+            &window,
+            &state,
+            &auxiliary_scroll,
+            event,
+            replaced,
+            &mut kinetic_shown,
+        );
+        // This callback runs only for a real Winit adapter. Software-window
+        // tests retain the Slint logical-key fallback.
+        window.set_native_shortcuts_authoritative(true);
+        if shortcuts.handle(&window, event) || replaced || auxiliary_replaced {
+            return EventResult::PreventDefault;
+        }
+        EventResult::Propagate
+    });
+}
+
+/// After panel routing: auxiliary scrollbar/command-strip wheel easing and the
+/// window's touchpad momentum. Returns true when the auxiliary path replaced input.
+fn route_auxiliary(
+    window: &MainWindow,
+    state: &RefCell<InputState>,
+    auxiliary_scroll: &RefCell<NativeScroll>,
+    event: &WindowEvent,
+    replaced: bool,
+    kinetic_shown: &mut bool,
+) -> bool {
+    // Panel identity/routing gets first refusal. Only the remaining native
+    // scrollbar and command-strip paths need auxiliary interpolation.
+    let replaced_here = if replaced {
+        auxiliary_scroll.borrow_mut().cancel_wheel();
+        false
+    } else {
+        let command = (window.get_command_path_content_width() > window.get_command_path_width())
             .then(|| CommandStrip {
                 bounds: LogicalRect::new(
                     LogicalPoint::new(
@@ -384,18 +438,17 @@ pub(crate) fn install(window: &MainWindow) {
                 ),
                 path: window.get_command_directory(),
             });
-            auxiliary_scroll
-                .borrow_mut()
-                .observe(window.window(), event, command)
-        };
-        // This callback runs only for a real Winit adapter. Software-window
-        // tests retain the Slint logical-key fallback.
-        window.set_native_shortcuts_authoritative(true);
-        if shortcuts.handle(&window, event) || replaced || auxiliary_replaced {
-            return EventResult::PreventDefault;
-        }
-        EventResult::Propagate
-    });
+        auxiliary_scroll
+            .borrow_mut()
+            .route(window.window(), event, command)
+    };
+    // Momentum is scroll interaction too: rows settle only once it stops.
+    let kinetic = auxiliary_scroll.borrow().kinetic_active();
+    if kinetic || *kinetic_shown {
+        window.set_scroll_interaction_active(kinetic || state.borrow().active());
+    }
+    *kinetic_shown = kinetic;
+    replaced_here
 }
 
 fn is_dialog_input(event: &WindowEvent) -> bool {

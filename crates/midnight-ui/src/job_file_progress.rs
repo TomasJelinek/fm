@@ -3,6 +3,10 @@
 use midnight_core::{CopyOperationPhase, CopyProgress, NumberLocale};
 use slint::SharedString;
 
+/// A file shows its own bar beside its name once it has been copying this long, so
+/// quick files never flash one.
+const SLOW_FILE_MILLIS: u64 = 2000;
+
 #[derive(Default)]
 pub(super) struct Meter {
     pub determinate: bool,
@@ -10,6 +14,9 @@ pub(super) struct Meter {
     pub label: SharedString,
     pub title: SharedString,
     pub verifying: bool,
+    /// "45%", or "Verifying 30%" during readback: set only for a slow file, whose
+    /// window then shows its bar beside its name.
+    pub percent: SharedString,
 }
 
 pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
@@ -63,6 +70,9 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
     } else {
         "Current file written"
     };
+    let slow = !p.state.is_terminal() && p.current_file_active_millis >= SLOW_FILE_MILLIS;
+    // Whole percent, rounded down: a file never shows 100% before its last byte.
+    let percent = (u128::from(done.min(total)) * 100 / u128::from(total)) as u64;
     Meter {
         determinate: true,
         verifying,
@@ -74,6 +84,11 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
             locale.format_u64(total)
         )
         .into(),
+        percent: match (slow, verifying) {
+            (false, _) => SharedString::default(),
+            (true, false) => format!("{percent}%").into(),
+            (true, true) => format!("Verifying {percent}%").into(),
+        },
     }
 }
 
@@ -203,6 +218,51 @@ mod tests {
         let retried = copy(&p, &locale);
         assert_eq!(retried.fraction, 0.75);
         assert_eq!(retried.label, "Verifying: 750 / 1000 bytes");
+    }
+
+    #[test]
+    fn only_a_file_copying_for_seconds_gets_its_own_percentage() {
+        let locale = NumberLocale::default();
+        let mut p = file(Some(1000));
+        p.current_file_copied = 456;
+        p.current_file_active_millis = 1999;
+        assert!(
+            copy(&p, &locale).percent.is_empty(),
+            "quick files show no bar"
+        );
+        p.current_file_active_millis = 2000;
+        let slow = copy(&p, &locale);
+        assert_eq!(slow.percent, "45%");
+        assert_eq!(slow.fraction, 0.456);
+        p.phase = CopyOperationPhase::Verifying;
+        p.current_file_copied = 1000;
+        p.current_file_verified = 300;
+        assert_eq!(copy(&p, &locale).percent, "Verifying 30%");
+        p.paused = true;
+        assert_eq!(
+            copy(&p, &locale).percent,
+            "Verifying 30%",
+            "a pause keeps it"
+        );
+        p.paused = false;
+        // The next file starts its own time at zero: no bar until it is slow too.
+        p.phase = CopyOperationPhase::Copying;
+        p.verification_pass_id = 2;
+        p.current_file_active_millis = 0;
+        p.current_file_copied = 999;
+        assert!(copy(&p, &locale).percent.is_empty());
+        p.current_file_active_millis = 60_000;
+        assert_eq!(copy(&p, &locale).percent, "99%", "never 100% too early");
+        for size in [None, Some(0)] {
+            p.current_file_size = size;
+            assert!(copy(&p, &locale).percent.is_empty());
+        }
+        p.current_file_size = Some(1000);
+        p.state = CopyOperationState::Failed;
+        assert!(
+            copy(&p, &locale).percent.is_empty(),
+            "a finished job has no bar"
+        );
     }
 
     #[test]

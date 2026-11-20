@@ -73,4 +73,37 @@ fn session_reads_once_and_serves_second_page_then_rejects_out_of_range() {
         api::read_message(&mut output).unwrap(),
         api::Message::Failure
     );
+    assert_eq!(
+        api::read_message(&mut output).unwrap(),
+        api::Message::FailureReason(
+            api::FailureReason::new("The page is outside the document").unwrap()
+        )
+    );
+    assert_eq!(output.position(), output.get_ref().len() as u64);
+}
+
+#[test]
+fn a_rejected_document_reports_the_parser_reason_after_failure() {
+    let mut bytes = Vec::new();
+    api::write_message(&mut bytes, &api::Message::Open { source_length: 4 }).unwrap();
+    let mut output = Vec::new();
+    session(&mut Cursor::new(bytes), &mut output, |_| {
+        Err::<Pages, _>(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Invalid PDF or password required",
+        ))
+    })
+    .unwrap();
+    let mut output = Cursor::new(output);
+    assert_eq!(
+        api::read_message(&mut output).unwrap(),
+        api::Message::Failure
+    );
+    assert_eq!(
+        api::read_message(&mut output).unwrap(),
+        api::Message::FailureReason(
+            api::FailureReason::new("Invalid PDF or password required").unwrap()
+        )
+    );
+    assert!(api::read_message(&mut output).is_err());
 }

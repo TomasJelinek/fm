@@ -172,6 +172,7 @@ fn an_undecodable_block_only_makes_its_own_members_unreadable() {
     let mut archive = Archive::empty(
         Rc::new(storage::MemoryStorage::default()),
         Limits::default(),
+        source.failures(),
     );
     archive.index_sevenzip(source, metadata).unwrap();
     let nodes = archive.list(1, 0).unwrap();

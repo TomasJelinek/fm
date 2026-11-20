@@ -5,6 +5,7 @@ fn counts(transfer: u64, verification: u64, items: u64) -> Counters {
         transfer,
         verification,
         items,
+        entries: 0,
     }
 }
 
@@ -297,4 +298,144 @@ fn compaction_preserves_actual_irregular_interval_boundaries() {
     assert_eq!(latest.samples.last().unwrap().start_millis, 60_750);
     assert_eq!(latest.samples.last().unwrap().elapsed_millis, 61_000);
     assert_eq!(latest.transfer_per_second, 1000.0);
+}
+
+const MIB: u64 = 1 << 20;
+
+fn close(actual: f64, expected: f64) -> bool {
+    (actual - expected).abs() <= expected.abs() * 1e-9
+}
+
+#[test]
+fn averages_appear_after_a_second_for_small_files_and_for_one_big_file() {
+    // Many small files: 3 of 4 KiB each per quarter second.
+    let mut small = Sampler::default();
+    let mut counters = counts(0, 0, 0);
+    small.observe(Duration::ZERO, counters, true);
+    let mut snapshot = Arc::default();
+    for tick in 1..=4 {
+        counters.transfer += 3 * 4096;
+        counters.verification += 3 * 4096;
+        counters.entries += 3;
+        snapshot = small.observe(Duration::from_millis(tick * 250), counters, true);
+        if tick < 4 {
+            assert_eq!(snapshot.smoothed_entries_per_second, 0.0, "tick {tick}");
+            assert_eq!(snapshot.smoothed_transfer_per_second, 0.0);
+        }
+    }
+    assert!(close(snapshot.smoothed_entries_per_second, 12.0));
+    assert!(close(snapshot.smoothed_transfer_per_second, 49_152.0));
+    assert!(close(snapshot.smoothed_verification_per_second, 49_152.0));
+    // One big file: bytes only, no entry completes.
+    let mut big = Sampler::default();
+    let mut counters = counts(0, 0, 0);
+    big.observe(Duration::ZERO, counters, true);
+    for tick in 1..=4 {
+        counters.transfer += 25 * MIB;
+        snapshot = big.observe(Duration::from_millis(tick * 250), counters, true);
+    }
+    assert!(close(
+        snapshot.smoothed_transfer_per_second,
+        100.0 * MIB as f64
+    ));
+    assert_eq!(snapshot.smoothed_entries_per_second, 0.0);
+}
+
+#[test]
+fn averages_weigh_intervals_by_time_and_follow_a_lasting_change_within_seconds() {
+    let mut sampler = Sampler::default();
+    let mut counters = counts(0, 0, 0);
+    sampler.observe(Duration::ZERO, counters, true);
+    let mut at = 0;
+    let mut tick = |sampler: &mut Sampler, counters: &mut Counters, bytes: u64| {
+        at += 250;
+        counters.transfer += bytes;
+        sampler.observe(Duration::from_millis(at), *counters, true)
+    };
+    // 40 s at 4 MiB/s, then 1 MiB/s: the average follows within seconds, not frames.
+    for _ in 0..160 {
+        tick(&mut sampler, &mut counters, MIB);
+    }
+    let mut snapshot = Arc::default();
+    for _ in 0..8 {
+        snapshot = tick(&mut sampler, &mut counters, MIB / 4);
+    }
+    let after_two_seconds = snapshot.smoothed_transfer_per_second / MIB as f64;
+    assert!(
+        (3.0..3.5).contains(&after_two_seconds),
+        "{after_two_seconds}"
+    );
+    for _ in 0..120 {
+        snapshot = tick(&mut sampler, &mut counters, MIB / 4);
+    }
+    let after_thirty_seconds = snapshot.smoothed_transfer_per_second / MIB as f64;
+    assert!(
+        (1.0..1.1).contains(&after_thirty_seconds),
+        "{after_thirty_seconds}"
+    );
+    assert_eq!(snapshot.transfer_per_second, MIB as f64);
+}
+
+#[test]
+fn a_pause_keeps_the_averages_and_resuming_continues_from_them() {
+    let mut sampler = Sampler::default();
+    let mut counters = counts(0, 0, 0);
+    sampler.observe(Duration::ZERO, counters, true);
+    let mut running = Arc::default();
+    for tick in 1..=8 {
+        counters.transfer += 1000;
+        counters.entries += 1;
+        running = sampler.observe(Duration::from_millis(tick * 250), counters, true);
+    }
+    assert!(close(running.smoothed_transfer_per_second, 4000.0));
+    assert!(close(running.smoothed_entries_per_second, 4.0));
+    let paused = sampler.observe(Duration::from_millis(2100), counters, false);
+    assert_eq!(paused.transfer_per_second, 0.0);
+    assert_eq!(
+        paused.smoothed_transfer_per_second,
+        running.smoothed_transfer_per_second
+    );
+    assert_eq!(
+        paused.smoothed_entries_per_second,
+        running.smoothed_entries_per_second
+    );
+    let long_pause = sampler.observe(Duration::from_secs(600), counters, false);
+    assert_eq!(
+        long_pause.smoothed_entries_per_second, running.smoothed_entries_per_second,
+        "idle time is never averaged"
+    );
+    sampler.observe(Duration::from_secs(600), counters, true);
+    counters.transfer += 1000;
+    counters.entries += 1;
+    let resumed = sampler.observe(Duration::from_millis(600_250), counters, true);
+    assert!(close(resumed.smoothed_transfer_per_second, 4000.0));
+    assert!(close(resumed.smoothed_entries_per_second, 4.0));
+    // Cancellation and other stops keep them too.
+    let mut stopped = resumed.clone();
+    stop(&mut stopped);
+    assert_eq!(stopped.transfer_per_second, 0.0);
+    assert_eq!(
+        stopped.smoothed_transfer_per_second,
+        resumed.smoothed_transfer_per_second
+    );
+}
+
+#[test]
+fn entries_count_what_the_progress_window_counts() {
+    let mut progress = CopyProgress::queued(
+        midnight_core::OperationId(1),
+        Default::default(),
+        1,
+        midnight_core::TransferIntent::Copy,
+    );
+    progress.files_completed = 5;
+    progress.completed_directories = 2;
+    progress.source_files_removed = 3;
+    progress.completed_roots = 1;
+    assert_eq!(copy_counters(&progress).entries, 7);
+    progress.intent = midnight_core::TransferIntent::Move;
+    assert_eq!(copy_counters(&progress).entries, 5, "moved once removed");
+    progress.discovery.scope = midnight_core::DiscoveryScope::SelectedRoots;
+    assert_eq!(copy_counters(&progress).entries, 1, "selected items only");
+    assert_eq!(copy_counters(&progress).items, 0, "the chart's renames");
 }

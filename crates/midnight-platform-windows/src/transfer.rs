@@ -145,7 +145,10 @@ impl TransferService for crate::WindowsFileSystem {
             CopyLinkPolicy::FollowDirectoryContents | CopyLinkPolicy::EmptyDirectories => {
                 move_source::prepare_with_links(path, links, revisions, cancel)
             }
-            CopyLinkPolicy::Preserve => Err(unsupported(
+            // Not compiled on Linux hosts. Windows keeps its directory-link
+            // policies: link leaves need privileged CreateSymbolicLinkW staging
+            // and separate junction rules, which are not implemented.
+            CopyLinkPolicy::Preserve | CopyLinkPolicy::FollowLinks => Err(unsupported(
                 path,
                 "Move with preserved links is unsupported",
             )),
@@ -164,7 +167,7 @@ impl TransferService for crate::WindowsFileSystem {
         links: CopyLinkPolicy,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
-        if links == CopyLinkPolicy::Preserve {
+        if links.recreates_links() {
             return Err(FsError::from_io(
                 "transfer capability",
                 path,

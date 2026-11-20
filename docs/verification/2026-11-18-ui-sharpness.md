@@ -133,8 +133,10 @@ one for a run, to compare them or to rule the fitting out as a cause:
 - **fitted**: also fits outlines horizontally, through the hinting engine swash
   itself uses: the font's own program where that puts stems on whole pixels (DejaVu
   Sans), the automatic hinter elsewhere. Glyphs inside a word follow each other at
-  their fitted, whole-pixel advances and the pen returns to the layout after every
-  blank.
+  their fitted, whole-pixel advances, move by a pixel where they would stray from
+  the layout or reach into the next glyph's place, and the pen returns to the
+  layout after every blank, which keeps at least its layout width less half a
+  pixel.
 
 Measured on snapshots of the main window on this machine (DejaVu Sans 12 px, light
 text on dark rows; "ink" is a pixel with at least 10 % coverage):
@@ -153,11 +155,39 @@ libraries measured the stem of `l` and `i` at two columns for `subpixel` and for
 on unrounded linear positions open visible gaps ("Nam e"), which the word-wise pen
 removes.
 
+**Blanks between words (20 November 2026).** The word-wise pen first only had to stay
+within a pixel of the layout either way. Fitted advances at small sizes are often wider
+than linear ones, so words grew into the blank after them, and the About dialog's
+license details showed 11 px text such as "copyright notice that is" with 1 to 2 px
+spaces. A glyph now may not lead its layout by more than half a pixel nor end more than
+half a pixel past where layout starts the next glyph, and a word after a blank keeps that
+blank at least its layout width less half a pixel ([vendor notes](../../vendor/README.md)).
+Measured with the vendored rasterizer on nine About dialog lines, each laid out from ten
+tenth-pixel starts (620 blanks per face and size; "short" is the layout width minus the
+drawn width):
+
+| Face and size | Worst blank, before | Worst blank, after | Blanks over 0.5 px short, before → after |
+| --- | ---: | ---: | ---: |
+| DejaVu Sans 11 px | 2.50 px short | 0.50 px short | 86 → 0 |
+| DejaVu Sans 12 px | 1.81 px short | 0.19 px wide | 406 → 0 |
+| DejaVu Sans 13 / 14 px | 1.13 / 1.45 px short | 0.13 / 0.45 px short | 27 → 0 |
+| DejaVu Sans Bold 20 / 26 px | 0.96 / 1.05 px short | 0.04 px wide / 0.05 px short | 479 → 0 |
+| Noto Sans 11 / 12 / 13 px | 1.86 / 2.12 / 2.38 px short | 0.14 px wide / 0.12 / 0.38 px short | 710 → 0 |
+
+The narrowest blank between the ink of two words grew from 2 to 3 px (DejaVu Sans
+11 px), from 2 to 4 px (12 px) and from 0 to 1 px (Noto Sans 12 and 13 px). Letters move
+closer instead: neighboring glyph pairs whose bitmaps overlap went from 962 to 1,085 of
+27,450, most of the added ones in Noto Sans at 11 and 12 px. This is a rasterizer
+measurement with linear layout and no kerning, not a snapshot of the running
+application; an ignored regression test in the vendored crate repeats it for DejaVu
+Sans.
+
 Known limits of `fitted`, accepted with that decision and not yet exercised in the
 running application beyond the snapshots:
 
-- Layout, carets, selections and elision still use linear advances, so ink can be up
-  to one pixel from where layout placed it. The recolored quick-search prefix in file
+- Layout, carets, selections and elision still use linear advances, so ink can be a
+  pixel, and at the start of a word after a blank about a pixel and a half, from where
+  layout placed it. The recolored quick-search prefix in file
   names is clipped at layout positions and can cut a pixel column of the next letter.
 - A word that crosses the left edge of a clip can move by a pixel while its text
   scrolls horizontally, as in a scrolled line edit.

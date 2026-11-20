@@ -122,11 +122,12 @@ fn sort_and_hot_path_actions_are_available_without_detailed_headers() {
 #[test]
 fn pointer_action_does_not_leave_a_checked_looking_outline_but_keyboard_focus_is_visible() {
     let mut test = ui::TestUi::new();
-    let button = ui::root_item(
-        &test.window,
-        "About Midnight Explorer",
-        AccessibleRole::Button,
-    );
+    // A narrow window scrolls the toolbar. Its scroll buttons keep the focus a click gives
+    // them (other toolbar actions return it to the file list or open a dialog).
+    test.resize(360, 600);
+    let label = "Scroll toolbar right";
+    let button = ui::root_item(&test.window, label, AccessibleRole::Button);
+    assert!(button.is_visible(), "the toolbar must overflow at 360px");
     let rect = button.geometry();
     let origin = button.map_to_native_window(rect.origin);
     let points = [
@@ -143,22 +144,40 @@ fn pointer_action_does_not_leave_a_checked_looking_outline_but_keyboard_focus_is
     ];
     test.draw();
     let idle = points.map(|(x, y)| test.pixel(x, y));
-    ui::click_root(
-        &test.window,
-        "About Midnight Explorer",
-        AccessibleRole::Button,
-    );
+    ui::click_root(&test.window, label, AccessibleRole::Button);
     test.window
         .window()
         .dispatch_event(slint::platform::WindowEvent::PointerExited);
     test.draw();
-    assert!(test.window.get_about_open());
-    test.window.set_about_open(false);
-    test.draw();
-    assert_eq!(points.map(|(x, y)| test.pixel(x, y)), idle);
+    assert!(
+        ui::root_item(&test.window, "Scroll toolbar left", AccessibleRole::Button).is_visible()
+    );
+    assert_eq!(
+        points.map(|(x, y)| test.pixel(x, y)),
+        idle,
+        "a pointer action leaves no checked-looking outline"
+    );
     render::snapshot(&test, "toolbar-after-pointer-action");
-    // Closing About returns focus to the file list, so Space no longer reopens it.
-    ui::key(&test.window, slint::platform::Key::Space);
+    // A key press while the button keeps its focus is keyboard navigation: the focus
+    // frame appears, in the theme's active frame color, on every edge.
+    ui::key(&test.window, slint::platform::Key::Shift);
     test.draw();
-    assert!(!test.window.get_about_open());
+    let focused = points.map(|(x, y)| test.pixel(x, y));
+    let frame = test
+        .window
+        .global::<midnight_ui::Theme>()
+        .get_active_frame();
+    let distance = |pixel: slint::Rgb8Pixel| {
+        u32::from(pixel.r.abs_diff(frame.red()))
+            + u32::from(pixel.g.abs_diff(frame.green()))
+            + u32::from(pixel.b.abs_diff(frame.blue()))
+    };
+    for (pixel, idle) in focused.iter().zip(idle) {
+        assert!(
+            distance(*pixel) < distance(idle),
+            "keyboard focus must be visible on every edge, in the active frame color: \
+             {pixel:?} (idle {idle:?}, frame {frame:?})"
+        );
+    }
+    render::snapshot(&test, "toolbar-keyboard-focus");
 }

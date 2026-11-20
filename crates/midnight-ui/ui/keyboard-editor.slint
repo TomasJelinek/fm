@@ -19,6 +19,8 @@ export global KeyboardEditorView {
     in-out property <string> used-by;
     in-out property <string> issue;
     in-out property <bool> can-assign;
+    // Restore command would change the command's shortcuts or discard a captured one.
+    in-out property <bool> can-restore;
     in-out property <string> revision;
     in-out property <string> command-revision;
     in-out property <bool> capturing;
@@ -146,7 +148,8 @@ export component KeyboardEditor inherits VerticalLayout {
             forward-focus: capture;
             Text {
                 x: 8px; width: parent.width - 16px;
-                text: KeyboardEditorView.candidate == "" ? "Click here, then press a shortcut" : KeyboardEditorView.candidate;
+                // Short enough to stay whole beside Clear and Assign at Touch density.
+                text: KeyboardEditorView.candidate == "" ? "Click, then press keys" : KeyboardEditorView.candidate;
                 color: KeyboardEditorView.candidate == "" ? Theme.secondary-text : Theme.text;
                 font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
             }
@@ -169,7 +172,8 @@ export component KeyboardEditor inherits VerticalLayout {
             }
         }
         HintedActionButton { row: root.narrow ? 4 : 2; col: root.narrow ? 0 : 1;
-            text: "Clear"; min-height: root.field-height; hint: "Clear the captured shortcut without changing saved assignments."; clicked => { KeyboardEditorView.clear(); } }
+            text: "Clear"; min-height: root.field-height; enabled: KeyboardEditorView.candidate != "";
+            hint: "Clear the captured shortcut without changing saved assignments."; clicked => { KeyboardEditorView.clear(); } }
         HintedActionButton {
             row: root.narrow ? 4 : 2; col: root.narrow ? 1 : 2;
             text: "Assign"; min-height: root.field-height; horizontal-stretch: 1; enabled: KeyboardEditorView.can-assign;
@@ -183,7 +187,8 @@ export component KeyboardEditor inherits VerticalLayout {
     if KeyboardEditorView.issue != "" : ErrorNotice { text: KeyboardEditorView.issue; maximum-notice-height: max(72px, Theme.font-size * 3); }
     GridLayout {
         spacing: 8px;
-        HintedActionButton { row: 0; col: 0; text: "Restore command"; hint: "Restore only this command's default shortcuts."; clicked => { KeyboardEditorView.restore(KeyboardEditorView.selected-id); } }
+        HintedActionButton { row: 0; col: 0; text: "Restore command"; enabled: KeyboardEditorView.can-restore;
+            hint: "Restore only this command's default shortcuts."; clicked => { KeyboardEditorView.restore(KeyboardEditorView.selected-id); } }
         HintedActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
             text: root.narrow ? "Restore defaults" : "Restore all defaults"; accessible-label: "Restore all defaults";
             hint: "Review before removing all custom shortcut assignments."; clicked => { root.confirming-reset = true; } }

@@ -1,16 +1,16 @@
 //! Copy/Move adapter: backend captures stay in Presenter, edits stay in the form.
-use crate::{MainWindow, OperationPresentation, Presenter};
-use midnight_core::{Command, CopyLinkPolicy, TransferMetadataPolicy, TransferStartPolicy};
+use crate::{MainWindow, OperationPresentation, Presenter, transfer_link_option};
+use midnight_core::{Command, TransferIntent, TransferMetadataPolicy, TransferStartPolicy};
 
 pub(super) fn initialize(
     window: &OperationPresentation<'_>,
     main: &MainWindow,
     directory_links_available: bool,
 ) {
-    let title = if main.get_copy_draft_move() {
-        "Move"
+    let (title, intent) = if main.get_copy_draft_move() {
+        ("Move", TransferIntent::Move)
     } else {
-        "Copy"
+        ("Copy", TransferIntent::Copy)
     };
     window.set_title_text(title.into());
     window.set_confirm_text(title.into());
@@ -18,8 +18,12 @@ pub(super) fn initialize(
     window.set_policy(main.get_copy_draft_policy());
     window.set_wait_visible(true);
     window.set_wait_checked(false);
-    window.set_follow_directory_links_visible(directory_links_available);
+    window.set_follow_directory_links_visible(
+        directory_links_available && transfer_link_option::visible(intent),
+    );
     window.set_follow_directory_links_checked(true);
+    window.set_follow_links_label(transfer_link_option::LABEL.into());
+    window.set_follow_links_hint(transfer_link_option::HINT.into());
     window.set_has_name(true);
     window.set_initial_name(main.get_copy_draft_destination());
     window.set_selection_end(main.get_copy_draft_selection_end());
@@ -42,6 +46,12 @@ pub(super) fn confirm(
     send: &dyn Fn(Command) -> bool,
 ) -> String {
     let generation = p.desktop.notice_generation;
+    let intent = p
+        .copies
+        .draft
+        .as_ref()
+        .map_or(TransferIntent::Copy, |draft| draft.intent);
+    let links = transfer_link_option::policy(intent, follow_directory_links);
     p.confirm_copy_dialog_with_directory_links(
         token,
         destination,
@@ -55,13 +65,7 @@ pub(super) fn confirm(
         } else {
             TransferStartPolicy::Immediate
         },
-        follow_directory_links.map(|follow| {
-            if follow {
-                CopyLinkPolicy::FollowDirectoryContents
-            } else {
-                CopyLinkPolicy::EmptyDirectories
-            }
-        }),
+        links,
         send,
     );
     // This synchronous call is the only writer under the Presenter borrow.
@@ -77,6 +81,11 @@ pub(super) fn confirm(
     } else {
         None
     };
+    let checking = p
+        .copies
+        .destination_check
+        .as_ref()
+        .is_some_and(|check| check.token == token);
     if let Some(draft) = p
         .copies
         .draft
@@ -86,7 +95,11 @@ pub(super) fn confirm(
         if let Some(message) = notice {
             draft.error = message;
         }
-        if draft.error.is_empty() {
+        // The backend is checking the typed folder: its answer admits the transfer
+        // or shows the dialog's refusal.
+        if draft.error.is_empty() && checking {
+            String::new()
+        } else if draft.error.is_empty() {
             "The transfer was not admitted. Try again.".into()
         } else {
             draft.error.clone()

@@ -8,16 +8,19 @@ use midnight_core::{
 };
 use midnight_plugin_host::{ContentSource, Error};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map},
     fmt, io,
     sync::{Arc, Mutex},
 };
 
-const MAX_NODES: usize = 100_000;
-const MAX_NAMES_BYTES: usize = 8 * 1024 * 1024;
+/// Raw and caption bytes along one address (its components and trail), not of a
+/// listing: neither how many members a folder lists nor their names are limited.
+const MAX_ADDRESS_NAMES_BYTES: usize = 8 * 1024 * 1024;
 const MAX_READ_BYTES: u32 = 256 * 1024;
 const MAX_COMPONENTS: usize = 256;
 const MAX_LOCATOR_BYTES: usize = 64 * 1024;
+/// Rows validated between two cancellation checks of a listing.
+const CANCEL_STRIDE: usize = 4096;
 
 #[derive(Clone)]
 struct Record {
@@ -28,7 +31,6 @@ struct Record {
 
 struct Records {
     nodes: HashMap<u64, Record>,
-    names_bytes: usize,
 }
 
 struct CapturedArchive {
@@ -79,8 +81,8 @@ pub(crate) fn captured_archive_root(
             metadata: entry.metadata.clone(),
         });
     }
-    captured.validate_rows(location.directory, &nodes)?;
-    captured.cache(&nodes, true)?;
+    captured.validate_rows(location.directory, &nodes, cancel)?;
+    captured.install(nodes)?;
     check(captured.mount.as_ref(), cancel)?;
     super::root_seed::wrap(
         OpenedLocation {
@@ -128,7 +130,7 @@ fn capture_location(
         .address
         .validate()
         .map_err(|_| ProviderError::InvalidResponse("invalid captured archive address"))?;
-    let names_bytes = location.trail.iter().try_fold(
+    location.trail.iter().try_fold(
         location
             .address
             .components
@@ -137,7 +139,7 @@ fn capture_location(
             .sum::<usize>(),
         |total, (_, caption)| {
             let total = total.saturating_add(caption.len());
-            if caption.len() > MAX_LOCATOR_BYTES || total > MAX_NAMES_BYTES {
+            if caption.len() > MAX_LOCATOR_BYTES || total > MAX_ADDRESS_NAMES_BYTES {
                 Err(ProviderError::ResourceLimited)
             } else {
                 Ok(total)
@@ -176,7 +178,7 @@ fn capture_location(
         CapturedArchive {
             mount,
             captured,
-            records: Mutex::new(Records { nodes, names_bytes }),
+            records: Mutex::new(Records { nodes }),
         },
     ))
 }
@@ -310,7 +312,7 @@ impl CapturedArchive {
             names_bytes = names_bytes
                 .saturating_add(raw.len())
                 .saturating_add(caption.len());
-            if raw_bytes > MAX_LOCATOR_BYTES || names_bytes > MAX_NAMES_BYTES {
+            if raw_bytes > MAX_LOCATOR_BYTES || names_bytes > MAX_ADDRESS_NAMES_BYTES {
                 return Err(ProviderError::ResourceLimited);
             }
             chain.push((current, raw, caption));
@@ -369,14 +371,21 @@ impl CapturedArchive {
         Ok((id, record))
     }
 
-    /// Validate a whole listing before publishing callbacks or updating the cache.
-    fn validate_rows(&self, directory: u64, rows: &[ArchiveNode]) -> Result<(), ProviderError> {
-        if rows.len() > MAX_NODES {
-            return Err(ProviderError::ResourceLimited);
-        }
-        let mut seen = HashSet::new();
-        let mut bytes = 0usize;
-        for node in rows {
+    /// Validate a whole listing before publishing callbacks or updating the cache. A
+    /// folder may list any number of members with names of any total length; each name
+    /// stays within the archive protocol's 64 KiB. Cancellation is checked every few
+    /// thousand rows, so a listing of millions of members stops promptly.
+    fn validate_rows(
+        &self,
+        directory: u64,
+        rows: &[ArchiveNode],
+        cancel: &Cancellation,
+    ) -> Result<(), ProviderError> {
+        let mut seen = HashSet::with_capacity(rows.len());
+        for (index, node) in rows.iter().enumerate() {
+            if index.is_multiple_of(CANCEL_STRIDE) {
+                super::registry::check_cancel(cancel)?;
+            }
             if node.id.mount != self.mount.id()
                 || node.id.entry <= 1
                 || node.id.entry == directory
@@ -387,12 +396,8 @@ impl CapturedArchive {
                     "invalid archive listing identity",
                 ));
             }
-            bytes = bytes
-                .saturating_add(node.raw_name.len())
-                .saturating_add(node.display_name.len());
-            if bytes > MAX_NAMES_BYTES
-                || node.raw_name.len() > 64 * 1024
-                || node.display_name.len() > 64 * 1024
+            if node.raw_name.len() > MAX_LOCATOR_BYTES
+                || node.display_name.len() > MAX_LOCATOR_BYTES
             {
                 return Err(ProviderError::ResourceLimited);
             }
@@ -400,65 +405,67 @@ impl CapturedArchive {
         Ok(())
     }
 
-    /// Both validation and cache installation are transactional under this short lock.
-    fn cache(&self, rows: &[ArchiveNode], install: bool) -> Result<(), ProviderError> {
+    /// Whether `rows` contradict members this capture already holds.
+    fn check_cached(&self, records: &Records, rows: &[ArchiveNode]) -> Result<(), ProviderError> {
+        for node in rows {
+            let Some(old) = records.nodes.get(&node.id.entry) else {
+                continue;
+            };
+            if old.parent != Some(node.parent)
+                || old.kind != node.kind
+                || (old.node.is_none()
+                    && self.base_index(node.id.entry).is_some_and(|index| {
+                        index == 0
+                            || self.captured.address.components[index - 1].as_slice()
+                                != node.raw_name.as_ref()
+                    }))
+                || old.node.as_ref().is_some_and(|old| {
+                    old.raw_name != node.raw_name
+                        || old.size != node.size
+                        || old.readable != node.readable
+                })
+            {
+                return Err(ProviderError::InvalidResponse(
+                    "archive member identity changed",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate a listing against the cache under this short lock, without installing it.
+    fn cache(&self, rows: &[ArchiveNode]) -> Result<(), ProviderError> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|_| super::registry::poisoned())?;
+        self.check_cached(&records, rows)
+    }
+
+    /// Validate and install a listing in one transaction under this short lock. The
+    /// rows move into the cache: a member costs one retained node, not another copy.
+    fn install(&self, rows: Vec<ArchiveNode>) -> Result<(), ProviderError> {
         let mut records = self
             .records
             .lock()
             .map_err(|_| super::registry::poisoned())?;
-        let mut additions = 0usize;
-        let mut bytes = records.names_bytes;
+        self.check_cached(&records, &rows)?;
         for node in rows {
-            if let Some(old) = records.nodes.get(&node.id.entry) {
-                if old.parent != Some(node.parent)
-                    || old.kind != node.kind
-                    || (old.node.is_none()
-                        && self.base_index(node.id.entry).is_some_and(|index| {
-                            index == 0
-                                || self.captured.address.components[index - 1].as_slice()
-                                    != node.raw_name.as_ref()
-                        }))
-                    || old.node.as_ref().is_some_and(|old| {
-                        old.raw_name != node.raw_name
-                            || old.size != node.size
-                            || old.readable != node.readable
-                    })
-                {
-                    return Err(ProviderError::InvalidResponse(
-                        "archive member identity changed",
-                    ));
+            match records.nodes.entry(node.id.entry) {
+                // Captured immutable members keep their original metadata.
+                hash_map::Entry::Occupied(mut record) => {
+                    if record.get().node.is_none() {
+                        record.get_mut().node = Some(node);
+                    }
                 }
-                if old.node.is_some() {
-                    continue;
-                }
-            } else {
-                additions += 1;
-            }
-            bytes = bytes
-                .saturating_add(node.raw_name.len())
-                .saturating_add(node.display_name.len());
-        }
-        if records.nodes.len().saturating_add(additions) > MAX_NODES || bytes > MAX_NAMES_BYTES {
-            return Err(ProviderError::ResourceLimited);
-        }
-        if install {
-            for node in rows {
-                records
-                    .nodes
-                    .entry(node.id.entry)
-                    .and_modify(|record| {
-                        // Captured immutable members keep their original metadata/byte accounting.
-                        if record.node.is_none() {
-                            record.node = Some(node.clone());
-                        }
-                    })
-                    .or_insert_with(|| Record {
+                hash_map::Entry::Vacant(record) => {
+                    record.insert(Record {
                         parent: Some(node.parent),
                         kind: node.kind,
-                        node: Some(node.clone()),
+                        node: Some(node),
                     });
+                }
             }
-            records.names_bytes = bytes;
         }
         Ok(())
     }
@@ -518,8 +525,8 @@ impl MountedFilesystem for CapturedArchive {
             .list(id, cancel)
             .map_err(|error| map_error(error, cancel))?;
         check(self.mount.as_ref(), cancel)?;
-        self.validate_rows(id, &rows)?;
-        self.cache(&rows, false)?;
+        self.validate_rows(id, &rows, cancel)?;
+        self.cache(&rows)?;
         for node in &rows {
             super::registry::check_cancel(cancel)?;
             if !emit(ProviderEntry {
@@ -536,7 +543,7 @@ impl MountedFilesystem for CapturedArchive {
             }
         }
         check(self.mount.as_ref(), cancel)?;
-        self.cache(&rows, true)
+        self.install(rows)
     }
 
     fn parent(

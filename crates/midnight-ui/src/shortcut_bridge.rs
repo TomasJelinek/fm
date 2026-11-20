@@ -8,6 +8,9 @@ use midnight_core::{Command, ShortcutChord, ShortcutContext};
 use slint::{ComponentHandle, Model};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+#[path = "held_input.rs"]
+mod held_input;
+
 type Bindings = Rc<RefCell<Arc<KeyboardBindings>>>;
 
 pub(crate) fn install_default(window: &MainWindow) {
@@ -37,6 +40,12 @@ fn context(window: &MainWindow) -> (ShortcutContext, i32, bool) {
             pane,
             composing,
         );
+    }
+    // Search results fed to a panel take that panel's file keys, the native
+    // hook's keypad and number-row keys too (`find_feed::dispatch`).
+    let feed = window.get_feed_focused_pane();
+    if feed >= 0 {
+        return (ShortcutContext::Files, feed, false);
     }
     if window.get_volume_popup_pane() >= 0 {
         (
@@ -105,6 +114,8 @@ fn logical_digit_is_native(window: &MainWindow, chord: &ShortcutChord) -> bool {
 }
 
 fn install_routing(window: &MainWindow, bindings: Bindings) {
+    let held = held_input::State::default();
+    held_input::install(window, held.clone(), bindings.clone());
     let hints = window.global::<ShortcutHints>();
     let state = bindings.clone();
     hints.on_lookup(move |action, all| state.borrow().hint_owned(action.as_str(), all));
@@ -257,23 +268,32 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
         if window.get_embedded_modal_open() {
             return false;
         }
-        let (context, pane, composing) = context(&window);
-        if composing && !control && !alt && !meta {
-            return false;
-        }
-        let Some(action) = resolve(&bindings, &chord, context) else {
-            return false;
-        };
-        if let file_keys::FileKey::Window(action) = action {
-            dispatch_window(&window, pane, context, action);
+        // A held panel's shortcuts wait with its keys (`held_input`).
+        if held_input::hold_physical(&window, &held, &chord) {
             return true;
         }
-        let result = file_key_bridge::dispatch(&window, pane, action);
-        if result >= 2 {
-            window.invoke_apply_file_input_action(pane, result);
-        }
-        result != 0
+        physical_shortcut(&window, &bindings, &chord)
     });
+}
+
+/// Run a shortcut the native window hook took before Slint saw its key.
+fn physical_shortcut(window: &MainWindow, bindings: &Bindings, chord: &ShortcutChord) -> bool {
+    let (context, pane, composing) = context(window);
+    if composing && !chord.control && !chord.alt && !chord.meta {
+        return false;
+    }
+    let Some(action) = resolve(bindings, chord, context) else {
+        return false;
+    };
+    if let file_keys::FileKey::Window(action) = action {
+        dispatch_window(window, pane, context, action);
+        return true;
+    }
+    let result = file_key_bridge::dispatch(window, pane, action);
+    if result >= 2 {
+        window.invoke_apply_file_input_action(pane, result);
+    }
+    result != 0
 }
 
 fn update_control_layer(
@@ -319,6 +339,17 @@ fn update_control_layer(
     }
     window.set_function_modifiers(mask);
     window.set_control_layer(mask == 1);
+}
+
+/// The main window lost activation: its modifier releases now go to another window,
+/// so the footer returns to the base layer. Native modifier state, where present,
+/// reports the same through its own focus event.
+pub(crate) fn window_deactivated(window: &MainWindow) {
+    if window.get_native_shortcuts_authoritative() {
+        return;
+    }
+    window.set_function_modifiers(0);
+    window.set_control_layer(false);
 }
 
 pub(crate) fn install(
@@ -428,6 +459,40 @@ mod function_modifier_tests {
                 9,
                 "native state owns the footer"
             );
+        });
+    }
+
+    #[test]
+    fn function_modifiers_return_to_the_base_layer_around_dialogs_and_deactivation() {
+        ui(|window| {
+            window.show().unwrap();
+            // Ctrl+F2 opens Attributes; the dialog then receives the Ctrl release.
+            update_control_layer(&window, &event(Key::Control, 0), false);
+            assert_eq!(window.get_function_modifiers(), 1);
+            window.set_about_open(true);
+            slint::platform::update_timers_and_animations();
+            assert!(window.get_embedded_modal_open());
+            assert_eq!(window.get_function_modifiers(), 0, "opening a dialog");
+            assert!(!window.get_control_layer());
+            update_control_layer(&window, &event(Key::Control, 0), false);
+            window.set_about_open(false);
+            slint::platform::update_timers_and_animations();
+            assert_eq!(window.get_function_modifiers(), 0, "closing a dialog");
+            update_control_layer(&window, &event(Key::Alt, 0), false);
+            assert_eq!(window.get_function_modifiers(), 2);
+            window_deactivated(&window);
+            assert_eq!(window.get_function_modifiers(), 0, "losing activation");
+            // Native modifier state owns the footer and reports its own focus loss.
+            window.set_native_shortcuts_authoritative(true);
+            window.set_function_modifiers(1);
+            window_deactivated(&window);
+            assert_eq!(window.get_function_modifiers(), 1);
+            window.set_about_open(true);
+            slint::platform::update_timers_and_animations();
+            assert_eq!(window.get_function_modifiers(), 1);
+            window.set_about_open(false);
+            slint::platform::update_timers_and_animations();
+            window.hide().unwrap();
         });
     }
 

@@ -122,6 +122,7 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         identity: "31".into(),
         label: "文档 [work]".into(),
         path: "D:\\文档\\work".into(),
+        path_tail: "\\work".into(),
         slot: 1,
     }])));
     window.set_left_path("D:\\文档".into());
@@ -567,4 +568,80 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         "dropdown opens the captured pane's native manager"
     );
     window.hide().unwrap();
+}
+
+/// The product of the opacity layers at and above the item.
+fn shown_opacity(item: &ItemRc) -> f32 {
+    let mut current = Some(item.clone());
+    let mut opacity = 1.0;
+    while let Some(node) = current {
+        if let Some(layer) = node.downcast::<i_slint_core::items::Opacity>() {
+            opacity *= layer.as_pin_ref().opacity();
+        }
+        current = node.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    opacity
+}
+
+#[test]
+fn tab_close_shows_on_hover_and_always_on_touch() {
+    let mut test = ui::TestUi::new();
+    test.window.set_left_tabs(ModelRc::new(VecModel::from(vec![
+        tab("11", "A", true),
+        tab("12", "B", false),
+    ])));
+    test.draw();
+    let close = |test: &ui::TestUi| {
+        ui::root_item(&test.window, &close_tab_hint("B"), AccessibleRole::Button)
+    };
+    let hover = |test: &mut ui::TestUi, position| {
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        test.draw();
+    };
+    assert!(shown_opacity(&close(&test)) < 0.01, "hidden at rest");
+    let body = ui::root_item(&test.window, "B\nD:\\文档\\B", AccessibleRole::Button);
+    let body_rect = body.geometry();
+    let body_origin = body.map_to_native_window(body_rect.origin);
+    hover(
+        &mut test,
+        slint::LogicalPosition::new(
+            body_origin.x + 12.0,
+            body_origin.y + body_rect.height() / 2.0,
+        ),
+    );
+    assert!(
+        shown_opacity(&close(&test)) > 0.99,
+        "shown while its tab is hovered"
+    );
+    let button = close(&test);
+    let rect = button.geometry();
+    let origin = button.map_to_native_window(rect.origin);
+    hover(
+        &mut test,
+        slint::LogicalPosition::new(
+            origin.x + rect.width() / 2.0,
+            origin.y + rect.height() / 2.0,
+        ),
+    );
+    assert!(
+        shown_opacity(&close(&test)) > 0.99,
+        "shown while it is hovered itself"
+    );
+    test.window
+        .window()
+        .dispatch_event(WindowEvent::PointerExited);
+    test.draw();
+    assert!(
+        shown_opacity(&close(&test)) < 0.01,
+        "hidden again without hover"
+    );
+    // Touch input has no hover, so the button is always there.
+    test.window.invoke_apply_preferences(0, 1);
+    test.draw();
+    assert!(shown_opacity(&close(&test)) > 0.99, "always shown on touch");
+    test.window.invoke_apply_preferences(0, 0);
+    test.draw();
+    assert!(shown_opacity(&close(&test)) < 0.01);
 }

@@ -1,9 +1,27 @@
 //! Presentation-only camera. Retained pixels move before the decoder supplies new strips.
-use midnight_core::{ViewerImageInfo, ViewerSurfaceId};
+use midnight_core::{DocumentLayout, ViewerImageInfo, ViewerSurfaceId};
 use midnight_ui_input::WheelMotion;
 use std::{collections::HashSet, time::Duration};
 
 const EDGE: f64 = 256.0;
+
+/// The scrollbar context of an image or document frame: a scrollbar drag lasts while it
+/// stays the same. A new surface means a new zoom, viewport or page, except that a
+/// document in the Continuous layout gets a new surface for every page its view reaches
+/// while it scrolls. Its context is the document, zoom and viewport instead, so a drag
+/// across pages keeps going to where the thumb is released.
+pub(super) fn position_context(generation: u64, info: &ViewerImageInfo, size: [u32; 2]) -> String {
+    if info.document_layout == Some(DocumentLayout::Continuous) {
+        format!(
+            "document:{generation}:{:x}:{}x{}",
+            info.zoom.to_bits(),
+            size[0],
+            size[1]
+        )
+    } else {
+        format!("image:{}", info.surface.0)
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Camera {
@@ -16,6 +34,10 @@ pub(super) struct Camera {
     sequence: u64,
     last_request: Option<[f64; 2]>,
     waiting: Option<[f64; 2]>,
+    /// The scrollbar positions (per axis, 0..=1) the waiting target came from. A new
+    /// surface maps them onto its own extent, so the newest thumb position wins over a
+    /// frame painted for an earlier step of the drag.
+    thumb: [Option<f64>; 2],
     suspended: bool,
 }
 
@@ -25,21 +47,27 @@ impl Camera {
             .info
             .as_ref()
             .is_none_or(|old| old.surface != info.surface);
+        let thumb = (changed && self.waiting.is_some()).then_some(self.thumb);
         if changed {
             self.origin = info.origin;
             self.motion.cancel();
             self.waiting = None;
+            self.thumb = [None; 2];
             self.last_request = None;
             self.suspended = false;
         }
         self.info = Some(info.clone());
         self.set_native_scale(native_scale);
         self.grid = grid;
-        if let Some(target) = self.waiting
+        if let Some(thumb) = thumb {
+            // The new surface was not asked for this target: keep aiming at it there.
+            self.aim(info.origin, thumb);
+        } else if let Some(target) = self.waiting
             && self.covered(target)
         {
             self.origin = target;
             self.waiting = None;
+            self.thumb = [None; 2];
         }
     }
 
@@ -80,6 +108,7 @@ impl Camera {
         }
         self.direct = direct;
         self.waiting = None;
+        self.thumb = [None; 2];
         if direct {
             self.motion.push_direct(x, y, now)
         } else {
@@ -88,29 +117,49 @@ impl Camera {
     }
 
     pub fn seek(&mut self, axis: usize, position: f64) -> bool {
-        if axis >= 2 || !position.is_finite() || self.suspended {
+        if axis >= 2 || !position.is_finite() || self.suspended || self.info.is_none() {
             return false;
         }
-        let Some(info) = &self.info else {
-            return false;
-        };
-        let dimension = if axis == 0 { info.width } else { info.height };
-        let maximum = f64::from(dimension) - info.visible_source[axis];
-        let mut target = self.waiting.unwrap_or(self.origin);
-        target[axis] = if maximum <= 0.0 {
-            maximum / 2.0
+        let mut thumb = if self.waiting.is_some() {
+            self.thumb
         } else {
-            maximum * position.clamp(0.0, 1.0)
+            [None; 2]
         };
+        thumb[axis] = Some(position.clamp(0.0, 1.0));
+        self.aim(self.waiting.unwrap_or(self.origin), thumb);
+        true
+    }
+
+    /// Aim at scrollbar positions; an axis without one keeps `base`. Retained tiles
+    /// that cover the target show it at once, otherwise it waits for them.
+    fn aim(&mut self, base: [f64; 2], thumb: [Option<f64>; 2]) {
+        let Some(info) = &self.info else {
+            return;
+        };
+        let mut target = base;
+        for (axis, position) in thumb.into_iter().enumerate() {
+            let Some(position) = position else {
+                continue;
+            };
+            let dimension = if axis == 0 { info.width } else { info.height };
+            let maximum = f64::from(dimension) - info.visible_source[axis];
+            target[axis] = if maximum <= 0.0 {
+                maximum / 2.0
+            } else {
+                maximum * position
+            };
+        }
         self.motion.cancel();
-        self.waiting = Some(target);
         if self.covered(target) {
             self.origin = target;
             self.waiting = None;
+            self.thumb = [None; 2];
+        } else {
+            self.waiting = Some(target);
+            self.thumb = thumb;
         }
         // A cached seek still needs to tell the backend about its final camera.
         self.last_request = None;
-        true
     }
 
     pub fn tick(&mut self, now: Duration) -> bool {
@@ -184,6 +233,7 @@ impl Camera {
     pub fn cancel(&mut self) {
         self.motion.cancel();
         self.waiting = None;
+        self.thumb = [None; 2];
         self.last_request = None;
     }
     pub fn suspend(&mut self) {
@@ -193,6 +243,15 @@ impl Camera {
 
     pub fn position(&self, axis: usize) -> f64 {
         self.normalized(axis, self.waiting.unwrap_or(self.origin))
+    }
+
+    /// The axis Home and End move along: down when the image is taller than the view,
+    /// else across when it is wider; none when it fits.
+    pub fn scroll_axis(&self) -> Option<usize> {
+        let info = self.info.as_ref().filter(|_| !self.suspended)?;
+        [1, 0]
+            .into_iter()
+            .find(|&axis| f64::from([info.width, info.height][axis]) > info.visible_source[axis])
     }
 
     pub fn displayed_position(&self, axis: usize) -> f64 {

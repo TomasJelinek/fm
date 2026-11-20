@@ -276,23 +276,30 @@ fn clipboard_move(follow_directory_links: bool) {
     let links = modeless::accessible_popup_item(
         &native,
         AccessibleRole::Checkbox,
-        "Follow directory links",
+        crate::support::link_option::LABEL,
     )
-    .expect("explicit clipboard Move exposes the directory-link choice");
+    .filter(|item| item.is_visible());
     assert_eq!(
-        links
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .unwrap(),
-        "true"
+        links.is_some(),
+        crate::support::link_option::shown(true),
+        "a clipboard Move shows the link choice only where Move can follow links"
     );
-    if !follow_directory_links {
-        links.accessible_action(&AccessibilityAction::Default);
+    if let Some(links) = links {
         assert_eq!(
             links
                 .accessible_string_property(AccessibleStringProperty::Checked)
                 .unwrap(),
-            "false"
+            "true"
         );
+        if !follow_directory_links {
+            links.accessible_action(&AccessibilityAction::Default);
+            assert_eq!(
+                links
+                    .accessible_string_property(AccessibleStringProperty::Checked)
+                    .unwrap(),
+                "false"
+            );
+        }
     }
     owned_windows::child_key(&h.windows, Key::Return);
     h.draw();
@@ -306,11 +313,7 @@ fn clipboard_move(follow_directory_links: bool) {
         .expect("explicit Enter must admit the captured clipboard Move");
     assert_eq!(
         options.links,
-        if follow_directory_links {
-            CopyLinkPolicy::FollowDirectoryContents
-        } else {
-            CopyLinkPolicy::EmptyDirectories
-        }
+        crate::support::link_option::sent(true, follow_directory_links)
     );
     let CopyOptionsInput::Native(request) = &options.input else {
         panic!("clipboard Move requires its native request");

@@ -180,6 +180,9 @@ pub enum Command {
         pane: PaneId,
         id: u64,
     },
+    /// Whether a typed Copy/Move destination is an existing folder, answered by
+    /// `Event::TransferDestinationChecked` on a backend worker.
+    CheckTransferDestination(crate::DestinationCheckRequest),
     EnqueueCopy(crate::CopyRequest),
     EnqueueSelectedCopy(crate::SelectedCopyRequest),
     EnqueueMove(crate::CopyRequest),
@@ -190,6 +193,10 @@ pub enum Command {
     EnqueueArchiveCopy(crate::ArchiveCopyRequest),
     DecideCopy(crate::CopyDecision),
     DecideRename(crate::CopyDecision),
+    /// Answers a `DeleteFailure` of the same job and version: Retry, Skip,
+    /// SkipAllErrors (skip this and every later failure of the job without asking)
+    /// or Cancel. Other choices are ignored.
+    DecideDelete(crate::CopyDecision),
     CancelCopy(crate::OperationId),
     CopyCancelConfirmation {
         id: crate::OperationId,
@@ -259,6 +266,8 @@ pub enum Command {
     /// Already armed backend ownership; all sender/permit paths must use guarded admission.
     LaunchExternalComparison(crate::ExternalCompareRequest),
     ListFontFamilies,
+    /// The About dialog's notices for one library; a newer request replaces a queued one.
+    ReadLicenseNotice(Box<crate::LicenseNoticeRequest>),
     ResolveDefaultEditor,
     EditCapturedFile {
         request: DesktopRequestId,
@@ -356,11 +365,14 @@ pub enum Command {
     },
     QueryVolumeInformation(crate::VolumeInformationRequest),
     /// Expand the immutable selected paths on a backend worker, never in UI.
+    /// `cancel` stops the background count of a single folder's contents that a
+    /// metadata summary continues with (`Event::PropertiesUpdated`).
     ShowSelectionProperties {
         request: DesktopRequestId,
         selection: Arc<SelectionSnapshot>,
         view: Arc<DirectoryIndex>,
         fallback: Option<PathBuf>,
+        cancel: crate::Cancellation,
     },
     OpenEntry {
         request: DesktopRequestId,
@@ -436,6 +448,10 @@ pub enum Command {
         sort: SortSpec,
         source: Option<VisibleDirectory>,
     },
+    /// Whether later listings, archive listings and inline-tree projections of
+    /// both panes include hidden entries. Listings already shown keep their rows
+    /// until the UI re-reads them; a Resort reuses its rows as they were listed.
+    ShowHiddenEntries(bool),
     Shutdown,
 }
 
@@ -488,6 +504,12 @@ pub enum Event {
         navigation: NavigationId,
         result: Result<crate::ArchiveListing, FsError>,
     },
+    /// Member bytes decoded so far while `navigation` opens an archive inside an archive.
+    ArchiveProgress {
+        pane: PaneId,
+        navigation: NavigationId,
+        staged: u64,
+    },
     ArchiveAvailability(Vec<crate::ArchiveFormat>),
     ViewerPluginsListed(Result<Vec<crate::ViewerPluginInfo>, String>),
     ComparatorCapabilitiesListed(crate::ComparatorCapabilities),
@@ -496,6 +518,11 @@ pub enum Event {
     DirectoriesCompared {
         id: crate::CompareId,
         result: Result<Arc<crate::CompareResult>, FsError>,
+    },
+    /// A running directory comparison's progress; never a result.
+    ComparisonProgress {
+        id: crate::CompareId,
+        progress: crate::CompareProgress,
     },
     PanelFilterValidated {
         request: crate::FilterValidationRequest,
@@ -591,6 +618,7 @@ pub enum Event {
         request: DesktopRequestId,
         result: Result<crate::DiagnosticTextPreview, FsError>,
     },
+    LicenseNoticeReady(Box<crate::LicenseNotice>),
     SizeWarningsReady {
         request: DesktopRequestId,
         result: Result<Arc<dyn crate::GeneratedTextSource>, FsError>,
@@ -633,6 +661,14 @@ pub enum Event {
         request: DesktopRequestId,
         result: Result<DesktopActionResult, FsError>,
     },
+    /// A newer text for the metadata Properties summary of `request`, while or after
+    /// its single folder's contents are counted. It replaces the shown text only;
+    /// it never reopens a dismissed summary.
+    PropertiesUpdated {
+        request: DesktopRequestId,
+        title: String,
+        body: String,
+    },
     DirectoryLinkTargetRead {
         request: DesktopRequestId,
         pane: PaneId,
@@ -646,6 +682,7 @@ pub enum Event {
         details: VolumeDetails,
     },
     VolumeInformationLoaded(Box<crate::VolumeInformationResult>),
+    TransferDestinationChecked(Box<crate::DestinationCheckResult>),
     VolumesFailed(FsError),
     ListingStarted {
         pane: PaneId,

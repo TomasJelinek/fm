@@ -1,10 +1,74 @@
 //! Linux reports compression only when statx explicitly supports that attribute.
-use midnight_core::{CompressionStatus, EntryMetadata, FsError};
-use rustix::fs::{AtFlags, CWD, FileType, Statx, StatxAttributes, StatxFlags, statx};
+use midnight_core::{CompressionStatus, EntryMetadata, FsError, PropertyAccount, PropertyDetails};
+use rustix::fs::{
+    AtFlags, CWD, FileType, Statx, StatxAttributes, StatxFlags, StatxTimestamp, statx,
+};
 use std::{
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+/// Properties details of `path` itself, never following a final link: owner and
+/// group with their account names, the birth time only when the filesystem reports
+/// one (statx `STATX_BTIME`), the modified and accessed times and the mode.
+pub(crate) fn details(path: &Path) -> Result<PropertyDetails, FsError> {
+    match statx(
+        CWD,
+        path,
+        AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT,
+        StatxFlags::BASIC_STATS | StatxFlags::BTIME,
+    ) {
+        Ok(stat) => Ok(decode_details(&stat)),
+        // Without statx no birth time is available; the rest still is.
+        Err(rustix::io::Errno::NOSYS) => fallback_details(path),
+        Err(error) => Err(FsError::from_io("read properties", path, error.into())),
+    }
+}
+
+fn decode_details(stat: &Statx) -> PropertyDetails {
+    let mask = StatxFlags::from_bits_retain(stat.stx_mask);
+    let time = |flag: StatxFlags, value: StatxTimestamp| {
+        mask.contains(flag)
+            .then(|| timestamp(value.tv_sec, value.tv_nsec))
+            .flatten()
+    };
+    PropertyDetails {
+        owner: mask.contains(StatxFlags::UID).then(|| PropertyAccount {
+            id: stat.stx_uid,
+            name: crate::ownership::user_name(stat.stx_uid),
+        }),
+        group: mask.contains(StatxFlags::GID).then(|| PropertyAccount {
+            id: stat.stx_gid,
+            name: crate::ownership::group_name(stat.stx_gid),
+        }),
+        created: time(StatxFlags::BTIME, stat.stx_btime),
+        modified: time(StatxFlags::MTIME, stat.stx_mtime),
+        accessed: time(StatxFlags::ATIME, stat.stx_atime),
+        unix_mode: mask
+            .contains(StatxFlags::MODE)
+            .then_some(u32::from(stat.stx_mode)),
+    }
+}
+
+fn fallback_details(path: &Path) -> Result<PropertyDetails, FsError> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| FsError::from_io("read properties", path, error))?;
+    Ok(PropertyDetails {
+        owner: Some(PropertyAccount {
+            id: metadata.uid(),
+            name: crate::ownership::user_name(metadata.uid()),
+        }),
+        group: Some(PropertyAccount {
+            id: metadata.gid(),
+            name: crate::ownership::group_name(metadata.gid()),
+        }),
+        created: None,
+        modified: metadata.modified().ok(),
+        accessed: metadata.accessed().ok(),
+        unix_mode: Some(metadata.mode()),
+    })
+}
 
 pub(crate) fn read(path: &Path) -> Result<EntryMetadata, FsError> {
     match statx(
@@ -175,6 +239,48 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert_eq!(read(&link).unwrap().size, None);
         assert_eq!(read(&path).unwrap_err().kind, std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn property_details_name_the_owner_and_report_birth_time_only_when_provided() {
+        use std::os::unix::fs::MetadataExt;
+        let (directory, path, mut stat) = fixture();
+        let read = details(&path).unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        let owner = read.owner.clone().unwrap();
+        assert_eq!(owner.id, metadata.uid());
+        assert_eq!(read.group.as_ref().unwrap().id, metadata.gid());
+        assert_eq!(read.unix_mode, Some(metadata.mode()));
+        assert_eq!(read.modified, metadata.modified().ok());
+        assert_eq!(read.accessed, metadata.accessed().ok());
+        // The birth time is the filesystem's own, or absent.
+        assert_eq!(read.created, metadata.created().ok());
+        stat.stx_mask &= !StatxFlags::BTIME.bits();
+        assert_eq!(decode_details(&stat).created, None);
+        stat.stx_mask = StatxFlags::BTIME.bits();
+        stat.stx_btime.tv_sec = 1_700_000_000;
+        stat.stx_btime.tv_nsec = 5;
+        let decoded = decode_details(&stat);
+        assert_eq!(
+            decoded.created,
+            UNIX_EPOCH.checked_add(Duration::new(1_700_000_000, 5))
+        );
+        assert_eq!(
+            (decoded.owner, decoded.group, decoded.unix_mode),
+            (None, None, None)
+        );
+        // A final link is described itself, never its target.
+        let link = directory.path().join("link");
+        std::os::unix::fs::symlink("missing target", &link).unwrap();
+        let mode = details(&link).unwrap().unix_mode.unwrap();
+        assert_eq!(FileType::from_raw_mode(mode), FileType::Symlink);
+    }
+
+    #[test]
+    fn account_names_come_from_the_account_files_or_stay_numeric() {
+        assert_eq!(crate::ownership::user_name(0).as_deref(), Some("root"));
+        assert_eq!(crate::ownership::group_name(0).as_deref(), Some("root"));
+        assert_eq!(crate::ownership::user_name(u32::MAX - 7), None);
     }
 
     #[test]

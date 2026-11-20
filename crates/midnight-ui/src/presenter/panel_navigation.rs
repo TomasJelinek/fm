@@ -5,9 +5,40 @@ pub(crate) struct PathPart {
     pub(crate) identity: String,
     pub(crate) label: String,
     pub(crate) prefix: String,
+    /// The archive's own name in an archive: a shortened path keeps it whole.
+    pub(crate) keep_whole: bool,
     path: PathBuf,
     archive: Option<ArchiveLocation>,
     network: Option<NetworkAction>,
+}
+
+/// One part per folder of a native path, the root first. Each label is the part of
+/// its prefix after the previous one, so that the labels join into the path.
+fn native_parts(path: &Path, identity: &str) -> Vec<PathPart> {
+    let ancestors: Vec<_> = path
+        .ancestors()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect();
+    let mut previous = String::new();
+    ancestors
+        .into_iter()
+        .rev()
+        .enumerate()
+        .map(|(index, path)| {
+            let prefix = path.to_string_lossy().into_owned();
+            let label = prefix.strip_prefix(&previous).unwrap_or(&prefix).to_owned();
+            previous = prefix.clone();
+            PathPart {
+                identity: format!("{identity}:{index}"),
+                label,
+                prefix,
+                keep_whole: false,
+                path: path.to_owned(),
+                archive: None,
+                network: None,
+            }
+        })
+        .collect()
 }
 
 pub(crate) struct HistoryChoice {
@@ -97,79 +128,69 @@ impl Presenter {
                 identity: format!("network-pending-path:{}", p.generation),
                 label: label.clone(),
                 prefix: label,
+                keep_whole: false,
                 path: PathBuf::new(),
                 archive: None,
                 network: Some(action.clone()),
             }];
         }
+        // A network address is opaque and names only its own node: no folders to show.
         if let Some(network) = &p.network {
             return vec![PathPart {
                 identity: format!("network-path:{}", p.generation),
                 label: network.address.display.clone(),
                 prefix: network.address.display.clone(),
+                keep_whole: false,
                 path: PathBuf::new(),
                 archive: None,
                 network: Some(NetworkAction::Browse(network.address.clone())),
             }];
         }
         if let Some(a) = &p.archive {
-            let mut previous = String::new();
-            return a
+            // The native folders that hold the archive come first, as on a native
+            // path, and leave the archive; the archive's name is a part of its own.
+            let container: PathBuf = a
                 .location
-                .trail
-                .iter()
-                .enumerate()
-                .map(|(index, (node, _))| {
-                    let mut location = a.location.clone();
-                    location.directory = *node;
-                    location.trail.truncate(index + 1);
-                    location.address.components.truncate(index);
-                    let prefix = location.display_text();
-                    let label = prefix.strip_prefix(&previous).unwrap_or(&prefix).to_owned();
-                    previous = prefix.clone();
-                    PathPart {
-                        identity: format!(
-                            "archive:{}:{}:{node}",
-                            p.generation,
-                            a.location.mount_id().unwrap_or(0)
-                        ),
-                        label,
-                        prefix,
-                        path: PathBuf::new(),
-                        archive: Some(location),
-                        network: None,
-                    }
-                })
+                .outermost()
+                .address
+                .container
+                .components()
                 .collect();
-        }
-        let ancestors: Vec<_> = p
-            .display_path()
-            .ancestors()
-            .filter(|path| !path.as_os_str().is_empty())
-            .collect();
-        let mut previous = String::new();
-        ancestors
-            .into_iter()
-            .rev()
-            .enumerate()
-            .map(|(index, path)| {
-                let prefix = path.to_string_lossy().into_owned();
+            let mut parts = container.parent().map_or_else(Vec::new, |folder| {
+                native_parts(folder, &format!("archive-path:{}", p.generation))
+            });
+            let mut previous = parts
+                .last()
+                .map_or_else(String::new, |part| part.prefix.clone());
+            let locations = a.path_locations();
+            // The root of the archive that holds this folder.
+            let own_root = locations.len().saturating_sub(a.location.trail.len());
+            // Archives inside archives: the enclosing archives' folders come first.
+            parts.extend(locations.into_iter().enumerate().map(|(index, location)| {
+                let prefix = location.display_text();
                 let label = prefix.strip_prefix(&previous).unwrap_or(&prefix).to_owned();
                 previous = prefix.clone();
                 PathPart {
                     identity: format!(
-                        "path:{}:{}:{index}",
+                        "archive:{}:{}:{index}:{}",
                         p.generation,
-                        u8::from(p.pending.is_some())
+                        location.mount_id().unwrap_or(0),
+                        location.directory
                     ),
                     label,
                     prefix,
-                    path: path.to_owned(),
-                    archive: None,
+                    keep_whole: index == own_root,
+                    path: PathBuf::new(),
+                    archive: Some(location),
                     network: None,
                 }
-            })
-            .collect()
+            }));
+            return parts;
+        }
+        native_parts(
+            p.display_path(),
+            &format!("path:{}:{}", p.generation, u8::from(p.pending.is_some())),
+        )
     }
 
     pub(crate) fn navigate_path_part(
@@ -191,7 +212,34 @@ impl Presenter {
         if let Some(location) = part.archive {
             return self.archive_navigate(pane, ArchiveAction::List(location), send);
         }
-        self.navigate(pane, part.path, None, send)
+        // A native folder that holds the shown archive leaves it, with the cursor on
+        // the folder or archive on the way back, as an ancestor of a native path does.
+        let container = self.panes[pane.index()]
+            .archive
+            .as_ref()
+            .map(|a| -> PathBuf {
+                a.location
+                    .outermost()
+                    .address
+                    .container
+                    .components()
+                    .collect()
+            });
+        if !self.navigate(pane, part.path.clone(), None, send) {
+            return false;
+        }
+        if let Some(container) = container {
+            let child = container
+                .ancestors()
+                .find(|child| child.parent() == Some(part.path.as_path()))
+                .map(Path::to_owned);
+            let p = &mut self.panes[pane.index()];
+            if let Some(request) = &mut p.pending {
+                request.wanted_cursor = child;
+            }
+            p.parent_cursor = false;
+        }
+        true
     }
 
     /// Cached shape for lazy history rows; path/display strings stay unallocated.

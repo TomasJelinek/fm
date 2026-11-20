@@ -3,6 +3,7 @@ import { Theme } from "theme.slint";
 import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
 import { LocationImage } from "action-icons.slint";
 import { TooltipPlacement } from "tooltip-placement.slint";
+import { PopupList } from "popup-list.slint";
 import { PathText } from "path-text.slint";
 export { TooltipPlacement }
 
@@ -11,20 +12,24 @@ export component TipBody inherits Rectangle {
     in property <string> text;
     in property <length> width-limit: 560px;
     x: 0px; y: 0px;
-    // Whole device pixels keep the 1px frame crisp.
-    width: TooltipPlacement.snap(min(root.width-limit, max(120px, content.preferred-width + 20px),
+    // Whole device pixels keep the frame crisp. The width rounds up: rounding down
+    // would take a fraction of a pixel from the text and wrap its last word.
+    width: TooltipPlacement.snap-up(min(root.width-limit, max(120px, content.preferred-width + 20px),
         TooltipPlacement.max-room(TooltipPlacement.cursor-x, TooltipPlacement.surface-width, 14px)));
-    height: TooltipPlacement.snap(min(content.preferred-height + 16px,
+    height: TooltipPlacement.snap-up(min(content.preferred-height + 16px,
         TooltipPlacement.max-room(TooltipPlacement.cursor-y, TooltipPlacement.surface-height, 18px)));
     clip: true;
     background: Theme.surface;
     border-color: Theme.active-frame;
-    border-width: 1px;
+    // One device pixel at every scale: 1px is 1.25-1.75 device pixels at fractional scales.
+    border-width: 1phx;
     border-radius: 4px;
     content := Text {
         x: 10px; y: 8px; width: max(1px, parent.width - 20px);
         text: root.text; color: Theme.text; font-size: Theme.small-font;
-        wrap: char-wrap;
+        // Lines break between words. A token wider than the line, such as a long
+        // path, still breaks where it must instead of running out of the frame.
+        wrap: word-wrap;
         accessible-label: root.text;
     }
 }
@@ -90,6 +95,10 @@ export component CompactPicker inherits Rectangle {
     private property <int> pending-index: -1;
     private property <bool> expanded;
     out property <bool> popup-open: root.expanded;
+    // Set while `cancel()` or `commit()` closes the list.
+    private property <bool> closing;
+    // Slint closed the list for a press outside it (`popup-focus`).
+    private property <bool> closed-outside;
     private property <bool> has-leading-icon: root.show-row-icons && !root.icon-only && !root.arrow-trigger-only
         && root.current-index >= 0 && (root.choices.length > 0 || root.current-index < root.icons.length);
     private property <bool> arrow-only: !root.icon-only && root.label == "" && !root.has-leading-icon;
@@ -133,6 +142,16 @@ export component CompactPicker inherits Rectangle {
     changed context => { if root.expanded { root.cancel(); } }
     changed current-index => { if root.expanded { root.cancel(); } }
     changed enabled => { if !root.enabled && root.expanded { root.cancel(); } }
+    // The press does not reach what it hit, and Slint gives the keyboard back to this
+    // picker. Unless something else took it meanwhile, that is a dismissal as by
+    // Escape: the owner returns the keyboard to the file list or the command line.
+    // Change handlers run once the close has finished.
+    changed closed-outside => {
+        if root.closed-outside {
+            root.closed-outside = false;
+            if focus.has-focus { root.dismissed(); }
+        }
+    }
     pure function row-label(index: int) -> string {
         if index < 0 || index >= root.item-count { return ""; }
         return root.choices.length > 0 ? root.choices[index].label : root.model[index];
@@ -196,7 +215,9 @@ export component CompactPicker inherits Rectangle {
         }
     }
     function cancel() {
+        root.closing = true;
         popup.close();
+        root.closing = false;
         root.expanded = false;
         focus.focus();
         root.dismissed();
@@ -208,7 +229,9 @@ export component CompactPicker inherits Rectangle {
             || (key != "" && (index >= root.opened-choices.length || root.opened-choices[index].identity != key)) {
             root.cancel(); return;
         }
+        root.closing = true;
         popup.close();
+        root.closing = false;
         root.expanded = false;
         focus.focus();
         if root.enabled && index >= 0 && index < root.item-count {
@@ -307,8 +330,8 @@ export component CompactPicker inherits Rectangle {
     }
     Tip { text: root.hint; }
     popup := PopupWindow {
-        private property <length> below: max(1px, TooltipPlacement.surface-height - root.absolute-position.y - root.height - 8px);
-        private property <length> above: max(1px, root.absolute-position.y - 8px);
+        private property <length> below: PopupList.room-below(root.absolute-position.y, root.height);
+        private property <length> above: PopupList.room-above(root.absolute-position.y);
         private property <bool> opens-above: root.popup-above
             || (root.fill-available-height && self.below < root.item-count * root.control-height + 10px && self.above > self.below);
         x: clamp(root.absolute-position.x + (root.popup-align-right ? root.width - self.width : 0px),
@@ -325,6 +348,11 @@ export component CompactPicker inherits Rectangle {
         forward-focus: popup-focus;
         popup-focus := FocusScope {
             focus-changed-event => { root.expanded = self.has-focus; }
+            // A newer popup over the list takes the keyboard for the same reason;
+            // `changed closed-outside` tells the two apart.
+            focus-lost(reason) => {
+                if reason == FocusReason.popup-activation && !root.closing { root.closed-outside = true; }
+            }
             key-pressed(event) => {
                 let shortcut = root.shortcut-event(event);
                 if shortcut == 1 { root.commit(root.shortcut-index); return accept; }
@@ -358,14 +386,12 @@ export component CompactPicker inherits Rectangle {
                     x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
                     // Direct ListView children stay virtualized even for a full
                     // installed-font catalog. The host keeps the committed index.
-                    content-y: -min(max(0px, root.item-count * root.control-height - self.visible-height),
-                        max(0, root.pending-index - 5) * root.control-height);
+                    content-y: PopupList.reveal(root.pending-index, root.item-count, root.control-height, self.visible-height);
                     // Wheel and scrollbar input assign content-y, which detaches the
                     // binding above; keyboard browsing must still reveal its row.
                     private property <int> browsed-index: root.pending-index;
                     changed browsed-index => {
-                        self.content-y = -min(max(0px, root.item-count * root.control-height - self.visible-height),
-                            max(0, self.browsed-index - 5) * root.control-height);
+                        self.content-y = PopupList.reveal(self.browsed-index, root.item-count, root.control-height, self.visible-height);
                     }
                     for value[index] in root.item-count : Rectangle {
                         height: root.control-height;

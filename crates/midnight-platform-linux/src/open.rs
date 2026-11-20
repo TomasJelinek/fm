@@ -99,6 +99,7 @@ fn same_activation_target(expected: &fs::Metadata, current: &fs::Metadata) -> bo
 fn program_command(path: &Path) -> io::Result<Command> {
     validate_path(path)?;
     let mut command = Command::new(path);
+    crate::open_files::with_original_open_file_limit(&mut command);
     if let Some(parent) = path.parent() {
         command.current_dir(parent);
     }
@@ -209,6 +210,7 @@ impl DesktopOpener {
             SystemLocation::RecycleBin => "trash:///",
         };
         let mut command = Command::new(self.executable());
+        crate::open_files::with_original_open_file_limit(&mut command);
         if matches!(self, Self::Gio) {
             command.args(["open", "--"]);
         }
@@ -224,6 +226,7 @@ impl DesktopOpener {
     fn command(self, path: &Path) -> io::Result<Command> {
         validate_path(path)?;
         let mut command = Command::new(self.executable());
+        crate::open_files::with_original_open_file_limit(&mut command);
         if matches!(self, Self::Gio) {
             command.args(["open", "--"]);
         }

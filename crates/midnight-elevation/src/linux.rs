@@ -229,22 +229,30 @@ impl Drop for PrivateSocket {
         }
     }
 }
-fn trusted_pkexec() -> io::Result<()> {
-    for path in Path::new("/usr/bin/pkexec").ancestors() {
+/// The system authorization executable.
+pub(crate) const PKEXEC: &str = "/usr/bin/pkexec";
+
+/// Only a pkexec that root alone can change may run anything as root for the application:
+/// it and every folder above it is no link, belongs to root and is neither group- nor
+/// other-writable, and it is an executable regular file.
+pub(crate) fn trusted_pkexec() -> io::Result<()> {
+    for path in Path::new(PKEXEC).ancestors() {
         let value = fs::symlink_metadata(path)?;
         if value.file_type().is_symlink() || value.uid() != 0 || value.mode() & 0o022 != 0 {
             return Err(denied("Untrusted system authorization executable"));
         }
     }
-    let value = fs::metadata("/usr/bin/pkexec")?;
+    let value = fs::metadata(PKEXEC)?;
     if !value.is_file() || value.mode() & 0o111 == 0 {
         return Err(denied("System authorization executable is not executable"));
     }
     Ok(())
 }
-struct ChildSlot;
+/// One of the two authorization processes the application runs at a time, held until the
+/// process was reaped.
+pub(crate) struct ChildSlot;
 impl ChildSlot {
-    fn acquire() -> io::Result<Self> {
+    pub(crate) fn acquire() -> io::Result<Self> {
         CHILDREN
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 2).then_some(count + 1)
@@ -450,7 +458,7 @@ pub(crate) fn list(helper: &Path, request: &Request, cancel: &Cancellation) -> i
         return Err(denied("Unexpected caller credentials"));
     }
     let created = stamp(parent)?;
-    let mut command = Command::new("/usr/bin/pkexec");
+    let mut command = Command::new(PKEXEC);
     command
         .arg("--disable-internal-agent")
         .arg(helper)

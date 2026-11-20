@@ -185,47 +185,6 @@ fn length_mismatch() -> Error {
     )
 }
 
-pub(crate) struct StoredReader {
-    storage: Rc<dyn Storage>,
-    content: Content,
-    position: u64,
-}
-impl StoredReader {
-    pub(crate) fn new(storage: Rc<dyn Storage>, content: Content) -> Self {
-        Self {
-            storage,
-            content,
-            position: 0,
-        }
-    }
-}
-impl Read for StoredReader {
-    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        let count = (self.content.length - self.position)
-            .min(output.len() as u64)
-            .min(u64::from(MAX_READ)) as u32;
-        if count == 0 {
-            return Ok(0);
-        }
-        let data = self.storage.read(
-            self.content.stage,
-            self.content.offset + self.position,
-            count,
-        )?;
-        if data.len() != count as usize {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        output[..data.len()].copy_from_slice(&data);
-        self.position += data.len() as u64;
-        Ok(data.len())
-    }
-}
-impl Seek for StoredReader {
-    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        self.position = seek_position(self.position, self.content.length, from)?;
-        Ok(self.position)
-    }
-}
 pub(crate) fn seek_position(position: u64, length: u64, from: SeekFrom) -> io::Result<u64> {
     let next = match from {
         SeekFrom::Start(next) => Some(next),

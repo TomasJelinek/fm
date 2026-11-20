@@ -1,5 +1,7 @@
 //! Smooth the pinned Fluent scrollbar wheel path and the horizontally remapped
-//! command prompt. Ordinary content keeps Slint's own wheel/touch physics.
+//! command prompt, and synthesise touchpad momentum for the whole window. Other
+//! content keeps Slint's own wheel easing unless the host opts into content glide.
+use crate::kinetic_native::{LINE_PIXELS, NativeKinetic, WheelSource};
 use crate::scroll_press::PressState;
 use crate::{WHEEL_FRAME, WheelMotion};
 use i_slint_core::{
@@ -14,10 +16,11 @@ use slint::{
         EventResult, WinitWindowAccessor,
         winit::{
             dpi::PhysicalPosition,
-            event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent},
+            event::{DeviceId, ElementState, MouseScrollDelta, TouchPhase, WindowEvent},
         },
     },
 };
+use std::time::Duration;
 
 // Slint Fluent 1.18.1 scrollview.slint: the bar's TouchArea fills its 14px
 // overlay. Verify that actual visible item too; an overflow alone does not imply
@@ -42,6 +45,22 @@ enum Target {
         horizontal: bool,
     },
     Command(CommandStrip),
+    /// Any content of a window that opted into [`NativeScroll::glide_content`].
+    Content {
+        scope: ItemWeak,
+    },
+}
+
+/// What momentum scrolls, resolved once per fling instead of on every frame.
+enum KineticView {
+    /// The host's [`KineticSurface`].
+    Surface,
+    /// A Flickable that scrolls along the fling; `bar` is its Fluent scrollbar
+    /// when the gesture happened on it.
+    Flickable {
+        flick: ItemWeak,
+        bar: Option<Target>,
+    },
 }
 
 // Pinned Winit has no create_child_window_adapter override, so SDK ComboBox
@@ -58,6 +77,15 @@ fn scope(window: &slint::Window) -> (ItemRc, bool) {
     } else {
         (ItemRc::new_root(inner.component()), false)
     }
+}
+
+/// An open popup other than a tooltip (an SDK combo box list, a menu) owns pointer
+/// input, so content behind it must not scroll.
+pub fn popup_open(window: &slint::Window) -> bool {
+    WindowInner::from_pub(window)
+        .active_popups()
+        .iter()
+        .any(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
 }
 
 fn bounds(item: &ItemRc) -> LogicalRect {
@@ -106,6 +134,12 @@ fn collect(item: ItemRc, position: LogicalPoint, views: &mut Vec<ItemRc>, bars: 
 }
 
 impl Target {
+    fn content(window: &slint::Window) -> Self {
+        Self::Content {
+            scope: scope(window).0.downgrade(),
+        }
+    }
+
     fn at(
         window: &slint::Window,
         position: LogicalPoint,
@@ -160,6 +194,7 @@ impl Target {
             Self::Command(saved) => {
                 !popup && command == Some(saved) && saved.bounds.contains(position)
             }
+            Self::Content { scope } => current.downgrade() == *scope,
             Self::Scrollbar {
                 scope,
                 bar,
@@ -183,7 +218,7 @@ impl Target {
             Self::Scrollbar {
                 horizontal: false, ..
             } => y != 0.0,
-            Self::Command(_) => x != 0.0 || y != 0.0,
+            Self::Command(_) | Self::Content { .. } => x != 0.0 || y != 0.0,
         }
     }
 
@@ -212,7 +247,27 @@ pub fn notify_scrollbar_wheel(window: &slint::Window, position: LogicalPoint, x:
         target.scrolled();
     }
 }
-/// Composable native wheel observer for direct scrollbar/command-strip handlers.
+/// Host delivery of one synthesised momentum frame as a native wheel event in the
+/// units of the finger stream (pixels, or lines for X11 streams, so each host applies
+/// its own line distance). Returns true when the host consumed it; otherwise Slint
+/// receives it as a wheel.
+pub type KineticSink = Box<dyn FnMut(&WindowEvent) -> bool>;
+/// Window region whose wheel notches glide; see [`NativeScroll::glide_content`].
+pub type GlideRegion = Box<dyn Fn(slint::LogicalPosition) -> bool>;
+
+/// Host content that scrolls by wheel events without a Slint Flickable (backend
+/// viewers, comparison text). Momentum starts only over such content or over a
+/// Flickable that can scroll along the fling, never over per-event controls.
+pub struct KineticSurface {
+    /// Whether this window point lies on the content.
+    pub contains: Box<dyn Fn(slint::LogicalPosition) -> bool>,
+    /// The content position per axis (any unit), `None` where unknown. Momentum on
+    /// an axis stops once its position stops changing (a content edge).
+    pub position: Box<dyn Fn() -> [Option<f64>; 2]>,
+}
+
+/// Composable native wheel observer for direct scrollbar/command-strip handlers,
+/// and the owner of the window's shared kinetic (touchpad momentum) scroller.
 pub struct NativeScroll {
     pressed: PressState,
     cursor: Option<PhysicalPosition<f64>>,
@@ -220,6 +275,12 @@ pub struct NativeScroll {
     target: Option<Target>,
     motion: WheelMotion,
     timer: slint::Timer,
+    kinetic: NativeKinetic,
+    source: WheelSource,
+    kinetic_view: Option<KineticView>,
+    kinetic_sink: Option<KineticSink>,
+    kinetic_surface: Option<KineticSurface>,
+    glide_region: Option<GlideRegion>,
 }
 
 impl NativeScroll {
@@ -239,18 +300,63 @@ impl NativeScroll {
             target: None,
             motion: WheelMotion::default(),
             timer,
+            kinetic: NativeKinetic::default(),
+            source: WheelSource::Other,
+            kinetic_view: None,
+            kinetic_sink: None,
+            kinetic_surface: None,
+            glide_region: None,
         }
     }
 
+    /// Glide wheel notches over this region of the window too, not only over
+    /// Fluent scrollbars. For content that takes pixel deltas without easing of its
+    /// own; never include controls that act once per wheel event (combo boxes).
+    pub fn glide_content(mut self, region: GlideRegion) -> Self {
+        self.glide_region = Some(region);
+        self
+    }
+
+    /// Override the platform default for synthesised touchpad momentum (on except
+    /// on Windows and macOS, whose touchpads deliver their own momentum events).
+    pub fn synthesize_momentum(mut self, enabled: bool) -> Self {
+        self.kinetic.cancel();
+        self.kinetic.enabled = enabled;
+        self
+    }
+
+    /// Route momentum frames over the host surface through a native host path
+    /// first (e.g. a browser surface).
+    pub fn set_kinetic_sink(&mut self, sink: KineticSink) {
+        self.kinetic_sink = Some(sink);
+    }
+
+    /// Host content that takes momentum without a Slint Flickable.
+    pub fn set_kinetic_surface(&mut self, surface: KineticSurface) {
+        self.kinetic_surface = Some(surface);
+    }
+
+    /// Stop wheel easing and touchpad momentum.
     pub fn cancel(&mut self) {
+        self.cancel_wheel();
+        self.kinetic.cancel();
+        self.kinetic_view = None;
+        self.timer.stop();
+    }
+
+    /// Stop only the eased scrollbar/content wheel; touchpad momentum continues.
+    pub fn cancel_wheel(&mut self) {
         self.motion.cancel();
         self.target = None;
-        self.timer.stop();
+        if !self.kinetic.kinetic.active() {
+            self.timer.stop();
+        }
     }
 
     /// Discard input ownership when a modal owner becomes disabled.
     pub fn reset(&mut self) {
         self.cancel();
+        self.kinetic.reset_modifiers();
         self.pressed = PressState::default();
         self.cursor = None;
         self.position = None;
@@ -262,35 +368,172 @@ impl NativeScroll {
         self.cancel();
     }
 
+    /// Touchpad momentum is running or waits for an unphased stream to end.
+    pub fn kinetic_active(&self) -> bool {
+        self.kinetic.kinetic.active()
+    }
+
+    /// Classification of the last tracked event. A touchpad sample should reach
+    /// its content without wheel easing.
+    pub fn source(&self) -> WheelSource {
+        self.source
+    }
+
+    fn logical_cursor(&self, window: &slint::Window) -> Option<LogicalPoint> {
+        let scale = window.scale_factor();
+        self.cursor
+            .filter(|_| scale.is_finite() && scale > 0.0)
+            .map(|p| {
+                let p = p.to_logical::<f32>(f64::from(scale));
+                LogicalPoint::new(p.x, p.y)
+            })
+    }
+
+    /// Feed one native event to the kinetic tracker. Call exactly once per event,
+    /// before routing it; [`Self::observe`] does both.
+    pub fn track(&mut self, window: &slint::Window, event: &WindowEvent) -> WheelSource {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Some(*position);
+        }
+        let cursor = self.logical_cursor(window);
+        let was_flinging = self.kinetic.kinetic.flinging();
+        self.source = self
+            .kinetic
+            .observe(event, cursor, window.scale_factor(), now(window));
+        if !self.kinetic.kinetic.flinging() || !was_flinging {
+            self.kinetic_view = None;
+        }
+        if self.kinetic.kinetic.active() && !self.timer.running() {
+            self.timer.restart();
+        }
+        self.source
+    }
+
     pub fn observe(
         &mut self,
         window: &slint::Window,
         event: &WindowEvent,
         command: Option<CommandStrip>,
     ) -> bool {
-        self.pressed.observe(event);
-        let now = WindowInner::from_pub(window)
-            .context()
-            .platform()
-            .duration_since_start();
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Some(*position);
+        self.track(window, event);
+        self.route(window, event, command)
+    }
+
+    /// Resolve what this fling scrolls. Momentum needs content that scrolls along
+    /// it: the host surface, or a Flickable (whose other axis is stopped). Anything
+    /// else, such as a spin box acting once per wheel event, gets none.
+    fn kinetic_view(&mut self, window: &slint::Window, origin: LogicalPoint) -> Option<()> {
+        if self.kinetic_view.is_some() {
+            return Some(());
+        }
+        let point = slint::LogicalPosition::new(origin.x, origin.y);
+        let view = if self
+            .kinetic_surface
+            .as_ref()
+            .is_some_and(|surface| (surface.contains)(point))
+        {
+            KineticView::Surface
+        } else {
+            let velocity = self.kinetic.kinetic.fling_velocity()?;
+            let (flick, axes) = flickable_at(window, origin, velocity)?;
+            for (axis, scrolls) in axes.into_iter().enumerate() {
+                if !scrolls {
+                    self.kinetic.kinetic.stop_axis(axis);
+                }
+            }
+            KineticView::Flickable {
+                flick,
+                bar: Target::at(window, origin, None),
+            }
+        };
+        self.kinetic_view = Some(view);
+        Some(())
+    }
+
+    fn kinetic_frame(&mut self, window: &slint::Window, now: Duration) {
+        let Some((mut x, mut y)) = self.kinetic.kinetic.tick(now) else {
+            return;
+        };
+        let Some(origin) = self.kinetic.origin else {
+            self.kinetic.cancel();
+            return;
+        };
+        if self.kinetic_view(window, origin).is_none() {
+            self.kinetic.cancel();
+            return;
+        }
+        // An axis the Flickable cannot scroll was stopped above, after this frame's tick.
+        let velocity = self.kinetic.kinetic.fling_velocity().unwrap_or_default();
+        if velocity[0] == 0.0 {
+            x = 0.0;
+        }
+        if velocity[1] == 0.0 {
+            y = 0.0;
         }
         let scale = window.scale_factor();
-        let cursor = self
-            .cursor
-            .filter(|_| scale.is_finite() && scale > 0.0)
-            .map(|p| {
-                let p = p.to_logical::<f32>(f64::from(scale));
-                LogicalPoint::new(p.x, p.y)
+        let consumed = matches!(self.kinetic_view, Some(KineticView::Surface))
+            && self.kinetic_sink.as_mut().is_some_and(|sink| {
+                sink(&WindowEvent::MouseWheel {
+                    device_id: DeviceId::dummy(),
+                    delta: if self.kinetic.lines {
+                        MouseScrollDelta::LineDelta(x / LINE_PIXELS, y / LINE_PIXELS)
+                    } else {
+                        MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+                            f64::from(x * scale),
+                            f64::from(y * scale),
+                        ))
+                    },
+                    phase: TouchPhase::Moved,
+                })
             });
+        if !consumed && (x != 0.0 || y != 0.0) {
+            if let Some(KineticView::Flickable { bar: Some(bar), .. }) = &self.kinetic_view {
+                bar.scrolled();
+            }
+            window.dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(origin.x, origin.y),
+                delta_x: x,
+                delta_y: y,
+            });
+        }
+        let position = match &self.kinetic_view {
+            Some(KineticView::Surface) => self
+                .kinetic_surface
+                .as_ref()
+                .map_or([None; 2], |surface| (surface.position)()),
+            Some(KineticView::Flickable { flick, .. }) => flick
+                .upgrade()
+                .and_then(|item| {
+                    let flick = item.downcast::<Flickable>()?;
+                    let flick = flick.as_pin_ref();
+                    Some([
+                        Some(f64::from(flick.content_x().get())),
+                        Some(f64::from(flick.content_y().get())),
+                    ])
+                })
+                .unwrap_or([None; 2]),
+            None => [None; 2],
+        };
+        self.kinetic.kinetic.observe_position(position, now);
+    }
+
+    /// Route an event already passed to [`Self::track`].
+    pub fn route(
+        &mut self,
+        window: &slint::Window,
+        event: &WindowEvent,
+        command: Option<CommandStrip>,
+    ) -> bool {
+        self.pressed.observe(event);
+        let now = now(window);
+        let cursor = self.logical_cursor(window);
         if self.target.as_ref().is_some_and(|target| {
             cursor.is_none_or(|point| !target.valid(window, point, command.as_ref()))
                 || self
                     .position
                     .is_none_or(|point| !target.valid(window, point, command.as_ref()))
         }) {
-            self.cancel();
+            self.cancel_wheel();
         }
         match event {
             WindowEvent::RedrawRequested => {
@@ -309,8 +552,39 @@ impl NativeScroll {
                     });
                 }
                 if !self.motion.active() {
-                    self.cancel();
+                    self.cancel_wheel();
                 }
+                self.kinetic_frame(window, now);
+                if !self.motion.active() && !self.kinetic.kinetic.active() {
+                    self.kinetic_view = None;
+                    self.timer.stop();
+                }
+            }
+            // Finger motion follows the finger: it reaches the content directly,
+            // as a wheel without a phase. Slint then neither eases it like a notch
+            // nor starts its own Flickable fling on the lift, so the shared
+            // momentum is the only one.
+            WindowEvent::MouseWheel { delta, .. } if self.source == WheelSource::Touchpad => {
+                self.cancel_wheel();
+                let Some(point) = cursor else {
+                    return false;
+                };
+                let (x, y) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * LINE_PIXELS, y * LINE_PIXELS),
+                    MouseScrollDelta::PixelDelta(delta) => {
+                        let delta = delta.to_logical::<f32>(f64::from(window.scale_factor()));
+                        (delta.x, delta.y)
+                    }
+                };
+                if x.is_finite() && y.is_finite() && (x != 0.0 || y != 0.0) {
+                    notify_scrollbar_wheel(window, point, x, y);
+                    window.dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                        position: slint::LogicalPosition::new(point.x, point.y),
+                        delta_x: x,
+                        delta_y: y,
+                    });
+                }
+                return true;
             }
             WindowEvent::MouseWheel {
                 delta: MouseScrollDelta::LineDelta(x, y),
@@ -320,20 +594,29 @@ impl NativeScroll {
                 let Some(point) = cursor else {
                     return false;
                 };
-                let Some(target) = Target::at(window, point, command.as_ref()) else {
-                    self.cancel();
+                // A notch with Ctrl, Alt or Super acts (zooms) once per wheel event;
+                // gliding it would repeat the action for every frame.
+                let target = Target::at(window, point, command.as_ref()).or_else(|| {
+                    let glide = !self.kinetic.wheel_modified()
+                        && self.glide_region.as_ref().is_some_and(|region| {
+                            region(slint::LogicalPosition::new(point.x, point.y))
+                        });
+                    glide.then(|| Target::content(window))
+                });
+                let Some(target) = target else {
+                    self.cancel_wheel();
                     return false;
                 };
                 if !target.accepts(*x, *y) {
-                    self.cancel();
+                    self.cancel_wheel();
                     return false;
                 }
                 if self.target.as_ref() != Some(&target) {
-                    self.cancel();
+                    self.cancel_wheel();
                 }
                 self.target = Some(target);
                 self.position = Some(point);
-                if self.motion.push(x * 60.0, y * 60.0, now) {
+                if self.motion.push(x * LINE_PIXELS, y * LINE_PIXELS, now) {
                     if !self.timer.running() {
                         self.timer.restart();
                     }
@@ -348,7 +631,7 @@ impl NativeScroll {
                 self.cursor = None;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.cancel();
+                self.cancel_wheel();
                 if let Some(point) = cursor {
                     let (x, y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (*x, *y),
@@ -371,6 +654,37 @@ impl NativeScroll {
         }
         false
     }
+}
+
+fn now(window: &slint::Window) -> Duration {
+    WindowInner::from_pub(window)
+        .context()
+        .platform()
+        .duration_since_start()
+}
+
+/// The innermost Flickable under `position` that scrolls along `velocity` (as
+/// Slint routes a wheel), with the axes it can scroll.
+fn flickable_at(
+    window: &slint::Window,
+    position: LogicalPoint,
+    velocity: [f64; 2],
+) -> Option<(ItemWeak, [bool; 2])> {
+    let (scope, _) = scope(window);
+    let mut views = Vec::new();
+    let mut bars = Vec::new();
+    collect(scope, position, &mut views, &mut bars);
+    views.into_iter().rev().find_map(|view| {
+        let area = bounds(&view);
+        let flick = view.downcast::<Flickable>()?;
+        let flick = flick.as_pin_ref();
+        let axes = [
+            flick.content_width().get() > area.width(),
+            flick.content_height().get() > area.height(),
+        ];
+        let along = (velocity[0] != 0.0 && axes[0]) || (velocity[1] != 0.0 && axes[1]);
+        along.then(|| (view.downgrade(), axes))
+    })
 }
 
 pub fn install<C: ComponentHandle + 'static>(

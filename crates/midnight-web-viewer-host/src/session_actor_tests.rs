@@ -845,3 +845,25 @@ fn the_session_thread_marks_itself_finished_before_its_last_wake() {
         "only the last wake follows the exit: {exited:?}"
     );
 }
+
+#[test]
+fn a_denied_sandbox_is_reported_with_its_own_fix_and_other_launch_failures_keep_the_prefix() {
+    let fix = "The HTML viewer needs permission for Chromium's sandbox on this system. \
+               Run once: sudo /opt/me/install-html-viewer-apparmor.sh";
+    let refusal = crate::SandboxRefusal::UserNamespaces {
+        executable: "/opt/me/viewers/midnight-viewer-html/midnight-viewer-html".into(),
+    };
+    let denied = io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        midnight_worker_platform::browser::SandboxUnavailable::new(fix, refusal.clone()),
+    );
+    assert_eq!(startup_error(&denied), (fix.to_owned(), Some(refusal)));
+    let missing = io::Error::new(io::ErrorKind::NotFound, "No such file or directory");
+    assert_eq!(
+        startup_error(&missing),
+        (
+            "Chromium startup: No such file or directory".to_owned(),
+            None
+        )
+    );
+}

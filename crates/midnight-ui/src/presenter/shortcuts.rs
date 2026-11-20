@@ -2,10 +2,16 @@
 use super::*;
 
 impl Presenter {
+    /// Why `viewer_launch` declined, for every case in which the user asked to view a
+    /// file; a viewer request must never end silently. Focusing a folder or the parent
+    /// entry is not such a request.
     pub fn viewer_unavailable_reason(&self, pane: PaneId) -> Option<String> {
-        if self.viewer_plugins.startup_read_failed && self.viewer_plugins.startup_disabled.is_none()
-        {
-            return Some(self.viewer_plugins.policy_unavailable().into());
+        if self.viewer_plugins.startup_disabled.is_none() {
+            return Some(if self.viewer_plugins.startup_read_failed {
+                self.viewer_plugins.policy_unavailable().into()
+            } else {
+                "Viewer settings are still being read. Try again in a moment.".into()
+            });
         }
         let panel = &self.panes[pane.index()];
         if panel.tree_view().is_some() && self.viewer_launch(pane, false).is_none() {
@@ -13,10 +19,52 @@ impl Presenter {
                 "Focus a readable regular file in the adopted tree before viewing.".into(),
             );
         }
+        if panel.parent_cursor {
+            return None;
+        }
         let entry = panel.cursor.and_then(|id| panel.entry_by_id(id))?;
-        entry.virtual_node.as_ref().filter(|node| !node.readable).map(|_| {
-            "This archive member is unreadable: directories, links, unsafe names, encryption and unsupported compression cannot be opened by the read-only provider.".into()
-        })
+        if let Some(node) = &entry.virtual_node {
+            if !node.readable {
+                return Some("This archive member is unreadable: directories, links, unsafe names, encryption and unsupported compression cannot be opened by the read-only provider.".into());
+            }
+            if panel
+                .archive
+                .as_ref()
+                .is_none_or(|archive| archive.location.mount.is_none())
+            {
+                return Some(
+                    "This archive is no longer open. Open it again to view its files.".into(),
+                );
+            }
+        }
+        match entry.kind {
+            EntryKind::Directory | EntryKind::DirectoryLink => return None,
+            EntryKind::Symlink => {
+                return Some(
+                    "Symbolic links are not opened by the viewer. View the file the link points to."
+                        .into(),
+                );
+            }
+            EntryKind::Other => {
+                return Some(
+                    "Devices, pipes, sockets and other special files cannot be viewed.".into(),
+                );
+            }
+            EntryKind::File => {}
+        }
+        if panel.loading {
+            return Some(
+                "This folder is still being listed. View the file when the listing is complete."
+                    .into(),
+            );
+        }
+        if !panel.search_allows_activation() {
+            return Some(
+                "The quick search does not match the focused file yet. Finish or clear it, then view the file."
+                    .into(),
+            );
+        }
+        None
     }
     /// Capture the exact displayed ordering without walking or opening any files.
     pub fn viewer_launch(&self, pane: PaneId, basic: bool) -> Option<ViewerLaunch> {
@@ -197,14 +245,27 @@ impl Presenter {
     }
 
     /// Return the current raw native item path for literal command-draft insertion.
+    /// Search results fed to the panel give their focused result, never the
+    /// folder hidden under them.
     pub(crate) fn focused_full_path(&self, pane: PaneId) -> Option<PathBuf> {
+        if let Some(feed) = self.feed(pane) {
+            return feed
+                .focused()
+                .map(|entry| entry.path.clone())
+                .filter(|path| path.is_absolute());
+        }
         focused_native_path(&self.panes[pane.index()])
             .filter(|path| path.is_absolute())
             .map(Path::to_path_buf)
     }
 
     /// Return the focused raw native basename for literal command-line insertion.
+    /// None under search results fed to the panel: a result's name alone would
+    /// name a file of the folder under the list, where the command runs.
     pub(crate) fn focused_name(&self, pane: PaneId) -> Option<PathBuf> {
+        if self.feed(pane).is_some() {
+            return None;
+        }
         let p = &self.panes[pane.index()];
         if p.loading || !p.native_capabilities() {
             return None;

@@ -5,10 +5,12 @@ mod outlines;
 mod timing;
 use crate::{
     LayoutError, RasterMut, TextPage, Viewport,
+    contrast::SelectionColors,
     raster::{blend_pixel, premultiply, stable_pixel},
+    tables::intersection,
 };
 use parley::{GlyphRun, Layout, PositionedLayoutItem};
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range};
 use swash::{
     CacheKey, FontRef,
     scale::{
@@ -38,6 +40,8 @@ pub(crate) struct GlyphPainter {
     variations: HashMap<Box<[i16]>, u32>,
     cache: GlyphCache,
     outlines: outlines::OutlineCache,
+    /// Readable brushes of selected glyphs over the current selection color.
+    selection_colors: SelectionColors,
     #[cfg(test)]
     scales: usize,
     #[cfg(test)]
@@ -97,6 +101,50 @@ impl TextPage {
             None => self.line_bounds.iter().copied().fold(own, union),
         }
     }
+}
+
+/// Per glyph of a run in visual order, after its first `skip` glyphs: whether the glyph's
+/// cluster starts inside `selection` (layout bytes). Ligature and mark glyphs follow their
+/// cluster.
+fn selected_glyphs<'a>(
+    run: &'a parley::Run<'a, [u8; 4]>,
+    selection: Range<usize>,
+    skip: usize,
+) -> impl Iterator<Item = bool> + 'a {
+    run.visual_clusters()
+        .flat_map(move |cluster| {
+            let inside = selection.contains(&cluster.text_range().start);
+            cluster.glyphs().map(move |_| inside)
+        })
+        .skip(skip)
+}
+
+/// The stretches along `glyph_run`'s baseline whose glyphs are selected or not, where its
+/// underline and strikethrough take the selected or the run's brush: the whole run unless
+/// it is partly selected. `first_glyph` is as in `selected_glyphs`.
+fn decoration_spans(
+    glyph_run: &GlyphRun<'_, [u8; 4]>,
+    coverage: Coverage,
+    selection: Option<&Range<usize>>,
+    first_glyph: usize,
+) -> Vec<(f32, f32, bool)> {
+    let start = glyph_run.offset();
+    let (Coverage::Partial, Some(selection)) = (coverage, selection) else {
+        let end = start + glyph_run.advance();
+        return vec![(start, end, coverage == Coverage::Selected)];
+    };
+    let mut spans: Vec<(f32, f32, bool)> = Vec::new();
+    let mut position = start;
+    let flags = selected_glyphs(glyph_run.run(), selection.clone(), first_glyph);
+    for (glyph, inside) in glyph_run.glyphs().zip(flags) {
+        let end = position + glyph.advance;
+        match spans.last_mut() {
+            Some(span) if span.2 == inside => span.1 = end,
+            _ => spans.push((position, end, inside)),
+        }
+        position = end;
+    }
+    spans
 }
 
 /// Strikethrough, then underline of a run: top edge, thickness (at least one
@@ -172,14 +220,61 @@ impl GlyphPainter {
     }
 }
 
+/// How much of one run's text a selection covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Coverage {
+    Unselected,
+    Selected,
+    Partial,
+}
+
+impl Coverage {
+    /// `selection` and `run` are both layout byte ranges.
+    fn of(selection: Option<&Range<usize>>, run: Range<usize>) -> Self {
+        match selection {
+            Some(selection) if selection.start < run.end && run.start < selection.end => {
+                if selection.start <= run.start && run.end <= selection.end {
+                    Self::Selected
+                } else {
+                    Self::Partial
+                }
+            }
+            _ => Self::Unselected,
+        }
+    }
+}
+
 impl GlyphPainter {
+    /// Paint the glyphs of `page`. A glyph whose cluster starts inside
+    /// `selection` (decoded UTF-8 bytes of `page`) uses a brush that stays
+    /// readable over `view.selection_color` painted on `view.background`.
     pub(crate) fn paint(
         &mut self,
         page: &TextPage,
         view: Viewport,
+        selection: Option<Range<usize>>,
         raster: &mut RasterMut<'_>,
     ) -> Result<(), LayoutError> {
-        self.paint_traced(page, view, None, raster, &mut timing::Trace::new())
+        // Only a visible selection changes glyph colors.
+        let selection = match selection {
+            Some(range)
+                if !range.is_empty()
+                    && self
+                        .selection_colors
+                        .prepare(view.selection_color, view.background) =>
+            {
+                Some(range)
+            }
+            _ => None,
+        };
+        self.paint_traced(
+            page,
+            view,
+            None,
+            selection,
+            raster,
+            &mut timing::Trace::new(),
+        )
     }
 
     pub(crate) fn paint_annotation(
@@ -189,7 +284,8 @@ impl GlyphPainter {
         origin: [f64; 2],
         raster: &mut RasterMut<'_>,
     ) -> Result<(), LayoutError> {
-        self.paint_traced(page, view, Some(origin), raster, &mut timing::Trace::new())
+        let trace = &mut timing::Trace::new();
+        self.paint_traced(page, view, Some(origin), None, raster, trace)
     }
 
     fn paint_traced(
@@ -197,6 +293,7 @@ impl GlyphPainter {
         page: &TextPage,
         view: Viewport,
         precise_origin: Option<[f64; 2]>,
+        selection: Option<Range<usize>>,
         raster: &mut RasterMut<'_>,
         trace: &mut timing::Trace,
     ) -> Result<(), LayoutError> {
@@ -240,16 +337,24 @@ impl GlyphPainter {
                 let translated = precise_origin.map(|origin| {
                     std::array::from_fn(|axis| origin[axis] - f64::from(part.origin[axis]))
                 });
+                let local = selection
+                    .as_ref()
+                    .and_then(|range| intersection(range, &part.range));
                 self.paint_traced(
                     &part.page,
                     view.translated(part.origin),
                     translated,
+                    local,
                     raster,
                     trace,
                 )?;
             }
             return Ok(());
         }
+        // Shaping expands tabs and CRLF; clusters carry these layout bytes.
+        let selection = selection.map(|range| {
+            page.source_map.to_layout(range.start)..page.source_map.to_layout(range.end)
+        });
         let left = view.origin[0];
         let right = left + view.width as f32;
         for (index, line) in page.layout.lines().enumerate() {
@@ -266,11 +371,25 @@ impl GlyphPainter {
             {
                 continue;
             }
+            // Parley splits a shaped run into consecutive glyph runs by style:
+            // the run (index in the line) and its glyphs before this glyph run.
+            let mut preceding = (usize::MAX, 0);
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
                 };
                 let run = glyph_run.run();
+                let coverage = Coverage::of(selection.as_ref(), run.text_range());
+                let first_glyph = if coverage == Coverage::Partial {
+                    if preceding.0 != run.index() {
+                        preceding = (run.index(), 0);
+                    }
+                    let first = preceding.1;
+                    preceding.1 += glyph_run.glyphs().count();
+                    first
+                } else {
+                    0
+                };
                 let reach = [
                     run.font_size() * INK_EM_HORIZONTAL,
                     run.font_size() * INK_EM_VERTICAL,
@@ -292,17 +411,29 @@ impl GlyphPainter {
                 {
                     continue;
                 }
-                for (y, height, brush) in decorations(&glyph_run) {
-                    raster.fill_at_origin(
-                        crate::Rect {
-                            x0: f64::from(glyph_run.offset()),
-                            y0: f64::from(y),
-                            x1: f64::from(glyph_run.offset() + glyph_run.advance()),
-                            y1: f64::from(y + height),
-                        },
-                        origin,
-                        brush,
-                    );
+                let mut lines = decorations(&glyph_run).peekable();
+                if lines.peek().is_some() {
+                    // Underlines and strikethroughs of selected text stay readable too.
+                    let spans =
+                        decoration_spans(&glyph_run, coverage, selection.as_ref(), first_glyph);
+                    for (y, height, brush) in lines {
+                        let selected_line = match coverage {
+                            Coverage::Unselected => brush,
+                            _ => self.selection_colors.brush(brush),
+                        };
+                        for &(x0, x1, inside) in &spans {
+                            raster.fill_at_origin(
+                                crate::Rect {
+                                    x0: f64::from(x0),
+                                    y0: f64::from(y),
+                                    x1: f64::from(x1),
+                                    y1: f64::from(y + height),
+                                },
+                                origin,
+                                if inside { selected_line } else { brush },
+                            );
+                        }
+                    }
                 }
                 if run.normalized_coords().len() > 64 {
                     return Err(LayoutError::InvalidFont);
@@ -311,12 +442,27 @@ impl GlyphPainter {
                 let font_id = (data.data.id(), data.index);
                 let (font_key, colored) = self.font_entry(font_id, data)?;
                 let coordinates = self.variation(run.normalized_coords());
-                let brush = glyph_run.style().brush;
+                let run_brush = glyph_run.style().brush;
+                let selected_brush = match coverage {
+                    Coverage::Unselected => run_brush,
+                    _ => self.selection_colors.brush(run_brush),
+                };
+                // A partly selected run decides per glyph: is its cluster's first
+                // byte selected? Ligature and mark glyphs follow their cluster.
+                let mut clusters = (coverage == Coverage::Partial).then(|| {
+                    selected_glyphs(run, selection.clone().unwrap_or_default(), first_glyph)
+                });
                 // Most scrolling frames reuse every glyph. Scaler setup belongs
                 // to the cache-miss path, not to every styled run.
                 let mut scaler = None;
                 let synthesis = run.synthesis();
                 for glyph in glyph_run.positioned_glyphs() {
+                    // Consume each glyph's cluster flag before culling can skip it.
+                    let inside = match &mut clusters {
+                        Some(clusters) => clusters.next().unwrap_or(false),
+                        None => coverage == Coverage::Selected,
+                    };
+                    let brush = if inside { selected_brush } else { run_brush };
                     if culled
                         && match precise_bounds {
                             Some(bounds) => {

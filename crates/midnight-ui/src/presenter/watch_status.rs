@@ -1,8 +1,10 @@
 //! Non-modal presentation of how the backend watches a pane's view.
 use super::*;
 
-/// The backend registers no native change notifications for the view.
-const POLLING_ONLY: &str = "Change notifications are unavailable for this folder; it is checked periodically (about every 15 seconds).";
+/// The backend could not register native change notifications for the view
+/// for a while (a flat folder's registration keeps being retried meanwhile).
+const POLLING_ONLY: &str =
+    "Live updates are unavailable for this folder; it is checked for changes regularly instead.";
 /// The pane's watch worker waits for its rate-limited restart.
 const RESTARTING: &str =
     "Automatic refresh is paused after an internal error; it is retried at most once a minute.";

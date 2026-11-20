@@ -72,7 +72,7 @@ production consumers, rather than every test fixture that calls `std::fs`.
 | F3 archive content | `viewer-engine/capture_archive.rs` wraps `ArchiveMount` in `ContentSource`, then `CapturedFile::from_source` | Preserve this working lease route; generalize ownership/version validation rather than reconstructing a member path |
 | File comparison | app `comparator.rs`; `compare-engine/worker.rs` directly captures both native paths; text/image workers use those captures | Provider-scoped independent content leases. This differs from the engine's two-pane metadata/selection comparison |
 | Thumbnails and command icons | app `thumbnails.rs` supplies `thumbnail-host::service::native_capture`; host service supports a capture closure, but current panel target construction requires native capability | Route selected provider sources and versioned cache keys through the existing bounded capture seam; keep explicit configured native icon paths distinct from panel-node authority |
-| Archive mount and listing | `engine/archives.rs` discovers installed packages; `filesystem-host/session.rs::Mount::open_captured` validates a provider capture and supervises a restricted worker | Preserve archive worker protocols 1, 2 and 3. Generic/nested mount sources need parent content leases and aggregate nesting/decompression budgets |
+| Archive mount and listing | `engine/archives.rs` discovers installed packages; `filesystem-host/session.rs::Mount::open_captured` validates a provider capture and supervises a restricted worker | Preserve archive worker protocols 1, 2 and 3. Archives inside archives already open from staged member leases of their enclosing mount (`Mount::open_nested`, depth and mount-count bounds); other generic mount sources remain |
 | Archive copy-out | `engine/archive_transfer.rs` re-lists captured IDs and checks mount, parent, raw name, kind, length and readability; adapts members to `TransferSource` | Preserve this completed verified-copy source route and native destination guarantees; no arbitrary display-to-path conversion |
 | Copy, Move, recovery | separately injected `TransferService`; `engine/copy_*`, `move_*`; `core/transfer*.rs`; OS `transfer*` retain native handles/proofs/stages | Provider-scoped prepared source/destination capabilities with equivalent revalidation, readback, publication and recovery; Read alone grants no source removal |
 | Rename, create, Trash, permanent delete and metadata editing | separately injected `MutationService`; `engine/operations.rs`, `operation_worker.rs`, `operation_metadata.rs`; OS mutation modules | Preserve preparation before confirmation, pinned target/parent identity, no-replace and distinct Trash/permanent semantics; do not reuse read-only size traversal for mutation |
@@ -106,10 +106,9 @@ violation, a pipe, source or staging I/O failure, or a detected source change.
 A listing page breaks the protocol when a member ID is below 2, not increasing or
 equal to the listed directory, when a member has another parent, or when the page is
 empty but announces more; so does protocol-1 content longer than requested. Such a
-reply ends the worker even if its request was cancelled meanwhile. The host's own
-listing limits (100,000 nodes and 8 MiB of raw and display names) are not protocol
-violations: a legitimate large directory can reach them, so they fail only that
-listing.
+reply ends the worker even if its request was cancelled meanwhile. The host sets no
+listing limit of its own: it pages through a directory of any size, as many members
+and name bytes as the worker's index holds.
 Cancelling a listing or member read never ends the shared worker: a listing
 stops between pages and discards a conforming in-flight page, protocol-3 member
 reads cancel cooperatively, and protocol-1/2 reads finish their exchange while the
@@ -120,8 +119,9 @@ issues request-cancellable member reads of shared mounts through `read_cooperati
 
 Archive navigation, saved/unavailable archive tabs, selection, F3 member content,
 panel thumbnails of archive members (for providers with stable member IDs) and
-verified copy-out exist. Nested archives, archive writes and general remote content
-are separate gaps; these do not erase the delivered archive functionality. The
+verified copy-out exist, and so do archives inside archives (session only). Archive
+writes and general remote content are separate gaps; these do not erase the delivered
+archive functionality. The
 existing `ArchiveAddress` remains native-container backed, so it is not yet a
 universal stored location.
 
@@ -223,7 +223,7 @@ preparation/dispatch, not cached permanently from package discovery.
 
 The local Salamander source is a behavioral reference, not a compatible API:
 
-- `D:/experiments/salamander-main/src/fileswnd.h` defines separate `ptDisk`,
+- `<salamander-source>/src/fileswnd.h` defines separate `ptDisk`,
   `ptZIPArchive` and `ptPluginFS` panels. It is evidence for working provider UI
   behavior, not evidence that its native disk access is itself plugin based.
 - `src/plugins/shared/spl_fs.h::CPluginInterfaceForFSAbstract` separates OpenFS,

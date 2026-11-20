@@ -24,6 +24,9 @@ pub struct FindContentQuery {
     pub text: String,
     pub case_sensitive: bool,
     pub whole_words: bool,
+    /// `text` is a bounded regular expression matched within each line, instead
+    /// of literal text. It is compiled on the search worker.
+    pub regex: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +70,10 @@ pub struct FindRequest {
     pub modified_within: Option<Duration>,
     /// Distinct native identities with equal bytes; hard-link aliases count once.
     pub duplicates: bool,
+    /// Also search the members of archives found on the way (names, and contents
+    /// when a content query is set) through the installed archive provider.
+    /// Identical files searches native files only.
+    pub archives: bool,
     pub limits: FindLimits,
 }
 impl FindRequest {
@@ -83,6 +90,7 @@ impl FindRequest {
             content: None,
             modified_within: None,
             duplicates: false,
+            archives: false,
             limits: FindLimits::default(),
         }
     }
@@ -173,11 +181,25 @@ impl FindEntry {
 #[derive(Clone, Debug)]
 pub struct FindResult {
     pub id: FindResultId,
+    /// For an archive member, `path` is the archive's native path joined with the
+    /// member's names: presentation and sorting only, never a native target.
     pub entry: FindEntry,
     /// Stable within this search; every published group contains at least two identities.
     pub duplicate_group: Option<u64>,
     /// Full group size, or zero for ordinary results.
     pub duplicate_group_size: usize,
+    /// Set for a member found inside an archive (Search inside archives).
+    pub archive: Option<Arc<FindArchiveMember>>,
+}
+
+/// Where a member found inside an archive lives. The provider address names the
+/// member's folder; the member is chosen there by its raw name.
+#[derive(Clone, Debug)]
+pub struct FindArchiveMember {
+    pub folder: crate::ArchiveAddress,
+    pub name: Vec<u8>,
+    /// The native archive file as it was searched; Go to file revalidates it.
+    pub container: FindEntry,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,6 +261,10 @@ pub struct FindProgress {
     pub duplicate_groups: u64,
     /// Actual hash/compare bytes, also charged to content_bytes and its shared limit.
     pub duplicate_bytes: u64,
+    /// Search inside archives: archives opened, and members examined in them. Shown as
+    /// progress only; no limit applies to either (members count as visited entries).
+    pub archives: u64,
+    pub archive_members: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FindBudget {

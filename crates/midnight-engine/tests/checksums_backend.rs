@@ -14,6 +14,11 @@ mod retirement;
 #[allow(dead_code)] // This fixture does not include the tree-capture admission caller.
 mod checksum;
 
+// Manifest saves publish through it; the empty-file replacement is not included.
+#[path = "../src/verified_output.rs"]
+#[allow(dead_code)]
+mod verified_output;
+
 use midnight_core::*;
 use std::{fs, sync::Arc, time::Duration};
 
@@ -85,6 +90,8 @@ async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified(
     )
     .unwrap();
     assert_eq!(receipt.included, 1);
+    assert_eq!(receipt.path, manifest);
+    assert!(receipt.recovery.is_empty(), "a new file displaces nothing");
     assert_eq!(
         fs::read_to_string(&manifest).unwrap(),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad *č文🦀 abc.txt\n"
@@ -118,6 +125,12 @@ async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified(
         fs::read_to_string(&manifest).unwrap(),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad *č文🦀 abc.txt\n"
     );
+    // The replaced manifest is kept, and the receipt says where, so it can be found.
+    let [kept] = replaced.recovery.as_slice() else {
+        panic!("one replaced file is kept: {:?}", replaced.recovery);
+    };
+    assert_ne!(kept, &manifest);
+    assert_eq!(fs::read(kept).unwrap(), b"stale");
     let alias = temp.path().join("source-alias.sha256");
     fs::hard_link(&path, &alias).unwrap();
     let alias_save = ChecksumManifestRequest {

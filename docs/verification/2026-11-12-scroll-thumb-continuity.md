@@ -1,6 +1,6 @@
 # Bounded scrollbar continuity (SCROLL-01)
 
-Starting commit: `6f06ec4`, authoritative repository `D:/experiments/dev/FM`.
+Starting commit: `6f06ec4`, in the authoritative primary checkout.
 This work follows the preserved BAT evidence in
 [the glyph verification](2026-11-12-glyph-compositing.md), which demonstrated correct
 pixel motion with opposite normalized thumb jumps of roughly 0.31–0.60%.

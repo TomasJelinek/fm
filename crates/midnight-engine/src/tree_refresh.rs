@@ -196,6 +196,7 @@ impl Session {
             return Ok(false);
         }
         if self.built_with_current_sizes()
+            && self.built_hide_hidden == self.options.hide_hidden
             && let (Some(before), Some(after)) = (&before, self.tree.listing_state(branch))
             && before.unchanged(&after)
         {
@@ -223,6 +224,7 @@ impl Session {
             self.projection = projection;
             self.selection = selection;
             self.built_sizes = self.options.sizes.clone();
+            self.built_hide_hidden = self.options.hide_hidden;
             Ok(())
         })();
         let error = match result {

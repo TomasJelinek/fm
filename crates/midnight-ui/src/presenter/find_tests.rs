@@ -110,6 +110,7 @@ fn result_validation_never_executes_and_cannot_retarget_a_new_search() {
                 id: FindResultId(7),
                 duplicate_group: None,
                 duplicate_group_size: 0,
+                archive: None,
                 entry: entry.clone(),
             })]
             .into(),
@@ -152,6 +153,7 @@ fn result_validation_never_executes_and_cannot_retarget_a_new_search() {
                 id: FindResultId(7),
                 duplicate_group: None,
                 duplicate_group_size: 0,
+                archive: None,
                 entry: entry.clone(),
             })]
             .into(),
@@ -184,6 +186,7 @@ fn invalid_root_and_query_edits_never_start_a_search_or_erase_captured_roots() {
             text: String::new(),
             case_sensitive: false,
             whole_words: false,
+            regex: false,
         }),
         ..Default::default()
     };
@@ -290,6 +293,7 @@ fn duplicate_group_larger_than_a_normal_batch_is_retained_atomically_on_stop() {
                 id: FindResultId(id),
                 duplicate_group: Some(1),
                 duplicate_group_size: 100,
+                archive: None,
                 entry: FindEntry {
                     path: std::env::temp_dir().join(format!("duplicate-{id}.txt")),
                     kind: EntryKind::File,

@@ -418,10 +418,8 @@ impl Worker {
             &roots,
             cancel,
             &mut |id, size| {
+                // One size per folder met, however many folders the archive holds.
                 let cache = self.store.get(&mount, self.active_mount);
-                if cache.values.len() >= scan::MAX_NODES && !cache.values.contains_key(&id) {
-                    return false;
-                }
                 cache.values.insert(id, size);
                 if throttle.due(Instant::now()) {
                     self.observe();
@@ -457,7 +455,7 @@ impl Worker {
             navigation,
             &self.lane.stop.clone(),
         ) {
-            return Err("Archive size results could not be published.".into());
+            return Err("Archive size results could not be shown.".into());
         }
         if ok || cancel.is_cancelled() {
             Ok(())

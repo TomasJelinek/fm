@@ -89,6 +89,7 @@ fn wildcard_search_streamed_orders_and_restart_preserve_backend_reclamation() {
                 id: FindResultId(index as u64 + 1),
                 duplicate_group: None,
                 duplicate_group_size: 0,
+                archive: None,
                 entry: FindEntry {
                     path: root.join(name),
                     kind: EntryKind::File,
@@ -440,6 +441,7 @@ fn modeless_find_streams_results_and_closes_independently_at_320_by_200() {
                 id: FindResultId(1),
                 duplicate_group: None,
                 duplicate_group_size: 0,
+                archive: None,
                 entry,
             })]
             .into(),

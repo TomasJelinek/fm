@@ -164,15 +164,13 @@ fn metadata_id(request: &MetadataTransferRequest) -> OperationId {
     }
 }
 /// Exact modified-time preflight accepts only native regular files. It keeps
-/// the ordinary no-follow source route even when the request carries a
-/// directory-only option.
+/// the ordinary no-follow source route even when the request carries a link
+/// option, so links stay refused there as before.
 pub(super) fn source_link_policy(
     links: CopyLinkPolicy,
     metadata: TransferMetadataPolicy,
 ) -> CopyLinkPolicy {
-    if links.materializes_directory_links()
-        && metadata == TransferMetadataPolicy::RequireModifiedTime
-    {
+    if metadata == TransferMetadataPolicy::RequireModifiedTime {
         CopyLinkPolicy::Reject
     } else {
         links
@@ -342,28 +340,21 @@ impl CopyInput {
     }
 
     pub(super) fn validate(&self) -> Result<(), FsError> {
-        if self.links == CopyLinkPolicy::Preserve {
-            if self.intent != TransferIntent::Copy {
-                return Err(error(
-                    &self.destination,
-                    io::ErrorKind::Unsupported,
-                    "Link preservation is available only for Copy; sources have been retained.",
-                ));
-            }
-            if self.metadata != TransferMetadataPolicy::ContentOnly {
-                return Err(error(
-                    &self.destination,
-                    io::ErrorKind::Unsupported,
-                    "Link preservation cannot require modified time.",
-                ));
-            }
-            if matches!(self.sources, Sources::Archive(_)) {
-                return Err(error(
-                    &self.destination,
-                    io::ErrorKind::Unsupported,
-                    "Archive sources do not support link preservation.",
-                ));
-            }
+        // Move preserves links (a rename, or a recreation across volumes); it never
+        // copies what a link points to. Required modified time keeps links refused.
+        if self.links == CopyLinkPolicy::FollowLinks && self.intent != TransferIntent::Copy {
+            return Err(error(
+                &self.destination,
+                io::ErrorKind::Unsupported,
+                "Following links is available only for Copy; sources have been retained.",
+            ));
+        }
+        if self.links.recreates_links() && matches!(self.sources, Sources::Archive(_)) {
+            return Err(error(
+                &self.destination,
+                io::ErrorKind::Unsupported,
+                "Archive sources do not support link preservation.",
+            ));
         }
         let clipboard = match &self.sources {
             Sources::Paths(files) => Some(files),
@@ -419,13 +410,13 @@ impl CopyInput {
                     }
                     PreparedCapturedTransfer::Move(roots)
                         if self.intent == TransferIntent::Move
-                            && !links.materializes_directory_links() =>
+                            && links == CopyLinkPolicy::Reject =>
                     {
                         roots.len()
                     }
                     PreparedCapturedTransfer::MoveWithDirectoryLinks(roots)
                         if self.intent == TransferIntent::Move
-                            && links.materializes_directory_links() =>
+                            && links != CopyLinkPolicy::Reject =>
                     {
                         roots.len()
                     }

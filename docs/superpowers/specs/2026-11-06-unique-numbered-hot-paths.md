@@ -49,7 +49,7 @@ preserves non-UTF-8/UTF-16 and long-path identity. Physical-alias deduplication
 would require a separate backend filesystem identity contract.
 
 The reference inspected was Salamander's `CCfgPageHotPath` in
-`D:\experiments\salamander-main\src\dialogs4.cpp`, where list selection loads
+`<salamander-source>\src\dialogs4.cpp`, where list selection loads
 management controls. Its separate name field is deliberately omitted here per
 the requested path-only presentation.
 

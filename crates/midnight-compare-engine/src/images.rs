@@ -161,6 +161,9 @@ impl Images {
             accessible_text: status.clone(),
             status,
             image: true,
+            bytes: false,
+            bytes_only: false,
+            scanning: false,
             position: 0.0,
         })
     }

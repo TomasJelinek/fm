@@ -211,6 +211,36 @@ impl Harness {
         self.child()
     }
 
+    /// Answer the check of the typed destination `path` as the backend does: the
+    /// folder exists. Only what the answer sends (the transfer) is kept.
+    fn answer_destination_check(&self, path: &std::path::Path) {
+        let check = self
+            .commands
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::CheckTransferDestination(request) => Some(request.clone()),
+                _ => None,
+            })
+            .expect("a typed destination is checked before the transfer starts");
+        assert_eq!(check.path, path);
+        self.commands.borrow_mut().clear();
+        owned_commands::run(&self.state, &self.begin, |state, _| {
+            state.apply_with_sender(
+                Event::TransferDestinationChecked(Box::new(DestinationCheckResult {
+                    request: check.request,
+                    path: check.path.clone(),
+                    result: Ok(true),
+                })),
+                &|command| {
+                    self.commands.borrow_mut().push(command);
+                    true
+                },
+            );
+        });
+        refresh(&self.main, &self.state.borrow());
+    }
+
     fn assert_closed(&self, child: &MinimalSoftwareWindow) {
         slint::platform::update_timers_and_animations();
         assert!(child.window().is_visible());
@@ -392,11 +422,15 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
                 destination.to_str().unwrap()
             );
             key(&child, Key::Return);
+            h.answer_destination_check(&destination);
             let commands = h.commands.borrow();
             let [Command::EnqueueCopyWithOptions(options)] = commands.as_slice() else {
                 panic!("the frozen options must enqueue exactly once");
             };
-            assert_eq!(options.links, CopyLinkPolicy::FollowDirectoryContents);
+            assert_eq!(
+                options.links,
+                crate::support::link_option::sent(moving, true)
+            );
             let CopyOptionsInput::Native(request) = &options.input else {
                 panic!("the dialog must keep its native selection");
             };
@@ -947,7 +981,8 @@ fn trash_and_permanent_delete_share_modeless_progress_and_close_means_cancel() {
         assert!(h.commands.borrow().is_empty());
         h.accepting.set(true);
         modeless::click(progress, "Cancel operation");
-        assert!(!progress.window().is_visible());
+        // As a Copy's, the window stays to show how the Delete ends.
+        assert!(progress.window().is_visible());
         assert!(matches!(h.commands.borrow().as_slice(),
             [Command::CancelOperation(actual)] if *actual == id));
         assert!(
@@ -955,6 +990,11 @@ fn trash_and_permanent_delete_share_modeless_progress_and_close_means_cancel() {
                 .get_operations()
                 .iter()
                 .any(|row| row.identity == id.0.to_string() && row.state == "Cancelling")
+        );
+        key(progress, Key::Escape);
+        assert!(
+            !progress.window().is_visible(),
+            "a cancelling Delete's window closes without another question"
         );
     }
 }

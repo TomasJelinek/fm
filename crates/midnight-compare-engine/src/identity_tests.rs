@@ -285,10 +285,10 @@ fn progressing_raw_verification_uses_exactly_one_bounded_pair_of_reads_per_turn(
     }
 }
 
-fn finish_decoded(lines: &[Vec<String>; 2]) -> bool {
+fn finish_decoded(text: [&str; 2]) -> bool {
     let mut proof = DecodedText::default();
     for _ in 0..1000 {
-        if let Some(equal) = proof.step(lines) {
+        if let Some(equal) = proof.step(text) {
             return equal;
         }
     }
@@ -297,29 +297,32 @@ fn finish_decoded(lines: &[Vec<String>; 2]) -> bool {
 
 #[test]
 fn decoded_identity_is_exact_across_unicode_and_chunk_boundaries() {
-    let lines = [vec!["漢".repeat(5000); 5], vec!["漢".repeat(5000); 5]];
+    let text = "漢".repeat(25_000);
     let mut proof = DecodedText::default();
     assert_eq!(
-        proof.step(&lines),
+        proof.step([&text, &text]),
         None,
         "A turn must not compare the entire 75 KiB"
     );
-    assert!(finish_decoded(&lines));
-    assert!(finish_decoded(&[
-        vec!["ab\n".into(), "c".into()],
-        vec!["a".into(), "b\nc".into()],
-    ]));
+    assert!(finish_decoded([&text, &text]));
+    // A difference in the last byte of a later chunk, inside a multi-byte character.
+    let mut changed = text.clone();
+    changed.pop();
+    changed.push('漣');
+    assert!(!finish_decoded([&text, &changed]));
 }
 
 #[test]
 fn decoded_identity_finds_late_differences_and_preserves_line_endings() {
-    let left = vec!["same\n".into(); 300];
-    let mut right = left.clone();
-    right.push("extra\n".into());
+    let left = "same\n".repeat(30_000);
+    let early = left.replacen("same\n", "SAME\n", 1);
+    let late = format!("{}x", &left[..left.len() - 1]);
     let mut proof = DecodedText::default();
-    assert_eq!(proof.step(&[left.clone(), right.clone()]), None);
-    assert!(!finish_decoded(&[left, right]));
-    assert!(!finish_decoded(&[vec!["a\r\n".into()], vec!["a\n".into()]]));
-    assert!(!finish_decoded(&[vec!["a\n".into()], vec!["a".into()]]));
-    assert!(finish_decoded(&[Vec::new(), Vec::new()]));
+    assert_eq!(proof.step([&left, &late]), None);
+    assert!(!finish_decoded([&left, &late]));
+    assert!(!finish_decoded([&left, &early]));
+    assert!(!finish_decoded([&left, &format!("{left}extra\n")]));
+    assert!(!finish_decoded(["a\r\n", "a\n"]));
+    assert!(!finish_decoded(["a\n", "a"]));
+    assert!(finish_decoded(["", ""]));
 }

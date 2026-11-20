@@ -2,6 +2,7 @@ import { ScrollStrip } from "scroll-strip.slint";
 import { Theme } from "theme.slint";
 import { Tip } from "controls.slint";
 import { DetailRow } from "navigation-models.slint";
+import { NameText } from "path-text.slint";
 
 component DetailField inherits Rectangle {
     in property <DetailRow> field;
@@ -21,7 +22,9 @@ component DetailField inherits Rectangle {
     forward-focus: focus;
     value := Text {
         x: 7px; width: max(0px, parent.width - 14px); height: parent.height;
-        text: field.value; font-size: Theme.small-font;
+        // A name stays left to right; other values (sizes, dates) are shown as they are.
+        text: field.label == "Name" ? NameText.ltr(field.value) : field.value;
+        accessible-label: field.value; font-size: Theme.small-font;
         color: root.primary ? Theme.text : Theme.secondary-text;
         vertical-alignment: center; overflow: elide;
     }

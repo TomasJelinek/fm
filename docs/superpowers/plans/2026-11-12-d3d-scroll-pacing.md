@@ -16,7 +16,7 @@ docs/verification/2026-11-12-scroll-thumb-continuity.md.
 
 ## Constraints and ownership
 
-- Starting at 5388a97 in D:/experiments/dev/FM. No commits by this agent.
+- Starting at 5388a97 in the primary checkout. No commits by this agent.
 - Own viewer renderer/UI/probe; coordinate vendored renderer changes before editing.
 - Preserve source validation, independent plugins, visible-only paging, reversal and absolute seeks.
 - Do not weaken sample guards, force software as the solution, or assert monitor scanout from CPU

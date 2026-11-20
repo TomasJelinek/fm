@@ -266,16 +266,18 @@ fn admit(lane: Arc<Lane>, snapshots: Snapshots, outbox: Outbox, command: Command
     let ready = snapshots.lock().unwrap_or_else(|e| e.into_inner())[pane.index()]
         .capture_tree_root(root)
         .ok();
-    let oversized = match &command {
+    let selected = match &command {
         Command::Compute {
             selection: Some(selected),
             ..
         }
-        | Command::Observe { selected, .. } => selected.capacity() > scan::MAX_NODES * 2,
-        _ => false,
+        | Command::Observe { selected, .. } => Some(selected.len()),
+        _ => None,
     };
+    // A listing of any size; a selection names at most every row of its listing.
     let Some(ready) = ready.filter(|ready| {
-        ready.archive().is_some() && ready.snapshot().entries.len() <= scan::MAX_NODES && !oversized
+        ready.archive().is_some()
+            && selected.is_none_or(|selected| selected <= ready.snapshot().entries.len())
     }) else {
         reject(
             &outbox,

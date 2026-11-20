@@ -90,11 +90,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         MutationKind::Delete(mode) => format!(
             "{}\n\n{}",
             delete_summary::summary(preview, &presenter.number_locale),
-            if mode == DeleteMode::Trash {
-                "Move these items to the system Trash? If unavailable, they will remain in place."
-            } else {
-                "Permanently delete these items and folder contents? This cannot be undone. Links are removed without deleting their targets."
-            }
+            delete_summary::question(preview, mode, &presenter.number_locale)
         ),
     };
     window.set_operation_title(title(kind).into());
@@ -143,9 +139,11 @@ fn present_replace(
         return;
     };
     window.set_operation_title("Replace file".into());
+    // Enter in the name field does not answer this question (see OperationDialog).
     window.set_operation_warning(
         format!(
-            "{} already exists. Choose Replace file to replace it with an empty file, or change the name.",
+            "{} already exists. Choose the Replace file button to replace it with an empty \
+             file; the original is kept in a recovery folder. Or change the name.",
             shown_text(name)
         )
         .into(),

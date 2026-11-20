@@ -608,3 +608,191 @@ fn cancelled_presence_probe_and_branch_listing_report_cancellation_and_stay_usab
     );
     assert_eq!(listing(opened.mount.as_ref(), &opened.root).len(), 1);
 }
+
+#[test]
+fn a_folder_of_more_than_100000_members_lists_completely() {
+    // A listing once failed beyond 100,000 members, and so did a capture that held
+    // more than that in all. Listing again checks the rows against all it holds.
+    let (location, state) = fixture(16, 1);
+    state.rows.lock().unwrap().insert(
+        4,
+        (5..100_006)
+            .map(|entry| node(16, entry, 4, EntryKind::File))
+            .collect(),
+    );
+    let opened = captured_archive(&location, &Cancellation::default()).unwrap();
+    let root = listing(opened.mount.as_ref(), &opened.root);
+    assert_eq!(root[2].kind, EntryKind::Directory);
+    for _ in 0..2 {
+        let members = listing(opened.mount.as_ref(), &root[2].token);
+        assert_eq!(members.len(), 100_001);
+        assert_eq!(members[100_000].metadata.size, Some(5));
+    }
+    assert_eq!(listing(opened.mount.as_ref(), &opened.root).len(), 3);
+}
+
+#[test]
+fn a_folder_with_more_than_8_mib_of_names_lists_completely() {
+    // 65 members whose raw names and labels take 64 KiB each: 8 MiB and 128 KiB.
+    let (location, state) = fixture(17, 1);
+    let named = (2..67)
+        .map(|entry| {
+            let mut raw = format!("{entry:03}").into_bytes();
+            raw.resize(64 * 1024, b'n');
+            ArchiveNode {
+                display_name: String::from_utf8_lossy(&raw).into_owned(),
+                raw_name: raw.into(),
+                ..node(17, entry, 1, EntryKind::File)
+            }
+        })
+        .collect();
+    state.rows.lock().unwrap().insert(1, named);
+    let opened = captured_archive(&location, &Cancellation::default()).unwrap();
+    let rows = listing(opened.mount.as_ref(), &opened.root);
+    assert_eq!(rows.len(), 65);
+    assert!(rows.iter().all(|row| row.raw_name.len() == 64 * 1024));
+    // A name beyond the archive protocol's 64 KiB is still refused.
+    let (location, state) = fixture(18, 1);
+    let mut long = node(18, 2, 1, EntryKind::File);
+    long.raw_name = vec![b'n'; 64 * 1024 + 1].into();
+    state.rows.lock().unwrap().insert(1, vec![long]);
+    let opened = captured_archive(&location, &Cancellation::default()).unwrap();
+    assert_eq!(
+        opened
+            .mount
+            .list(&opened.root, &Cancellation::default(), &mut |_| true),
+        Err(ProviderError::ResourceLimited)
+    );
+}
+
+/// Memory per member of a listed archive folder in the application process, beside
+/// the worker's own index: the rows the host returns, a panel listing of them (rows,
+/// collation keys and index, as `archives/navigation.rs` builds it, without and with
+/// the archive suffix hints of its file rows) and the tree provider's capture. Each
+/// case runs in a fresh child process; Linux only (procfs):
+/// `cargo test -p midnight-engine --lib archive_folder_memory_per_member -- --ignored --nocapture --test-threads=1`
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "manual memory measurement of a million-member archive folder"]
+fn archive_folder_memory_per_member() {
+    const CASE: &str = "MIDNIGHT_ARCHIVE_ROWS_CASE";
+    const MEMBERS: u64 = 1_000_000;
+    let resident = || {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmRSS:"))
+            .and_then(|value| {
+                value
+                    .trim()
+                    .trim_end_matches("kB")
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .unwrap()
+            * 1024
+    };
+    // 16-byte names, as in a folder of `file-0000001.txt` members.
+    let members = || {
+        (2..MEMBERS + 2).map(|entry| {
+            let name = format!("file-{entry:07}.txt");
+            ArchiveNode {
+                raw_name: Arc::from(name.as_bytes()),
+                display_name: name,
+                ..node(19, entry, 1, EntryKind::File)
+            }
+        })
+    };
+    let Ok(case) = std::env::var(CASE) else {
+        for case in ["host", "panel", "hints", "tree"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "archive_folder_memory_per_member",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .arg("--test-threads=1")
+                .env(CASE, case)
+                .output()
+                .unwrap();
+            let report = String::from_utf8_lossy(&output.stdout);
+            let line = report.lines().find_map(|line| {
+                line.find(&format!("{case}: "))
+                    .map(|at| line[at..].to_owned())
+            });
+            assert!(output.status.success() && line.is_some(), "{report}");
+            eprintln!("{}", line.unwrap_or_default());
+        }
+        return;
+    };
+    /// Stand-in collation keys: the lowercase name, as the listing benchmarks use.
+    struct Lowercase;
+    impl midnight_core::LocaleService for Lowercase {
+        fn number_locale(&self) -> Result<midnight_core::NumberLocale, FsError> {
+            Ok(Default::default())
+        }
+        fn collation_key(&self, value: &std::ffi::OsStr) -> Result<Option<Vec<u8>>, FsError> {
+            Ok(value.to_str().map(|text| text.to_lowercase().into_bytes()))
+        }
+    }
+    let cancel = Cancellation::default();
+    let (description, retained) = match case.as_str() {
+        "host" => {
+            let start = resident();
+            let rows: Vec<ArchiveNode> = members().collect();
+            let grown = resident().saturating_sub(start);
+            assert_eq!(rows.len() as u64, MEMBERS);
+            ("the host's listing rows", grown)
+        }
+        "panel" => {
+            let start = resident();
+            let mut entries: Vec<_> = members().map(midnight_core::Entry::from_archive).collect();
+            midnight_core::prepare_sort_keys(&mut entries, &Lowercase, &cancel).unwrap();
+            let index = midnight_core::DirectoryIndex::from_entries(&entries);
+            let grown = resident().saturating_sub(start);
+            assert_eq!(index.by_id.len() as u64, MEMBERS);
+            ("a panel listing: rows, keys and index", grown)
+        }
+        "hints" => {
+            let start = resident();
+            let mut entries: Vec<_> = members().map(midnight_core::Entry::from_archive).collect();
+            // As archives/navigation.rs prepares file rows: members named like
+            // archives open as archives inside this archive.
+            for entry in &mut entries {
+                entry.archive_extensions =
+                    midnight_core::ArchiveExtensionHints::from_path(Path::new(&entry.display_name));
+            }
+            midnight_core::prepare_sort_keys(&mut entries, &Lowercase, &cancel).unwrap();
+            let index = midnight_core::DirectoryIndex::from_entries(&entries);
+            let grown = resident().saturating_sub(start);
+            assert_eq!(index.by_id.len() as u64, MEMBERS);
+            (
+                "a panel listing with the suffix hints of its file rows",
+                grown,
+            )
+        }
+        _ => {
+            let (location, state) = fixture(19, 1);
+            state.rows.lock().unwrap().insert(1, members().collect());
+            let opened = captured_archive(&location, &cancel).unwrap();
+            let start = resident();
+            let mut count = 0u64;
+            opened
+                .mount
+                .list(&opened.root, &cancel, &mut |_| {
+                    count += 1;
+                    true
+                })
+                .unwrap();
+            let grown = resident().saturating_sub(start);
+            assert_eq!(count, MEMBERS);
+            ("the tree provider's capture", grown)
+        }
+    };
+    println!(
+        "{case}: {description} of {MEMBERS} members grow the process by {:.1} MiB, {} bytes per member",
+        retained as f64 / 1048576.0,
+        retained / MEMBERS
+    );
+}

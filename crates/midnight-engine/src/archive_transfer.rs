@@ -11,6 +11,13 @@ mod names;
 #[path = "archive_transfer_name/linux.rs"]
 mod names;
 
+/// Rows of a selection or listing handled between two checks of Stop and the source.
+const CHECK_STRIDE: usize = 4096;
+
+/// The roots of a captured selection of any size, in the order the panel captured
+/// them. Only the selected members are kept from the folder's listing, moved rather
+/// than copied, and Stop and the source are checked every few thousand rows. The copy
+/// then takes the roots one at a time; each costs its retained source until copied.
 pub(super) fn resolve(
     request: &ArchiveCopyRequest,
     cancel: &Cancellation,
@@ -37,34 +44,56 @@ pub(super) fn resolve(
             .copied()
             .collect()
     };
-    if wanted.is_empty() || wanted.len() > 4096 {
-        return Err(failure(
-            "Archive copy requires between 1 and 4096 captured entries.",
-        ));
+    if wanted.is_empty() {
+        return Err(failure("Archive copy requires a captured entry."));
     }
-    let actual = mount.list(request.location.directory, cancel);
-    crate::copy_nested_retirement::observe_archive(&*mount);
-    let actual = actual?;
-    let mut actual_map = std::collections::HashMap::new();
-    for node in actual {
-        if actual_map.insert(node.id.entry, node).is_some() {
-            return Err(failure("Duplicate archive member identity."));
+    let selected = || {
+        request
+            .entries
+            .iter()
+            .filter(|entry| wanted.contains(&entry.id))
+    };
+    let mut members = std::collections::HashMap::with_capacity(wanted.len());
+    for (index, entry) in selected().enumerate() {
+        if index.is_multiple_of(CHECK_STRIDE) {
+            check(&*mount, cancel)?;
         }
-    }
-    let actual = actual_map;
-    let visited = Arc::new(Mutex::new(Traversal::default()));
-    let mut sources = VecDeque::new();
-    for entry in request
-        .entries
-        .iter()
-        .filter(|entry| wanted.contains(&entry.id))
-    {
         let expected = entry
             .virtual_node
             .as_ref()
             .ok_or_else(|| failure("Captured entry is not an archive member."))?;
-        let node = actual
-            .get(&expected.id.entry)
+        members.insert(expected.id.entry, None);
+    }
+    let actual = mount.list(request.location.directory, cancel);
+    crate::copy_nested_retirement::observe_archive(&*mount);
+    let actual = actual?;
+    // Every listed identity is unique; only the selected members are kept.
+    let mut listed = HashSet::with_capacity(actual.len());
+    for (index, node) in actual.into_iter().enumerate() {
+        if index.is_multiple_of(CHECK_STRIDE) {
+            check(&*mount, cancel)?;
+        }
+        if !listed.insert(node.id.entry) {
+            return Err(failure("Duplicate archive member identity."));
+        }
+        if let Some(member) = members.get_mut(&node.id.entry) {
+            *member = Some(node);
+        }
+    }
+    drop(listed);
+    let visited = Arc::new(Mutex::new(Traversal::default()));
+    let mut sources = VecDeque::with_capacity(wanted.len());
+    for (index, entry) in selected().enumerate() {
+        if index.is_multiple_of(CHECK_STRIDE) {
+            check(&*mount, cancel)?;
+        }
+        let expected = entry
+            .virtual_node
+            .as_ref()
+            .ok_or_else(|| failure("Captured entry is not an archive member."))?;
+        let node = members
+            .get_mut(&expected.id.entry)
+            .and_then(Option::take)
             .ok_or_else(|| failure("Captured archive member is unavailable."))?;
         if node.id != expected.id
             || node.id.mount != mount.id()
@@ -76,12 +105,10 @@ pub(super) fn resolve(
         {
             return Err(failure("Captured archive member identity changed."));
         }
-        sources.push_back(Box::new(Source::new(
-            mount.clone(),
-            node.clone(),
-            0,
-            visited.clone(),
-        )?) as Box<dyn TransferSource>);
+        sources.push_back(
+            Box::new(Source::new(mount.clone(), node, 0, visited.clone())?)
+                as Box<dyn TransferSource>,
+        );
     }
     if sources.len() != wanted.len() {
         return Err(failure("Captured archive selection is stale."));
@@ -89,21 +116,34 @@ pub(super) fn resolve(
     Ok(sources)
 }
 
+/// The members a captured batch has entered, so that a member listed twice (a cycle
+/// or a duplicate identity) fails instead of copying again. Nothing limits how many
+/// members a batch copies or how long their names are; the set costs a few dozen
+/// bytes per member, beside the listing of each folder on the current path.
 #[derive(Default)]
 pub(crate) struct Traversal {
     seen: HashSet<VirtualEntryId>,
-    listed: usize,
-    names: usize,
 }
 
+/// One member being copied. A copy holds a source for each selected member until it
+/// is copied, so a source keeps only what reading the member needs: its names went
+/// into `entry` when it was made, and only a folder that is entered lists children.
 struct Source {
     mount: MountReference,
-    node: ArchiveNode,
+    member: Member,
     entry: TransferEntry,
     offset: u64,
     children: Option<VecDeque<ArchiveNode>>,
     depth: usize,
     visited: Arc<Mutex<Traversal>>,
+}
+
+/// The identity, kind and declared length of a source's member.
+#[derive(Clone, Copy)]
+struct Member {
+    id: VirtualEntryId,
+    kind: EntryKind,
+    size: Option<u64>,
 }
 
 /// Every Copy-owned clone, including a failed construction or recursive source,
@@ -197,9 +237,9 @@ impl Source {
         let name = names::native_name(raw)?;
         {
             let mut ids = visited.lock().unwrap_or_else(|e| e.into_inner());
-            if ids.seen.len() >= 100_000 || !ids.seen.insert(node.id) {
+            if !ids.seen.insert(node.id) {
                 return Err(failure(
-                    "Archive traversal is cyclic or exceeds its entry budget.",
+                    "Archive traversal is cyclic: a member was listed twice.",
                 ));
             }
         }
@@ -221,7 +261,11 @@ impl Source {
         };
         Ok(Self {
             mount,
-            node,
+            member: Member {
+                id: node.id,
+                kind: node.kind,
+                size: node.size,
+            },
             entry,
             offset: 0,
             children: None,
@@ -232,7 +276,7 @@ impl Source {
 }
 impl TransferSource for Source {
     fn virtual_identity(&self) -> Option<VirtualEntryId> {
-        Some(self.node.id)
+        Some(self.member.id)
     }
     fn entry(&self) -> &TransferEntry {
         &self.entry
@@ -245,7 +289,7 @@ impl TransferSource for Source {
     }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         self.revalidate(cancel)?;
-        if self.node.kind != EntryKind::File {
+        if self.member.kind != EntryKind::File {
             return Err(failure("Archive directory has no content."));
         }
         if buffer.is_empty() {
@@ -255,7 +299,7 @@ impl TransferSource for Source {
         // Cancelling a copy must not terminate the shared archive worker.
         let bytes = crate::archive_shared::read(
             &*self.mount,
-            self.node.id.entry,
+            self.member.id.entry,
             self.offset,
             length,
             cancel,
@@ -269,18 +313,18 @@ impl TransferSource for Source {
             .offset
             .checked_add(bytes.len() as u64)
             .ok_or_else(|| failure("Archive source offset overflow."))?;
-        if self.node.size.is_some_and(|size| self.offset > size) {
+        if self.member.size.is_some_and(|size| self.offset > size) {
             return Err(failure("Archive member grew beyond its declared length."));
         }
         buffer[..bytes.len()].copy_from_slice(&bytes);
         Ok(bytes.len())
     }
     fn supports_read_retry(&self) -> bool {
-        self.node.kind == EntryKind::File
+        self.member.kind == EntryKind::File
     }
     fn retry_read_from(&mut self, offset: u64, cancel: &Cancellation) -> Result<(), FsError> {
         self.revalidate(cancel)?;
-        if !self.supports_read_retry() || self.node.size.is_none_or(|size| offset > size) {
+        if !self.supports_read_retry() || self.member.size.is_none_or(|size| offset > size) {
             return Err(failure("Invalid archive member retry offset."));
         }
         // Archive reads are explicitly addressed by the retained mount/member IDs.
@@ -292,34 +336,24 @@ impl TransferSource for Source {
         cancel: &Cancellation,
     ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
         self.revalidate(cancel)?;
-        if self.node.kind != EntryKind::Directory {
+        if self.member.kind != EntryKind::Directory {
             return Err(failure("Archive file has no children."));
         }
         if self.children.is_none() {
-            let children = self.mount.list(self.node.id.entry, cancel);
+            // The host pages the listing and ends it between pages when the copy is
+            // cancelled, however many members the folder holds.
+            let children = self.mount.list(self.member.id.entry, cancel);
             crate::copy_nested_retirement::observe_archive(&*self.mount);
-            let children = children?;
-            {
-                let mut budget = self.visited.lock().unwrap_or_else(|e| e.into_inner());
-                budget.listed = budget.listed.saturating_add(children.len());
-                for child in &children {
-                    budget.names = budget
-                        .names
-                        .saturating_add(child.raw_name.len())
-                        .saturating_add(child.display_name.len());
-                }
-                if budget.listed > 100_000 || budget.names > 8 * 1024 * 1024 {
-                    return Err(failure(
-                        "Archive traversal exceeds its aggregate listing budget.",
-                    ));
-                }
-            }
-            self.children = Some(children.into());
+            self.children = Some(children?.into());
         }
-        let Some(node) = self.children.as_mut().and_then(VecDeque::pop_front) else {
+        let Some(node) = self
+            .children
+            .as_mut()
+            .and_then(|children| children.pop_front())
+        else {
             return Ok(None);
         };
-        if node.parent != self.node.id.entry {
+        if node.parent != self.member.id.entry {
             return Err(failure("Archive child belongs to a different directory."));
         }
         Source::new(
@@ -374,21 +408,6 @@ pub(crate) fn captured_root(
     let actual = mount.list(expected.parent, cancel);
     crate::copy_nested_retirement::observe_archive(&*mount);
     let actual = actual?;
-    {
-        let mut budget = traversal.lock().unwrap_or_else(|e| e.into_inner());
-        budget.listed = budget.listed.saturating_add(actual.len());
-        for node in &actual {
-            budget.names = budget
-                .names
-                .saturating_add(node.raw_name.len())
-                .saturating_add(node.display_name.len());
-        }
-        if budget.listed > 100_000 || budget.names > 8 * 1024 * 1024 {
-            return Err(failure(
-                "Archive admission exceeds its aggregate listing budget.",
-            ));
-        }
-    }
     let mut ids = HashSet::new();
     let mut found = None;
     for node in actual {
@@ -418,3 +437,7 @@ mod taint_tests;
 #[cfg(test)]
 #[path = "archive_transfer_cancel_tests.rs"]
 mod cancel_tests;
+
+#[cfg(test)]
+#[path = "archive_transfer_size_tests.rs"]
+mod size_tests;

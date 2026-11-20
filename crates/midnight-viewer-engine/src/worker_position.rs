@@ -25,10 +25,48 @@ pub(super) enum SourcePosition {
     Unavailable,
 }
 
+/// A reply can stop short of the scrollbar position it was read for, even after its
+/// bounded correction reads. A semantic document keeps tables and other layout units
+/// whole, so a position can fall between the last camera of one window and the first
+/// camera of the next. A byte-capped text or source window of long lines can be barely
+/// taller than the viewport, so its cameras cover only a sliver of the scrollbar. The
+/// window's camera at `minimum` or `maximum`, whose thumb positions are `low` and `high`,
+/// is then the closest view on the side where the file continues. File endpoints need
+/// the real edge. A text or source window holds one contiguous byte range, so one farther
+/// from the position than its own source span did not load the position's surroundings;
+/// beside a document's whole table, the band no window shows can be wider than a small
+/// window next to it.
+fn nearest_edge(
+    page: &Page,
+    length: u64,
+    mode: u16,
+    position: f64,
+    (low, high): (f64, f64),
+    (minimum, maximum): (f32, f32),
+) -> Option<f32> {
+    if !(position > 0.0 && position < 1.0) {
+        return None;
+    }
+    let (origin, distance) = if page.after && position > high {
+        (maximum, position - high)
+    } else if page.before && position < low {
+        (minimum, low - position)
+    } else {
+        return None;
+    };
+    let span = page.end.saturating_sub(page.start) as f64 / length.max(1) as f64;
+    (mode == viewer::MODE_DOCUMENT || distance <= span).then_some(origin)
+}
+
 impl Worker {
     pub(super) fn position_metrics(&self) -> Option<(f64, f64)> {
+        self.metrics_at(self.origin[1])
+    }
+
+    /// Thumb position and extent of the loaded page at vertical camera `origin`.
+    fn metrics_at(&self, origin: f32) -> Option<(f64, f64)> {
         if let Some(map) = &self.scroll_map {
-            return map.metrics(f64::from(self.origin[1]), f64::from(self.geometry.height));
+            return map.metrics(f64::from(origin), f64::from(self.geometry.height));
         }
         let page = self.page.as_ref()?;
         let shaped = self.shaped.as_ref()?;
@@ -43,8 +81,46 @@ impl Worker {
             self.length,
             shaped.height(),
             self.geometry.height as f32,
-            self.origin[1],
+            origin,
         ))
+    }
+
+    /// The loaded window's camera that comes closest to `position` (`nearest_edge`).
+    fn nearest_loaded_edge(&self, position: f64) -> Option<f32> {
+        let page = self.page.as_ref()?;
+        let shaped = self.shaped.as_ref()?;
+        let height = self.geometry.height as f32;
+        let maximum = (crate::viewport::available_height(page, shaped, height) - height).max(0.0);
+        let minimum = if self.mode == viewer::MODE_SOURCE {
+            crate::viewport::source_minimum_origin(page, shaped)?
+        } else {
+            0.0
+        };
+        if minimum > maximum {
+            return None;
+        }
+        let coverage = (self.metrics_at(minimum)?.0, self.metrics_at(maximum)?.0);
+        nearest_edge(
+            page,
+            self.length,
+            self.mode,
+            position,
+            coverage,
+            (minimum, maximum),
+        )
+    }
+
+    /// Settle a position that the loaded window cannot show at its nearest edge
+    /// (`nearest_loaded_edge`); otherwise it stays unavailable.
+    fn settle_at_nearest_edge(&mut self, position: f64) -> LoadedPosition {
+        let Some(origin) = self.nearest_loaded_edge(position) else {
+            return LoadedPosition::Unavailable;
+        };
+        self.origin[1] = origin;
+        self.reset_raster_context();
+        self.frames.invalidate();
+        self.dirty = true;
+        LoadedPosition::Ready
     }
 
     fn cached_position(&self, position: f64) -> Option<f32> {
@@ -304,6 +380,71 @@ impl Worker {
         true
     }
 
+    /// Camera of a Source candidate for `position` once no bounded reread can complete
+    /// it. A candidate whose cameras all lie above its first complete logical line, as
+    /// an 8 KiB window that starts inside a line and is barely taller than the viewport,
+    /// uses its whole camera range, as a packet shorter than the viewport already does.
+    /// The position is resolved in that range or settles at its nearer edge; a packet
+    /// shorter than the viewport has one camera, at its top.
+    fn source_fallback_origin(
+        &self,
+        page: &Page,
+        shaped: &TextPage,
+        map: Option<&ViewerScrollMap>,
+        position: f64,
+        minimum: Option<f32>,
+        maximum: f32,
+    ) -> Option<f32> {
+        if !(position > 0.0 && position < 1.0) {
+            return None;
+        }
+        let Some(map) = map else {
+            let height = self.geometry.height as f32;
+            if shaped.height() >= height {
+                return None;
+            }
+            let (top, _) = navigation::scroll_metrics(
+                page.start,
+                page.end,
+                self.length,
+                shaped.height(),
+                height,
+                0.0,
+            );
+            return nearest_edge(
+                page,
+                self.length,
+                self.mode,
+                position,
+                (top, top),
+                (0.0, 0.0),
+            );
+        };
+        let height = f64::from(self.geometry.height);
+        let minimum = minimum.filter(|minimum| *minimum <= maximum).unwrap_or(0.0);
+        let low = map.metrics(f64::from(minimum), height)?.0;
+        let high = map.metrics(f64::from(maximum), height)?.0;
+        if (low..=high).contains(&position) {
+            return map
+                .inverse_near(
+                    position,
+                    height,
+                    f64::from(minimum),
+                    f64::from(maximum),
+                    f64::from(minimum),
+                )
+                .map(|origin| origin as f32);
+        }
+        nearest_edge(
+            page,
+            self.length,
+            self.mode,
+            position,
+            (low, high),
+            (minimum, maximum),
+        )
+    }
+
     pub(super) fn resolve_source_position(
         &mut self,
         page: Page,
@@ -414,7 +555,19 @@ impl Worker {
             .as_mut()
             .and_then(|source| source.reread(window, edge))
         else {
-            return SourcePosition::Unavailable;
+            let origin = self.source_fallback_origin(
+                &page,
+                &shaped,
+                map.as_ref(),
+                target.position,
+                minimum,
+                maximum,
+            );
+            let Some(origin) = origin else {
+                return SourcePosition::Unavailable;
+            };
+            self.publish_page(page, shaped, Some((map, origin)), output);
+            return SourcePosition::Ready;
         };
         SourcePosition::Reload {
             sequence: target.sequence,
@@ -598,7 +751,7 @@ impl Worker {
                 }
             }
             // SOURCE_COMPLETION_OBSERVATION_V2_END refine_corrected_uncovered
-            return LoadedPosition::Unavailable;
+            return self.settle_at_nearest_edge(target.position);
         }
         if let Some(correction) = self.text_edge_correction(target) {
             return correction;
@@ -635,7 +788,7 @@ impl Worker {
                 }
             }
             // SOURCE_COMPLETION_OBSERVATION_V2_END refine_no_progress
-            return LoadedPosition::Unavailable;
+            return self.settle_at_nearest_edge(target.position);
         }
         self.positions.target = Some(crate::position_ack::Target {
             corrected: true,

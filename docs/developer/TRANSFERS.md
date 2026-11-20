@@ -37,11 +37,14 @@ engine locale from either slot. Enumerated, inspected and automatically resolved
 (Replace all, Merge all) entries are never formatted, and progress events carry
 no entry metadata.
 
-Independent Copy/Move jobs run concurrently on every storage class, up to the
+Copy/Move jobs start at once and run concurrently on every storage class; the
 configured disk-I/O limit ([Disk operations](DISK_OPERATIONS.md); Automatic is four)
-and only while their native namespace footprints are disjoint. Each job performs one
-native call at a time and holds its disk slot only while it executes native steps;
-see [operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). More
+interleaves their native steps. Where their native namespace footprints overlap,
+only the overlapping item waits for the job that already holds it; a job that would
+read what another job changes, or whose footprint is unknown, waits as a whole. Each
+job performs one native call at a time and holds its disk slot only while it
+executes native steps; see
+[operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). More
 than one stream within a job still requires positive local SSD classification at
 both endpoints and shared budgets. The
 [local concurrency experiment](../verification/2026-11-10-ssd-copy-probe.md)
@@ -140,6 +143,11 @@ A target change while a decision is pending invalidates that decision. A newly
 appearing destination at publication requires a fresh conflict, even after
 Replace all. A stale job/version response cannot authorize a new conflict.
 Skip, another name and Cancel remain available when replacement is unsupported.
+A conflict Skip (Skip, Skip all, or Skip for a name inside a merged folder) keeps
+the existing destination and is not an error: when such skips are the only
+exceptions, the job ends Completed without a failure notice, and Jobs details
+count the skipped entries. An I/O error the user skips is still an error: the job
+ends Completed with errors, or Failed when nothing was transferred.
 
 ## I/O errors and progress lifetime
 
@@ -154,7 +162,7 @@ The async decision waiter releases its blocking worker and the job's disk slot;
 the namespace share, claim, native owners and the logical queue reservation stay
 held, preserving FIFO ordering. Other disk users and jobs proceed while the user
 decides. After a non-Cancel answer the job readmits its slot through the FIFO
-gate before its next native step (Waiting for available capacity); a Cancel answer
+gate before its next native step (Waiting for disk capacity); a Cancel answer
 cancels the job at once, and checked teardown reclaims the slot without waiting.
 Cancel/shutdown wakes a paused job and performs cleanup before delivering terminal
 progress.
@@ -189,6 +197,11 @@ Retry retains native identities and the original source/stage handles:
   still rehashes both files before removal.
 
 Skip All is scoped by phase, native error kind and operation name within one job.
+A Move that cannot take its source before anything is copied (the native rename,
+or a Move-only check of the source) stops at the "Moving the source" phase with
+the operation `move`. Linux moves a folder into another folder only when the
+folder itself is writable, because its link to its parent changes; a read-only
+folder is reported as such and left in place.
 Successful retries do not increment failed counts; skipped errors and cleanup or
 restoration failures remain in history. A source-name restoration conflict retains
 both objects and reports the residual path. Unsafe cleanup/commit failures stop
@@ -466,8 +479,9 @@ Cross-volume Move and explicit directory merges use per-file verification under
 the job's immutable full/quick policy before source removal. Native permission
 errors do not authorize a cross-device fallback. Recursive Move uses ContentOnly;
 required modified time still
-accepts only distinct regular-file roots. Hardlinks, links, virtual providers and
-broader metadata remain separate unfinished scope. No phase promises an atomic
+accepts only distinct regular-file roots. Links move as links on Linux (see
+[links](#links-in-copy-and-move)); hardlinks, virtual providers and broader metadata
+remain separate unfinished scope. No phase promises an atomic
 snapshot or batch rollback under arbitrary concurrent mutation. See
 [recursive native qualification](../verification/2026-11-08-recursive-move.md).
 
@@ -597,18 +611,169 @@ also reruns `transfer::namespace::tests::` in a child process forced into the mo
 build volume does not provide
 (`parent::tests::namespace_tests_pass_in_the_other_lookup_mode_too`).
 
+## Linux namespace pins
+
+The Linux adapter (`transfer_namespace.rs`) reports exact lookup keys only for a folder
+whose names compare byte for byte, on a mount whose root is the filesystem's root:
+
+- ext2, ext3 and ext4, tmpfs and Btrfs, when `FS_IOC_GETFLAGS` reports neither case
+  folding (`FS_CASEFOLD_FL`) nor encryption (`FS_ENCRYPT_FL`; without the key, names
+  are encoded) for the folder. Btrfs never folds case.
+- XFS under the same flags, and only on a volume made without the ASCII-CI feature
+  (`mkfs.xfs -n version=ci`), as `XFS_IOC_FSGEOMETRY` reports it: with the feature,
+  ASCII letters compare case-insensitively. A volume whose geometry cannot be read
+  (kernels before 5.1) is `Unknown`.
+- The mount's root in `/proc/self/mountinfo` must be the filesystem's root. Under a
+  subdirectory bind mount, or a Btrfs subvolume mounted on its own (with `subvol=`, or
+  as a default subvolume other than the top level, as distributions commonly mount `/`
+  and `/home`), `..` from the mount's top folder leads to the folder it is mounted on
+  rather than to its parent on the filesystem, so the folder's real ancestors, and a
+  rename of one of them, cannot be seen. Folders there are `Unknown`.
+
+Overlayfs is `Unknown`, because an object's identity changes when a lower file is
+copied up and its names merge layers whose lookups differ. So are NFS, SMB and other
+network filesystems and FUSE mounts, whose server or daemon decides how names compare
+and where others change names unseen, and any filesystem that does not answer
+`FS_IOC_GETFLAGS`. As on Windows, an `Unknown` binding sends the turn to the host's
+opaque lane with its full refresh of the job's pins: transfers there exclude each other
+instead of running side by side, and Copy and Move still work.
+
+The Linux namespace unit tests create their fixtures in the temporary folder
+(`TMPDIR`), which must therefore lie on a qualified mount; below a bind-mounted folder,
+such as a container's `_build`, they stop with "fixture requires qualified local byte
+lookup".
+
+## Links in Copy and Move
+
+`CopyLinkPolicy` is frozen when a job is admitted. The Copy/Move dialog sends it
+through `Command::EnqueueCopyWithOptions`; its choice is platform policy in
+`crates/midnight-ui/src/transfer_link_option/`:
+
+| Dialog | Linux | Windows |
+| --- | --- | --- |
+| Copy, **Follow links** checked (default) | `FollowLinks` | `FollowDirectoryContents` |
+| Copy, cleared | `Preserve` | `EmptyDirectories` |
+| Move (Linux shows no option) | `Preserve` | as Copy's option |
+
+`Preserve` never opens a link's target. The Linux source yields every link it meets,
+the selected root and each link below a selected folder, as a link leaf (`EntryKind::Symlink`)
+whose `link_representation` is the exact `readlink` bytes (at most 64 KiB, relative
+text kept verbatim). That read revalidates the parent binding, the link's identity,
+revision and text through the held parent; an in-place change fails. Discovery counts
+a leaf without following it.
+
+`FollowLinks` (Copy only) follows a directory link exactly as `FollowDirectoryContents`
+does, under the same mount, link-depth and ancestry rules, and presents a link to a
+regular file as that file: its content is copied and verified like any file, and the
+binding of the link and its target is revalidated, with the file's revision, before
+each use.
+
+Both follow a link only to a target on the link's own mount. The link's text is
+resolved as the kernel resolves it, but never across a mount point (nor by `..` above
+the mount's root) and never through a magic link. The kernel does that itself under
+`RESOLVE_NO_XDEV`, except when the link is on another mount than the root's and its
+text, or a link met on the way, is absolute: the way from `/` back into the link's
+mount crosses mount points, which `RESOLVE_NO_XDEV` refuses. Such a text is resolved
+one name at a time within the mount, an absolute text from the mount's root when it
+lies under the mount's path, with at most 40 links on the way (`MountAnchor::walk`);
+the folders below a followed link are revalidated the same way. So with `/home` on its
+own filesystem, a link there to `/home/user/folder` is followed, and one to
+`/media/stick/folder` or `/proc` is not. Only links followed inside one another count
+against the budget of 128: Copy has no fixed depth limit for ordinary folders under
+any policy (Move keeps its own limit of 128 folders; on Linux the folders that
+transfers hold open count against a [descriptor budget](#folders-held-open-on-linux)),
+and `Preserve` and `EmptyDirectories` keep no ancestry at all. Recursive totals (discovery) still stop
+after 128 nested folders, as without a link policy; the job then copies without them.
+
+A link that `FollowLinks` cannot follow is a leaf recreated as with `Preserve`, and
+`TransferSource::link_not_followed` gives the reason, which the job records as a note
+(`CopyProgress::notes`, first 16, with an exact `note_count`) shown in Jobs details:
+a missing target, a loop of links, an unreadable target, a target on another
+filesystem than the link (the policy never crosses mounts), a special file, or a
+directory that is an active ancestor (the cycle detection of `FollowDirectoryContents`,
+which there is an error). A target is unreadable when the user cannot read the file,
+or cannot list or enter the folder: opening it as a path needs neither, so this is
+checked (`faccessat` with the effective IDs) before the link is followed, and such a
+link is kept rather than failing when it is copied. A link whose text the kernel cannot
+resolve within the mount (an absolute one, say) is also kept when its folder's mount
+cannot be qualified for the walk, for example a folder whose path leads through
+another link rather than along the mount's own path. Notes are not errors; the job
+still completes.
+
+Copy recreates a link (engine `LinkCopy`): admission (`TransferDirectory::admit_link`),
+a private stage, sync, an independent readback that must equal the source text, a
+revalidation of source and stage, then publication. On Linux the stage is `item` in a
+new owner-only `.midnight-link-<random>` directory beneath the protected destination
+folder (`symlinkat` relative to the held directory), so no link exists under a final
+name before it is verified. Publication renames it to the final name with
+`RENAME_NOREPLACE` (a filesystem that cannot exclude replacement refuses it) and
+removes the empty stage; the published link's identity and text are checked again.
+An existing name is an ordinary conflict: Skip, another name, or Replace when the
+destination declares `TransferCapabilities::link_replacement` (local ext, as for
+files) and the target is a file or a link, never a folder. Replace binds the target
+pin (`StagedTransferLink::prepare_replacement`), moves the staged link into a new
+`.midnight-recovery-<random>/item` and exchanges it with the target there
+(`RENAME_EXCHANGE`), so the displaced entry stays in recovery, with the identity and
+revision checks of file replacement. A link counts as a completed file and never as
+content bytes.
+
+Move moves the link itself. Preparation with `Preserve` returns an `Ordinary` entry
+whose capture is the link's own: on one filesystem it renames the link through the
+private `.midnight-move-*` capture used for directory links (Replace of a file or link
+exchanges it into that capture directory, as a native file replacement does). Across
+filesystems the capture recreates the link at the destination (the stage, readback,
+publication and replacement above), checks the published link, and only then removes
+the original link with the protected removal of a moved directory link (owned link
+with one name, staged, revalidated, unlinked). If that removal fails, the outcome is
+`RecoveryRequired` with the published destination, so the job reports the error and
+both links remain. Its `try_native_move` therefore never reports `CrossDevice`; the
+engine has no content fallback for a link and reports one that a provider cannot move.
+Folders under a cross-volume Move are traversed with the same policy, so their links
+move as links. `FollowLinks` is refused for Move.
+
+Windows (not compiled on Linux hosts) keeps its directory-link policies: the source
+refuses `Preserve` and `FollowLinks` and its destinations stage no links
+(`link_replacement` is false), because recreating a symbolic link needs
+`CreateSymbolicLinkW` with a privilege or Developer Mode and junctions need their own
+qualification. The UI therefore sends it the existing directory-link policies.
+
+## Folders held open on Linux
+
+Each folder level that a Copy or Move works inside keeps three descriptors open (the
+source folder, its entry stream and the destination folder), and each level of the
+discovery that totals a selection holds its folder open too. These levels are counted
+across all transfers of the process against a budget of a quarter of the soft
+open-file limit (`RLIMIT_NOFILE`) at three descriptors per level, between 32 and 4,096
+levels (`transfer_descriptor_budget.rs`). A folder past it is refused with an error that
+names the limit, long before the process would run out of descriptors (EMFILE) and
+fail whatever else opens a file meanwhile: other jobs, panel listings, watches and
+viewers. Transfers that run at the same time share the levels, so a deep tree can be
+refused while another deep transfer runs and succeed alone.
+
+At start the application raises its soft open-file limit to the hard limit, at most
+65,536 (`raise_open_file_limit` in `midnight-platform-linux`, called first in `main`):
+a desktop session's usual soft limit of 1,024 allows 85 levels, the raised one 4,096.
+If the limit cannot be raised, the application logs a warning and keeps the smaller
+budget. Programs it starts for the user (an editor, a terminal, a custom command, the
+application that opens a document) get the original limit back before they run,
+because programs that use `select()` cannot handle descriptors numbered 1,024 or
+higher. So does the application when it restarts itself with software rendering; it
+then raises the limit again.
+
 ## Current limits and next stage
 
 Copy preserves verified content, with explicit required modified time as above.
-Remaining times/attributes, permissions, ACLs, extended attributes and alternate
-streams need their declared metadata capability matrix. By default, existing source
-link/special entries are refused.
-
-The engine also implements link-preserving Copy behind the internal engine command
-`Command::EnqueueCopyWithOptions` with `CopyLinkPolicy::Preserve`; neither the UI nor
-a public API or SDK offers it yet. It accepts native sources only, Copy (never Move) with content-only
-metadata, and recreates each symbolic/directory link from its exact representation:
-stage, sync, independent readback of the staged link, then no-replace publication.
+On Linux, Copy and cross-volume Move give each new file and folder the source's
+read, write and execute bits masked by the process umask, as `cp` without `-p`
+does: a file at publication, a folder once its contents were copied (it stays
+private until then). A source without modes, such as an archive entry, gets those
+of any new file or folder (0666 or 0777 masked by the umask). Set-user-ID,
+set-group-ID and sticky bits are not copied, and a merged existing folder keeps
+its permissions ([staging rules](../../SECURITY.md)).
+Remaining times/attributes, ownership, ACLs, extended attributes and alternate
+streams need their declared metadata capability matrix. Without an explicit link
+policy (`CopyLinkPolicy::Reject`) existing source link/special entries are refused;
+the Copy/Move dialog always sends one, see [links](#links-in-copy-and-move).
 Special entries stay unsupported. A link cleanup failure or an uncertain link
 publication (durability unconfirmed or recovery required) stops the job.
 Recursive directory Move uses the per-file proof and postorder empty-directory

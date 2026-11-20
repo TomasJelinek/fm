@@ -1,8 +1,9 @@
 import { ScrollView } from "scroll-view.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
-
-
+import { ActionIcons, FallbackIcons } from "action-icons.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
+import { UserCommandRow } from "user-command-toolbar.slint";
 
 export struct CommandMenuRow {
     native-icon: image,
@@ -17,6 +18,12 @@ export component CommandMenuBody inherits Rectangle {
     in property <string> title;
     in property <[CommandMenuRow]> rows;
     in property <int> item-count: 5;
+    // The configured Custom Commands, listed before the last row (Close); without
+    // any, a short empty state points to their Options page.
+    in property <bool> lists-commands;
+    in property <[UserCommandRow]> commands;
+    callback run-command(string, string);
+    callback set-up-commands();
     // The height that shows the title and every row at its minimum without
     // scrolling. Below 240px the padding and spacing are compact.
     private property <length> regular-height: 2 * 12px + heading.preferred-height + 8px + items.min-height;
@@ -43,7 +50,7 @@ export component CommandMenuBody inherits Rectangle {
                 min-width: 0px; min-height: 0px; vertical-stretch: 1;
                 items := VerticalLayout {
                     spacing: 8px; alignment: start;
-                    for index in root.item-count : HintedActionButton {
+                    for index in root.item-count - (root.lists-commands ? 1 : 0) : HintedActionButton {
                         native-icon: root.rows[index].native-icon;
                         fallback-icon: root.rows[index].fallback-icon;
                         text: root.rows[index].label;
@@ -51,8 +58,75 @@ export component CommandMenuBody inherits Rectangle {
                         hint: root.rows[index].hint;
                         clicked => { root.selected(index); }
                     }
+                    if root.lists-commands : Rectangle {
+                        height: 1px; background: Theme.frame;
+                        accessible-role: none;
+                    }
+                    for command in root.commands : Rectangle {
+                        // A toolbar separator is a thin rule here.
+                        height: command.separator ? 1px : max(Theme.control-height, run.preferred-height);
+                        background: command.separator ? Theme.frame : transparent;
+                        // The shared run glyph, as every labelled action; the toolbar
+                        // shows each command's own icon.
+                        run := HintedActionButton {
+                            x: 0px; y: 0px; width: parent.width; height: parent.height;
+                            visible: !command.separator;
+                            fallback-icon: FallbackIcons.run;
+                            text: command.name; accessible-label: command.name;
+                            enabled: command.enabled && !command.separator;
+                            hint: command.hint;
+                            clicked => { root.run-command(command.identity, command.revision); }
+                        }
+                    }
+                    if root.lists-commands && root.commands.length == 0 : HorizontalLayout {
+                        spacing: 8px;
+                        // One line: a height that followed the width would feed back
+                        // into the menu's own height.
+                        Text {
+                            text: "No Custom Commands configured.";
+                            color: Theme.secondary-text; font-size: Theme.font-size;
+                            vertical-alignment: center; overflow: elide;
+                            horizontal-stretch: 1; min-width: 0px;
+                        }
+                        HintedActionButton {
+                            text: "Set up…"; accessible-label: "Set up Custom Commands";
+                            fallback-icon: FallbackIcons.options;
+                            min-height: Theme.control-height; horizontal-stretch: 0;
+                            hint: "Add Custom Commands in Options → Custom Commands.";
+                            clicked => { root.set-up-commands(); }
+                        }
+                    }
+                    if root.lists-commands : HintedActionButton {
+                        native-icon: root.rows[root.item-count - 1].native-icon;
+                        fallback-icon: root.rows[root.item-count - 1].fallback-icon;
+                        text: root.rows[root.item-count - 1].label;
+                        min-height: Theme.control-height;
+                        hint: root.rows[root.item-count - 1].hint;
+                        clicked => { root.selected(root.item-count - 1); }
+                    }
                 }
             }
         }
     }
+}
+
+// The User menu: the command line, Hot Paths, and Properties, folder sizes and
+// checksums of the active panel, then the configured Custom Commands.
+export component UserMenuBody inherits CommandMenuBody {
+    in property <ActionIcons> icons;
+    title: "User menu";
+    // F9 runs the configured Custom Commands on the active panel, as the
+    // toolbar does.
+    lists-commands: true;
+    // The number of `rows`, kept constant (not `rows.length`) so that arriving
+    // icons or shortcut hints never rebuild the rows during a gesture.
+    item-count: 6;
+    rows: [
+        { native-icon: root.icons.terminal, fallback-icon: FallbackIcons.terminal, label: "Command line", hint: ShortcutHints.hint("Toggle command editor focus without running a command", "command.focus") },
+        { native-icon: root.icons.bookmarks, fallback-icon: FallbackIcons.bookmarks, label: "Bookmarks and Hot Paths", hint: "Save, open or remove a favorite folder. Hot Paths provide ten numbered shortcuts." },
+        { native-icon: root.icons.properties, fallback-icon: FallbackIcons.properties, label: "Properties" + (ShortcutHints.key("files.properties") == "" ? "" : " · " + ShortcutHints.key("files.properties")), hint: ShortcutHints.hint("Show Properties for selected items, or the focused file or folder", "files.properties") },
+        { native-icon: root.icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes, label: "Calculate / cancel folder sizes", hint: ShortcutHints.hint("Measure selected folders, or all folders when nothing is selected; choose again to cancel", "panel.folder-sizes") },
+        { fallback-icon: FallbackIcons.checksums, label: "Checksums", hint: ShortcutHints.hint("Calculate, save or verify SFV, MD5, SHA-1, SHA-256 and SHA-512", "files.checksums") },
+        { native-icon: root.icons.close, fallback-icon: FallbackIcons.close, label: "Close", hint: "Close this dialog and return to the file manager." },
+    ];
 }

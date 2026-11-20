@@ -332,6 +332,11 @@ pub struct UserPreferences {
     pub glyph_fitting: GlyphFitting,
     /// Show only matching names during panel type-to-search instead of jumping.
     pub quick_search_filter: bool,
+    /// List hidden entries (dot-names on Unix, the hidden attribute on Windows)
+    /// in both panels and inline trees. Shown by default.
+    pub show_hidden_files: bool,
+    /// The last Select/Deselect by mask choices, reused by the next dialog.
+    pub mask_selection: crate::MaskSelectionPreferences,
     pub size_display: SizeDisplay,
     pub disk_io_concurrency: DiskIoConcurrency,
     pub remember_command_history: bool,
@@ -397,6 +402,8 @@ impl Default for UserPreferences {
             touch_font_size: 15,
             glyph_fitting: GlyphFitting::default(),
             quick_search_filter: false,
+            show_hidden_files: true,
+            mask_selection: crate::MaskSelectionPreferences::default(),
             size_display: SizeDisplay::default(),
             disk_io_concurrency: DiskIoConcurrency::default(),
             remember_command_history: true,
@@ -543,6 +550,9 @@ impl UserPreferences {
             if let Err(error) = filter.validate_bounds() {
                 message = Some(error);
             }
+        }
+        if let Err(error) = self.mask_selection.validate() {
+            message = Some(error);
         }
         if let Err(error) = crate::validate_filename_colors(&self.filename_colors) {
             message = Some(error);

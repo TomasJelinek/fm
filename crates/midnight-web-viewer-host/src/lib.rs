@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub use midnight_web_viewer_api as api;
+pub use midnight_worker_platform::browser::SandboxRefusal;
 mod providers;
 mod resource_jobs;
 mod resources;

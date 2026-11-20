@@ -69,11 +69,22 @@ pub struct LocalCalendarTime {
     pub hour: u8,
     pub minute: u8,
     pub second: u8,
+    /// The instant's fraction of its (floored) second, so the fields name it exactly.
+    pub nanosecond: u32,
     /// Seconds east of UTC.
     pub offset_seconds: i32,
 }
 
 impl LocalCalendarTime {
+    /// The fraction of an instant's second, counted from the floored second that
+    /// native calendar conversions use for instants before 1970 too.
+    pub fn nanosecond_of(instant: std::time::SystemTime) -> u32 {
+        match instant.duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => after.subsec_nanos(),
+            Err(before) => (1_000_000_000 - before.duration().subsec_nanos()) % 1_000_000_000,
+        }
+    }
+
     /// Pairs native local fields with the instant they describe, deriving the offset
     /// from their difference. Rejects invalid fields and offsets of a day or more.
     #[allow(clippy::too_many_arguments)]
@@ -115,6 +126,7 @@ impl LocalCalendarTime {
             hour,
             minute,
             second,
+            nanosecond: Self::nanosecond_of(instant),
             offset_seconds: offset,
         })
     }

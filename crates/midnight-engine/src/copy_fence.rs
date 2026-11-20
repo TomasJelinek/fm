@@ -173,7 +173,7 @@ impl Predecessors {
                             "wait for earlier copies",
                             path,
                             io::Error::other(
-                                "An earlier copy did not complete fully verified publication. No mutation was started. Inspect the copy results and confirm the operation again.",
+                                "An earlier copy did not finish copying and verifying every file. No mutation was started. Inspect the copy results and confirm the operation again.",
                             ),
                         ));
                     }

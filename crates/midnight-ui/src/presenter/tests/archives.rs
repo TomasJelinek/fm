@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "nested_archives.rs"]
+mod nested_archives;
+
 #[derive(Debug)]
 struct FixtureMount;
 impl ArchiveMount for FixtureMount {
@@ -252,7 +255,13 @@ fn archive_paths_and_breadcrumbs_use_native_separators_without_added_spaces() {
         expected.to_string_lossy()
     );
     assert_eq!(parts.last().unwrap().prefix, expected.to_string_lossy());
-    let first = parts[0].identity.clone();
+    // The archive's own part lists its root.
+    let first = parts
+        .iter()
+        .find(|part| part.keep_whole)
+        .unwrap()
+        .identity
+        .clone();
     let command = RefCell::new(None);
     assert!(p.navigate_path_part(PaneId::Left, &first, &|value| {
         *command.borrow_mut() = Some(value);
@@ -261,6 +270,88 @@ fn archive_paths_and_breadcrumbs_use_native_separators_without_added_spaces() {
     assert!(matches!(&*command.borrow(), Some(Command::ArchiveNavigate {
         action: ArchiveAction::List(location), ..
     }) if location.directory == 1 && location.address.components.is_empty()));
+}
+
+/// `sample.zip/folder`, with the archive in `data/archives` below the test root.
+fn archive_in_native_folders() -> (Presenter, PathBuf) {
+    let mut p = archive_pane();
+    let folder = test_root().join("data").join("archives");
+    let archive = p.panes[0].archive.as_mut().unwrap();
+    archive.location.address.container = folder.join("sample.zip");
+    archive.location.trail.push((2, "folder".into()));
+    archive.location.address.components = vec![b"folder".to_vec()];
+    archive.location.directory = 2;
+    (p, folder)
+}
+
+#[test]
+fn archive_breadcrumbs_show_the_folders_that_hold_the_archive_and_its_name_alone() {
+    let (p, folder) = archive_in_native_folders();
+    let parts = p.path_parts(PaneId::Left);
+    let separator = std::path::MAIN_SEPARATOR;
+    let labels: Vec<&str> = parts.iter().map(|part| part.label.as_str()).collect();
+    assert_eq!(labels.concat(), p.panes[0].display_location_text());
+    assert_eq!(
+        labels[labels.len() - 4..],
+        [
+            "data".to_owned(),
+            format!("{separator}archives"),
+            format!("{separator}sample.zip"),
+            format!("{separator}folder"),
+        ]
+    );
+    assert_eq!(parts[parts.len() - 3].prefix, folder.to_string_lossy());
+    // Only the archive's name is kept whole when the path shortens.
+    let kept: Vec<&str> = parts
+        .iter()
+        .filter(|part| part.keep_whole)
+        .map(|part| part.label.as_str())
+        .collect();
+    assert_eq!(kept, [format!("{separator}sample.zip")]);
+}
+
+#[test]
+fn a_native_breadcrumb_leaves_the_archive_with_the_cursor_on_the_way_back() {
+    for (label, cursor) in [("archives", "sample.zip"), ("data", "archives")] {
+        let (mut p, folder) = archive_in_native_folders();
+        let parts = p.path_parts(PaneId::Left);
+        let part = parts
+            .iter()
+            .find(|part| part.label.trim_start_matches(std::path::is_separator) == label)
+            .unwrap();
+        let target = PathBuf::from(&part.prefix);
+        let sent = RefCell::new(Vec::new());
+        assert!(
+            p.navigate_path_part(PaneId::Left, &part.identity, &|command| {
+                sent.borrow_mut().push(command);
+                true
+            })
+        );
+        let navigation = sent
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::Navigate {
+                    navigation, path, ..
+                } if *path == target => Some(*navigation),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label}: no native navigation"));
+        let child = target.join(cursor);
+        assert!(folder.join("sample.zip").starts_with(&child));
+        finish(
+            &mut p,
+            PaneId::Left,
+            navigation,
+            vec![
+                Entry::new(EntryId(7), target.join("before"), EntryKind::Directory),
+                Entry::new(EntryId(8), child, EntryKind::File),
+            ],
+        );
+        assert!(p.panes[0].archive.is_none(), "{label}: the archive is left");
+        assert_eq!(p.panes[0].cursor, Some(EntryId(8)), "{label}");
+        assert_eq!(p.panes[0].display_path(), target);
+    }
 }
 
 #[test]
@@ -911,4 +1002,285 @@ fn retained_tree_root_archive_activation_uses_original_authority_without_provide
             .iter()
             .any(|command| matches!(command, Command::OpenEntry { .. }))
     );
+}
+
+#[derive(Debug)]
+struct ReopenedMount;
+impl ArchiveMount for ReopenedMount {
+    fn id(&self) -> u64 {
+        43
+    }
+    fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        panic!("UI performed listing")
+    }
+    fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+        panic!("UI performed reading")
+    }
+    fn validate(&self) -> Result<(), FsError> {
+        panic!("UI performed validation")
+    }
+}
+
+/// `sample.zip/folder`, listed through the fixture's session (mount 42).
+fn nested_archive_pane() -> Presenter {
+    let mut p = archive_pane();
+    let command = RefCell::new(None);
+    assert!(p.open(PaneId::Left, 1, &|c| {
+        *command.borrow_mut() = Some(c);
+        true
+    }));
+    let Some(Command::ArchiveNavigate {
+        action: ArchiveAction::List(location),
+        navigation,
+        ..
+    }) = command.into_inner()
+    else {
+        panic!("folder listing");
+    };
+    let entries: Arc<[Entry]> = vec![node(5, "readme.txt", EntryKind::File)].into();
+    p.apply(Event::ArchiveListed {
+        pane: PaneId::Left,
+        navigation,
+        result: Ok(ArchiveListing {
+            location,
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        }),
+    });
+    assert_eq!(p.panes[0].archive.as_ref().unwrap().location.trail.len(), 2);
+    p
+}
+
+/// What every request through a session gets after its watchdog stopped it.
+fn stopped_session() -> FsError {
+    FsError::from_io(
+        "archive navigation",
+        Path::new(""),
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Archive worker made no progress for 20 seconds and was stopped; open the archive again",
+        ),
+    )
+}
+
+/// The current archive listing's result, applied as the application does.
+fn listed(
+    p: &mut Presenter,
+    result: Result<ArchiveListing, FsError>,
+    sent: &RefCell<Vec<Command>>,
+) {
+    let navigation = NavigationId(p.panes[0].generation);
+    p.apply_with_sender(
+        Event::ArchiveListed {
+            pane: PaneId::Left,
+            navigation,
+            result,
+        },
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+}
+
+fn last_listing(sent: &RefCell<Vec<Command>>) -> ArchiveLocation {
+    sent.borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::ArchiveNavigate {
+                action: ArchiveAction::List(location),
+                ..
+            } => Some(location.clone()),
+            _ => None,
+        })
+        .expect("an archive listing")
+}
+
+#[test]
+fn a_stopped_archive_session_is_reopened_and_backspace_still_leaves_the_archive() {
+    let mut p = nested_archive_pane();
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    // Backspace lists the parent through the session, which has been stopped.
+    assert!(p.up(PaneId::Left, &send));
+    assert_eq!(last_listing(&sent).mount_id(), Some(42));
+    listed(&mut p, Err(stopped_session()), &sent);
+    let archive = p.panes[0].archive.as_ref().unwrap();
+    assert!(
+        std::iter::once(&archive.location)
+            .chain(&archive.history)
+            .all(|location| location.mount.is_none()),
+        "the stopped session is never used again"
+    );
+    // The parent is listed again through a fresh session.
+    let reopened = last_listing(&sent);
+    assert!(reopened.mount.is_none());
+    assert!(reopened.address.components.is_empty(), "the archive root");
+    assert!(p.panes[0].loading);
+    let entries: Arc<[Entry]> = vec![node(2, "folder", EntryKind::Directory)].into();
+    listed(
+        &mut p,
+        Ok(ArchiveListing {
+            location: ArchiveLocation {
+                mount: Some(Arc::new(ReopenedMount)),
+                directory: 1,
+                trail: vec![(1, "sample.zip".into())],
+                address: reopened.address,
+            },
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        }),
+        &sent,
+    );
+    assert_eq!(
+        p.panes[0].archive.as_ref().unwrap().location.mount_id(),
+        Some(43)
+    );
+    assert!(p.panes[0].error.is_empty() && p.desktop.notice.is_none());
+    // From the root, Backspace returns to the native folder, archive under the cursor.
+    assert!(p.up(PaneId::Left, &send));
+    assert!(
+        sent.borrow()
+            .iter()
+            .any(|command| matches!(command, Command::Navigate { .. }))
+    );
+    assert_eq!(
+        p.panes[0].pending.as_ref().unwrap().wanted_cursor.as_ref(),
+        Some(&test_root().join("sample.zip"))
+    );
+}
+
+#[test]
+fn an_archive_that_cannot_be_reopened_returns_to_its_native_folder() {
+    let mut p = nested_archive_pane();
+    let sent = RefCell::new(Vec::new());
+    assert!(p.up(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    listed(&mut p, Err(stopped_session()), &sent);
+    assert!(last_listing(&sent).mount.is_none(), "re-opened once");
+    listed(&mut p, Err(stopped_session()), &sent);
+    // The panel leaves the archive with its file under the cursor and says why.
+    let native = sent
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Navigate { path, .. } => Some(path.clone()),
+            _ => None,
+        });
+    assert_eq!(
+        native,
+        Some(test_root()),
+        "the folder that contains the archive"
+    );
+    assert_eq!(
+        p.panes[0].pending.as_ref().unwrap().wanted_cursor.as_ref(),
+        Some(&test_root().join("sample.zip"))
+    );
+    let (title, body) = p.desktop.notice.clone().expect("a notice");
+    assert_eq!(title, "Archive unavailable");
+    assert!(body.contains("made no progress for 20 seconds"), "{body}");
+    let archive = Entry::new(EntryId(9), test_root().join("sample.zip"), EntryKind::File);
+    let navigation = NavigationId(p.panes[0].generation);
+    finish(&mut p, PaneId::Left, navigation, vec![archive]);
+    assert!(p.panes[0].archive.is_none() && !p.panes[0].loading);
+    assert_eq!(p.panes[0].cursor, Some(EntryId(9)));
+}
+
+#[test]
+fn refresh_reopens_the_shown_folder_of_a_stopped_archive_session() {
+    let mut p = nested_archive_pane();
+    let sent = RefCell::new(Vec::new());
+    assert!(p.refresh_location(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    assert_eq!(last_listing(&sent).mount_id(), Some(42));
+    listed(&mut p, Err(stopped_session()), &sent);
+    let reopened = last_listing(&sent);
+    assert!(reopened.mount.is_none());
+    assert_eq!(reopened.address.components, [b"folder".to_vec()]);
+}
+
+#[test]
+fn a_cancelled_archive_listing_keeps_its_session() {
+    let mut p = nested_archive_pane();
+    assert!(p.up(PaneId::Left, &|_| true));
+    let sent = RefCell::new(Vec::new());
+    listed(
+        &mut p,
+        Err(FsError::from_io(
+            "archive navigation",
+            Path::new(""),
+            io::ErrorKind::Interrupted.into(),
+        )),
+        &sent,
+    );
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::ArchiveNavigate { .. }))
+    );
+    assert_eq!(
+        p.panes[0].archive.as_ref().unwrap().location.mount_id(),
+        Some(42)
+    );
+}
+
+#[test]
+fn a_viewer_whose_archive_session_stopped_leaves_the_panel_usable() {
+    let mut p = nested_archive_pane();
+    p.viewer_plugins.startup_disabled = Some(Arc::from([]));
+    p.panes[0].cursor = Some(p.panes[0].entries[0].id);
+    p.panes[0].parent_cursor = false;
+    let viewer = p.viewer_launch(PaneId::Left, false).unwrap();
+    assert_eq!(viewer.archive.as_ref().unwrap().mount.id(), 42);
+    // The viewer's read stalls, the watchdog stops the session and the viewer says so.
+    p.report_viewer_error(stopped_session().to_string());
+    let sent = RefCell::new(Vec::new());
+    assert!(p.up(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    listed(&mut p, Err(stopped_session()), &sent);
+    assert!(
+        last_listing(&sent).mount.is_none(),
+        "the panel opens a fresh session"
+    );
+    drop(viewer);
+}
+
+#[test]
+fn a_refused_reopen_is_retried_and_its_cause_stays_visible() {
+    let mut p = nested_archive_pane();
+    assert!(p.up(PaneId::Left, &|_| true));
+    let navigation = NavigationId(p.panes[0].generation);
+    p.apply_with_sender(
+        Event::ArchiveListed {
+            pane: PaneId::Left,
+            navigation,
+            result: Err(stopped_session()),
+        },
+        &|_| false,
+    );
+    assert!(
+        p.panes[0].error.contains("no progress"),
+        "{}",
+        p.panes[0].error
+    );
+    assert!(!p.panes[0].loading);
+    let sent = RefCell::new(Vec::new());
+    p.flush_selection(&|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(last_listing(&sent).mount.is_none());
+    assert!(p.panes[0].loading);
 }

@@ -290,6 +290,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         images: Arc::new(Mutex::new(Some(Arc::from([])))),
         windows: Arc::new(AtomicUsize::new(0)),
         fonts: Default::default(),
+        video: Default::default(),
         catalog_preparation: Default::default(),
         image_startup: crate::image_startup::Startup::new(executor.handle().clone(), resident),
         image_policy: Default::default(),

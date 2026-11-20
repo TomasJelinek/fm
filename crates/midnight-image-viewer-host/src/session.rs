@@ -42,6 +42,9 @@ impl Source for midnight_plugin_host::CapturedFile {
     }
 }
 
+/// Longest wait after `Failure` for the worker's reason or the end of its stream.
+const REASON_GRACE: Duration = Duration::from_secs(1);
+
 /// One persistent restricted decoder. Creation, rendering, close and Drop are backend-only.
 /// Memory is capped at 512 MiB, retained RGBA at 128 MiB; cumulative process CPU is 60 seconds.
 /// Each operation additionally has the supplied wall-clock deadline and cancellation flag.
@@ -258,13 +261,13 @@ impl ImageSession {
                                 api::write_message(input, &Message::Data(bytes))?;
                             }
                             Message::Metadata(metadata) if provider.protocol == 1 => {
-                                return Ok((metadata, None));
+                                return Ok(Some((metadata, None)));
                             }
                             Message::DocumentMetadata(document) if provider.protocol == 2 => {
                                 document.validate()?;
-                                return Ok((document.pages[0], Some(document)));
+                                return Ok(Some((document.pages[0], Some(document))));
                             }
-                            Message::Failure => return Err(rejected()),
+                            Message::Failure => return Ok(None),
                             _ => return Err(io::Error::other("Unexpected image-open response")),
                         }
                     }
@@ -273,6 +276,12 @@ impl ImageSession {
                     ))
                 },
             )?;
+            let Some(metadata) = metadata else {
+                return Err(rejected(
+                    provider.protocol == 2,
+                    self.failure_reason(cancel).as_ref(),
+                ));
+            };
             #[cfg(feature = "startup-diagnostics")]
             startup.mark("metadata");
             self.metadata = metadata.0;
@@ -345,7 +354,8 @@ impl ImageSession {
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("Image session request limit"))?;
             let request_id = self.request_id;
-            let message = if self.document.is_some() {
+            let document = self.document.is_some();
+            let message = if document {
                 Message::PageViewport {
                     id: request_id,
                     page: page as u32,
@@ -365,12 +375,15 @@ impl ImageSession {
                             && frame.width == viewport.width
                             && frame.height == viewport.height =>
                     {
-                        Ok(frame)
+                        Ok(Some(frame))
                     }
-                    Message::Failure => Err(rejected()),
+                    Message::Failure => Ok(None),
                     _ => Err(io::Error::other("Unexpected image-viewport response")),
                 }
             })?;
+            let Some(frame) = frame else {
+                return Err(not_drawn(document, self.failure_reason(cancel).as_ref()));
+            };
             self.validate_source()?;
             check_cancel(cancel)?;
             Ok(frame)
@@ -400,6 +413,24 @@ impl ImageSession {
     /// (`cleanup_status`) before formatting.
     pub fn close_checked(mut self) -> io::Result<()> {
         self.owner.finish()
+    }
+
+    /// After `Failure`: end the session and read the reason that may follow it before
+    /// stopping the worker. Workers end their stream after `Failure` (SDK 0.4.0 after the
+    /// reason, older ones at once), so this normally returns within milliseconds; a
+    /// worker that does neither is stopped after `REASON_GRACE` or on cancellation, and
+    /// the failure keeps its plain text.
+    fn failure_reason(&mut self, cancel: &AtomicBool) -> Option<api::FailureReason> {
+        self.failed = true;
+        let transport = self.owner.transport_mut();
+        let reason = transport
+            .exchange(cancel, REASON_GRACE, |_, output, _| {
+                Ok(crate::raster_reply::failure_reason(output))
+            })
+            .ok()
+            .flatten();
+        transport.kill();
+        reason
     }
 
     fn validate_source(&self) -> io::Result<()> {
@@ -459,9 +490,105 @@ impl CapturedSource {
         Ok(())
     }
 }
-fn rejected() -> io::Error {
+
+/// The decoder refused the source: what a refusal means in words a user can act on, then
+/// the decoder's own sanitized reason when the worker sent one (SDK 0.4.0 and later).
+fn rejected(document: bool, reason: Option<&api::FailureReason>) -> io::Error {
+    let kind = if document { "document" } else { "image" };
     io::Error::new(
         io::ErrorKind::Unsupported,
-        "Image decoder rejected the source",
+        match reason {
+            Some(reason) => format!(
+                "This {kind} is damaged or incomplete: {}",
+                continuation(reason)
+            ),
+            None => {
+                format!("This {kind} is damaged or incomplete, or its format is not supported.")
+            }
+        },
     )
+}
+
+/// The decoder could not draw a view of a source it accepted. Images are decoded whole at
+/// open, so only document pages, decoded on demand, can still turn out damaged here.
+fn not_drawn(document: bool, reason: Option<&api::FailureReason>) -> io::Error {
+    io::Error::other(match (document, reason) {
+        (true, Some(reason)) => format!("This page could not be drawn: {}", continuation(reason)),
+        (true, None) => "This page could not be drawn; the document may be damaged.".into(),
+        (false, Some(reason)) => {
+            format!("This image could not be drawn: {}", continuation(reason))
+        }
+        (false, None) => "This image could not be drawn.".into(),
+    })
+}
+
+/// The reason continues the host's sentence after its colon, so a capitalized first
+/// word is lowercased ("The file is empty"); an acronym such as "PDF" stays.
+fn continuation(reason: &api::FailureReason) -> String {
+    let mut text = reason.as_str().to_owned();
+    let mut bytes = text.bytes();
+    if let (Some(first), Some(second)) = (bytes.next(), bytes.next())
+        && first.is_ascii_uppercase()
+        && second.is_ascii_lowercase()
+    {
+        // Reasons are ASCII, so the first byte is a whole character.
+        text[..1].make_ascii_lowercase();
+    }
+    text
+}
+
+#[cfg(test)]
+mod failure_text_tests {
+    use super::*;
+
+    #[test]
+    fn the_reason_is_the_second_part_of_the_failure_text() {
+        let reason = api::FailureReason::new("The file is empty").unwrap();
+        for (error, text) in [
+            (
+                rejected(false, Some(&reason)),
+                "This image is damaged or incomplete: the file is empty",
+            ),
+            (
+                rejected(true, Some(&reason)),
+                "This document is damaged or incomplete: the file is empty",
+            ),
+            (
+                rejected(false, None),
+                "This image is damaged or incomplete, or its format is not supported.",
+            ),
+            (
+                rejected(true, None),
+                "This document is damaged or incomplete, or its format is not supported.",
+            ),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert_eq!(error.to_string(), text);
+        }
+        assert_eq!(
+            not_drawn(true, Some(&reason)).to_string(),
+            "This page could not be drawn: the file is empty"
+        );
+        assert_eq!(
+            not_drawn(true, None).to_string(),
+            "This page could not be drawn; the document may be damaged."
+        );
+        assert_eq!(
+            not_drawn(false, Some(&reason)).to_string(),
+            "This image could not be drawn: the file is empty"
+        );
+        assert_eq!(
+            not_drawn(false, None).to_string(),
+            "This image could not be drawn."
+        );
+        for (given, shown) in [
+            ("PDF page is invalid", "PDF page is invalid"),
+            ("unexpected end of file", "unexpected end of file"),
+            ("X", "X"),
+            ("Png: bad", "png: bad"),
+        ] {
+            let reason = api::FailureReason::new(given).unwrap();
+            assert_eq!(continuation(&reason), shown);
+        }
+    }
 }

@@ -47,7 +47,7 @@ fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
     let links = modeless::accessible_popup_item(
         &dialog,
         AccessibleRole::Checkbox,
-        "Follow directory links",
+        crate::support::link_option::LABEL,
     );
     if archive {
         assert!(links.is_none_or(|item| !item.is_visible()));
@@ -89,11 +89,7 @@ fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
             "archive members keep their provider readers"
         );
     } else {
-        let expected = if follow_directory_links {
-            CopyLinkPolicy::FollowDirectoryContents
-        } else {
-            CopyLinkPolicy::EmptyDirectories
-        };
+        let expected = crate::support::link_option::sent(false, follow_directory_links);
         assert!(
             !observed.is_empty(),
             "the captured native options must reach preparation"

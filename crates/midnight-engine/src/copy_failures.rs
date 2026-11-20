@@ -4,7 +4,11 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(super) enum Context {
     Entry,
+    /// The top folder itself cannot be read further; Skip leaves out the rest of it.
     Enumeration,
+    /// One child of the top folder cannot be opened (`Job::failed_child`); Skip
+    /// leaves out only that child and the folder continues with the next one.
+    Child,
     DirectoryRemoval,
     Move,
 }
@@ -36,6 +40,8 @@ impl Job {
                     || {
                         if let Some(link) = &work.link {
                             link.failure_stage()
+                        } else if work.source_move_failed {
+                            CopyErrorStage::MovingSource
                         } else if work.entry().item.kind == EntryKind::Directory {
                             CopyErrorStage::CreatingDirectory
                         } else {
@@ -73,6 +79,17 @@ impl Job {
                 false,
                 true,
             ),
+            Context::Child => {
+                let frame = self.stack.last().expect("failed child's folder");
+                let child = self.failed_child.as_ref().expect("failed child");
+                // Retry opens the child again by its name.
+                (
+                    CopyErrorStage::Reading,
+                    Some(frame.source.entry().item.path.join(child)),
+                    true,
+                    true,
+                )
+            }
             Context::DirectoryRemoval => (
                 CopyErrorStage::RemovingSource,
                 self.stack
@@ -106,15 +123,19 @@ impl Job {
             return Step::Done;
         };
         self.version = version;
+        let destination = match (context, &self.failed_child, self.stack.last()) {
+            (Context::Child, Some(child), Some(frame)) => frame.destination.path().join(child),
+            _ => self.current.as_ref().map_or_else(
+                || self.progress.destination_directory.clone(),
+                |work| work.destination.path().join(&work.name),
+            ),
+        };
         let failure = CopyFailure {
             id: self.progress.id,
             version,
             error,
             source,
-            destination: self.current.as_ref().map_or_else(
-                || self.progress.destination_directory.clone(),
-                |work| work.destination.path().join(&work.name),
-            ),
+            destination,
             stage,
             can_retry,
             can_skip,
@@ -168,6 +189,7 @@ impl Job {
                         result
                     }
                     Context::Enumeration => unreachable!("enumeration cannot advertise retry"),
+                    Context::Child => self.reopen_failed_child(),
                     Context::DirectoryRemoval => Ok(()),
                 };
                 self.progress.message.clear();
@@ -184,6 +206,15 @@ impl Job {
                 self.progress.message.clear();
                 match self.failure_context {
                     Context::Entry => self.skip_current(),
+                    Context::Child => {
+                        self.failed_child = None;
+                        // The skipped child stays in its folder, so a Move keeps that
+                        // folder and every folder above it.
+                        for frame in &mut self.stack {
+                            frame.retain_source = true;
+                        }
+                        self.progress.skipped += 1;
+                    }
                     Context::Enumeration | Context::DirectoryRemoval => {
                         let frame = ownership::Armed::new(
                             self.stack.pop().expect("failed enumeration frame"),
@@ -222,5 +253,15 @@ impl Job {
                 Step::Failure(Arc::new(failure))
             }
         }
+    }
+
+    /// Retry of a child that could not be opened: open it again by name. While it
+    /// still fails, it stays the pending child.
+    fn reopen_failed_child(&mut self) -> Result<(), FsError> {
+        let child = self.failed_child.as_ref().expect("failed child");
+        let frame = self.stack.last().expect("failed child's folder");
+        self.reopened_child = Some(frame.source.open_child(child, &self.cancel)?);
+        self.failed_child = None;
+        Ok(())
     }
 }

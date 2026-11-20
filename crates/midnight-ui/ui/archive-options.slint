@@ -23,6 +23,9 @@ export global ArchiveOptionsView {
     in property <string> conflict-extension;
     in property <string> availability;
     in property <bool> ready;
+    // The custom-extension editor is open. Options lets its Escape cancel only that
+    // edit; the next Escape closes Options.
+    in-out property <bool> adding;
     callback search(string);
     callback choose-format(int);
     callback toggle(string, bool);
@@ -33,9 +36,8 @@ export global ArchiveOptionsView {
 
 export component ArchiveOptions inherits VerticalLayout {
     spacing: 8px; alignment: start;
-    private property <bool> adding;
     private property <int> selected-format: ArchiveOptionsView.format-index;
-    changed selected-format => { root.adding = false; }
+    changed selected-format => { ArchiveOptionsView.adding = false; }
     Text {
         text: "Open these file types as folders";
         color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
@@ -93,15 +95,18 @@ export component ArchiveOptions inherits VerticalLayout {
         }
     }
     Rectangle {
-        height: root.adding ? extension-input.preferred-height : Theme.control-height + 4px;
-        if !root.adding : NavigationButton {
+        height: ArchiveOptionsView.adding ? extension-input.preferred-height : Theme.control-height + 4px;
+        // Stays in the tree while hidden, so a cancelled edit can return focus here
+        // instead of leaving it on the hidden field.
+        add-extension := NavigationButton {
             x: 0px; y: 0px;
             icon: @image-url("icons/add.svg"); accessible-label: "Add custom archive extension";
             width: Theme.control-height + 4px; height: Theme.control-height + 4px;
             rest-border: Theme.frame;
-            enabled: ArchiveOptionsView.ready;
+            visible: !ArchiveOptionsView.adding;
+            enabled: ArchiveOptionsView.ready && !ArchiveOptionsView.adding;
             hint: "Add an extension for this archive format.";
-            clicked => { root.adding = true; }
+            clicked => { ArchiveOptionsView.adding = true; }
         }
         // Not a component of its own: one that inherits the hinted LineEdit is
         // compiled as another copy of the LineEdit.
@@ -110,26 +115,34 @@ export component ArchiveOptions inherits VerticalLayout {
             placeholder-text: "Extension, then Enter";
             hint: "Enter a literal extension, such as backup or backup.tar. Press Enter to add it, or Escape to cancel.";
             key-pressed(event) => {
-                if event.text == Key.Escape { ArchiveOptionsView.draft = ""; root.adding = false; return accept; }
+                if event.text == Key.Escape && ArchiveOptionsView.adding {
+                    ArchiveOptionsView.draft = "";
+                    ArchiveOptionsView.adding = false;
+                    add-extension.focus();
+                    return accept;
+                }
                 reject
             }
-            visible: root.adding; enabled: root.adding && ArchiveOptionsView.ready;
+            visible: ArchiveOptionsView.adding; enabled: ArchiveOptionsView.adding && ArchiveOptionsView.ready;
             width: parent.width;
             text <=> ArchiveOptionsView.draft;
             changed visible => { if self.visible { self.focus(); } }
             accepted => {
                 if ArchiveOptionsView.ready && ArchiveOptionsView.draft != "" {
                     ArchiveOptionsView.add();
-                    if ArchiveOptionsView.error == "" && ArchiveOptionsView.draft == "" { root.adding = false; }
+                    if ArchiveOptionsView.error == "" && ArchiveOptionsView.draft == "" {
+                        ArchiveOptionsView.adding = false;
+                        add-extension.focus();
+                    }
                 }
             }
         }
     }
-    if root.adding && ArchiveOptionsView.error != "" : Text {
+    if ArchiveOptionsView.adding && ArchiveOptionsView.error != "" : Text {
         text: ArchiveOptionsView.error; color: Theme.error-text;
         font-size: Theme.font-size; wrap: word-wrap;
     }
-    if root.adding && ArchiveOptionsView.conflict-extension != "" : HintedActionButton {
+    if ArchiveOptionsView.adding && ArchiveOptionsView.conflict-extension != "" : HintedActionButton {
         text: "Show built-in checkbox";
         hint: "Select the format and existing checkbox for this built-in extension.";
         clicked => { ArchiveOptionsView.show-builtin(); }

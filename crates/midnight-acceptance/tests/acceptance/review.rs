@@ -1,14 +1,19 @@
-//! UI review: render the main window and every reachable dialog in several themes,
-//! both densities and small and large window sizes, and flag layout problems.
+//! UI review: the polish gate's sweep (docs/developer/acceptance/ui-polish.md). The main
+//! window in several states, its menus and popups, every embedded dialog and the tool
+//! windows are rendered across a matrix of themes, densities, window sizes (each window's
+//! minimum size included) and scale factors, and every capture runs the gate's checks
+//! (`scenarios::ui_gate`). Any flag fails the scenario unless the gate lists it as an
+//! exemption with its reason.
 //!
-//! Dialogs open with their keyboard shortcut where one exists. Options, Hot Paths,
-//! Jobs and About have no default shortcut; they open through the same window
-//! callbacks the main menu invokes. Viewer and file-comparison windows need installed
-//! plugins and are not reviewed yet (docs/developer/ACCEPTANCE.md, "Extending").
+//! Dialogs open with their keyboard shortcut where one exists. Options, Hot Paths, Jobs
+//! and About have no default shortcut; they open through the same window callbacks the
+//! main menu invokes. Job progress windows, decision windows and the viewers have their
+//! own gate scenarios (`scenarios::ui_states`).
 use super::{
-    Context,
-    app::{self, App, Config},
+    Context, Scenario,
+    app::{App, Config},
     input, inspect, panel, report,
+    scenarios::ui_gate::{self as gate, Target},
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::{PaneId, PreferenceTheme, UiDensity};
@@ -17,9 +22,134 @@ use slint::{
     ComponentHandle,
     platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow},
 };
-use std::{rc::Rc, time::Duration};
+use std::{path::Path, rc::Rc, time::Duration};
 
-/// Where an opened dialog lives.
+/// Window size class of a combination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Size {
+    /// Each window's own minimum size.
+    Min,
+    Small,
+    Normal,
+    Large,
+}
+
+/// What a combination captures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Every surface of this sweep.
+    Full,
+    /// The main window's states and popups, one dialog, a notice and Find: the theme
+    /// sweep, where colour is what differs.
+    Colors,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Combination {
+    pub theme: PreferenceTheme,
+    pub density: UiDensity,
+    pub size: Size,
+    pub scale: f32,
+    pub scope: Scope,
+}
+
+impl Combination {
+    const fn new(theme: PreferenceTheme, density: UiDensity, size: Size, scale: f32) -> Self {
+        Self {
+            theme,
+            density,
+            size,
+            scale,
+            scope: Scope::Full,
+        }
+    }
+
+    pub fn prefix(&self) -> String {
+        format!(
+            "{:?}-{:?}-{:?}-x{}",
+            self.theme, self.density, self.size, self.scale as u32
+        )
+    }
+
+    /// The main window's logical size.
+    pub fn main_size(&self) -> (usize, usize) {
+        match self.size {
+            Size::Min => (320, 200),
+            Size::Small => (960, 600),
+            Size::Normal => (1340, 820),
+            Size::Large => (1600, 1000),
+        }
+    }
+}
+
+/// The default matrix: both densities at every size class (the windows' minimum sizes
+/// included) in five themes with every surface, and scale 2 in both densities in the
+/// colour scope.
+pub fn default_matrix() -> Vec<Combination> {
+    use PreferenceTheme::*;
+    use UiDensity::*;
+    let colors = |combination: Combination| Combination {
+        scope: Scope::Colors,
+        ..combination
+    };
+    vec![
+        Combination::new(Blue, Desktop, Size::Normal, 1.0),
+        Combination::new(Dark, Touch, Size::Small, 1.0),
+        Combination::new(Light, Desktop, Size::Large, 1.0),
+        Combination::new(HighContrastDark, Touch, Size::Normal, 1.0),
+        Combination::new(Blue, Desktop, Size::Min, 1.0),
+        Combination::new(Dark, Touch, Size::Min, 1.0),
+        colors(Combination::new(Light, Desktop, Size::Normal, 2.0)),
+        colors(Combination::new(HighContrastLight, Touch, Size::Small, 2.0)),
+    ]
+}
+
+/// Every theme the default matrix leaves out, in the colour scope.
+pub fn theme_matrix() -> Vec<Combination> {
+    let covered: Vec<PreferenceTheme> = default_matrix().iter().map(|c| c.theme).collect();
+    PreferenceTheme::ALL
+        .iter()
+        .filter(|theme| !covered.contains(theme))
+        .map(|theme| Combination {
+            scope: Scope::Colors,
+            ..Combination::new(*theme, UiDensity::Desktop, Size::Normal, 1.0)
+        })
+        .collect()
+}
+
+/// The full matrix: every theme in both densities at the normal size, and the base
+/// themes in both densities at every size class and both scale factors.
+pub fn full_matrix() -> Vec<Combination> {
+    use PreferenceTheme::*;
+    let mut list = Vec::new();
+    for theme in PreferenceTheme::ALL {
+        for density in [UiDensity::Desktop, UiDensity::Touch] {
+            list.push(Combination::new(theme, density, Size::Normal, 1.0));
+        }
+    }
+    for theme in [Blue, Dark, Light, HighContrastDark, HighContrastLight] {
+        for density in [UiDensity::Desktop, UiDensity::Touch] {
+            for size in [Size::Min, Size::Small, Size::Normal, Size::Large] {
+                for scale in [1.0, 2.0] {
+                    if size == Size::Normal && scale == 1.0 {
+                        continue;
+                    }
+                    list.push(Combination::new(theme, density, size, scale));
+                }
+            }
+        }
+    }
+    list
+}
+
+/// Whether the full matrix was asked for (`--all-themes`, or
+/// `MIDNIGHT_ACCEPTANCE_UI_MATRIX=full`).
+pub fn full_requested(context: &Context) -> bool {
+    context.options.all_themes
+        || std::env::var("MIDNIGHT_ACCEPTANCE_UI_MATRIX").is_ok_and(|value| value == "full")
+}
+
+/// Where an opened surface lives.
 enum Host {
     /// A popup on the main window's adapter.
     Main,
@@ -27,126 +157,65 @@ enum Host {
     Tool(Rc<MinimalSoftwareWindow>),
 }
 
-struct Combination {
-    theme: PreferenceTheme,
-    density: UiDensity,
-    width: usize,
-    height: usize,
-    dialogs: bool,
+/// One combination's running sweep.
+struct Sweep {
+    combination: Combination,
+    prefix: String,
 }
 
-fn combinations(all_themes: bool) -> Vec<Combination> {
-    let full = |theme, density, width, height| Combination {
-        theme,
-        density,
-        width,
-        height,
-        dialogs: true,
-    };
-    let mut list = vec![
-        full(PreferenceTheme::Blue, UiDensity::Desktop, 1600, 1000),
-        full(PreferenceTheme::Blue, UiDensity::Desktop, 960, 600),
-        full(PreferenceTheme::Dark, UiDensity::Touch, 1600, 1000),
-        full(PreferenceTheme::Dark, UiDensity::Touch, 960, 600),
-        full(PreferenceTheme::Light, UiDensity::Desktop, 1340, 820),
-        full(
-            PreferenceTheme::HighContrastDark,
-            UiDensity::Touch,
-            1340,
-            820,
-        ),
-    ];
-    if all_themes {
-        for index in 0..=25 {
-            let theme = theme_from_index(index);
-            if list.iter().any(|combination| combination.theme == theme) {
-                continue;
-            }
-            list.push(Combination {
-                theme,
-                density: UiDensity::Desktop,
-                width: 1340,
-                height: 820,
-                dialogs: false,
-            });
-        }
+impl Sweep {
+    fn capture(
+        &self,
+        app: &mut App,
+        context: &mut Context,
+        host: &Host,
+        name: &str,
+        caption: &str,
+    ) {
+        let target = match host {
+            Host::Main => Target::Main,
+            Host::Tool(window) => Target::Tool(window.clone()),
+        };
+        let surface = format!("{}/{name}", self.prefix);
+        let shot = format!("{}-{name}", self.prefix);
+        gate::capture(
+            app,
+            context,
+            &target,
+            &surface,
+            &shot,
+            &format!("{caption} · {}", self.prefix),
+        );
     }
-    list
-}
 
-fn theme_from_index(index: i32) -> PreferenceTheme {
-    use PreferenceTheme::*;
-    [
-        Blue,
-        Dark,
-        Light,
-        Dracula,
-        Nord,
-        GruvboxDark,
-        CatppuccinMocha,
-        SolarizedLight,
-        CarbonGreen,
-        TokyoNight,
-        OneDark,
-        RosePine,
-        NortonCommander,
-        AmberTerminal,
-        VerdantLight,
-        CatppuccinLatte,
-        RosePineDawn,
-        PaperContrast,
-        SandstoneContrast,
-        DeepOcean,
-        GraphiteContrast,
-        HighContrastDark,
-        HighContrastLight,
-        SlateBlue,
-        SlateTeal,
-        SlateViolet,
-    ][index as usize]
-}
-
-/// Record a capture's layout findings against its screenshot.
-fn check(context: &mut Context, shot: &str, window: &slint::Window, width: f32, height: f32) {
-    let findings = inspect::check_layout(window, width, height);
-    if let Some(recorded) = context
-        .outcome
-        .shots
-        .iter_mut()
-        .find(|recorded| recorded.file == shot)
-    {
-        recorded.flags = findings.len();
-    }
-    for finding in findings {
-        context.outcome.flags.push(report::Flag {
-            shot: shot.to_owned(),
-            kind: finding.kind,
-            detail: finding.detail,
-        });
+    /// Size a tool window for this combination: its minimum, three quarters of its
+    /// preferred size, its preferred size or 1.4 times that.
+    fn size_tool(&self, window: &MinimalSoftwareWindow) {
+        let (min, preferred) = gate::window_sizes(window.window());
+        let size = match self.combination.size {
+            Size::Min => min,
+            Size::Small => (
+                (preferred.0 * 0.75).max(min.0),
+                (preferred.1 * 0.75).max(min.1),
+            ),
+            Size::Normal => preferred,
+            Size::Large => (
+                (preferred.0 * 1.4).clamp(min.0, 1700.0),
+                (preferred.1 * 1.4).clamp(min.1, 1150.0),
+            ),
+        };
+        gate::size_tool(window, size, self.combination.scale);
     }
 }
 
-fn capture(app: &mut App, context: &mut Context, host: &Host, name: &str, caption: &str) {
-    // Theme colours animate briefly after changes; let them settle before rendering.
-    app.idle(Duration::from_millis(250));
-    match host {
-        Host::Main => {
-            let shot = app.screenshot(context, name, caption);
-            let (width, height) = (app.width as f32, app.height as f32);
-            check(context, &shot, app.window.window(), width, height);
-        }
-        Host::Tool(window) => {
-            let shot = app.screenshot_window(context, window, name, caption);
-            let size = window.window().size();
-            check(
-                context,
-                &shot,
-                window.window(),
-                size.width as f32,
-                size.height as f32,
-            );
-        }
-    }
+/// How long a step waits for a dialog or popup: a stuck step fails fast and the sweep
+/// goes on (`isolated`).
+const STEP: Duration = Duration::from_secs(15);
+
+/// Pump the application until `condition` holds, or panic after [`STEP`].
+#[track_caller]
+fn wait(app: &mut App, what: &str, condition: impl Fn(&App) -> bool) {
+    app.until_for(what, STEP, condition);
 }
 
 fn has_popup(app: &App) -> bool {
@@ -161,15 +230,14 @@ fn main_idle(app: &App) -> bool {
         && app.window.get_metadata_token().is_empty()
         && !app.window.get_mutation_input_blocked()
         && app.tool_windows().is_empty()
+        && super::tools_support::shown_notice(app).is_none()
 }
 
 /// Wait for a new tool window and size it for this combination.
-fn tool(app: &mut App, what: &str, before: usize) -> Host {
-    app.until(what, move |app| app.tool_windows().len() > before);
+fn tool(app: &mut App, sweep: &Sweep, what: &str, before: usize) -> Host {
+    wait(app, what, move |app| app.tool_windows().len() > before);
     let window = app.tool_windows().pop().expect("tool window");
-    let width = (app.width as f32 * 0.7).clamp(480.0, 1000.0) as u32;
-    let height = (app.height as f32 * 0.75).clamp(360.0, 720.0) as u32;
-    app::layout_tool(&window, width, height);
+    sweep.size_tool(&window);
     app.settle();
     Host::Tool(window)
 }
@@ -179,12 +247,12 @@ fn close(app: &mut App, host: &Host, what: &str) {
         Host::Main => input::key(app.slint(), Key::Escape),
         Host::Tool(window) => input::key(window.window(), Key::Escape),
     }
-    app.until(&format!("{what} to close"), main_idle);
+    wait(app, &format!("{what} to close"), main_idle);
 }
 
-fn options_pages(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), String> {
+fn options_pages(app: &mut App, context: &mut Context, sweep: &Sweep) -> Result<(), String> {
     app.window.invoke_show_options();
-    app.until("Options", |app| app.window.get_options_open());
+    wait(app, "Options", |app| app.window.get_options_open());
     for (topic, label) in [
         (0, "General"),
         (1, "Appearance"),
@@ -223,15 +291,15 @@ fn options_pages(app: &mut App, context: &mut Context, prefix: &str) -> Result<(
                 }
                 input::key(app.slint(), Key::Return);
             }
-            app.until(&format!("the {label} Options page"), move |app| {
+            wait(app, &format!("the {label} Options page"), move |app| {
                 app.window.get_options_topic_index() == topic
             });
         }
-        capture(
+        sweep.capture(
             app,
             context,
             &Host::Main,
-            &format!("{prefix}-options-{topic:02}"),
+            &format!("options-{topic:02}"),
             &format!("Options › {label}"),
         );
     }
@@ -241,17 +309,8 @@ fn options_pages(app: &mut App, context: &mut Context, prefix: &str) -> Result<(
 
 type Step<'a> = Box<dyn FnOnce(&mut App, &mut Context) -> Result<(), String> + 'a>;
 
-/// A dialog opened by a shortcut: name, caption, modifiers, key, and "it is open".
-type Shortcut = (
-    &'static str,
-    &'static str,
-    &'static [Key],
-    Key,
-    fn(&App) -> bool,
-);
-
-/// Run one dialog step; a failure (or panic) becomes a review flag and the sweep goes on
-/// after Escape has closed whatever the step left open.
+/// Run one step; a failure (or panic) becomes a review flag and the sweep goes on after
+/// Escape has closed whatever the step left open.
 fn isolated(app: &mut App, context: &mut Context, prefix: &str, name: &str, step: Step<'_>) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step(app, context)));
     let error = match result {
@@ -265,9 +324,9 @@ fn isolated(app: &mut App, context: &mut Context, prefix: &str, name: &str, step
     };
     let first = error.lines().next().unwrap_or_default().to_owned();
     context.outcome.flags.push(report::Flag {
-        shot: format!("shots/{}/{prefix}-main.png", app::context_name()),
+        shot: format!("shots/{}/{prefix}-main.png", super::app::context_name()),
         kind: "dialog step failed",
-        detail: format!("{name}: {first}"),
+        detail: format!("{prefix}/{name}: {first}"),
     });
     context.note(format!("{prefix} {name} failed: {error}"));
     for _ in 0..3 {
@@ -277,48 +336,21 @@ fn isolated(app: &mut App, context: &mut Context, prefix: &str, name: &str, step
         input::key(app.slint(), Key::Escape);
         app.idle(Duration::from_millis(100));
     }
+    super::files_support::dismiss_all(app);
 }
 
-/// Open, capture and close every dialog for one combination.
-fn dialogs(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), String> {
-    let left = PaneId::Left;
-    panel::select_row(app, left, "alpha.bin")?;
-    let p = prefix.to_owned();
-    isolated(
-        app,
-        context,
-        prefix,
-        "main menu",
-        Box::new(move |app: &mut App, context: &mut Context| {
-            input::key(app.slint(), Key::F10);
-            app.until("the main menu", has_popup);
-            capture(
-                app,
-                context,
-                &Host::Main,
-                &format!("{p}-main-menu"),
-                "Main menu (F10)",
-            );
-            close(app, &Host::Main, "the main menu");
-            Ok(())
-        }),
-    );
-    let p = prefix.to_owned();
-    isolated(
-        app,
-        context,
-        prefix,
-        "options",
-        Box::new(move |app: &mut App, context: &mut Context| options_pages(app, context, &p)),
-    );
-    dialog_steps(app, context, prefix);
-    Ok(())
-}
+/// A dialog opened by a shortcut: screenshot name, caption, modifiers, key and the
+/// condition that shows it opened.
+type ShortcutDialog = (
+    &'static str,
+    &'static str,
+    &'static [Key],
+    Key,
+    fn(&App) -> bool,
+);
 
-fn dialog_steps(app: &mut App, context: &mut Context, prefix: &str) {
-    let left = PaneId::Left;
-
-    let simple: [Shortcut; 9] = [
+fn shortcut_dialogs() -> [ShortcutDialog; 9] {
+    [
         ("copy", "Copy (F5)", &[], Key::F5, |app| {
             !app.window.get_copy_draft_token().is_empty()
         }),
@@ -362,149 +394,345 @@ fn dialog_steps(app: &mut App, context: &mut Context, prefix: &str) {
             Key::F12,
             |app| app.window.get_panel_filter_view().open,
         ),
-    ];
-    for (name, caption, modifiers, key, ready) in simple {
-        let shot = format!("{prefix}-{name}");
+    ]
+}
+
+/// A popup of the main window opened by a key: screenshot name, caption, modifiers, key.
+const POPUPS: [(&str, &str, &[Key], Key); 3] = [
+    ("main-menu", "Main menu (F10)", &[], Key::F10),
+    ("user-menu", "User menu (F9)", &[], Key::F9),
+    ("volumes", "Volume choices (Alt+F1)", &[Key::Alt], Key::F1),
+];
+
+/// The main window's own states: the cursor, marked rows and a filename search.
+fn main_states(app: &mut App, context: &mut Context, sweep: &Sweep) {
+    let left = PaneId::Left;
+    let prefix = sweep.prefix.clone();
+    isolated(
+        app,
+        context,
+        &prefix,
+        "marked rows",
+        Box::new(|app: &mut App, context: &mut Context| {
+            panel::select_row(app, left, "alpha.bin")?;
+            input::key(app.slint(), Key::Insert);
+            input::key(app.slint(), Key::Insert);
+            app.settle();
+            sweep.capture(
+                app,
+                context,
+                &Host::Main,
+                "main-marked",
+                "Marked rows and the cursor",
+            );
+            input::chord(app.slint(), &[Key::Control], "d");
+            app.settle();
+            Ok(())
+        }),
+    );
+    isolated(
+        app,
+        context,
+        &prefix,
+        "filename search",
+        Box::new(|app: &mut App, context: &mut Context| {
+            panel::select_row(app, left, "alpha.bin")?;
+            input::type_text(app.slint(), "be");
+            app.settle();
+            sweep.capture(app, context, &Host::Main, "main-search", "Filename search");
+            input::key(app.slint(), Key::Escape);
+            app.settle();
+            Ok(())
+        }),
+    );
+    for (name, caption, modifiers, key) in POPUPS {
         isolated(
             app,
             context,
-            prefix,
+            &prefix,
             caption,
             Box::new(move |app: &mut App, context: &mut Context| {
                 panel::focus_list(app, left)?;
                 input::chord(app.slint(), modifiers, key);
-                app.until(caption, ready);
-                capture(app, context, &Host::Main, &shot, caption);
+                wait(app, caption, has_popup);
+                sweep.capture(app, context, &Host::Main, name, caption);
                 close(app, &Host::Main, caption);
                 Ok(())
             }),
         );
     }
+}
 
-    let p = prefix.to_owned();
+/// An unreadable folder with a long name inside the review folder: entering it shows
+/// the error notice that names a long path.
+fn locked_folder(left: &Path) -> Result<String, String> {
+    let name = "a-folder-whose-long-name-makes-the-error-path-long-enough-to-wrap-in-a-notice";
+    let path = left.join(name);
+    std::fs::create_dir_all(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    Ok(name.to_owned())
+}
+
+/// The error notice of a folder that cannot be listed, naming its long path, then its
+/// details.
+fn error_notice(
+    app: &mut App,
+    context: &mut Context,
+    sweep: &Sweep,
+    locked: &str,
+) -> Result<(), String> {
+    panel::select_row(app, PaneId::Left, locked)?;
+    input::key(app.slint(), Key::Return);
+    wait(app, "an error notice", |app| {
+        super::tools_support::shown_notice(app).is_some()
+    });
+    sweep.capture(
+        app,
+        context,
+        &Host::Main,
+        "notice-error",
+        "Error notice with a long path",
+    );
+    if inspect::find(app.slint(), AccessibleRole::Button, "Details").is_some() {
+        input::click_button(app.slint(), "Details")?;
+        app.settle();
+        sweep.capture(
+            app,
+            context,
+            &Host::Main,
+            "notice-details",
+            "Error notice, details shown",
+        );
+    }
+    input::key(app.slint(), Key::Escape);
+    wait(app, "the notice to close", |app| {
+        super::tools_support::shown_notice(app).is_none()
+    });
+    Ok(())
+}
+
+fn about(app: &mut App, context: &mut Context, sweep: &Sweep) -> Result<(), String> {
+    app.window.invoke_show_about();
+    wait(app, "About", |app| app.window.get_about_open());
+    sweep.capture(app, context, &Host::Main, "about", "About");
+    input::click(app.slint(), AccessibleRole::Tab, "Licenses")?;
+    app.settle();
+    sweep.capture(
+        app,
+        context,
+        &Host::Main,
+        "about-licenses",
+        "About › Licenses",
+    );
+    input::click(app.slint(), AccessibleRole::TextInput, "Filter libraries")?;
+    input::key(app.slint(), Key::DownArrow);
+    input::key(app.slint(), Key::Return);
+    app.settle();
+    sweep.capture(
+        app,
+        context,
+        &Host::Main,
+        "about-license",
+        "About › Licenses › a license",
+    );
+    for _ in 0..3 {
+        if !app.window.get_about_open() {
+            break;
+        }
+        input::key(app.slint(), Key::Escape);
+        app.idle(Duration::from_millis(100));
+    }
+    wait(app, "About to close", main_idle);
+    Ok(())
+}
+
+/// Open, capture and close every embedded dialog and tool window.
+fn dialogs(app: &mut App, context: &mut Context, sweep: &Sweep, locked: &str) {
+    let left = PaneId::Left;
+    let prefix = sweep.prefix.clone();
+    let colors = sweep.combination.scope == Scope::Colors;
     isolated(
         app,
         context,
-        prefix,
+        &prefix,
+        "options",
+        Box::new(|app: &mut App, context: &mut Context| {
+            if colors {
+                return Ok(());
+            }
+            options_pages(app, context, sweep)
+        }),
+    );
+    for (name, caption, modifiers, key, ready) in shortcut_dialogs() {
+        if colors && name != "copy" {
+            continue;
+        }
+        isolated(
+            app,
+            context,
+            &prefix,
+            caption,
+            Box::new(move |app: &mut App, context: &mut Context| {
+                panel::select_row(app, left, "alpha.bin")?;
+                input::chord(app.slint(), modifiers, key);
+                wait(app, caption, ready);
+                sweep.capture(app, context, &Host::Main, name, caption);
+                close(app, &Host::Main, caption);
+                Ok(())
+            }),
+        );
+    }
+    isolated(
+        app,
+        context,
+        &prefix,
+        "error notice",
+        Box::new(|app: &mut App, context: &mut Context| error_notice(app, context, sweep, locked)),
+    );
+    if colors {
+        isolated(
+            app,
+            context,
+            &prefix,
+            "Find",
+            Box::new(|app: &mut App, context: &mut Context| {
+                panel::focus_list(app, left)?;
+                let before = app.tool_windows().len();
+                input::chord(app.slint(), &[Key::Alt], Key::F7);
+                let host = tool(app, sweep, "Find", before);
+                sweep.capture(app, context, &host, "find", "Find (Alt+F7)");
+                close(app, &host, "Find");
+                Ok(())
+            }),
+        );
+        return;
+    }
+    isolated(
+        app,
+        context,
+        &prefix,
         "Make File List",
-        Box::new(move |app: &mut App, context: &mut Context| {
-            panel::focus_list(app, left)?;
+        Box::new(|app: &mut App, context: &mut Context| {
+            panel::select_row(app, left, "alpha.bin")?;
             input::chord(app.slint(), &[Key::Control], "m");
-            app.until("Make File List", |app| {
+            wait(app, "Make File List", |app| {
                 app.window.global::<FileListPresentation>().get_active()
             });
-            capture(
+            sweep.capture(
                 app,
                 context,
                 &Host::Main,
-                &format!("{p}-file-list"),
+                "file-list",
                 "Make File List (Ctrl+M)",
             );
             close(app, &Host::Main, "Make File List");
             Ok(())
         }),
     );
-
-    let p = prefix.to_owned();
     isolated(
         app,
         context,
-        prefix,
+        &prefix,
         "Attributes",
-        Box::new(move |app: &mut App, context: &mut Context| {
-            panel::focus_list(app, left)?;
+        Box::new(|app: &mut App, context: &mut Context| {
+            panel::select_row(app, left, "alpha.bin")?;
             input::chord(app.slint(), &[Key::Control], Key::F2);
-            app.until("Attributes", |app| {
+            wait(app, "Attributes", |app| {
                 !app.window.get_metadata_token().is_empty()
             });
-            capture(
+            sweep.capture(
                 app,
                 context,
                 &Host::Main,
-                &format!("{p}-attributes"),
+                "attributes",
                 "Attributes (Ctrl+F2)",
             );
             input::click_button(app.slint(), "Times")?;
             app.settle();
-            capture(
-                app,
-                context,
-                &Host::Main,
-                &format!("{p}-times"),
-                "Attributes › Times",
-            );
+            sweep.capture(app, context, &Host::Main, "times", "Attributes › Times");
             close(app, &Host::Main, "Attributes");
             Ok(())
         }),
     );
-
-    let p = prefix.to_owned();
     isolated(
         app,
         context,
-        prefix,
+        &prefix,
         "Hot Paths",
-        Box::new(move |app: &mut App, context: &mut Context| {
+        Box::new(|app: &mut App, context: &mut Context| {
             panel::focus_list(app, left)?;
             app.window.invoke_show_bookmarks(left.index() as i32);
-            app.until("Hot Paths", |app| {
+            wait(app, "Hot Paths", |app| {
                 !app.window
                     .global::<HotPathsPresentation>()
                     .get_token()
                     .is_empty()
             });
-            capture(
-                app,
-                context,
-                &Host::Main,
-                &format!("{p}-hot-paths"),
-                "Hot Paths",
-            );
+            sweep.capture(app, context, &Host::Main, "hot-paths", "Hot Paths");
             close(app, &Host::Main, "Hot Paths");
             Ok(())
         }),
     );
-
-    let p = prefix.to_owned();
     isolated(
         app,
         context,
-        prefix,
+        &prefix,
         "About",
-        Box::new(move |app: &mut App, context: &mut Context| {
-            app.window.invoke_show_about();
-            app.until("About", |app| app.window.get_about_open());
-            capture(app, context, &Host::Main, &format!("{p}-about"), "About");
-            close(app, &Host::Main, "About");
-            Ok(())
-        }),
+        Box::new(|app: &mut App, context: &mut Context| about(app, context, sweep)),
     );
-
-    let p = prefix.to_owned();
     isolated(
         app,
         context,
-        prefix,
+        &prefix,
         "Drive information",
-        Box::new(move |app: &mut App, context: &mut Context| {
+        Box::new(|app: &mut App, context: &mut Context| {
             panel::focus_list(app, left)?;
             input::chord(app.slint(), &[Key::Control], Key::F1);
-            app.until("Drive information", |app| {
+            wait(app, "Drive information", |app| {
                 app.window.get_embedded_modal_open() || has_popup(app)
             });
             app.idle(Duration::from_millis(300));
-            capture(
+            sweep.capture(
                 app,
                 context,
                 &Host::Main,
-                &format!("{p}-drive-info"),
+                "drive-info",
                 "Drive information (Ctrl+F1)",
             );
             close(app, &Host::Main, "Drive information");
             Ok(())
         }),
     );
-
+    isolated(
+        app,
+        context,
+        &prefix,
+        "Properties",
+        Box::new(|app: &mut App, context: &mut Context| {
+            panel::select_row(app, left, "alpha.bin")?;
+            input::chord(app.slint(), &[Key::Alt], Key::Return);
+            wait(app, "Properties", |app| {
+                app.window.get_embedded_modal_open()
+                    || has_popup(app)
+                    || super::tools_support::shown_notice(app).is_some()
+            });
+            app.idle(Duration::from_millis(300));
+            sweep.capture(
+                app,
+                context,
+                &Host::Main,
+                "properties",
+                "Properties (Alt+Enter)",
+            );
+            close(app, &Host::Main, "Properties");
+            Ok(())
+        }),
+    );
     for (name, caption, modifiers, key) in [
         ("find", "Find (Alt+F7)", &[Key::Alt][..], Key::F7),
         (
@@ -515,78 +743,137 @@ fn dialog_steps(app: &mut App, context: &mut Context, prefix: &str) {
         ),
         ("help", "Help (F1)", &[][..], Key::F1),
     ] {
-        let shot = format!("{prefix}-{name}");
         isolated(
             app,
             context,
-            prefix,
+            &prefix,
             caption,
             Box::new(move |app: &mut App, context: &mut Context| {
                 panel::focus_list(app, left)?;
                 let before = app.tool_windows().len();
                 input::chord(app.slint(), modifiers, key);
-                let host = tool(app, caption, before);
-                capture(app, context, &host, &shot, caption);
+                let host = tool(app, sweep, caption, before);
+                sweep.capture(app, context, &host, name, caption);
                 close(app, &host, caption);
                 Ok(())
             }),
         );
     }
-
-    let p = prefix.to_owned();
     isolated(
         app,
         context,
-        prefix,
+        &prefix,
         "Jobs",
-        Box::new(move |app: &mut App, context: &mut Context| {
+        Box::new(|app: &mut App, context: &mut Context| {
             let before = app.tool_windows().len();
             app.window.invoke_show_operations();
-            let host = tool(app, "Jobs", before);
-            capture(app, context, &host, &format!("{p}-jobs"), "Jobs");
+            let host = tool(app, sweep, "Jobs", before);
+            sweep.capture(app, context, &host, "jobs", "Jobs");
             close(app, &host, "Jobs");
             Ok(())
         }),
     );
 }
 
-pub fn run(context: &mut Context) -> Result<(), String> {
+/// Sweep `combinations`: start the application once per combination (the first loaded
+/// preferences choose theme and density), size and scale it, and capture every surface
+/// of the combination's scope.
+pub fn sweep(context: &mut Context, combinations: &[Combination]) -> Result<usize, String> {
     // Dialogs are cancelled, never confirmed, but work on a copy all the same.
     let left = context.work.join("review");
-    super::scenarios::transfers::copy_tree(&context.fixture.path("checksums"), &left)?;
+    if !left.exists() {
+        super::scenarios::transfers::copy_tree(&context.fixture.path("checksums"), &left)?;
+    }
+    let locked = locked_folder(&left)?;
     let right = context.fixture.root.clone();
     let mut reviewed = 0;
-    for combination in combinations(context.options.all_themes) {
-        let Combination {
-            theme,
-            density,
-            width,
-            height,
-            dialogs: with_dialogs,
-        } = combination;
+    for combination in combinations {
+        let (width, height) = combination.main_size();
         let mut config = Config::new(&left, &right);
-        config.theme = theme;
-        config.density = density;
+        config.theme = combination.theme;
+        config.density = combination.density;
         config.width = width;
         config.height = height;
         let mut app = App::start(config);
-        let prefix = format!("{theme:?}-{density:?}-{width}x{height}");
-        capture(
-            &mut app,
-            context,
-            &Host::Main,
-            &format!("{prefix}-main"),
-            &format!("Main window · {theme:?} · {density:?} · {width}×{height}"),
+        gate::scale_main(&mut app, (width, height), combination.scale);
+        let sweep = Sweep {
+            combination: *combination,
+            prefix: combination.prefix(),
+        };
+        let caption = format!(
+            "Main window · {:?} · {:?} · {width}×{height} · scale {}",
+            combination.theme, combination.density, combination.scale
         );
-        if with_dialogs {
-            dialogs(&mut app, context, &prefix).map_err(|error| format!("{prefix}: {error}"))?;
-        }
+        sweep.capture(&mut app, context, &Host::Main, "main", &caption);
+        main_states(&mut app, context, &sweep);
+        dialogs(&mut app, context, &sweep, &locked);
         app.shutdown()?;
         reviewed += 1;
     }
+    Ok(reviewed)
+}
+
+/// Scenario `ui_review`: the default matrix.
+pub fn run(context: &mut Context) -> Result<(), String> {
+    let matrix = default_matrix();
+    let reviewed = sweep(context, &matrix)?;
     context.note(format!(
-        "{reviewed} theme/density/size combinations, {} screenshots; not reviewed: viewers and Compare files (need installed plugins)",
+        "{reviewed} combinations ({}), {} screenshots",
+        matrix
+            .iter()
+            .map(Combination::prefix)
+            .collect::<Vec<_>>()
+            .join(", "),
         context.outcome.shots.len()
     ));
-    Ok(())
+    gate::verdict(context, "ui_review")
+}
+
+/// Scenario `ui_themes`: every other theme in the colour scope.
+pub fn themes(context: &mut Context) -> Result<(), String> {
+    let matrix = theme_matrix();
+    let reviewed = sweep(context, &matrix)?;
+    context.note(format!(
+        "{reviewed} themes in the colour scope, {} screenshots",
+        context.outcome.shots.len()
+    ));
+    gate::verdict(context, "ui_themes")
+}
+
+/// Scenario `ui_matrix_full`: the full matrix, on request only.
+pub fn full(context: &mut Context) -> Result<(), String> {
+    if !full_requested(context) {
+        return Err(
+            "SKIP: the full matrix runs with --all-themes or MIDNIGHT_ACCEPTANCE_UI_MATRIX=full"
+                .to_owned(),
+        );
+    }
+    let matrix = full_matrix();
+    let reviewed = sweep(context, &matrix)?;
+    context.note(format!(
+        "{reviewed} combinations of the full matrix, {} screenshots",
+        context.outcome.shots.len()
+    ));
+    gate::verdict(context, "ui_matrix_full")
+}
+
+/// The registrations of the sweep's other scenarios (`scenarios::all`).
+pub fn themes_scenario() -> Scenario {
+    Scenario {
+        name: "ui_themes",
+        area: "ui",
+        summary: "Polish gate in every theme the default matrix leaves out: main window states, menus, popups, Copy, an error notice and Find.",
+        run: themes,
+        timeout: Duration::from_secs(40 * 60),
+    }
+}
+
+pub fn full_scenario() -> Scenario {
+    Scenario {
+        name: "ui_matrix_full",
+        area: "ui",
+        summary: "Polish gate over the full matrix (--all-themes or MIDNIGHT_ACCEPTANCE_UI_MATRIX=full): every theme and density, every size class and scale factor of the base themes.",
+        run: full,
+        timeout: Duration::from_secs(300 * 60),
+    }
 }

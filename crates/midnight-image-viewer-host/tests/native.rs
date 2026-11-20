@@ -135,15 +135,38 @@ fn sandboxed_image_session_retains_original_pixels_and_rejects_source_changes() 
 fn corrupt_content_and_cancelled_sessions_never_return_a_frame() {
     let _serial = SERIAL.lock().unwrap();
     let provider = provider();
-    assert!(
-        ImageSession::open(
+    // Text, a PNG cut inside its header, and an empty file: one plain sentence each,
+    // followed by the decoder's own reason that the worker sends after `Failure`.
+    let truncated_png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0".to_vec();
+    for (bytes, expected) in [
+        (
+            b"invalid image".to_vec(),
+            Some("the content is not a recognized image format"),
+        ),
+        (truncated_png, None),
+        (Vec::new(), Some("the file is empty")),
+    ] {
+        let error = ImageSession::open(
             &provider,
-            Arc::new(Bytes::new(b"invalid image".to_vec())),
+            Arc::new(Bytes::new(bytes)),
             &AtomicBool::new(false),
-            Duration::from_secs(5)
+            Duration::from_secs(5),
         )
-        .is_err()
-    );
+        .err()
+        .expect("Corrupt content must not open");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        let text = error.to_string();
+        let reason = text
+            .strip_prefix("This image is damaged or incomplete: ")
+            .unwrap_or_else(|| panic!("no decoder reason: {text:?}"));
+        assert!(
+            !reason.is_empty() && reason.len() <= 160 && reason.is_ascii(),
+            "{text:?}"
+        );
+        if let Some(expected) = expected {
+            assert_eq!(reason, expected);
+        }
+    }
     let source = Arc::new(Bytes::new(bitmap()));
     let cancel = AtomicBool::new(true);
     assert!(

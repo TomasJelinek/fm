@@ -74,7 +74,7 @@ No dependency, lockfile, platform policy or operation admission quota changed.
 
 ## Installed executable and startup
 
-The rebuilt `D:/experiments/dev/FM/_build/debug/me.exe` has SHA-256
+The rebuilt `_build/debug/me.exe` has SHA-256
 `0d73139064eb925a4971dd81eb1bc8ca045b80ed3bdabdd737e9f31f4ed6a088`.
 It and the matching elevation helper were deployed with unchanged existing plugin
 artifacts to `<user-profile>/MidnightExplorer-20261112-owners-0d731390`; the private

@@ -19,8 +19,10 @@ pub enum GlyphFitting {
     Snapped,
     /// Outlines are also fitted to the grid horizontally, which puts vertical
     /// stems on whole pixel columns. Inside a word glyphs follow each other at
-    /// their fitted, whole-pixel advances; the pen returns to the layout
-    /// position after every blank and never strays more than a pixel from it.
+    /// their fitted, whole-pixel advances and move by a pixel where they would
+    /// stray from the layout or reach into the next glyph's place, so a blank
+    /// keeps at least its layout width less half a pixel; the pen returns to
+    /// the layout after every blank.
     /// A word is followed from the first glyph of a glyph run call, so a caller
     /// that omits glyphs outside its clip can move the rest of that word by a
     /// pixel between two scroll positions.
@@ -44,37 +46,73 @@ pub fn glyph_fitting() -> GlyphFitting {
     }
 }
 
-/// The largest distance, in pixels, between a fitted pen and its layout position.
-const MAX_DRIFT: f32 = 1.0;
+/// How far, in pixels, a fitted pen may fall behind its layout position.
+const MAX_LAG: f32 = 1.0;
+/// How far, in pixels, a fitted pen may run ahead of its layout position, and
+/// a fitted advance past the layout position of the next glyph: no further
+/// than rounding moves a glyph.
+const MAX_LEAD: f32 = 0.5;
 
 /// Places the glyphs of one glyph run call for `GlyphFitting::Fitted`.
 ///
 /// A fitted outline is drawn for a whole-pixel advance. Following the linear
 /// layout instead would round every pen separately and open or close gaps
 /// between neighbors by a pixel. The pen therefore moves by the fitted advance
-/// until the next blank, another baseline, a glyph that was not fitted, or a
-/// drift of more than `MAX_DRIFT` from the layout, where it returns to the
-/// rounded layout position. Carets and selections, which follow the layout,
-/// stay within that distance of the ink.
+/// inside a word. At small sizes fitted advances are often wider than the
+/// layout's, and a word that grew by their sum would run into the blank after
+/// it until two words read as one. So a glyph moves a pixel closer to its
+/// predecessor where its pen would lead the layout by more than `MAX_LEAD`, or
+/// its fitted advance end more than `MAX_LEAD` past where layout starts the
+/// next glyph (unless layout puts that one over this glyph, as it does a
+/// mark), and a pixel further where its pen would lag by more than `MAX_LAG`.
+/// A word starts on the rounded layout position after a blank, on
+/// another baseline and after a glyph that was not fitted; after a blank it
+/// starts late enough to keep the blank at least its layout width less half a
+/// pixel. Carets and selections follow the layout, so they can be a pixel, and
+/// at the start of such a word about a pixel and a half, from the ink.
 #[derive(Default)]
 pub(crate) struct WordPen {
     /// Where the next glyph goes if it continues the word: x and baseline.
     next: Option<(f32, f32)>,
+    /// After a blank: where the word before it ends as drawn, where layout
+    /// puts the blank, and their baseline.
+    blank: Option<(f32, f32, f32)>,
 }
 
 impl WordPen {
-    /// The whole-pixel x for a glyph that layout placed at `x` on `baseline`.
-    pub(crate) fn place(&mut self, x: f32, baseline: f32) -> f32 {
-        match self.next.take() {
-            Some((pen, same)) if same == baseline && (pen - x).abs() <= MAX_DRIFT => pen,
+    /// The whole-pixel x for a drawn glyph that layout placed at `x` on
+    /// `baseline`. `next` is where layout starts the following glyph of the run
+    /// on the same baseline, if any; `advance` is the glyph's fitted advance,
+    /// or `None` for a glyph that was not fitted, which ends the word.
+    pub(crate) fn place(&mut self, x: f32, baseline: f32, next: Option<f32>, advance: Option<f32>) -> f32 {
+        let mut pen = match self.next.take() {
+            Some((pen, line)) if line == baseline && pen >= x - MAX_LAG && pen <= x + MAX_LEAD => pen,
             _ => x.round(),
+        };
+        if let (Some(next), Some(advance)) = (next, advance) {
+            // A mark that layout puts over this glyph is no successor to make room for.
+            if next > x + advance / 2.0 {
+                pen = pen.min((next + MAX_LEAD - advance).floor());
+            }
         }
+        pen = pen.max((x - MAX_LAG).ceil());
+        if let Some((end, blank, line)) = self.blank.take() {
+            if line == baseline && x >= blank {
+                pen = pen.max((end + (x - blank) - 0.5).ceil());
+            }
+        }
+        self.next = advance.map(|advance| (pen + advance, baseline));
+        pen
     }
 
-    /// Records the glyph drawn at `pen`. `advance` is its fitted advance, or
-    /// `None` for a blank and for a glyph that was not fitted.
-    pub(crate) fn advance(&mut self, pen: f32, baseline: f32, advance: Option<f32>) {
-        self.next = advance.map(|advance| (pen + advance, baseline));
+    /// Records a blank that layout placed at `x` on `baseline`. It is not
+    /// drawn and ends the word before it.
+    pub(crate) fn blank(&mut self, x: f32, baseline: f32) {
+        if let Some((end, line)) = self.next.take() {
+            if line == baseline {
+                self.blank = Some((end, x, baseline));
+            }
+        }
     }
 }
 
@@ -88,14 +126,31 @@ pub(crate) fn of_run(fitting: GlyphFitting, filled: bool) -> GlyphFitting {
     }
 }
 
-/// Where a glyph that layout put at `x` on `baseline` is drawn: the whole-pixel
-/// x of its origin, and how many tenths of a pixel beyond it the bitmap is
-/// rasterized at. `Subpixel` is the upstream arithmetic, unchanged.
-pub(crate) fn place(fitting: GlyphFitting, word: &mut WordPen, x: f32, baseline: f32) -> (f32, f32) {
+/// How many tenths of a pixel beyond its whole-pixel pen the bitmap of a glyph
+/// that layout put at `x` is rasterized at. `Subpixel` is the upstream
+/// arithmetic, unchanged.
+pub(crate) fn phase(fitting: GlyphFitting, x: f32) -> f32 {
     match fitting {
-        GlyphFitting::Subpixel => (x.trunc(), crate::geometry::quantize(x.fract(), 0.1) * 10.0),
-        GlyphFitting::Snapped => (x.round(), 0.0),
-        GlyphFitting::Fitted => (word.place(x, baseline), 0.0),
+        GlyphFitting::Subpixel => crate::geometry::quantize(x.fract(), 0.1) * 10.0,
+        GlyphFitting::Snapped | GlyphFitting::Fitted => 0.0,
+    }
+}
+
+/// The whole-pixel x of the origin of a drawn glyph that layout put at `x` on
+/// `baseline`, with `next` and `advance` as `WordPen::place` takes them.
+/// `Subpixel` is the upstream arithmetic, unchanged.
+pub(crate) fn pen(
+    fitting: GlyphFitting,
+    word: &mut WordPen,
+    x: f32,
+    baseline: f32,
+    next: Option<f32>,
+    advance: Option<f32>,
+) -> f32 {
+    match fitting {
+        GlyphFitting::Subpixel => x.trunc(),
+        GlyphFitting::Snapped => x.round(),
+        GlyphFitting::Fitted => word.place(x, baseline, next, advance),
     }
 }
 
@@ -398,9 +453,12 @@ pub(crate) mod fitted {
 /// ignored by default. `vendor/README.md` has the command that runs them.
 #[cfg(all(test, feature = "swash"))]
 mod font_tests {
-    use super::fitted::FittedRasterizer;
+    use super::{fitted::FittedRasterizer, WordPen};
     use crate::text::FontId;
-    use skrifa::MetadataProvider;
+    use skrifa::{
+        instance::{LocationRef, Size},
+        MetadataProvider,
+    };
 
     const DEJAVU_SANS: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
@@ -432,6 +490,12 @@ mod font_tests {
             assert_eq!(fitted.data.len(), width * fitted.placement.height as usize);
             let rows = fitted.data.chunks(width).map(<[u8]>::to_vec).collect();
             (rows, fitted.advance.expect("a fitted advance"))
+        }
+
+        /// The fitted advance of a glyph, or `None` for a blank.
+        fn advance(&mut self, glyph: u16, size: f32) -> Option<f32> {
+            let fitted = self.rasterizer.render(self.id, &self.data, 0, size, glyph, &[])?;
+            Some(fitted.advance.expect("a fitted advance"))
         }
     }
 
@@ -484,6 +548,56 @@ mod font_tests {
 
     #[test]
     #[ignore = "reads DejaVu Sans from /usr/share/fonts/truetype/dejavu"]
+    fn words_keep_their_blanks_at_small_sizes() {
+        // About dialog text whose words ran into each other at 11 and 12 px.
+        let text = "copyright notice that is included in or attached to the work, base64 0.23.1";
+        let mut face = Face::dejavu_sans();
+        let data = face.data.clone();
+        let font = skrifa::FontRef::from_index(&data, 0).unwrap();
+        for size in [11.0, 12.0, 13.0, 14.0] {
+            let metrics = font.glyph_metrics(Size::new(size), LocationRef::default());
+            // Linear layout without kerning, starting at every tenth of a pixel.
+            for tenth in 0..10 {
+                let mut x = 2.0 + tenth as f32 / 10.0;
+                let glyphs: Vec<(f32, Option<f32>)> = text
+                    .chars()
+                    .map(|character| {
+                        let glyph = font.charmap().map(character).unwrap();
+                        let at = x;
+                        x += metrics.advance_width(glyph).unwrap();
+                        (at, face.advance(glyph.to_u32() as u16, size))
+                    })
+                    .collect();
+                let mut pen = WordPen::default();
+                let (mut end, mut blank) = (None, None);
+                for (index, &(at, advance)) in glyphs.iter().enumerate() {
+                    let Some(advance) = advance else {
+                        pen.blank(at, 9.0);
+                        blank = blank.or(Some(at));
+                        continue;
+                    };
+                    let next = glyphs.get(index + 1).map(|glyph| glyph.0);
+                    let drawn = pen.place(at, 9.0, next, Some(advance));
+                    assert!(
+                        (drawn - at).abs() <= 1.5,
+                        "{size} px: glyph {index} at {drawn} for {at}"
+                    );
+                    if let (Some(end), Some(blank)) = (end, blank.take()) {
+                        let layout: f32 = at - blank;
+                        assert!(
+                            drawn - end >= layout - 0.5,
+                            "{size} px from +{tenth}/10: the blank before glyph {index} is {} px of {layout}",
+                            drawn - end
+                        );
+                    }
+                    end = Some(drawn + advance);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "reads DejaVu Sans from /usr/share/fonts/truetype/dejavu"]
     fn blanks_are_left_to_the_caller_and_bitmaps_repeat_exactly() {
         let mut face = Face::dejavu_sans();
         let font = skrifa::FontRef::from_index(&face.data, 0).unwrap();
@@ -514,19 +628,16 @@ mod tests {
     fn a_word_keeps_its_fitted_advances_and_returns_to_the_layout_at_blanks() {
         let mut pen = WordPen::default();
         // "mi m": layout advances 11.69, 3.33 and 3.81, fitted advances 11 and 3.
-        let m = pen.place(3.9, 20.0);
+        let m = pen.place(3.9, 20.0, Some(15.59), Some(11.0));
         assert_eq!(m, 4.0, "a word starts on the rounded layout position");
-        pen.advance(m, 20.0, Some(11.0));
-        let i = pen.place(15.59, 20.0);
+        let i = pen.place(15.59, 20.0, Some(18.92), Some(3.0));
         assert_eq!(
             i, 15.0,
             "the next glyph follows at the fitted advance, not at round(15.59)"
         );
-        pen.advance(i, 20.0, Some(3.0));
         // The blank is not drawn, so the pen forgets the word.
-        let blank = pen.place(18.92, 20.0);
-        pen.advance(blank, 20.0, None);
-        assert_eq!(pen.place(22.73, 20.0), 23.0);
+        pen.blank(18.92, 20.0);
+        assert_eq!(pen.place(22.73, 20.0, None, Some(11.0)), 23.0);
     }
 
     #[test]
@@ -536,11 +647,10 @@ mod tests {
         let mut placed = Vec::new();
         // Twenty glyphs whose fitted advance is 0.4 px short of the layout.
         for _ in 0..20 {
-            let x = pen.place(layout, 9.5);
+            let x = pen.place(layout, 9.5, Some(layout + 6.4), Some(6.0));
             assert_eq!(x, x.round());
-            assert!((x - layout).abs() <= MAX_DRIFT, "{x} against {layout}");
+            assert!(x >= layout - MAX_LAG && x <= layout + MAX_LEAD, "{x} against {layout}");
             placed.push(x);
-            pen.advance(x, 9.5, Some(6.0));
             layout += 6.4;
         }
         let gaps: Vec<f32> = placed.windows(2).map(|pair| pair[1] - pair[0]).collect();
@@ -553,50 +663,119 @@ mod tests {
     }
 
     #[test]
-    fn another_baseline_or_a_pen_behind_the_layout_starts_anew() {
+    fn a_word_whose_fitted_advances_exceed_the_layout_keeps_the_blank_after_it() {
+        // Fitted advances are often wider than the layout's at small sizes: here
+        // every one is 7 px against 6.9 to 5.9 px of layout.
+        for layout in [6.9_f32, 6.6, 6.3, 5.9] {
+            for blank in [2.6_f32, 3.1, 3.5, 4.2] {
+                for tenth in 0..10 {
+                    let mut pen = WordPen::default();
+                    let mut x = 2.0 + tenth as f32 / 10.0;
+                    let mut placed = Vec::new();
+                    for _ in 0..6 {
+                        let at = pen.place(x, 9.0, Some(x + layout), Some(7.0));
+                        assert_eq!(at, at.round(), "stems stay on whole pixels");
+                        assert!(at >= x - MAX_LAG && at <= x + MAX_LEAD, "{at} against {x}");
+                        placed.push(at);
+                        x += layout;
+                    }
+                    let gaps: Vec<f32> = placed.windows(2).map(|pair| pair[1] - pair[0]).collect();
+                    assert!(gaps.iter().all(|gap| (5.0..=7.0).contains(gap)), "{gaps:?}");
+                    let end = placed[5] + 7.0;
+                    pen.blank(x, 9.0);
+                    let next = pen.place(x + blank, 9.0, Some(x + blank + layout), Some(7.0));
+                    assert!(
+                        next - end >= blank - 0.5,
+                        "a {blank} px blank after {placed:?} at {layout} px is drawn {} px wide",
+                        next - end
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_word_after_a_blank_starts_late_enough_to_keep_the_blank() {
         let mut pen = WordPen::default();
-        pen.advance(10.0, 5.0, Some(7.0));
-        assert_eq!(pen.place(17.6, 6.0), 18.0, "the next line");
-        pen.advance(10.0, 5.0, Some(7.0));
-        assert_eq!(pen.place(3.6, 5.0), 4.0, "a run that goes backwards");
-        pen.advance(10.0, 5.0, Some(7.0));
-        assert_eq!(pen.place(18.01, 5.0), 18.0, "more than a pixel ahead");
-        pen.advance(10.0, 5.0, Some(7.0));
-        assert_eq!(pen.place(17.9, 5.0), 17.0, "within a pixel the word continues");
+        // "a b" where the fitted a is 1.8 px wider than its layout: it moves back
+        // no more than a pixel and still reaches 0.9 px into the blank.
+        assert_eq!(pen.place(0.9, 9.0, Some(7.1), Some(8.0)), 0.0);
+        pen.blank(7.1, 9.0);
+        // The rounded layout position, 10, would leave 2 px of a 3 px blank.
+        assert_eq!(pen.place(10.1, 9.0, None, Some(7.0)), 11.0);
+    }
+
+    #[test]
+    fn a_mark_over_its_base_does_not_move_the_base() {
+        let mut pen = WordPen::default();
+        // A base whose fitted advance is 7 px, and a combining mark that layout
+        // puts 0.4 px after the base's origin: no room is made for the mark.
+        assert_eq!(pen.place(10.6, 5.0, Some(11.0), Some(7.0)), 11.0);
+        // The same glyph before an ordinary successor moves back a pixel.
+        assert_eq!(pen.place(30.6, 5.0, Some(36.9), Some(7.0)), 30.0);
+    }
+
+    #[test]
+    fn another_baseline_or_a_pen_far_from_the_layout_starts_anew() {
+        let mut pen = WordPen::default();
+        let seven = Some(7.0);
+        // Each case follows a glyph drawn at 10 with a fitted advance of 7.
+        pen.place(10.0, 5.0, None, seven);
+        assert_eq!(pen.place(17.6, 6.0, None, seven), 18.0, "the next line");
+        pen.place(10.0, 5.0, None, seven);
+        assert_eq!(pen.place(3.6, 5.0, None, seven), 4.0, "a run that goes backwards");
+        pen.place(10.0, 5.0, None, seven);
+        assert_eq!(pen.place(18.01, 5.0, None, seven), 18.0, "more than a pixel behind");
+        pen.place(10.0, 5.0, None, seven);
+        assert_eq!(pen.place(17.9, 5.0, None, seven), 17.0, "within a pixel behind");
+        pen.place(10.0, 5.0, None, seven);
+        assert_eq!(pen.place(16.4, 5.0, None, seven), 16.0, "more than half a pixel ahead");
+        pen.place(10.0, 5.0, None, seven);
+        assert_eq!(pen.place(16.6, 5.0, None, seven), 17.0, "within half a pixel ahead");
     }
 
     #[test]
     fn subpixel_placement_is_the_upstream_arithmetic() {
+        let subpixel = |word: &mut WordPen, x: f32| {
+            let drawn = pen(GlyphFitting::Subpixel, word, x, 5.0, Some(x + 3.0), Some(3.0));
+            (drawn, phase(GlyphFitting::Subpixel, x))
+        };
         let mut word = WordPen::default();
         for step in -300..=300 {
             let x = step as f32 * 0.037;
             // The two expressions this replaced in `render_atlas`.
             let upstream = (x.trunc(), crate::geometry::quantize(x.fract(), 0.1) * 10.0);
-            assert_eq!(place(GlyphFitting::Subpixel, &mut word, x, 5.0), upstream, "{x}");
+            assert_eq!(subpixel(&mut word, x), upstream, "{x}");
         }
         // The pen truncates and the bitmap carries the rest, in tenths: the
         // key of the glyph cache, where a fraction near one becomes ten.
         let tenths = |x| {
-            let (pen, phase) = place(GlyphFitting::Subpixel, &mut WordPen::default(), x, 5.0);
+            let (pen, phase) = subpixel(&mut WordPen::default(), x);
             (pen, phase as u8)
         };
         assert_eq!(tenths(7.26), (7.0, 3));
         assert_eq!(tenths(7.96), (7.0, 10));
         // The word pen was never consulted: the next fitted glyph starts a word.
-        assert_eq!(place(GlyphFitting::Fitted, &mut word, 7.6, 5.0), (8.0, 0.0));
+        assert_eq!(pen(GlyphFitting::Fitted, &mut word, 7.6, 5.0, None, Some(3.0)), 8.0);
     }
 
     #[test]
     fn snapped_and_fitted_glyphs_have_one_bitmap_on_a_whole_pixel() {
         let mut word = WordPen::default();
-        for (x, pen) in [(7.26, 7.0), (7.5, 8.0), (7.96, 8.0), (-0.4, 0.0), (-0.6, -1.0)] {
-            assert_eq!(place(GlyphFitting::Snapped, &mut word, x, 5.0), (pen, 0.0), "{x}");
+        for (x, whole) in [(7.26, 7.0), (7.5, 8.0), (7.96, 8.0), (-0.4, 0.0), (-0.6, -1.0)] {
+            assert_eq!(pen(GlyphFitting::Snapped, &mut word, x, 5.0, None, None), whole, "{x}");
+            assert_eq!(
+                (phase(GlyphFitting::Snapped, x), phase(GlyphFitting::Fitted, x)),
+                (0.0, 0.0)
+            );
         }
-        assert_eq!(place(GlyphFitting::Fitted, &mut word, 3.9, 5.0), (4.0, 0.0));
-        word.advance(4.0, 5.0, Some(11.0));
         assert_eq!(
-            place(GlyphFitting::Fitted, &mut word, 15.59, 5.0),
-            (15.0, 0.0),
+            pen(GlyphFitting::Fitted, &mut word, 3.9, 5.0, Some(15.59), Some(11.0)),
+            4.0
+        );
+        assert_eq!(
+            pen(GlyphFitting::Fitted, &mut word, 15.59, 5.0, None, Some(3.0)),
+            15.0,
             "inside a word the fitted advance decides"
         );
     }

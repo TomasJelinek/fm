@@ -714,25 +714,40 @@ fn rename_foundation_descriptor_minor_two_with_minimum_host_three_is_rejected() 
 }
 
 #[test]
-fn closing_a_handle_the_plugin_already_retired_does_not_stop_the_instance() {
+fn closing_a_listing_the_plugin_already_retired_does_not_stop_the_instance() {
     let _serial = rename_ffi_lock(&TESTS);
-    for request in [
-        Request::CloseList { cursor: 9 },
-        Request::CloseRead { reader: 9 },
+    // A failed page retires its cursor in the plugin; the required CloseList then
+    // finds it gone.
+    let stale = rename_ffi_failed(ErrorCode::StaleReference);
+    let fixture = RenameFfiReplies::new(vec![stale.clone(), Response::Unit]);
+    fixture.with_instance(|instance| {
+        assert_eq!(
+            instance.call(&Request::CloseList { cursor: 9 }, &|| false),
+            Ok(stale)
+        );
+        assert!(!instance.poisoned.load(Ordering::Acquire));
+        // Ordinary work, which a stopped instance refuses, still reaches the plugin.
+        assert_eq!(
+            instance.call(&Request::Stat { mount: 1, node: 2 }, &|| false),
+            Ok(Response::Unit)
+        );
+    });
+    // No failed read retires its reader, so a stale CloseRead is a double close; it
+    // and any other cleanup refusal stop new work.
+    for (request, code) in [
+        (Request::CloseRead { reader: 9 }, ErrorCode::StaleReference),
+        (Request::CloseList { cursor: 9 }, ErrorCode::Io),
     ] {
-        let stale = rename_ffi_failed(ErrorCode::StaleReference);
-        let fixture = RenameFfiReplies::new(vec![stale.clone(), Response::Unit]);
+        let fixture = RenameFfiReplies::new(vec![rename_ffi_failed(code), Response::Unit]);
         fixture.with_instance(|instance| {
-            assert_eq!(instance.call(&request, &|| false), Ok(stale), "{request:?}");
-            assert!(!instance.poisoned.load(Ordering::Acquire), "{request:?}");
-            // Later work still reaches the plugin.
-            assert_eq!(instance.call(&request, &|| false), Ok(Response::Unit));
+            let _ = instance.call(&request, &|| false);
+            assert!(instance.poisoned.load(Ordering::Acquire), "{request:?}");
+            assert!(
+                instance
+                    .call(&Request::Stat { mount: 1, node: 2 }, &|| false)
+                    .is_err(),
+                "{request:?}"
+            );
         });
     }
-    // Any other cleanup refusal still stops new work.
-    let fixture = RenameFfiReplies::new(vec![rename_ffi_failed(ErrorCode::Io)]);
-    fixture.with_instance(|instance| {
-        let _ = instance.call(&Request::CloseList { cursor: 9 }, &|| false);
-        assert!(instance.poisoned.load(Ordering::Acquire));
-    });
 }

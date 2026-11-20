@@ -372,6 +372,9 @@ fn drag(
     h.ui.window
         .window()
         .dispatch_event(WindowEvent::PointerMoved { position: to });
+    // A release sooner than 400 ms after the press cancels the drag
+    // (`MIN_DRAG_DURATION` in src/presenter/drag_drop.rs).
+    h.idle(std::time::Duration::from_millis(400));
     h.settle();
     if cancel {
         ui::key(&h.ui.window, Key::Escape);
@@ -456,7 +459,7 @@ fn real_f2_rename_shows_the_new_name_and_holds_panel_input_until_then() {
             .any(|row| row.name == "file-05.bin")
     );
     let cursor = h.cursor(PaneId::Left);
-    ui::key(&h.ui.window, Key::DownArrow);
+    ui::key(&h.ui.window, Key::UpArrow);
     assert_eq!(
         h.cursor(PaneId::Left),
         cursor,
@@ -464,12 +467,13 @@ fn real_f2_rename_shows_the_new_name_and_holds_panel_input_until_then() {
     );
 
     // Completion alone re-reads the folder; no watch notification is needed.
+    // The kept Up then moves on from the new name.
     h.until(|h| {
-        h.rows(PaneId::Left)
-            .iter()
-            .any(|row| row.name == "renamed-05.bin")
+        !h.ui.window.get_mutation_input_blocked()
+            && h.rows(PaneId::Left)
+                .iter()
+                .any(|row| row.name == "renamed-05.bin")
     });
-    assert!(!h.ui.window.get_mutation_input_blocked());
     assert!(
         h.operations[operations..]
             .iter()
@@ -477,16 +481,23 @@ fn real_f2_rename_shows_the_new_name_and_holds_panel_input_until_then() {
     );
     let rows = h.rows(PaneId::Left);
     assert!(!rows.iter().any(|row| row.name == "file-05.bin"));
-    let cursor = usize::try_from(h.cursor(PaneId::Left)).unwrap();
-    assert_eq!(rows[cursor].name, "renamed-05.bin");
-    assert!(h.left.join("renamed-05.bin").exists());
-    // The new name can be the last row: Windows collation sorts "část 文档 🦀.txt"
-    // with "c", before the files. The folders always leave a row above it.
-    ui::key(&h.ui.window, Key::UpArrow);
+    let renamed = rows
+        .iter()
+        .position(|row| row.name == "renamed-05.bin")
+        .unwrap();
     assert_eq!(
         usize::try_from(h.cursor(PaneId::Left)).unwrap(),
-        cursor - 1,
-        "input is accepted again"
+        renamed - 1,
+        "the Up typed during the hold is replayed from the revealed new name"
+    );
+    assert!(h.left.join("renamed-05.bin").exists());
+    // Down from the row above always has a row to reach, even where the new name
+    // is the last row (Windows collation sorts "část 文档 🦀.txt" before the files).
+    ui::key(&h.ui.window, Key::DownArrow);
+    assert_eq!(
+        usize::try_from(h.cursor(PaneId::Left)).unwrap(),
+        renamed,
+        "input is accepted at once again"
     );
     h.assert_sentinel();
 }

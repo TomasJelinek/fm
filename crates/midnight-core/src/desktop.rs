@@ -568,6 +568,33 @@ impl TerminalProcess for Child {
 pub trait PropertyService: Send + Sync + 'static {
     /// Returns true when native properties were shown, false for metadata fallback.
     fn show_properties(&self, paths: &[PathBuf]) -> Result<bool, FsError>;
+
+    /// Ownership, times and permissions of `path` itself (a final link is not
+    /// followed) for the metadata fallback. Read-only and called on a backend
+    /// worker. None when this service has no such details.
+    fn property_details(&self, _path: &Path) -> Result<Option<PropertyDetails>, FsError> {
+        Ok(None)
+    }
+}
+
+/// Native details of one entry for the Properties summary. A field is None when the
+/// filesystem does not report it; a missing birth time is shown as not available.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PropertyDetails {
+    pub owner: Option<PropertyAccount>,
+    pub group: Option<PropertyAccount>,
+    pub created: Option<std::time::SystemTime>,
+    pub modified: Option<std::time::SystemTime>,
+    pub accessed: Option<std::time::SystemTime>,
+    /// POSIX file type and permission bits of the entry itself.
+    pub unix_mode: Option<u32>,
+}
+
+/// A numeric owner or group and its name when the account database has one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PropertyAccount {
+    pub id: u32,
+    pub name: Option<String>,
 }
 
 pub trait LocationService: Send + Sync + 'static {

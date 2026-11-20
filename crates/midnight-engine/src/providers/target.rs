@@ -355,6 +355,28 @@ impl ArchiveMount for LeasedArchive {
         self.check(&cancel)?;
         identity
     }
+
+    // An archive inside this archive reports its enclosing folder and opens from a
+    // member staged here; a revoked target vouches for neither.
+    fn parent(&self) -> Option<midnight_core::ArchiveParent> {
+        self.context().validate_registration().ok()?;
+        self.source().parent()
+    }
+
+    fn stage_member(
+        &self,
+        entry: u64,
+        cancelled: &dyn Fn() -> bool,
+        progress: &dyn Fn(u64),
+    ) -> Result<Arc<dyn midnight_core::ArchiveContent>, FsError> {
+        let request = self.context().request(&Cancellation::default());
+        self.check(&request)?;
+        let content =
+            self.source()
+                .stage_member(entry, &|| cancelled() || request.is_cancelled(), progress);
+        self.check(&request)?;
+        content
+    }
 }
 
 #[cfg(test)]

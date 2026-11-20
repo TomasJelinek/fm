@@ -23,7 +23,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [fontdb](https://crates.io/crates/fontdb/0.24.0) | 0.24.0 | MIT | midnight-platform-linux |
 | [futures-lite](https://crates.io/crates/futures-lite/2.6.1) | 2.6.1 | Apache-2.0 OR MIT | midnight-platform-linux |
 | [getrandom](https://crates.io/crates/getrandom/0.3.4) | 0.3.4 | MIT OR Apache-2.0 | midnight-elevation, midnight-platform-windows |
-| [hayro](https://crates.io/crates/hayro/0.9.0) | 0.9.0 | Apache-2.0 OR MIT | midnight-viewer-pdf |
+| [hayro](https://crates.io/crates/hayro/0.9.0) | 0.9.0 | Apache-2.0 OR MIT | midnight-thumbnail-image, midnight-viewer-pdf |
 | [i-slint-compiler](https://crates.io/crates/i-slint-compiler/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-ui-bindings |
 | [i-slint-core](https://crates.io/crates/i-slint-core/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-ui, midnight-ui-input, midnight-viewer-ui |
 | [icu_casemap](https://crates.io/crates/icu_casemap/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |

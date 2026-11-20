@@ -13,8 +13,21 @@ const MAX_EXPANSION: usize = 65536;
 const XLINK: &str = "http://www.w3.org/1999/xlink";
 
 pub(super) fn decode(reader: impl Read, target: Option<(u32, u32)>) -> io::Result<RgbaImage> {
+    let mut reader = reader.take(MAX_BYTES + 1);
     let mut bytes = Vec::new();
-    reader.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    // No raster signature matched. Say so for empty or non-markup content before
+    // reading up to 4 MiB of it as SVG text: the reason reaches the viewer's status.
+    (&mut reader).take(64).read_to_end(&mut bytes)?;
+    if bytes.is_empty() {
+        return Err(invalid("The file is empty"));
+    }
+    if !markup_prefix(&bytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "The content is not a recognized image format",
+        ));
+    }
+    reader.read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_BYTES {
         return Err(invalid("SVG source exceeds 4 MiB budget"));
     }
@@ -85,6 +98,15 @@ pub(super) fn decode(reader: impl Read, target: Option<(u32, u32)>) -> io::Resul
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// Whether a content prefix can start SVG text: after an optional UTF-8 byte order
+/// mark and whitespace, the first byte is `<`. A prefix of only whitespace is undecided.
+fn markup_prefix(prefix: &[u8]) -> bool {
+    let text = prefix.strip_prefix(b"\xef\xbb\xbf").unwrap_or(prefix);
+    text.iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_none_or(|byte| *byte == b'<')
 }
 
 fn unsupported() -> io::Error {

@@ -45,7 +45,8 @@ application gates pass; it is not yet a qualified feature of the running app.
 3. Choose **Automatic**, **Built-in text**, **Built-in image** or
    **External program**. The fixed final **Other regular files → Automatic** row
    handles pairs with no matching override. Automatic uses the current built-in
-   decoder assignments, then text for other regular files. This fallback does
+   decoder assignments, then text for other regular files, and bytes for pairs that
+   are not text or not two images (see Byte comparison). This fallback does
    not launch an operating-system file association. The read-only built-in types
    list describes the current session; plugin changes awaiting restart do not
    update that session's decoder coverage.
@@ -141,6 +142,15 @@ are shown as the control pictures ␋, ␌ and ␛. The explicit bidirectional e
 override and isolate controls (U+202A-U+202E, U+2066-U+2069) are shown as escapes such
 as `\u202E`, so neither file can reorder its displayed lines; the diff still compares
 the raw lines. NUL and other control characters mark the file as binary.
+Text comparison admits files up to 32 MiB, with at most 1,000,000 lines and lines up
+to 16 KiB (`crates/midnight-compare-engine/src/text.rs`; the line limit bounds the
+shaping of one painted row). A pair it does not admit (binary content, another
+encoding, or a limit) is not refused: it is compared as bytes, and the summary names
+the reason, for example *File A: not UTF-8 or UTF-16 text (binary or another
+encoding); compared as bytes*. A file over 32 MiB is not read as text at all, and a
+file whose first 256 KiB hold a control byte is refused after that first block.
+Reading a large file reports its progress (*Reading File A: 12 of 30 MiB…*), then
+*Matching lines…*; both stop at the next block or alignment step after Escape or Close.
 
 The installed fixed-pitch families are scanned on a `comparator-fonts` thread, started
 when a text comparison begins reading; the scan reads every installed family and can
@@ -189,10 +199,118 @@ and a catalog reply reaches it even when the full queue refused the Close input 
 reply's wake: the worker then still has queued inputs to take, and it reads the inbox
 again before it blocks.
 
+## Byte comparison (hex view)
+
+A pair is compared as bytes when text comparison does not admit it (above), when
+Automatic routing finds an image opposite a file that is not one, or a document (PDF),
+and on request: the **Hex** button of a text comparison switches between its lines and
+its bytes, and back. The button is checked and disabled for a pair that can only be
+compared as bytes. An explicit *Built-in image* rule still reports a pair it cannot
+decode instead of comparing bytes, and image pairs keep their image modes.
+
+Both files are shown side by side in rows of offset, hex bytes and characters (`·` for
+bytes outside printable ASCII). A row holds 16 bytes when the pane is wide enough, else
+8 or 4; resizing keeps the first visible offset. Rows that hold a difference are tinted
+like changed text rows, and the differing bytes themselves, in the hex and character
+columns, are marked more strongly. A byte differs when the files hold different values
+at its offset or only one file is that long, so files of different lengths compare; a
+**region** is a maximal run of differing bytes. The summary on the status line gives the
+number of differing bytes and regions (or *Bytes identical*), the first difference as hex
+and decimal offsets, both sizes and the first visible offset.
+
+The worker scans both captured files from the start, with at most one 256 KiB read of
+each file per turn (the native filesystem's largest read) and one non-queuing admission
+of the process-wide I/O gate per turn, like whole-input verification. Input is handled
+between turns, so the view scrolls while the scan runs; the summary shows *Comparing
+bytes… 37%* and the counts found so far, repainted at most every 250 ms. Escape or Close
+cancels the scan with the window, and a changed file fails the comparison like any other
+read. The tail of the longer file is counted without being read. For a pair compared
+only as bytes the completed scan, with both captured revisions validated, is the
+whole-input identity verdict (one pass, no second read); the Hex view of a text pair
+keeps the text's verdict.
+
+Memory is bounded: the scan holds two 256 KiB blocks, exact 64-bit counts and an index
+of region starts for navigation with at most 262,144 eight-byte entries. When a pair has
+more regions, the index keeps only starts at least a doubling spacing apart, so nearby
+regions share one navigation stop, and the summary says *regions closer than N bytes
+share a stop*. Painting reads only the bytes around the visible rows (three screens, at
+most 12 KiB per file) through the I/O gate.
+
+Difference navigation uses the keys and buttons of text comparison: Next and Previous
+difference (F7, N, Alt+Down or Alt+Right; Shift+F7, P, Alt+Up or Alt+Left) move to the
+next or previous row that starts a region and stop at the first and last one; Alt+Home
+and Alt+End go to the first and last region. A region the scan has not reached yet is
+shown as soon as it is found (*finding the next difference…*), and Alt+End waits for the
+end of the scan. Arrows, Page Up/Down, Ctrl+Home/End, the position bar and the wheel or
+touchpad (with the same gliding and momentum as text) scroll by rows. The hex view has no
+Find. Tests: `midnight-compare-engine/src/binary_tests.rs`,
+`midnight-compare-engine/src/capture_bytes_tests.rs` and
+`midnight-compare-ui/tests/hex_comparison.rs`.
+
+## Large text comparison
+
+Lines are interned to integer ids first, so the alignment deadline covers only the
+alignment. The optimal (Myers) alignment gets 750 ms. When Myers gives up at that
+deadline (many scattered changes in a large file), lines that occur exactly once in each
+file and keep their order anchor a second pass (their longest increasing subsequence, as
+in patience diff) that runs Myers only between neighbouring anchors, with another
+750 ms. A gap Myers gives up on after that, or a pair without such lines, is shown as
+one changed block, and the status says that line matching timed out. Whether Myers gave
+up decides, not the clock afterwards: an alignment it finished is kept, and a gap it
+resolves without a search (one side empty once the common ends are trimmed) stays exact
+after the deadline. No pass pairs unequal lines as equal.
+
+Both passes collect consecutive changed lines as one group while they run, at a constant
+cost per Myers step. A group that only deletes or only inserts then slides through the
+equal lines around it, up and then down as far as they repeat its lines, and joins a
+group it reaches, so that a change Myers split reads as one group; a group that changes
+both files never moves. Groups move by at most twice the lines of both files in all, so
+this stays linear. Collecting, sliding and building the rows all check Escape and Close
+between bounded steps. The retained text is one string and a `u32` line end per line for
+each file, and 12 bytes per aligned row (`text_align.rs`, tests in `text_align_tests.rs`
+and `text_tests.rs`).
+
+Measured on 2026-11-20 with synthetic logs of numbered 70-byte lines (a standalone
+build of this alignment code and of the previous `similar::TextDiff` pipeline) on a
+shared 32-CPU build machine with a load average of 7 to 13. Times cover the alignment
+and the retained rows after reading; memory is the peak beyond the two texts.
+
+| Per file | Lines | Changed lines | Previous, optimized | Current, optimized | Current, debug | Memory, previous → current |
+| --- | --- | --- | --- | --- | --- | --- |
+| 16 MiB | 238,828 | 2 | 198 ms | 72 ms | 420 ms | +65 → +16 MiB |
+| 32 MiB | 477,686 | 2 | 473–523 ms | 169 ms | 855 ms | +131 → +32 MiB |
+| 64 MiB | 955,305 | 2 | 996 ms | 453 ms | not run | +282 → +64 MiB |
+| 4 MiB | 59,706 | 10% (5,392 groups) | 520 ms | 516 ms | 886 ms | +4 MiB |
+| 32 MiB | 477,686 | 1% (4,793 groups) | 919–958 ms, out of time: 2,397–3,596 groups | 688 ms, all groups | not run | +131 → +32 MiB |
+| 16 MiB | 238,828 | 10% (21,324 groups) | 833 ms, one changed block | 865 ms, all groups | 1,347 ms | +65 → +16 MiB |
+| 32 MiB | 477,686 | 10% (42,846 groups) | 967 ms, one changed block | 1,012 ms, all groups | 1,895 ms | +131 → +32 MiB |
+| 64 MiB | 955,305 | 10% (85,850 groups) | 1,098 ms, one changed block | 1,329 ms, all groups | not run | +284 → +64 MiB |
+| 32 MiB | 477,686 | unrelated files | 956 ms, one block | 1,066 ms, one block | 2,270 ms | +131 → +82 MiB |
+| 64 MiB | 955,305 | unrelated files | 1,468 ms, one block | 1,442 ms, one block | not run | +282 → +164 MiB |
+
+These measurements predate the development profile's optimization level 2 for `similar`
+and this crate (`Cargo.toml`); the debug app (`_build/debug`) now runs them optimized.
+Reading, UTF-8 validation and the control check add to these times (they are linear;
+the control check reads eight bytes at a time). 32 MiB and 1,000,000 lines per file keep
+the worst case near one second (two in a debug build) and the peak memory near two and a
+half times the texts; 64 MiB pairs would still align in under 1.5 seconds, but at twice
+the memory. Larger pairs, which a text view would not make readable, are compared as
+bytes with bounded memory.
+
+The table predates the collection and compaction described above. They were measured
+on 2026-11-20 in the project's Linux build container (test profile, which builds this
+crate and `similar` at optimization level 2) on the same shared machine, with a case
+from review: File A of 250,000 blocks `U<i>`, an empty line and `X<i>`, and File B the
+same with `Y<i>` and one more empty line (1,750,000 lines in all). Myers gives up, and
+the anchored pass emits about a million operations. It aligns in 1.0 s
+(`many_changes_between_anchors_align_in_bounded_time`). The previous code, which merged
+those operations through `similar`'s `Compact` with a vector insertion or removal each,
+took 290 s, and a cancellation requested after 30 s did not stop it.
+
 ## Presentation and tests
 
 The same native comparator window hosts the File A / File B form and the resulting
-text/image comparison. It retains main-window placement/size, native resizing/moving,
+text, image or byte comparison. It retains main-window placement/size, native resizing/moving,
 Escape and the close button. Each input has Browse; Enter submits both nonempty
 fields. Short forms center within the window, scroll at 320×200 and keep Compare and
 Cancel outside the scrolling area. File fields own their editing/navigation keys.

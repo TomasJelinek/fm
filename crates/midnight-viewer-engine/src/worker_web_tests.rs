@@ -943,3 +943,96 @@ fn policy_controls_keep_file_scope_across_fresh_browser_contexts() {
     assert!(!accepts_input(&frames, context, file, &key(true)));
     assert!(accepts_input(&frames, context, context, &key(true)));
 }
+
+/// A running browser that records the commands it accepts and returns queued output.
+#[derive(Clone, Default)]
+struct Recording(std::sync::Arc<std::sync::Mutex<(Vec<api::CommandKind>, Vec<api::Event>)>>);
+
+impl Recording {
+    fn finds(&self) -> Vec<api::Find> {
+        let mut state = self.0.lock().unwrap();
+        state
+            .0
+            .drain(..)
+            .filter_map(|command| match command {
+                api::CommandKind::Find(find) => Some(find),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn reply(&self, matches: u32, active: u32) {
+        self.0
+            .lock()
+            .unwrap()
+            .1
+            .push(event(api::EventKind::FindResult(api::FindResult {
+                request_sequence: 1,
+                matches,
+                active,
+                complete: true,
+            })));
+    }
+}
+
+impl Browser for Recording {
+    fn send(&self, command: api::CommandKind) -> bool {
+        self.0.lock().unwrap().0.push(command);
+        true
+    }
+    fn drain(&self, maximum: usize) -> Vec<api::Event> {
+        let mut state = self.0.lock().unwrap();
+        let count = maximum.min(state.1.len());
+        state.1.drain(..count).collect()
+    }
+    fn close(&self) {}
+    fn finished(&self) -> bool {
+        false
+    }
+    fn policy_change_allowed(&self) -> bool {
+        true
+    }
+    fn release_on_worker(self: Box<Self>) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[test]
+fn every_search_asks_chromium_to_activate_a_match_and_the_status_counts_in_good_english() {
+    let browser = Recording::default();
+    let (mut worker, output) = web_worker(Box::new(browser.clone()));
+    output.finish_open(Ok(()));
+    // A new session would only highlight the matches and report none active; a
+    // follow-up activates the nearest one, also for a changed query.
+    worker.input(search(), &output);
+    worker.input(search(), &output);
+    worker.input(
+        ViewerInput::Search {
+            query: "other".into(),
+            backwards: true,
+            case_sensitive: true,
+            whole_words: false,
+        },
+        &output,
+    );
+    let finds = browser.finds();
+    assert_eq!(finds.len(), 3);
+    assert!(finds.iter().all(|find| find.find_next), "{finds:?}");
+    assert!(!finds[2].forward && finds[2].match_case);
+    statuses(&output);
+    for (matches, active, status) in [
+        (0, 0, "No matches"),
+        (1, 0, "1 match"),
+        (3, 0, "3 matches"),
+        (1, 1, "Match 1 of 1"),
+        (3, 2, "Match 2 of 3"),
+    ] {
+        browser.reply(matches, active);
+        worker.poll_web(&output);
+        assert_eq!(
+            statuses(&output),
+            [status],
+            "{matches} matches, active {active}"
+        );
+    }
+}

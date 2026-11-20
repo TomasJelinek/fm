@@ -33,6 +33,24 @@ impl Provider {
         &self.package
     }
 
+    /// A single-image provider whose package and executable do not exist, so every
+    /// launch fails validation. Only for host tests of scheduling around a launch.
+    #[doc(hidden)]
+    pub fn unavailable_for_tests(id: &str, extensions: &[&str]) -> Self {
+        Self {
+            id: id.into(),
+            name: id.into(),
+            version: "0".into(),
+            extensions: extensions
+                .iter()
+                .map(|&extension| extension.into())
+                .collect(),
+            protocol: 1,
+            executable: PathBuf::from("/nonexistent/midnight-image-provider"),
+            package: PathBuf::from("/nonexistent"),
+        }
+    }
+
     /// Match a filename extension without a leading dot. Native source identities stay separate.
     pub fn supports_extension(&self, extension: &str) -> bool {
         self.extensions

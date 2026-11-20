@@ -8,8 +8,14 @@ use std::sync::OnceLock;
 mod common;
 #[path = "syntax_cpp.rs"]
 mod cpp;
+#[path = "syntax_css.rs"]
+mod css;
+#[path = "syntax_csv.rs"]
+mod csv;
 #[path = "syntax_lua.rs"]
 mod lua;
+#[path = "syntax_make.rs"]
+mod make;
 #[path = "syntax_usda.rs"]
 mod usda;
 #[path = "syntax_xml.rs"]
@@ -44,6 +50,10 @@ pub enum Language {
     Xml,
     Lua,
     Usda,
+    Css,
+    Makefile,
+    Csv,
+    Tsv,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -61,6 +71,10 @@ enum Mode {
     Lua(lua::State),
     Yaml(yaml::State),
     Usda(usda::State),
+    Css(css::State),
+    Make(make::State),
+    /// CSV and TSV, whose dialect comes from the language.
+    Csv(csv::State),
 }
 
 /// An open string literal closed by `count` (1 or 3) `quote` bytes.
@@ -145,6 +159,8 @@ impl State {
             Mode::Lua(state) if state.pending_style() => state.pending_span(),
             Mode::Xml(state) if state.pending_style() => state.pending_span(),
             Mode::Yaml(state) if state.pending_style() => state.pending_span(),
+            Mode::Css(state) if state.pending_style() => state.pending_span(),
+            Mode::Make(state) if state.pending_style() => state.pending_span(),
             _ => None,
         }
     }
@@ -176,6 +192,11 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "xml" | "xsd" | "xsl" | "xslt" | "xaml" | "csproj" | "fsproj" | "vbproj" | "vcxproj"
         | "props" | "targets" | "resx" | "manifest" => Some(Xml),
         "usda" => Some(Usda),
+        "css" => Some(Css),
+        // Whole names such as `Makefile` arrive here as their only "extension".
+        "mk" | "mak" | "makefile" | "gnumakefile" => Some(Makefile),
+        "csv" => Some(Csv),
+        "tsv" => Some(Tsv),
         _ => None,
     };
     if found.is_some() {
@@ -330,6 +351,67 @@ pub(crate) fn stream(
             };
             Some(consumed)
         }
+        Language::Css => {
+            let mut current = if let Mode::Css(current) = state.mode {
+                current
+            } else {
+                css::State::default()
+            };
+            let consumed = if final_chunk {
+                css::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                css::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == css::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Css(current)
+            };
+            Some(consumed)
+        }
+        Language::Makefile => {
+            let mut current = if let Mode::Make(current) = state.mode {
+                current
+            } else {
+                make::State::default()
+            };
+            let consumed = if final_chunk {
+                make::scan(text, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                make::stream(text, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == make::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Make(current)
+            };
+            Some(consumed)
+        }
+        Language::Csv | Language::Tsv => {
+            let dialect = match language {
+                Language::Tsv => csv::Dialect::Tsv,
+                _ => csv::Dialect::Csv,
+            };
+            let mut current = if let Mode::Csv(current) = state.mode {
+                current
+            } else {
+                csv::State::default()
+            };
+            let consumed = if final_chunk {
+                csv::scan(text, dialect, &mut current, styles, cancelled)?;
+                text.len()
+            } else {
+                csv::stream(text, dialect, &mut current, styles, false, cancelled)?
+            };
+            state.mode = if current == csv::State::default() {
+                Mode::Normal
+            } else {
+                Mode::Csv(current)
+            };
+            Some(consumed)
+        }
         _ => common::stream(text, language, state, styles, final_chunk, cancelled),
     }
 }
@@ -465,12 +547,18 @@ fn keyword_list(language: Language) -> &'static str {
             "select from where as join left right inner outer on group by order having limit offset insert into values update set delete create table drop alter index view distinct union all null true false and or not is like in exists case when then else end begin commit rollback"
         }
         Language::Yaml => "true false null True False Null TRUE FALSE NULL yes no on off",
-        Language::Xml | Language::Lua | Language::Usda => "",
+        Language::Xml
+        | Language::Lua
+        | Language::Usda
+        | Language::Css
+        | Language::Makefile
+        | Language::Csv
+        | Language::Tsv => "",
     }
 }
 
 fn keyword(language: Language, token: &str) -> bool {
-    const LANGUAGES: usize = Language::Usda as usize + 1;
+    const LANGUAGES: usize = Language::Tsv as usize + 1;
     static TABLES: [OnceLock<Box<[&'static str]>>; LANGUAGES] =
         [const { OnceLock::new() }; LANGUAGES];
     let words = TABLES[language as usize].get_or_init(|| {

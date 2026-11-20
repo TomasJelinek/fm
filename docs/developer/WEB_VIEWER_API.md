@@ -61,7 +61,11 @@ document causes no periodic host wakeups.
 The application's opt-in `Service::open_with_layout` path uses app-private
 `midnight_core::viewer` messages. `ViewerOutput::LayoutSelected` announces a
 nonzero token, selected mode and `content_generation` before the backend starts
-the viewer transport or HTML browser session. The UI applies the selected mode/chrome,
+a native plugin session or HTML browser session. An image or PDF provider starts
+decoding at selection instead, overlapping native window creation, because decoding
+needs no viewport; its first viewport is still requested only after the
+acknowledgement. A selection that is invalidated retires that provider like a
+closing image. The UI applies the selected mode/chrome,
 settles layout, measures the actual canvas and sends `ViewerInput::LayoutReady`
 with that token and `ViewerGeometry`. It acknowledges unchanged dimensions too,
 retries refused enqueues and suppresses redundant Resize until acceptance.
@@ -110,6 +114,33 @@ Tree-wide cancellation uses `cgroup.kill`. These limits supplement Chromium's
 sandbox. Failure to establish containment is an error, never an unsandboxed
 fallback. Native Linux rendering and containment were qualified on Ubuntu 24.04
 under WSLg XWayland; see the [Linux report](../verification/2026-11-10-html-linux.md).
+That qualification did not cover AppArmor's user-namespace restriction, which WSLg
+does not apply: on Ubuntu 23.10+ desktops the browser needs the
+`midnight-explorer-html-viewer` profile that `scripts/install-html-viewer-apparmor.sh`
+installs, or a setuid-root `chrome-sandbox` (see
+[system requirements](../SYSTEM_REQUIREMENTS.md)). The Linux launcher checks for this
+before the browser can use its sandbox. When `kernel.apparmor_restrict_unprivileged_userns`
+is 1 and `chrome-sandbox` is not setuid root, it reads the started browser's AppArmor
+label; a browser without any profile, where an `unshare --user --map-root-user` probe
+in a child process is refused too, is stopped at once. `browser::spawn` then returns
+`browser::SandboxUnavailable`, whose message names the installer of that installation
+when the script and every folder above it are owned by root and not writable by group
+or others (otherwise it asks for an administrator and points to the system
+requirements), and the host shows that message instead of a transport error. It also
+carries the typed `browser::SandboxRefusal::UserNamespaces { executable }`: the host
+session records it before it publishes that terminal error, and
+`Session::sandbox_refusal` returns it to the viewer worker that drained the error, so
+nothing interprets the message text. The worker then publishes
+`ViewerOutput::SandboxNotice` (shown in the page's place) and, where
+`midnight_elevation::SandboxProfile::for_browser` finds a root-owned `/usr/bin/pkexec`
+and an installation path AppArmor can name, offers Install…. `ViewerInput::InstallSandboxPermission`
+runs `SandboxProfile::install` on its own thread (polkit, one constant root command; see
+[security](../../SECURITY.md)), shows "Waiting for authorization…", and opens the
+document again after success. A dismissed or refused authorization (pkexec 126/127) and
+other failures keep Install… available; a pkexec that became untrusted leaves only the
+manual instructions; closing the window cancels a pending prompt. A profile the browser
+gets from the installed policy or inherits from the application allows the namespaces,
+so it is never reported. Other launch failures keep the generic error and offer nothing.
 IME composition/commit pass CEF's required invalid replacement range (a synthetic
 commit is covered by the opt-in native fixture); physical IME input, native Chromium
 Wayland and other display/system policies still need their own qualification. Windows measurements do not establish Linux frame pacing.
@@ -122,7 +153,12 @@ timer period (15.6 ms when measured). CEF's external message pump measured only 
 fewer idle pumps on Windows and is not used
 ([idle-wakeup record](../verification/2026-11-18-html-idle-wakeups.md)).
 
-Viewer controls reuse Escape, Ctrl+F, Find next/previous and zoom. Pointer, keyboard
+Viewer controls reuse Escape, Ctrl+F, Find next/previous and zoom. Every search goes
+to Chromium as a follow-up (`Find.find_next`): a new native session only highlights
+the matches and reports none active, while a follow-up, also with another query or
+case, activates the nearest match on from the active one, as the text viewer searches
+on from where it stands. The status line reads "Match 2 of 3", "1 match" or
+"3 matches" while no match is active, or "No matches". Pointer, keyboard
 and IME input target the displayed content generation. Space, Backspace and
 Alt+Left/Right are arbitrated inside Chromium using its actual editable focus, so
 typing into an HTML input does not change the viewed file. Clipboard text returns through the host's explicit
@@ -144,6 +180,22 @@ replies are ignored after viewer content loses focus; unbound keys are not repla
 overflow state: a selection exceeding 48 KiB of UTF-8 reports a budget error
 without publishing a partial or empty clipboard replacement. A later smaller
 selection remains copyable.
+
+Wheel input scrolls a page as far and as fast as a text document. The viewer glides a
+wheel notch through the shared wheel motion (60 logical px per line over 200 ms) and
+sends one physical-pixel `Wheel` per presented frame; touchpad pixels, X11 finger
+lines (60 px per line) and Linux momentum go through at once, one `Wheel` per report
+or frame. The provider starts Chromium with `disable-smooth-scrolling`, so it applies
+each wheel event at once instead of animating it again (CEF's windowless wheel events
+are not precise deltas, which Chromium otherwise eases over about 170 ms); keyboard
+scrolling jumps at once too. Chromium reports no scroll position: once the page has
+painted since a glide or touchpad stream began (or a second has passed), the glide or
+momentum stops 120 ms after the page stops painting new frames, at its top or bottom
+edge. A wheel with
+Ctrl, Alt or Super acts once, unglided, with the previous 40 px line, so Chromium's
+Ctrl+wheel zoom keeps its rate. The public API and wire are unchanged. See
+[HTML pages](SCROLLING.md#html-pages) for the measurements; Windows is not yet
+qualified.
 
 The provider's own dev package uses `opt-level = 2` for its image conversion and
 composition loops. Other dev dependencies and the host's iteration profile are

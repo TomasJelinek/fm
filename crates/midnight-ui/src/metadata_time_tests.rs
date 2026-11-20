@@ -70,13 +70,39 @@ fn each_invalid_field_is_named_in_its_error() {
         assert!(parse_time(bad, &plain()).is_err(), "{bad}");
     }
     let leap = instant("Modified", "2016-12-31", "23:59:60", "Z", &plain()).unwrap_err();
-    assert!(leap.contains("Leap seconds"), "{leap}");
+    assert!(leap.starts_with("Modified time:"), "{leap}");
+    assert!(leap.contains("leap second"), "{leap}");
     let offset = instant("Created", "2026-11-06", "12:00", "", &plain()).unwrap_err();
     assert!(offset.starts_with("Created UTC offset:"), "{offset}");
     for bad in ["", "01:00", "+24:00", "+01:60", "+1:5", "CET", "+", "UTC+"] {
         assert!(parse_offset(bad).is_none(), "{bad}");
     }
     assert!(parse_date(&"1".repeat(65), &plain()).is_none());
+}
+
+#[test]
+fn non_ascii_offsets_are_invalid_instead_of_panicking() {
+    // Four bytes after the sign, but byte 2 is inside a character.
+    for bad in [
+        "+1€",
+        "+€1",
+        "+😀",
+        "UTC+1€",
+        "gmt-€€",
+        "−01:00",
+        "+０１:００",
+    ] {
+        assert!(parse_offset(bad).is_none(), "{bad}");
+        let error = instant("Modified", "2026-11-06", "12:00", bad, &plain()).unwrap_err();
+        assert!(error.starts_with("Modified UTC offset:"), "{error}");
+        // Up/Down on the field and the review both parse it.
+        assert_eq!(
+            step(bad, Field::Offset, part_at(bad, 2), 1, "+01:00", &plain()).unwrap(),
+            ("+01:00".into(), 1..3),
+            "{bad} is replaced by the fallback"
+        );
+        assert!(step(bad, Field::Offset, 1, -1, "", &plain()).is_none());
+    }
 }
 
 #[test]
@@ -188,6 +214,29 @@ fn stepping_an_empty_or_invalid_field_starts_from_the_fallback() {
 }
 
 #[test]
+fn picker_steps_on_an_empty_or_invalid_field_step_from_the_fallback() {
+    assert_eq!(
+        step_picker("", Field::Time, 0, 1, "03:04:05", &plain()).unwrap(),
+        ("04:04:05".into(), 0..2),
+        "the first click already changes the shown hour"
+    );
+    assert_eq!(
+        step_picker("25:00", Field::Time, 2, -1, "03:04:05", &plain())
+            .unwrap()
+            .0,
+        "03:04:04"
+    );
+    assert_eq!(
+        step_picker("12:30:00", Field::Time, 1, 1, "03:04:05", &plain())
+            .unwrap()
+            .0,
+        "12:31:00",
+        "a valid field steps from its own value"
+    );
+    assert!(step_picker("", Field::Time, 0, 1, "", &plain()).is_none());
+}
+
+#[test]
 fn calendar_pages_start_on_monday_and_moves_clamp_to_month_ends() {
     let view = month_view("2026-11-06", "", &plain()).unwrap();
     assert_eq!(view.title, "November 2026");
@@ -228,6 +277,7 @@ fn starting_values_keep_the_worker_offset_and_utc_is_explicit() {
         hour: 9,
         minute: 5,
         second: 0,
+        nanosecond: 250_000_000,
         offset_seconds: -(4 * 3600 + 30 * 60),
     };
     assert_eq!(
@@ -236,7 +286,37 @@ fn starting_values_keep_the_worker_offset_and_utc_is_explicit() {
             date: "2026-07-04".into(),
             time: "09:05:00".into(),
             offset: "-04:30".into(),
-        }
+        },
+        "fields show whole seconds"
+    );
+    // 2026-07-04 13:35:00.25 UTC
+    assert_eq!(
+        exact(&value),
+        Some(UNIX_EPOCH + Duration::from_millis(1_783_172_100_250))
+    );
+    let before_epoch = LocalCalendarTime {
+        year: 1969,
+        month: 12,
+        day: 31,
+        hour: 23,
+        minute: 59,
+        second: 59,
+        nanosecond: 500_000_000,
+        offset_seconds: 0,
+    };
+    assert_eq!(
+        exact(&before_epoch),
+        Some(UNIX_EPOCH - Duration::from_millis(500))
+    );
+    // Now at the worker's offset: the same instant, shown as local fields.
+    let moment = UNIX_EPOCH + Duration::from_millis(1_783_172_100_250);
+    let local = calendar_at(moment, value.offset_seconds).unwrap();
+    assert_eq!(local, value);
+    assert_eq!(exact(&local), Some(moment));
+    assert_eq!(
+        texts(&calendar_at(moment, 3600).unwrap()).time,
+        "14:35:00",
+        "13:35 UTC at +01:00"
     );
     let utc = utc_texts(UNIX_EPOCH + Duration::from_secs(86_400 + 3661));
     assert_eq!(

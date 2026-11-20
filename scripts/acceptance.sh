@@ -57,10 +57,20 @@ cd -- "$root"
 # suite's target.
 command=(cargo test --workspace --locked --features midnight-acceptance/acceptance --test acceptance --)
 command+=("${runner[@]}")
+# The viewer scenarios stage the plugin packages of the build that preceded the suite
+# (`./build.sh release --acceptance` built release packages), not the test profile's.
+# Absolute (relative to the checkout, like Cargo's target folder): Cargo runs the suite
+# in its package folder.
+plugins=${MIDNIGHT_ACCEPTANCE_PLUGINS:-${CARGO_TARGET_DIR:-$root/_build}/$profile}
+case "$plugins" in
+    /*) ;;
+    *) plugins=$root/$plugins ;;
+esac
 
 if [ "$dry_run" = 1 ]; then
     printf 'Working directory: %s\n' "$root"
     printf 'Build profile: %s (the suite uses the debug test profile)\n' "$profile"
+    printf 'Plugin packages: %s\n' "$plugins"
     printf 'TMPDIR: %s\n' "${TMPDIR:-$root/_build/tmp}"
     printf 'Command:'
     printf ' [%s]' "${command[@]}"
@@ -79,5 +89,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 mkdir -p -- "$root/_build/tmp"
 export TMPDIR=${TMPDIR:-"$root/_build/tmp"}
-printf 'Acceptance suite (build profile %s; tests use the debug test profile)\n' "$profile"
+export MIDNIGHT_ACCEPTANCE_PLUGINS="$plugins"
+printf 'Acceptance suite (build profile %s; tests use the debug test profile; plugins from %s)\n' \
+    "$profile" "$plugins"
 exec "${command[@]}"

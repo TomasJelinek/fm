@@ -341,3 +341,138 @@ fn tree_rename_holds_input_until_the_refreshed_tree_shows_and_focuses_the_new_na
         );
     }
 }
+
+/// A completed Copy from `source` into `destination`, which ran briefly.
+fn copied(p: &mut Presenter, source: &Path, destination: &Path) -> Event {
+    let mut progress = CopyProgress::queued(
+        OperationId(5),
+        destination.to_owned(),
+        1,
+        TransferIntent::Copy,
+    );
+    progress.source_directories = vec![source.to_owned()];
+    progress.state = CopyOperationState::Running;
+    p.copies.progress.push(Arc::new(progress.clone()));
+    progress.state = CopyOperationState::Completed;
+    Event::Copy(CopyEvent::Progress(Arc::new(progress)))
+}
+
+fn tree_refresh(sent: &RefCell<Vec<Command>>) -> Option<(TreeViewStamp, TreeRequestId)> {
+    sent.borrow().iter().find_map(|command| match command {
+        Command::Tree(command) => match command.as_ref() {
+            TreeCommand::RefreshLoaded(request) => Some((request.view.stamp, request.request)),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// A Copy into a folder a tree shows holds that tree until its refresh
+/// completes; a Copy out of it changes nothing the tree shows and holds nothing.
+#[test]
+fn a_copy_holds_a_tree_only_when_it_shows_the_destination() {
+    for into_tree in [true, false] {
+        let (mut p, root) = setup();
+        let inside = root.entries[0].path.clone();
+        let elsewhere = test_root().join("elsewhere");
+        let event = if into_tree {
+            copied(&mut p, &elsewhere, &inside)
+        } else {
+            copied(&mut p, &inside, &elsewhere)
+        };
+        let sent = RefCell::new(Vec::new());
+        p.apply_with_sender(event, &|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
+        let (stamp, request) =
+            tree_refresh(&sent).expect("the tree refreshes its loaded branches either way");
+        assert_eq!(p.mutation_settling_panes()[0], into_tree, "{into_tree}");
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Refreshed {
+                stamp,
+                request,
+                result: Ok(()),
+            })),
+            &|_| true,
+        );
+        assert!(!p.mutation_settling_panes()[0]);
+    }
+}
+
+/// A tree refresh that cannot start now (a full command queue) runs later
+/// without a hold: the tree's input never waits for it.
+#[test]
+fn a_tree_hold_ends_when_its_refresh_cannot_start() {
+    let (mut p, root) = setup();
+    let inside = root.entries[0].path.clone();
+    let event = copied(&mut p, &test_root().join("elsewhere"), &inside);
+    let sent = RefCell::new(Vec::new());
+    p.apply_with_sender(event, &|command| {
+        let refused = matches!(&command, Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::RefreshLoaded(_)));
+        sent.borrow_mut().push(command);
+        !refused
+    });
+    assert!(tree_refresh(&sent).is_some(), "the refresh was attempted");
+    assert!(!p.mutation_settling_panes()[0]);
+    // It is sent once the queue has room, still without a hold.
+    sent.borrow_mut().clear();
+    p.flush_selection(&|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(tree_refresh(&sent).is_some());
+    assert!(!p.mutation_settling_panes()[0]);
+}
+
+/// A Copy into the tree that completes while a Rename's refresh is pending
+/// keeps the renamed entry as the cursor target.
+#[test]
+fn a_later_completion_keeps_an_earlier_tree_reveal() {
+    let (mut p, root) = setup();
+    let request = capture(&mut p);
+    p.apply_with_sender(reply(&request), &|_| true);
+    let id = p.operations.pending.expect("prepared tree rename");
+    p.apply(Event::Operation(OperationEvent::Preview(Arc::new(
+        OperationPreview {
+            id,
+            kind: MutationKind::Rename,
+            files: 0,
+            folders: 1,
+            file_bytes: None,
+            sample: vec![MutationItem {
+                path: root.entries[0].path.join("child"),
+                kind: EntryKind::Directory,
+                metadata: Default::default(),
+            }],
+        },
+    ))));
+    p.confirm_operation(&id.0.to_string(), "renamed".into(), &|_| true);
+    let mut progress = (*p.operations.progress[0]).clone();
+    progress.state = OperationState::Completed;
+    progress.completed = 1;
+    progress.renamed_to = Some(root.entries[0].path.join("renamed"));
+    p.apply_with_sender(
+        Event::Operation(OperationEvent::Progress(Arc::new(progress))),
+        &|_| true,
+    );
+    let event = copied(
+        &mut p,
+        &test_root().join("elsewhere"),
+        &root.entries[0].path,
+    );
+    p.apply_with_sender(event, &|_| true);
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(renamed_publication(
+            root.clone(),
+            2,
+        )))),
+        &|_| true,
+    );
+    assert_eq!(
+        p.panes[0].cursor,
+        Some(EntryId(12)),
+        "the renamed entry still takes the cursor"
+    );
+}

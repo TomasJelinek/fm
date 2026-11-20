@@ -14,6 +14,7 @@ fn prepare_html(worker: &mut Worker) -> (tempfile::TempDir, super::super::layout
         super::super::layout::PreparedOpening {
             file,
             route: crate::routing::Route::Process { index: 0 },
+            image: None,
         },
     )
 }
@@ -290,6 +291,7 @@ fn video_layout_waits_for_matching_canvas_before_admitting_the_capture() {
             super::super::layout::PreparedOpening {
                 file,
                 route: crate::routing::Route::Process { index: 0 },
+                image: None,
             },
             &output,
         )
@@ -357,4 +359,77 @@ fn video_controls_and_frames_share_capture_generation() {
     assert_eq!(frame.generation, generation);
     assert_eq!(&*frame.pixels, &[128, 0, 64, 128]);
     assert_eq!(output.take_open_result(), Some(Ok(())));
+}
+
+fn prepare_image(
+    worker: &mut Worker,
+) -> (tempfile::TempDir, super::super::layout::PreparedOpening) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("owned.png");
+    std::fs::write(&path, b"captured layout fixture").unwrap();
+    let file = midnight_plugin_host::CapturedFile::capture(&path).unwrap();
+    worker.images = Arc::from(
+        [midnight_image_viewer_host::Provider::unavailable_for_tests(
+            "test-image",
+            &["png"],
+        )],
+    );
+    worker.layout = crate::layout_handshake::Handshake::new(true);
+    worker.positions.reset().unwrap();
+    worker.mode = VIEWER_MODE_IMAGE;
+    worker.modes = vec![VIEWER_MODE_IMAGE];
+    (
+        directory,
+        super::super::layout::PreparedOpening {
+            file,
+            route: crate::routing::Route::Process { index: 0 },
+            image: None,
+        },
+    )
+}
+
+#[test]
+fn image_provider_starts_while_the_canvas_is_negotiated_and_is_adopted_on_acknowledgement() {
+    let (mut worker, _) = worker();
+    let output = Mailbox::with_layout();
+    let (_directory, opening) = prepare_image(&mut worker);
+    worker.select_opening(opening, &output).unwrap();
+    let (token, mode, _) = selection(&output);
+    assert_eq!(mode, VIEWER_MODE_IMAGE);
+    assert!(
+        worker
+            .pending_layout
+            .as_ref()
+            .is_some_and(|opening| opening.image.is_some()),
+        "decoding must not wait for the frontend canvas"
+    );
+    assert!(
+        worker.image.is_none(),
+        "no viewport before the acknowledgement"
+    );
+
+    let opening = worker.take_layout_ready(token, worker.geometry).unwrap();
+    assert!(opening.image.is_some());
+    worker.start_opening(opening, &output).unwrap();
+    assert!(
+        worker.image.is_some(),
+        "the started provider is the displayed one"
+    );
+    assert!(worker.closing_image.is_none());
+}
+
+#[test]
+fn an_abandoned_negotiation_retires_its_started_image_provider_without_joining_it() {
+    let (mut worker, _) = worker();
+    let output = Mailbox::with_layout();
+    let (_directory, opening) = prepare_image(&mut worker);
+    worker.select_opening(opening, &output).unwrap();
+    selection(&output);
+    worker.input(ViewerInput::Close, &output);
+    assert!(worker.pending_layout.is_none());
+    assert!(worker.image.is_none());
+    assert!(
+        worker.closing_image.is_some(),
+        "the next opening must wait for the provider like any closing image"
+    );
 }

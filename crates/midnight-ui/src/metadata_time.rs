@@ -500,6 +500,54 @@ pub(crate) fn texts(value: &LocalCalendarTime) -> FieldTexts {
     }
 }
 
+/// The calendar fields of `instant` at a known UTC offset (the worker's latest local
+/// offset), with its sub-second part. Pure arithmetic: no timezone lookup.
+pub(crate) fn calendar_at(instant: SystemTime, offset_seconds: i32) -> Option<LocalCalendarTime> {
+    use chrono::Timelike;
+    let since = instant.duration_since(UNIX_EPOCH).ok()?;
+    let utc = chrono::DateTime::from_timestamp(
+        i64::try_from(since.as_secs()).ok()?,
+        since.subsec_nanos(),
+    )?;
+    let local = utc.with_timezone(&FixedOffset::east_opt(offset_seconds)?);
+    Some(LocalCalendarTime {
+        year: local.year(),
+        month: u8::try_from(local.month()).ok()?,
+        day: u8::try_from(local.day()).ok()?,
+        hour: u8::try_from(local.hour()).ok()?,
+        minute: u8::try_from(local.minute()).ok()?,
+        second: u8::try_from(local.second()).ok()?,
+        nanosecond: local.nanosecond(),
+        offset_seconds,
+    })
+}
+
+/// The exact instant a starting value describes. Its fields show whole seconds and a
+/// whole-minute offset; this keeps the sub-seconds and any seconds of the offset.
+pub(crate) fn exact(value: &LocalCalendarTime) -> Option<SystemTime> {
+    let local = NaiveDate::from_ymd_opt(value.year, value.month.into(), value.day.into())?
+        .and_hms_nano_opt(
+            value.hour.into(),
+            value.minute.into(),
+            value.second.into(),
+            value.nanosecond,
+        )?;
+    let time = FixedOffset::east_opt(value.offset_seconds)?
+        .from_local_datetime(&local)
+        .single()?;
+    system_time(time.timestamp(), time.timestamp_subsec_nanos())
+}
+
+fn system_time(seconds: i64, nanos: u32) -> Option<SystemTime> {
+    if seconds >= 0 {
+        UNIX_EPOCH.checked_add(Duration::new(seconds.unsigned_abs(), nanos))
+    } else {
+        UNIX_EPOCH
+            .checked_sub(Duration::from_secs(seconds.unsigned_abs()))
+            .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(nanos))))
+    }
+}
+
 /// The current instant in UTC, used when the worker supplied no local starting value.
 pub(crate) fn utc_texts(now: SystemTime) -> FieldTexts {
     let seconds = now
@@ -516,7 +564,7 @@ pub(crate) fn utc_texts(now: SystemTime) -> FieldTexts {
         .unwrap_or_default()
 }
 
-fn offset_text(minutes: i32) -> String {
+pub(crate) fn offset_text(minutes: i32) -> String {
     let sign = if minutes < 0 { '-' } else { '+' };
     let minutes = minutes.unsigned_abs();
     format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
@@ -659,7 +707,8 @@ pub(crate) enum TimeError {
 /// `+HH:MM`, `+HHMM`, `+H`, `Z` or `UTC`, optionally prefixed with `UTC`/`GMT`.
 pub(crate) fn parse_offset(text: &str) -> Option<FixedOffset> {
     let text = text.trim();
-    if text.len() > MAX_FIELD {
+    // An offset is ASCII; byte positions below are then character boundaries.
+    if text.len() > MAX_FIELD || !text.is_ascii() {
         return None;
     }
     let upper = text.to_ascii_uppercase();
@@ -681,7 +730,7 @@ pub(crate) fn parse_offset(text: &str) -> Option<FixedOffset> {
     };
     let (hours, minutes) = match body.split_once(':') {
         Some((hours, minutes)) => (hours, minutes),
-        None if body.len() == 4 => body.split_at(2),
+        None if body.len() == 4 => body.split_at_checked(2)?,
         None => (body, "00"),
     };
     if hours.is_empty()
@@ -713,7 +762,7 @@ pub(crate) fn instant(
         .ok_or_else(|| format!("{label} date: use {}", date_forms(forms)))?;
     let time = parse_time(time, forms).map_err(|error| match error {
         TimeError::LeapSecond => {
-            "Leap seconds cannot be represented as a filesystem timestamp.".to_string()
+            format!("{label} time: a leap second cannot be stored as a filesystem timestamp.")
         }
         TimeError::Invalid => format!("{label} time: use {}", time_forms(forms)),
     })?;
@@ -723,16 +772,8 @@ pub(crate) fn instant(
         .from_local_datetime(&date.and_time(time))
         .single()
         .ok_or_else(|| format!("{label}: the timestamp is outside the supported range."))?;
-    let nanos = value.timestamp_subsec_nanos();
-    let seconds = value.timestamp();
-    if seconds >= 0 {
-        UNIX_EPOCH.checked_add(Duration::new(seconds.unsigned_abs(), nanos))
-    } else {
-        UNIX_EPOCH
-            .checked_sub(Duration::from_secs(seconds.unsigned_abs()))
-            .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(nanos))))
-    }
-    .ok_or_else(|| format!("{label}: the timestamp is outside the supported range."))
+    system_time(value.timestamp(), value.timestamp_subsec_nanos())
+        .ok_or_else(|| format!("{label}: the timestamp is outside the supported range."))
 }
 
 /// Index of the part under a byte cursor: the digit run containing or ending at the
@@ -813,6 +854,24 @@ pub(crate) fn step(
         }
     }
     Some(render(field, &values, text, part, typed))
+}
+
+/// A picker's step: on an empty or invalid field it steps from the fallback, so the
+/// first click already changes the shown value.
+pub(crate) fn step_picker(
+    text: &str,
+    field: Field,
+    part: usize,
+    delta: i32,
+    fallback: &str,
+    forms: &SystemForms,
+) -> Option<(String, Range<usize>)> {
+    let start = if normalize(text, field, forms).is_some() {
+        text
+    } else {
+        fallback
+    };
+    step(start, field, part, delta, fallback, forms)
 }
 
 /// Numeric parts of a valid field and the form it was typed in: date `[year, month,

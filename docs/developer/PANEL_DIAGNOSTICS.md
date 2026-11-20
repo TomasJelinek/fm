@@ -61,10 +61,24 @@ or virtualized rebinding between press and release cancels the gesture.
 ## Watch status
 
 `Event::WatchStatus` reports how an accepted flat view or tree session is watched:
-`PollingOnly` (with the registration error) after native registration failed, so
-only the periodic check (about every 15 seconds) finds changes; `Restarting` while
-a failed watch worker waits for its rate-limited restart; `Native` only to clear an
-earlier status of the same view. Each status is sent once per change of a view's
+`PollingOnly` (with the registration error) when native registration failed, so
+only checks find changes; `Restarting` while a failed watch worker waits for its
+rate-limited restart; `Native` only to clear an earlier status of the same view.
+A flat folder whose registration fails is checked about every second (less often
+for folders with more than 4,000 entries, and never more often than ten times as
+long as a check takes) while the registration is retried after 1, 2, 4 and 8
+seconds, then every 15 seconds; a successful retry switches to notifications
+without a status, and `PollingOnly` is reported only once registrations kept
+failing for a minute. A tree batch whose registration fails reports `PollingOnly`
+at once and is polled at the regular interval. On Linux every subscription of the
+filesystem service shares one inotify instance (`fs.inotify.max_user_instances` is
+a small per-user limit shared by all programs); a directory's native watch ends
+with its last subscription, and a directory replaced since its watch was added
+(renamed away and created again) is watched anew, without the old one's watch,
+when a subscription registers it again. inotify watches folders, not paths: a
+registration that names a folder the shared instance already watches under another
+path (a bind mount, or a folder renamed since and opened under its new name) gets an
+instance of its own, so that neither path's watch can end or redirect the other's. Each status is sent once per change of a view's
 status, never blocks the watch worker (a full event queue keeps the newest status
 until it can be sent), and a status for a view the pane no longer shows is
 dropped. It is non-fatal: rows, actions and manual Refresh stay usable, and it is
@@ -76,13 +90,31 @@ and accessible description give the registration error of `PollingOnly`.
 `TreeEvent::WatchFailed` keeps reporting scope enrollment failures and epoch
 exhaustion.
 
-A flat folder registers again with a refresh; a tree batch with a later scope
+A flat folder also registers again with a refresh; a tree batch with a later scope
 update, at most once per poll interval. A pane's watch worker that panics restarts
 in place on its resident worker thread: at once the first time, afterwards no sooner than a
 minute after its previous restart, reporting `Restarting` meanwhile. A registration
 that panicked twice in a row is skipped until another one is made, so its view is
 only polled and reports `PollingOnly`. Panics on platform notification threads,
 such as the process-wide Windows watch service thread, are outside this policy.
+
+A check compares a flat folder with the rows the pane accepted. With Show hidden
+files off, it leaves out the hidden entries that the listing left out, by the same
+rule (`hidden_entries`: dot-names on Unix, the hidden attribute on Windows), so a
+folder with dotfiles or `desktop.ini` does not look changed at every check. A change
+of hidden entries alone is then found only by a notification, whose re-read shows
+nothing new. Accepted rows keep the choice they were listed with (a resort keeps
+that of the rows it sorts) until the re-read that follows a change of the choice is
+accepted.
+
+An adopted inline tree's root is checked the same way while its rows are still the
+flat listing the tree was adopted from: what that listing left out (it counts them;
+with nothing to leave out, the current choice decides) is left out of the root's
+checks, so adopting a tree in a folder with dotfiles requests no maintenance pass.
+Once a maintenance pass lists the root again, the tree's model holds its hidden
+entries (only the projection leaves them out), and the root's checks keep them, as
+an expanded branch's always do: a change of a hidden entry there is found, and the
+re-listing it causes shows nothing new.
 
 ## Presentation and viewing
 

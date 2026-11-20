@@ -85,6 +85,9 @@ pub(crate) struct Fill {
 
 const MAX_PIXELS: usize = 16 * 1024 * 1024;
 
+/// A selected byte range and the layout rectangles that show it.
+type Selection = (Range<usize>, Vec<Rect>);
+
 fn pixel_bytes(width: u32, height: u32) -> Option<usize> {
     (width as usize)
         .checked_mul(height as usize)?
@@ -114,6 +117,7 @@ impl TextRenderer {
                 background: [0; 4],
                 selection_color: [0; 4],
             },
+            None,
             target,
         )
     }
@@ -154,18 +158,21 @@ impl TextRenderer {
         self.glyphs.paint_annotation(page, viewport, origin, target)
     }
 
+    /// Paint `page` into a new viewport raster. A `selection` (decoded UTF-8 byte
+    /// range) is filled with `viewport.selection_color`; its glyphs keep their
+    /// hue but change lightness where needed to stay readable on that fill.
     pub fn rasterize(
         &mut self,
         page: &TextPage,
         viewport: Viewport,
         selection: Option<Range<usize>>,
     ) -> Result<Raster, LayoutError> {
-        let (bytes, rectangles) = validate(page, viewport, selection)?;
+        let (bytes, selection) = validate(page, viewport, selection)?;
         let mut rgba = vec![0; bytes];
         self.paint_viewport(
             page,
             viewport,
-            rectangles,
+            selection,
             &mut RasterMut {
                 width: viewport.width,
                 height: viewport.height,
@@ -191,14 +198,14 @@ impl TextRenderer {
         selection: Option<Range<usize>>,
         rgba: &mut [u8],
     ) -> Result<(), LayoutError> {
-        let (bytes, rectangles) = validate(page, viewport, selection)?;
+        let (bytes, selection) = validate(page, viewport, selection)?;
         if rgba.len() != bytes {
             return Err(LayoutError::InvalidGeometry);
         }
         self.paint_viewport(
             page,
             viewport,
-            rectangles,
+            selection,
             &mut RasterMut {
                 width: viewport.width,
                 height: viewport.height,
@@ -211,7 +218,7 @@ impl TextRenderer {
         &mut self,
         page: &TextPage,
         viewport: Viewport,
-        selection: Option<Vec<Rect>>,
+        selection: Option<Selection>,
         raster: &mut RasterMut<'_>,
     ) -> Result<(), LayoutError> {
         let mut trace = cfg!(debug_assertions)
@@ -222,23 +229,26 @@ impl TextRenderer {
         raster.rgba.as_chunks_mut::<4>().0.fill(background);
         trace_phase("clear", &mut trace);
         paint_backgrounds(page, viewport, raster);
-        for rect in selection.into_iter().flatten() {
-            raster.fill(rect, viewport.origin, viewport.selection_color);
-        }
+        let selection = selection.map(|(range, rectangles)| {
+            for rect in rectangles {
+                raster.fill(rect, viewport.origin, viewport.selection_color);
+            }
+            range
+        });
         trace_phase("backgrounds", &mut trace);
-        self.glyphs.paint(page, viewport, raster)?;
+        self.glyphs.paint(page, viewport, selection, raster)?;
         trace_phase("glyphs", &mut trace);
         Ok(())
     }
 }
 
-/// Byte length of a viewport raster and its selection rectangles, validated
-/// before any pixel is allocated or written.
+/// Byte length of a viewport raster and the selected range with its rectangles,
+/// validated before any pixel is allocated or written.
 fn validate(
     page: &TextPage,
     viewport: Viewport,
     selection: Option<Range<usize>>,
-) -> Result<(usize, Option<Vec<Rect>>), LayoutError> {
+) -> Result<(usize, Option<Selection>), LayoutError> {
     let bytes = (viewport.width as usize)
         .checked_mul(viewport.height as usize)
         .filter(|&n| n > 0 && n <= MAX_PIXELS)
@@ -247,10 +257,13 @@ fn validate(
     if viewport.origin.iter().any(|value| !value.is_finite()) {
         return Err(LayoutError::InvalidGeometry);
     }
-    let rectangles = selection
-        .map(|range| page.selection_geometry(range))
+    let selection = selection
+        .map(|range| {
+            let rectangles = page.selection_geometry(range.clone())?;
+            Ok((range, rectangles))
+        })
         .transpose()?;
-    Ok((bytes, rectangles))
+    Ok((bytes, selection))
 }
 
 impl RasterMut<'_> {

@@ -25,7 +25,7 @@ export component MenuActionButton inherits Rectangle {
     NativeActionImage {
         x: 8px; y: (root.height - self.height) / 2;
         width: Theme.icon-size; height: self.width;
-        native-icon: root.row-native-icon; fallback-icon: root.row-fallback-icon;
+        native-icon: root.row-native-icon; fallback-icon: root.row-fallback-icon; glyph: true;
         action-enabled: root.enabled;
     }
     Text {

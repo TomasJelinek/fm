@@ -57,6 +57,16 @@ fn local_calendar_offset_is_the_difference_between_local_fields_and_the_instant(
     let before_epoch = UNIX_EPOCH - Duration::from_millis(500);
     let west = LocalCalendarTime::from_local_fields(1969, 12, 31, 18, 59, 59, before_epoch);
     assert_eq!(west.unwrap().offset_seconds, -5 * 3600);
+    assert_eq!(
+        west.unwrap().nanosecond,
+        500_000_000,
+        "the fraction counts from the floored second, as the fields do"
+    );
+    assert_eq!(summer.nanosecond, 0);
+    assert_eq!(
+        LocalCalendarTime::nanosecond_of(instant + Duration::from_nanos(789)),
+        789
+    );
     for (year, month, day, hour) in [(2026, 2, 29, 0), (2026, 13, 1, 0), (2026, 1, 1, 24)] {
         assert!(
             LocalCalendarTime::from_local_fields(year, month, day, hour, 0, 0, instant).is_none()

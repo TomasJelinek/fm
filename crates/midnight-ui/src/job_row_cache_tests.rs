@@ -222,3 +222,37 @@ fn late_metadata_results_and_clear_invalidate_derived_history_without_retaining_
     assert!(job_presentation::rows(&p).is_empty());
     assert!(p.job_rows.0.borrow().is_empty());
 }
+
+#[test]
+fn a_new_snapshot_with_the_same_errors_keeps_their_model() {
+    use crate::JobIssue;
+    use slint::{Model, ModelRc, VecModel};
+    let issue = |title: &str| JobIssue {
+        title: title.into(),
+        path: "target/資料.txt".into(),
+        path_tail: "/資料.txt".into(),
+        detail: "Operation: write".into(),
+    };
+    let rows = |titles: &[&str]| OperationRow {
+        issues: ModelRc::new(VecModel::from(
+            titles.iter().copied().map(issue).collect::<Vec<_>>(),
+        )),
+        ..Default::default()
+    };
+    let cache = Rows::default();
+    let locale = NumberLocale::default();
+    let mut source = progress(1);
+    let first = cache.get(Snapshot::Copy(&source, None), &locale, || rows(&["denied"]));
+    source = Arc::new((*source).clone());
+    let same = cache.get(Snapshot::Copy(&source, None), &locale, || rows(&["denied"]));
+    assert!(
+        first.issues == same.issues,
+        "an equal error list keeps the model the window's rows are built from"
+    );
+    source = Arc::new((*source).clone());
+    let changed = cache.get(Snapshot::Copy(&source, None), &locale, || {
+        rows(&["denied", "full"])
+    });
+    assert!(first.issues != changed.issues);
+    assert_eq!(changed.issues.row_count(), 2);
+}

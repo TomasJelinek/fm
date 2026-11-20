@@ -487,7 +487,7 @@ pub(super) fn run(
     validation.map_err(|error| error.to_string())?;
     let browser =
         midnight_worker_platform::browser::spawn_with_host_shortcuts(&provider.executable)
-            .map_err(|error| format!("Chromium startup: {error}"))?;
+            .map_err(|error| launch_failed(shared, &error))?;
     let transport = Transport {
         input: Box::new(browser.input),
         output: Box::new(browser.output),
@@ -496,6 +496,30 @@ pub(super) fn run(
     // The rest of `browser`, its private profile, is dropped when this function returns:
     // after `run_with` waited for the whole process tree.
     run_with(transport, owner, viewport, shared, Limits::default())
+}
+
+/// The message of the terminal error of a browser that could not start. A refused sandbox
+/// is recorded as that error's typed reason first: `supervise` publishes the error after
+/// the actor returned, so a consumer that drains it finds the reason
+/// (`Session::sandbox_refusal`).
+pub(super) fn launch_failed(shared: &Shared, error: &io::Error) -> String {
+    let (message, refusal) = startup_error(error);
+    if let Ok(mut output) = shared.output.lock() {
+        output.refusal = refusal;
+    }
+    message
+}
+
+/// A sandbox the system denies is reported with its own message, which names the one-time
+/// fix, and its typed refusal for a consumer that offers that fix; any other launch failure
+/// keeps the generic prefix and has no refusal.
+fn startup_error(error: &io::Error) -> (String, Option<crate::SandboxRefusal>) {
+    match error.get_ref().and_then(|inner| {
+        inner.downcast_ref::<midnight_worker_platform::browser::SandboxUnavailable>()
+    }) {
+        Some(unavailable) => (unavailable.to_string(), Some(unavailable.refusal().clone())),
+        None => (format!("Chromium startup: {error}"), None),
+    }
 }
 
 /// Run the session over `transport`: the actor on this thread, the reader of the browser's

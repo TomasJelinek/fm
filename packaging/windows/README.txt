@@ -1,4 +1,4 @@
-Midnight Explorer 0.2.0 - Windows x64 preview
+Midnight Explorer 0.3.0 - Windows x64 preview
 
 Extract the complete ZIP to a folder, then run me.exe.
 Keep the viewers, filesystems and thumbnailers folders beside me.exe, including

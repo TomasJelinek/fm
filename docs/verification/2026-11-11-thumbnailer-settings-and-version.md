@@ -1,6 +1,6 @@
 # Thumbnailer Settings catalog and application 0.2
 
-The development checkout is `D:\experiments\dev\FM`, on
+The development checkout is the primary Windows checkout, on
 `codex/viewer-plugins`. The separate `codex/main-deep-audit` checkout predates
 the plugin implementation and was not used as this application's build source.
 
@@ -66,7 +66,7 @@ The 0.2 debug build completed in 6m04s using Rust 1.99.1/MSVC, the checked-in
 development optimization overrides, two build jobs, debug information disabled
 and incremental compilation disabled. No release build was requested or produced.
 
-Executable: `D:\experiments\dev\FM\_build\debug\me.exe`
+Executable: `_build\debug\me.exe`
 
 Size: 94,712,832 bytes.
 
@@ -100,13 +100,13 @@ worker SDK bundle with the previous bundle found exactly one changed member:
 archives were byte-identical; Git provenance, tar metadata and line endings did
 not cause this mismatch. Only that first-party checksum was updated, preserving
 all package versions, third-party checksums and `--locked` enforcement. Evidence
-for this follow-up is under `D:/experiments/dev/FM/_build/qa/sdk-checksum/`.
+for this follow-up is under `_build/qa/sdk-checksum/`.
 The existing 0.2 application tests, executable and deployment recorded above
 remain unchanged; no new application build was needed.
 
 - A fresh bundle was generated with `cargo run --manifest-path api/Cargo.toml -p
   midnight-api-package --bin worker-packages --locked --offline --
-  D:/experiments/dev/FM D:/experiments/dev/FM/_build/qa/sdk-checksum/releases`
+  <repo> <repo>/_build/qa/sdk-checksum/releases`
   (`fresh-package.log`). Its configuration is
   `releases/worker-sdk-1794356045532782900/.cargo/registry.toml` beneath the
   evidence directory, referenced below as `$sdk`.

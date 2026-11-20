@@ -112,6 +112,7 @@ wrap_app! {
                 for flag in ["disable-background-networking", "disable-component-update", "disable-extensions", "disable-sync", "no-first-run", "disable-default-apps", "disable-domain-reliability"] {
                     command_line.append_switch(Some(&CefString::from(flag)));
                 }
+                command_line.append_switch(Some(&CefString::from(input::SMOOTH_SCROLLING_OFF)));
                 #[cfg(feature = "diagnostic-software-compositing")]
                 command_line.append_switch(Some(&CefString::from("disable-gpu-compositing")));
             }

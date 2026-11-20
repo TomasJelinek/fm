@@ -396,3 +396,27 @@ fn create_file_concurrent_same_name_has_exactly_one_winner() {
     );
     assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
 }
+
+#[test]
+fn the_prepared_base_is_identified_as_transfers_identify_it() {
+    use midnight_core::TransferService;
+    let fixture = tempfile::tempdir().unwrap();
+    let panel = fixture.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let service = LinuxFileSystem::new(None);
+    let prepared = service.prepare_create(&panel, &cancel).unwrap();
+    let pinned = prepared.transfer_identity(&cancel).unwrap();
+    let reopened = service
+        .prepare_transfer_destination(&panel, &cancel)
+        .unwrap();
+    assert_eq!(pinned, reopened.identity());
+    // A folder that later takes the path is a different object.
+    fs::rename(&panel, fixture.path().join("moved-panel")).unwrap();
+    fs::create_dir(&panel).unwrap();
+    let newcomer = service
+        .prepare_transfer_destination(&panel, &cancel)
+        .unwrap();
+    assert_ne!(pinned, newcomer.identity());
+    assert_eq!(prepared.transfer_identity(&cancel).unwrap(), pinned);
+}

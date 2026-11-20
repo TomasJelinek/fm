@@ -1,4 +1,4 @@
-//! Image decoding belongs exclusively in the restricted provider process.
+//! Image and PDF decoding belong exclusively in the restricted provider process.
 #![forbid(unsafe_code)]
 use midnight_thumbnail_sdk::{
     ReadSeek,
@@ -6,7 +6,15 @@ use midnight_thumbnail_sdk::{
 };
 use std::io;
 
-/// Decode one still image. Image-rs limits are backed by the OS worker's hard resource limits.
+mod pdf;
+mod signature;
+mod source;
+
+pub use pdf::MAX_SOURCE_BYTES as MAX_PDF_SOURCE_BYTES;
+
+/// Decode one still image, or draw the first page of a PDF document. The content
+/// decides which: no file name crosses the protocol. Image-rs limits and the PDF
+/// source budget are backed by the OS worker's hard resource limits.
 pub fn decode(request: &Request, stream: &mut dyn ReadSeek) -> io::Result<Frame> {
     midnight_thumbnail_sdk::api::rgba_length(request.width, request.height)?;
     if request.frame != 0 {
@@ -15,9 +23,15 @@ pub fn decode(request: &Request, stream: &mut dyn ReadSeek) -> io::Result<Frame>
             "Image provider exposes a still preview",
         ));
     }
-    let image = midnight_image_decoder::decode(stream, Some((request.width, request.height)))?;
-    let (width, height) = image.dimensions();
-    let rgba = image.into_raw();
+    let mut stream = source::Prefixed::new(stream, pdf::SNIFF_BYTES)?;
+    let (width, height, rgba) = if pdf::sniff(stream.prefix()) {
+        pdf::first_page(&mut stream, request.width, request.height)?
+    } else {
+        let image =
+            midnight_image_decoder::decode(&mut stream, Some((request.width, request.height)))?;
+        let (width, height) = image.dimensions();
+        (width, height, image.into_raw())
+    };
     Ok(Frame {
         id: request.id,
         width,

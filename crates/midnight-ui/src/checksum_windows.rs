@@ -266,6 +266,9 @@ fn refresh(
         w.set_save_stopping(s.save.as_ref().is_some_and(|save| save.stopping));
         // Copy details formats the session again, with raw paths.
         w.set_error(crate::shown_text(&s.error));
+        w.set_issue(crate::shown_text(&s.issue().unwrap_or_default()));
+        w.set_save_status(crate::shown_text(&s.save_status(&p.number_locale)));
+        w.set_details(crate::shown_text(&s.details(&p.number_locale)));
         w.set_attention(
             !s.error.is_empty()
                 || s.progress.errors > 0
@@ -448,6 +451,17 @@ fn create(
     callback!(on_cancel_save_prompt, |p, send| {
         let _ = send;
         p.dismiss_checksum_save_prompt(id);
+    });
+    callback!(on_copy_details, |p, send| {
+        // The presenter's text with exact paths, not the display-safe copy shown.
+        if let Some(details) = p
+            .checksums
+            .sessions
+            .get(&id)
+            .map(|s| s.details(&p.number_locale))
+        {
+            p.copy_viewer_text(details, send);
+        }
     });
     let weak = window.as_weak();
     window.window().on_close_requested(move || {

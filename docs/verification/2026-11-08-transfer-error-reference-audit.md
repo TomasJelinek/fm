@@ -13,15 +13,15 @@ copied into the implementation.
 
 ## Source provenance
 
-The inspected local source tree is `D:/experiments/salamander-main`; it has no Git
+The inspected local source tree is `<salamander-source>`; it has no Git
 metadata, so no upstream revision is asserted. Line references below are one-based
 and apply to these exact files:
 
 | Key | Source | SHA-256 |
 | --- | --- | --- |
-| W | [src/worker.cpp](D:/experiments/salamander-main/src/worker.cpp) | `AAF1055BBFD6AB6B0C6A6BCD4F63750178C8D6A93DAE05FCDD49930307F2DB16` |
-| F | [src/fileswn6.cpp](D:/experiments/salamander-main/src/fileswn6.cpp) | `FD8C7878455DB81AA5ECA6660BAE5702287755E467DC08F2791894253A11295A` |
-| D | [src/dialogs.cpp](D:/experiments/salamander-main/src/dialogs.cpp) | `276462169E929DD7D304267A6D3A249C97777F1E192BB94A3D7DA8B459310BC2` |
+| W | `src/worker.cpp` | `AAF1055BBFD6AB6B0C6A6BCD4F63750178C8D6A93DAE05FCDD49930307F2DB16` |
+| F | `src/fileswn6.cpp` | `FD8C7878455DB81AA5ECA6660BAE5702287755E467DC08F2791894253A11295A` |
+| D | `src/dialogs.cpp` | `276462169E929DD7D304267A6D3A249C97777F1E192BB94A3D7DA8B459310BC2` |
 
 For example, `W:3191-3224` identifies lines 3191 through 3224 of `src/worker.cpp`.
 The audit covers native transfer execution, relevant preparation/enumeration and
@@ -112,7 +112,7 @@ individual source (W:6070–6079). It does not wait for every file in the batch.
 The checksum plugin exposes separate calculation/manifest-verification commands
 for CRC32, MD5, SHA-1, SHA-256 and SHA-512; it is not invoked by this native
 Copy/Move path. See
-[checksum.cpp:254](D:/experiments/salamander-main/src/plugins/checksum/checksum.cpp:254),
+`src/plugins/checksum/checksum.cpp:254` in the same tree,
 SHA-256 `681725C657C829256F12ED537C2F2F4B4EF680C4B074514EC912E8CF1D0FAC5B`.
 This recheck does not establish behavior for every archive/network plugin.
 

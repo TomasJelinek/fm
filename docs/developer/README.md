@@ -35,6 +35,8 @@ pointer feedback, bounded position queues, content acknowledgements and native
 latency measurement. These UI/engine messages are not part of the plugin ABI.
 The [file comparison contract](FILE_COMPARISON.md) describes automatic panel
 pairing, manual File A / File B choice, native picking and cancellation.
+[Compare directories](COMPARE_DIRECTORIES.md) describes the panel comparison's
+criteria, content reads, subfolder walk, limits and cancellation.
 
 Application contributors working on copy and archive extraction should also read
 the internal [native transfer contract](TRANSFERS.md). Its Rust capabilities are
@@ -96,7 +98,7 @@ One Git repository contains **separate Cargo workspaces**:
 | `filesystem-api/Cargo.toml` | Archive worker protocol and native filesystem API/SDK | Separate public wire and C ABI contracts; no application crates |
 | `worker-api/Cargo.toml` | Restricted executable startup SDK | Public platform containment contract |
 | `thumbnail-api/Cargo.toml` | Brokered media reads and bounded RGBA frame protocol | Independent public API/SDK; no application crates |
-| `image-viewer-api/Cargo.toml` | Raster image/document API 0.2.0 and SDK 0.3.0 | Versioned public page metadata and bounded viewport messages |
+| `image-viewer-api/Cargo.toml` | Raster image/document API 0.3.0 and SDK 0.4.0 | Versioned public page metadata, bounded viewport messages and sanitized failure reasons |
 | `web-viewer-api/Cargo.toml` | Interactive web viewer API and SDK 0.2.0 | Bounded frame/input process protocol; no third-party dependencies |
 | `plugins/midnight-thumbnail-image/`, `plugins/midnight-thumbnail-video/` | Image and video frame decoding | Released thumbnail/worker SDK, the shared image decoder (images) and plugin-owned codecs/tests |
 | `plugins/midnight-fs-archive/` | ZIP, 7z, TAR and GZIP/XZ/BZIP2/Zstandard streams and TAR wrappers | Released filesystem API and worker SDK plus plugin-owned parsers |
@@ -107,7 +109,7 @@ One Git repository contains **separate Cargo workspaces**:
 | `plugins/image-decoder/` | Shared bounded image codecs | Path dependency of the image viewer and image thumbnail workers; not a public API |
 | `plugins/midnight-viewer-html/` | Optional Chromium (CEF) HTML provider | Released web viewer API 0.2.0 and pinned CEF bindings |
 | `plugins/midnight-viewer-basic/` | Text/Binary decoding and search | Released public SDK plus plugin-owned dependencies |
-| `plugins/midnight-viewer-source/` | 19 lexical profiles, including XML/XAML/MSBuild; bounded scanning and styles | Its own workspace, lockfile, dependencies and [syntax/viewport tests](../../plugins/midnight-viewer-source/README.md) |
+| `plugins/midnight-viewer-source/` | 25 lexical profiles, including XML/XAML/MSBuild, CSS, Makefiles and CSV/TSV; bounded scanning and styles | Its own workspace, lockfile, dependencies and [syntax/viewport tests](../../plugins/midnight-viewer-source/README.md) |
 | `plugins/midnight-viewer-markdown/` | Semantic Markdown | Its own workspace, lockfile, dependencies and tests |
 | `plugins/viewer-conformance/` | Independent native C ABI fixture | Released public SDK; not a user-facing viewer |
 

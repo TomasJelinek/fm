@@ -125,6 +125,22 @@ impl Catalog {
     pub fn available_formats(&self) -> Vec<ArchiveFormat> {
         available_archive_formats(self.packages.iter().flat_map(|package| &package.formats))
     }
+    /// Choose this process's archive spool root now if an installed worker stages
+    /// content, so the first archive mount neither walks the spool candidates nor waits
+    /// for the test spool that checks one: on a busy disk, creating that file can wait
+    /// seconds for the volume's journal. Blocking file-system work for a backend thread
+    /// at startup. An error is diagnostic only: the next mount checks the roots again.
+    pub fn prepare_staging(&self) -> io::Result<()> {
+        if self
+            .packages
+            .iter()
+            .any(|package| package.protocol.supports_staging())
+        {
+            crate::staging::Staging::prepare_private()
+        } else {
+            Ok(())
+        }
+    }
     pub fn choose_provider(
         &self,
         path: &Path,

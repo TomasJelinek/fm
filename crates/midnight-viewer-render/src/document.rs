@@ -3,6 +3,7 @@ use crate::raster::Fill;
 use crate::tables::{Composite, PlacedPage, TablePresentation, clipped_colors, clipped_styles};
 use crate::{
     ColorSpan, LayoutError, Rect, StyleSpan, TableRow, TextOptions, TextPage, TextRenderer,
+    contrast,
 };
 use std::ops::Range;
 
@@ -316,34 +317,13 @@ impl Palette {
         Self {
             border: mixed(0.2),
             subtle: mixed(0.045),
-            muted: if contrast(muted, background) >= 4.5 {
+            muted: if contrast::ratio(muted, background) >= contrast::MINIMUM {
                 muted
             } else {
                 foreground
             },
         }
     }
-}
-
-fn contrast(a: [u8; 4], b: [u8; 4]) -> f32 {
-    let luminance = |color: [u8; 4]| {
-        [0.2126, 0.7152, 0.0722]
-            .into_iter()
-            .zip(color)
-            .map(|(weight, channel)| {
-                let v = f32::from(channel) / 255.0;
-                weight
-                    * if v <= 0.04045 {
-                        v / 12.92
-                    } else {
-                        ((v + 0.055) / 1.055).powf(2.4)
-                    }
-            })
-            .sum::<f32>()
-    };
-    let a = luminance(a);
-    let b = luminance(b);
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 fn validate(

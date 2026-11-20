@@ -29,7 +29,7 @@ not total decompression work.
 ## Requested ZIP, read-only qualification
 
 Both native Windows and native Linux ran the installed restricted worker against
-`D:/experiments/godot/Godot_v4.7.2-stable_win64.exe.zip`.
+a local copy of `Godot_v4.7.2-stable_win64.exe.zip`.
 
 | Measurement | Bytes |
 | --- | ---: |

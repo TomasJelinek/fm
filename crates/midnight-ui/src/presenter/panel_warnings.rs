@@ -467,6 +467,7 @@ impl Presenter {
         if generation == self.desktop.notice_generation {
             self.desktop.notice_navigation = None;
         }
+        self.properties_closed(generation);
         if self
             .panel_warnings
             .diagnostic

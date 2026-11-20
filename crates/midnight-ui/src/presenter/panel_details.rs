@@ -9,7 +9,33 @@ pub(crate) struct PanelDetail {
 }
 
 impl Presenter {
+    /// The panel's status line: the focused entry or the selection, then how many
+    /// hidden entries the panel leaves out while hidden files are not shown. For a
+    /// few seconds after a drag from the panel was released too soon, a note leads.
     pub(crate) fn panel_details(&self, pane: PaneId) -> Vec<PanelDetail> {
+        let mut details = self.focus_details(pane);
+        if let Some(note) = self.quick_drag_note(pane) {
+            details.insert(0, note);
+        }
+        let p = &self.panes[pane.index()];
+        let hidden = p.hidden_count();
+        if hidden > 0 {
+            let keys = self.shortcut_hint("panel.hidden-files");
+            details.push(PanelDetail {
+                identity: format!("detail:{}:hidden:{hidden}", p.generation),
+                label: "Hidden",
+                value: format!("{hidden} hidden"),
+                explanation: if keys.is_empty() {
+                    "Hidden files are not shown.".into()
+                } else {
+                    format!("Hidden files are not shown; {keys} shows them.")
+                },
+            });
+        }
+        details
+    }
+
+    fn focus_details(&self, pane: PaneId) -> Vec<PanelDetail> {
         let p = &self.panes[pane.index()];
         if p.network_hides_rows() {
             return Vec::new();

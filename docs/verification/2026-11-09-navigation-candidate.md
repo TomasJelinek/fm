@@ -36,7 +36,7 @@ the exact executable hash.
 The owned candidate process ran with these arguments:
 
 ```text
---ui-smoke-test --left D:\experiments\dev\FM --right C:\Windows\System32 --snapshot D:\experiments\dev\FM\_build\qa\navigation-candidate\native-smoke.png
+--ui-smoke-test --left <repo> --right C:\Windows\System32 --snapshot <repo>\_build\qa\navigation-candidate\native-smoke.png
 ```
 
 The default native renderer was used. Process 66228 ran from

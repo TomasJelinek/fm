@@ -31,4 +31,17 @@ pub struct OperationThroughput {
     pub transfer_per_second: f64,
     pub verification_per_second: f64,
     pub items_per_second: f64,
+    /// The basis of a remaining-time estimate: the same writes and reads averaged
+    /// over roughly the last eight seconds of activity, each interval weighted by its
+    /// duration (an exponential average over time, not over samples), so a burst
+    /// between two observations barely moves it. Zero until a second of activity
+    /// was measured. Unlike the current rates these stay while the job is paused or
+    /// waiting, so an estimate holds still and resumes where it stopped.
+    pub smoothed_transfer_per_second: f64,
+    pub smoothed_verification_per_second: f64,
+    /// The same average of entries the job completed, counted as its progress
+    /// counts them: the files, links and folders a Copy finished (a Move's files
+    /// once their source is removed), its selected items when only those are
+    /// counted, or the entries a Delete removed.
+    pub smoothed_entries_per_second: f64,
 }

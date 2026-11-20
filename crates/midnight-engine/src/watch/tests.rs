@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "fence_tests.rs"]
 mod fence_tests;
+#[path = "hidden_tests.rs"]
+mod hidden_tests;
 #[path = "lifetime_tests.rs"]
 mod lifetime_tests;
 #[path = "timing_tests.rs"]
@@ -104,6 +106,9 @@ struct Native {
     drop_threads: Arc<Mutex<Vec<(ThreadId, ThreadId)>>>,
     history: Arc<Mutex<Vec<Watched>>>,
     fail: bool,
+    /// So many of the next registrations fail, as the system's watch limits
+    /// make them fail while other programs hold the watches.
+    fail_next: AtomicUsize,
     /// Fires the newest subscription when the next one is registered: a
     /// notification that arrives while the worker subscribes again.
     fire_on_watch: AtomicBool,
@@ -159,8 +164,16 @@ impl WatchService for Native {
                 left.checked_sub(1)
             })
             .is_ok();
+        let fails = self.fail
+            || (!panics
+                && self
+                    .fail_next
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok());
         // Recorded before `registrations` can observe this registration.
-        if !panics && !self.fail {
+        if !panics && !fails {
             self.history
                 .lock()
                 .unwrap()
@@ -171,7 +184,7 @@ impl WatchService for Native {
         if panics {
             panic!("watch test registration panic");
         }
-        if self.fail {
+        if fails {
             return Err(FsError::from_io(
                 "test watch",
                 path,
@@ -389,11 +402,16 @@ impl StorageService for Files {
     }
 }
 
+/// Timing for tests: a failed registration is reported at once, polled at the
+/// regular interval and not retried within a test.
 fn timing(poll: Duration) -> Timing {
     Timing {
         quiet: Duration::from_millis(20),
         maximum: Duration::from_millis(70),
         poll,
+        unwatched: poll,
+        retry: Duration::from_secs(3600),
+        report: Duration::ZERO,
         restart: Duration::from_secs(60),
         cooldown: Duration::ZERO,
     }
@@ -854,6 +872,132 @@ async fn failed_native_registration_reports_polling_only_once_and_keeps_polling(
         events.try_recv().is_err(),
         "each view's status is sent once"
     );
+}
+
+/// A folder whose registration fails for a while: its regular check is a
+/// minute away, so only the frequent checks of an unwatched folder find
+/// changes.
+fn unwatched_timing(report: Duration) -> Timing {
+    Timing {
+        unwatched: Duration::from_millis(40),
+        retry: Duration::from_millis(60),
+        report,
+        ..timing(Duration::from_secs(60))
+    }
+}
+
+/// The next watch status, skipping hints.
+async fn next_status(events: &mut mpsc::Receiver<Event>) -> (WatchedView, WatchStatus) {
+    loop {
+        match next_event(events).await {
+            Event::WatchStatus { view, status } => return (view, status),
+            Event::DirectoryChanged { .. } => {}
+            other => panic!("Unexpected watch event: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_registration_is_retried_and_switches_to_notifications_without_a_status() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let native = Arc::new(Native {
+        fail_next: AtomicUsize::new(2),
+        ..Native::default()
+    });
+    let (_owner, controller, mut tasks, mut events) = controller_with(
+        files.clone(),
+        Some(native.clone()),
+        unwatched_timing(Duration::from_secs(60)),
+        8,
+    );
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    // Two failures, retried after 60 and 120 ms, then a native subscription.
+    native.registrations(3).await;
+    assert_eq!(
+        native.history(),
+        [Watched::Registered("left".into())],
+        "only the third registration succeeded"
+    );
+    // Notifications of the late subscription are hinted; `changed` fails on
+    // any status, and none was reported.
+    native.fire(2);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    stop(&controller, &mut tasks).await;
+    assert_eq!(
+        native.callbacks.lock().unwrap().len(),
+        3,
+        "no retry after success"
+    );
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event, Event::WatchStatus { .. }),
+            "the retry stays silent: {event:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_without_notifications_is_checked_often_and_reported_only_when_it_lasts() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let native = Arc::new(Native {
+        fail: true,
+        ..Native::default()
+    });
+    let report = Duration::from_secs(2);
+    let (_owner, controller, mut tasks, mut events) = controller_with(
+        files.clone(),
+        Some(native.clone()),
+        unwatched_timing(report),
+        64,
+    );
+    let start = Instant::now();
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    native.registrations(1).await;
+    // A change is found within a frequent check, not the minute of the regular
+    // one, and before any status.
+    files.put("left", 8);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(1)));
+    assert!(start.elapsed() < report, "{:?}", start.elapsed());
+    // Only a registration that keeps failing is reported, once.
+    let (view, reported) = next_status(&mut events).await;
+    assert!(start.elapsed() >= report, "{:?}", start.elapsed());
+    assert_eq!(
+        (view, kind(&reported)),
+        (flat(PaneId::Left, 1), "PollingOnly")
+    );
+    assert!(
+        native.callbacks.lock().unwrap().len() >= 4,
+        "the registration was retried meanwhile"
+    );
+    assert!(files.probes.load(Ordering::SeqCst) >= 5, "checked often");
+    stop(&controller, &mut tasks).await;
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event, Event::WatchStatus { .. }),
+            "the status is reported once: {event:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unwatched_folder_is_checked_about_every_second_and_less_often_when_large() {
+    let timing = PRODUCTION_TIMING;
+    let poll = |entries, cost| unwatched_poll(timing, entries, Duration::from_millis(cost));
+    let seconds = |seconds| Duration::from_secs(seconds);
+    assert_eq!(poll(0, 0), seconds(1));
+    assert_eq!(poll(4_000, 20), seconds(1));
+    assert_eq!(poll(4_001, 20), seconds(2));
+    assert_eq!(poll(40_000, 0), seconds(10));
+    assert_eq!(
+        poll(1_000_000, 0),
+        timing.poll,
+        "never less often than the regular check"
+    );
+    // Checking costs at most a tenth of the time.
+    assert_eq!(poll(100, 300), seconds(3));
+    assert_eq!(poll(1_000_000, 2_000), seconds(20));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

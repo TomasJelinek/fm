@@ -31,6 +31,8 @@ mod metadata;
 mod mounts;
 mod mutation;
 mod open;
+mod open_files;
+pub use open_files::{MAX_OPEN_FILES, raise_open_file_limit, with_original_open_file_limit};
 mod ownership;
 mod path_picker;
 mod settings;
@@ -50,6 +52,8 @@ use mounts::mount_paths;
 pub struct LinuxFileSystem {
     local: LocalServices,
     home: Option<PathBuf>,
+    /// The one inotify instance every folder watch of this service shares.
+    watches: std::sync::Arc<watch::Hub>,
 }
 
 // Requires the composed transfer_lease reply-owner handoff: no lease-worker file
@@ -63,6 +67,7 @@ impl LinuxFileSystem {
         Self {
             local: LocalServices::default(),
             home,
+            watches: std::sync::Arc::default(),
         }
     }
 }

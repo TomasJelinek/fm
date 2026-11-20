@@ -175,6 +175,7 @@ async fn native_publication_retires_previous_archive_outside_state_lock() {
                 sizes: Arc::default(),
             },
             None,
+            0,
         );
     })
     .await

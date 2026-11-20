@@ -36,6 +36,15 @@ impl SelectionIntent {
             Self::Drag(_) => "dragging files",
         }
     }
+
+    /// The label as a sentence's subject.
+    fn subject(&self) -> String {
+        let mut label = self.label().chars();
+        label
+            .next()
+            .map(|first| first.to_uppercase().chain(label).collect())
+            .unwrap_or_default()
+    }
 }
 
 pub(super) struct PendingSelectionAction {
@@ -54,6 +63,25 @@ impl Presenter {
         intent: SelectionIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
+        // The selection and focus belong to the folder hidden under search
+        // results fed to the panel: what the list offers acts on its marked
+        // results, as its own keys do; the rest is refused.
+        if self.feed(pane).is_some() {
+            use super::find::feed::FeedAction;
+            let action = match &intent {
+                SelectionIntent::Properties => FeedAction::Properties,
+                SelectionIntent::Copy => FeedAction::Clipboard { cut: false },
+                SelectionIntent::Cut => FeedAction::Clipboard { cut: true },
+                SelectionIntent::CopyDialog(context) => FeedAction::Transfer(context.intent),
+                _ => {
+                    let message = find::feed::refusal(&intent.subject());
+                    self.report_selection_action_error(&intent, find::feed::REFUSED, message);
+                    return;
+                }
+            };
+            self.feed_action(pane, action, send);
+            return;
+        }
         if !self.tree_action_allowed(pane) || !self.native_action_allowed(pane) {
             return;
         }
@@ -135,12 +163,15 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         let label = intent.label();
+        // Stops the folder count a metadata summary continues with.
+        let properties = matches!(intent, SelectionIntent::Properties).then(Cancellation::default);
         let command = match intent {
             SelectionIntent::Properties => Command::ShowSelectionProperties {
                 request,
                 selection: files.selection,
                 view: files.view,
                 fallback: files.fallback,
+                cancel: properties.clone().unwrap_or_default(),
             },
             SelectionIntent::Copy => Command::CopyFiles { request, files },
             SelectionIntent::Cut => Command::CutFiles { request, files },
@@ -180,6 +211,9 @@ impl Presenter {
         };
         if send(command) {
             self.desktop.requests.insert(request);
+            if let Some(cancel) = properties {
+                self.properties_requested(request, cancel);
+            }
         } else {
             self.desktop.requests.remove(&request);
             self.desktop.report(

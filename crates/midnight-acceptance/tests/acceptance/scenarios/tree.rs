@@ -69,13 +69,13 @@ pub fn expand_all(context: &mut Context) -> Result<(), String> {
         let rows = app.rows(pane);
         wanted
             .iter()
-            .all(|name| rows.iter().any(|row| row.name.as_str() == name.as_str()))
+            .all(|name| rows.iter().any(|row| row.name == name))
     });
     let rows = app.rows(pane);
     for (level, name) in expected.iter().enumerate() {
         let row = rows
             .iter()
-            .find(|row| row.name.as_str() == name.as_str())
+            .find(|row| row.name == name)
             .ok_or_else(|| format!("{name} is not shown"))?;
         if row.tree_depth != level as i32 + 1 {
             return Err(format!(

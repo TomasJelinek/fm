@@ -124,7 +124,8 @@ fn batch_cancel_waits_for_short_callback_and_teardown_releases_owner() {
         5
     );
     let subscription = NativeWatch {
-        watcher: None,
+        hub: Arc::default(),
+        id: 0,
         gate: gate.clone(),
     };
     let (done_sender, done_receiver) = mpsc::sync_channel(1);

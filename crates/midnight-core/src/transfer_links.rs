@@ -12,18 +12,41 @@ pub enum CopyLinkPolicy {
     /// Legacy preparation rejects links.
     #[default]
     Reject,
-    /// Stage and verify the exact supported link representation as a leaf.
+    /// Stage and verify the exact supported link representation as a leaf, never
+    /// following it. Copy recreates every link; Move moves the link itself (a rename
+    /// on one volume; across volumes the link is recreated, then the original removed).
     Preserve,
     /// Materialize each qualified directory link as a directory with verified contents.
     FollowDirectoryContents,
     /// Materialize each qualified directory link as an empty ordinary directory.
     EmptyDirectories,
+    /// Copy only: copy what each link points to. A directory link is followed as
+    /// with `FollowDirectoryContents` (cycles are refused the same way) and a link to
+    /// a regular file is copied as that file's content. A link that cannot be
+    /// followed (dangling, unreadable, pointing to a special file, or back to an
+    /// active ancestor) is recreated as a link, as `Preserve` does, and the
+    /// source reports why through `TransferSource::link_not_followed`.
+    FollowLinks,
 }
 
 impl CopyLinkPolicy {
     /// Whether the source must project supported directory links as ordinary directories.
     pub fn materializes_directory_links(self) -> bool {
-        matches!(self, Self::FollowDirectoryContents | Self::EmptyDirectories)
+        matches!(
+            self,
+            Self::FollowDirectoryContents | Self::EmptyDirectories | Self::FollowLinks
+        )
+    }
+
+    /// Whether directory links are followed into their contents, so followed
+    /// referents take part in ancestry checks.
+    pub fn follows_directory_links(self) -> bool {
+        matches!(self, Self::FollowDirectoryContents | Self::FollowLinks)
+    }
+
+    /// Whether the source can yield link leaves that are recreated as links.
+    pub fn recreates_links(self) -> bool {
+        matches!(self, Self::Preserve | Self::FollowLinks)
     }
 }
 
@@ -318,6 +341,36 @@ pub trait StagedTransferLink: Send {
         cancel: &Cancellation,
     ) -> Result<TransferIdentity, FsError>;
 
+    /// Bind the unpublished stage to replace the consented target under `policy`,
+    /// without changing the namespace, as `StagedTransferFile::prepare_replacement`
+    /// does. A later publication with another name never replaces.
+    fn prepare_replacement(
+        &mut self,
+        _name: &OsStr,
+        _expected: std::sync::Arc<dyn crate::TransferTarget>,
+        _policy: crate::TransferReplacementPolicy,
+        _cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        Err(super::transfer_unsupported(
+            Path::new(""),
+            "link replacement is unsupported",
+        ))
+    }
+
+    /// Publish the revalidated owned link over the bound target, keeping the
+    /// displaced entry in private recovery. Same outcome rules as
+    /// `StagedTransferFile::publish_replace`: Err certifies that no user entry moved.
+    fn publish_replace(
+        &mut self,
+        _name: &OsStr,
+        _cancel: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        Err(super::transfer_unsupported(
+            Path::new(""),
+            "link replacement is unsupported",
+        ))
+    }
+
     /// Explicitly remove only the owned unpublished stage and empty owned private
     /// directory after verifying their bindings. Never follow targets, recurse,
     /// delete an unknown entry, or remove a published object. Success certifies
@@ -350,6 +403,24 @@ mod tests {
     #[test]
     fn link_policy_defaults_to_reject() {
         assert_eq!(CopyLinkPolicy::default(), CopyLinkPolicy::Reject);
+    }
+
+    #[test]
+    fn follow_links_materializes_follows_and_recreates_what_it_cannot_follow() {
+        let policy = CopyLinkPolicy::FollowLinks;
+        assert!(policy.materializes_directory_links());
+        assert!(policy.follows_directory_links());
+        assert!(policy.recreates_links());
+        assert!(CopyLinkPolicy::Preserve.recreates_links());
+        assert!(!CopyLinkPolicy::Preserve.materializes_directory_links());
+        assert!(!CopyLinkPolicy::EmptyDirectories.follows_directory_links());
+        for legacy in [
+            CopyLinkPolicy::Reject,
+            CopyLinkPolicy::FollowDirectoryContents,
+            CopyLinkPolicy::EmptyDirectories,
+        ] {
+            assert!(!legacy.recreates_links(), "{legacy:?}");
+        }
     }
 
     #[test]
@@ -470,6 +541,7 @@ mod tests {
             CopyLinkPolicy::Preserve,
             CopyLinkPolicy::FollowDirectoryContents,
             CopyLinkPolicy::EmptyDirectories,
+            CopyLinkPolicy::FollowLinks,
         ] {
             let error = service
                 .prepare_transfer_source_with_links(path, policy, &cancel)
@@ -493,6 +565,7 @@ mod tests {
             CopyLinkPolicy::Preserve,
             CopyLinkPolicy::FollowDirectoryContents,
             CopyLinkPolicy::EmptyDirectories,
+            CopyLinkPolicy::FollowLinks,
         ] {
             let error = sources
                 .prepare_with_links(&service, policy, &cancel)

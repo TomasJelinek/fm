@@ -36,7 +36,7 @@ The failing installation lacked `filesystems/midnight.fs.archive`. UI activation
 also depended on the asynchronous discovered-format list, allowing a configured
 archive to reach the desktop association when discovery was pending or empty.
 The regression fixtures cover ZIP, 7z and the reported
-`ovclash-0.2.2-linux-x86_64.tar.gz`, both before discovery and with an empty result,
+`<external-project>-<version>-linux-x86_64.tar.gz`, both before discovery and with an empty result,
 as well as an exact retained inline-tree root. Availability continues to control
 badges; enabled native-file associations control internal activation. Backend
 failure must leave the original native rows/path intact and never launch an
@@ -74,7 +74,7 @@ owned-folder startup/snapshot/automatic-shutdown smoke passed. Rust formatting
 and the 100,000-byte source-size check passed (2,285 handwritten source files at
 that check). These are targeted results, not a full workspace suite.
 
-The exact reported `<home>/Downloads/ovclash-0.2.2-linux-x86_64.tar.gz`
+The exact reported `<home>/Downloads/<external-project>-<version>-linux-x86_64.tar.gz`
 was read through the production native-capture/engine/archive-worker path. Three
 internal opens/listings succeeded (one root entry each, about 456–477 ms per open);
 relisting took about 0.4 ms. The archive was neither extracted nor modified.

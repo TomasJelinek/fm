@@ -2,6 +2,8 @@
 use super::*;
 #[path = "find_actions.rs"]
 mod actions;
+#[path = "find_feed.rs"]
+pub(crate) mod feed;
 #[path = "find_roots.rs"]
 mod roots;
 pub(crate) use actions::FileAction;
@@ -15,6 +17,8 @@ pub(crate) struct FindForm {
     pub content: Option<FindContentQuery>,
     pub modified_within: Option<std::time::Duration>,
     pub duplicates: bool,
+    /// Search inside archives.
+    pub archives: bool,
 }
 impl Default for FindForm {
     fn default() -> Self {
@@ -26,6 +30,7 @@ impl Default for FindForm {
             content: None,
             modified_within: None,
             duplicates: false,
+            archives: false,
         }
     }
 }
@@ -39,12 +44,27 @@ pub(crate) struct FindState {
     retired_orders: std::cell::RefCell<Vec<Arc<FindOrder>>>,
     next_session: u64,
     next_validation: u64,
+    /// Go to file of an archive member: once that archive folder is listed, the
+    /// cursor goes to the member with this raw name.
+    archive_cursor: Option<(PaneId, NavigationId, Vec<u8>)>,
+    /// Feed to panel: the search results each panel shows instead of its folder.
+    pub(crate) feeds: [Option<feed::FeedPane>; 2],
+    /// A viewer requested from search results in a panel, opened by the application.
+    feed_viewer: Option<ViewerLaunch>,
+    /// Identifies each delete captured from search results.
+    feed_serial: u64,
+    /// Rows a page key moves in each panel's result list, as last reported by the
+    /// window (0: not reported yet). The list exists while hidden, so it reports
+    /// before a feed opens.
+    pub(crate) feed_pages: [usize; 2],
 }
 pub(crate) struct FindSession {
     pub revision: u64,
     pub origin: PaneId,
     /// Every listed folder keeps its captured native path; unticked ones are not searched.
     pub roots: Vec<FindRoot>,
+    /// The latest accepted Add, counted, with the row of its folder (new or listed).
+    pub added_root: (u64, usize),
     pub generation: FindGeneration,
     pub results: Vec<Arc<FindResult>>,
     pub order: Option<Arc<FindOrder>>,
@@ -116,6 +136,7 @@ impl Presenter {
                 roots: vec![FindRoot::new(
                     self.panes[pane.index()].display_path().to_owned(),
                 )],
+                added_root: (0, 0),
                 generation: FindGeneration(0),
                 results: vec![],
                 order: None,
@@ -169,6 +190,7 @@ impl Presenter {
         request.content = form.content;
         request.modified_within = form.modified_within;
         request.duplicates = form.duplicates;
+        request.archives = form.archives && !form.duplicates;
         if let Err(error) = request.validate() {
             s.error = error.into();
             return false;
@@ -327,12 +349,17 @@ impl Presenter {
                 return;
             }
         };
-        if !s
+        let Some(found) = s
             .results
             .iter()
-            .any(|r| r.id == request.result && entry.matches_capture(&r.entry))
-        {
+            .find(|r| r.id == request.result && entry.matches_capture(&r.entry))
+        else {
             s.error = "Search result changed. Run the search again.".into();
+            return;
+        };
+        if let Some(member) = found.archive.clone() {
+            let pane = s.origin;
+            self.reveal_archive_member(request.session, pane, &member, send);
             return;
         }
         let Some(parent) = entry.path.parent().map(Path::to_owned) else {
@@ -347,6 +374,74 @@ impl Presenter {
             }
         } else if let Some(s) = self.finds.session_mut(&request.session) {
             s.error = "Panel navigation queue is busy. Try Go to file again.".into();
+        }
+    }
+
+    /// Opens the archive folder that holds `member` in `pane`; the cursor goes to the
+    /// member when that listing arrives. The provider address, not a displayed
+    /// path, names the folder, and the archive must still be the searched revision.
+    fn reveal_archive_member(
+        &mut self,
+        session: FindSessionId,
+        pane: PaneId,
+        member: &FindArchiveMember,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let error = if let Err(error) = member.folder.validate() {
+            Some(error.to_owned())
+        } else if self.archive_navigate(
+            pane,
+            ArchiveAction::List(ArchiveLocation::unavailable(member.folder.clone())),
+            send,
+        ) {
+            self.active = pane;
+            let navigation = NavigationId(self.panes[pane.index()].generation);
+            self.retired
+                .push(Box::new(self.finds.archive_cursor.replace((
+                    pane,
+                    navigation,
+                    member.name.clone(),
+                ))));
+            None
+        } else {
+            Some("Panel navigation queue is busy. Try Go to file again.".to_owned())
+        };
+        if let (Some(error), Some(s)) = (error, self.finds.session_mut(&session)) {
+            s.error = error;
+        }
+    }
+
+    /// After an event: search results shown in panels, and a revealed archive member.
+    pub(super) fn flush_find_panels(&mut self) {
+        self.flush_feeds();
+        self.flush_find_archive_cursor();
+    }
+
+    /// Put the cursor on a revealed archive member once its folder is listed. A
+    /// later navigation of that panel forgets it.
+    fn flush_find_archive_cursor(&mut self) {
+        let Some((pane, navigation, _)) = &self.finds.archive_cursor else {
+            return;
+        };
+        let p = &mut self.panes[pane.index()];
+        if p.generation == navigation.0 && p.loading {
+            return;
+        }
+        let Some((_, navigation, name)) = self.finds.archive_cursor.take() else {
+            return;
+        };
+        if p.generation == navigation.0
+            && p.successful_generation == Some(navigation)
+            && p.archive.is_some()
+            && let Some(entry) = p.entries.iter().find(|entry| {
+                entry
+                    .virtual_node
+                    .as_ref()
+                    .is_some_and(|node| *node.raw_name == *name)
+            })
+        {
+            p.cursor = Some(entry.id);
+            p.parent_cursor = false;
         }
     }
 

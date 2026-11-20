@@ -209,6 +209,40 @@ class ThumbnailNoticeTests(unittest.TestCase):
             self.generate()
         self.assertEqual((self.output / "midnight-thumbnail-image/THIRD-PARTY.json").read_bytes(), previous)
 
+    def test_plugin_notices_supply_asset_notices_and_terms_a_crate_package_omits(self):
+        # The PDF renderer embeds fonts whose notice lies below its crate root, and one
+        # of its dependencies publishes no license text at all.
+        self.dependency(self.package("fonts", files={"LICENSE-MIT": "Fonts terms\n",
+                                                     "assets/LICENSE_FOXIT": "Not collected\n"}))
+        self.dependency(self.package("omitted"))
+        own = self.root / "plugins/midnight-thumbnail-image/notices"
+        (own / "fonts-1.2.3/assets").mkdir(parents=True)
+        (own / "fonts-1.2.3/assets/LICENSE_FOXIT").write_text("Font notice\n", encoding="utf-8")
+        (own / "omitted-1.2.3").mkdir()
+        (own / "omitted-1.2.3/LICENSE").write_text("Reviewed terms\n", encoding="utf-8")
+        self.generate()
+        licenses = self.output / "midnight-thumbnail-image/licenses"
+        self.assertEqual((licenses / "fonts-1.2.3/LICENSE-MIT").read_text(), "Fonts terms\n")
+        self.assertEqual((licenses / "fonts-1.2.3/assets/LICENSE_FOXIT").read_text(), "Font notice\n")
+        self.assertEqual((licenses / "omitted-1.2.3/LICENSE").read_text(), "Reviewed terms\n")
+        self.assertFalse((self.output / "midnight-thumbnail-video/licenses/fonts-1.2.3").exists())
+        # A folder without a license text does not excuse the missing terms.
+        (own / "omitted-1.2.3/LICENSE").unlink()
+        (own / "omitted-1.2.3/README").write_text("Not a license\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "omitted-1.2.3"):
+            self.generate()
+
+    def test_plugin_terms_need_a_license_file_in_a_folder_that_is_not_a_link(self):
+        own = self.root / "plugins/midnight-thumbnail-image/notices"
+        (own / "crate-1.0.0").mkdir(parents=True)
+        self.assertFalse(self.notices.plugin_terms(own, "crate-1.0.0"))
+        (own / "crate-1.0.0/COPYING").write_text("Terms\n", encoding="utf-8")
+        self.assertTrue(self.notices.plugin_terms(own, "crate-1.0.0"))
+        self.assertFalse(self.notices.plugin_terms(own, "missing-1.0.0"))
+        if os.name != "nt":
+            (own / "linked-1.0.0").symlink_to(own / "crate-1.0.0", target_is_directory=True)
+            self.assertFalse(self.notices.plugin_terms(own, "linked-1.0.0"))
+
     def test_unknown_third_party_license_is_rejected_even_when_a_license_file_exists(self):
         self.dependency(self.package("unreviewed", license="UNKNOWN", files={"LICENSE": "Unreviewed\n"}))
         with self.assertRaisesRegex(ValueError, "[Uu]nknown.*unreviewed"):

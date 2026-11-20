@@ -6,7 +6,7 @@ exclude = ["api", "filesystem-api", "image-viewer-api", "thumbnail-api", "web-vi
     "vendor/image"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
@@ -157,6 +157,15 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.zerotrie]
+opt-level = 2
+
+# Text comparison aligns up to 32 MiB per file within a time budget; unoptimized
+# diffing makes large comparisons several times slower in development builds
+# (docs/developer/FILE_COMPARISON.md).
+[profile.dev.package.similar]
+opt-level = 2
+
+[profile.dev.package.midnight-compare-engine]
 opt-level = 2
 
 # Bounded GPU binding reuse; provenance and verification: vendor/README.md.

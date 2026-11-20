@@ -80,7 +80,7 @@ not an implemented descendant-sizing route.
 
 Salamander source inspected locally:
 
-- `D:/experiments/salamander-main/src/fileswn7.cpp:1896`
+- `<salamander-source>/src/fileswn7.cpp:1896`
   CalculateOccupiedZIPSpace uses selection/caret/all-directory modes and calls
   GetDirSize on stored archive directory data.
 - `src/zip.cpp:6360` GetDirSize resolves the stored subdirectory and delegates to

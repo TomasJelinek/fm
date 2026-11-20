@@ -154,6 +154,9 @@ pub enum SelectionAction {
         ranges: SelectionRanges,
         mode: SelectionMode,
     },
+    /// Select or deselect the view's rows whose names match the masks; other
+    /// marks stay. Requires a complete view: names come from its native paths.
+    Mask(Arc<crate::MaskSelection>),
     Rebase,
 }
 

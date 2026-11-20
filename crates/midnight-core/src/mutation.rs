@@ -89,6 +89,35 @@ pub struct RenameCompletion {
 pub struct DeleteCompletion {
     /// Staging left behind after the deletion completed; see [`MutationResidue`].
     pub residue: Option<MutationResidue>,
+    /// Failures inside the entry that the caller chose to skip
+    /// ([`PreparedMutation::delete_with_decisions`]). When nonzero the entry was not
+    /// deleted: what was skipped remains, with the folders that contain it, under the
+    /// entry's own name. Everything else was removed.
+    pub skipped: u64,
+}
+
+/// One entry that a recursive Delete could not remove, offered to its caller before
+/// the deletion gives up ([`PreparedMutation::delete_with_decisions`]).
+#[derive(Clone, Debug)]
+pub struct DeleteEntryFailure {
+    /// Why, naming the entry; a folder that its entries cannot leave (write-protected,
+    /// or owned by another user) is named instead of each of its entries.
+    pub error: FsError,
+    /// Whether trying the same step again can succeed once its cause is gone: never
+    /// for a mount boundary.
+    pub can_retry: bool,
+}
+
+/// What a recursive Delete does about an entry it could not remove.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeleteFailureChoice {
+    /// Try the same step again.
+    Retry,
+    /// Leave the entry (a folder with everything still in it) and go on with the rest.
+    /// The folders that contain it are kept too, without being reported again.
+    Skip,
+    /// End the deletion. What was removed stays removed; the rest is kept.
+    Cancel,
 }
 
 /// Pinned file/file conflict. Preparation never mutates either namespace. The
@@ -279,6 +308,24 @@ pub trait PreparedMutation: Send + Sync {
         cancel: &Cancellation,
         progress: &mut dyn FnMut(&Path),
     ) -> Result<DeleteCompletion, FsError>;
+    /// `delete` that offers each entry it cannot remove to `failed`, which may wait for
+    /// the user, instead of ending at the first one: Retry tries that step again, Skip
+    /// leaves the entry and goes on with the rest of the tree (counted in
+    /// [`DeleteCompletion::skipped`]), and Cancel ends the deletion as cancellation
+    /// does. A folder that its entries cannot leave is offered once, for the folder.
+    /// `Err` is a failure that was not offered (preparing the deletion, say) or
+    /// cancellation. Without per-entry decisions a provider ends at the first failure,
+    /// which its caller may then offer for the whole selected entry.
+    fn delete_with_decisions(
+        &self,
+        mode: DeleteMode,
+        cancel: &Cancellation,
+        progress: &mut dyn FnMut(&Path),
+        failed: &mut dyn FnMut(DeleteEntryFailure) -> DeleteFailureChoice,
+    ) -> Result<DeleteCompletion, FsError> {
+        let _ = failed;
+        self.delete(mode, cancel, progress)
+    }
 }
 
 /// Blocking native operations are called only on the engine's mutation workers.
@@ -327,6 +374,23 @@ pub trait PreparedDirectory: Send + Sync {
             "create empty file",
             Path::new(name),
             std::io::Error::from(std::io::ErrorKind::Unsupported),
+        ))
+    }
+
+    /// The pinned base's native identity in the form `TransferDirectory::identity`
+    /// reports for the same directory. A transfer capability opened for this base by
+    /// path must match it before it changes anything there (a confirmed empty file
+    /// replacing an existing one). Unsupported unless the provider can state it in
+    /// that form; such a caller then refuses.
+    fn transfer_identity(&self, cancel: &Cancellation) -> Result<crate::TransferIdentity, FsError> {
+        let _ = cancel;
+        Err(FsError::from_io(
+            "identify folder",
+            Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "This folder cannot be identified for a safe replacement.",
+            ),
         ))
     }
 }

@@ -460,7 +460,7 @@ impl VerifiedFileCopy {
         if self.phase != CopyPhase::ReadyToPublish {
             return Err(failure(
                 path,
-                "copy must be completely verified before publication",
+                "the copy must be completely verified before it is put in place",
             ));
         }
         let _permit = io_permit(cancel, path)?;
@@ -476,13 +476,24 @@ impl VerifiedFileCopy {
                 if self.stage.modified_time(cancel)? != pin.modified() {
                     return Err(failure(
                         path,
-                        "required modified time changed before publication",
+                        "the required modified time changed before the copy was put in place",
                     ));
                 }
                 Ok::<(), FsError>(())
             })
             .transpose();
         if let Err(error) = metadata {
+            self.phase = CopyPhase::Failed;
+            return Err(error);
+        }
+        // The stage stays private until here; the published copy gets the source's
+        // ordinary permission bits where the platform has them, or those of any new
+        // file (0666 before the umask) for a source without them, such as an archive.
+        let mode = self.source.entry().item.metadata.unix_mode;
+        if let Err(error) = self
+            .stage
+            .set_published_permissions(mode.unwrap_or(0o666), cancel)
+        {
             self.phase = CopyPhase::Failed;
             return Err(error);
         }

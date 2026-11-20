@@ -36,6 +36,12 @@ pub(super) trait Browser: Send {
     fn finished(&self) -> bool;
     fn policy_change_allowed(&self) -> bool;
     fn release_on_worker(self: Box<Self>) -> Result<(), String>;
+    /// The system refused the browser its sandbox when it started: the typed reason of the
+    /// terminal error the session published (and the worker drained). `None` for every
+    /// other end and while the session runs.
+    fn sandbox_refusal(&self) -> Option<midnight_web_viewer_host::SandboxRefusal> {
+        None
+    }
 }
 
 impl Browser for midnight_web_viewer_host::Session {
@@ -56,6 +62,9 @@ impl Browser for midnight_web_viewer_host::Session {
     }
     fn release_on_worker(self: Box<Self>) -> Result<(), String> {
         midnight_web_viewer_host::Session::release_on_worker(*self)
+    }
+    fn sandbox_refusal(&self) -> Option<midnight_web_viewer_host::SandboxRefusal> {
+        midnight_web_viewer_host::Session::sandbox_refusal(self)
     }
 }
 
@@ -227,7 +236,6 @@ pub(super) struct WebView {
     viewport: api::Viewport,
     policy: api::Policy,
     zoom: f64,
-    find: String,
     find_result: Option<String>,
     source_change: SourceChange,
     action_notice: ActionNotice,
@@ -243,13 +251,12 @@ pub(super) struct WebView {
 }
 
 impl WebView {
-    fn new(session: Box<dyn Browser>, viewport: api::Viewport, floor: u64) -> Self {
+    pub(super) fn new(session: Box<dyn Browser>, viewport: api::Viewport, floor: u64) -> Self {
         Self {
             session,
             viewport,
             policy: api::Policy::default(),
             zoom: 1.0,
-            find: String::new(),
             find_result: None,
             source_change: SourceChange::default(),
             action_notice: ActionNotice::default(),
@@ -427,7 +434,6 @@ impl Worker {
                     return true;
                 }
                 web.policy = *policy;
-                web.find.clear();
                 web.find_result = None;
                 web.context_floor = self.frames.latest_revision().saturating_add(1);
                 // Host revokes grants and recreates the context before admitting new input.
@@ -453,14 +459,17 @@ impl Worker {
                 case_sensitive,
                 ..
             } => {
-                let find_next = web.find == *query;
-                web.find.clone_from(query);
                 web.find_result = None;
                 api::CommandKind::Find(api::Find {
                     query: query.clone(),
                     forward: !backwards,
                     match_case: *case_sensitive,
-                    find_next,
+                    // Chromium activates a match only for a follow-up search: a new
+                    // session highlights every match but reports none active. A follow-up
+                    // with other text or case starts a new session and activates the
+                    // nearest match on from the active one, as the text viewer searches
+                    // on from where it stands.
+                    find_next: true,
                 })
             }
             ViewerInput::Copy { frame }
@@ -612,13 +621,7 @@ impl Worker {
                     }
                 }
                 api::EventKind::FindResult(result) => {
-                    let message = if result.matches == 0 {
-                        "No matches".into()
-                    } else if result.active == 0 {
-                        format!("{} matches", result.matches)
-                    } else {
-                        format!("Match {} of {}", result.active, result.matches)
-                    };
+                    let message = find_status(&result);
                     let status = if let Some(web) = self.web.as_mut() {
                         web.find_result = Some(message.clone());
                         if web.source_change.reported || web.action_notice.text().is_some() {
@@ -640,8 +643,18 @@ impl Worker {
                 api::EventKind::HostShortcut(shortcut) => {
                     output.put(ViewerOutput::WebShortcut(shortcut))
                 }
-                // Not every browser error ends the session (an oversized Copy does not).
-                api::EventKind::Error { message, .. } => self.error(message, output),
+                // Not every browser error ends the session (an oversized Copy does not). A
+                // refused sandbox is shown with the step that allows it instead of the page.
+                api::EventKind::Error { message, .. } => {
+                    match self
+                        .web
+                        .as_ref()
+                        .and_then(|web| web.session.sandbox_refusal())
+                    {
+                        Some(refusal) => self.sandbox_refused(refusal, message, output),
+                        None => self.error(message, output),
+                    }
+                }
                 // The host's last output when the browser closed itself (see `Browser::drain`).
                 api::EventKind::Closed => self.browser_closed(output),
                 _ => {}
@@ -659,6 +672,17 @@ impl Worker {
         if !std::mem::replace(&mut web.ended, true) && !web.reason {
             self.error(BROWSER_CLOSED.into(), output);
         }
+    }
+}
+
+/// A browser Find result for the status line, worded as the comparator's Find: the
+/// active match of the count once Chromium activated one, else the count alone.
+fn find_status(result: &api::FindResult) -> String {
+    match (result.matches, result.active) {
+        (0, _) => "No matches".into(),
+        (1, 0) => "1 match".into(),
+        (matches, 0) => format!("{matches} matches"),
+        (matches, active) => format!("Match {active} of {matches}"),
     }
 }
 

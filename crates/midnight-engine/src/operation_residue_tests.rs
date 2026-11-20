@@ -160,11 +160,25 @@ fn delete_selection(names: &[&str], calls: Arc<Calls>) -> OperationProgress {
     .unwrap();
     job.confirm(None).unwrap();
     job.set_state(OperationState::Running);
-    let (sender, _events) = mpsc::channel(8);
-    job.execute(Outbox {
-        sender,
-        wakeup: Arc::new(|| {}),
-    })
+    let (sender, mut events) = mpsc::channel(8);
+    // A failure waits for its decision: this caller skips each one.
+    let decisions = job.delete_decisions.clone();
+    let worker = std::thread::spawn(move || {
+        job.execute(Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        })
+    });
+    while let Some(event) = events.blocking_recv() {
+        if let Event::Operation(OperationEvent::DeleteFailure(failure)) = event {
+            decisions.resolve(CopyDecision {
+                id: failure.id,
+                version: failure.version,
+                choice: CopyChoice::Skip,
+            });
+        }
+    }
+    worker.join().unwrap()
 }
 
 #[test]

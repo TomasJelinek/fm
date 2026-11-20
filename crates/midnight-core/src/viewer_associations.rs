@@ -60,7 +60,8 @@ impl ViewerAssociations {
         Ok(())
     }
 
-    /// A positive rank is a literal filename suffix match. No match is `None`.
+    /// A positive rank is a literal filename suffix match, or an entry that is the
+    /// whole name (`makefile` for `Makefile`). No match is `None`.
     pub fn suffix_match(&self, id: &str, defaults: &[String], name: &str) -> Option<usize> {
         let name = name.to_lowercase();
         self.overrides
@@ -71,7 +72,7 @@ impl ViewerAssociations {
                 !suffix.is_empty()
                     && name
                         .strip_suffix(&suffix.to_lowercase())
-                        .is_some_and(|prefix| prefix.ends_with('.'))
+                        .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('.'))
             })
             .map(String::len)
             .max()
@@ -143,6 +144,43 @@ mod tests {
         assert_eq!(value.suffix_match("viewer", &defaults, "README.md"), None);
         value.overrides.insert("viewer".into(), vec![]);
         assert_eq!(value.suffix_match("viewer", &defaults, "README.md"), None);
+    }
+
+    #[test]
+    fn an_entry_also_matches_the_whole_file_name() {
+        let value = ViewerAssociations::default();
+        let defaults: Vec<String> = ["makefile", "gnumakefile", "mk"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        for (name, rank) in [
+            ("Makefile", Some(8)),
+            ("makefile", Some(8)),
+            ("GNUmakefile", Some(11)),
+            ("x.mk", Some(2)),
+            ("rules.makefile", Some(8)),
+            (".makefile", Some(8)),
+            ("notmakefile", None),
+            ("Makefile.am", None),
+            ("mkfile", None),
+        ] {
+            assert_eq!(
+                value.suffix_match("source", &defaults, name),
+                rank,
+                "{name}"
+            );
+        }
+        // User entries use the same rule; an empty entry never matches an empty name.
+        let mut value = ViewerAssociations::default();
+        value
+            .overrides
+            .insert("source".into(), vec!["dockerfile".into()]);
+        assert_eq!(
+            value.suffix_match("source", &defaults, "Dockerfile"),
+            Some(10)
+        );
+        assert_eq!(value.suffix_match("source", &defaults, "Makefile"), None);
+        assert_eq!(value.suffix_match("other", &[String::new()], ""), None);
     }
 
     #[test]

@@ -11,7 +11,7 @@ runtime tests were performed for this review.
 ## Evidence and compiler identity
 
 Evidence root:
-`D:/experiments/dev/FM/_build/qa/media-playback-win-v1/`.
+`_build/qa/media-playback-win-v1/`.
 Paths in this record are relative to that root unless stated otherwise.
 
 | Evidence | Scope |

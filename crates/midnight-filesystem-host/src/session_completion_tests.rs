@@ -147,6 +147,7 @@ fn verify_completion(
         protocol,
         staging: Arc::new(Mutex::new(staging)),
         close: Arc::new(close::CloseReceipt::new()),
+        nested: None,
     };
     let result = if listing {
         mount.list(1, &cancel).map(|nodes| nodes.len())

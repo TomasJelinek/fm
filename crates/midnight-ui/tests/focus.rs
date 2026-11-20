@@ -255,6 +255,7 @@ async fn alt_enter_sends_all_active_pane_marks_to_native_properties() {
         selection,
         view,
         fallback,
+        ..
     } = &command
     else {
         panic!("Alt+Enter must send the captured selection");

@@ -24,6 +24,7 @@ mod navigation_fallback;
 mod network_bookmarks;
 mod network_neighborhood;
 mod operations;
+mod panel_choices;
 mod panel_navigation;
 mod parent_focus;
 mod preferences_load;

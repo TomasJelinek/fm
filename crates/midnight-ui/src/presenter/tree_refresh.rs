@@ -41,7 +41,8 @@ impl Pane {
 
 impl Presenter {
     /// Hold input until the tree refresh just queued for `pane` completes, when the
-    /// tree shows one of the `affected` folders.
+    /// tree shows one of the `affected` folders. An earlier job's entry still
+    /// takes the cursor unless this job reveals its own.
     pub(super) fn hold_tree_refresh(
         &mut self,
         pane: PaneId,
@@ -55,8 +56,10 @@ impl Presenter {
         }
         let settle = &mut self.operations.settle;
         settle.tree[pane.index()] = Some(p.tree.refresh.desired);
-        let old = mem::replace(&mut settle.tree_reveal[pane.index()], reveal);
-        self.retired.push(Box::new(old));
+        if reveal.is_some() {
+            let old = mem::replace(&mut settle.tree_reveal[pane.index()], reveal);
+            self.retired.push(Box::new(old));
+        }
     }
 
     /// Release each tree hold once its refresh completed; after a flush, also one

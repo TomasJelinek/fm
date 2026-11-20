@@ -178,9 +178,10 @@ impl TextComparison {
         'rows: while scan.row < last && bytes < TURN_BYTES {
             check_cancel(cancel)?;
             let row = &self.rows[scan.row];
-            for (side, index) in [row.left, row.right].into_iter().enumerate() {
+            for (side, index) in [row.left(), row.right()].into_iter().enumerate() {
                 let Some(line) = index else { continue };
-                let text = visible_controls(self.lines[side][line].trim_end_matches(['\r', '\n']));
+                let text =
+                    visible_controls(self.lines[side].line(line).trim_end_matches(['\r', '\n']));
                 bytes += text.len();
                 let haystack = if self.find.query.case_sensitive {
                     text.as_ref()

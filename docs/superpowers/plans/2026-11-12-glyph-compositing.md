@@ -15,7 +15,7 @@
 - Own `crates/midnight-viewer-render/src/glyphs.rs`, private timing/oracle modules, and `raster.rs` only if sharing its pixel blend avoids duplication.
 - No public API, source-read, layout, phase, source-anchor, glyph-cache or retained-raster budget changes.
 - Preserve color outlines, bitmap fallback, premultiplied RGBA and exact integer rounding.
-- Authoritative checkout is `D:/experiments/dev/FM`; generated output under `_build`.
+- Work in the authoritative primary checkout; generated output under `_build`.
 - Coordinate the shared Cargo target and quiet timing slots. No concurrent build during measurements and no commit.
 
 ## Review focus

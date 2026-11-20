@@ -9,7 +9,7 @@ preserves the offset; later scroll, cursor, path, filter context or query change
 cancel the restoration. Successful navigation retains ordinary reset/reveal.
 Stale backend replies remain fenced by the presenter's existing navigation IDs.
 
-Read-only Salamander comparison: `D:/experiments/salamander-main/src/fileswn2.cpp`
+Read-only Salamander comparison: `<salamander-source>/src/fileswn2.cpp`
 saves the list top index and caret before changing paths (around line 320), then
 passes both to `RefreshListBox` when `ChangePathToDisk` fails without a changed
 path (around lines 365–382). This supports preserving both viewport and focus.

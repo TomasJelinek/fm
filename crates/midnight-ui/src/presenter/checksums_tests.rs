@@ -169,6 +169,17 @@ fn focused_checksum_sidecar_prefills_verification_without_hashing_the_manifest()
 
 /// Finish the session's current run with one calculated SHA-256 row.
 pub(super) fn finish(p: &mut Presenter, id: ChecksumJobId, completion: ChecksumCompletion) {
+    finish_reporting(p, id, completion, Vec::new(), Vec::new());
+}
+
+/// [`finish`] with the backend's diagnostics and the limits the run reached.
+fn finish_reporting(
+    p: &mut Presenter,
+    id: ChecksumJobId,
+    completion: ChecksumCompletion,
+    diagnostics: Vec<FsError>,
+    reached_budgets: Vec<ChecksumBudget>,
+) {
     let generation = p.checksums.sessions[&id].generation;
     let retention = ChecksumRetention::new(());
     let row = Arc::new(ChecksumRow {
@@ -202,12 +213,60 @@ pub(super) fn finish(p: &mut Presenter, id: ChecksumJobId, completion: ChecksumC
                     bytes_read: 3,
                     ..Default::default()
                 },
-                reached_budgets: vec![],
-                diagnostics: vec![],
+                reached_budgets,
+                diagnostics,
             },
             retention,
         })),
     })));
+}
+
+#[test]
+fn a_verification_refused_for_mixed_algorithms_names_that_reason() {
+    let send = |_| true;
+    let (mut p, id) = setup(&send);
+    finish(&mut p, id, ChecksumCompletion::Completed);
+    assert!(p.start_checksum_verification(id, "mixed.sha256", &send));
+    let s = &p.checksums.sessions[&id];
+    let (generation, manifest) = (s.generation, s.directory.join("mixed.sha256"));
+    // What the engine reports for a SHA-256 line followed by an MD5 line.
+    let refused = FsError::from_io(
+        "verify checksums",
+        &manifest,
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Checksum manifest mixes different algorithms.",
+        ),
+    );
+    p.apply(Event::Checksum(Box::new(ChecksumEvent {
+        job: id,
+        generation,
+        update: ChecksumUpdate::Finished(Arc::new(ChecksumRun {
+            job: id,
+            generation,
+            algorithms: ChecksumAlgorithms::default(),
+            captured_roots: vec![manifest].into(),
+            rows: Arc::from([]),
+            summary: ChecksumSummary {
+                completion: ChecksumCompletion::Failed,
+                progress: ChecksumProgress {
+                    errors: 1,
+                    ..Default::default()
+                },
+                reached_budgets: vec![],
+                diagnostics: vec![refused],
+            },
+            retention: ChecksumRetention::new(()),
+        })),
+    })));
+    let s = &p.checksums.sessions[&id];
+    assert!(!s.running);
+    assert_eq!(
+        s.issue().as_deref(),
+        Some("Checksum manifest mixes different algorithms.")
+    );
+    let details = s.details(&NumberLocale::default());
+    assert!(details.contains("mixes different algorithms"), "{details}");
 }
 
 #[test]
@@ -286,36 +345,27 @@ fn checksum_full_row_copy_ignores_uncalculated_output_selector() {
 }
 
 #[test]
-fn manifest_filename_uses_captured_folder_and_invalid_drafts_never_enqueue() {
+fn manifest_filename_uses_captured_folder_and_gets_the_format_extension() {
     let (mut p, id) = setup(&|_| true);
     finish(&mut p, id, ChecksumCompletion::Completed);
-    let expected = p.checksums.sessions[&id]
+    // The chosen name has no extension; the captured folder stays after navigation.
+    let chosen = p.checksums.sessions[&id]
         .suggested
-        .with_file_name("export 日本語.sha256");
+        .with_file_name("export 日本語");
+    p.checksums.sessions.get_mut(&id).unwrap().suggested = chosen.clone();
     p.panes[0].path.push("navigated-away");
     let commands = std::cell::RefCell::new(Vec::new());
     let send = |command| {
         commands.borrow_mut().push(command);
         true
     };
-    let form = |destination: &str| checksums::ChecksumSaveForm {
-        generation: 1,
-        algorithm: ChecksumAlgorithm::Sha256,
-        destination: destination.into(),
-        acknowledge: false,
-        overwrite: false,
-    };
-    assert!(!p.save_checksum_manifest(id, form("../outside.sha256"), &send));
-    assert!(commands.borrow().is_empty());
-    assert!(p.checksums.sessions[&id].save.is_none());
-    assert!(!p.checksums.sessions[&id].error.is_empty());
-    assert!(p.save_checksum_manifest(id, form("export 日本語.sha256"), &send));
+    p.begin_checksum_save(id, ChecksumAlgorithm::Sha256, &send);
     let sent = commands.borrow();
     assert_eq!(sent.len(), 1);
     let Command::SaveChecksumManifest { request, .. } = &sent[0] else {
-        panic!("Only the valid captured destination may enter the manifest queue");
+        panic!("Only the chosen destination may enter the manifest queue");
     };
-    assert_eq!(request.destination, expected);
+    assert_eq!(request.destination, chosen.with_extension("sha256"));
     assert!(p.checksums.sessions[&id].error.is_empty());
 }
 
@@ -324,22 +374,18 @@ fn partial_checksum_save_requires_exact_current_run_acknowledgement() {
     let (mut p, id) = setup(&|_| true);
     finish(&mut p, id, ChecksumCompletion::Incomplete);
     let path = std::env::temp_dir().join("checksums.sha256");
-    let text = path.to_string_lossy();
+    p.checksums.sessions.get_mut(&id).unwrap().suggested = path.clone();
     let commands = std::cell::RefCell::new(Vec::new());
     let send = |c| {
         commands.borrow_mut().push(c);
         true
     };
-    let form = |acknowledge| checksums::ChecksumSaveForm {
-        generation: 1,
-        algorithm: ChecksumAlgorithm::Sha256,
-        destination: text.to_string(),
-        acknowledge,
-        overwrite: false,
-    };
-    assert!(!p.save_checksum_manifest(id, form(false), &send));
-    assert!(commands.borrow().is_empty());
-    assert!(p.save_checksum_manifest(id, form(true), &send));
+    p.begin_checksum_save(id, ChecksumAlgorithm::Sha256, &send);
+    assert!(
+        commands.borrow().is_empty(),
+        "partial results are asked first"
+    );
+    p.confirm_checksum_save(id, &send);
     let sent = commands.borrow();
     let Command::SaveChecksumManifest { request, .. } = sent.last().unwrap() else {
         panic!()
@@ -480,4 +526,220 @@ fn an_existing_manifest_is_offered_for_replacement_instead_of_failing() {
     assert_eq!(all.len(), 3);
     assert!(all[2].1, "Replace sends the confirmed overwrite");
     assert_eq!(all[2].2, chosen);
+}
+
+/// Native folders whose names are not valid Unicode; the destination tests share them.
+#[cfg(unix)]
+#[path = "checksums/destination_unix_tests.rs"]
+pub(super) mod raw_paths;
+#[cfg(windows)]
+#[path = "checksums/destination_windows_tests.rs"]
+pub(super) mod raw_paths;
+
+/// Every manifest save sent: its ID and request.
+fn sent_saves(sent: &[Command]) -> Vec<(ChecksumManifestId, ChecksumManifestRequest)> {
+    sent.iter()
+        .filter_map(|command| match command {
+            Command::SaveChecksumManifest {
+                save_id, request, ..
+            } => Some((*save_id, (**request).clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn already_exists(p: &mut Presenter, id: ChecksumJobId, save_id: ChecksumManifestId) {
+    let generation = p.checksums.sessions[&id].generation;
+    p.apply(Event::ChecksumManifest(Box::new(ChecksumManifestEvent {
+        save_id,
+        job: id,
+        generation,
+        update: ChecksumManifestUpdate::Finished(Err(FsError::from_io(
+            "save checksum manifest",
+            Path::new("existing"),
+            std::io::ErrorKind::AlreadyExists.into(),
+        ))),
+    })));
+}
+
+#[test]
+fn a_new_run_discards_the_save_question_about_the_previous_one() {
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let (mut p, id) = setup(&send);
+    finish(&mut p, id, ChecksumCompletion::Incomplete);
+    p.begin_checksum_save(id, ChecksumAlgorithm::Sha256, &send);
+    assert!(
+        p.checksums.sessions[&id].save_prompt.is_some(),
+        "partial results are asked about first"
+    );
+    let algorithms = p.checksums.sessions[&id].algorithms;
+    assert!(p.start_checksums(id, algorithms, false, &send));
+    assert!(p.checksums.sessions[&id].save_prompt.is_none());
+    sent.borrow_mut().clear();
+    p.confirm_checksum_save(id, &send);
+    assert!(
+        sent_saves(&sent.borrow()).is_empty(),
+        "an answer about old results saves nothing of the new run"
+    );
+}
+
+#[test]
+fn a_partial_save_sends_the_counts_its_question_showed_and_a_refused_answer_is_kept() {
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let (mut p, id) = setup(&send);
+    finish(&mut p, id, ChecksumCompletion::Incomplete);
+    p.begin_checksum_save(id, ChecksumAlgorithm::Sha256, &send);
+    let shown = p.checksums.sessions[&id]
+        .save_prompt
+        .as_ref()
+        .and_then(|prompt| prompt.acknowledged)
+        .expect("the question carries the counts it shows");
+    // An answer while other work runs is refused aloud, and the question stays.
+    p.checksums.sessions.get_mut(&id).unwrap().running = true;
+    p.confirm_checksum_save(id, &send);
+    let s = &p.checksums.sessions[&id];
+    assert!(sent_saves(&sent.borrow()).is_empty());
+    assert!(!s.error.is_empty(), "a refused answer is reported");
+    assert!(
+        s.save_prompt.is_some(),
+        "the question can still be answered"
+    );
+    p.checksums.sessions.get_mut(&id).unwrap().running = false;
+    p.confirm_checksum_save(id, &send);
+    let saves = sent_saves(&sent.borrow());
+    let [(_, request)] = saves.as_slice() else {
+        panic!("one save: {saves:?}");
+    };
+    assert_eq!(request.acknowledge_partial, Some(shown));
+    assert!(p.checksums.sessions[&id].save_prompt.is_none());
+}
+
+#[test]
+fn replacing_keeps_the_exact_native_destination_it_asked_about() {
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let (mut p, id) = setup(&send);
+    finish(&mut p, id, ChecksumCompletion::Completed);
+    // A folder name that is not valid Unicode, and an extension the save appends.
+    let chosen = raw_paths::raw_parent().join("checksums");
+    p.checksums.sessions.get_mut(&id).unwrap().suggested = chosen.clone();
+    p.begin_checksum_save(id, ChecksumAlgorithm::Sha256, &send);
+    let expected = chosen.with_extension("sha256");
+    let first = sent_saves(&sent.borrow());
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].1.destination, expected);
+    already_exists(&mut p, id, first[0].0);
+    p.confirm_checksum_save(id, &send);
+    let saves = sent_saves(&sent.borrow());
+    assert_eq!(saves.len(), 2, "{:?}", p.checksums.sessions[&id].error);
+    assert!(saves[1].1.overwrite);
+    assert_eq!(saves[1].1.destination, expected);
+}
+
+#[test]
+fn the_window_text_names_a_refused_input_the_limits_and_a_kept_replaced_file() {
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let (mut p, id) = setup(&send);
+    let refused = FsError::from_io(
+        "verify checksums",
+        Path::new("/data/sums.sha256"),
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Manifest entries must be relative names below the manifest's folder.",
+        ),
+    );
+    finish_reporting(
+        &mut p,
+        id,
+        ChecksumCompletion::Failed,
+        vec![refused],
+        vec![ChecksumBudget::Rows],
+    );
+    let locale = NumberLocale::default();
+    let s = &p.checksums.sessions[&id];
+    assert_eq!(
+        s.issue().as_deref(),
+        Some("Manifest entries must be relative names below the manifest's folder.")
+    );
+    let details = s.details(&locale);
+    assert!(details.contains("must be relative names"), "{details}");
+    assert!(
+        details.contains("Reached resource limits: result rows"),
+        "{details}"
+    );
+    // A completed run saved over an existing file reports where that file is kept.
+    let algorithms = p.checksums.sessions[&id].algorithms;
+    assert!(p.start_checksums(id, algorithms, false, &send));
+    finish(&mut p, id, ChecksumCompletion::Completed);
+    let saved = std::env::temp_dir().join("checksums.sha256");
+    let kept = std::env::temp_dir()
+        .join(".midnight-recovery-1")
+        .join("item");
+    p.checksums.sessions.get_mut(&id).unwrap().suggested = saved.clone();
+    p.begin_checksum_save(id, ChecksumAlgorithm::Sha256, &send);
+    let (save_id, _) = sent_saves(&sent.borrow())[0].clone();
+    let generation = p.checksums.sessions[&id].generation;
+    p.apply(Event::ChecksumManifest(Box::new(ChecksumManifestEvent {
+        save_id,
+        job: id,
+        generation,
+        update: ChecksumManifestUpdate::Finished(Ok(ChecksumManifestReceipt {
+            path: saved.clone(),
+            included: 1,
+            excluded: 0,
+            verified_bytes: 77,
+            recovery: vec![kept.clone()],
+        })),
+    })));
+    let s = &p.checksums.sessions[&id];
+    assert_eq!(
+        s.save_status(&locale),
+        "Saved checksums.sha256 · 1 included · the replaced file is kept for recovery"
+    );
+    let details = s.details(&locale);
+    assert!(details.contains(saved.to_str().unwrap()), "{details}");
+    assert!(details.contains(kept.to_str().unwrap()), "{details}");
+    assert!(details.contains("Delete it when you no longer need it."));
+    assert!(s.issue().is_none());
+}
+
+#[test]
+fn a_selected_checksum_file_opens_verification_from_the_selection_itself() {
+    let root = std::env::temp_dir();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    let entries: Arc<[Entry]> = vec![
+        Entry::new(EntryId(1), root.join("photo.jpg"), EntryKind::File),
+        Entry::new(EntryId(2), root.join("photos.sha256"), EntryKind::File),
+    ]
+    .into();
+    let pane = &mut p.panes[0];
+    pane.entries = entries.clone();
+    pane.index = Arc::new(DirectoryIndex::from_entries(&entries));
+    // Only the manifest is selected; the cursor stays on the photo.
+    let files = SelectedFiles {
+        selection: Arc::new(SelectionSnapshot::from_bits(pane.index.clone(), vec![0b10]).unwrap()),
+        view: pane.index.clone(),
+        fallback: Some(root.join("photo.jpg")),
+    };
+    let id = p
+        .open_captured_checksums(PaneId::Left, root.clone(), files, &|_| true)
+        .unwrap();
+    let s = &p.checksums.sessions[&id];
+    assert!(s.verify_initial);
+    assert_eq!(s.manifest_suggested, root.join("photos.sha256"));
 }

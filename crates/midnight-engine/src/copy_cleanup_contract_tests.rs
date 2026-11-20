@@ -245,6 +245,7 @@ fn cleanup_receipt_survives(pending_stages: u8) {
         replacement_prepared: false,
         native_fallback: false,
         move_preflight_done: false,
+        source_move_failed: false,
         force_prompt: false,
     });
     cancel.cancel();

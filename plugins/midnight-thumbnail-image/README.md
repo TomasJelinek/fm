@@ -9,12 +9,45 @@ SVG rasterizes directly to the requested aspect ratio with embedded Noto fonts;
 it receives no path, network or system-font access. See the shared decoder's
 explicit SVG subset, resource limits and bundled font provenance.
 
+## PDF first pages
+
+The worker also previews PDF documents, with the PDF viewer's renderer: pinned
+Hayro 0.9.0 with its compiled standard fonts and CMaps (`embed-fonts`,
+`embed-cmaps`) and no filesystem, network or system-font lookup. No file name
+reaches the worker, so the content decides. Content that starts with an image
+signature that the image decoder chooses a codec by (image-rs's, such as PNG or
+JPEG), or with markup that it reads as SVG, goes to the image decoder even when its
+metadata, text or comments mention `%PDF-`. Otherwise `%PDF-` within the first
+kilobyte selects the PDF path, and anything else goes to the image decoder. The
+bytes needed for that choice are the first brokered read that the image decoder
+makes anyway, so sniffing adds no host round trip.
+
+- Only page 1 is drawn, as an opaque white page fitted inside the requested cell
+  with its aspect ratio. A page is vector content, so a small page is drawn at the
+  cell's size rather than enlarged from a smaller raster.
+- The document is read whole, once, and at most 64 MiB: a larger source fails before
+  any of it past the first read is fetched. Page edges must be 1–32,768 points.
+- Password-protected, damaged and page-less documents fail, and so does a page
+  that the renderer can draw only with warnings (an unloadable font or image),
+  exactly as the PDF viewer refuses it. The host then keeps the placeholder.
+- The host's limits for every thumbnail worker still apply: 512 MiB of memory,
+  8 CPU seconds, a 10-second deadline and 256 MiB of brokered reads per request.
+
 The provider version changes whenever decoding policy changes, invalidating old
-thumbnail cache identities. AVIF shares the viewer's pinned static dav1d decoder,
+thumbnail cache identities. Adding PDF support changed it (it now names Hayro), so
+cached image thumbnails are regenerated once after the update. AVIF shares the
+viewer's pinned static dav1d decoder,
 32 MiB encoded-container cap, and primary/alpha native frame limits. HEIC/HEIF is
 not enabled. The root thumbnail build scripts prepare pinned native tools/static
 code and copy the full shared notice set, including the MPL parser source archive.
 Use `-NativeOffline` or `MIDNIGHT_IMAGE_NATIVE_OFFLINE=1` to forbid native downloads.
+
+`notices/` holds the reviewed notices that crate packages omit, which the notice
+staging adds under `licenses/`: the Foxit standard fonts and Adobe CMaps that
+Hayro embeds, its other asset notices and upstream NOTICE, and the BSD-3-Clause
+license that alloc-stdlib 0.2.4 does not publish. They are the PDF viewer's
+reviewed copies. The development profile optimizes all dependencies, like the
+viewer plugins, so debug builds draw pages within the host's CPU limit.
 
 `scripts/ci.ps1 -SdkConfig <released worker SDK .cargo/registry.toml> -BuildRoot
 <directory below _build> [-NativeOffline]` (Windows, PowerShell 7) and

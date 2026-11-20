@@ -140,7 +140,9 @@ async fn tree_move_root_feedback_waits_for_native_rename_and_skip_retains_later_
                     .await;
             }
             CopyEvent::Progress(p) if p.state.is_terminal() => {
-                assert_eq!(p.state, CopyOperationState::CompletedWithErrors, "{p:?}");
+                // The skipped conflict was the user's choice, not an error.
+                assert_eq!(p.state, CopyOperationState::Completed, "{p:?}");
+                assert_eq!((p.skipped, p.failed), (1, 0), "{p:?}");
                 assert_eq!(p.source_files_removed, 0);
                 assert_eq!(p.native_entries_moved, 1);
                 assert_eq!(p.copied_bytes + p.verified_bytes + p.validation_bytes, 0);

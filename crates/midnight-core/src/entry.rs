@@ -79,6 +79,9 @@ pub struct DirectoryIndex {
     pub file_sizes: Vec<Option<u64>>,
     /// Bounded locale samples prepared during the same backend index pass.
     pub column_samples: crate::MetadataColumnSamples,
+    /// Hidden entries the indexed listing left out because hidden files are not
+    /// shown; zero when they are shown and for projections of a listing.
+    pub hidden: usize,
 }
 
 impl DirectoryIndex {
@@ -106,6 +109,7 @@ impl DirectoryIndex {
             directory_bits: Vec::with_capacity(rows.div_ceil(64)),
             file_sizes: Vec::with_capacity(rows),
             column_samples: crate::MetadataColumnSamples::default(),
+            hidden: 0,
         }
     }
 

@@ -107,6 +107,14 @@ impl ContentResources for Resources {
         }
         Err(Error("Empty archive resource path".into()))
     }
+
+    /// Gives up this reference; the last one releases its main member's lease.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        match Arc::into_inner(self) {
+            Some(Resources { main }) => main.release_on_worker(),
+            None => Ok(()),
+        }
+    }
 }
 impl ContentSource for Member {
     fn length(&self) -> u64 {
@@ -128,6 +136,18 @@ impl ContentSource for Member {
         self.mount
             .read(self.entry, offset, length, &Cancellation::default())
             .map_err(|e| Error(e.to_string()))
+    }
+
+    /// Gives up this reference; the last one releases its mount reference through the
+    /// mount's own protocol, which tears the mount down only if no tab or viewer holds it.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        match Arc::into_inner(self) {
+            Some(member) => member
+                .mount
+                .release_on_worker()
+                .map_err(|error| Error(error.to_string())),
+            None => Ok(()),
+        }
     }
 }
 pub(crate) fn prepare(launch: &ViewerLaunch, closed: &Arc<AtomicBool>) -> Result<Order, String> {
@@ -214,10 +234,16 @@ mod tests {
     struct Mount {
         changed: AtomicBool,
         validations: AtomicUsize,
+        releases: AtomicUsize,
     }
     impl ArchiveMount for Mount {
         fn id(&self) -> u64 {
             8
+        }
+        /// The test keeps its own reference, so every release is a shared one.
+        fn release_on_worker(self: Arc<Self>) -> Result<(), FsError> {
+            self.releases.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
         fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
             unreachable!()
@@ -301,6 +327,27 @@ mod tests {
         mount.changed.store(true, Ordering::Release);
         assert!(first.read_at(0, 5).is_err());
         closed.store(true, Ordering::Release);
+    }
+
+    /// A member capture carries its own resource scope, as HTML inside an archive does;
+    /// releasing it is confirmed and returns its mount reference exactly once.
+    #[test]
+    fn released_member_captures_return_their_mount_reference_once() {
+        let mount = Arc::new(Mount::default());
+        let members = (2..=3)
+            .map(|entry| member(entry, "same.txt".into(), Some(5)))
+            .collect();
+        let launch = launch(&mount, members, 2);
+        let closed = Arc::new(AtomicBool::new(false));
+        let order = prepare(&launch, &closed).unwrap();
+        drop(launch);
+        let other = order.capture.as_ref().unwrap()(1, &closed).unwrap();
+        assert!(other.resources().is_some());
+        let first = order.focused.unwrap();
+        first.release_on_worker().unwrap();
+        assert_eq!(mount.releases.load(Ordering::Relaxed), 1);
+        other.release_on_worker().unwrap();
+        assert_eq!(mount.releases.load(Ordering::Relaxed), 2);
     }
 
     #[test]

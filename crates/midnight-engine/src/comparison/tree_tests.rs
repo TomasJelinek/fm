@@ -82,7 +82,7 @@ fn side(pane: PaneId, size: u64) -> CompareSide {
         selection_revision: SelectionRevision(0),
     }
 }
-fn request() -> Arc<CompareRequest> {
+pub(super) fn request() -> Arc<CompareRequest> {
     Arc::new(CompareRequest {
         id: CompareId(1),
         sides: [side(PaneId::Left, 10), side(PaneId::Right, 20)],

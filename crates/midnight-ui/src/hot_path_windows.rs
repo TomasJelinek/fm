@@ -79,7 +79,9 @@ pub(crate) fn install(
         };
         ctx.next.set(token);
         let presentation = main.global::<HotPathsPresentation>();
-        presentation.set_path(crate::shown_text(&location.display_text()));
+        let path = crate::shown_text(&location.display_text());
+        presentation.set_path_tail(crate::path_tail(&path));
+        presentation.set_path(path);
         *ctx.record.borrow_mut() = Some(Record {
             token,
             location,

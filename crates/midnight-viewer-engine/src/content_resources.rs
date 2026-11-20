@@ -112,6 +112,17 @@ impl ContentResources for Scope {
         };
         CapturedFile::from_source(Arc::new(asset))
     }
+
+    /// A shared reference only gives up its count. The last one, which `Arc::into_inner`
+    /// grants to exactly one of any concurrent callers, closes the pinned directory here
+    /// on the backend worker and releases its main-document capture.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        let Some(Scope { directory, main }) = Arc::into_inner(self) else {
+            return Ok(());
+        };
+        drop(directory);
+        main.release_on_worker()
+    }
 }
 
 struct Handles {
@@ -215,6 +226,23 @@ impl ContentSource for Asset {
         drop(handles);
         self.validate_parent(&cancel)?;
         Ok(bytes)
+    }
+
+    /// The last reference closes the retained file and ancestor handles and its pin of the
+    /// directory here, on the backend worker, then releases its main-document capture.
+    fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
+        let Some(Asset {
+            directory,
+            main,
+            handles,
+            ..
+        }) = Arc::into_inner(self)
+        else {
+            return Ok(());
+        };
+        drop(handles);
+        drop(directory);
+        main.release_on_worker()
     }
 }
 

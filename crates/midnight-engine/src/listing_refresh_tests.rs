@@ -107,6 +107,43 @@ fn a_recycled_identity_of_another_path_is_another_row() {
     );
 }
 
+/// A folder sorted newest first: a rewritten file jumps from far down to the
+/// top (or the reverse) and costs one removal and one addition, not an edit
+/// of every row it passed, which would replace the rows.
+#[test]
+fn a_row_that_jumps_far_up_or_down_costs_two_edits() {
+    let before: Vec<_> = (0..1_000)
+        .map(|id| entry(id, &format!("{id:04}"), 1))
+        .collect();
+    let mut up = before.clone();
+    let mover = up.remove(600);
+    up.insert(100, entry(mover.id.0, "0600", 2));
+    assert_eq!(
+        check(&before, &up),
+        [
+            RowEdit::Added { row: 100, count: 1 },
+            RowEdit::Removed { row: 601, count: 1 },
+        ]
+    );
+    let mut top = before.clone();
+    let mover = top.remove(500);
+    top.insert(0, mover);
+    assert_eq!(check(&before, &top).len(), 2);
+    let mut down = before.clone();
+    let mover = down.remove(0);
+    down.insert(700, mover);
+    assert_eq!(check(&before, &down).len(), 2);
+    // Several movers in both directions among additions and removals.
+    let mut mixed = before.clone();
+    let first = mixed.remove(900);
+    mixed.insert(3, first);
+    let second = mixed.remove(10);
+    mixed.insert(800, second);
+    mixed.remove(400);
+    mixed.insert(50, entry(5_000, "new", 1));
+    assert!(check(&before, &mixed).len() <= 6);
+}
+
 #[test]
 fn a_shuffled_listing_is_replaced_rather_than_edited() {
     let before: Vec<_> = (0..1_000)

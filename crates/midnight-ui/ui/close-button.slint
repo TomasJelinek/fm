@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { ActionGlyph } from "action-icons.slint";
 
 // Square icon control: text-button padding cannot displace the close glyph.
 export component CloseButton inherits Rectangle {
@@ -21,7 +22,7 @@ export component CloseButton inherits Rectangle {
         width: min(root.width - 8px, root.height - 8px, max(12px, Theme.font-size));
         height: self.width;
         x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
-        image-fit: contain; colorize: root.enabled ? Theme.text : Theme.muted-text;
+        image-fit: contain; colorize: ActionGlyph.tint(root.enabled);
     }
     focus := FocusScope {
         enabled: root.enabled;

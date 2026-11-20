@@ -16,7 +16,7 @@ this additional preparation. Changed target revisions discard consent and requir
 a fresh prompt. Other native failures never enter a Copy or delete-first path.
 
 Salamander's `RenameFileInternal` in the local reference
-`D:/experiments/salamander-main/src/fileswn5.cpp` (around lines 2108–2300) confirms
+`<salamander-source>/src/fileswn5.cpp` (around lines 2108–2300) confirms
 the file-overwrite interaction through `COverwriteDlg`. Its delete-before-rename
 publication was not reused. Midnight retains the displaced original and exposes
 its recovery path in Recent Jobs. Committed/recovery native outcomes are reported

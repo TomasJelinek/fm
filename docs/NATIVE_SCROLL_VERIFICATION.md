@@ -19,7 +19,9 @@ the motion immediately before rendering, spending at most 16 ms of animation
 time per frame. Missed frames extend the tween instead of skipping invisible
 positions. Same-direction impulses accumulate only undelivered pixels; reversal
 discards the previous direction's residual. The existing 2,400 px pending bound
-prevents an unbounded backlog. Pixel and phased touchpad input remains native.
+prevents an unbounded backlog. Pixel and phased touchpad input follows the finger;
+Linux momentum after the fingers lift is synthesised separately (see
+[kinetic scrolling](developer/SCROLLING.md#touchpad-momentum-kinetic-scrolling)).
 Row snapping waits until the motion finishes and the list becomes idle.
 
 Each discrete vertical notch travels at least one layout band. Detailed and
@@ -688,7 +690,7 @@ movement still waited 314.033 and 334.171 ms. It was not extended to a sustained
 run and does not support a backend-policy change.
 
 Read-only adapter discovery found Intel Iris Xe (driver 32.0.101.7088) and a discrete
-RTX 3500 Ada Generation Laptop GPU (driver 621.14). Pinned WGPU 30.0.1 disables
+laptop GPU. Pinned WGPU 30.0.1 disables
 DX12 suballocation for adapter names containing `Iris(R) Xe`; its documented
 workaround selects committed allocations regardless of memory hints. The
 workaround and all driver/security policies remain unchanged.
@@ -831,7 +833,7 @@ software behavior require the subsequent targeted qualification.
 The exact-file diagnostic was frozen with SHA-256
 `CDA65C95798E46C9CDBFB7A2F992DFA6BA432A553938937656AEF3D7F8E7F72A`
 (`retained-exact-baseline4/`, matching PDB). Inputs were the untouched
-`D:/temp/ovclash/results/2026-09-07-mfg/manifest.json` (2659 bytes) and
+`<external-project>/results/<run>/manifest.json` (2659 bytes) and
 `C:/Windows/System32/WwanFeatureTests.xml` (3865 bytes). The trusted diagnostic
 plugin set selected source mode for JSON and plain text for XML; both began in
 retained-raster presentation, with wrapping disabled. This is the reported actual

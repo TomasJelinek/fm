@@ -17,6 +17,7 @@ fn ordered_prefix_and_streamed_tail_preserve_ids_with_constant_time_inverse_look
                 id: FindResultId(id),
                 duplicate_group: None,
                 duplicate_group_size: 0,
+                archive: None,
                 entry: FindEntry {
                     path: std::env::temp_dir().join(format!("result-{id}")),
                     kind: EntryKind::File,
@@ -91,6 +92,7 @@ fn advanced_draft_maps_to_typed_query_without_enabling_hidden_content() {
         modified_enabled: true,
         modified_seconds: 5 * 60,
         duplicates: true,
+        content_regex: true,
         ..Default::default()
     };
     let converted = form(draft.clone());
@@ -102,7 +104,7 @@ fn advanced_draft_maps_to_typed_query_without_enabling_hidden_content() {
     assert!(converted.duplicates);
     let content = converted.content.unwrap();
     assert_eq!(content.text, "Příliš 日本語");
-    assert!(content.whole_words && content.case_sensitive);
+    assert!(content.whole_words && content.case_sensitive && content.regex);
 
     let disabled = form(FindDraft {
         content_enabled: false,
@@ -135,6 +137,7 @@ fn large_duplicate_group_rows_keep_identity_and_group_boundaries_after_sort() {
                 id: FindResultId(id),
                 duplicate_group: Some(4),
                 duplicate_group_size: 100,
+                archive: None,
                 entry: FindEntry {
                     path: std::env::temp_dir().join(format!("result-{id}")),
                     kind: EntryKind::File,

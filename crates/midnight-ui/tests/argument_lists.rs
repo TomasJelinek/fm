@@ -150,6 +150,27 @@ fn exercise(command: bool) {
     assert_eq!(values(&test, command).last().unwrap(), "new literal");
     action(&mut test, "Remove argument");
     action(&mut test, "Add argument");
+    // Escape cancels only the new argument; Options and its staged edits stay.
+    ui::key(&test.window, Key::Escape);
+    test.draw();
+    assert!(
+        test.window.get_options_open(),
+        "Escape in a new argument cancels only that add"
+    );
+    assert!(
+        ui::try_popup_item(
+            &test.window,
+            &format!("{prefix} new argument"),
+            AccessibleRole::TextInput
+        )
+        .is_none()
+    );
+    editor_value(&test, 3, "文档 two words");
+    assert_eq!(
+        values(&test, command),
+        [" \"literal 文档\" & ", placeholder, "文档 two words"]
+    );
+    action(&mut test, "Add argument");
     // An empty argument is still supported, but must be added explicitly.
     ui::key(&test.window, Key::Return);
     test.draw();

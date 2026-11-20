@@ -5,7 +5,6 @@ use midnight_work_budget::{Gate, storage_admission};
 use std::sync::{Arc, atomic::AtomicBool};
 
 const BLOCK_BYTES: u32 = 64 * 1024;
-const DECODED_SPANS: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IdentityTurn {
@@ -18,65 +17,31 @@ pub(crate) enum IdentityTurn {
 /// rendering. No proof is inferred from the diff algorithm or visible rows.
 #[derive(Default)]
 pub(crate) struct DecodedText {
-    lines: [usize; 2],
-    offsets: [usize; 2],
+    offset: usize,
     verdict: Option<bool>,
 }
 
 impl DecodedText {
-    /// Compare at most 64 KiB and visit at most 256 spans per backend turn.
-    pub fn step(&mut self, text: &[Vec<String>; 2]) -> Option<bool> {
+    /// Compare at most 64 KiB of both retained texts per backend turn.
+    pub fn step(&mut self, text: [&str; 2]) -> Option<bool> {
         if let Some(verdict) = self.verdict {
             return Some(verdict);
         }
-        let mut budget = BLOCK_BYTES as usize;
-        for _ in 0..DECODED_SPANS {
-            for (side, lines) in text.iter().enumerate() {
-                if let Some(line) = lines.get(self.lines[side])
-                    && self.offsets[side] == line.len()
-                {
-                    self.lines[side] += 1;
-                    self.offsets[side] = 0;
-                }
-            }
-            let left = text[0].get(self.lines[0]);
-            let right = text[1].get(self.lines[1]);
-            // Empty retained spans consume a bounded iteration rather than
-            // allowing arbitrary cleanup/scanning within one turn.
-            if left.is_some_and(|line| line.len() == self.offsets[0])
-                || right.is_some_and(|line| line.len() == self.offsets[1])
-            {
-                continue;
-            }
-            let (left, right) = match (left, right) {
-                (Some(left), Some(right)) => (left.as_bytes(), right.as_bytes()),
-                (None, None) => {
-                    self.verdict = Some(true);
-                    return self.verdict;
-                }
-                _ => {
-                    self.verdict = Some(false);
-                    return self.verdict;
-                }
-            };
-            let amount = (left.len() - self.offsets[0])
-                .min(right.len() - self.offsets[1])
-                .min(budget);
-            if left[self.offsets[0]..self.offsets[0] + amount]
-                != right[self.offsets[1]..self.offsets[1] + amount]
-            {
-                self.verdict = Some(false);
-                return self.verdict;
-            }
-            for offset in &mut self.offsets {
-                *offset += amount;
-            }
-            budget -= amount;
-            if budget == 0 {
-                return None;
-            }
+        let [left, right] = text.map(str::as_bytes);
+        if left.len() != right.len() {
+            self.verdict = Some(false);
+            return self.verdict;
         }
-        None
+        let end = left.len().min(self.offset + BLOCK_BYTES as usize);
+        if left.get(self.offset..end) != right.get(self.offset..end) {
+            self.verdict = Some(false);
+            return self.verdict;
+        }
+        self.offset = end;
+        if end == left.len() {
+            self.verdict = Some(true);
+        }
+        self.verdict
     }
 }
 

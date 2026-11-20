@@ -1,6 +1,6 @@
 # Native Jobs, decisions, Panel filter and Hot Paths
 
-11 November 2026. Baseline: `5aee4d2`, authoritative `D:/experiments/dev/FM`.
+11 November 2026. Baseline: `5aee4d2`, in the authoritative primary checkout.
 This implements Task 3 and the Panel filter/Hot Paths subset of Task 4 in the
 [accepted native-dialog plan](../superpowers/plans/2026-11-10-native-dialog-windows.md).
 Source is implemented with **88 unique Windows checks** and **63 unique Linux

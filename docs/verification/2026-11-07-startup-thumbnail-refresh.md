@@ -32,7 +32,7 @@ Validation completed:
   timer regression. Strict Clippy for the application and all its targets passed.
 - Workspace rustfmt, whitespace checks and the 683-file source-size guard passed.
 - The optimized Windows release rebuilt successfully. A normal launch from
-  `D:\experiments\dev\FM\_build\release\me.exe` retained a responsive process and
+  `_build\release\me.exe` retained a responsive process and
   a visible window titled Midnight Explorer 0.1 — File Manager, using the native
   saved settings. Its redirected stderr remained empty.
 - Focused independent review confirmed the shared redraw boundary fix and test;

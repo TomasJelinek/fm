@@ -502,9 +502,10 @@ impl GlyphAtlas {
 
         let fitting = fitting::of_run(self.fitting, mode == RenderMode::Fill);
         let mut word = fitting::WordPen::default();
+        let mut glyphs = glyphs.peekable();
 
-        for glyph in glyphs {
-            let (pen_x, subpixel_location) = fitting::place(fitting, &mut word, glyph.x, glyph.y);
+        while let Some(glyph) = glyphs.next() {
+            let subpixel_location = fitting::phase(fitting, glyph.x);
 
             let id = RenderedGlyphId::new(
                 glyph.glyph_id,
@@ -539,10 +540,12 @@ impl GlyphAtlas {
 
             let Some(rendered) = glyph_cache_entry.get() else {
                 // A blank ends the word.
-                word.advance(pen_x, glyph.y, None);
+                word.blank(glyph.x, glyph.y);
                 continue;
             };
-            word.advance(pen_x, glyph.y, rendered.fitted_advance);
+            // Where layout starts the next glyph on this baseline.
+            let next = glyphs.peek().filter(|next| next.y == glyph.y).map(|next| next.x);
+            let pen_x = fitting::pen(fitting, &mut word, glyph.x, glyph.y, next, rendered.fitted_advance);
 
             if let Some(texture) = self.glyph_textures.borrow().get(rendered.texture_index) {
                 let image_id = texture.image_id;

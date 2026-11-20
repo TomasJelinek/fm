@@ -1,7 +1,12 @@
 //! Linux processes inherit terminal behavior without invoking a shell.
 use std::process::Command;
 
-pub(super) fn configure(_command: &mut Command) {}
+/// The restarted application starts with the open-file limit this one started with, so
+/// it raises the limit itself and gives the original back to the programs it starts for
+/// the user.
+pub(super) fn configure(command: &mut Command) {
+    midnight_platform::with_original_open_file_limit(command);
+}
 
 #[cfg(test)]
 mod tests {

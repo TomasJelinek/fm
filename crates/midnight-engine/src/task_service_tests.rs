@@ -108,12 +108,13 @@ fn cancelled_actor_retires_service(actor: Actor) {
     let controller: Box<dyn std::any::Any> = {
         let _entered = runtime.enter();
         match actor {
-            Actor::Find => Box::new(find::Controller::new(
+            Actor::Find => Box::new(find::Controller::with_archives(
                 scope.clone(),
                 find::Retirement {
                     domain: domain.clone(),
                 },
                 Some(service.clone()),
+                None,
                 None,
                 outbox,
                 &mut tasks,

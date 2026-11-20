@@ -481,10 +481,13 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         "reordering cancels the popup gesture"
     );
 
-    // Native icon pixels retain their RGB; clearing the palette restores SVG fallback.
+    // Action buttons keep the shared tinted glyph whatever artwork the host supplies:
+    // a colored native refresh icon changes no pixel of the window.
     window.window().dispatch_event(WindowEvent::PointerMoved {
         position: slint::LogicalPosition::new(0.0, 0.0),
     });
+    draw(&mut pixels, 1340);
+    let glyph_pixels = pixels.clone();
     let buffer =
         slint::SharedPixelBuffer::<slint::Rgb8Pixel>::clone_from_slice(&[251, 7, 13], 1, 1);
     window.set_action_icons(ActionIcons {
@@ -492,37 +495,21 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         ..Default::default()
     });
     draw(&mut pixels, 1340);
-    let red = pixels
-        .iter()
-        .filter(|p| p.r == 251 && p.g == 7 && p.b == 13)
-        .count();
-    assert!(red > 100, "native action RGB must not be tinted");
-    let native_coordinates: Vec<_> = pixels
-        .iter()
-        .enumerate()
-        .filter_map(|(index, p)| (p.r == 251 && p.g == 7 && p.b == 13).then_some(index))
-        .collect();
-    let native_pixels = pixels.clone();
-    window.set_action_icons(ActionIcons::default());
-    draw(&mut pixels, 1340);
+    assert!(
+        !pixels.iter().any(|p| p.r == 251 && p.g == 7 && p.b == 13),
+        "native action artwork must not replace the shared glyph"
+    );
     assert!(
         pixels
             .iter()
-            .zip(&native_pixels)
+            .zip(&glyph_pixels)
             .filter(|(a, b)| a != b)
             .count()
-            > 100
+            < 10,
+        "native action artwork must leave the action glyphs unchanged"
     );
-
-    let background = pixels[native_coordinates[0] - 1341];
-    assert!(
-        native_coordinates
-            .iter()
-            .filter(|index| **index % 1340 < 670 && pixels[**index] != background)
-            .count()
-            > 30,
-        "missing native icons render visible semantic vector fallbacks"
-    );
+    window.set_action_icons(ActionIcons::default());
+    draw(&mut pixels, 1340);
 
     // File and folder rows stay quiet on hover, including unfinished sizes.
     // Both panels retain the deliberate tooltips on their sort headers.

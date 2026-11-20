@@ -22,6 +22,8 @@ pub(crate) struct ProjectionOptions {
     pub(crate) filter: PanelFilter,
     pub(crate) search: TreeSearchOptions,
     pub(crate) locale: Option<Arc<dyn LocaleService>>,
+    /// Leave hidden rows and everything loaded below them out (`hidden_entries`).
+    pub(crate) hide_hidden: bool,
 }
 
 #[derive(Clone)]
@@ -221,7 +223,14 @@ impl ProjectionState {
                 .map_err(|error| ProviderError::Failed(error.to_string()))?;
             }
         }
-        let rows = self.sorted_rows(model_rows, options, cancel)?;
+        let (rows, hidden) = self.sorted_rows(model_rows, options, cancel)?;
+        // Until the root is listed again its rows are the captured listing, which
+        // already left its hidden entries out and counted them.
+        let root_hidden = if options.hide_hidden && root.same_snapshot(&self.root_actions) {
+            root.index.hidden
+        } else {
+            0
+        };
         let revision = match previous {
             Some(previous) => previous
                 .stamp
@@ -249,7 +258,8 @@ impl ProjectionState {
             "tree projection exceeds its row budget"
             | "tree projection exceeds its payload budget" => ProviderError::ResourceLimited,
             _ => ProviderError::InvalidResponse(error),
-        })?;
+        })?
+        .with_hidden(hidden + root_hidden);
         if let Some(previous) = previous
             && !previous.same_structure(&projection)
         {
@@ -261,12 +271,14 @@ impl ProjectionState {
         Ok(Arc::new(projection))
     }
 
+    /// Rows in display order and how many hidden rows were left out (the loaded
+    /// contents of a left-out folder go uncounted).
     fn sorted_rows(
         &self,
         model_rows: Vec<TreeRow>,
         options: &ProjectionOptions,
         cancel: &Cancellation,
-    ) -> Result<Vec<TreeDisplayRow>, ProviderError> {
+    ) -> Result<(Vec<TreeDisplayRow>, usize), ProviderError> {
         options
             .search
             .validate_bounds()
@@ -277,6 +289,9 @@ impl ProjectionState {
         let mut rows = HashMap::with_capacity(model_rows.len());
         let mut siblings: HashMap<Option<TreeRowId>, Vec<Entry>> = HashMap::new();
         let mut matching = HashSet::new();
+        // Model rows arrive parents first, so a left-out parent precedes its rows.
+        let mut left_out = HashSet::new();
+        let mut hidden = 0_usize;
         for row in model_rows {
             check_cancel(cancel)?;
             let record = &self.records[&row.id];
@@ -290,6 +305,17 @@ impl ProjectionState {
                         .id,
                 )
             };
+            if options.hide_hidden {
+                if parent.is_some_and(|parent| left_out.contains(&parent)) {
+                    left_out.insert(record.id);
+                    continue;
+                }
+                if crate::hidden_entries::is_hidden(&record.entry) {
+                    left_out.insert(record.id);
+                    hidden += 1;
+                    continue;
+                }
+            }
             let passes_filter = filter.matches_entry(&record.entry);
             let prefix = if passes_filter && !query.is_empty() {
                 crate::search::entry_prefix_end(&record.entry, &query, &|| cancel.is_cancelled())
@@ -388,7 +414,7 @@ impl ProjectionState {
             );
             result.push(row);
         }
-        Ok(result)
+        Ok((result, hidden))
     }
 }
 

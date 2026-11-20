@@ -76,7 +76,7 @@ plugin projects retain their own parser/decoder tests and public SDK boundaries.
 ## Shared build launch through a registered private runtime
 
 The final probe also ran as
-`D:\experiments\dev\FM\_build\qa\shared-viewer-probe-profile-20261107\me.exe`, with a
+`_build\qa\shared-viewer-probe-profile-20261107\me.exe`, with a
 copied viewer tree beside it in the shared checkout. `deploy-private.ps1`
 copied that exact executable and packages into
 `<user-profile>\_build\viewer-qa-profile-20261107` and registered the

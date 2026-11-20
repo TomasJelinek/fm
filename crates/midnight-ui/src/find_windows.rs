@@ -14,9 +14,14 @@ use std::{
     rc::{Rc, Weak},
     sync::Arc,
 };
+#[path = "find_feed.rs"]
+pub(crate) mod feed;
 #[cfg(test)]
 #[path = "find_window_order_tests.rs"]
 mod order_tests;
+#[cfg(test)]
+#[path = "find_window_root_tests.rs"]
+mod root_tests;
 
 struct Rows {
     state: Weak<RefCell<Presenter>>,
@@ -44,6 +49,7 @@ impl Model for Rows {
         let id = self.id_for_row(row)?;
         let result = session.results.get(id.0.checked_sub(1)? as usize)?;
         let entry = &result.entry;
+        let path = shown_text(&entry.path.parent().unwrap_or(&entry.path).to_string_lossy());
         Some(FindRow {
             token: format!("{}:{}", session.generation.0, result.id.0).into(),
             name: shown_text(
@@ -59,7 +65,8 @@ impl Model for Rows {
                 .map_or_else(SharedString::default, |value| {
                     shown_text(&value.to_string_lossy())
                 }),
-            path: shown_text(&entry.path.parent().unwrap_or(&entry.path).to_string_lossy()),
+            path_tail: crate::path_tail(&path),
+            path,
             size: if entry.kind == EntryKind::Directory {
                 "<DIR>".into()
             } else {
@@ -85,6 +92,7 @@ impl Model for Rows {
                     .and_then(|id| session.results.get(id.0.checked_sub(1)? as usize))
                     .is_none_or(|previous| previous.duplicate_group != result.duplicate_group),
             group_shade: result.duplicate_group.is_some_and(|group| group % 2 == 0),
+            in_archive: result.archive.is_some(),
         })
     }
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -150,6 +158,8 @@ struct WindowRecord {
     // One model for the window's life: a tick updates its row in place, so an
     // open Search folders list stays open while several folders are toggled.
     root_rows: Rc<VecModel<FindRootRow>>,
+    // The session's Add count already shown to the window.
+    added_root: u64,
     revision: Option<u64>,
 }
 type Windows = Rc<RefCell<HashMap<FindSessionId, WindowRecord>>>;
@@ -158,10 +168,12 @@ pub(crate) fn install(
     main: &MainWindow,
     state: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
+    begin_owned: crate::BeginOwned,
 ) {
     let windows: Windows = Rc::new(RefCell::new(HashMap::new()));
     let sessions = RefCell::new(DialogSessions::default());
     let closing = Rc::new(Cell::new(false));
+    let feeds = feed::install(main, &state, &send, &begin_owned);
     let failures = Failures::new(
         main,
         &state,
@@ -199,6 +211,7 @@ pub(crate) fn install(
                 return;
             };
             refresh(&main, &windows, &sessions, &state, &send, &failures);
+            feeds.refresh(&main, &state.borrow());
         });
     }
     main.on_close_find_windows(move || {
@@ -328,6 +341,12 @@ fn refresh(
                     .unwrap_or(i32::MAX),
             );
         }
+        // After the rows exist: an accepted Add, typed or browsed, chooses its folder
+        // and closes the entry, also when the folder was listed already.
+        if record.added_root != s.added_root.0 {
+            record.added_root = s.added_root.0;
+            w.invoke_root_added(i32::try_from(s.added_root.1).unwrap_or(i32::MAX));
+        }
         let selected = (record.rows.structure.get().0 == s.generation.0)
             .then(|| {
                 usize::try_from(w.get_selected_row())
@@ -454,6 +473,25 @@ fn create(
     callback!(on_reveal, |p, send, row| {
         p.reveal_find(id, &row, send);
     });
+    {
+        // The results stay in the panel; this window closes like Total Commander's.
+        let host = host.clone();
+        let state = state.clone();
+        let weak = window.as_weak();
+        let main = main.as_weak();
+        window.on_feed_panel(move || {
+            if !host.is_current(session) {
+                return;
+            }
+            let fed = state.borrow_mut().feed_find_results(id).is_some();
+            if fed && let Some(window) = weak.upgrade() {
+                window.invoke_close_session();
+            }
+            if let Some(main) = main.upgrade() {
+                crate::refresh(&main, &state.borrow());
+            }
+        });
+    }
     callback!(on_file_action, |p, send, row, action| {
         if let Some(action) = file_action(action) {
             p.find_file_action(id, &row, action, send);
@@ -510,6 +548,7 @@ fn create(
         rows,
         roots: vec![],
         root_rows,
+        added_root: 0,
         revision: None,
     })
 }
@@ -548,11 +587,13 @@ fn form(draft: FindDraft) -> FindForm {
             text: draft.content.to_string(),
             case_sensitive: draft.content_case,
             whole_words: draft.whole_words,
+            regex: draft.content_regex,
         }),
         modified_within: draft
             .modified_enabled
             .then(|| std::time::Duration::from_secs(draft.modified_seconds.max(0) as u64)),
         duplicates: draft.duplicates,
+        archives: draft.archives && !draft.duplicates,
     }
 }
 
@@ -631,6 +672,13 @@ fn details(s: &crate::presenter::find::FindSession, locale: &NumberLocale) -> St
             count(p.duplicate_groups),
             count(p.duplicate_candidates),
             count(p.duplicate_bytes)
+        ));
+    }
+    if p.archives > 0 {
+        text.push_str(&format!(
+            "\nInside archives: {} archives · {} members",
+            count(p.archives),
+            count(p.archive_members)
         ));
     }
     if let Some(summary) = &s.summary {

@@ -1,0 +1,655 @@
+//! Delete to Trash (F8) for real, into the staged process's private Trash
+//! (`viewers_stage::run_private`: `$XDG_DATA_HOME/Trash` is a folder in the work
+//! folder): a file, a folder, a multi-selection, awkward names (`.trashinfo` paths and
+//! shortened labels), a read-only file, a nested row of the inline tree; then the
+//! write-protected cases. A write-protected folder inside the deleted tree is deleted
+//! (owner write is added for it); an entry of a write-protected folder outside the
+//! deleted tree is refused with a Retry/Skip/Skip all/Cancel question, and Retry works
+//! once the folder is writable. The last cases wait for announced behavior and are
+//! reported as pending while it is missing.
+use crate::{
+    Context,
+    app::{App, Config},
+    files_support::{self as support, DeleteEnd, Pending, Timings, facts, io_error, tree_facts},
+    input, inspect, panel, tools_support as tools, viewers_stage,
+};
+use i_slint_core::items::AccessibleRole;
+use midnight_core::{OperationProgress, OperationState, PaneId};
+use slint::platform::{Key, WindowAdapter};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+pub const TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const LEFT: PaneId = PaneId::Left;
+const OWNER_WRITE: &str =
+    "Delete adds owner write permission to write-protected folders inside the deleted tree";
+const DELETE_PROMPT: &str =
+    "Delete failures ask Retry/Skip/Skip all/Cancel and continue after Skip";
+
+pub fn trash(context: &mut Context) -> Result<(), String> {
+    viewers_stage::run_private(context, TIMEOUT, run)
+}
+
+#[cfg(unix)]
+fn chmod(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|error| io_error(path, error))
+}
+
+#[cfg(not(unix))]
+fn chmod(_: &Path, _: u32) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::symlink_metadata(path).map_or(0, |metadata| metadata.permissions().mode() & 0o7777)
+}
+
+#[cfg(not(unix))]
+fn mode(_: &Path) -> u32 {
+    0
+}
+
+/// `%XX` sequences decoded, as `.trashinfo` writes paths.
+fn percent_decode(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let Some(value) = text
+                .get(index + 1..index + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        {
+            output.push(value);
+            index += 3;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    output
+}
+
+/// The label a trashed entry starts with: the name's first 32 bytes at most, cut at a
+/// character boundary.
+fn label(name: &str) -> &str {
+    let mut end = name.len().min(32);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
+}
+
+/// One entry of the Trash: its name in `files/` and its `.trashinfo` text.
+struct Trashed {
+    name: String,
+    info: String,
+}
+
+fn trashed(trash: &Path) -> Vec<Trashed> {
+    panel::disk_names(&trash.join("files"))
+        .into_iter()
+        .map(|name| Trashed {
+            info: fs::read_to_string(trash.join("info").join(format!("{name}.trashinfo")))
+                .unwrap_or_default(),
+            name,
+        })
+        .collect()
+}
+
+/// The Trash entry whose `.trashinfo` names `original`, checked against the format.
+fn entry_for(trash: &Path, original: &Path) -> Result<PathBuf, String> {
+    let wanted = original.as_os_str().as_encoded_bytes();
+    let entries = trashed(trash);
+    let entry = entries
+        .iter()
+        .find(|entry| {
+            entry
+                .info
+                .lines()
+                .find_map(|line| line.strip_prefix("Path="))
+                .is_some_and(|path| percent_decode(path) == wanted)
+        })
+        .ok_or_else(|| {
+            format!(
+                "no Trash entry names {}; entries {:?}",
+                original.display(),
+                entries.iter().map(|entry| &entry.name).collect::<Vec<_>>()
+            )
+        })?;
+    let lines: Vec<&str> = entry.info.lines().collect();
+    let date = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("DeletionDate="))
+        .unwrap_or_default();
+    let date_ok = date.len() == 19
+        && date.bytes().enumerate().all(|(index, byte)| match index {
+            4 | 7 => byte == b'-',
+            10 => byte == b'T',
+            13 | 16 => byte == b':',
+            _ => byte.is_ascii_digit(),
+        });
+    if lines.first() != Some(&"[Trash Info]") || !date_ok {
+        return Err(format!(
+            "{}.trashinfo is malformed: {:?}",
+            entry.name, entry.info
+        ));
+    }
+    let name = original
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !entry
+        .name
+        .starts_with(&format!("{}-midnight-", label(&name)))
+    {
+        return Err(format!(
+            "the Trash entry {:?} does not start with the label {:?}",
+            entry.name,
+            label(&name)
+        ));
+    }
+    Ok(trash.join("files").join(&entry.name))
+}
+
+fn ok(progress: &OperationProgress, what: &str) -> Result<(), String> {
+    support::operation_ok(progress, what)
+}
+
+fn run(context: &mut Context) -> Result<(), String> {
+    // Only the staged process has a private data folder, beside its run folder.
+    let staged = context.run_dir.parent().and_then(Path::parent);
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|data| staged.is_some_and(|staged| data.starts_with(staged)))
+        .ok_or("files_trash runs only in its staged process, with a private XDG_DATA_HOME")?;
+    let trash_root = data.join("Trash");
+    let root = support::scratch(context, "trash")?;
+    support::stage(
+        context,
+        &["text", "code", "images", "names", "readonly", "deep"],
+        &root,
+    )?;
+    support::stage(context, &["readonly"], &root.join("perm"))?;
+    crate::scenarios::transfers::copy_tree(&context.fixture.path("many"), &root.join("bulk"))?;
+    let ro_parent = root.join("ro-parent");
+    fs::create_dir(&ro_parent).map_err(|error| io_error(&ro_parent, error))?;
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        fs::write(ro_parent.join(name), format!("{name}\n"))
+            .map_err(|error| io_error(&ro_parent, error))?;
+    }
+    chmod(&ro_parent, 0o555)?;
+    let mut app = App::start(Config::new(&root, &context.work));
+    let mut failures = Vec::new();
+    let mut pending = Pending::default();
+    let mut timings = Timings::default();
+
+    // A file: in the Trash with its bytes and a well-formed .trashinfo.
+    panel::enter(&mut app, LEFT, "text")?;
+    panel::select_row(&mut app, LEFT, "plain.txt")?;
+    let before = facts(&root.join("text/plain.txt"))?;
+    let started = Instant::now();
+    let progress = support::trash(&mut app, context, Some("trash-confirmation"))?;
+    timings.add("F8 confirm to report", started.elapsed());
+    if let Err(error) = ok(&progress, "F8 text/plain.txt") {
+        failures.push(error);
+    }
+    support::wait_row(&mut app, LEFT, "plain.txt", false);
+    match entry_for(&trash_root, &root.join("text/plain.txt")) {
+        Err(error) => failures.push(error),
+        Ok(entry) => {
+            if facts(&entry).ok().as_ref() != Some(&before) {
+                failures.push(format!(
+                    "the trashed plain.txt is {:?}, not {before:?}",
+                    facts(&entry)
+                ));
+            }
+        }
+    }
+    for folder in ["", "files", "info"] {
+        let path = trash_root.join(folder);
+        if mode(&path) & 0o777 != 0o700 {
+            failures.push(format!(
+                "{} has mode {:o}, not 0700",
+                path.display(),
+                mode(&path)
+            ));
+        }
+    }
+    panel::leave(&mut app, LEFT)?;
+
+    // A folder: its whole tree, modes and times, in the Trash.
+    let tree = tree_facts(&root.join("code"))?;
+    panel::select_row(&mut app, LEFT, "code")?;
+    let progress = support::trash(&mut app, context, None)?;
+    if let Err(error) = ok(&progress, "F8 code/") {
+        failures.push(error);
+    }
+    match entry_for(&trash_root, &root.join("code")) {
+        Err(error) => failures.push(error),
+        Ok(entry) => {
+            let differences = support::compare_trees(&tree, &tree_facts(&entry)?, true);
+            if !differences.is_empty() {
+                failures.push(format!("the trashed code/ differs: {differences:?}"));
+            }
+        }
+    }
+
+    // A multi-selection: every file of images/.
+    panel::enter(&mut app, LEFT, "images")?;
+    panel::focus_list(&mut app, LEFT)?;
+    input::chord(app.slint(), &[Key::Control], "a");
+    let names = support::names_on_disk(&root.join("images"));
+    let wanted = names.clone();
+    app.until("Ctrl+A in images/", move |app| {
+        let mut selected = support::selected_names(app, LEFT);
+        selected.sort();
+        selected == wanted
+    });
+    let progress = support::trash(&mut app, context, Some("trash-multi"))?;
+    if let Err(error) = ok(&progress, "F8 of images/*") {
+        failures.push(error);
+    }
+    for name in &names {
+        if let Err(error) = entry_for(&trash_root, &root.join("images").join(name)) {
+            failures.push(error);
+        }
+    }
+    if !support::names_on_disk(&root.join("images")).is_empty() {
+        failures.push("images/ is not empty after F8 of every file".into());
+    }
+    panel::leave(&mut app, LEFT)?;
+
+    // Awkward names: percent-encoded paths, labels cut at 32 bytes.
+    panel::enter(&mut app, LEFT, "names")?;
+    let long = format!("{}.txt", "long-name-".repeat(22));
+    for name in [
+        "Ünïcödé.txt",
+        "with spaces.txt",
+        "日本語のファイル.txt",
+        "#hash&amp;$dollar%percent.txt",
+        long.as_str(),
+    ] {
+        if let Err(error) = panel::select_row(&mut app, LEFT, name) {
+            failures.push(error);
+            continue;
+        }
+        let progress = support::trash(&mut app, context, None)?;
+        if let Err(error) = ok(&progress, &format!("F8 names/{name}")) {
+            failures.push(error);
+            continue;
+        }
+        support::wait_row(&mut app, LEFT, name, false);
+        if let Err(error) = entry_for(&trash_root, &root.join("names").join(name)) {
+            failures.push(error);
+        }
+    }
+    panel::leave(&mut app, LEFT)?;
+
+    // A read-only file keeps its mode in the Trash.
+    panel::enter(&mut app, LEFT, "readonly")?;
+    panel::select_row(&mut app, LEFT, "locked.txt")?;
+    let progress = support::trash(&mut app, context, None)?;
+    if let Err(error) = ok(&progress, "F8 readonly/locked.txt") {
+        failures.push(error);
+    }
+    match entry_for(&trash_root, &root.join("readonly/locked.txt")) {
+        Err(error) => failures.push(error),
+        Ok(entry) if mode(&entry) & 0o777 != 0o444 => failures.push(format!(
+            "the trashed locked.txt has mode {:o}",
+            mode(&entry)
+        )),
+        Ok(_) => {}
+    }
+
+    // A write-protected folder with contents is the whole deleted tree: owner write is
+    // added for it and it goes to the Trash. While that is missing, the refusal must
+    // leave it unchanged.
+    let locked = tree_facts(&root.join("readonly/locked-folder"))?;
+    panel::select_row(&mut app, LEFT, "locked-folder")?;
+    let (start, ended) = support::delete_with(&mut app, false)?;
+    let result = match ended {
+        DeleteEnd::Done(progress) if progress.state == OperationState::Completed => {
+            entry_for(&trash_root, &root.join("readonly/locked-folder")).map(|_| ())
+        }
+        DeleteEnd::Done(progress) => {
+            let kept = tree_facts(&root.join("readonly/locked-folder"))
+                .is_ok_and(|after| support::compare_trees(&locked, &after, true).is_empty());
+            if !kept {
+                failures.push("a refused Trash of the write-protected folder changed it".into());
+            }
+            Err(format!(
+                "{:?}: {:?}",
+                progress.state,
+                progress.errors.first()
+            ))
+        }
+        DeleteEnd::Asked(window) => {
+            let text = support::describe_window(&window);
+            support::cancel_delete(&mut app, &window, start);
+            Err(format!("asked instead: {text}"))
+        }
+    };
+    pending.check(
+        "F8 of a write-protected folder with contents",
+        OWNER_WRITE,
+        result,
+    );
+    support::dismiss_all(&mut app);
+    panel::leave(&mut app, LEFT)?;
+
+    // An entry of a write-protected folder (outside the deleted tree): the question
+    // offers Retry, Skip, Skip all and Cancel; Retry works once the folder is writable.
+    panel::enter(&mut app, LEFT, "ro-parent")?;
+    panel::select_row(&mut app, LEFT, "a.txt")?;
+    let (start, ended) = support::delete_with(&mut app, false)?;
+    let result = match ended {
+        DeleteEnd::Asked(window) => {
+            let offered = inspect::labels(window.window(), AccessibleRole::Button);
+            app.screenshot_window(context, &window, "delete-question", "A refused delete asks");
+            let missing: Vec<&str> = ["Retry", "Skip", "Cancel"]
+                .into_iter()
+                .filter(|wanted| !offered.iter().any(|label| label.starts_with(wanted)))
+                .collect();
+            chmod(&ro_parent, 0o755)?;
+            let answered = support::answer_delete(&mut app, &window, &["Retry", "Skip"]);
+            let ended = support::wait_delete(&mut app, start);
+            chmod(&ro_parent, 0o555)?;
+            match ended {
+                DeleteEnd::Done(progress) if progress.state == OperationState::Completed => {
+                    if !missing.is_empty() {
+                        Err(format!("the question offers no {missing:?}: {offered:?}"))
+                    } else if answered.as_deref() != Ok("Retry") {
+                        Err(format!("Retry could not be answered: {answered:?}"))
+                    } else {
+                        entry_for(&trash_root, &ro_parent.join("a.txt")).map(|_| ())
+                    }
+                }
+                DeleteEnd::Done(progress) => Err(format!("Retry ended {:?}", progress.state)),
+                DeleteEnd::Asked(window) => {
+                    let text = support::describe_window(&window);
+                    support::cancel_delete(&mut app, &window, start);
+                    Err(format!("Retry asked again: {text}"))
+                }
+            }
+        }
+        DeleteEnd::Done(progress) => {
+            if !ro_parent.join("a.txt").is_file() {
+                failures.push("a refused delete in a write-protected folder removed a.txt".into());
+            }
+            Err(format!(
+                "no question; the delete ended {:?} ({:?})",
+                progress.state,
+                progress.errors.first()
+            ))
+        }
+    };
+    pending.check(
+        "F8 of a file in a write-protected folder asks, and Retry works",
+        DELETE_PROMPT,
+        result,
+    );
+    support::dismiss_all(&mut app);
+
+    // Two such files: Skip all keeps both and ends the job.
+    panel::focus_list(&mut app, LEFT)?;
+    input::chord(app.slint(), &[Key::Control], "d");
+    for name in ["b.txt", "c.txt"] {
+        panel::select_row(&mut app, LEFT, name)?;
+        input::key(app.slint(), Key::Insert);
+    }
+    let (start, ended) = support::delete_with(&mut app, false)?;
+    let result = match ended {
+        DeleteEnd::Asked(window) => {
+            let clicked = support::answer_delete(
+                &mut app,
+                &window,
+                &["Skip all", "Skip all this error type"],
+            );
+            match (clicked, support::wait_delete(&mut app, start)) {
+                (Err(error), DeleteEnd::Asked(window)) => {
+                    support::cancel_delete(&mut app, &window, start);
+                    Err(error)
+                }
+                (Err(error), _) => Err(error),
+                (Ok(_), DeleteEnd::Done(progress)) => {
+                    if ro_parent.join("b.txt").is_file() && ro_parent.join("c.txt").is_file() {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "Skip all ended {:?} without both files",
+                            progress.state
+                        ))
+                    }
+                }
+                (Ok(_), DeleteEnd::Asked(window)) => {
+                    let text = support::describe_window(&window);
+                    support::cancel_delete(&mut app, &window, start);
+                    Err(format!("Skip all asked again: {text}"))
+                }
+            }
+        }
+        DeleteEnd::Done(progress) => Err(format!(
+            "no question; the delete ended {:?} with {} error(s)",
+            progress.state,
+            progress.errors.len()
+        )),
+    };
+    if !ro_parent.join("b.txt").is_file() || !ro_parent.join("c.txt").is_file() {
+        failures.push("a refused delete in a write-protected folder removed a file".into());
+    }
+    pending.check(
+        "F8 of two files in a write-protected folder: Skip all keeps both",
+        DELETE_PROMPT,
+        result,
+    );
+    support::dismiss_all(&mut app);
+    panel::leave(&mut app, LEFT)?;
+
+    // A nested row of the inline tree goes to the Trash with its tree.
+    support::toggle_tree(&mut app, "deep")?;
+    support::wait_tree_depth(&mut app, "level-01", Some(1));
+    support::toggle_tree(&mut app, "level-01")?;
+    support::wait_tree_depth(&mut app, "level-02", Some(2));
+    support::toggle_tree(&mut app, "level-02")?;
+    support::wait_tree_depth(&mut app, "level-03", Some(3));
+    let nested = root.join("deep/level-01/level-02/level-03");
+    let tree = tree_facts(&nested)?;
+    panel::select_row(&mut app, LEFT, "level-03")?;
+    let progress = support::trash(&mut app, context, Some("trash-tree-row"))?;
+    if let Err(error) = ok(&progress, "F8 of the nested level-03 row") {
+        failures.push(error);
+    }
+    support::wait_tree_depth(&mut app, "level-03", None);
+    match entry_for(&trash_root, &nested) {
+        Err(error) => failures.push(error),
+        Ok(entry) => {
+            let differences = support::compare_trees(&tree, &tree_facts(&entry)?, true);
+            if !differences.is_empty() {
+                failures.push(format!("the trashed level-03 differs: {differences:?}"));
+            }
+        }
+    }
+    support::toggle_tree(&mut app, "deep")?;
+    support::wait_tree_depth(&mut app, "level-01", None);
+
+    // Shift+F8 of a tree holding a write-protected folder with contents: it is deleted
+    // whole, without a question.
+    panel::enter(&mut app, LEFT, "perm")?;
+    panel::select_row(&mut app, LEFT, "readonly")?;
+    let (start, ended) = support::delete_with(&mut app, true)?;
+    let result = match ended {
+        DeleteEnd::Done(progress)
+            if progress.state == OperationState::Completed
+                && !root.join("perm/readonly").exists() =>
+        {
+            Ok(())
+        }
+        DeleteEnd::Done(progress) => Err(format!(
+            "{:?} ({:?}); left {:?}",
+            progress.state,
+            progress.errors.first(),
+            support::names_on_disk(&root.join("perm/readonly"))
+        )),
+        DeleteEnd::Asked(window) => {
+            let text = support::describe_window(&window);
+            support::cancel_delete(&mut app, &window, start);
+            Err(format!("asked: {text}"))
+        }
+    };
+    pending.check(
+        "Shift+F8 of a tree with a write-protected folder deletes it whole",
+        OWNER_WRITE,
+        result,
+    );
+    support::dismiss_all(&mut app);
+    panel::leave(&mut app, LEFT)?;
+
+    // A long permanent delete: its window holds still while paused, then Cancel
+    // operation stops it, and every file left is whole.
+    let originals = tree_facts(&context.fixture.path("many"))?;
+    panel::select_row(&mut app, LEFT, "bulk")?;
+    let start = app.operations.len();
+    let before = app.tool_windows().len();
+    panel::wait_input(&mut app);
+    input::chord(app.slint(), &[Key::Shift], Key::F8);
+    support::wait_operation_dialog(&mut app, "the permanent delete confirmation");
+    input::key(app.slint(), Key::Return);
+    app.until("the delete's window or its end", move |app| {
+        app.tool_windows().len() > before
+            || app.operations[start..]
+                .iter()
+                .any(|progress| progress.state.is_terminal())
+    });
+    let ended = |app: &App| {
+        app.operations[start..]
+            .iter()
+            .find(|progress| progress.state.is_terminal())
+            .cloned()
+    };
+    match tools::tool_titled(&app, "Permanently delete").filter(|_| ended(&app).is_none()) {
+        None => context.note(format!(
+            "the delete of bulk/ ended {:?} before its window could be used",
+            ended(&app).map(|progress| progress.state)
+        )),
+        Some(window) => {
+            crate::app::layout_tool(&window, 760, 560);
+            app.settle();
+            let held = |app: &App| {
+                app.operations[start..]
+                    .last()
+                    .map(|progress| progress.processed_entries)
+            };
+            if tools::click_last(window.window(), "Pause").is_ok() {
+                let watched = window.clone();
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while !inspect::visible_texts(watched.window())
+                    .iter()
+                    .any(|text| text == "Paused")
+                    && ended(&app).is_none()
+                    && Instant::now() < deadline
+                {
+                    app.idle(Duration::from_millis(20));
+                }
+                let at = held(&app);
+                app.idle(Duration::from_millis(800));
+                if ended(&app).is_none() && held(&app) != at {
+                    failures.push(format!(
+                        "the paused delete moved on: {at:?} → {:?}",
+                        held(&app)
+                    ));
+                }
+                app.screenshot_window(context, &window, "delete-paused", "A paused delete");
+                let _ = tools::click_last(window.window(), "Resume");
+            } else {
+                failures.push(format!(
+                    "the delete's window has no Pause: {:?}",
+                    inspect::visible_texts(window.window())
+                ));
+            }
+            if ended(&app).is_none()
+                && tools::click_last(window.window(), "Cancel operation").is_ok()
+            {
+                let watched = window.clone();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while ended(&app).is_none() && Instant::now() < deadline {
+                    if inspect::visible_texts(watched.window())
+                        .iter()
+                        .any(|text| text == "Cancel this operation?")
+                    {
+                        let _ = tools::click_last(watched.window(), "Cancel operation");
+                    }
+                    app.idle(Duration::from_millis(30));
+                }
+            }
+            let progress = support::wait_operation(&mut app, start);
+            // A cancelled delete keeps its window open with the outcome, as Copy does;
+            // no notice repeats it.
+            app.idle(Duration::from_millis(400));
+            let ended = inspect::visible_texts(window.window());
+            if progress.state == OperationState::Cancelled {
+                if !window.window().is_visible()
+                    || !ended
+                        .iter()
+                        .any(|text| text.starts_with("Delete cancelled;"))
+                    || !ended.iter().any(|text| text.contains("Items deleted: "))
+                    || ended.iter().any(|text| text.starts_with("Items remaining"))
+                {
+                    failures.push(format!(
+                        "the cancelled delete's window does not show its outcome: {:?}",
+                        ended.iter().take(12).collect::<Vec<_>>()
+                    ));
+                }
+                if let Some(notice) = support::shown_notice(&app) {
+                    failures.push(format!(
+                        "a notice follows the cancelled delete whose window is open: {notice:?}"
+                    ));
+                }
+                app.screenshot_window(context, &window, "delete-cancelled", "A cancelled delete");
+            }
+            let kept = tree_facts(&root.join("bulk")).unwrap_or_default();
+            let partial: Vec<&String> = kept
+                .iter()
+                .filter(|(path, facts)| {
+                    originals.get(*path).map(|original| &original.content) != Some(&facts.content)
+                })
+                .map(|(path, _)| path)
+                .collect();
+            if !partial.is_empty() {
+                failures.push(format!(
+                    "the cancelled delete left changed files: {:?}",
+                    partial.iter().take(5).collect::<Vec<_>>()
+                ));
+            }
+            context.note(format!(
+                "the delete of bulk/ ended {:?}: {} of {} entries kept, all whole",
+                progress.state,
+                kept.len(),
+                originals.len()
+            ));
+        }
+    }
+    support::dismiss_all(&mut app);
+
+    let entries = trashed(&trash_root);
+    context.note(format!(
+        "{} entries in the private Trash {}: {:?}",
+        entries.len(),
+        trash_root.display(),
+        entries
+            .iter()
+            .map(|entry| &entry.name)
+            .take(12)
+            .collect::<Vec<_>>()
+    ));
+    context.note(timings.summary());
+    app.shutdown()?;
+    support::report_with(context, &failures, &pending)
+}

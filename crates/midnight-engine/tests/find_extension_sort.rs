@@ -40,6 +40,7 @@ fn fixture() -> Vec<Arc<FindResult>> {
             id: FindResultId(index as u64 + 1),
             duplicate_group: None,
             duplicate_group_size: 0,
+            archive: None,
             entry: FindEntry {
                 path: PathBuf::from(path),
                 kind,

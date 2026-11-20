@@ -373,15 +373,15 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "midnight-image-viewer-api"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "6fb5a14d480a38bb8f2712aa872891478c85d28a49c42dcf19dde1c237fb6ce5"
+checksum = "130fc9ed5a36d3e06840d5ed41d7130585a24dc33fe6e9ed4c9e6c9231e14cad"
 
 [[package]]
 name = "midnight-image-viewer-sdk"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "fb35f1591ca683860b78c50b043c7820bf5f32ca4c118d127ac5845e5befd980"
+checksum = "baf0111ac5832369979b611066d5b201168d921489875a3ea7d5b6298c11274c"
 dependencies = [
  "midnight-image-viewer-api",
  "midnight-worker-sdk",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-viewer-pdf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hayro",
  "midnight-image-viewer-sdk",

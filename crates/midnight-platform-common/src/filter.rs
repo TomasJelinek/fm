@@ -1,12 +1,11 @@
 //! Bounded worker-side panel/name filter compilation; names are never converted lossily.
 use midnight_core::{
-    Entry, EntryKind, FilterDiagnostic, FilterDiagnosticKind, FilterMode, PanelFilter,
+    Entry, EntryKind, FilterDiagnostic, FilterDiagnosticKind, FilterMasks, FilterMode, PanelFilter,
 };
 use regex::{Regex, RegexBuilder};
 use std::ffi::OsStr;
 
 pub(crate) const REGEX_BYTES: usize = 2 * 1024 * 1024;
-const MAX_MASKS: usize = 64;
 
 pub struct CompiledFilter {
     include: Option<Regex>,
@@ -15,7 +14,9 @@ pub struct CompiledFilter {
 
 impl CompiledFilter {
     pub fn new(filter: &PanelFilter) -> Result<Self, String> {
-        FilterPlan::new(filter)?.compile(REGEX_BYTES)
+        FilterPlan::new(filter)?
+            .compile(REGEX_BYTES)
+            .map_err(String::from)
     }
 
     /// Invalid Unicode names remain visible. Their raw identity is never replaced.
@@ -30,6 +31,22 @@ impl CompiledFilter {
                 .exclude
                 .as_ref()
                 .is_some_and(|regex| regex.is_match(name))
+    }
+}
+
+/// Why a prepared pattern did not compile into a matcher.
+pub(crate) enum PatternError {
+    /// An invalid pattern (or engine budget); the message says why.
+    Invalid(String),
+    /// A valid pattern whose matcher would exceed its byte budget.
+    TooLarge(String),
+}
+
+impl From<PatternError> for String {
+    fn from(error: PatternError) -> Self {
+        match error {
+            PatternError::Invalid(message) | PatternError::TooLarge(message) => message,
+        }
     }
 }
 
@@ -77,9 +94,11 @@ impl FilterPlan {
 
     /// Each retained engine receives this program ceiling AND this DFA ceiling.
     /// The caller accounts for both before constructing engines. Ordinary filters keep 2 MiB.
-    pub(crate) fn compile(self, engine_bytes: usize) -> Result<CompiledFilter, String> {
+    pub(crate) fn compile(self, engine_bytes: usize) -> Result<CompiledFilter, PatternError> {
         if engine_bytes == 0 || engine_bytes > REGEX_BYTES {
-            return Err("Filename matcher engine budget must be between 1 byte and 2 MiB.".into());
+            return Err(PatternError::Invalid(
+                "Filename matcher engine budget must be between 1 byte and 2 MiB.".into(),
+            ));
         }
         let compile = |pattern: &str| {
             RegexBuilder::new(pattern)
@@ -89,7 +108,10 @@ impl FilterPlan {
                 .dfa_size_limit(engine_bytes)
                 .nest_limit(64)
                 .build()
-                .map_err(|error| error.to_string())
+                .map_err(|error| match error {
+                    regex::Error::CompiledTooBig(_) => PatternError::TooLarge(error.to_string()),
+                    _ => PatternError::Invalid(error.to_string()),
+                })
         };
         Ok(CompiledFilter {
             include: self.include.as_deref().map(compile).transpose()?,
@@ -150,62 +172,37 @@ impl CompiledPanelFilter {
     }
 }
 
+/// The include and exclude regexes of a Masks expression. The grammar is
+/// `FilterMasks`, which the Select by mask dialog checks too; without include
+/// masks every name is included.
 fn masks(expression: &str) -> Result<(String, Option<String>), String> {
-    let mut groups = [Vec::new(), Vec::new()];
-    let mut excluded = false;
-    let mut current = String::new();
-    let mut chars = expression.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            ';' if chars.peek() == Some(&';') => {
-                chars.next();
-                current.push(';');
-            }
-            ';' | '|' => {
-                push_mask(&mut groups[usize::from(excluded)], &mut current);
-                if ch == '|' {
-                    if excluded {
-                        return Err("Use at most one | before excluded masks.".into());
-                    }
-                    excluded = true;
-                }
-            }
-            _ => current.push(ch),
+    let masks = FilterMasks::parse(expression).map_err(|error| error.message().to_owned())?;
+    let group = |list: &[String]| {
+        let mut alternatives: Vec<String> =
+            list.iter().map(String::as_str).map(mask_regex).collect();
+        if alternatives.is_empty() {
+            alternatives.push(".*".into());
         }
-    }
-    push_mask(&mut groups[usize::from(excluded)], &mut current);
-    if groups.iter().map(Vec::len).sum::<usize>() > MAX_MASKS {
-        return Err("A panel filter may contain at most 64 masks.".into());
-    }
-    if excluded && groups[1].is_empty() {
-        return Err("Add at least one excluded mask after |.".into());
-    }
-    if groups[0].is_empty() {
-        groups[0].push(".*".into());
-    }
-    let expression = |group: &[String]| format!("\\A(?:{})\\z", group.join("|"));
+        format!("\\A(?:{})\\z", alternatives.join("|"))
+    };
     Ok((
-        expression(&groups[0]),
-        excluded.then(|| expression(&groups[1])),
+        group(&masks.include),
+        (!masks.exclude.is_empty()).then(|| group(&masks.exclude)),
     ))
 }
 
-fn push_mask(group: &mut Vec<String>, current: &mut String) {
-    let mask = current.trim();
-    if !mask.is_empty() {
-        if mask == "*.*" {
-            group.push(".*".into());
-        } else {
-            let mut regex = String::new();
-            for ch in mask.chars() {
-                match ch {
-                    '*' => regex.push_str(".*"),
-                    '?' => regex.push('.'),
-                    _ => regex.push_str(&regex::escape(&ch.to_string())),
-                }
-            }
-            group.push(regex);
+/// `*` is any text and `?` one character; `*.*` is every name, extensionless too.
+fn mask_regex(mask: &str) -> String {
+    if mask == "*.*" {
+        return ".*".into();
+    }
+    let mut regex = String::new();
+    for ch in mask.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            _ => regex.push_str(&regex::escape(&ch.to_string())),
         }
     }
-    current.clear();
+    regex
 }

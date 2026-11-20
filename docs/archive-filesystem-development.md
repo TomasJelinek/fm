@@ -113,19 +113,19 @@ Regeneration after deleting build outputs (PowerShell; adjust checkout location
 and use the canonical bundle path printed by the packaging command):
 
 ```powershell
-$env:CARGO_HOME = 'D:\experiments\dev\FM\.tools\cargo'
-$env:RUSTUP_HOME = 'D:\experiments\dev\FM\.tools\rustup'
-$env:PATH = 'D:\experiments\dev\FM\.tools\cargo\bin;' + $env:PATH
+$env:CARGO_HOME = '<repo>\.tools\cargo'
+$env:RUSTUP_HOME = '<repo>\.tools\rustup'
+$env:PATH = '<repo>\.tools\cargo\bin;' + $env:PATH
 $env:CARGO_PROFILE_DEV_DEBUG = '0'
 $env:CARGO_PROFILE_TEST_DEBUG = '0'
 $env:CARGO_INCREMENTAL = '0'
-$env:TEMP = 'D:\experiments\dev\FM\_build\tmp'
+$env:TEMP = '<repo>\_build\tmp'
 $env:TMP = $env:TEMP
 New-Item -ItemType Directory -Force $env:TEMP | Out-Null
-$env:CARGO_TARGET_DIR = 'D:\experiments\dev\FM\_build\api-tools'
-cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --offline -- D:/experiments/dev/FM D:/experiments/dev/FM/_build/worker-sdk-releases
-$sdkConfig = 'D:/experiments/dev/FM/_build/worker-sdk-releases/<emitted-bundle>/.cargo/registry.toml'
-$env:CARGO_TARGET_DIR = 'D:\experiments\dev\FM\_build\archive-filesystems\backend'
+$env:CARGO_TARGET_DIR = '<repo>\_build\api-tools'
+cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --offline -- <repo> <repo>/_build/worker-sdk-releases
+$sdkConfig = '<repo>/_build/worker-sdk-releases/<emitted-bundle>/.cargo/registry.toml'
+$env:CARGO_TARGET_DIR = '<repo>\_build\archive-filesystems\backend'
 cargo test --manifest-path filesystem-api/Cargo.toml --locked --offline
 cargo test --manifest-path plugins/midnight-fs-archive/Cargo.toml --config $sdkConfig --locked --offline
 cargo build --release --manifest-path plugins/midnight-fs-archive/Cargo.toml --config $sdkConfig --locked --offline

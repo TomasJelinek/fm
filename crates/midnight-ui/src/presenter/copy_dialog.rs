@@ -151,7 +151,8 @@ mod owned_draft_tests {
     #[test]
     fn successful_send_retires_original_draft_after_a_fast_backend_releases_its_clone() {
         let (mut p, drops) = draft();
-        let destination = std::env::temp_dir().join("destination");
+        // The proposed destination: a typed other folder would be checked first.
+        let destination = std::env::temp_dir().join("owned-copy-draft");
         p.confirm_copy_dialog("copy-draft:1", &destination.to_string_lossy(), &|command| {
             drop(command);
             true
@@ -167,7 +168,8 @@ mod owned_draft_tests {
     fn exhausted_operation_id_retires_unused_builder_without_replacing_draft() {
         let (mut p, drops) = draft();
         p.operations.next_id = u64::MAX;
-        let destination = std::env::temp_dir().join("destination");
+        // The proposed destination: a typed other folder would be checked first.
+        let destination = std::env::temp_dir().join("owned-copy-draft");
         p.confirm_copy_dialog("copy-draft:1", &destination.to_string_lossy(), &|_| {
             panic!("exhausted ids must not send")
         });
@@ -234,6 +236,22 @@ pub(crate) struct CopyDraft {
     pub(crate) intent: TransferIntent,
     /// Hidden in place until an owned callback can detach the captured sources.
     pub(crate) retire_requested: bool,
+}
+
+/// What the dialog says when its destination is not an existing folder.
+pub(crate) const DESTINATION_FOLDER_REQUIRED: &str =
+    "Enter the full path of an existing destination folder.";
+
+/// A typed destination that no panel shows, while the backend checks that it is an
+/// existing folder. Its answer resumes the confirmation with these choices.
+pub(crate) struct DestinationCheck {
+    pub(crate) token: String,
+    request: DesktopRequestId,
+    path: PathBuf,
+    cancel: Cancellation,
+    metadata: TransferMetadataPolicy,
+    start_policy: TransferStartPolicy,
+    links: Option<CopyLinkPolicy>,
 }
 
 impl CopyDraft {
@@ -415,6 +433,18 @@ impl Presenter {
         intent: TransferIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
+        // Search results fed to the panel copy or move their marked results.
+        if self.feed(pane).is_some() {
+            self.feed_action(pane, find::feed::FeedAction::Transfer(intent), send);
+            return;
+        }
+        if self.comparison_refuses(if intent == TransferIntent::Move {
+            "Move"
+        } else {
+            "Copy"
+        }) {
+            return;
+        }
         if self.operations.closing
             || self.copies.draft.is_some()
             || self.copies.tree_pending.is_some()
@@ -584,7 +614,7 @@ impl Presenter {
             PathBuf::from(destination)
         };
         if !destination.is_absolute() || destination.as_os_str().as_encoded_bytes().contains(&0) {
-            draft.error = "Enter the full path of an existing destination folder.".into();
+            draft.error = DESTINATION_FOLDER_REQUIRED.into();
             return;
         }
         let intent = draft.intent;
@@ -598,6 +628,30 @@ impl Presenter {
             draft.error = "These captured items support Copy only.".into();
             return;
         }
+        // The folder the dialog proposed (the other panel's) and a panel's folder now
+        // exist. A typed folder is checked first, so that a missing one is refused
+        // here instead of starting a job that cannot run.
+        let known = destination == draft.destination
+            || self.panes.iter().any(|pane| pane.path == destination);
+        if known {
+            self.submit_copy_draft(destination, metadata, start_policy, links, send);
+        } else {
+            self.check_copy_destination(token, destination, metadata, start_policy, links, send);
+        }
+    }
+
+    fn submit_copy_draft(
+        &mut self,
+        destination: PathBuf,
+        metadata: TransferMetadataPolicy,
+        start_policy: TransferStartPolicy,
+        links: Option<CopyLinkPolicy>,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let Some(draft) = self.copies.draft.as_ref() else {
+            return;
+        };
+        let intent = draft.intent;
         let links = links.filter(|_| draft.directory_link_options_available());
         let input = draft.input.clone();
         let roots = input.roots() as u64;
@@ -616,6 +670,107 @@ impl Presenter {
             send,
         ) {
             self.retire_copy_draft();
+        }
+    }
+
+    /// Ask the backend whether `path` is an existing folder; its answer resumes the
+    /// confirmation (`transfer_destination_checked`). The dialog stays as it is.
+    fn check_copy_destination(
+        &mut self,
+        token: &str,
+        path: PathBuf,
+        metadata: TransferMetadataPolicy,
+        start_policy: TransferStartPolicy,
+        links: Option<CopyLinkPolicy>,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        if let Some(check) = self
+            .copies
+            .destination_check
+            .as_mut()
+            .filter(|check| check.token == token && check.path == path)
+        {
+            // OK again while the same folder is checked: one answer, the latest choices.
+            check.metadata = metadata;
+            check.start_policy = start_policy;
+            check.links = links;
+            return;
+        }
+        if let Some(previous) = self.copies.destination_check.take() {
+            previous.cancel.cancel();
+        }
+        let request = self.desktop.request();
+        let cancel = Cancellation::default();
+        let sent = send(Command::CheckTransferDestination(DestinationCheckRequest {
+            request,
+            path: path.clone(),
+            cancel: cancel.clone(),
+        }));
+        if !sent {
+            if let Some(draft) = self.copies.draft.as_mut() {
+                draft.error = "The Copy/Move queue is busy. Try again.".into();
+            }
+            return;
+        }
+        if let Some(draft) = self.copies.draft.as_mut() {
+            draft.error.clear();
+        }
+        self.copies.destination_check = Some(DestinationCheck {
+            token: token.to_owned(),
+            request,
+            path,
+            cancel,
+            metadata,
+            start_policy,
+            links,
+        });
+    }
+
+    /// The backend's answer for the destination the dialog is checking. A folder lets
+    /// the transfer start; a missing path or something else keeps the dialog open with
+    /// its own text. When the backend cannot tell (no permission to look, an
+    /// unsupported provider), the transfer starts and reports what stops it.
+    pub(super) fn transfer_destination_checked(
+        &mut self,
+        checked: DestinationCheckResult,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let Some(check) = self
+            .copies
+            .destination_check
+            .take_if(|check| check.request == checked.request && check.path == checked.path)
+        else {
+            return;
+        };
+        if !self
+            .copies
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.token == check.token && !draft.retire_requested)
+        {
+            return;
+        }
+        let folder = match &checked.result {
+            Ok(folder) => *folder,
+            Err(error) => !matches!(
+                error.kind,
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ),
+        };
+        if !folder {
+            if let Some(draft) = self.copies.draft.as_mut() {
+                draft.error = DESTINATION_FOLDER_REQUIRED.into();
+            }
+        } else if !self.owned_command_scope_available() {
+            self.copy_dialog_reclaim_busy(&check.token);
+        } else {
+            self.submit_copy_draft(
+                check.path,
+                check.metadata,
+                check.start_policy,
+                check.links,
+                send,
+            );
         }
     }
 
@@ -769,6 +924,9 @@ impl Presenter {
     /// Only the post-window drain may bypass the live callback's ownership claim.
     pub(super) fn force_retire_copy_draft(&mut self) {
         self.retire_tree_transfer(None);
+        if let Some(check) = self.copies.destination_check.take() {
+            check.cancel.cancel();
+        }
         if let Some(draft) = self.copies.draft.take() {
             self.retired.push(Box::new(draft));
         }

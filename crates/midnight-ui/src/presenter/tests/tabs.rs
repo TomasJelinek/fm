@@ -192,27 +192,92 @@ fn rejected_restore_retries_without_discarding_saved_tabs_or_current_view() {
 }
 
 #[test]
-fn initial_panel_paths_are_saved_after_load_even_without_a_tab_edit() {
-    let mut p = Presenter::new(
-        test_root().join("initial-left"),
-        test_root().join("initial-right"),
-    );
-    p.set_tab_restore_overrides([false, false]);
-    assert!(p.needs_initial_preferences());
-    let saved = RefCell::new(None);
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|command| {
-        if let Command::SavePreferences { preferences, .. } = command {
-            *saved.borrow_mut() = Some(preferences);
+fn a_start_without_changes_saves_nothing_and_the_next_save_keeps_its_panels() {
+    let saved = [
+        saved_tabs(&["saved-left-1", "saved-left-2"], 1),
+        saved_tabs(&["saved-right"], 0),
+    ];
+    let given = [
+        saved_tabs(&["given-left"], 0),
+        saved_tabs(&["given-right"], 0),
+    ];
+    // Both, one or no panels given on the command line; a first start, with no saved
+    // tabs, and a later one.
+    for explicit in [[true, true], [true, false], [false, true], [false, false]] {
+        for stored in [
+            [PaneTabPreferences::default(), PaneTabPreferences::default()],
+            saved.clone(),
+        ] {
+            let case = format!(
+                "explicit {explicit:?}, saved tabs {}",
+                stored[0].paths.len()
+            );
+            let mut p = Presenter::new(
+                test_root().join("given-left"),
+                test_root().join("given-right"),
+            );
+            p.set_tab_restore_overrides(explicit);
+            assert!(
+                !p.needs_initial_preferences(),
+                "{case}: closing early has nothing to save"
+            );
+            let sent = RefCell::new(Vec::new());
+            let send = |command: Command| {
+                if let Command::SavePreferences { preferences, .. } = command {
+                    sent.borrow_mut().push(preferences);
+                }
+                true
+            };
+            p.apply_with_sender(
+                Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
+                    preferences: UserPreferences {
+                        tabs: stored.clone(),
+                        ..Default::default()
+                    },
+                    comparators: midnight_core::FileComparatorSnapshot::default(),
+                }))),
+                &send,
+            );
+            assert!(
+                sent.borrow().is_empty(),
+                "{case}: the start saved its preferences"
+            );
+            assert_eq!(p.desktop.status, "", "{case}");
+            assert!(
+                p.pending_preferences_save().is_none(),
+                "{case}: an exit would save"
+            );
+            // The given panels keep their paths; the others restore their saved tabs.
+            let expected = [0, 1].map(|slot| {
+                if explicit[slot] || stored[slot].paths.is_empty() {
+                    given[slot].clone()
+                } else {
+                    stored[slot].clone()
+                }
+            });
+            for pane in [PaneId::Left, PaneId::Right] {
+                let tabs = p.tabs(pane);
+                assert_eq!(
+                    tabs.iter().map(|tab| tab.path.clone()).collect::<Vec<_>>(),
+                    expected[pane.index()].paths,
+                    "{case}: {pane:?}"
+                );
+                assert_eq!(
+                    tabs.iter().position(|tab| tab.active),
+                    Some(expected[pane.index()].active),
+                    "{case}: {pane:?}"
+                );
+            }
+            // The first change the user makes saves the panels as they are shown.
+            p.change_preferences(2, 0, 0, &send);
+            let saves = sent.into_inner();
+            let [save] = saves.as_slice() else {
+                panic!("{case}: a changed theme saves once, not {}", saves.len());
+            };
+            assert_eq!(save.theme, PreferenceTheme::Light, "{case}");
+            assert_eq!(save.tabs, expected, "{case}");
         }
-        true
-    });
-    assert_eq!(
-        saved.into_inner().unwrap().tabs,
-        [
-            saved_tabs(&["initial-left"], 0),
-            saved_tabs(&["initial-right"], 0)
-        ]
-    );
+    }
 }
 
 #[test]

@@ -108,6 +108,9 @@ pub struct TransferCapabilities {
     pub directory_merge: bool,
     pub conditional_overwrite: bool,
     pub recoverable_replacement: bool,
+    /// A staged link can replace a consented file or link here under the
+    /// recoverable policy (`StagedTransferLink::publish_replace`).
+    pub link_replacement: bool,
 }
 
 /// A pinned native object and its provider-owned revision, captured for one conflict.
@@ -163,6 +166,10 @@ pub trait TransferService: Send + Sync {
     /// Prepare a native Move with an explicit copy-side directory-link policy.
     /// Reject keeps the ordinary native Move route. Implementations must supply
     /// independent no-follow removal authority for every projected directory link.
+    /// Preserve moves each link itself: a link source (`link_representation`) is an
+    /// `Ordinary` entry whose capture renames the link on one volume and, across
+    /// volumes, recreates it at the destination before removing the original, so
+    /// its `try_native_move` never reports `CrossDevice`.
     fn prepare_move_source_with_links(
         &self,
         path: &Path,
@@ -201,7 +208,10 @@ pub trait TransferService: Send + Sync {
     /// Prepare a read-only source using an explicit link policy.
     ///
     /// Reject uses legacy preparation. Preserve requires positive native no-follow
-    /// authority over the original link and exact representation.
+    /// authority over the original link and exact representation, for the selected
+    /// root and every link met below it. FollowLinks follows directory links as
+    /// FollowDirectoryContents does, presents a link to a regular file as that file
+    /// and yields a link it cannot follow as a preserved link leaf.
     ///
     /// Directory materialization keeps the original logical path and presents an
     /// ordinary directory to the worker. FollowDirectoryContents supplies the
@@ -222,7 +232,7 @@ pub trait TransferService: Send + Sync {
     ) -> Result<Box<dyn TransferSource>, FsError> {
         match links {
             CopyLinkPolicy::Reject => self.prepare_transfer_source(path, cancel),
-            CopyLinkPolicy::Preserve => Err(transfer_unsupported(
+            CopyLinkPolicy::Preserve | CopyLinkPolicy::FollowLinks => Err(transfer_unsupported(
                 path,
                 "link-preserving source preparation is unsupported",
             )),
@@ -271,6 +281,18 @@ pub(crate) fn unconfirmed_transfer_release(operation: &'static str) -> FsError {
     )
 }
 
+/// A child that its folder's enumeration reached but could not open. Its name is
+/// already read, so the enumeration continues with the next child.
+#[derive(Debug)]
+pub struct TransferChildFailure {
+    /// The child's own name in its folder, for `TransferSource::open_child`.
+    pub name: std::ffi::OsString,
+    pub error: FsError,
+}
+
+/// One child from `TransferSource::next_child_or_failure`.
+pub type TransferChild = Result<Box<dyn TransferSource>, TransferChildFailure>;
+
 /// A retained source for a file, directory, or explicitly preserved link.
 /// Iteration opens at most one child per call. Directory sources stay on the traversal stack.
 /// Directory-link projections grant read-only authority over any followed contents.
@@ -301,6 +323,13 @@ pub trait TransferSource: Send {
             &self.entry().item.path,
             "native link representation is unsupported",
         ))
+    }
+    /// Why this link leaf was not followed under `CopyLinkPolicy::FollowLinks`
+    /// (for example a dangling or unreadable target, or a cycle), in words for the
+    /// job details. None for every other source, including a followed link.
+    /// Wrappers forward it; it grants no authority.
+    fn link_not_followed(&self) -> Option<String> {
+        None
     }
     /// Independently enumerate metadata for the same projection execution will copy.
     /// Use the retained policy and native identity, ancestry and cancellation guards.
@@ -439,6 +468,17 @@ pub trait TransferSource: Send {
         &mut self,
         cancel: &Cancellation,
     ) -> Result<Option<Box<dyn TransferSource>>, FsError>;
+    /// `next_child`, except that a child which cannot be opened once its name is read
+    /// comes back as `Ok(Some(Err(..)))`: the caller can skip that child alone, or open
+    /// it again with `open_child`, and then continue with the next one. `Err` remains a
+    /// failure of this folder itself, which ends its enumeration. The default reports
+    /// every failure as the folder's; wrappers that forward `next_child` forward this.
+    fn next_child_or_failure(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferChild>, FsError> {
+        self.next_child(cancel).map(|child| child.map(Ok))
+    }
 }
 
 pub trait TransferDirectory: Send + Sync {
@@ -581,6 +621,18 @@ pub trait TransferDirectory: Send + Sync {
         ))
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
+    /// Give a folder this provider created for a copy the source folder's permissions
+    /// (0777 for a source without POSIX modes), as
+    /// `StagedTransferFile::set_published_permissions` does for files. The caller
+    /// applies it once the folder's contents were copied, so it stays private while
+    /// they are written. A folder that existed before (Merge) keeps its permissions.
+    fn set_published_permissions(
+        &self,
+        _unix_mode: u32,
+        _cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        Ok(())
+    }
     fn inspect(
         &self,
         name: &OsStr,
@@ -664,12 +716,26 @@ pub trait StagedTransferFile: Read + Write + Seek + Send {
             "retained target validation is unsupported",
         ))
     }
+    /// Give the unpublished stage the permissions its published copy has: the source's
+    /// read, write and execute bits for user, group and other (`unix_mode`, as the source
+    /// entry reports it, or 0666 for a source without POSIX modes), masked as the
+    /// platform masks new files; never setuid, setgid or sticky. The caller applies it
+    /// right before publication, so the private staging mode lasts until then. A stage
+    /// that preserves the replaced output's own permissions keeps them. Platforms
+    /// without POSIX modes have nothing to apply.
+    fn set_published_permissions(
+        &mut self,
+        _unix_mode: u32,
+        _cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        Ok(())
+    }
     /// Revalidate the final name relative to the held directory against this exact
     /// stage inode, never adopting a concurrent replacement's identity.
     fn revalidate_publication(&self, _cancel: &Cancellation) -> Result<TransferIdentity, FsError> {
         Err(transfer_unsupported(
             Path::new(""),
-            "publication validation is unsupported",
+            "validating a copy in place is unsupported",
         ))
     }
     fn sync(&mut self, cancel: &Cancellation) -> Result<(), FsError>;
@@ -708,7 +774,7 @@ pub trait StagedTransferFile: Read + Write + Seek + Send {
     ) -> Result<TransferPublication, FsError> {
         Err(transfer_unsupported(
             Path::new(""),
-            "replacement publication is unsupported",
+            "replacing an existing item is unsupported",
         ))
     }
     fn cleanup(&mut self) -> Result<(), FsError>;

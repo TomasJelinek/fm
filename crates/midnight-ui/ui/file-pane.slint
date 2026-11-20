@@ -49,6 +49,8 @@ export component FilePane inherits Rectangle {
     in property <[NavigationChoiceRow]> forward-history;
     in property <int> history-revision;
     in property <[PathPartRow]> path-parts;
+    // The path part kept whole when the path shortens: an archive's name (-1: none).
+    in property <int> path-anchor: -1;
     in property <[DetailRow]> details;
     in property <string> free-space;
     in property <string> bookmark-name;
@@ -157,6 +159,8 @@ export component FilePane inherits Rectangle {
     in property <bool> can-elevate;
     callback retry-directory-elevated();
     in property <bool> loading;
+    // Shown below the rows (`..`) while the panel lists no entry; empty otherwise.
+    in property <string> empty-message;
     private property <bool> loading-feedback;
     function reset-loading-feedback() {
         loading-delay.stop();
@@ -184,21 +188,49 @@ export component FilePane inherits Rectangle {
     size-title-metric := Text { visible: false; text: "Size"; font-size: Theme.small-font; }
     date-title-metric := Text { visible: false; text: "Modified"; font-size: Theme.small-font; }
     time-title-metric := Text { visible: false; text: "Time"; font-size: Theme.small-font; }
+    // A name of a dozen characters, in the font that file names are drawn in.
+    name-metric := Text { visible: false; text: "document.txt"; font-size: Theme.font-size; }
     private property <length> desired-size-width: max(size-metric.preferred-width + 4px,
         size-title-metric.preferred-width + Theme.icon-size + 5px);
     private property <length> desired-date-width: max(date-metric.preferred-width + 4px,
         date-title-metric.preferred-width + Theme.icon-size + 5px);
     private property <length> desired-time-width: max(time-metric.preferred-width + 4px,
         time-title-metric.preferred-width + 4px);
-    // Preserve a usable name column at narrow splits; the copyable details retain exact values.
-    private property <length> metadata-budget: max(0px,
-        root.list-grid-width - max(90px, root.list-grid-width * 0.30) - 48px);
-    private property <float> metadata-scale: min(1,
-        root.metadata-budget / max(1px, root.desired-size-width + root.desired-date-width + root.desired-time-width));
-    private property <length> size-column-width: min(root.desired-size-width,
-        max(Theme.icon-size + 3px, root.desired-size-width * root.metadata-scale));
-    private property <length> date-column-width: root.desired-date-width * root.metadata-scale;
-    private property <length> time-column-width: root.desired-time-width * root.metadata-scale;
+    // The narrowest a column shows all of its values at; its heading may then be cut.
+    private property <length> least-size-width: max(Theme.icon-size + 3px, size-metric.preferred-width + 4px);
+    private property <length> least-date-width: date-metric.preferred-width + 4px;
+    private property <length> least-time-width: time-metric.preferred-width + 4px;
+    // The name comes first. A row spends its padding, tree slot, icon and their
+    // spacing (FileEntry) and keeps room for a name of a dozen characters. The
+    // metadata takes what is left: Size, then the modification date, then its time,
+    // each shown only while it fits at its values' width after the one before it,
+    // then widened in that order up to its full width. A column that does not fit is
+    // hidden and the name takes its room, so a narrow panel drops Time, then the date,
+    // then Size before it elides a short name. The copyable details keep every value.
+    private property <length> name-claim: 24px + (Theme.touch ? 26px : 20px)
+        + Theme.file-icon-size + 4px + name-metric.preferred-width;
+    private property <length> metadata-room: max(0px, root.list-grid-width - root.name-claim);
+    private property <bool> size-shown: root.metadata-room >= root.least-size-width + 8px;
+    private property <bool> date-shown: root.size-shown
+        && root.metadata-room >= root.least-size-width + root.least-date-width + 16px;
+    private property <bool> time-shown: root.date-shown && root.metadata-room
+        >= root.least-size-width + root.least-date-width + root.least-time-width + 24px;
+    private property <length> metadata-spare: max(0px, root.metadata-room
+        - (root.size-shown ? root.least-size-width + 8px : 0px)
+        - (root.date-shown ? root.least-date-width + 8px : 0px)
+        - (root.time-shown ? root.least-time-width + 8px : 0px));
+    private property <length> size-growth: min(root.metadata-spare, root.desired-size-width - root.least-size-width);
+    private property <length> date-growth: min(root.metadata-spare - root.size-growth,
+        root.desired-date-width - root.least-date-width);
+    private property <length> size-column-width: root.size-shown ? root.least-size-width + root.size-growth : 0px;
+    private property <length> date-column-width: root.date-shown ? root.least-date-width + root.date-growth : 0px;
+    private property <length> time-column-width: root.time-shown ? root.least-time-width
+        + min(root.metadata-spare - root.size-growth - root.date-growth,
+            root.desired-time-width - root.least-time-width) : 0px;
+    // The shown columns, each with the spacing before it.
+    private property <length> metadata-width: (root.size-shown ? root.size-column-width + 8px : 0px)
+        + (root.date-shown ? root.date-column-width + 8px : 0px)
+        + (root.time-shown ? root.time-column-width + 8px : 0px);
     in-out property <string> search-query;
     in property <string> search-context;
     in property <bool> search-pending;
@@ -273,10 +305,19 @@ export component FilePane inherits Rectangle {
     out property <int> visible-row-start: min(root.rows.length, root.source-row(root.first-band, 0));
     out property <int> visible-row-end: min(root.rows.length,
         root.source-row(max(0, root.end-band - 1), root.view-columns - 1) + 1);
+    // Thumbnails of every row at least partly visible. The grid also asks for
+    // one row beyond each edge, so scrolling reveals no blank tiles, while the
+    // whole range fits the pane's half of the request budget
+    // (MAX_THUMBNAIL_VIEW_TARGETS, 256); a larger grid keeps its visible rows first.
+    private property <bool> thumbnail-grid: !root.minimal && root.view-mode == 2;
+    private property <int> thumbnail-first-band: floor(-list.content-y / root.row-height);
+    private property <int> thumbnail-end-band: ceil((-list.content-y + list.visible-height) / root.row-height);
+    private property <int> thumbnail-margin: root.thumbnail-grid
+        && (root.thumbnail-end-band - root.thumbnail-first-band + 2) * root.view-columns <= 128 ? 1 : 0;
     out property <int> thumbnail-row-start: min(root.rows.length,
-        root.source-row(max(0, floor(-list.content-y / root.row-height)), 0));
+        root.source-row(max(0, root.thumbnail-first-band - root.thumbnail-margin), 0));
     out property <int> thumbnail-row-end: min(root.rows.length,
-        root.source-row(max(0, ceil((-list.content-y + list.visible-height) / root.row-height) - 1), root.view-columns - 1) + 1);
+        root.source-row(max(0, root.thumbnail-end-band + root.thumbnail-margin - 1), root.view-columns - 1) + 1);
     callback view-mode-selected(int);
     callback mutation(int);
     callback action(int);
@@ -533,6 +574,7 @@ export component FilePane inherits Rectangle {
                     activate => { root.activate(); }
                     view-selected(mode) => { root.view-mode-selected(mode); root.focus-list(); }
                     sort-selected(column) => { root.sort(column); root.focus-list(); }
+                    hidden-files-toggled => { root.action(5); root.focus-list(); }
                     dismissed => { root.focus-list(); }
                 }
             }
@@ -542,7 +584,7 @@ export component FilePane inherits Rectangle {
             accessible-role: button; accessible-label: root.filter-label;
             accessible-action-default => { root.activate(); root.filter(); }
             NativeActionImage {
-                fallback-icon: FallbackIcons.filter;
+                fallback-icon: FallbackIcons.filter; glyph: true;
                 x: 6px; y: (parent.height - self.height) / 2;
                 width: 14px; height: 14px;
             }
@@ -585,7 +627,7 @@ export component FilePane inherits Rectangle {
                         pane-id: root.pane-id;
                         text-size: root.minimal ? min(24px, Theme.font-size) : Theme.font-size;
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
-                        path: root.path; parts: root.path-parts;
+                        path: root.path; parts: root.path-parts; anchor: root.path-anchor;
                         hint: "Folder path: " + root.path + "\n" + root.status + (root.loading-feedback ? "\nReading folder…" : "") + "\nEdit and press Enter to open a folder. " + ShortcutHints.hint("Focus path editor", "panel.path");
                         navigate(path) => { root.activate(); root.navigate(path); root.focus-list(); }
                         selected-part(identity) => { root.activate(); root.path-part(identity); root.focus-list(); }
@@ -617,6 +659,7 @@ export component FilePane inherits Rectangle {
                     activate => { root.activate(); }
                     view-selected(mode) => { root.view-mode-selected(mode); root.focus-list(); }
                     sort-selected(column) => { root.sort(column); root.focus-list(); }
+                    hidden-files-toggled => { root.action(5); root.focus-list(); }
                     dismissed => { root.focus-list(); }
                 }
             }
@@ -635,35 +678,36 @@ export component FilePane inherits Rectangle {
                         spacing: 8px; alignment: start;
                         FileColumnHeading {
                             title: "Name"; sort-label: "Name";
-                            width: min(self.natural-width, max(0px, (root.list-grid-width - root.size-column-width - root.date-column-width - root.time-column-width - 48px) * 0.55));
+                            width: min(self.natural-width, max(0px, (root.list-grid-width - 24px - root.metadata-width) * 0.55));
                             icons: root.action-icons; sorted: root.sort-column == 0;
                             descending: root.descending;
                             activate => { root.activate(); root.sort(0); }
                         }
                         FileColumnHeading {
                             title: "Ext"; sort-label: "Extension";
-                            width: min(self.natural-width, max(0px, (root.list-grid-width - root.size-column-width - root.date-column-width - root.time-column-width - 48px) * 0.45 - 8px));
+                            width: min(self.natural-width, max(0px, (root.list-grid-width - 24px - root.metadata-width) * 0.45 - 8px));
                             icons: root.action-icons; sorted: root.sort-column == 3;
                             descending: root.descending;
                             activate => { root.activate(); root.sort(3); }
                         }
                     }
                 }
-                FileColumnHeading {
+                // A hidden column takes its heading and the spacing before it along.
+                if root.size-shown : FileColumnHeading {
                     title: "Size"; sort-label: "Size";
                     width: root.size-column-width; horizontal-stretch: 0; align-right: true;
                     icons: root.action-icons; sorted: root.sort-column == 1;
                     descending: root.descending;
                     activate => { root.activate(); root.sort(1); }
                 }
-                FileColumnHeading {
+                if root.date-shown : FileColumnHeading {
                     title: "Modified"; sort-label: "Modified";
                     width: root.date-column-width; horizontal-stretch: 0;
                     icons: root.action-icons; sorted: root.sort-column == 2;
                     descending: root.descending;
                     activate => { root.activate(); root.sort(2); }
                 }
-                FileColumnHeading {
+                if root.time-shown : FileColumnHeading {
                     title: "Time"; sort-label: "Modified time";
                     width: root.time-column-width; horizontal-stretch: 0; show-direction: false;
                     icons: root.action-icons; sorted: root.sort-column == 2;
@@ -703,6 +747,7 @@ export component FilePane inherits Rectangle {
             }
             list := PanelList {
                 row-height: root.row-height;
+                partial-bands: root.thumbnail-grid;
                 user-scrolled => {
                     if root.directory-link-tooltip.row != "" && root.directory-link-tooltip.pane == root.pane-id {
                         root.retire-directory-link-hover();
@@ -780,9 +825,14 @@ export component FilePane inherits Rectangle {
                     border-color: Theme.active-frame; border-width: 1px;
                 }
             }
-            if root.rows.length == 0 && !root.loading : Text {
-                text: root.search-query != "" ? (root.search-pending ? "Searching…" : "No matching names") : "This folder is empty";
-                color: Theme.muted-text; font-size: Theme.font-size + 1px; horizontal-alignment: center; vertical-alignment: center;
+            // An empty folder, entries all hidden or filtered out, or a quick search
+            // without matches, said below `..` so that the row stays clear and still
+            // goes up. A text takes neither the focus nor keys or clicks.
+            if root.empty-message != "" && !root.loading : Text {
+                x: 12px; y: list.row-content-y + root.band-count * root.row-height + 12px;
+                width: max(0px, list.visible-width - 24px); height: self.preferred-height;
+                text: root.empty-message; wrap: word-wrap;
+                color: Theme.muted-text; font-size: Theme.font-size + 1px; horizontal-alignment: center;
             }
             // Overlay the pending notice: refresh must not move rows or reset scrolling.
             if root.loading && root.loading-feedback : Rectangle {
@@ -808,8 +858,9 @@ export component FilePane inherits Rectangle {
                 label: root.drag-label; highlight-panel: root.drop-row < 0;
             }
         }
-        // Non-modal and not an error: rows, actions and Refresh stay usable.
-        // The presenter sets it only for the pane's current flat or tree view.
+        // Non-modal and not an error: the watch status of the pane's current
+        // flat or tree view, or what the held pane waits for (the main window's
+        // `hold-status`, shown instead while it lasts).
         if root.watch-status != "" : Rectangle {
             height: root.minimal ? Theme.small-font + 4px : Theme.status-height;
             background: Theme.secondary-surface;

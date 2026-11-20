@@ -56,7 +56,7 @@ dated verification evidence does not qualify this new polish.
 
 ## Salamander reference and adaptation
 
-Reviewed `D:/experiments/salamander-main/src/usermenu.h` (CUserMenuItem),
+Reviewed `<salamander-source>/src/usermenu.h` (CUserMenuItem),
 `dialogs4.cpp` (CCfgPageUserMenu), `mainwnd4.cpp` (ExpandCommand2) and
 `execute.cpp` (ValidateUserMenuArguments/ExpandUserMenuArguments). Salamander
 separates name, executable, arguments, initial directory and icon, supports

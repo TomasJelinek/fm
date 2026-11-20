@@ -291,12 +291,15 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
         navigation_count
     );
     let searches = search_count(&commands);
+    // No drive has the letter (none does on Linux): Shift+Z types "Z".
     chord(&window, Key::Shift, "Z");
     assert_eq!(
         search_count(&commands),
-        searches,
-        "shifted text cannot start search"
+        searches + 1,
+        "shifted text starts a search"
     );
+    assert_eq!(latest_search(&commands).query, "Z");
+    key(&window, Key::Escape);
     key(&window, "AL");
     chord(&window, Key::Shift, "!");
     assert_eq!(latest_search(&commands).query, "AL!");

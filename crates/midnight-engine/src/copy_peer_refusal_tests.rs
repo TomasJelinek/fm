@@ -608,7 +608,7 @@ async fn peer_refused_move_source_capture_retries_without_a_prompt() {
     )
     .await;
     h.wait_status(2, |progress| {
-        progress.wait_reason == Some(TransferWaitReason::Resources)
+        progress.wait_reason == Some(TransferWaitReason::SameFolders)
     })
     .await;
     assert_eq!(captures.load(Ordering::SeqCst), 1, "it waits for the peer");
@@ -1003,7 +1003,7 @@ async fn persistently_opaque_peer_refusal_waits_without_rerunning_the_step() {
     h.controller.namespace().latch_opaque_for_test(granted[0]);
     probe_released.store(true, Ordering::Release);
     h.wait_status(2, |progress| {
-        progress.wait_reason == Some(TransferWaitReason::Resources)
+        progress.wait_reason == Some(TransferWaitReason::SameFolders)
     })
     .await;
     let refused = attempts.load(Ordering::SeqCst);

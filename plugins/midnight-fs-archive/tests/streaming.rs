@@ -444,3 +444,123 @@ fn sparse_five_gibibyte_tar_indexes_with_u64_offsets_and_bounded_reads() {
         reads.get()
     );
 }
+
+/// Memory staging that counts reads of staged streams.
+struct ReadCounting {
+    inner: MemoryStorage,
+    reads: Rc<Cell<u64>>,
+}
+impl Storage for ReadCounting {
+    fn begin(&self, purpose: StagePurpose, expected: Option<u64>, maximum: u64) -> io::Result<u64> {
+        self.inner.begin(purpose, expected, maximum)
+    }
+    fn append(&self, stage: u64, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        self.inner.append(stage, offset, bytes)
+    }
+    fn seal(&self, stage: u64, length: u64) -> io::Result<()> {
+        self.inner.seal(stage, length)
+    }
+    fn read(&self, stage: u64, offset: u64, length: u32) -> io::Result<Vec<u8>> {
+        self.reads.set(self.reads.get() + u64::from(length));
+        self.inner.read(stage, offset, length)
+    }
+}
+
+/// 300 small members and one of 1 MiB, the large one in the middle of the stream.
+fn gzip_tar() -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+    let mut members = Vec::new();
+    for index in 0..300u32 {
+        members.push((
+            format!("small-{index:03}.bin"),
+            vec![(index % 251) as u8; 3000],
+        ));
+        if index == 150 {
+            members.push((
+                "large.bin".to_owned(),
+                (0..1024 * 1024u32).map(|i| (i % 253) as u8).collect(),
+            ));
+        }
+    }
+    let mut tar = tar::Builder::new(Vec::new());
+    for (name, data) in &members {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append_data(&mut header, name, data.as_slice()).unwrap();
+    }
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gzip.write_all(&tar.into_inner().unwrap()).unwrap();
+    (gzip.finish().unwrap(), members)
+}
+
+#[test]
+fn compressed_tar_is_indexed_while_staged_and_never_read_back_to_list() {
+    let (source, members) = gzip_tar();
+    let length = source.len() as u64;
+    let reads = Rc::new(Cell::new(0));
+    let mut archive = Archive::open_stream(
+        Format::TarGzip,
+        Box::new(Cursor::new(source)),
+        length,
+        Rc::new(ReadCounting {
+            inner: MemoryStorage::default(),
+            reads: reads.clone(),
+        }),
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(reads.get(), 0, "opening read the staged stream back");
+    let nodes = directory_nodes(&archive, 1);
+    assert_eq!(nodes.len(), members.len());
+    assert_eq!(reads.get(), 0, "listing read the staged stream back");
+    for (name, data) in [&members[0], &members[151], &members[300]] {
+        let node = nodes
+            .iter()
+            .find(|node| node.name == name.as_bytes())
+            .unwrap();
+        let offset = data.len() as u64 / 2;
+        let (bytes, _) = archive.read(node.id, offset, 1000).unwrap();
+        let start = offset as usize;
+        assert_eq!(
+            bytes,
+            &data[start..(start + 1000).min(data.len())],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn compressed_tar_staging_failures_keep_their_codes() {
+    use midnight_filesystem_api::ErrorCode;
+    let (source, _) = gzip_tar();
+    let limited = Limits {
+        max_total: 64 * 1024,
+        ..Limits::default()
+    };
+    let error = Archive::open(Format::TarGzip, source.clone(), limited)
+        .err()
+        .unwrap();
+    assert_eq!(error.code, ErrorCode::Limit);
+    let error = Archive::open_stream(
+        Format::TarGzip,
+        Box::new(Cursor::new(source.clone())),
+        source.len() as u64,
+        Rc::new(DiskFull),
+        Limits::default(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.code, ErrorCode::Io);
+    assert!(error.message.contains("disk full"), "{}", error.message);
+    // A stream cut inside the large member and one with a damaged trailer.
+    let mut damaged = source.clone();
+    let end = damaged.len();
+    damaged[end - 5] ^= 1;
+    for broken in [source[..source.len() / 2].to_vec(), damaged] {
+        let error = Archive::open(Format::TarGzip, broken, Limits::default())
+            .err()
+            .unwrap();
+        assert_eq!(error.code, ErrorCode::Corrupt, "{}", error.message);
+    }
+}

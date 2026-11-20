@@ -98,6 +98,30 @@ fn captured_view_is_reused_after_navigation_and_parent_is_never_a_fallback() {
 }
 
 #[test]
+fn the_item_count_is_singular_for_one_item() {
+    let send = |_| true;
+    let (mut p, id) = fixture(&send);
+    let generation = p.file_list.session.as_ref().unwrap().generation;
+    for (items, truncated, summary) in [
+        (1, false, "1 item"),
+        (2, true, "2 items · preview shortened"),
+    ] {
+        p.apply_file_list(FileListEvent {
+            id,
+            generation,
+            result: Ok(FileListUpdate::Preview {
+                text: "preview".into(),
+                items,
+                truncated,
+            }),
+        });
+        assert_eq!(p.file_list.session.as_ref().unwrap().summary, summary);
+    }
+    generated(&mut p, id);
+    assert_eq!(p.file_list.session.as_ref().unwrap().summary, "1 item");
+}
+
+#[test]
 fn stale_previews_cannot_replace_new_draft_and_close_cancels_last_submitted_generation() {
     let commands = RefCell::new(Vec::new());
     let send = |c| {

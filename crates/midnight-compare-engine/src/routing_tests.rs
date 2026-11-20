@@ -67,3 +67,33 @@ fn automatic_keeps_text_available_when_optional_image_discovery_fails() {
     });
     assert!(matches!(result, Ok(BuiltInPlan::Text)));
 }
+
+#[test]
+fn automatic_compares_an_image_with_another_file_as_bytes_and_an_image_rule_refuses() {
+    let providers: Arc<[Provider]> =
+        Arc::from([Provider::unavailable_for_tests("test.png", &["png"])]);
+    for (names, side) in [
+        (["left.png", "right.bin"], "File A is an image"),
+        (["left.txt", "right.PNG"], "File B is an image"),
+    ] {
+        let paths = names.map(PathBuf::from);
+        let result = plan(BuiltInTarget::Automatic, &paths, &[], || {
+            Ok(providers.clone())
+        });
+        assert!(
+            matches!(&result, Ok(BuiltInPlan::Bytes(reason)) if reason.starts_with(side)),
+            "{names:?}"
+        );
+        let result = plan(BuiltInTarget::Images, &paths, &[], || Ok(providers.clone()));
+        assert!(matches!(result, Err(message) if message.contains("image decoders")));
+    }
+    // A disabled decoder makes both sides plain files: text, or bytes if not text.
+    let paths = ["left.png", "right.png"].map(PathBuf::from);
+    let result = plan(
+        BuiltInTarget::Automatic,
+        &paths,
+        &["test.png".into()],
+        || Ok(providers.clone()),
+    );
+    assert!(matches!(result, Ok(BuiltInPlan::Text)));
+}

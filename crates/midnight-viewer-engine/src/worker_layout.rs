@@ -4,6 +4,10 @@ use super::*;
 pub(super) struct PreparedOpening {
     pub file: midnight_plugin_host::CapturedFile,
     pub route: crate::routing::Route,
+    /// An image provider started while the frontend creates its canvas. Decoding
+    /// needs no viewport, so it overlaps native window and swapchain creation;
+    /// the first viewport is still requested only after the acknowledgement.
+    pub image: Option<crate::image_worker::ImageWorker>,
 }
 
 impl Worker {
@@ -13,7 +17,23 @@ impl Worker {
 
     pub(super) fn invalidate_layout(&mut self) {
         self.layout.invalidate();
-        self.pending_layout = None;
+        self.retire_pending_layout();
+    }
+
+    /// A started image provider closes like a displayed one: the next opening waits
+    /// for its actor instead of joining it on this worker.
+    pub(super) fn retire_pending_layout(&mut self) {
+        if let Some(mut image) = self.pending_layout.take().and_then(|opening| opening.image) {
+            image.cancel();
+            self.closing_image = Some(image);
+        }
+    }
+
+    fn image_process(&self, route: crate::routing::Route) -> Option<usize> {
+        match route {
+            crate::routing::Route::Process { index } if index < self.images.len() => Some(index),
+            _ => None,
+        }
     }
 
     pub(super) fn prepare_opening(
@@ -136,7 +156,11 @@ impl Worker {
                 }
             }
         };
-        Ok(PreparedOpening { file, route })
+        Ok(PreparedOpening {
+            file,
+            route,
+            image: None,
+        })
     }
 
     pub(super) fn select_opening(
@@ -145,6 +169,15 @@ impl Worker {
         output: &Mailbox,
     ) -> Result<(), String> {
         if let Some(selected) = self.layout.select(self.mode, self.positions.generation)? {
+            let mut opening = opening;
+            if let Some(index) = self.image_process(opening.route) {
+                opening.image = Some(crate::image_worker::ImageWorker::open(
+                    self.images[index].clone(),
+                    Arc::new(opening.file.clone()),
+                    self.wake.clone(),
+                    self.image_startup.clone(),
+                )?);
+            }
             self.pending_layout = Some(opening);
             output.put(ViewerOutput::LayoutSelected {
                 token: selected.token,
@@ -184,7 +217,7 @@ impl Worker {
         opening: PreparedOpening,
         output: &Mailbox,
     ) -> Result<(), String> {
-        let PreparedOpening { file, route } = opening;
+        let PreparedOpening { file, route, image } = opening;
         self.session = match route {
             crate::routing::Route::Office { renderer } => {
                 let provider = renderer
@@ -239,13 +272,17 @@ impl Worker {
                 None
             }
             crate::routing::Route::Process { index } => {
-                self.image = Some(crate::image_view::ImageView::new(
-                    crate::image_worker::ImageWorker::open(
+                let worker = match image {
+                    Some(worker) => worker,
+                    None => crate::image_worker::ImageWorker::open(
                         self.images[index].clone(),
                         Arc::new(file),
                         self.wake.clone(),
                         self.image_startup.clone(),
                     )?,
+                };
+                self.image = Some(crate::image_view::ImageView::new(
+                    worker,
                     self.image_ids.clone(),
                 ));
                 None

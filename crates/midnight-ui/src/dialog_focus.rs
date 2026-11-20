@@ -72,8 +72,57 @@ impl FocusReturn {
     }
 }
 
+/// Where the keyboard may stay once no dialog or popup is left: a text field (a
+/// file list's quick search, the command line, a path editor) or the search
+/// results shown over a panel. The control that opened a dialog, popup or tool
+/// window with the pointer (a toolbar or drive-bar button, a picker) is not one:
+/// the keyboard then returns to the active file list, whatever opened the dialog.
+fn keyboard_home(main: &crate::MainWindow) -> bool {
+    main.get_feed_focused_pane() >= 0
+        || WindowInner::from_pub(slint::ComponentHandle::window(main))
+            .focus_item
+            .borrow()
+            .upgrade()
+            .is_some_and(|item| item.downcast::<TextInput>().is_some())
+}
+
+/// Nothing is open over the main window: no form, dialog or popup.
+fn nothing_open(main: &crate::MainWindow) -> bool {
+    let window = slint::ComponentHandle::window(main);
+    window.is_visible()
+        && !main.get_embedded_modal_open()
+        && !crate::dialog_host::dialog_input_blocked(window)
+        && !WindowInner::from_pub(window)
+            .active_popups()
+            .iter()
+            .any(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+}
+
+/// The main window is active again, as when a tool window closes. A pointer-opened
+/// control that kept the keyboard (the button that opened the window) gives it to
+/// the active file list once nothing else is open.
+pub(crate) fn window_activated(main: &crate::MainWindow) {
+    use slint::ComponentHandle;
+    let weak = main.as_weak();
+    // After the activation settles: a click that activated the window may open a
+    // dialog, which then owns the keyboard.
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        let Some(main) = weak.upgrade() else { return };
+        if nothing_open(&main)
+            && !main.get_shell_focused()
+            && FocusReturn::capture(main.window())
+                .item_in_current_scope(main.window())
+                .is_some()
+            && !keyboard_home(&main)
+        {
+            main.invoke_focus_files();
+        }
+    });
+}
+
 /// Restore invoking focus after a popup retires, without moving focus out of
-/// another modal or reviving an obsolete presentation occurrence.
+/// another modal or reviving an obsolete presentation occurrence. A restored
+/// focus outside the keyboard's homes (`keyboard_home`) moves to the file list.
 pub(crate) fn restore_after_popup(
     main: &crate::MainWindow,
     focus: Option<FocusReturn>,
@@ -83,18 +132,10 @@ pub(crate) fn restore_after_popup(
     let weak = main.as_weak();
     slint::Timer::single_shot(std::time::Duration::ZERO, move || {
         let Some(main) = weak.upgrade() else { return };
-        if !current()
-            || !main.window().is_visible()
-            || main.get_embedded_modal_open()
-            || crate::dialog_host::dialog_input_blocked(main.window())
-            || WindowInner::from_pub(main.window())
-                .active_popups()
-                .iter()
-                .any(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
-        {
+        if !current() || !nothing_open(&main) {
             return;
         }
-        if !focus.is_some_and(|focus| focus.restore(main.window())) {
+        if !focus.is_some_and(|focus| focus.restore(main.window())) || !keyboard_home(&main) {
             main.invoke_focus_files();
         }
     });
@@ -159,13 +200,15 @@ pub(crate) fn install(main: &crate::MainWindow) {
             }
         } else {
             saved.borrow_mut().take();
+            // A dialog or popup closed: Slint gave the keyboard back to what had it
+            // before, which may be the toolbar button that opened it.
             let no_popup = !WindowInner::from_pub(main.window())
                 .active_popups()
                 .iter()
                 .any(|popup| !matches!(popup.window_kind, WindowKind::ToolTip));
             if no_popup
-                && current.item_in_current_scope(main.window()).is_none()
                 && main.window().is_visible()
+                && (current.item_in_current_scope(main.window()).is_none() || !keyboard_home(&main))
             {
                 main.invoke_focus_files();
             }

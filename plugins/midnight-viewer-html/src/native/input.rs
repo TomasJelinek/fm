@@ -7,6 +7,11 @@ const INVALID_RANGE: Range = Range {
     to: u32::MAX,
 };
 
+/// Chromium switch that applies every wheel event at once. CEF delivers OSR wheel
+/// events as non-precise deltas, which Chromium otherwise animates over about 170 ms;
+/// the host already sends its wheel glide and touchpad momentum one frame at a time.
+pub(super) const SMOOTH_SCROLLING_OFF: &str = "disable-smooth-scrolling";
+
 fn modifiers(value: api::Modifiers) -> u32 {
     (u32::from(value.shift) * 2)
         | (u32::from(value.control) * 4)
@@ -33,6 +38,11 @@ fn click_button(button: api::PointerButton) -> Option<(MouseButtonType, u32)> {
     }
 }
 
+/// The host's per-frame deltas of one wheel glide add up to whole pixels only up to
+/// float rounding. A total this close below a whole DIP counts as that DIP, so the
+/// glide's last DIP is not held back until the next wheel event.
+const WHOLE_DIP_TOLERANCE: f64 = 1e-3;
+
 /// Converts physical wheel deltas to whole DIPs, keeping each axis' fractional
 /// remainder so precision-touchpad scrolling below one DIP per event accumulates.
 /// A reversed direction discards the opposite remainder.
@@ -44,7 +54,7 @@ fn wheel_steps(remainder: &mut [f64; 2], delta: [f64; 2], scale: f64) -> [i32; 2
             remainder[axis] = 0.0;
         }
         let total = remainder[axis] + value;
-        let whole = total.trunc();
+        let whole = (total + WHOLE_DIP_TOLERANCE.copysign(total)).trunc();
         remainder[axis] = total - whole;
         steps[axis] = whole as i32;
     }
@@ -249,6 +259,24 @@ mod tests {
             wheel_steps(&mut remainder, [120.0, -240.0], 1.0),
             [120, -240]
         );
+    }
+
+    #[test]
+    fn a_glide_of_per_frame_deltas_scrolls_its_whole_distance() {
+        // Ten frames of 0.1 px add up to 0.9999999999999999 in f64; at 2x, ten frames
+        // of 0.6 physical px to 2.9999999999999996 DIP. Neither may stop a DIP short.
+        for (frame, scale, expected) in [(-0.1, 1.0, -1), (0.6, 2.0, 3)] {
+            let mut remainder = [0.0; 2];
+            let total: i32 = (0..10)
+                .map(|_| wheel_steps(&mut remainder, [frame, 0.0], scale)[0])
+                .sum();
+            assert_eq!(total, expected, "{frame} x 10 at {scale}x");
+            assert!(remainder[0].abs() < WHOLE_DIP_TOLERANCE);
+        }
+        // A real fraction still waits for the rest of its DIP.
+        let mut remainder = [0.0; 2];
+        assert_eq!(wheel_steps(&mut remainder, [0.0, 0.998], 1.0), [0, 0]);
+        assert_eq!(wheel_steps(&mut remainder, [0.0, 0.002], 1.0), [0, 1]);
     }
 
     #[test]

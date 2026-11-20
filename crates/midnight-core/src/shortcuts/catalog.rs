@@ -91,7 +91,9 @@ fn build() -> Vec<ShortcutDefinition> {
         "panel.root",
         "Filesystem root",
         FilesAny,
-        &["Ctrl+Backspace", "Shift+Backspace", "Ctrl+Backslash"],
+        // Shift+Backspace is the key menus show: Backspace goes up one level,
+        // Shift+Backspace all the way to the root of the panel's location.
+        &["Shift+Backspace", "Ctrl+Backspace", "Ctrl+Backslash"],
     );
     add(
         "panel.enter-folder",
@@ -360,6 +362,32 @@ fn build() -> Vec<ShortcutDefinition> {
         "Invert top-level files and folders",
         FilesAny,
         &["Ctrl+Shift+I"],
+    );
+    // Ctrl+= and Ctrl+− also work without a numeric keypad; Ctrl++ serves layouts
+    // whose + needs no Shift. The first key is the one menus show.
+    add(
+        "selection.mask-select",
+        "Select by mask…",
+        FilesIdle,
+        &["Ctrl+Equal", "NumpadAdd", "Ctrl+Plus"],
+    );
+    add(
+        "selection.mask-deselect",
+        "Deselect by mask…",
+        FilesIdle,
+        &["Ctrl+Minus", "NumpadSubtract"],
+    );
+    add(
+        "selection.mask-invert",
+        "Invert selection (folders as in Select by mask)",
+        FilesIdle,
+        &["NumpadMultiply"],
+    );
+    add(
+        "panel.hidden-files",
+        "Show or hide hidden files",
+        FilesAny,
+        &["Ctrl+H"],
     );
     add("sort.name", "Sort by name", FilesAny, &["Ctrl+F3"]);
     add(

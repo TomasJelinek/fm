@@ -22,6 +22,18 @@ position and drive-letter text are not evidence of volume identity. Until the
 backend resolves the automatic action, UI feedback must not promise a specific
 action. Ctrl+Shift and Alt link requests are rejected while Link is unsupported.
 
+A drag released less than 400 ms (`MIN_DRAG_DURATION`) after the pointer press that
+started it is an accident, whatever it is over: the other panel, a folder row, the
+source panel or nothing. The drag is cancelled as Escape cancels it (the prepared
+sources are released, no transfer, dialog or Move follows, the outline and drag
+feedback clear, selection and cursor stay) and the source panel's status line leads
+with "Drag cancelled: released within 0.4 s" for about four seconds or until the
+next drag. The press is the window's own left-button press, read from the platform's
+monotonic clock (injected through the Slint platform in tests), not the later
+threshold crossing; releases at or after 400 ms drop exactly as before, Ctrl/Shift
+included. Tabs, the path bar, Hot Paths, toolbars and dialogs receive no file drops,
+so a release there cancels the drag at any time.
+
 Move reuses ordinary operation admission, collision prompts and source-identity
 checks. Qualified same-volume moves use native rename without checksum reads;
 cross-volume moves copy and verify each file before deleting that source. Copy
@@ -41,10 +53,14 @@ receipts cannot revive a released gesture or retarget work after navigation.
 Canceled and rejected provider capabilities are retired on backend workers.
 
 Internal gestures remain in the application until the pointer leaves its client
-area. External handoff then releases UI capture only after arming the exact live
-drag token. Windows' backend STA temporarily attaches its input queue to the
-validated same-process window thread while calling DoDragDrop, and detaches on
-every exit. COM, path serialization and file work remain on the backend. A real
+area and the press is at least 400 ms old. Until then the window keeps the pointer
+grab and sees the release, so a quicker drop outside it is cancelled like one
+inside; once the operating system runs the drag, no drop can come sooner, and the
+receiving application needs no timing of its own. Incoming drops have no press in
+this application and are not timed. External handoff then releases UI capture only
+after arming the exact live drag token. Windows' backend STA temporarily attaches
+its input queue to the validated same-process window thread while calling
+DoDragDrop, and detaches on every exit. COM, path serialization and file work remain on the backend. A real
 owned-window test must exercise physical button release and cancellation; a
 synthetic held-button value is insufficient to qualify this boundary.
 
@@ -70,6 +86,7 @@ qualification remain pending; see [the dated evidence](../../verification/file-d
 ## Verification
 
 - Source threshold, group capture, unselected rows, quick release and Escape.
+- A release 399 ms after the press cancels with no transfer; one at 400 ms drops.
 - Exact folder destinations in all three layouts before and after scrolling.
 - Automatic volume defaults, explicit Ctrl/Shift, unsupported link modifiers.
 - Tree receipts, selection acknowledgement, stale navigation and backpressure.

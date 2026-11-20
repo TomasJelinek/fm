@@ -11,8 +11,22 @@ publish = false
 [dependencies]
 midnight-image-decoder = { path = "../image-decoder" }
 midnight-thumbnail-sdk = { version = "=0.2.0", registry = "midnight" }
+# The PDF viewer's renderer and features: compiled standard fonts and CMaps, no
+# filesystem, network or system-font lookup.
+hayro = { version = "=0.9.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 [dev-dependencies]
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+
+# The development application loads development plugin builds, and the host stops a
+# thumbnail worker after 8 CPU seconds. Unoptimized decoders and PDF rasterization ran
+# many times slower than shipped ones, so optimize all dependencies like the viewer
+# plugins and keep this crate debuggable and checked.
+# Measurements: docs/verification/2026-11-20-viewer-speed.md.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [lints.rust]
 unsafe_code = "forbid"

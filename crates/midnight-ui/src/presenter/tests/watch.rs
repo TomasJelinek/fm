@@ -140,7 +140,10 @@ fn a_watch_status_is_shown_non_modally_only_for_the_rows_it_concerns() {
         .watch_notice(PaneId::Left)
         .expect("the current rows are only checked periodically");
     let polling = notice.text;
-    assert!(polling.contains("about every 15 seconds"), "{polling}");
+    assert!(
+        polling.contains("checked for changes regularly"),
+        "{polling}"
+    );
     assert!(
         notice.details.contains("OS file watch limit reached"),
         "the registration error explains it: {}",

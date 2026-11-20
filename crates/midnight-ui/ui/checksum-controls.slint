@@ -19,7 +19,9 @@ export component MenuCheck inherits Rectangle {
 
 // The algorithm dropdown. Each row has a checkbox (include it in the next calculation) and
 // a name (show that algorithm's column once it has been calculated). "Include subfolders"
-// is the last row; nothing here recalculates by itself.
+// is the last row; nothing here recalculates by itself. From the keyboard, Enter, Space
+// or an arrow opens it; Up/Down move, Space ticks the row, Enter shows the row's column
+// (or ticks Include subfolders), and Escape or Tab closes it.
 export component ChecksumAlgorithmMenu inherits Rectangle {
     in-out property <ChecksumDraft> draft;
     in-out property <int> algorithm;
@@ -27,6 +29,8 @@ export component ChecksumAlgorithmMenu inherits Rectangle {
     in property <bool> busy;
     in property <bool> enabled: true;
     private property <[string]> names: ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"];
+    // The keyboard row: 0 to 4 are the algorithms, 5 is Include subfolders.
+    private property <int> current;
     pure function included(index: int) -> bool {
         return index == 0 ? root.draft.sha256 : index == 1 ? root.draft.sha512
             : index == 2 ? root.draft.md5 : index == 3 ? root.draft.sha1 : root.draft.crc32;
@@ -37,13 +41,22 @@ export component ChecksumAlgorithmMenu inherits Rectangle {
         else if index == 1 { root.draft.sha512 = !root.draft.sha512; }
         else if index == 2 { root.draft.md5 = !root.draft.md5; }
         else if index == 3 { root.draft.sha1 = !root.draft.sha1; }
-        else { root.draft.crc32 = !root.draft.crc32; }
+        else if index == 4 { root.draft.crc32 = !root.draft.crc32; }
+        else { root.draft.recursive = !root.draft.recursive; }
+    }
+    function open-menu() {
+        if root.enabled { root.current = root.algorithm; menu.show(); }
+    }
+    function close-menu() {
+        menu.close();
+        focus.focus();
     }
     min-width: 0px; min-height: Theme.control-height; preferred-height: Theme.control-height; vertical-stretch: 0;
     accessible-role: button; accessible-label: "Checksum algorithms"; accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { menu.show(); } }
+    accessible-action-default => { root.open-menu(); }
     background: trigger.has-hover && root.enabled ? Theme.hover : Theme.secondary-surface;
-    border-width: 1px; border-color: Theme.frame; border-radius: 4px;
+    border-width: focus.has-focus ? 2px : 1px;
+    border-color: focus.has-focus ? Theme.active-frame : Theme.frame; border-radius: 4px;
     Text {
         x: 10px; width: parent.width - 30px; height: parent.height;
         text: root.names[root.algorithm]; color: root.enabled ? Theme.text : Theme.muted-text;
@@ -53,53 +66,88 @@ export component ChecksumAlgorithmMenu inherits Rectangle {
         source: @image-url("icons/chevron-down.svg"); colorize: Theme.secondary-text; image-fit: contain;
         x: parent.width - 20px; y: (parent.height - self.height) / 2; width: 12px; height: 12px;
     }
-    trigger := TouchArea {
+    focus := FocusScope {
         enabled: root.enabled;
-        Tip { text: "Choose which checksums to calculate (checkboxes) and which one to show. Nothing recalculates until you press Calculate."; }
-        clicked => { menu.show(); }
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " "
+                || event.text == Key.DownArrow || event.text == Key.UpArrow {
+                root.open-menu();
+                return accept;
+            }
+            reject
+        }
+        trigger := TouchArea {
+            enabled: root.enabled;
+            Tip { text: "Choose which checksums to calculate (checkboxes) and which one to show. Nothing recalculates until you press Calculate."; }
+            clicked => { focus.focus(); root.open-menu(); }
+        }
     }
     menu := PopupWindow {
         close-policy: close-on-click-outside;
+        forward-focus: menu-focus;
         x: parent.width - self.width; y: parent.height + 2px;
         width: max(210px, root.width); height: 6 * 30px + 12px;
-        Rectangle { background: Theme.surface; border-width: 1px; border-color: Theme.active-frame; border-radius: 4px; }
-        VerticalLayout {
-            padding: 4px; spacing: 0px;
-            for name[index] in root.names : Rectangle {
-                height: 30px; border-radius: 3px;
-                accessible-role: checkbox; accessible-label: name; accessible-checked: root.included(index);
-                accessible-action-default => { root.toggle(index); }
-                background: index == root.algorithm ? Theme.active-header : name-area.has-hover ? Theme.hover : transparent;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 10px;
-                    VerticalLayout { alignment: center; MenuCheck { checked: root.included(index); enabled: !root.busy; } }
-                    Text {
-                        text: name; color: root.available[index] || !root.available[root.algorithm] ? Theme.text : Theme.secondary-text;
-                        font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1;
+        menu-focus := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.DownArrow { root.current = min(5, root.current + 1); return accept; }
+                if event.text == Key.UpArrow { root.current = max(0, root.current - 1); return accept; }
+                if event.text == Key.Home { root.current = 0; return accept; }
+                if event.text == Key.End { root.current = 5; return accept; }
+                if event.text == " " { root.toggle(root.current); return accept; }
+                if event.text == Key.Return {
+                    if root.current < 5 && root.available[root.current] {
+                        root.algorithm = root.current;
+                        root.close-menu();
+                    } else { root.toggle(root.current); }
+                    return accept;
+                }
+                if event.text == Key.Escape || event.text == Key.Tab { root.close-menu(); return accept; }
+                reject
+            }
+            Rectangle { background: Theme.surface; border-width: 1px; border-color: Theme.active-frame; border-radius: 4px; }
+            VerticalLayout {
+                padding: 4px; spacing: 0px;
+                for name[index] in root.names : Rectangle {
+                    height: 30px; border-radius: 3px;
+                    accessible-role: checkbox; accessible-label: name; accessible-checked: root.included(index);
+                    accessible-action-default => { root.toggle(index); }
+                    background: index == root.algorithm ? Theme.active-header
+                        : name-area.has-hover || (index == root.current && menu-focus.has-focus) ? Theme.hover : transparent;
+                    border-width: index == root.current && menu-focus.has-focus ? 1px : 0px;
+                    border-color: Theme.active-frame;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 10px;
+                        VerticalLayout { alignment: center; MenuCheck { checked: root.included(index); enabled: !root.busy; } }
+                        Text {
+                            text: name; color: root.available[index] || !root.available[root.algorithm] ? Theme.text : Theme.secondary-text;
+                            font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1;
+                        }
+                    }
+                    name-area := TouchArea {
+                        clicked => { if root.available[index] { root.algorithm = index; } }
+                    }
+                    TouchArea {
+                        x: 0px; width: 34px; enabled: !root.busy;
+                        clicked => { root.toggle(index); }
                     }
                 }
-                name-area := TouchArea {
-                    clicked => { if root.available[index] { root.algorithm = index; } }
-                }
-                TouchArea {
-                    x: 0px; width: 34px; enabled: !root.busy;
-                    clicked => { root.toggle(index); }
-                }
-            }
-            Rectangle { height: 1px; background: Theme.frame; }
-            Rectangle {
-                height: 30px;
-                accessible-role: checkbox; accessible-label: "Include subfolders"; accessible-checked: root.draft.recursive;
-                accessible-action-default => { if !root.busy { root.draft.recursive = !root.draft.recursive; } }
-                background: recursive-area.has-hover ? Theme.hover : transparent;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 10px;
-                    VerticalLayout { alignment: center; MenuCheck { checked: root.draft.recursive; enabled: !root.busy; } }
-                    Text { text: "Include subfolders"; color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1; }
-                }
-                recursive-area := TouchArea {
-                    enabled: !root.busy;
-                    clicked => { root.draft.recursive = !root.draft.recursive; }
+                Rectangle { height: 1px; background: Theme.frame; }
+                Rectangle {
+                    height: 30px; border-radius: 3px;
+                    accessible-role: checkbox; accessible-label: "Include subfolders"; accessible-checked: root.draft.recursive;
+                    accessible-action-default => { root.toggle(5); }
+                    background: recursive-area.has-hover || (root.current == 5 && menu-focus.has-focus) ? Theme.hover : transparent;
+                    border-width: root.current == 5 && menu-focus.has-focus ? 1px : 0px;
+                    border-color: Theme.active-frame;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 10px;
+                        VerticalLayout { alignment: center; MenuCheck { checked: root.draft.recursive; enabled: !root.busy; } }
+                        Text { text: "Include subfolders"; color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1; }
+                    }
+                    recursive-area := TouchArea {
+                        enabled: !root.busy;
+                        clicked => { root.toggle(5); }
+                    }
                 }
             }
         }

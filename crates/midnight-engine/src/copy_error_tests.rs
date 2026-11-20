@@ -184,7 +184,7 @@ async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
     let waiting = h
         .wait_status(2, |progress| {
             progress.state == CopyOperationState::Preparing
-                && progress.wait_reason == Some(TransferWaitReason::Resources)
+                && progress.wait_reason == Some(TransferWaitReason::SameFolders)
         })
         .await;
     assert_eq!(waiting.files_completed, 0);

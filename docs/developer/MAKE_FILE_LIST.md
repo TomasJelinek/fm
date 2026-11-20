@@ -53,7 +53,9 @@ cancellably afterward. `save_file_list` retains an opaque destination pin and th
 generated spool through explicit overwrite/append confirmation. Consent binds the
 path, target revision and append mode. Append releases the validated prefix reader
 at EOF before native replacement; the target pin remains checked before publication.
-`VerifiedFileCopy` verifies the staged contents before publishing them.
+`VerifiedFileCopy` verifies the staged contents before publishing them. A confirmed
+Replace or Append keeps the displaced original in a recovery copy, which the
+completion notice names (acceptance: `panels_file_list`).
 
 `TransferDirectory::stage_file_preserving_target` is an optional native capability
 whose default is Unsupported. It initializes existing-output security and supported

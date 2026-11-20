@@ -11,7 +11,7 @@ behavior, working changes and outstanding native/release qualification.
 Add current path must work inside an archive, including its root and any browsed
 subdirectory. The displayed form follows Salamander's requested separator, for
 example `D:\packages\source.zip@src\viewer` on Windows and
-`/home/user/source.zip@src/viewer` on Linux. Use the platform's normal separators,
+`/data/packages/source.zip@src/viewer` on Linux. Use the platform's normal separators,
 without added spaces; the archive root ends at `@`.
 
 Persistence retains a typed location: native archive container path, provider

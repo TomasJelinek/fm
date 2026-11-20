@@ -30,8 +30,12 @@ mod editor;
 mod find;
 #[path = "desktop_link_targets.rs"]
 mod link_targets;
+#[path = "desktop_properties.rs"]
+mod properties;
 
 const ICON_CAPACITY: usize = DESKTOP_ICON_CAPACITY;
+/// Concurrent Properties folder-contents counts.
+const MAX_CONTENT_COUNTS: usize = 2;
 const MAX_TERMINALS: usize = crate::user_command_runtime::MAX_PROCESSES;
 const MAX_OPEN_HELPERS: usize = crate::user_command_runtime::MAX_OPEN_PROCESSES;
 pub(crate) const MAX_OPEN_LAUNCHES: usize = 4;
@@ -63,6 +67,9 @@ pub(crate) struct Desktop {
     volume_icons: watch::Sender<Vec<IconKey>>,
     children: mpsc::Sender<TrackedChild>,
     property_budget: Arc<Semaphore>,
+    /// Folder-contents counts of Properties summaries; a replaced summary's count
+    /// is cancelled, so a later one waits only briefly.
+    contents_budget: Arc<Semaphore>,
     launch_budget: Arc<Semaphore>,
     context_requests: watch::Sender<u64>,
     link_targets: watch::Sender<Option<link_targets::Lookup>>,
@@ -170,6 +177,7 @@ impl Desktop {
             volume_icons,
             children,
             property_budget: Arc::new(Semaphore::new(1)),
+            contents_budget: Arc::new(Semaphore::new(MAX_CONTENT_COUNTS)),
             launch_budget: Arc::new(Semaphore::new(1)),
             context_requests,
             link_targets,
@@ -518,6 +526,7 @@ impl Desktop {
         filesystem: Arc<dyn FileSystem>,
         request: DesktopRequestId,
         paths: Vec<PathBuf>,
+        cancel: Cancellation,
         tasks: &mut JoinSet<()>,
     ) {
         if paths.is_empty() {
@@ -534,27 +543,37 @@ impl Desktop {
         let worker_permit = permit.clone();
         let outbox = self.outbox.clone();
         let scope = self.scope.clone();
+        let counting = self.contents_budget.clone();
+        let worker_cancel = cancel.clone();
         tasks.spawn(self.scope.future(async move {
             // Capacity covers native work and its terminal delivery, including panic.
-            let _permit = permit;
+            let permit = permit;
             let result = tokio::task::spawn_blocking(scope.blocking(move || {
                 let _permit = worker_permit;
-                show_properties(
+                let shown = show_properties(
                     filesystem.as_ref(),
                     services.as_deref(),
                     locale.as_deref(),
                     &paths,
-                    &Cancellation::default(),
-                )
+                    &worker_cancel,
+                );
+                // The provider outlives this worker only for a folder counted next.
+                shown.map(|(result, folder)| (result, folder.map(|folder| (folder, filesystem))))
             }))
             .await;
-            let result = match result {
-                Ok(result) => result,
-                Err(error) => Err(worker_error("properties", Path::new(""), error)),
+            let (result, folder) = match result {
+                Ok(Ok((result, folder))) => (Ok(result), folder),
+                Ok(Err(error)) => (Err(error), None),
+                Err(error) => (Err(worker_error("properties", Path::new(""), error)), None),
             };
             outbox
                 .send(Event::DesktopActionFinished { request, result })
                 .await;
+            // Another Properties request may open while this folder is counted.
+            drop(permit);
+            if let Some((folder, filesystem)) = folder {
+                count_contents(scope, counting, filesystem, folder, request, cancel, outbox).await;
+            }
         }));
     }
 
@@ -755,69 +774,94 @@ impl OpenCompletion {
     }
 }
 
+/// A native Properties dialog, or the metadata summary and, for a single folder,
+/// the summary to complete once its contents are counted.
 fn show_properties(
     filesystem: &dyn FileSystem,
     services: Option<&dyn DesktopServices>,
     locale: Option<&dyn LocaleService>,
     paths: &[PathBuf],
     cancel: &Cancellation,
-) -> Result<DesktopActionResult, FsError> {
+) -> Result<(DesktopActionResult, Option<properties::Single>), FsError> {
     crate::captured_native::check_cancel(cancel)?;
     if let Some(services) = services
         && services.show_properties(paths)?
     {
-        return Ok(DesktopActionResult::PropertiesOpened);
+        return Ok((DesktopActionResult::PropertiesOpened, None));
     }
     crate::captured_native::check_cancel(cancel)?;
-    let locale = locale.map_or_else(
+    let numbers = locale.map_or_else(
         || Ok(NumberLocale::default()),
         |service| service.number_locale(),
     )?;
-    metadata_properties(filesystem, paths, &locale, cancel)
+    let time = |value: std::time::SystemTime| {
+        locale
+            .and_then(|service| service.format_datetime(value))
+            .map_or_else(
+                || properties::utc_text(value),
+                |text| format!("{} {}", text.date, text.time),
+            )
+    };
+    // Details are an addition: a provider that cannot read them keeps the summary.
+    let details = |path: &Path| {
+        services
+            .and_then(|services| services.property_details(path).ok().flatten())
+            .map(|details| properties::Details::format(details, &time))
+    };
+    let summary = properties::summary(
+        paths,
+        &numbers,
+        cancel,
+        &|path| filesystem.entry_metadata(path),
+        &details,
+    )?;
+    Ok((summary.result, summary.folder))
 }
 
-fn metadata_properties(
-    filesystem: &dyn FileSystem,
-    paths: &[PathBuf],
-    locale: &NumberLocale,
-    cancel: &Cancellation,
-) -> Result<DesktopActionResult, FsError> {
-    let mut bytes = 0u64;
-    let mut files = 0u64;
-    let mut unknown = 0usize;
-    for path in paths {
-        crate::captured_native::check_cancel(cancel)?;
-        let metadata = filesystem.entry_metadata(path);
-        crate::captured_native::check_cancel(cancel)?;
-        match metadata {
-            Ok(metadata) => match metadata.size {
-                Some(size) => {
-                    bytes = bytes.checked_add(size).ok_or_else(|| {
-                        FsError::from_io(
-                            "properties",
-                            path,
-                            io::Error::other("Combined size exceeds u64."),
-                        )
-                    })?;
-                    files += 1;
-                }
-                None => unknown += 1,
-            },
-            Err(error) if paths.len() == 1 => return Err(error),
-            Err(_) => unknown += 1,
-        }
-    }
-    let title = if paths.len() == 1 {
-        paths[0].display().to_string()
-    } else {
-        format!("{} selected items", paths.len())
+/// Count a single folder's contents for its Properties summary, publishing the
+/// totals so far and then the final text. The request's cancellation (its summary
+/// closed or replaced) stops the count without publishing.
+async fn count_contents(
+    scope: TaskLifetime,
+    budget: Arc<Semaphore>,
+    filesystem: Arc<dyn FileSystem>,
+    folder: properties::Single,
+    request: DesktopRequestId,
+    cancel: Cancellation,
+    outbox: Outbox,
+) {
+    let Ok(permit) = budget.acquire_owned().await else {
+        return;
     };
-    let bytes = locale.format_u64(bytes);
-    let body = format!(
-        "{} items\n{bytes} bytes in {files} regular files\n{unknown} items without a file length\n\nRead-only metadata. Folder contents are not included.",
-        paths.len()
-    );
-    Ok(DesktopActionResult::PropertiesInfo { title, body })
+    if cancel.is_cancelled() {
+        return;
+    }
+    let _ = tokio::task::spawn_blocking(scope.blocking(move || {
+        let _permit = permit;
+        let publish = |body: String| {
+            outbox.blocking_send(
+                Event::PropertiesUpdated {
+                    request,
+                    title: folder.title.clone(),
+                    body,
+                },
+                &cancel,
+            )
+        };
+        // A closed outbox (the engine stopping) ends the count like a cancellation.
+        let counted =
+            properties::count_contents(filesystem.as_ref(), &folder.path, &cancel, &mut |so_far| {
+                publish(folder.body(Some(properties::Contents::Calculating(Some(so_far)))))
+            });
+        if cancel.is_cancelled() {
+            return;
+        }
+        publish(match &counted {
+            Ok(totals) => folder.body(Some(properties::Contents::Counted(totals))),
+            Err(error) => folder.body(Some(properties::Contents::Failed(&error.message))),
+        });
+    }))
+    .await;
 }
 
 /// A watch slot coalesces refreshes without overlapping uninterruptible host calls.
@@ -1292,6 +1336,81 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_single_folder_summary_is_completed_with_its_counted_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("photos");
+        std::fs::create_dir_all(folder.join("inner")).unwrap();
+        std::fs::write(folder.join("a.jpg"), vec![1; 1000]).unwrap();
+        std::fs::write(folder.join("inner/b.jpg"), vec![2; 24]).unwrap();
+        let platform = Arc::new(midnight_platform::LocalFileSystem::new(None));
+        let (sender, mut events) = mpsc::channel(8);
+        let mut tasks = JoinSet::new();
+        let desktop = Desktop::testing(
+            Some(platform.clone() as Arc<dyn DesktopServices>),
+            None,
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+            &mut tasks,
+        );
+        async fn received(events: &mut mpsc::Receiver<Event>) -> Event {
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+                    .await
+                    .expect("a Properties event")
+                    .expect("an open outbox");
+                if matches!(
+                    event,
+                    Event::DesktopActionFinished { .. } | Event::PropertiesUpdated { .. }
+                ) {
+                    return event;
+                }
+            }
+        }
+        let cancel = Cancellation::default();
+        desktop
+            .properties(
+                platform.clone(),
+                DesktopRequestId(9),
+                vec![folder.clone()],
+                cancel.clone(),
+                &mut tasks,
+            )
+            .await;
+        let Event::DesktopActionFinished {
+            request: DesktopRequestId(9),
+            result: Ok(DesktopActionResult::PropertiesInfo { body, .. }),
+        } = received(&mut events).await
+        else {
+            panic!("expected the metadata summary first");
+        };
+        assert!(body.contains("Owner: "), "{body}");
+        assert!(body.contains("Contents: Calculating…"), "{body}");
+        let body = loop {
+            match received(&mut events).await {
+                Event::PropertiesUpdated { request, body, .. }
+                    if request == DesktopRequestId(9) && !body.contains("Calculating") =>
+                {
+                    break body;
+                }
+                Event::PropertiesUpdated { .. } => {}
+                other => panic!("unexpected event {other:?}"),
+            }
+        };
+        assert!(body.contains("Contents: 2 files, 1 folder, "), "{body}");
+        assert!(
+            body.contains(" 1024 bytes") || body.contains(" 1,024 bytes"),
+            "{body}"
+        );
+        assert!(!cancel.is_cancelled());
+        drop(desktop);
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+
     #[tokio::test]
     async fn completed_properties_keep_capacity_until_their_terminal_event_is_delivered() {
         let (sender, events) = mpsc::channel(1);
@@ -1319,6 +1438,7 @@ mod tests {
                     filesystem,
                     DesktopRequestId(id),
                     vec!["captured/file".into()],
+                    Cancellation::default(),
                     &mut tasks,
                 ));
                 // Accepted work starts on this poll; a rejection waits for output.

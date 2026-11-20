@@ -17,7 +17,13 @@ export component ChecksumWindow inherits ToolWindow {
     public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }
-    public function begin() { results.focus(); }
+    public function begin() { root.focus-page(); }
+    // Keyboard focus for the shown page: its results list, or the window's Escape
+    // handler. A control that removes itself when used calls this first: Slint
+    // leaves the focus on a removed item, and Escape would no longer close the window.
+    function focus-page() {
+        if root.page == 0 && !root.show-details { results.focus(); } else { root.focus-content(); }
+    }
     title: "Checksums · Midnight Explorer";
     icon: FallbackIcons.checksums;
     in property <[ChecksumDisplayRow]> rows;
@@ -32,13 +38,20 @@ export component ChecksumWindow inherits ToolWindow {
     in property <bool> attention;
     in property <string> progress;
     in property <string> error;
+    // The attention line: the error, a backend diagnostic or the limits reached.
+    in property <string> issue;
+    // What a save does, or where the last one went and what it replaced.
+    in property <string> save-status;
+    // Everything both lines summarize; shown in place of the page on request.
+    in property <string> details;
     // Asked in the window instead of failing: partial results or an existing file.
     in property <string> save-prompt;
     in property <string> save-prompt-action: "Save";
     in property <string> generation-token;
     changed error => { root.attention-dismissed = false; }
     changed attention => { root.attention-dismissed = false; }
-    changed generation-token => { root.attention-dismissed = false; }
+    changed generation-token => { root.attention-dismissed = false; root.show-details = false; }
+    changed save-status => { root.save-status-dismissed = false; }
     in property <[bool]> output-available: [false, false, false, false, false];
     in-out property <string> manifest-path;
     in-out property <ChecksumDraft> draft;
@@ -46,8 +59,14 @@ export component ChecksumWindow inherits ToolWindow {
     in-out property <int> selected-row: -1;
     // Calculate, Verify file. The draft survives page switches.
     in-out property <int> page;
-    changed page => { if root.page == 0 { results.focus(); } else { root.focus-content(); } }
+    changed page => {
+        root.show-details = false;
+        root.focus-page();
+    }
+    // Details replaces the page until Back; the page's draft survives.
+    in-out property <bool> show-details;
     private property <bool> attention-dismissed;
+    private property <bool> save-status-dismissed;
     private property <bool> has-algorithm: root.draft.md5 || root.draft.sha1 || root.draft.sha256 || root.draft.sha512 || root.draft.crc32;
     private property <bool> can-save: root.has-output && !root.running && !root.saving && !root.picker-busy && root.save-prompt == "" && root.output-available[root.output-algorithm];
     private property <bool> row-calculated: root.selected-row >= 0 && root.selected-row < root.rows.length && root.rows[root.selected-row].calculated;
@@ -60,6 +79,7 @@ export component ChecksumWindow inherits ToolWindow {
     callback stop-save();
     callback confirm-save();
     callback cancel-save-prompt();
+    callback copy-details();
     public function copy-current() {
         if root.row-calculated && root.output-available[root.output-algorithm] {
             root.copy-result(root.rows[root.selected-row].token, root.output-algorithm, false);
@@ -94,18 +114,23 @@ export component ChecksumWindow inherits ToolWindow {
         if root.page == 0 && root.attention && !root.attention-dismissed: HorizontalLayout {
             spacing: 8px; height: max(32px, Theme.control-height); cross-axis-alignment: center;
             ErrorGlyph { width: 20px; height: 20px; }
-            Text { text: root.error != "" ? root.error : root.verifying ? "Verification needs attention" : "Some results are incomplete";
+            Text { text: root.issue != "" ? root.issue : root.verifying ? "Verification needs attention" : "Some results are incomplete";
                 color: Theme.error-text; overflow: elide; vertical-alignment: center;
                 min-width: 0px; horizontal-stretch: 1; }
+            if !root.show-details: HintedActionButton {
+                text: "Details"; hint: "Show the reason, every reported problem and the limits reached.";
+                clicked => { root.show-details = true; root.focus-page(); }
+            }
             CloseButton { label: "Dismiss checksum warning";
                 hint: "Dismiss this notice.";
-                width: Theme.control-height; clicked => { root.attention-dismissed = true; } }
+                width: Theme.control-height;
+                clicked => { root.attention-dismissed = true; root.focus-page(); } }
         }
         Rectangle {
             vertical-stretch: 1; min-height: 18px; clip: true;
             background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
             results := ChecksumResults {
-                visible: root.page == 0;
+                visible: root.page == 0 && !root.show-details;
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                 surface-width: root.width; surface-height: root.height;
                 rows: root.rows; algorithms: root.output-available;
@@ -113,14 +138,22 @@ export component ChecksumWindow inherits ToolWindow {
                 selected-row <=> root.selected-row; output-algorithm: root.output-algorithm;
                 copy-result(token, algorithm, whole) => { root.copy-result(token, algorithm, whole); }
             }
-            if root.page == 0 && root.rows.length == 0: Text {
+            if root.page == 0 && root.rows.length == 0 && !root.show-details: Text {
                 text: root.running ? (root.verifying ? "Verifying files…" : "Calculating checksums…")
                     : "Choose the checksums in the list above, then press Calculate.";
                 color: Theme.muted-text; wrap: word-wrap;
                 x: 12px; width: parent.width - 24px;
                 horizontal-alignment: center; vertical-alignment: center;
             }
-            if root.page == 1: VScrollView {
+            if root.show-details: VScrollView {
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                VerticalLayout {
+                    padding: root.compact ? 8px : 16px; spacing: 8px; alignment: start;
+                    Text { text: "Details"; color: Theme.strong-text; font-weight: 600; }
+                    Text { text: root.details; color: Theme.text; wrap: word-wrap; }
+                }
+            }
+            if root.page == 1 && !root.show-details: VScrollView {
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                 VerticalLayout {
                     padding: root.compact ? 8px : 16px; spacing: 12px; alignment: start;
@@ -152,13 +185,26 @@ export component ChecksumWindow inherits ToolWindow {
             HintedActionButton {
                 text: root.save-prompt-action; primary: true; fallback-icon: FallbackIcons.done;
                 hint: "Go ahead and write the manifest.";
-                clicked => { root.confirm-save(); }
+                clicked => { root.focus-page(); root.confirm-save(); }
             }
             HintedActionButton {
                 text: "Cancel"; fallback-icon: FallbackIcons.close;
                 hint: "Leave the manifest unwritten.";
-                clicked => { root.cancel-save-prompt(); }
+                clicked => { root.focus-page(); root.cancel-save-prompt(); }
             }
+        }
+        if root.save-prompt == "" && root.save-status != "" && !root.save-status-dismissed: HorizontalLayout {
+            spacing: 8px; height: max(32px, Theme.control-height); cross-axis-alignment: center;
+            Text { text: root.save-status; color: Theme.text; overflow: elide; vertical-alignment: center;
+                min-width: 0px; horizontal-stretch: 1; }
+            if !root.show-details && !root.saving: HintedActionButton {
+                text: "Details"; hint: "Show the saved file's full path and where a replaced file is kept.";
+                clicked => { root.show-details = true; root.focus-page(); }
+            }
+            if !root.saving: CloseButton { label: "Dismiss save notice";
+                hint: "Dismiss this notice.";
+                width: Theme.control-height;
+                clicked => { root.save-status-dismissed = true; root.focus-page(); } }
         }
         if !root.compact || root.page != 0 || !root.attention || root.attention-dismissed: Text {
             text: root.progress; color: root.attention ? Theme.error-text : Theme.secondary-text;
@@ -168,28 +214,38 @@ export component ChecksumWindow inherits ToolWindow {
         DialogFooter {
             dismiss-text: "Close"; dismiss-hint: "Close this checksum window (Escape). Running work is cancelled.";
             compact-height: root.compact; dismiss => { root.close-session(); }
-            if root.running || root.page == 0: HintedActionButton {
+            if root.show-details: HintedActionButton {
+                text: "Back"; fallback-icon: FallbackIcons.checksums;
+                hint: "Return to the page.";
+                clicked => { root.show-details = false; root.focus-page(); }
+            }
+            if root.show-details: HintedActionButton {
+                text: "Copy details"; fallback-icon: FallbackIcons.copy;
+                hint: "Copy these details, including full paths, to the clipboard.";
+                clicked => { root.copy-details(); }
+            }
+            if root.running || (root.page == 0 && !root.show-details): HintedActionButton {
                 text: root.stopping ? "Stopping…" : root.running ? "Stop" : "Calculate"; primary: !root.running;
                 fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.checksums;
                 enabled: !root.stopping && !root.saving && !root.picker-busy && (root.running || (root.has-algorithm && root.has-captured-files));
                 hint: root.running ? "Stop calculation and keep completed results." : "Calculate the chosen checksums for the captured selection.";
                 clicked => { if root.running { root.stop(); } else { root.calculate(root.draft); root.page = 0; } }
             }
-            if root.page == 0: HintedActionButton {
+            if root.page == 0 && !root.show-details: HintedActionButton {
                 text: root.width < 460px ? "Copy" : "Copy " + ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm];
                 fallback-icon: FallbackIcons.copy;
                 enabled: root.row-calculated && root.output-available[root.output-algorithm];
                 hint: "Copy the selected hash (Ctrl+C). Ctrl+Shift+C copies the full row; right-click a result for more choices.";
                 clicked => { root.copy-current(); }
             }
-            if root.page == 0 && !root.running: HintedActionButton {
+            if root.page == 0 && !root.running && !root.show-details: HintedActionButton {
                 text: root.saving ? (root.save-stopping ? "Stopping…" : "Stop save") : root.width < 460px ? "Save…" : "Save manifest…";
                 fallback-icon: root.saving ? FallbackIcons.close : FallbackIcons.save-again;
                 enabled: root.saving ? !root.save-stopping : root.can-save;
                 hint: root.saving ? "Cancel writing the manifest." : "Choose a file and save the calculated checksums. An existing file is only replaced after you confirm.";
                 clicked => { if root.saving { root.stop-save(); } else { root.browse-manifest(false, root.output-algorithm); } }
             }
-            if root.page == 1 && !root.running: HintedActionButton {
+            if root.page == 1 && !root.running && !root.show-details: HintedActionButton {
                 text: "Verify"; primary: true; fallback-icon: FallbackIcons.checksums;
                 enabled: !root.saving && !root.picker-busy && root.manifest-path != "";
                 hint: "Read the checksum file and compare every listed file on background workers.";

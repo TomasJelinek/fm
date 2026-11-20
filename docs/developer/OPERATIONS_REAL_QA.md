@@ -32,7 +32,10 @@ the same QA output directory. No permanent deletion fallback or global Recycle
 Bin cleanup occurred.
 
 Initial harness runs exposed incorrect QA assumptions, subsequently corrected:
-Skip produces `CompletedWithErrors` with a skip count; invalid source ancestry
+Skip produces `CompletedWithErrors` with a skip count (since 20 November 2026 a
+conflict Skip ends `Completed` with the skip count, and only a skipped I/O error
+still ends `CompletedWithErrors`; the Windows harness expects this but was not
+rerun on Windows); invalid source ancestry
 fails immediately without a Retry prompt; a later queued cancellation acknowledges
 `CancelRequested` before its FIFO terminal event; and Windows staging deletion
 can remain pending until the owned native handle closes. The engine performs that
@@ -111,7 +114,7 @@ observed test result without upgrading the product's sampled guarantee.
 
 ## Salamander comparison used for the matrix
 
-The local reference tree `D:\experiments\salamander-main\src` was inspected without
+The local reference tree `<salamander-source>\src` was inspected without
 changes. Its `worker.cpp` defines separate Skip All state for read, write,
 overwrite, move, delete, directory creation, and metadata errors (around lines
 989–1012), and explicit Retry/Cancel dispatches (including around lines 2517–2592).

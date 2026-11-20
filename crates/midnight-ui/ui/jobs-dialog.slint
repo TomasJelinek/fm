@@ -8,6 +8,19 @@ import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { SpeedChartData } from "operation-speed-chart.slint";
 
+// One error a job reported, as its window lists it. Display text only: no action
+// takes a path from here.
+export struct JobIssue {
+    // The reason, on one line.
+    title: string,
+    // The whole path, or empty for an error without one.
+    path: string,
+    // The end of `path` that a shortened row keeps in view.
+    path-tail: string,
+    // What an expanded row shows below the path: the whole message and the operation.
+    detail: string,
+}
+
 export struct OperationRow {
     identity: string, title: string, detail: string, progress-detail: string,
     summary: string, state: string,
@@ -17,8 +30,14 @@ export struct OperationRow {
     current-path: string, remaining: string, eta: string,
     waiting: bool, activity-label: string, verification-view: bool, file-progress-title: string,
     file-determinate: bool, file-progress: float, file-progress-label: string, icon: image, kind: int, speed-chart: SpeedChartData,
+    // "45%" beside the current file's name once it copies slowly; empty for quick files.
+    file-percent: string,
+    // `transfer-totals`: files and size for a Copy or Move, items for a Delete.
     transfer-directory: string, transfer-name: string, transfer-totals: string, transfer-outcome: string,
-    transfer-speed-chart: SpeedChartData
+    transfer-speed-chart: SpeedChartData,
+    // `transfer-outcome` serves every kind of job: once a job ended without completing
+    // cleanly, what it did and did not do. The errors it reported, and their count.
+    issues: [JobIssue], issue-summary: string
 }
 
 export global JobsView {
@@ -66,6 +85,8 @@ component FinishedJobButton inherits HintedActionButton {
     in property <bool> without-errors;
     callback clear-finished(bool);
     text: root.without-errors ? "Clear finished without errors" : "Clear all finished";
+    // Like Remove: the entries leave the list, no file is touched.
+    fallback-icon: FallbackIcons.close;
     enabled: JobsView.has-finished(root.rows, root.without-errors);
     hint: root.without-errors ? "Remove finished jobs without errors and keep jobs that need attention."
         : "Remove all finished jobs from this session's history.";
@@ -123,11 +144,11 @@ export component OperationsBody inherits Rectangle {
         }
         VerticalLayout {
             padding: root.compact ? 6px : 16px; spacing: root.compact ? 4px : 10px;
+            // The native title bar closes Jobs; the footer's Close and Escape do too.
             DialogHeader {
-                title: "Jobs"; compact: root.compact;
+                title: "Jobs"; compact: root.compact; closable: false;
                 fallback-icon: FallbackIcons.folder-sizes;
                 detail: root.rows.length == 1 ? "1 operation" : root.rows.length + " operations";
-                close-label: "Close dialog"; close => { root.close(); }
             }
             list-frame := Rectangle {
                 min-height: 20px; min-width: 0px; vertical-stretch: 1;
@@ -206,7 +227,8 @@ export component OperationsBody inherits Rectangle {
                     }
                 }
                 if root.selected.attention : HintedActionButton {
-                    text: "Resolve"; hint: "Review the decision needed by this job.";
+                    text: "Resolve"; fallback-icon: FallbackIcons.view;
+                    hint: "Review the decision needed by this job.";
                     clicked => { root.resolve(root.selected.identity); }
                 }
             }

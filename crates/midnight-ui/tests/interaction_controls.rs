@@ -307,14 +307,7 @@ fn extreme_splitter_drag_keeps_modified_column_inside_both_panes_at_large_fonts(
                     (ui.window.get_panel_ratio() - 0.5).abs() > 0.15,
                     "the drag must reach a narrow pane before checking its columns"
                 );
-                let mut headers: Vec<_> =
-                    named_items(&ui.window, "Sort by Modified", AccessibleRole::Button)
-                        .iter()
-                        .map(bounds)
-                        .collect();
-                headers.sort_by(|left, right| left.0.total_cmp(&right.0));
-                assert_eq!(headers.len(), 2);
-                for ((x, _, width, _), (pane_x, pane_width)) in headers.into_iter().zip([
+                let panes = [
                     (
                         ui.window.get_left_list_left(),
                         ui.window.get_left_list_width(),
@@ -323,8 +316,28 @@ fn extreme_splitter_drag_keeps_modified_column_inside_both_panes_at_large_fonts(
                         ui.window.get_right_list_left(),
                         ui.window.get_right_list_width(),
                     ),
-                ]) {
-                    assert!(x >= pane_x - 1.0 && width > 0.0);
+                ];
+                let headers: Vec<_> =
+                    named_items(&ui.window, "Sort by Modified", AccessibleRole::Button)
+                        .iter()
+                        .map(bounds)
+                        .collect();
+                // A narrow pane gives file names their width first and may hide its
+                // date column; the wide pane keeps it, and a shown one stays inside.
+                let wide = panes[usize::from(panes[1].1 > panes[0].1)];
+                assert!(
+                    headers
+                        .iter()
+                        .any(|(x, ..)| *x >= wide.0 - 1.0 && *x < wide.0 + wide.1),
+                    "the wide pane shows Modified: density={density}, fonts={desktop_font}/{touch_font}, direction={direction}"
+                );
+                assert!(headers.len() <= 2);
+                for (x, _, width, _) in headers {
+                    let (pane_x, pane_width) = *panes
+                        .iter()
+                        .find(|(pane_x, pane_width)| x >= pane_x - 1.0 && x < pane_x + pane_width)
+                        .expect("Modified starts inside a pane");
+                    assert!(width > 0.0);
                     assert!(
                         x + width <= pane_x + pane_width + 1.0,
                         "Modified extends beyond pane: density={density}, fonts={desktop_font}/{touch_font}, direction={direction}, header={x}+{width}, pane={pane_x}+{pane_width}"

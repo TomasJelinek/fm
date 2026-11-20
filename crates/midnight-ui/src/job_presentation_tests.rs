@@ -56,7 +56,11 @@ fn transfer_overview_uses_discovered_totals_and_separate_current_path_parts() {
     value.current_file_size = Some(90);
     value.current_file_verified = 9;
     let verifying = copy(&p, &value);
-    assert_eq!(verifying.transfer_totals, "Files: 2 / 8 · Bytes: 200 / 840");
+    // Written bytes include the current file's, as the percentage does.
+    assert_eq!(
+        verifying.transfer_totals,
+        "Files: 2 of 8 · Bytes: 290 B of 840 B"
+    );
     assert_eq!(verifying.progress_label, "34% complete");
     assert_eq!(verifying.file_progress, 0.1);
 
@@ -75,12 +79,12 @@ fn transfer_overview_uses_discovered_totals_and_separate_current_path_parts() {
         ..Default::default()
     };
     let moved = copy(&p, &value);
-    assert_eq!(moved.transfer_totals, "Selected items: 2 / 3");
+    assert_eq!(moved.transfer_totals, "Selected items: 2 of 3");
     assert_eq!(moved.progress_label, "66% complete");
 }
 
 #[test]
-fn cancelled_and_warning_transfers_show_their_outcome_and_retained_issues() {
+fn cancelled_and_warning_transfers_show_their_outcome_and_list_only_their_errors() {
     let p = Presenter::new("left".into(), "right".into());
     let mut value = progress(27);
     value.requested_roots = 4;
@@ -95,6 +99,9 @@ fn cancelled_and_warning_transfers_show_their_outcome_and_retained_issues() {
         uncommitted_bytes: None,
         omitted_error_details: 2,
     });
+    value.add_note(
+        "/source/links/dangling was copied as a link because its target does not exist.".into(),
+    );
     let residual = PathBuf::from("target").join("partial");
     value.errors.push(FsError::from_io(
         "cleanup",
@@ -102,31 +109,31 @@ fn cancelled_and_warning_transfers_show_their_outcome_and_retained_issues() {
         std::io::Error::other("Temporary file removal failed"),
     ));
     let cancelled = copy(&p, &value);
-    assert!(
-        cancelled
-            .transfer_outcome
-            .contains("Selected items completed: 1")
-    );
-    assert!(cancelled.transfer_outcome.contains("Not completed: 3"));
-    assert!(
-        cancelled
-            .transfer_outcome
-            .contains("Temporary file removal failed")
-    );
-    assert!(
-        cancelled
-            .transfer_outcome
-            .contains(residual.to_string_lossy().as_ref())
-    );
+    let outcome = cancelled.transfer_outcome.as_str();
+    assert!(outcome.starts_with("Copy cancelled; files already copied are kept.\n"));
+    assert!(outcome.contains("Files copied: 2"), "{outcome}");
+    assert!(outcome.contains("Selected items copied: 1 · Not copied: 3"));
+    assert!(outcome.contains("1 skipped item was not copied."));
+    assert!(outcome.contains("1 link was copied as a link"));
+    // Errors are listed one per row, never in the outcome text, and notes not at all.
+    assert!(!outcome.contains("Temporary file removal failed"));
+    assert!(!outcome.contains("/source/links/dangling"));
+    assert_eq!(cancelled.issue_summary, "3 errors, 1 listed");
+    let issues: Vec<_> = cancelled.issues.iter().collect();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].title, "Temporary file removal failed");
+    assert_eq!(issues[0].path, residual.to_string_lossy().as_ref());
+    // Copy details keep everything: the error, the notes and what was not retained.
     assert!(
         cancelled
             .detail
             .contains(residual.to_string_lossy().as_ref())
     );
-
-    assert!(cancelled.transfer_outcome.contains("2 more error details"));
-    assert!(!cancelled.transfer_outcome.contains("Files published"));
-    assert!(!cancelled.transfer_outcome.contains("Bytes published"));
+    assert!(cancelled.detail.contains("/source/links/dangling"));
+    assert!(cancelled.detail.contains("2 more error details"));
+    for text in [outcome, cancelled.detail.as_str()] {
+        assert!(!text.to_lowercase().contains("publish"), "{text}");
+    }
 
     value.state = CopyOperationState::Completed;
     value.failed = 0;
@@ -147,18 +154,17 @@ fn cancelled_and_warning_transfers_show_their_outcome_and_retained_issues() {
     });
     let warning = copy(&p, &value);
     assert_eq!(warning.state, "Completed with warnings");
-    assert!(warning.transfer_outcome.contains("Skipped: 1"));
+    let outcome = warning.transfer_outcome.as_str();
+    assert!(outcome.contains("1 skipped item was not copied."));
     assert!(
-        warning
-            .transfer_outcome
-            .contains("Files published: 2 · Not published: 2")
+        outcome.contains("Files copied: 2 · Not copied: 2"),
+        "{outcome}"
     );
-    assert!(
-        warning
-            .transfer_outcome
-            .contains("Bytes published: 250 · Not published: 125")
-    );
-    assert!(!warning.transfer_outcome.contains("more error details"));
+    assert!(outcome.contains("Bytes copied: 250 · Not copied: 125"));
+    assert!(!outcome.contains("Selected items"), "file totals are known");
+    assert!(warning.issue_summary.is_empty());
+    assert_eq!(warning.issues.row_count(), 0);
+    assert!(!warning.detail.contains("more error details"));
 }
 
 #[test]
@@ -261,6 +267,33 @@ fn copy_details_show_retained_originals_and_truthful_bounded_samples() {
             .contains("Additional displaced destination files")
     );
     assert!(!row.failed);
+}
+
+#[test]
+fn copy_details_list_link_notes_without_turning_them_into_errors() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut progress = progress(4);
+    progress.state = CopyOperationState::Completed;
+    for name in ["dangling", "to-self"] {
+        progress.add_note(format!(
+            "/source/links/{name} was copied as a link because it could not be followed."
+        ));
+    }
+    progress.note_count = 18;
+    let row = copy(&p, &progress);
+    assert!(
+        row.detail
+            .contains("\n\nNotes\n/source/links/dangling was copied as a link")
+    );
+    assert!(
+        row.detail
+            .contains("/source/links/to-self was copied as a link")
+    );
+    assert!(row.detail.contains("16 more notes are not shown."));
+    assert!(!row.failed);
+    // A clean completion with notes needs no review: no outcome and no error rows.
+    assert!(row.transfer_outcome.is_empty());
+    assert!(row.issue_summary.is_empty() && row.issues.row_count() == 0);
 }
 
 #[test]
@@ -530,7 +563,8 @@ fn delete_progress_distinguishes_waiting_scanning_and_control_states() {
         ..Default::default()
     };
     let scanning = update(&mut p, &progress);
-    assert_eq!(scanning.progress_label, "Discovering: 5 items (900 B)");
+    // A Delete counts items; the size it removes is no measure of its work.
+    assert_eq!(scanning.progress_label, "Discovering: 5 items");
     assert_eq!(scanning.activity_label, "Discovering items...");
     assert!(scanning.discovering && !scanning.waiting);
     assert!(!scanning.determinate && scanning.eta.is_empty());
@@ -546,11 +580,14 @@ fn delete_progress_distinguishes_waiting_scanning_and_control_states() {
     });
     let pausing = row(&p);
     assert_eq!(pausing.progress_label, "Pausing...");
+    assert_eq!(pausing.state, "Pausing...", "the Jobs list says so too");
     assert!(pausing.pause_requested && !pausing.paused && !pausing.discovering);
     progress.pause_requested = true;
     progress.paused = true;
     let paused = update(&mut p, &progress);
     assert_eq!(paused.activity_label, "Paused");
+    assert_eq!(paused.state, "Paused");
+    assert!(paused.detail.contains("\nPaused\n"));
     assert!(paused.paused && !paused.discovering && paused.eta.is_empty());
 
     p.set_job_paused("41", false, &|command| {
@@ -564,6 +601,7 @@ fn delete_progress_distinguishes_waiting_scanning_and_control_states() {
     });
     let resuming = row(&p);
     assert_eq!(resuming.activity_label, "Resuming...");
+    assert_eq!(resuming.state, "Resuming...");
     assert!(resuming.paused && !resuming.pause_requested && !resuming.discovering);
 
     p.cancel_operation("41", &|command| {
@@ -802,6 +840,46 @@ fn typed_transfer_waits_override_stale_scanning_and_phase() {
 }
 
 #[test]
+fn the_jobs_list_names_a_paused_transfer_with_its_phase() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(26);
+    for (phase, paused, pause_requested, state) in [
+        (CopyOperationPhase::Copying, true, true, "Paused · copying"),
+        (
+            CopyOperationPhase::Verifying,
+            true,
+            true,
+            "Paused · verifying SHA-256",
+        ),
+        (CopyOperationPhase::Copying, false, true, "Pausing..."),
+        (CopyOperationPhase::Copying, true, false, "Resuming..."),
+        (CopyOperationPhase::Copying, false, false, "Copying"),
+    ] {
+        value.phase = phase;
+        value.paused = paused;
+        value.pause_requested = pause_requested;
+        let row = copy(&p, &value);
+        assert_eq!(row.state, state);
+        assert!(
+            row.detail.contains(&format!("\n{state}\n")),
+            "{}",
+            row.detail
+        );
+    }
+    // A decision, a cancellation and a finished job keep their own state.
+    value.paused = true;
+    value.pause_requested = true;
+    for (state, shown) in [
+        (CopyOperationState::WaitingForDecision, "Needs a decision"),
+        (CopyOperationState::CancelRequested, "Cancelling"),
+        (CopyOperationState::Completed, "Completed"),
+    ] {
+        value.state = state;
+        assert_eq!(copy(&p, &value).state, shown);
+    }
+}
+
+#[test]
 fn control_states_and_pause_override_typed_waits_before_discovery() {
     let p = Presenter::new("left".into(), "right".into());
     for (state, paused, pause_requested, label) in [
@@ -860,7 +938,7 @@ fn typed_wait_suppresses_eta_with_known_work_and_never_comes_from_message_text()
         verification_bytes: 1000,
     });
     value.throughput = Arc::new(OperationThroughput {
-        transfer_per_second: 100.0,
+        smoothed_transfer_per_second: 100.0,
         ..Default::default()
     });
     value.wait_reason = Some(TransferWaitReason::Resources);
@@ -1218,4 +1296,52 @@ fn accepted_local_copy_cancel_clears_pause_wait_without_retiring_or_rewriting_pr
         assert!(!p.has_live_operations());
         assert_eq!(p.copies.progress[0].state, CopyOperationState::Cancelled);
     }
+}
+
+#[test]
+fn each_transfer_wait_says_why_the_job_waits() {
+    let p = Presenter::new("left".into(), "right".into());
+    let cases = [
+        (
+            TransferWaitReason::DiskCapacity,
+            "Waiting for disk capacity",
+        ),
+        (
+            TransferWaitReason::SameFolders,
+            "Waiting for another job in the same folders to finish",
+        ),
+        (
+            TransferWaitReason::OtherOperation,
+            "Waiting for another file operation",
+        ),
+    ];
+    for (reason, label) in cases {
+        for state in [
+            CopyOperationState::Queued,
+            CopyOperationState::Preparing,
+            CopyOperationState::Running,
+        ] {
+            let mut value =
+                CopyProgress::queued(OperationId(26), "target".into(), 1, TransferIntent::Copy);
+            value.state = state;
+            value.wait_reason = Some(reason);
+            let row = copy(&p, &value);
+            assert_eq!(row.state, label, "{reason:?} in {state:?}");
+            assert_eq!(row.activity_label, label);
+            assert_eq!(row.progress_label, label);
+            assert!(row.waiting && row.eta.is_empty());
+            value.paused = true;
+            value.pause_requested = true;
+            assert_eq!(copy(&p, &value).activity_label, "Paused");
+        }
+    }
+    assert_eq!(
+        cases
+            .iter()
+            .map(|(_, label)| *label)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        cases.len(),
+        "each reason has its own label"
+    );
 }

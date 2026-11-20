@@ -3,6 +3,7 @@ use crate::OperationRow;
 use midnight_core::{
     CopyFailure, CopyProgress, MetadataResult, NumberLocale, OperationId, OperationProgress,
 };
+use slint::{Model, ModelRc};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet, hash_map::Entry},
@@ -59,6 +60,9 @@ impl Token {
 fn same<T>(old: &Weak<T>, current: &Arc<T>) -> bool {
     Weak::ptr_eq(old, &Arc::downgrade(current))
 }
+fn same_rows<T: PartialEq + Clone + 'static>(left: &ModelRc<T>, right: &ModelRc<T>) -> bool {
+    left.row_count() == right.row_count() && left.iter().eq(right.iter())
+}
 fn same_optional<T>(old: &Option<Weak<T>>, current: Option<&Arc<T>>) -> bool {
     match (old, current) {
         (None, None) => true,
@@ -94,10 +98,16 @@ impl Rows {
             Entry::Occupied(slot) => {
                 let cached = slot.into_mut();
                 if !cached.snapshot.same(&snapshot) || cached.locale != *locale {
+                    let mut row = build();
+                    // A progress update that reports the same errors keeps their model:
+                    // the job window's error rows, and the focus on one, then stay.
+                    if same_rows(&row.issues, &cached.row.issues) {
+                        row.issues = cached.row.issues.clone();
+                    }
                     *cached = Cached {
                         snapshot: Token::new(&snapshot),
                         locale: locale.clone(),
-                        row: build(),
+                        row,
                     };
                 }
                 cached

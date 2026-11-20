@@ -234,6 +234,17 @@ impl TransferSource for Source {
         }
         self.0.open(cancel)?.source.link_representation(cancel)
     }
+    fn link_not_followed(&self) -> Option<String> {
+        let state = self.0.lock().ok()?;
+        if let Some(active) = state.as_ref() {
+            return active.source.link_not_followed();
+        }
+        self.0
+            .open(&Cancellation::default())
+            .ok()?
+            .source
+            .link_not_followed()
+    }
     fn open_child(
         &self,
         name: &OsStr,
@@ -248,6 +259,13 @@ impl TransferSource for Source {
     ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
         self.0
             .with_active(cancel, |active| active.source.next_child(cancel))
+    }
+    fn next_child_or_failure(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferChild>, FsError> {
+        self.0
+            .with_active(cancel, |active| active.source.next_child_or_failure(cancel))
     }
     fn next_move_child(
         &mut self,

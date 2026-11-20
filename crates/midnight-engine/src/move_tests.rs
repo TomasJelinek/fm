@@ -8,6 +8,9 @@ pub(super) mod directories;
 #[cfg(target_os = "linux")]
 #[path = "move_linux_tests.rs"]
 mod linux;
+#[cfg(target_os = "linux")]
+#[path = "copy_link_linux_tests.rs"]
+mod linux_links;
 #[path = "copy_metadata_tests.rs"]
 mod metadata;
 #[path = "move_restore_tests.rs"]

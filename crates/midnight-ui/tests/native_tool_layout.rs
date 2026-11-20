@@ -256,14 +256,15 @@ fn native_decision_keeps_recovery_details_artwork_and_reachable_footer() {
         for label in ["Skip", "Skip all", "Copy as", "Cancel job"] {
             inside(&native, label);
         }
-        // The header close defers like the footer button and shares its label.
-        inside_each(&native, "Decide later", 2);
+        // The native frame's X closes the window; the header has no second X, so
+        // Decide later is only the footer button.
+        inside_each(&native, "Decide later", 1);
         painted_icon(&pixels, "Decision body");
         window.set_source_details(source.into());
         window.set_can_replace(true);
         for (width, height) in [(1040, 720), (660, 500), (320, 200)] {
             render(&native, width, height, "native-decision-recovery");
-            inside_each(&native, "Decide later", 2);
+            inside_each(&native, "Decide later", 1);
             let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
             for text in [source, target] {
                 assert!(
@@ -288,11 +289,13 @@ fn hot_paths_host() -> form::Host {
     let host = form::Host::new();
     let presentation = host.main.global::<HotPathsPresentation>();
     presentation.set_path("/very/long/文档/👩🏽‍💻/folder".into());
+    presentation.set_path_tail("/folder".into());
     presentation.set_model(slint::ModelRc::new(slint::VecModel::from(vec![
         BookmarkRow {
             identity: "1".into(),
             label: "文档 · Saved project".into(),
             path: "/very/long/文档/👩🏽‍💻/project".into(),
+            path_tail: "/project".into(),
             slot: 1,
         },
     ])));
@@ -327,7 +330,19 @@ fn embedded_hot_paths_keeps_actions_artwork_and_compact_close() {
         for label in ["Add current", "Close"] {
             form::assert_unclipped(&host.visible_item(AccessibleRole::Button, label), label);
         }
-        painted_icon(&pixels, "Add Hot Path");
+        // A labelled button shows the shared tinted glyph; the host's (magenta) artwork
+        // for Add current never replaces it.
+        let magenta = pixels
+            .iter()
+            .filter(|pixel| {
+                i16::from(pixel.r) > i16::from(pixel.g) + 40
+                    && i16::from(pixel.b) > i16::from(pixel.g) + 40
+            })
+            .count();
+        assert_eq!(
+            magenta, 0,
+            "Add current shows host artwork instead of its glyph"
+        );
         host.render(328, 208, "embedded-hot-paths-compact");
         form::assert_unclipped(&host.visible_item(AccessibleRole::Button, "Close"), "Close");
     }

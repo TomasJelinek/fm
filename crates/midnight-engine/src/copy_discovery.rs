@@ -56,8 +56,12 @@ impl Job {
                 break;
             }
             let mut unprojected_link = false;
+            // A link that the policy recreates as a link is an expected leaf.
+            let recreated_links = self.links.recreates_links();
             let mut visit = |item: &MutationItem| {
-                unprojected_link |= uses_directory_projection && link_job::is_link_kind(item.kind);
+                unprojected_link |= uses_directory_projection
+                    && !recreated_links
+                    && link_job::is_link_kind(item.kind);
                 discovery.observe(item);
                 budget.observe(item, self.verification);
                 if published.elapsed() >= DISCOVERY_PUBLISH_INTERVAL {

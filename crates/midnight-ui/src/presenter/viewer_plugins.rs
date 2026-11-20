@@ -31,6 +31,9 @@ pub(crate) struct ViewerPluginsState {
         Option<super::thumbnailer_associations::ThumbnailerExtensionDraft>,
     pub(crate) error: String,
     pub(crate) pending: bool,
+    /// The listing in flight, or the last one, came from the Plugins page's Rescan,
+    /// which reports what it found.
+    pub(crate) rescan_requested: bool,
     pub(crate) startup_disabled: Option<Arc<[String]>>,
     pub(crate) startup_associations: Arc<ViewerAssociations>,
     /// The initial settings read failed, so `startup_disabled` stays unknown and
@@ -88,12 +91,68 @@ impl Presenter {
                 self.viewer_plugins.pending = true;
                 self.viewer_plugins.filesystems_pending = true;
                 self.viewer_plugins.thumbnailers_pending = true;
+                self.viewer_plugins.rescan_requested = false;
                 self.viewer_plugins.error.clear();
                 self.viewer_plugins.filesystem_error.clear();
                 self.viewer_plugins.thumbnailer_error.clear();
             } else {
                 self.viewer_plugins.error = "Plugin discovery is busy. Try Refresh again.".into();
             }
+        }
+    }
+
+    /// The Plugins page's Rescan: a listing whose outcome the page then reports.
+    pub(crate) fn rescan_plugins(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.request_viewer_plugins(send);
+        let state = &mut self.viewer_plugins;
+        state.rescan_requested =
+            state.pending || state.filesystems_pending || state.thumbnailers_pending;
+    }
+
+    /// What the last Rescan found, once every catalog has answered; empty otherwise.
+    /// A rescan that finds nothing still says so.
+    pub(crate) fn plugin_rescan_status(&self) -> String {
+        let state = &self.viewer_plugins;
+        if !state.rescan_requested
+            || state.pending
+            || state.filesystems_pending
+            || state.thumbnailers_pending
+        {
+            return String::new();
+        }
+        if !state.error.is_empty()
+            || !state.filesystem_error.is_empty()
+            || !state.thumbnailer_error.is_empty()
+        {
+            return "Rescanned; some plugin lists could not be read.".into();
+        }
+        let counts = [
+            (state.catalog.len(), "viewer"),
+            (self.filesystem_plugin_catalog().count(), "filesystem"),
+            (self.archive_plugin_catalog().count(), "archive"),
+            (state.thumbnailers.len(), "thumbnailer"),
+        ];
+        let total: usize = counts.iter().map(|(count, _)| count).sum();
+        let noun = if total == 1 { "plugin" } else { "plugins" };
+        let kinds = counts
+            .iter()
+            .filter(|(count, _)| *count > 0)
+            .map(|(count, kind)| format!("{count} {kind}"))
+            .collect::<Vec<_>>();
+        let found = match kinds.as_slice() {
+            [] => "no plugins found".to_owned(),
+            [only] => format!("found {only} {noun}"),
+            [rest @ .., last] => format!("found {} and {last} {noun}", rest.join(", ")),
+        };
+        let unavailable = state
+            .filesystems
+            .iter()
+            .filter(|plugin| plugin.kind.is_none())
+            .count();
+        match unavailable {
+            0 => format!("Rescanned: {found}."),
+            1 => format!("Rescanned: {found}; 1 package is unavailable."),
+            count => format!("Rescanned: {found}; {count} packages are unavailable."),
         }
     }
 
@@ -318,7 +377,8 @@ mod tests {
     #[test]
     fn failed_settings_read_explains_unavailable_viewers_instead_of_loading() {
         let mut presenter = presenter();
-        assert_eq!(presenter.viewer_unavailable_reason(PaneId::Left), None);
+        let reason = presenter.viewer_unavailable_reason(PaneId::Left);
+        assert!(reason.is_some_and(|reason| reason.contains("still being read")));
         presenter.preferences_loaded(Err(FsError::from_io(
             "load preferences",
             std::path::Path::new("preferences"),
@@ -335,6 +395,41 @@ mod tests {
                 .policy_unavailable()
                 .contains("loading")
         );
+    }
+
+    /// A declined viewer request always says why, unless no file was focused.
+    #[test]
+    fn every_declined_view_of_a_file_has_a_visible_reason() {
+        let mut presenter = presenter();
+        presenter.preferences_loaded(Ok(UserPreferences::default()));
+        assert!(presenter.viewer_launch(PaneId::Left, false).is_some());
+        assert_eq!(presenter.viewer_unavailable_reason(PaneId::Left), None);
+
+        presenter.panes[0].loading = true;
+        assert!(presenter.viewer_launch(PaneId::Left, false).is_none());
+        let reason = presenter.viewer_unavailable_reason(PaneId::Left);
+        assert!(reason.is_some_and(|reason| reason.contains("still being listed")));
+        presenter.panes[0].loading = false;
+
+        let path = std::env::current_dir().unwrap();
+        for (kind, expected) in [
+            (EntryKind::Symlink, Some("Symbolic links")),
+            (EntryKind::Other, Some("special files")),
+            (EntryKind::Directory, None),
+            (EntryKind::DirectoryLink, None),
+        ] {
+            let entries = vec![Entry::new(EntryId(1), path.join("item"), kind)];
+            presenter.panes[0].index = Arc::new(DirectoryIndex::from_entries(&entries));
+            presenter.panes[0].entries = entries.into();
+            assert!(presenter.viewer_launch(PaneId::Left, false).is_none());
+            let reason = presenter.viewer_unavailable_reason(PaneId::Left);
+            assert_eq!(reason.is_some(), expected.is_some(), "{kind:?}: {reason:?}");
+            if let (Some(reason), Some(expected)) = (reason, expected) {
+                assert!(reason.contains(expected), "{kind:?}: {reason}");
+            }
+        }
+        presenter.panes[0].parent_cursor = true;
+        assert_eq!(presenter.viewer_unavailable_reason(PaneId::Left), None);
     }
 
     #[test]

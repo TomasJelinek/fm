@@ -32,10 +32,11 @@ impl Presenter {
             s.error = "Search folders cannot change while a search runs.".into();
             return;
         }
-        if let Some(existing) = s.roots.iter_mut().find(|root| root.path == path) {
+        if let Some(row) = s.roots.iter().position(|root| root.path == path) {
             // Adding a listed folder again searches it rather than duplicating it.
-            existing.searched = true;
+            s.roots[row].searched = true;
             s.error.clear();
+            s.added_root = (s.added_root.0.wrapping_add(1), row);
             return;
         }
         let mut paths: Vec<_> = s.roots.iter().map(|root| root.path.clone()).collect();
@@ -46,6 +47,7 @@ impl Presenter {
             Ok(()) => {
                 if let Some(path) = request.roots.into_iter().last() {
                     s.roots.push(FindRoot::new(path));
+                    s.added_root = (s.added_root.0.wrapping_add(1), s.roots.len() - 1);
                 }
                 s.error.clear();
             }

@@ -91,7 +91,7 @@ its established private-fixture ACL setup under the fresh QA TEMP; it does not
 change user directory permissions.
 
 The inspected Salamander reference remains
-`D:/experiments/salamander-main/src/worker.cpp`: pending-I/O draining at
+`<salamander-source>/src/worker.cpp`: pending-I/O draining at
 3726–3808, unfinished-output cleanup at 4733–4767, and separate Move removal
 retry at 6069–6112 informed the boundaries. Its pathname deletion and ignored
 cleanup failures were not adopted. See the existing

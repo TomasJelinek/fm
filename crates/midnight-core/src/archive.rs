@@ -2,6 +2,37 @@
 use crate::{Cancellation, EntryKind, FsError};
 use std::sync::Arc;
 
+/// Archive levels one path may open, counting the archive opened from a native file:
+/// archives inside archives open at most `MAX_ARCHIVE_DEPTH - 1` levels below it.
+pub const MAX_ARCHIVE_DEPTH: usize = 4;
+
+/// Why an archive at the deepest level does not open an archive inside it.
+pub fn archive_depth_message() -> String {
+    format!(
+        "Archives open inside archives at most {MAX_ARCHIVE_DEPTH} levels deep. Copy this \
+         archive to a folder with F5 to open it there."
+    )
+}
+
+/// The enclosing archive of an archive that was opened from one of its members.
+#[derive(Clone, Debug)]
+pub struct ArchiveParent {
+    /// The enclosing archive's folder that holds the member, with that archive's mount.
+    pub location: ArchiveLocation,
+    /// The member read as the inner archive, in the enclosing archive's mount.
+    pub member: VirtualEntryId,
+    /// The member's display name, which names the inner archive's root.
+    pub name: String,
+}
+
+/// The verified content of one archive member, retained by the backend independently of
+/// its mount's member cache and worker (`ArchiveMount::stage_member`).
+pub trait ArchiveContent: Send + Sync + std::fmt::Debug {
+    fn length(&self) -> u64;
+    /// At most `length` bytes from `offset`; fewer only at the end of the content.
+    fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, FsError>;
+}
+
 /// Persistent provider address. Raw member components belong to the provider;
 /// they are never joined onto the native container path. Session IDs are absent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,6 +257,33 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
     ) -> Result<Option<Vec<u8>>, FsError> {
         Ok(None)
     }
+
+    /// The enclosing archive when this mount reads a member of another archive as an
+    /// archive; None for an archive opened from a native file. Wrappers forward it.
+    fn parent(&self) -> Option<ArchiveParent> {
+        None
+    }
+
+    /// Backend only: decode one member completely, verify it and keep its content as a
+    /// lease that stays readable independently of this mount's member cache and worker,
+    /// for an archive inside this archive to read as its source. `cancelled` stops the
+    /// staging between bounded steps without ending the shared worker; `progress`
+    /// receives the member bytes staged so far. Providers without such leases refuse.
+    fn stage_member(
+        &self,
+        _entry: u64,
+        _cancelled: &dyn Fn() -> bool,
+        _progress: &dyn Fn(u64),
+    ) -> Result<Arc<dyn ArchiveContent>, FsError> {
+        Err(FsError::from_io(
+            "open archive",
+            std::path::Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "This archive provider cannot open archives inside archives",
+            ),
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -239,17 +297,61 @@ pub struct ArchiveLocation {
 }
 impl ArchiveLocation {
     /// Presentation only: provider members retain their opaque identities and
-    /// must never be passed to native filesystem APIs using this string.
+    /// must never be passed to native filesystem APIs using this string. Inside an
+    /// archive that lies in another archive it names the whole path, for example
+    /// `/data/outer.zip/folder/inner.zip/sub`.
     pub fn display_text(&self) -> String {
-        let native: std::path::PathBuf = self.address.container.components().collect();
+        let enclosing = self.enclosing();
+        let outermost = enclosing.last().map_or(self, |parent| &parent.location);
+        let native: std::path::PathBuf = outermost.address.container.components().collect();
         let mut text = native.to_string_lossy().into_owned();
-        for (_, name) in self.trail.iter().skip(1) {
-            if !text.ends_with(std::path::MAIN_SEPARATOR) {
-                text.push(std::path::MAIN_SEPARATOR);
+        // From the outermost archive inwards: its folders, then the member opened
+        // as the next archive, and last this location's own folders.
+        for parent in enclosing.iter().rev() {
+            for (_, name) in parent.location.trail.iter().skip(1) {
+                push_display_component(&mut text, name);
             }
-            text.push_str(name);
+            push_display_component(&mut text, &parent.name);
+        }
+        for (_, name) in self.trail.iter().skip(1) {
+            push_display_component(&mut text, name);
         }
         text
+    }
+
+    /// The enclosing archive of this location's mount (`ArchiveMount::parent`).
+    pub fn parent(&self) -> Option<ArchiveParent> {
+        self.mount.as_ref()?.parent()
+    }
+
+    /// Every enclosing archive, innermost first. A chain is never longer than the
+    /// deepest path that can be opened, so a malformed chain cannot loop.
+    pub fn enclosing(&self) -> Vec<ArchiveParent> {
+        let mut chain: Vec<ArchiveParent> = Vec::new();
+        let mut next = self.parent();
+        while let Some(parent) = next {
+            if chain.len() >= MAX_ARCHIVE_DEPTH {
+                break;
+            }
+            next = parent.location.parent();
+            chain.push(parent);
+        }
+        chain
+    }
+
+    /// Archive levels of this location: 1 in an archive opened from a native file.
+    pub fn depth(&self) -> usize {
+        self.enclosing().len() + 1
+    }
+
+    /// The folder of the archive opened from a native file that leads to this location:
+    /// the location itself unless it lies in an archive inside an archive. An archive
+    /// inside an archive is opened for the session only, so saved tabs and Hot Paths
+    /// keep this location instead.
+    pub fn outermost(&self) -> ArchiveLocation {
+        self.enclosing()
+            .pop()
+            .map_or_else(|| self.clone(), |parent| parent.location)
     }
 
     pub fn unavailable(address: ArchiveAddress) -> Self {
@@ -280,6 +382,13 @@ impl ArchiveLocation {
     }
 }
 
+fn push_display_component(text: &mut String, name: &str) {
+    if !text.ends_with(std::path::MAIN_SEPARATOR) {
+        text.push(std::path::MAIN_SEPARATOR);
+    }
+    text.push_str(name);
+}
+
 #[derive(Clone, Debug)]
 pub enum ArchiveAction {
     Open {
@@ -287,6 +396,12 @@ pub enum ArchiveAction {
         format: crate::ArchiveFormat,
     },
     List(ArchiveLocation),
+    /// Open a member of a mounted archive as an archive inside it; `parent` names the
+    /// mounted folder that holds the member.
+    OpenMember {
+        parent: ArchiveParent,
+        format: crate::ArchiveFormat,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -310,6 +425,8 @@ pub enum ArchiveSelectionAction {
         ranges: crate::SelectionRanges,
         mode: crate::SelectionMode,
     },
+    /// Select or deselect displayed members whose names match the masks.
+    Mask(Arc<crate::MaskSelection>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -490,5 +607,110 @@ mod release_tests {
             worker.join().unwrap().unwrap();
         }
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod nested_tests {
+    use super::*;
+
+    /// A mount the tests only name; its parent is its enclosing archive, if any.
+    #[derive(Debug)]
+    struct Named(u64, Option<ArchiveParent>);
+    impl ArchiveMount for Named {
+        fn id(&self) -> u64 {
+            self.0
+        }
+        fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+            unreachable!()
+        }
+        fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+            unreachable!()
+        }
+        fn validate(&self) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn parent(&self) -> Option<ArchiveParent> {
+            self.1.clone()
+        }
+    }
+
+    fn location(mount: Named, trail: &[&str]) -> ArchiveLocation {
+        ArchiveLocation {
+            mount: Some(Arc::new(mount)),
+            address: ArchiveAddress {
+                provider: "midnight.fs.archive".into(),
+                format: Some(crate::ArchiveFormat::Zip),
+                container: std::env::temp_dir().join("outer.zip"),
+                source_version: vec![1],
+                components: trail[1..]
+                    .iter()
+                    .map(|name| name.as_bytes().to_vec())
+                    .collect(),
+            },
+            directory: trail.len() as u64,
+            trail: trail
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (index as u64 + 1, (*name).to_owned()))
+                .collect(),
+        }
+    }
+
+    /// `name` opened from a member of `location`, shown at its folder `trail`.
+    fn inside(location: ArchiveLocation, id: u64, name: &str, trail: &[&str]) -> ArchiveLocation {
+        let parent = ArchiveParent {
+            member: VirtualEntryId {
+                mount: location.mount_id().unwrap(),
+                entry: 9,
+            },
+            location,
+            name: name.into(),
+        };
+        let mut trail = trail.to_vec();
+        trail.insert(0, name);
+        self::location(Named(id, Some(parent)), &trail)
+    }
+
+    #[test]
+    fn nested_locations_name_the_whole_path_and_keep_the_outermost_folder() {
+        let outer = location(Named(1, None), &["outer.zip", "folder"]);
+        let inner = inside(outer.clone(), 2, "inner.tar.gz", &["sub"]);
+        let innermost = inside(inner.clone(), 3, "deep.zip", &[]);
+        let separator = std::path::MAIN_SEPARATOR;
+        let base: std::path::PathBuf = std::env::temp_dir()
+            .join("outer.zip")
+            .components()
+            .collect();
+        let base = base.to_string_lossy();
+        assert_eq!(outer.display_text(), format!("{base}{separator}folder"));
+        assert_eq!(
+            inner.display_text(),
+            format!("{base}{separator}folder{separator}inner.tar.gz{separator}sub")
+        );
+        assert_eq!(
+            innermost.display_text(),
+            format!(
+                "{base}{separator}folder{separator}inner.tar.gz{separator}sub{separator}deep.zip"
+            )
+        );
+        assert_eq!((outer.depth(), inner.depth(), innermost.depth()), (1, 2, 3));
+        let saved = innermost.outermost();
+        assert_eq!(saved.mount_id(), Some(1));
+        assert_eq!(saved.address.components, [b"folder".to_vec()]);
+        assert_eq!(outer.outermost().mount_id(), Some(1));
+        assert!(outer.parent().is_none());
+        assert_eq!(innermost.parent().unwrap().member.mount, 2);
+    }
+
+    #[test]
+    fn a_long_parent_chain_stays_bounded() {
+        let mut location = location(Named(1, None), &["outer.zip"]);
+        for id in 2..20 {
+            location = inside(location, id, "again.zip", &[]);
+        }
+        assert_eq!(location.enclosing().len(), MAX_ARCHIVE_DEPTH);
+        assert_eq!(location.depth(), MAX_ARCHIVE_DEPTH + 1);
+        assert!(location.display_text().ends_with("again.zip"));
     }
 }

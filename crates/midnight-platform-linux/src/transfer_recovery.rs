@@ -69,6 +69,17 @@ impl Revision {
         // Our exchange itself updates ctime. It cannot be a post-exchange version token.
         self.size == other.size && self.modified == other.modified && self.mode == other.mode
     }
+    /// Whether a Move source's `current` revision is still this pinned one. Under the
+    /// transfer policy its permissions (mode, and so ctime) may change before a Retry,
+    /// as the user may fix them; the length and mtime must hold. Exact keeps everything.
+    fn same_source(self, current: Self, policy: TransferRevisionPolicy) -> bool {
+        match policy {
+            TransferRevisionPolicy::Exact => self == current,
+            TransferRevisionPolicy::AcceptChangeTimeOnly => {
+                self.size == current.size && self.modified == current.modified
+            }
+        }
+    }
 }
 
 struct Target {
@@ -124,13 +135,23 @@ pub(super) fn prepare_target(
 }
 
 /// A consent pin whose revalidation compares its revision under `policy`; Copy and Move
-/// conflict pins and Move sources accept a moved ctime (VIEW-05).
+/// conflict pins accept a moved ctime (VIEW-05). Move sources use [`SourcePin`].
 pub(super) fn prepare_target_with(
     directory: &Directory,
     name: &OsStr,
     policy: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
+    Ok(pin(directory, name, policy, cancel)?
+        .map(|target| Arc::new(target) as Arc<dyn TransferTarget>))
+}
+
+fn pin(
+    directory: &Directory,
+    name: &OsStr,
+    policy: TransferRevisionPolicy,
+    cancel: &Cancellation,
+) -> Result<Option<Target>, FsError> {
     directory.revalidate(cancel)?;
     validate_name(name, &directory.path)?;
     let file = match open_target(directory, name) {
@@ -140,14 +161,52 @@ pub(super) fn prepare_target_with(
     };
     let path = directory.path.join(name);
     let (entry, revision) = target_snapshot(&file, &path, policy, || {})?;
-    Ok(Some(Arc::new(Target {
+    Ok(Some(Target {
         entry,
         revision,
         policy,
         file,
         name: name.to_owned(),
         directory: directory.clone(),
-    })))
+    }))
+}
+
+/// A Move source at its name. Like a consented destination it must stay the same
+/// object with the same content. Under the transfer policy its permissions (mode and
+/// ctime) may change between attempts, as the user may make a refused source writable
+/// and retry; under Exact (Rename's capture) nothing may change.
+pub(in crate::transfer) struct SourcePin(Target);
+impl SourcePin {
+    pub(in crate::transfer) fn prepare(
+        directory: &Directory,
+        name: &OsStr,
+        policy: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<Self>, FsError> {
+        Ok(pin(directory, name, policy, cancel)?.map(Self))
+    }
+    pub(in crate::transfer) fn entry(&self) -> &TransferEntry {
+        &self.0.entry
+    }
+    pub(in crate::transfer) fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        let Target {
+            directory,
+            name,
+            file,
+            entry,
+            revision,
+            policy,
+        } = &self.0;
+        let path = &entry.item.path;
+        directory.revalidate(cancel)?;
+        if identity(&open_target(directory, name)?, path)? != entry.identity {
+            return Err(invalid(path, "the source was replaced after it was chosen"));
+        }
+        if !revision.same_source(Revision::of(file, path)?, *policy) {
+            return Err(invalid(path, "the source changed after it was chosen"));
+        }
+        Ok(())
+    }
 }
 
 /// The displayed entry has no ctime; under `AcceptChangeTimeOnly` one that moved while the
@@ -266,7 +325,7 @@ impl Stage {
     }
 }
 
-fn create_recovery(
+pub(super) fn create_recovery(
     directory: &Directory,
     cancel: &Cancellation,
     change: &mut namespace::Change<'_>,
@@ -274,7 +333,7 @@ fn create_recovery(
     create_named_directory(directory, cancel, ".midnight-recovery-", change)
 }
 
-fn create_named_directory(
+pub(super) fn create_named_directory(
     directory: &Directory,
     cancel: &Cancellation,
     prefix: &str,
@@ -474,7 +533,7 @@ impl Stage {
         if !supported(&self.directory) {
             return Err(unsupported(
                 &self.directory.path,
-                "recovery publication requires a local ext filesystem",
+                "keeping a replaced item recoverable requires a local ext filesystem",
             ));
         }
         self.directory.revalidate(cancel)?;

@@ -1,7 +1,7 @@
 //! Monotonic activity sampling shared by transfer and mutation workers.
 use midnight_core::{
-    CopyOperationState, CopyProgress, MutationKind, OperationProgress, OperationState,
-    OperationThroughput, ThroughputSample,
+    CopyOperationState, CopyProgress, DiscoveryScope, MutationKind, OperationProgress,
+    OperationState, OperationThroughput, ThroughputSample, TransferIntent,
 };
 use std::{
     sync::Arc,
@@ -10,6 +10,11 @@ use std::{
 
 pub(crate) const CADENCE: Duration = Duration::from_millis(250);
 const MAX_SAMPLES: usize = 240;
+/// Time constant of the remaining-time averages: an interval's weight falls to
+/// about a third after this much further activity.
+const SMOOTHING: Duration = Duration::from_secs(8);
+/// The averages are published once this much activity has been measured.
+const SMOOTHING_MINIMUM: Duration = Duration::from_secs(1);
 
 #[path = "verification_pass.rs"]
 mod verification_pass;
@@ -20,6 +25,9 @@ pub(crate) struct Counters {
     pub transfer: u64,
     pub verification: u64,
     pub items: u64,
+    /// Completed entries as the job's progress counts them. Averaged for remaining
+    /// time only; the chart's item series is `items`.
+    pub entries: u64,
 }
 
 impl Counters {
@@ -28,6 +36,7 @@ impl Counters {
             transfer: self.transfer.checked_sub(previous.transfer)?,
             verification: self.verification.checked_sub(previous.verification)?,
             items: self.items.checked_sub(previous.items)?,
+            entries: self.entries.checked_sub(previous.entries)?,
         })
     }
 
@@ -36,7 +45,48 @@ impl Counters {
             transfer: self.transfer.saturating_add(other.transfer),
             verification: self.verification.saturating_add(other.verification),
             items: self.items.saturating_add(other.items),
+            entries: self.entries.saturating_add(other.entries),
         }
+    }
+}
+
+/// Exponential averages over activity time. Each measured interval weighs by its
+/// duration, so a short boundary flush hardly moves them, and dividing by the
+/// accumulated weight makes the first seconds the plain average of all activity
+/// so far instead of a value biased toward zero or toward the first interval.
+#[derive(Default)]
+struct Averages {
+    weight: f64,
+    transfer: f64,
+    verification: f64,
+    entries: f64,
+    measured: Duration,
+}
+
+impl Averages {
+    fn include(&mut self, duration: Duration, delta: Counters) {
+        let seconds = duration.as_secs_f64();
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return;
+        }
+        // 1 - e^(-t/τ): the share of the average this interval replaces.
+        let share = -(-seconds / SMOOTHING.as_secs_f64()).exp_m1();
+        let blend = |average: &mut f64, count: u64| {
+            *average += share * (count as f64 / seconds - *average);
+        };
+        blend(&mut self.transfer, delta.transfer);
+        blend(&mut self.verification, delta.verification);
+        blend(&mut self.entries, delta.entries);
+        self.weight += share * (1.0 - self.weight);
+        self.measured = self.measured.saturating_add(duration);
+    }
+
+    fn rate(&self, average: f64) -> f64 {
+        if self.measured < SMOOTHING_MINIMUM || self.weight <= 0.0 {
+            return 0.0;
+        }
+        let rate = average / self.weight;
+        if rate.is_finite() { rate.max(0.0) } else { 0.0 }
     }
 }
 
@@ -136,6 +186,7 @@ pub(crate) struct Sampler {
     active: bool,
     started: bool,
     history: PeakHistory,
+    averages: Averages,
     last_counts: Counters,
     last_duration: Duration,
     last_started: Duration,
@@ -173,6 +224,13 @@ impl Sampler {
             if !duration.is_zero()
                 && (duration >= CADENCE || (!active && delta != Counters::default()))
             {
+                // Only this interval's own work: `record` may merge it into the
+                // previous chart interval, which the averages already include. The
+                // chart also records idle intervals while paused or waiting; the
+                // averages take only activity, so a pause leaves them as they were.
+                if active || delta != Counters::default() {
+                    self.averages.include(duration, delta);
+                }
                 self.record(elapsed, duration, delta, active);
                 self.baseline = counters;
                 self.baseline_at = elapsed;
@@ -232,19 +290,25 @@ impl Sampler {
                 0.0
             },
             items_per_second: if active { sample.items_per_second } else { 0.0 },
+            smoothed_transfer_per_second: self.averages.rate(self.averages.transfer),
+            smoothed_verification_per_second: self.averages.rate(self.averages.verification),
+            smoothed_entries_per_second: self.averages.rate(self.averages.entries),
         });
     }
 }
 
 /// Zero current labels without copying history or changing an already idle Arc.
+/// The averages stay: a paused estimate holds still and resumes from them.
 pub(crate) fn stop(snapshot: &mut Arc<OperationThroughput>) {
     if snapshot.transfer_per_second != 0.0
         || snapshot.verification_per_second != 0.0
         || snapshot.items_per_second != 0.0
     {
         *snapshot = Arc::new(OperationThroughput {
-            samples: snapshot.samples.clone(),
-            ..OperationThroughput::default()
+            transfer_per_second: 0.0,
+            verification_per_second: 0.0,
+            items_per_second: 0.0,
+            ..(**snapshot).clone()
         });
     }
 }
@@ -287,6 +351,12 @@ impl Tracker {
                 self.started.elapsed(),
                 Counters {
                     items: progress.processed_entries,
+                    // As the window counts a Delete's progress.
+                    entries: if progress.discovery.scope == DiscoveryScope::SelectedRoots {
+                        progress.completed
+                    } else {
+                        progress.processed_entries
+                    },
                     ..Counters::default()
                 },
                 progress.state == OperationState::Running && !progress.paused,
@@ -302,7 +372,23 @@ fn copy_counters(progress: &CopyProgress) -> Counters {
             .verified_bytes
             .saturating_add(progress.validation_bytes),
         items: progress.native_entries_moved,
+        entries: copy_entries(progress),
     }
+}
+
+/// Completed entries as the window counts a Copy or Move's progress: selected
+/// items when only those were discovered, otherwise files (a Move's once their
+/// source is removed) and fully copied folders.
+fn copy_entries(progress: &CopyProgress) -> u64 {
+    if progress.discovery.scope == DiscoveryScope::SelectedRoots {
+        return progress.completed_roots;
+    }
+    let files = if progress.intent == TransferIntent::Move {
+        progress.source_files_removed
+    } else {
+        progress.files_completed
+    };
+    files.saturating_add(progress.completed_directories)
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 # Confirmed permanent deletion and Windows Read-only attributes
 
 The user reported error5 deleting
-`<user-profile>/OneDrive\Pictures\Backgrounds\QQQ`
+`<user-profile>/OneDrive\<test-folder>`
 and explicitly requested a permanent-delete test of that exact directory.
 Read-only was present alongside Directory/Archive/Compressed and a OneDrive
 cloud reparse tag. No arbitrary files or sibling directories were deleted.
@@ -42,7 +42,7 @@ Windows, local NTFS, offline locked Cargo, two jobs, isolated output under
   Logs: `dialog-red.log` and `dialog-themes-green.log`.
 
 A throwaway helper under `_build/delete-followups/probe` invoked the same product
-MutationService, hardcoded to the exact user-requested QQQ directory. A read-only
+MutationService, hardcoded to the exact user-requested test directory. A read-only
 preparation captured that target first. The explicitly authorized permanent
 deletion then succeeded, and a separate filesystem check confirmed it absent.
 The helper SHA-256 was

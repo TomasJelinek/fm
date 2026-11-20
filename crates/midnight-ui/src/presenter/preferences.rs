@@ -62,6 +62,8 @@ pub(super) struct EditedFields {
     pub(super) touch_font_size: bool,
     pub(super) glyph_fitting: bool,
     pub(super) quick_search_filter: bool,
+    pub(super) show_hidden_files: bool,
+    pub(super) mask_selection: bool,
     pub(super) size_display: bool,
     pub(super) remember_command_history: bool,
     pub(super) copy_checksum_verification: bool,
@@ -333,6 +335,12 @@ impl Presenter {
                 if edited.quick_search_filter {
                     loaded.quick_search_filter = local.quick_search_filter;
                 }
+                if edited.show_hidden_files {
+                    loaded.show_hidden_files = local.show_hidden_files;
+                }
+                if edited.mask_selection {
+                    loaded.mask_selection = local.mask_selection.clone();
+                }
                 if edited.size_display {
                     loaded.size_display = local.size_display;
                 }
@@ -478,6 +486,8 @@ impl Presenter {
             return;
         }
         self.request_comparator_capabilities(false, send);
+        // Restored tabs are listed with the saved Show hidden files choice.
+        self.flush_hidden_entries(send);
         self.flush_tab_sessions(send);
         if mem::take(&mut self.preferences.flush_after_load) {
             self.send_preferences_save(send);
@@ -814,6 +824,9 @@ impl Presenter {
             || preferences.panel_filters != previous.panel_filters;
         edited.quick_search_filter |=
             preferences.quick_search_filter != previous.quick_search_filter;
+        let hidden_changed = preferences.show_hidden_files != previous.show_hidden_files;
+        edited.show_hidden_files |= hidden_changed;
+        edited.mask_selection |= preferences.mask_selection != previous.mask_selection;
         edited.panel_filter_history |=
             preferences.panel_filter_history != previous.panel_filter_history;
         edited.size_display |= preferences.size_display != previous.size_display;
@@ -847,6 +860,9 @@ impl Presenter {
         self.sync_user_command_settings();
         if filter_changed {
             self.search_filter_changed();
+        }
+        if hidden_changed {
+            self.flush_hidden_entries(send);
         }
         if before.is_some_and(|before| before == self.preferences.persistable_values()) {
             return;

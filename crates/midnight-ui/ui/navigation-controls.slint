@@ -3,7 +3,7 @@ import { HintedActionButton } from "hinted-inputs.slint";
 import { ScrollStrip } from "scroll-strip.slint";
 import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
-import { PathText } from "path-text.slint";
+import { NameText, PathText } from "path-text.slint";
 import { CompactPicker, Tip } from "controls.slint";
 import { TabRow, BookmarkRow, NavigationChoiceRow } from "navigation-models.slint";
 import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
@@ -19,6 +19,8 @@ export component NavigationButton inherits Rectangle {
     in property <image> icon;
     in property <image> native-icon;
     in property <length> icon-size: 16px;
+    // Actions show the shared tinted glyph; a program's own artwork (a shell) keeps its colors.
+    in property <bool> action-glyph: true;
     in property <string> label;
     in property <string> hint;
     in property <string> identity;
@@ -47,7 +49,7 @@ export component NavigationButton inherits Rectangle {
     forward-focus: focus;
     NativeActionImage {
         visible: root.label == "";
-        native-icon: root.native-icon; fallback-icon: root.icon;
+        native-icon: root.native-icon; fallback-icon: root.icon; glyph: root.action-glyph;
         action-enabled: root.enabled;
         width: root.icon-size; height: root.icon-size;
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
@@ -215,7 +217,8 @@ export component TabStrip inherits Rectangle {
                     forward-focus: tab-focus;
                     caption := Text {
                         x: 8px; width: max(0px, close.x - self.x - 4px); height: parent.height;
-                        text: tab.label; color: Theme.text; font-size: Theme.font-size;
+                        text: NameText.ltr(tab.label); accessible-label: tab.label;
+                        color: Theme.text; font-size: Theme.font-size;
                         vertical-alignment: center; overflow: elide;
                     }
                     tab-focus := FocusScope {

@@ -1,8 +1,8 @@
 //! GNU binary checksum and SFV export. Only explicit backend callers may encode/save.
+use super::super::verified_output;
 use super::format::MAX_MANIFEST_BYTES;
 use super::worker::{failure, with_io};
 use midnight_core::*;
-use midnight_platform_common::transfer::{CopyPhase, VerifiedFileCopy};
 use std::{
     collections::HashSet,
     io,
@@ -132,202 +132,26 @@ pub fn save_manifest(
         target = Some(pinned);
     }
     let (bytes, counts) = encode(run, request, parent, cancel)?;
-    let source = Box::new(ManifestBytes {
-        entry: TransferEntry {
-            item: MutationItem {
-                path: path.clone(),
-                kind: EntryKind::File,
-                metadata: EntryMetadata {
-                    size: Some(bytes.len() as u64),
-                    ..EntryMetadata::default()
-                },
-            },
-            identity: TransferIdentity {
-                device: 0,
-                object: [0; 16],
-            },
-        },
-        bytes: bytes.into(),
-        offset: 0,
-    });
-    let stage = with_io(SAVE, cancel, path, || match &target {
-        Some(target) => {
-            let capabilities = directory.capabilities();
-            let policy = if capabilities.conditional_overwrite {
-                TransferReplacementPolicy::ConditionalIdentity
-            } else if capabilities.recoverable_replacement {
-                TransferReplacementPolicy::RecoverableCurrentEntry
-            } else {
-                return Err(failure(
-                    path,
-                    io::ErrorKind::Unsupported,
-                    "This filesystem does not support safely replacing a file.",
-                ));
-            };
-            directory.stage_file_preserving_target(name, target.clone(), policy, cancel)
+    let saved = verified_output::publish(directory.as_ref(), path, target.as_ref(), bytes, cancel)?;
+    let recovery = saved.recovery;
+    if let Some(mut warning) = saved.warning {
+        // The manifest is in place, but the save cannot be confirmed: a failure that
+        // says so and where a replaced manifest is kept.
+        for kept in &recovery {
+            warning.message.push_str(&format!(
+                "\nThe previous file is kept for recovery at {}",
+                kept.display()
+            ));
         }
-        None => directory.stage_file(cancel),
-    })?;
-    let mut copy = VerifiedFileCopy::new(source, stage)?;
-    let mut saved = (|| {
-        while copy.phase() != CopyPhase::ReadyToPublish {
-            copy.step(cancel)?;
-        }
-        let publication = if let Some(target) = &target {
-            with_io(SAVE, cancel, path, || target.revalidate(cancel))?;
-            copy.publish_replace(name, cancel)?
-        } else {
-            copy.publish(name, cancel)?
-        };
-        let receipt = |path, recovery| ChecksumManifestReceipt {
-            path,
-            included: counts.included,
-            excluded: counts.excluded,
-            verified_bytes: copy.verified_bytes(),
-            recovery,
-        };
-        match publication {
-            TransferPublication::Published(path) => Ok(receipt(path, Vec::new())),
-            TransferPublication::Replaced { path, recovery } => {
-                Ok(receipt(path, vec![recovery.path]))
-            }
-            TransferPublication::PublishedDurabilityUnconfirmed { path, mut error } => {
-                error.message = format!(
-                    "Manifest published at {}; directory durability is unconfirmed: {}",
-                    path.display(),
-                    error.message
-                );
-                Err(error)
-            }
-            TransferPublication::RecoveryRequired {
-                recovery,
-                mut error,
-                ..
-            } => {
-                for item in recovery {
-                    error
-                        .message
-                        .push_str(&format!("\nRecovery file: {}", item.path.display()));
-                }
-                Err(error)
-            }
-        }
-    })();
-    if let Err(ref mut primary) = saved
-        && let Err(cleanup) = copy.cleanup()
-    {
-        primary
-            .message
-            .push_str(&format!(" Staging cleanup also failed: {cleanup}"));
+        return Err(warning);
     }
-    saved
-}
-
-/// Replace an existing regular file with an empty one, or create it when absent, through
-/// verified staging and the platform's safe replacement. A confirmed Shift+F4 over an
-/// existing name uses this; the plain create path never replaces.
-pub(crate) fn replace_with_empty_file(
-    service: &dyn TransferService,
-    path: &Path,
-    cancel: &Cancellation,
-) -> Result<std::path::PathBuf, FsError> {
-    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-        return Err(failure(
-            path,
-            io::ErrorKind::InvalidInput,
-            "A new file needs a containing folder and a name.",
-        ));
-    };
-    let directory = with_io(SAVE, cancel, parent, || {
-        service.prepare_transfer_destination(parent, cancel)
-    })?;
-    let target = with_io(SAVE, cancel, path, || {
-        directory.prepare_target(name, cancel)
-    })?;
-    if target
-        .as_ref()
-        .is_some_and(|target| target.entry().item.kind != EntryKind::File)
-    {
-        return Err(failure(
-            path,
-            io::ErrorKind::InvalidInput,
-            "Only a file can be replaced with an empty file.",
-        ));
-    }
-    let source = Box::new(ManifestBytes {
-        entry: TransferEntry {
-            item: MutationItem {
-                path: path.to_owned(),
-                kind: EntryKind::File,
-                metadata: EntryMetadata {
-                    size: Some(0),
-                    ..EntryMetadata::default()
-                },
-            },
-            identity: TransferIdentity {
-                device: 0,
-                object: [0; 16],
-            },
-        },
-        bytes: Vec::new().into(),
-        offset: 0,
-    });
-    let stage = with_io(SAVE, cancel, path, || match &target {
-        Some(target) => {
-            let capabilities = directory.capabilities();
-            let policy = if capabilities.conditional_overwrite {
-                TransferReplacementPolicy::ConditionalIdentity
-            } else if capabilities.recoverable_replacement {
-                TransferReplacementPolicy::RecoverableCurrentEntry
-            } else {
-                return Err(failure(
-                    path,
-                    io::ErrorKind::Unsupported,
-                    "This filesystem does not support safely replacing a file.",
-                ));
-            };
-            directory.stage_file_preserving_target(name, target.clone(), policy, cancel)
-        }
-        None => directory.stage_file(cancel),
-    })?;
-    let mut copy = VerifiedFileCopy::new(source, stage)?;
-    let mut created = (|| {
-        while copy.phase() != CopyPhase::ReadyToPublish {
-            copy.step(cancel)?;
-        }
-        let publication = if let Some(target) = &target {
-            with_io(SAVE, cancel, path, || target.revalidate(cancel))?;
-            copy.publish_replace(name, cancel)?
-        } else {
-            copy.publish(name, cancel)?
-        };
-        match publication {
-            TransferPublication::Published(path) | TransferPublication::Replaced { path, .. } => {
-                Ok(path)
-            }
-            TransferPublication::PublishedDurabilityUnconfirmed { error, .. } => Err(error),
-            TransferPublication::RecoveryRequired {
-                recovery,
-                mut error,
-                ..
-            } => {
-                for item in recovery {
-                    error
-                        .message
-                        .push_str(&format!("\nRecovery file: {}", item.path.display()));
-                }
-                Err(error)
-            }
-        }
-    })();
-    if let Err(ref mut primary) = created
-        && let Err(cleanup) = copy.cleanup()
-    {
-        primary
-            .message
-            .push_str(&format!(" Staging cleanup also failed: {cleanup}"));
-    }
-    created
+    Ok(ChecksumManifestReceipt {
+        path: saved.path,
+        included: counts.included,
+        excluded: counts.excluded,
+        verified_bytes: saved.verified_bytes,
+        recovery,
+    })
 }
 
 pub(super) fn encode(
@@ -504,45 +328,6 @@ fn export_digest(row: &ChecksumRow, algorithm: ChecksumAlgorithm) -> Option<&Che
     (row.state == ChecksumRowState::Calculated)
         .then(|| row.digest(algorithm))
         .flatten()
-}
-
-struct ManifestBytes {
-    entry: TransferEntry,
-    bytes: Arc<[u8]>,
-    offset: usize,
-}
-impl TransferSource for ManifestBytes {
-    fn entry(&self) -> &TransferEntry {
-        &self.entry
-    }
-    fn native_identity(&self) -> Option<TransferIdentity> {
-        None
-    }
-    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
-        if cancel.is_cancelled() {
-            Err(failure(
-                &self.entry.item.path,
-                io::ErrorKind::Interrupted,
-                "Manifest export cancelled.",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-    fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
-        self.revalidate(cancel)?;
-        let count = buffer.len().min(self.bytes.len() - self.offset);
-        buffer[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
-        self.offset += count;
-        Ok(count)
-    }
-    fn next_child(&mut self, _: &Cancellation) -> Result<Option<Box<dyn TransferSource>>, FsError> {
-        Err(failure(
-            &self.entry.item.path,
-            io::ErrorKind::Unsupported,
-            "A manifest is not a directory.",
-        ))
-    }
 }
 
 #[cfg(test)]

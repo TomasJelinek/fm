@@ -12,6 +12,11 @@ export global TooltipPlacement {
     public pure function snap(value: length) -> length {
         return Math.round(value / 1px * root.scale) / root.scale * 1px;
     }
+    // The next whole device pixel at or above `value`; a size that must hold its text.
+    // The small tolerance keeps a value already on the grid from growing by a pixel.
+    public pure function snap-up(value: length) -> length {
+        return Math.ceil(value / 1px * root.scale - 0.01) / root.scale * 1px;
+    }
 
     public pure function max-room(cursor: length, surface: length, gap: length) -> length {
         return max(1px, max(cursor - gap - 8px, surface - 8px - cursor - gap));

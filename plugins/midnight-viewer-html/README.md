@@ -72,7 +72,9 @@ inline styling, script denial, a denied loopback HTTP image request, browser
 Find and Find Next, select-control popup composition/hide, browser-arbitrated
 Space input, editable-field Space and explicit selection copy, textarea
 Enter/Shift+Enter, punctuation keys and a synthetic IME commit, layout zoom,
-fractional-DPI resize, and clean process exit. Editable steps wait for the copied
+fractional-DPI resize, and clean process exit; `chromium_applies_each_wheel_event_at_once`
+checks that one wheel event scrolls its whole distance in the next frame and stops at
+the top edge (it ran on Linux X11 only). Editable steps wait for the copied
 selection rather than fixed delays, because frames carry no input acknowledgment.
 The final fixture passed in 2.29 seconds on the development Windows environment;
 on a loaded development machine CefShutdown alone took 10-12 seconds, so the
@@ -115,7 +117,10 @@ the US-layout OEM key of its physical key, letters follow the produced Latin let
 (QWERTZ/AZERTY), numpad keys follow NumLock, and unknown keys are 0, so typed
 punctuation never acts as Delete, arrow or page commands. Mouse Back/Forward buttons are not forwarded as clicks, and
 focus loss ends a held button's capture. Fractional wheel deltas accumulate per
-document. IME composition and commit pass CEF's required invalid replacement range.
+document. Chromium runs with `disable-smooth-scrolling`: the host glides wheel notches
+and coasts touchpad flicks itself, one delta per frame, so Chromium applies each wheel
+event at once instead of easing it again over about 170 ms. IME composition and
+commit pass CEF's required invalid replacement range.
 
 ## Linux status
 

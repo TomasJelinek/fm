@@ -421,6 +421,8 @@ impl TransferDirectory for Directory {
             directory_merge: true,
             conditional_overwrite: true,
             recoverable_replacement: true,
+            // This fixture's stages publish without replacement only.
+            link_replacement: false,
         }
     }
 
@@ -1088,7 +1090,34 @@ fn preserve_copies_exact_raw_native_representations_as_leaves_with_no_content_cr
 }
 
 #[test]
-fn preserve_move_and_required_modified_time_reject_before_any_provider_preparation() {
+fn following_links_in_a_move_rejects_before_any_provider_preparation() {
+    let fixture = Fixture::new();
+    let mut options = fixture.options(1);
+    options.links = CopyLinkPolicy::FollowLinks;
+    let CopyOptionsInput::Native(request) = &mut options.input else {
+        unreachable!()
+    };
+    request.intent = TransferIntent::Move;
+    let input = CopyInput::options(options);
+    assert_eq!(
+        input.validate().unwrap_err().kind,
+        io::ErrorKind::Unsupported
+    );
+    let status = Arc::new(Mutex::new(initial(&input)));
+    let mut preparation = preparation::Preparation::new(input, fixture.service.clone());
+    let Err(error) = preparation.attempt(Cancellation::default(), status) else {
+        panic!("a Move that follows links was admitted")
+    };
+    assert_eq!(error.kind, io::ErrorKind::Unsupported);
+    assert_eq!(fixture.control.source_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.control.destination_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn preserve_move_without_provider_support_and_required_time_never_stage_a_link() {
+    // A Move keeps links as links through the provider's own Move authority, which
+    // this fixture lacks; required modified time keeps links refused as before.
     for (intent, metadata) in [
         (TransferIntent::Move, TransferMetadataPolicy::ContentOnly),
         (
@@ -1104,19 +1133,15 @@ fn preserve_move_and_required_modified_time_reject_before_any_provider_preparati
         request.intent = intent;
         request.metadata = metadata;
         let input = CopyInput::options(options);
-        assert_eq!(
-            input.validate().unwrap_err().kind,
-            io::ErrorKind::Unsupported
-        );
+        input.validate().unwrap();
         let status = Arc::new(Mutex::new(initial(&input)));
         let mut preparation = preparation::Preparation::new(input, fixture.service.clone());
         let Err(error) = preparation.attempt(Cancellation::default(), status) else {
-            panic!("incompatible Preserve was admitted")
+            panic!("{intent:?} with {metadata:?} admitted a link")
         };
-        assert_eq!(error.kind, io::ErrorKind::Unsupported);
-        assert_eq!(fixture.control.source_opens.load(Ordering::SeqCst), 0);
-        assert_eq!(fixture.control.destination_opens.load(Ordering::SeqCst), 0);
+        assert_eq!(error.kind, io::ErrorKind::Unsupported, "{error:?}");
         assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.control.publishes.load(Ordering::SeqCst), 0);
     }
 }
 

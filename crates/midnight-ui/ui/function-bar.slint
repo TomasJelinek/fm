@@ -120,7 +120,8 @@ export component FunctionBar inherits Rectangle {
                     : self.icon-role == 14 ? FallbackIcons.refresh : self.icon-role == 15 ? FallbackIcons.checksums : FallbackIcons.menu;
                 text: self.slot.action == "" ? self.slot.key : self.slot.key + " " + self.slot.label;
                 caption: self.slot.action == "" ? "F" + (index + 1) : "F" + (index + 1) + " " + self.slot.label;
-                // Show the action even when its icon must yield space; only very narrow cells use keys alone.
+                // The action caption yields its icon first; a cell too narrow for the whole
+                // caption shows the key alone.
                 compact-text: "F" + (index + 1);
                 enabled: root.enabled-action(self.action-id);
                 hint: self.slot.hint;

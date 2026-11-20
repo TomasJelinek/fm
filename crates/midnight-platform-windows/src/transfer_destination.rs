@@ -74,6 +74,8 @@ impl TransferDirectory for Directory {
             directory_merge: true,
             conditional_overwrite: false,
             recoverable_replacement: recovery::supported(self),
+            // Windows stages no links (see TRANSFERS.md, "Windows links").
+            link_replacement: false,
         }
     }
     fn supports_native_move_replacement(&self, source: TransferIdentity) -> bool {
@@ -394,7 +396,7 @@ impl StagedTransferFile for Stage {
         if self.published || self.cleaned || !self.metadata {
             return Err(unsupported(
                 &self.path,
-                "modified time can only be set on an owned unpublished metadata stage",
+                "modified time can only be set on an owned metadata stage before it gets its final name",
             ));
         }
         super::metadata::set(&self.file, &self.path, expected, cancel)
@@ -421,14 +423,19 @@ impl StagedTransferFile for Stage {
         let name = self
             .published_name
             .as_ref()
-            .ok_or_else(|| invalid(&self.path, "stage has no successful publication"))?;
+            .ok_or_else(|| invalid(&self.path, "the copy has not been put in place"))?;
         let own = identity(&self.file, &self.path)?;
-        let visible = self
-            .directory
-            .inspect(name, cancel)?
-            .ok_or_else(|| invalid(&self.path, "published target disappeared"))?;
+        let visible = self.directory.inspect(name, cancel)?.ok_or_else(|| {
+            invalid(
+                &self.path,
+                "the copied file disappeared from the destination",
+            )
+        })?;
         if visible.item.kind != EntryKind::File || visible.identity != own {
-            return Err(invalid(&self.path, "published target name changed"));
+            return Err(invalid(
+                &self.path,
+                "the copied file's name at the destination changed",
+            ));
         }
         Ok(own)
     }

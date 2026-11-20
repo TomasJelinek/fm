@@ -125,6 +125,7 @@ impl Edit {
                 revision: 0,
                 patch: MetadataPatch::default(),
                 localized_times: Default::default(),
+                patch_calendars: Default::default(),
                 time_input_format: None,
                 time_defaults: Default::default(),
                 capabilities: MetadataCapabilities::default(),
@@ -149,11 +150,20 @@ impl Edit {
     /// Native locale discovery and formatting stay on this preparation worker.
     pub(super) fn localize(&mut self, locale: Option<&dyn LocaleService>) {
         self.preview.localized_times.clear();
+        self.preview.patch_calendars.clear();
         self.preview.time_input_format = locale.and_then(LocaleService::datetime_input_format);
         self.preview.time_defaults = MetadataTimeDefaults::default();
         let Some(locale) = locale else {
             return;
         };
+        let patch = &self.preview.patch;
+        for edit in [patch.created, patch.modified, patch.accessed] {
+            if let TimeEdit::Set(value) = edit
+                && let Some(calendar) = locale.local_calendar(value)
+            {
+                self.preview.patch_calendars.insert(value, calendar);
+            }
+        }
         // Editors start from the roots' shared current time, else the current instant.
         let sample = &self.preview.sample;
         let shared = |field: fn(&MetadataSnapshot) -> Option<SystemTime>| {

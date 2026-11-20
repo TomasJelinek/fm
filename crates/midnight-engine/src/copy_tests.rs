@@ -11,6 +11,10 @@ use tokio::sync::{Notify, mpsc};
 mod archive;
 #[path = "copy_cancel_queue_tests.rs"]
 mod cancel_queue;
+// Linux reports a child that cannot be opened apart from its folder.
+#[cfg(target_os = "linux")]
+#[path = "copy_child_failure_tests.rs"]
+mod child_failures;
 #[path = "copy_completion_tests.rs"]
 mod completion;
 #[path = "copy_concurrency_regression_tests.rs"]
@@ -37,6 +41,9 @@ mod peer_refusal;
 mod progress_discovery;
 #[path = "copy_progress_verification_tests.rs"]
 mod progress_verification;
+#[cfg(target_os = "linux")]
+#[path = "move_protected_folder_tests.rs"]
+mod protected_moves;
 #[path = "copy_publication_tests.rs"]
 mod publication;
 #[path = "copy_queue_tests.rs"]
@@ -49,6 +56,10 @@ mod scheduler;
 mod stage_retry;
 #[path = "copy_throughput_tests.rs"]
 mod throughput;
+// Manual timings on the native Linux adapter (ignored; procfs CPU time).
+#[cfg(target_os = "linux")]
+#[path = "copy_timing_tests.rs"]
+mod timing;
 #[path = "tree_copy_tests.rs"]
 mod tree_copy;
 #[path = "copy_verification_tests.rs"]
@@ -617,8 +628,9 @@ async fn skip_all_is_scoped_to_one_job_and_existing_directories_never_merge() {
         })
         .await;
     let done = h.terminal(1).await;
-    assert_eq!(done.state, CopyOperationState::CompletedWithErrors);
-    assert_eq!(done.skipped, 2);
+    // Skipping existing names is the user's choice, not an error.
+    assert_eq!(done.state, CopyOperationState::Completed);
+    assert_eq!((done.skipped, done.failed), (2, 0));
     assert_eq!(done.files_completed, 0);
     assert!(!destination.join("source/child").exists());
     h.controller
@@ -779,7 +791,7 @@ async fn queued_cancellation_finishes_while_another_mutation_still_holds_the_gat
         loop {
             if let CopyEvent::Progress(progress) = h.next().await {
                 assert!(!progress.state.is_terminal(), "{progress:?}");
-                if progress.wait_reason == Some(TransferWaitReason::Resources) {
+                if progress.wait_reason == Some(TransferWaitReason::OtherOperation) {
                     break progress;
                 }
             }

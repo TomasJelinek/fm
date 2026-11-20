@@ -37,6 +37,33 @@ fn combined_rename_permissions_and_timestamp_preserve_contents() {
 }
 
 #[test]
+fn a_time_the_filesystem_does_not_keep_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.txt");
+    fs::write(&path, b"x").unwrap();
+    let cancel = Cancellation::default();
+    let item = LinuxFileSystem::new(None).prepare(&path, &cancel).unwrap();
+    // 1800-01-01: before the first second that ext4, XFS or FAT can store, so
+    // the kernel clamps it there; btrfs and tmpfs keep it.
+    let time = UNIX_EPOCH - Duration::from_secs(5_364_662_400);
+    let patch = MetadataPatch {
+        modified: TimeEdit::Set(time),
+        ..Default::default()
+    };
+    let result = item.edit_metadata(&patch, None, &cancel);
+    assert!(result.changes.modified);
+    let stored = fs::metadata(&path).unwrap().modified().unwrap();
+    if stored == time {
+        assert!(result.error.is_none(), "{:?}", result.error);
+    } else {
+        let error = result
+            .error
+            .expect("a clamped time is not reported as applied");
+        assert!(error.message.contains("modified time"), "{error:?}");
+    }
+}
+
+#[test]
 fn hardlink_collision_and_cancel_preserve_all_files() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("SOURCE");

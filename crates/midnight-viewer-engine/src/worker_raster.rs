@@ -485,7 +485,16 @@ impl Worker {
                     matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE),
                 )
             })
-            .flatten();
+            .flatten()
+            // A camera outside this page must reach the next one even when a reply cannot
+            // pass its edge (`Continuation::seam`); a prefetch inside it may fall short.
+            .map(|continuation| {
+                if covered {
+                    continuation
+                } else {
+                    continuation.bounded_by(page)
+                }
+            });
         if covered {
             self.origin = local;
             self.dirty = true;

@@ -29,6 +29,10 @@ export component CopyConflictDialog inherits Rectangle {
     in property <bool> failure-mode;
     in property <bool> can-retry;
     in property <bool> can-skip;
+    // A Delete failure shares this prompt with its own heading and Skip all scope.
+    in property <string> failure-title: "Copy/Move needs attention";
+    in property <string> skip-all-text: "Skip all this error type";
+    in property <string> skip-all-hint: "Skip later failures of this kind at this step in this job only. Name conflicts still need a separate decision.";
     in property <string> source-details;
     in property <string> target-details;
     callback decide(int, string);
@@ -49,12 +53,12 @@ export component CopyConflictDialog inherits Rectangle {
             padding: root.compact || root.failure-mode ? 8px : 16px;
             spacing: root.compact ? 4px : root.failure-mode ? 6px : 10px;
             DialogHeader {
-                title: root.failure-mode ? "Copy/Move needs attention" : "Item already exists";
+                title: root.failure-mode ? root.failure-title : "Item already exists";
                 error: root.failure-mode; native-icon: root.native-icon; fallback-icon: FallbackIcons.copy;
                 compact: root.compact || root.failure-mode;
                 text-size: Theme.font-size * (root.failure-mode ? 1.0 : 1.2);
-                // Like the window's X and Escape, the header close only defers.
-                close-label: "Decide later"; close => { root.later(); }
+                // The native title bar's X, Escape and Decide later defer; no second X.
+                closable: false;
             }
             content := ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
@@ -128,7 +132,7 @@ export component CopyConflictDialog inherits Rectangle {
                     if root.can-skip : HorizontalLayout {
                         spacing: 8px;
                         HintedActionButton { text: "Skip"; hint: "Skip this failed item and continue this job."; clicked => { root.decide(0, ""); } }
-                        HintedActionButton { text: "Skip all this error type"; hint: "Skip later failures of this kind at this step in this job only. Name conflicts still need a separate decision."; clicked => { root.decide(9, ""); } }
+                        HintedActionButton { text: root.skip-all-text; hint: root.skip-all-hint; clicked => { root.decide(9, ""); } }
                     }
                 }
             }

@@ -10,12 +10,19 @@ use slint::{ModelRc, VecModel, platform::WindowAdapter};
 use std::rc::Rc;
 
 fn text_item(item: ItemRc, expected: &str) -> Option<ItemRc> {
+    // The Name field draws its value inside left-to-right isolation marks.
+    let shown = |text: &str| {
+        text.strip_prefix('\u{2066}')
+            .and_then(|text| text.strip_suffix('\u{2069}'))
+            .unwrap_or(text)
+            == expected
+    };
     let matches = item
         .downcast::<SimpleText>()
-        .is_some_and(|text| text.as_pin_ref().text() == expected)
+        .is_some_and(|text| shown(&text.as_pin_ref().text()))
         || item
             .downcast::<ComplexText>()
-            .is_some_and(|text| text.as_pin_ref().text() == expected);
+            .is_some_and(|text| shown(&text.as_pin_ref().text()));
     if matches {
         return Some(item);
     }

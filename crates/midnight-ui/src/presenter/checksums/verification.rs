@@ -41,7 +41,7 @@ impl Presenter {
         s.running = true;
         s.stopping = false;
         s.error.clear();
-        s.save_message.clear();
+        s.forget_saves();
         s.progress = ChecksumProgress::default();
         self.retired.push(Box::new(mem::take(&mut s.streamed)));
         self.retired.push(Box::new(s.run.take()));

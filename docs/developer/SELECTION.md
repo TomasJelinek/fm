@@ -47,6 +47,29 @@ notifications happen after mutable presenter and gesture borrows have ended.
 Stale archive response indexes and selected sets enter the existing retirement
 queue, including the last owner of an obsolete listing.
 
+## Selection by mask
+
+Select and Deselect by mask (Ctrl+= and Ctrl+−, keypad + and −, F10) and the
+keypad's invert reuse the
+three selection backends. `SelectionAction::Mask`, `ArchiveSelectionAction::Mask`
+and `TreeSelectionAction::Mask` carry one `MaskSelection` (pattern, select or
+deselect, folders). The worker compiles the pattern with the panel filter's Masks
+grammar, ignoring case, and matches only rows of the captured view: native rows by
+the final component of their raw path, archive members by their listed caption,
+tree rows by their entry name. Folders and directory links take part only when
+`folders` is set; other marks are kept. Native mask requests need a complete view:
+a request queued while a listing streams fails without changing marks, and so would
+an invalid mask. The dialog sends none: `MaskSelectionPreferences::validate_mask`
+checks the storage bounds and the Masks grammar with `FilterMasks`, the parser the
+filter compiler uses too, and an invalid mask keeps the dialog open with the reason.
+Loading settings checks only the storage
+bounds, so a mask an earlier build remembered still loads and the dialog then says
+what is wrong with it. Tree masks reach every selectable shown row, expanded
+descendants included, never context-only ancestors. Keypad * sends `Invert` or
+`InvertAll` following the remembered folder choice. The presenter keeps the dialog
+draft and saves the last mask and folder choice (`MaskSelectionPreferences`) only
+after its request was accepted.
+
 ## Verification
 
 The implementation plan is

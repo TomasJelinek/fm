@@ -192,10 +192,10 @@ export component MetadataDialog inherits Rectangle {
                     if root.topic == 1 : VerticalLayout {
                         spacing: 14px; alignment: start;
                         Text { text: "Tick a timestamp to change it, then type its date and time or pick them. Up/Down arrows change the part under the cursor."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
-                        MetadataTime { narrow: root.narrow-times; label: "Modified"; enabled: root.can-modified; default: MetadataTimeCodec.modified-default; value <=> root.draft.modified; edited => { root.edited(); } }
-                        MetadataTime { narrow: root.narrow-times; label: "Created"; enabled: root.can-created; default: MetadataTimeCodec.created-default; value <=> root.draft.created; edited => { root.edited(); } }
-                        MetadataTime { narrow: root.narrow-times; label: "Accessed"; enabled: root.can-accessed; default: MetadataTimeCodec.accessed-default; value <=> root.draft.accessed; edited => { root.edited(); } }
-                        Text { text: "Times start from the current value. The UTC offset is used exactly as shown; around a daylight-saving change, choose the offset that matches the intended hour. Now uses the moment you review."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
+                        MetadataTime { narrow: root.narrow-times; label: "Modified"; index: 1; enabled: root.can-modified; default: MetadataTimeCodec.modified-default; value <=> root.draft.modified; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-times; label: "Created"; index: 0; enabled: root.can-created; default: MetadataTimeCodec.created-default; value <=> root.draft.created; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-times; label: "Accessed"; index: 2; enabled: root.can-accessed; default: MetadataTimeCodec.accessed-default; value <=> root.draft.accessed; edited => { root.edited(); } }
+                        Text { text: "Times start from the current value, and Now fills in the current one. The UTC offset is used exactly as shown: after moving a date into or out of daylight-saving time, change the offset too. Review notes any offset that differs from local time."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
                     }
                     if root.topic == 2 : VerticalLayout {
                         spacing: 12px; alignment: start;

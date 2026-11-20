@@ -21,7 +21,35 @@ application delivery remain pending.
 - Confirming Cancel operation requests cooperative cancellation. A rejected
   command leaves the window visible with an actionable retry. A completion or
   replaced/stale window session while the question is open cannot send a new
-  cancellation. Completed progress closes without asking.
+  cancellation. Completed progress closes without asking. After an accepted
+  cancellation the window of a Copy, Move or Delete stays open and then shows how
+  the job ended.
+- A job window has no close button in its header: its native title bar, Escape and
+  the footer's Cancel operation or Close close it. The Jobs window is the same.
+- Once a job has ended, its window shows the outcome instead of its progress (no
+  speed chart, time or Items remaining): the state, then what was copied, moved or
+  deleted and what was not, for example `Files copied: 23,956 · Not copied:
+  99,875`, `Items deleted: 108 · Not deleted: 24,284`, `Copy cancelled; files
+  already copied are kept.` or `Move cancelled; completed moves remain, and files
+  already copied to the destination are kept.` (the engine's sentence from the job's
+  message, which Details shows too; a Move can leave a file copied with its source
+  restored), and counts of skipped items, links copied as links and files kept
+  in recovery folders. A clean completion shows its summary. Only errors are listed,
+  while the job runs and after it, one row each with the reason and the path
+  shortened in the middle; the error count opens the first, and a click, Return or
+  Space on a row opens its whole path, message and operation in place. Informational
+  notes (a link copied as a link because it could not be followed) and the items a
+  cancellation left unprocessed are only counted.
+- Details shows and hides an area below the progress or outcome with the job's
+  complete details (counters, source, destination, diagnostics, every retained
+  error and informational note), in a box of its own that scrolls; a window lower
+  than 350 px adds them to the end of its scrolled content instead. Copy details
+  copies the same text.
+- While a job's own window is open, the main window adds no notice when the job
+  ends, whether it was cancelled, failed or completed: the window shows the outcome.
+  A job whose window is not open (closed while it was cancelling, or a Rename,
+  creation or Properties job never opened from Jobs) is reported by a notice as
+  before.
 - Cancellation remains cooperative: finish the safe checkpoint and clean up owned
   unpublished temporary files. Earlier committed changes remain. Jobs retains the
   final result, including cleanup errors; closing presentation never means success.
@@ -35,24 +63,108 @@ application delivery remain pending.
   name-conflict question or reads as a cancellation. A Properties (metadata) rename in
   the same situation still applies the item's remaining permission and time changes
   but counts the item as failed (its error is never a name conflict either); a single
-  edited item is still revealed under its new name. Notices of jobs that end
-  Completed with errors are titled "File operation completed with errors", never
-  "failed", and say that changes were not undone only when a target did not complete.
+  edited item is still revealed under its new name. Notices of such jobs (only when
+  no window of the job is open) are titled "File operation completed with errors",
+  never "failed", and say that changes were not undone only when a target did not
+  complete.
+- A Delete (Trash or permanent, from a panel or an expanded tree) pauses on each item
+  it cannot remove and asks in the shared decision prompt, headed "Delete needs
+  attention" (`OperationEvent::DeleteFailure`, answered by `Command::DecideDelete`
+  with the token `delete-error:{job}:{version}`): Retry repeats that step, Skip leaves
+  that item and goes on with every remaining item and target, Skip all errors skips
+  the job's later failures without asking, Cancel job stops and keeps what is left,
+  and Decide later keeps the question for Jobs. A folder whose items cannot leave it
+  (write-protected, or owned by another user) is asked about once, for the folder.
+  The last target failing as a whole in a way Retry cannot change (for example an
+  item replaced after the confirmation) is only reported, as nothing is left to decide.
+  Folders that keep skipped items are not deleted and not reported as more errors;
+  the job's message adds one line per such target, "*target* was not deleted because
+  it still contains skipped items." A Delete counts its errors in `failed`: each
+  skipped or cancelling failure, each target that ended at a failure that was not
+  skipped, and each completed target's issue; `completed` counts the targets
+  deleted. While a decision waits, Linux puts what is left of a permanently deleted
+  item back under its own name, so the cause can be fixed where it is shown, and
+  captures it again with the same identity checks before going on. Windows offers
+  only the whole item (a follow-up). On Linux, write-protected folders of the
+  confirmed tree that the user owns never stop a Delete ([security](../../SECURITY.md)).
+- Copy/Move enumerate a folder with `TransferSource::next_child_or_failure`. A child
+  that cannot be opened once its name is read comes back on its own, and the job
+  pauses for that child only (stage Reading the source, the child as source and its
+  destination path): Retry opens it again with `open_child`, Skip and Skip all leave
+  out that child (a Move keeps its folder and every folder above it) and the folder
+  goes on with its next child. A failure of the folder itself (its listing breaks
+  off, it was replaced, or it lets its names be read but not opened) still pauses
+  once as Reading folder contents, where Skip leaves out the rest of that folder.
+  Linux reports child failures; Windows and archive sources keep the default, which
+  reports every failure as the folder's. A same-volume Linux Move of a folder the user
+  owns that lacks owner write gets owner write through its retained descriptor only
+  for its renames (a folder's ".." entry changes) and its own mode back afterwards; a
+  prepared Move source is rechecked by identity, size and modified time, so a
+  permission change made to fix a failure does not stop its Retry.
+- Copy/Move stages that still end the job, or the rest of a folder, without an
+  item-level Skip (20 November audit), and why:
+  - Preparation (stage Preparing) of captured (tree) or archive sources, and of a
+    single selected item: a failure blocks the whole job before anything is copied,
+    with Retry and Cancel only (no Retry when retrying cannot help). One of several
+    selected native items that fails alone (its path is the error's) also offers Skip
+    and Skip all: `Preparation::skip_root` plans the job again without it, it counts
+    as skipped and as one error, and the others are copied. A preparation failure
+    after recorded cleanup residuals still ends the job.
+  - A folder that fails itself (above): its listing cannot resume where it stopped,
+    so there is no Retry and Skip leaves out the rest of that folder.
+  - Ordinary cross-volume Move children that cannot be prepared for Move (special
+    files, mount points): Skip leaves out the rest of their folder, which stays in
+    the source. A per-child variant needs the folder-level checks of the Move
+    preparation separated first, or a read-only folder would ask once per child.
+  - After an uncertain commit or cleanup the job ends without a question: a
+    publication that needs recovery or whose durability is unconfirmed, a link stage
+    that cannot be cleaned up, a native Move rename that needs recovery, a failed
+    cleanup after a verified source was removed, a capture that does not match, and
+    Move invariant failures. Most leave the data in place (only a private stage may
+    remain), so a Skip-only pause would be safe for them, but they are deliberately
+    never retried; that change is a follow-up. A Move also ends on any error it records
+    without a question, such as a failed restore or cleanup during Skip, or folder
+    permissions that could not be applied.
 - A completed or completed-with-errors Copy, Move, Delete, Rename, New file, New
   folder or Properties job refreshes every native panel showing an affected folder as
   soon as its terminal progress is applied, without waiting for a watch notification.
   A flat panel re-reads the folder, superseding an in-flight same-folder background
   re-read (a watch refresh, which may predate the change); any other load, a directory
   comparison or a drag from the panel still defers it. A tree panel whose root
-  contains an affected folder refreshes its loaded branches. Main-window panel input
-  (keys, pointer and wheel) then waits, with a wait cursor, until those re-reads and
-  tree refreshes complete, fail or are superseded; a renamed or created entry gets
-  the cursor, in a tree once a publication shows it. A Rename, New file or New folder
-  also holds input from its confirmation when no other copy or file job is live,
-  because it may otherwise run behind that job. Failed or cancelled jobs, a Rename
-  name-conflict question and a refresh that cannot start at once never hold input;
-  failures are reported as before. The main window releases the hold after 3 seconds
-  in any case.
+  contains an affected folder refreshes its loaded branches.
+- When the user waited for the job (it ended within 5 seconds of first reporting
+  that it runs, or sooner), the input of each panel showing its change then waits
+  until those re-reads and tree refreshes complete, fail or are superseded: a Copy's
+  destination (never its sources, which a Copy does not change), a Move's sources and
+  destination, and the folder of a Delete, Rename, creation or Properties job. A
+  renamed or created entry gets the cursor, in a tree once a publication shows it
+  (the tree worker sends a refresh pass's reply only after every view of that pass).
+  Only that panel waits: its pointer and wheel input over the panel, with a wait
+  cursor, and the keys typed while its file list has focus, including the digit-row
+  and bracket shortcuts the native window hook takes. Those keys (at most 64) are
+  kept and replayed in order, with the modifiers they were typed with, once the panel
+  shows the change; they are dropped if the focus moved to another panel, the command
+  line or a dialog meanwhile. The other panel, the command line, the toolbars and the
+  function bar stay usable; a file operation requested there for the waiting panel
+  waits for its re-read like any other background re-read (see below). A Rename, New
+  file or New folder also holds its panel from its confirmation when no other copy or
+  file job is live, because it may otherwise run behind that job. That hold lasts as
+  long as the job runs, with no time limit, and when the job takes longer than half a
+  second the panel's status line says what it does (`Renaming “a” to “b”…`,
+  `Creating “name”…`, `Creating folder “name”…`); its completion counts as waited for
+  however long it ran. Failed or cancelled jobs, a Rename name-conflict question, a
+  refresh that cannot start at once and other jobs that ran longer never hold input;
+  a failure or cancellation releases a held panel at once and is reported as before.
+  The wait for the re-reads after a completion is limited to 3 seconds, counted from
+  the completion: then the waiting keys are replayed, input is released, and the
+  status line says `Updating the file list…` until the change appears. Escape ends
+  either wait at once; it is not replayed, and the keys typed before it are. A panel
+  released by Escape is not held again by that job's re-read, only by a later job.
+- A file operation (Rename, Delete, New file, New folder) or an expander click
+  requested while a background re-read (a watch refresh or a job's re-read) keeps a
+  panel's rows on screen runs once that re-read ends, on the targets captured when it
+  was requested, unless the panel left the folder meanwhile. Opening an entry does not
+  wait; it uses the rows on screen.
 - Closing Jobs only closes the ledger. It does not cancel independent operations.
 - Successfully completed automatic progress closes. A manually reopened progress
   window stays open; so does manually opened Jobs.
@@ -88,10 +200,16 @@ Failure or cancellation releases this scheduling wait only after actual native
 cleanup/retirement. The separate destructive-operation fence still requires
 verified success. Later ready jobs may bypass waiters and unfilled handoffs.
 
-`EarlierTransfers` means an outstanding explicit dependency; `Resources` means
-actual I/O, namespace or scope admission is blocked. Selecting a policy alone is
-not a current wait. While waiting, a Copy/Move shows Queued, Queued — waiting for
-earlier transfers or Waiting for available capacity. It shows Discovering only while
+`EarlierTransfers` means an outstanding explicit dependency. The other reasons say
+why the job cannot proceed right now: `DiskCapacity` (every configured disk slot
+is busy for longer than another job's step), `SameFolders` (another job uses the
+same files or folders: one item waits, or the whole job when it would read what
+that job changes or a footprint is unknown) and `OtherOperation` (a Delete,
+Rename, new folder or saved list holds or queues for the whole namespace).
+`Resources` remains a generic capacity wait. Selecting a policy alone is not a
+current wait. While waiting, a Copy/Move shows Queued, Queued — waiting for
+earlier transfers, Waiting for disk capacity, Waiting for another job in the same
+folders to finish, or Waiting for another file operation. It shows Discovering only while
 its discovery is actually scanning and never shows Calculating (see ETA under
 [Verification and charts](#verification-and-charts); Delete differs there). Clear
 wait reasons on acquisition, cancel-request and terminal publication. Cancellation,
@@ -102,14 +220,14 @@ through actual provider destruction, plus one retained slot identity of the
 configured global disk-I/O gate. The slot consumes capacity only while the job
 executes native steps:
 
-- Pause, user decisions and namespace-grant waits return the slot. The job readmits
-  it through the FIFO gate before its next native step (Waiting for available
-  capacity); a paused job takes neither lease.
-- At each step boundary a running job yields its slot while a call-scoped request
-  (checksum, thumbnail, viewer, folder-size or file-list I/O) is queued, so such a
-  request waits for at most one step of each transfer, never for a whole job. Jobs
-  queued for a slot do not cause yields; they wait for a running job to finish,
-  pause or wait. Discovering one selected root's tree for progress totals is a
+- Pause, user decisions and namespace waits return the slot. The job readmits it
+  through the FIFO gate before its next native step (Waiting for disk capacity once
+  that takes longer than 250 ms); a paused job takes neither lease.
+- At each step boundary a running job yields its slot while anything else is queued
+  for it: a call-scoped request (checksum, thumbnail, viewer, folder-size or
+  file-list I/O) or another transfer. Such a request waits for at most one step of
+  each transfer, never for a whole job, and transfers sharing the limit (even a
+  limit of one) interleave step by step. Discovering one selected root's tree for progress totals is a
   single step, so a large or slow tree delays both this yield and an acknowledged
   pause until that discovery returns (cancellation is still honored inside it).
 - Waits for decisions, pause, resume, admission and namespace changes, and terminal
@@ -122,17 +240,27 @@ executes native steps:
 
 Initial acquisition takes the namespace share and then the FIFO disk slot. Legacy
 namespace consumers take their complete namespace before any disk slot, and no
-slot holder waits for a namespace share, so this order cannot deadlock. One job
-performs one native call at a time; a disk-I/O limit of one runs one job's steps at
-a time. Future within-job multiple streams still require positive local SSD
-classification at both endpoints and shared budgets.
+slot holder waits for a namespace share, so this order cannot deadlock. The share
+semaphore is fair: a copy started while a whole-namespace operation is queued waits
+behind it (Waiting for another file operation). One job performs one native call at
+a time; a disk-I/O limit of one runs one step at a time, alternating between jobs.
+Future within-job multiple streams still require positive local SSD classification
+at both endpoints and shared budgets.
 
-Namespace admission grants a claim only when its complete footprint is disjoint
-from every granted claim and every earlier waiting claim; an opaque claim excludes
-all others. A refused grant waits for a registry change (a grant, completion or
-quarantine; any change while admission is momentarily closed) and revalidates at
-least once per second, holding no disk slot. A pin of another job that cannot be
-re-probed only defers the grant; it is never recorded against either job. All
+Namespace admission is an atomic check-and-claim, decided at once under the
+registry lock: the job probes only its own pins and compares them with the
+committed facts of granted jobs, which every change announces before it mutates
+anything. It never waits for a peer's turn and its cost does not depend on what a
+peer has published. A selected root that a granted job claims or has deferred is
+deferred too, not refused: the job starts, and that item is claimed by its first
+change that no earlier-granted job refuses (later jobs never hold an earlier one
+back, so these waits cannot form a cycle). A job is refused as a whole only when a
+footprint is unknown (opaque), when one of its sources overlaps what a granted job
+changes (its in-progress output may be visible), or behind an older waiting job that
+shares an item; it then waits for a grant, completion or quarantine and revalidates
+at least once per second, holding no disk slot. Because grants no longer re-probe
+peers, a turn that did not announce every binding it affected refreshes every pin of
+its job when it finishes. All
 namespace changes (stage creation, publication, directory creation, removal) of all
 jobs are serialized by one registry turn, which spans the native call. A change of
 a running job that granted peers refuse (opaque, latched or intersecting) mutated

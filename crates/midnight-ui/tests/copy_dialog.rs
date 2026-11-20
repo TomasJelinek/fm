@@ -1,5 +1,6 @@
 #[path = "support/window_input.rs"]
 mod input;
+use crate::support::link_option;
 use crate::support::modeless;
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
@@ -126,6 +127,192 @@ fn dismiss_native_notice(windows: &NativeWindows) {
 }
 // The complete-source layout of the shipped draft is checked on the embedded host:
 // native_operation_windows::embedded_copy_draft_shows_the_complete_source_above_a_single_line_destination.
+
+/// Answer the check of the typed destination `path` as the backend does, recording
+/// only what that answer sends (the transfer, if any).
+fn answer_destination_check(
+    state: &Rc<RefCell<Presenter>>,
+    begin: &midnight_ui::BeginOwned,
+    commands: &Rc<RefCell<Vec<Command>>>,
+    path: &std::path::Path,
+    result: Result<bool, FsError>,
+) {
+    let check = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::CheckTransferDestination(request) => Some(request.clone()),
+            _ => None,
+        })
+        .expect("a typed destination is checked before the transfer starts");
+    assert_eq!(check.path, path);
+    commands.borrow_mut().clear();
+    owned_commands::run(state, begin, |state, _| {
+        state.apply_with_sender(
+            Event::TransferDestinationChecked(Box::new(DestinationCheckResult {
+                request: check.request,
+                path: check.path.clone(),
+                result,
+            })),
+            &|command| {
+                commands.borrow_mut().push(command);
+                true
+            },
+        );
+    });
+}
+
+/// Copy and Move refuse a typed destination that is not an existing folder in the
+/// dialog, with its own text and the keyboard still in the destination field, and
+/// start no job. Once the folder exists, OK starts the transfer.
+#[test]
+fn copy_refuses_a_destination_that_is_not_an_existing_folder() {
+    refuse_a_destination_that_is_not_an_existing_folder(Key::F5, false);
+}
+
+#[test]
+fn move_refuses_a_destination_that_is_not_an_existing_folder() {
+    refuse_a_destination_that_is_not_an_existing_folder(Key::F6, true);
+}
+
+/// One dialog per test: the windowing platform can be installed once per test thread.
+fn refuse_a_destination_that_is_not_an_existing_folder(shortcut: Key, moving: bool) {
+    {
+        let (mut ui, windows) = multi_window_ui();
+        let base = std::env::temp_dir().join("copy destination check");
+        let state = Rc::new(RefCell::new(Presenter::new(
+            base.clone(),
+            base.join("target"),
+        )));
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        let captured = commands.clone();
+        let begin = install(
+            &ui.window,
+            state.clone(),
+            Rc::new(move |command| {
+                captured.borrow_mut().push(command);
+                true
+            }),
+        );
+        let navigation = commands
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::Navigate {
+                    pane: PaneId::Left,
+                    navigation,
+                    ..
+                } => Some(*navigation),
+                _ => None,
+            })
+            .unwrap();
+        let entries: Arc<[Entry]> = vec![Entry::new(
+            EntryId(1),
+            base.join("file.txt"),
+            EntryKind::File,
+        )]
+        .into();
+        state.borrow_mut().apply(Event::ListingFinished {
+            pane: PaneId::Left,
+            navigation,
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        });
+        refresh(&ui.window, &state.borrow());
+        ui.window.invoke_focus_files();
+        ui::key(&ui.window, Key::End);
+        ui::key(&ui.window, shortcut);
+        ui.draw();
+        let child = draft_child(&windows);
+        let focused = || {
+            WindowInner::from_pub(child.window())
+                .focus_item
+                .borrow()
+                .upgrade()
+        };
+        // The dialog opens with the keyboard in the destination field.
+        let editor = focused().expect("a focused destination field");
+        assert!(editor.downcast::<TextInput>().is_some());
+        for (name, result) in [
+            ("missing", Err(std::io::ErrorKind::NotFound)),
+            ("file.txt", Ok(false)),
+            ("missing/below", Err(std::io::ErrorKind::NotADirectory)),
+        ] {
+            let path = base.join(name);
+            input::chord(&child, &[Key::Control], "a");
+            input::key(&child, path.to_string_lossy().as_ref());
+            commands.borrow_mut().clear();
+            input::key(&child, Key::Return);
+            ui.draw();
+            answer_destination_check(
+                &state,
+                &begin,
+                &commands,
+                &path,
+                result.map_err(|kind| FsError::from_io("check destination", &path, kind.into())),
+            );
+            refresh(&ui.window, &state.borrow());
+            ui.draw();
+            assert!(commands.borrow().is_empty(), "{name}: no job starts");
+            assert!(!state.borrow().has_live_operations(), "{name}: no job");
+            assert!(
+                !ui.window.get_copy_draft_token().is_empty(),
+                "{name}: the dialog stays open"
+            );
+            let error = ui.window.get_copy_draft_error();
+            assert_eq!(
+                error.as_str(),
+                "Enter the full path of an existing destination folder.",
+                "{name}"
+            );
+            assert!(
+                accessible_item(&child, AccessibleRole::Text, error.as_str())
+                    .is_some_and(|item| item.is_visible()),
+                "{name}: the dialog shows its refusal"
+            );
+            assert_eq!(
+                focused(),
+                Some(editor.clone()),
+                "{name}: the keyboard stays in the destination field"
+            );
+        }
+        // The folder exists now: the same OK starts the transfer.
+        let folder = base.join("missing");
+        input::chord(&child, &[Key::Control], "a");
+        input::key(&child, folder.to_string_lossy().as_ref());
+        commands.borrow_mut().clear();
+        input::key(&child, Key::Return);
+        ui.draw();
+        answer_destination_check(&state, &begin, &commands, &folder, Ok(true));
+        refresh(&ui.window, &state.borrow());
+        ui.draw();
+        let queued = commands.borrow();
+        let [Command::EnqueueCopyWithOptions(options)] = queued.as_slice() else {
+            panic!("OK starts one transfer");
+        };
+        let CopyOptionsInput::Native(request) = &options.input else {
+            panic!("the dialog retains the native selection");
+        };
+        assert_eq!(
+            request.intent,
+            if moving {
+                TransferIntent::Move
+            } else {
+                TransferIntent::Copy
+            }
+        );
+        let MetadataTransferInput::Selected(request) = &request.input else {
+            panic!("the captured selection remains shared");
+        };
+        assert_eq!(request.destination, folder);
+        drop(queued);
+        assert!(
+            ui.window.get_copy_draft_token().is_empty(),
+            "the dialog closed"
+        );
+        ui.window.hide().unwrap();
+    }
+}
 
 #[test]
 fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard() {
@@ -271,7 +458,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     assert!(!ui.window.get_copy_draft_token().is_empty());
     let child = draft_child(&windows);
     assert!(
-        accessible_item(&child, AccessibleRole::Checkbox, "Follow directory links")
+        accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL)
             .is_none_or(|item| !item.is_visible())
     );
     let option = accessible_item(
@@ -425,14 +612,18 @@ fn destination_editor(
         "Wait for other operations to finish",
     )
     .expect("Copy and Move both expose the wait option");
-    let links = accessible_item(&child, AccessibleRole::Checkbox, "Follow directory links")
-        .expect("Copy and Move both expose the link option");
-    assert_eq!(
-        links
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .unwrap(),
-        "true"
-    );
+    let shown = link_option::shown(moving);
+    let links = accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL)
+        .filter(|item| item.is_visible());
+    assert_eq!(links.is_some(), shown, "the link option's presence");
+    if let Some(links) = &links {
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .unwrap(),
+            "true"
+        );
+    }
     assert_eq!(
         wait.accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
@@ -440,14 +631,16 @@ fn destination_editor(
     );
     input::key(&child, Key::Tab);
     input::key(&child, Key::Tab);
-    input::key(&child, Key::Space);
-    assert_eq!(
-        links
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .unwrap(),
-        "false"
-    );
-    input::key(&child, Key::Tab);
+    if let Some(links) = &links {
+        input::key(&child, Key::Space);
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .unwrap(),
+            "false"
+        );
+        input::key(&child, Key::Tab);
+    }
     input::key(&child, Key::Space);
     assert_eq!(
         wait.accessible_string_property(AccessibleStringProperty::Checked)
@@ -500,20 +693,23 @@ fn destination_editor(
         "false",
         "every new draft must start unchecked",
     );
-    let links =
-        accessible_item(&child, AccessibleRole::Checkbox, "Follow directory links").unwrap();
-    assert_eq!(
-        links
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .unwrap(),
-        "true",
-        "new drafts default to following directory links"
-    );
-    if !follow_directory_links {
-        input::click(&child, &links);
-        let editor =
-            accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
-        input::click(&child, &editor);
+    let links = accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL)
+        .filter(|item| item.is_visible());
+    assert_eq!(links.is_some(), shown);
+    if let Some(links) = &links {
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .unwrap(),
+            "true",
+            "new drafts default to following links"
+        );
+        if !follow_directory_links {
+            input::click(&child, links);
+            let editor =
+                accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
+            input::click(&child, &editor);
+        }
     }
     if wait_for_earlier {
         input::click(&child, &wait);
@@ -541,11 +737,12 @@ fn destination_editor(
         );
     }
     let destination = base.join("another target");
-    // Both directions include the three checkboxes and stay within the modal form.
+    // Both directions include every shown checkbox and stay within the modal form.
     let inner = i_slint_core::window::WindowInner::from_pub(child.window());
     let editor = inner.focus_item.borrow().upgrade().unwrap();
+    let focusable = if shown { 6 } else { 5 };
     for reverse in [false, true] {
-        for _ in 0..6 {
+        for _ in 0..focusable {
             if reverse {
                 input::chord(&child, &[Key::Shift], Key::Tab);
             } else {
@@ -583,17 +780,19 @@ fn destination_editor(
         if wait_for_earlier { "true" } else { "false" },
         "rejected admission must preserve the chosen wait policy"
     );
-    assert_eq!(
-        links
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .unwrap(),
-        if follow_directory_links {
-            "true"
-        } else {
-            "false"
-        },
-        "rejected admission must preserve the chosen link policy"
-    );
+    if let Some(links) = &links {
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .unwrap(),
+            if follow_directory_links {
+                "true"
+            } else {
+                "false"
+            },
+            "rejected admission must preserve the chosen link policy"
+        );
+    }
     let error = ui.window.get_copy_draft_error();
     assert!(!error.is_empty());
     assert!(
@@ -618,6 +817,9 @@ fn destination_editor(
     accepting.set(true);
     input::key(&child, Key::Return);
     ui.draw();
+    // The typed folder is checked before the transfer starts: it exists.
+    answer_destination_check(&state, &begin, &commands, &destination, Ok(true));
+    ui.draw();
     let queued = commands.borrow();
     assert_eq!(queued.len(), 1);
     let expected_start = if wait_for_earlier {
@@ -630,11 +832,7 @@ fn destination_editor(
     };
     assert_eq!(
         options.links,
-        if follow_directory_links {
-            CopyLinkPolicy::FollowDirectoryContents
-        } else {
-            CopyLinkPolicy::EmptyDirectories
-        }
+        link_option::sent(moving, follow_directory_links)
     );
     let CopyOptionsInput::Native(request) = &options.input else {
         panic!("the dialog must retain the native selection");
@@ -1044,20 +1242,18 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     );
     input::key(&test.native, Key::Tab);
     compact_settle(&mut test);
-    let links = compact_item(&test, AccessibleRole::Checkbox, "Follow directory links");
-    compact_assert_focus(&test, &links);
-    compact_assert_visible(
-        &test,
-        &links,
-        true,
-        "keyboard directory-link checkbox indicator",
-    );
-    assert_eq!(
-        links
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .unwrap(),
-        "true"
-    );
+    let shown = link_option::shown(moving);
+    if shown {
+        let links = compact_item(&test, AccessibleRole::Checkbox, link_option::LABEL);
+        compact_assert_focus(&test, &links);
+        compact_assert_visible(&test, &links, true, "keyboard link checkbox indicator");
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .unwrap(),
+            "true"
+        );
+    }
     input::chord(&test.native, &[Key::Shift], Key::Tab);
     compact_settle(&mut test);
     compact_assert_focus(&test, &option);
@@ -1095,7 +1291,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     edited.insert(caret, 'X');
     compact_assert_edit(&input, &edited, caret + 1);
     compact_fixed_controls(&test, action);
-    for _ in 0..5 {
+    for _ in 0..if shown { 5 } else { 4 } {
         input::key(&test.native, Key::Tab);
         compact_settle(&mut test);
     }
@@ -1106,6 +1302,11 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     );
     input::key(&test.native, Key::Return);
     compact_settle(&mut test);
+    // A typed destination is checked first; the backend finds an existing folder.
+    let edited_path = std::path::PathBuf::from(&edited);
+    answer_destination_check(&state, &begin, &commands, &edited_path, Ok(true));
+    refresh(&test.window, &state.borrow());
+    compact_settle(&mut test);
     assert!(test.window.get_copy_draft_token().is_empty());
     let queued = commands.borrow();
     let [Command::EnqueueCopyWithOptions(options)] = queued.as_slice() else {
@@ -1113,7 +1314,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
             "metadata confirmation must admit exactly one captured {action} request: {queued:?}"
         );
     };
-    assert_eq!(options.links, CopyLinkPolicy::FollowDirectoryContents);
+    assert_eq!(options.links, link_option::sent(moving, true));
     let CopyOptionsInput::Native(request) = &options.input else {
         panic!("metadata confirmation changed its native source");
     };

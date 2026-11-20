@@ -49,7 +49,7 @@ lease; desktop tests ran serially. Artifacts are under
 
 Total: **106 targeted tests passed**, plus the native startup smoke run. This is
 not a full-workspace test result. Safe script fixtures exercised actual execution;
-the user's `ovclash-process-mb-h56.sh` was neither read nor executed. Shell probes
+the user's own shell script was neither read nor executed. Shell probes
 also exercised a controlling PTY, Bash, sh and the installed BusyBox ash; this
 does not claim physical testing on every Linux distribution or shell. The actual
 GUI terminal-emulator handoff and interactive sudo authentication were not tested.

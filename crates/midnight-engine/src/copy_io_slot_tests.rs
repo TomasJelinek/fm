@@ -300,7 +300,7 @@ async fn namespace_grant_wait_returns_the_disk_slot() {
         loop {
             if let CopyEvent::Progress(progress) = h.next().await
                 && progress.id == OperationId(2)
-                && progress.wait_reason == Some(TransferWaitReason::Resources)
+                && progress.wait_reason == Some(TransferWaitReason::SameFolders)
                 && progress.state == CopyOperationState::Preparing
             {
                 break;

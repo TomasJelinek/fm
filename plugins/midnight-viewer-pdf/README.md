@@ -1,7 +1,7 @@
 # PDF viewer
 
 Independent, removable PDF raster provider for Midnight Explorer. It depends only
-on the released public raster SDK 0.3.0 (API 0.2.0) and pinned `hayro` 0.9.0; no private host
+on the released public raster SDK 0.4.0 (API 0.3.0) and pinned `hayro` 0.9.0; no private host
 crate or UI toolkit is linked. Installing/removing its package requires restart.
 Windows x86-64 and Linux x86-64/aarch64 use the existing native worker sandbox.
 Hayro itself is portable Rust; a macOS host sandbox has not been implemented.
@@ -28,6 +28,13 @@ password are rejected; empty-password encrypted documents may open if Hayro can
 decrypt them. Hayro is experimental: some PDF constructs and nonembedded fonts
 may render differently or be unsupported. Reported missing-font/image/annotation
 warnings reject the page; the plugin does not promise complete PDF fidelity.
+
+Since 0.2.0 its error texts reach the viewer's status line through the SDK's failure
+reason, after the host's sentence: an empty file, an invalid or incomplete structure,
+a password or unsupported encryption, a document over 128 MiB or 4,096 pages, an
+oversized or invalid page, and a page with content Hayro cannot draw each have their
+own short, path-free text (for example "This document is damaged or incomplete: the
+document needs a password or uses unsupported encryption").
 
 Build/test against an exported public SDK bundle, with generated files below a `_build`
 directory: this project's own, that of the repository holding it in `plugins/`, or

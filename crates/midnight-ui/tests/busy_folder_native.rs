@@ -4,12 +4,15 @@
 mod native;
 use crate::support::ui;
 
+use i_slint_core::model::{ModelChangeListener, ModelChangeListenerContainer};
 use midnight_core::PaneId;
 use slint::Model;
 use std::{
+    cell::Cell,
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -17,6 +20,29 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+/// Counts the left row model's resets: a reset replaces every row delegate,
+/// which is the refill an in-place re-read avoids.
+#[derive(Default)]
+struct Resets(Cell<usize>);
+
+impl ModelChangeListener for Resets {
+    fn row_changed(self: Pin<&Self>, _: usize) {}
+    fn row_added(self: Pin<&Self>, _: usize, _: usize) {}
+    fn row_removed(self: Pin<&Self>, _: usize, _: usize) {}
+    fn reset(self: Pin<&Self>) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+fn count_resets(h: &native::Harness) -> Pin<Box<ModelChangeListenerContainer<Resets>>> {
+    let resets = Box::pin(ModelChangeListenerContainer::<Resets>::default());
+    h.ui.window
+        .get_left_rows()
+        .model_tracker()
+        .attach_peer(resets.as_ref().model_peer());
+    resets
+}
 
 /// Writes, renames and removes files in a folder until stopped, as a compiler
 /// writes its objects: each step creates a temporary file, renames it, appends
@@ -329,4 +355,222 @@ fn a_folder_that_keeps_changing_is_relisted_at_a_bounded_rate_and_converges() {
     converge_silently(&mut h, &folder);
     assert_eq!(cursor_row(&h).unwrap().name, "file-07.bin");
     assert_eq!(selected_names(&h).len(), 2);
+}
+
+/// Reports the rows on screen, as the application's visible-row pass does
+/// every frame (`thumbnails.rs`); folder presence is probed for them.
+fn report_viewport(h: &native::Harness) {
+    drop(
+        h.presenter
+            .borrow_mut()
+            .thumbnail_targets([(0, 64), (0, 64)], ["", ""]),
+    );
+}
+
+/// Settles until the left panel shows `main.rs` colored and the folder rows'
+/// presence resolved, then until no listing has started for a second.
+fn settle_decorated(h: &mut native::Harness) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        report_viewport(h);
+        h.settle();
+        let rows = h.rows(PaneId::Left);
+        let row = |name: &str| rows.iter().find(|row| row.name == name).cloned();
+        if !h.ui.window.get_left_loading()
+            && row("main.rs").is_some_and(|row| row.color_rule)
+            && row("inside").is_some_and(|row| row.tree_disclosure == 5)
+            && row("nested").is_some_and(|row| row.tree_disclosure == 3)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "decorations never settled: {:?}",
+            ["main.rs", "inside", "nested"].map(|name| row(name).map(|row| (
+                row.name,
+                row.color_rule,
+                row.tree_disclosure
+            )))
+        );
+        h.idle(Duration::from_millis(10));
+    }
+    let mut listings = h.listings[0];
+    let mut quiet_since = Instant::now();
+    while quiet_since.elapsed() < Duration::from_millis(1_500) {
+        report_viewport(h);
+        h.settle();
+        if h.listings[0] != listings {
+            listings = h.listings[0];
+            quiet_since = Instant::now();
+        }
+        h.idle(Duration::from_millis(10));
+    }
+}
+
+/// Whether two rows show the same. Slint never finds two empty images equal,
+/// so rows whose icon is not loaded (the parent row's here) compare by every
+/// field's value instead.
+fn same_row(left: &midnight_ui::FileRow, right: &midnight_ui::FileRow) -> bool {
+    let empty = |row: &midnight_ui::FileRow| row.icon.size().width == 0;
+    if empty(left) && empty(right) {
+        format!("{left:?}") == format!("{right:?}")
+    } else {
+        left == right
+    }
+}
+
+/// Settles frames until a listing started after `listings` and `after` more
+/// passed, failing when the row model was reset or a row other than
+/// `changing` differs from `before` in any frame.
+#[track_caller]
+fn assert_rows_kept(
+    h: &mut native::Harness,
+    before: &[midnight_ui::FileRow],
+    listings: usize,
+    changing: Option<&str>,
+    after: Duration,
+) {
+    let resets = count_resets(h);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut listed: Option<Instant> = None;
+    while listed.is_none_or(|listed| listed.elapsed() < after) {
+        report_viewport(h);
+        h.settle();
+        assert_eq!(resets.0.get(), 0, "the row model was reset");
+        assert!(
+            !h.ui.window.get_left_loading(),
+            "the loading state was shown"
+        );
+        let rows = h.rows(PaneId::Left);
+        let differing: Vec<_> = before
+            .iter()
+            .filter(|row| Some(row.name.as_str()) != changing)
+            .filter(|row| !rows.iter().any(|now| same_row(row, now)))
+            .map(|row| {
+                let now = rows.iter().find(|now| now.name == row.name);
+                format!("{row:?} became {now:?}")
+            })
+            .collect();
+        assert!(differing.is_empty(), "rows changed: {differing:#?}");
+        assert_eq!(rows.len(), before.len(), "rows were added or removed");
+        if listed.is_none() && h.listings[0] > listings {
+            listed = Some(Instant::now());
+        }
+        assert!(Instant::now() < deadline, "no listing started");
+        h.idle(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_refresh_that_changes_nothing_visible_leaves_the_model_and_every_row_untouched() {
+    let mut h = native::Harness::watched(0);
+    let folder = h.left.clone();
+    fs::write(folder.join("main.rs"), b"fn main() {}").unwrap();
+    settle_decorated(&mut h);
+    select_two(&mut h);
+    settle_decorated(&mut h);
+    let before = h.rows(PaneId::Left);
+    let listings = h.listings[0];
+    // Two notifications, and a folder that lists the same as before whenever
+    // it is read: the modification time set to what it is. (A file created
+    // and removed again is listed by a re-read that starts in between.)
+    let main = folder.join("main.rs");
+    let modified = fs::metadata(&main).unwrap().modified().unwrap();
+    for _ in 0..2 {
+        fs::File::options()
+            .write(true)
+            .open(&main)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+    assert_rows_kept(
+        &mut h,
+        &before,
+        listings,
+        None,
+        Duration::from_millis(1_500),
+    );
+    let after = h.rows(PaneId::Left);
+    assert!(
+        after.len() == before.len() && after.iter().zip(&before).all(|(a, b)| same_row(a, b)),
+        "the rows differ after the refresh"
+    );
+    assert_eq!(cursor_row(&h).unwrap().name, "file-07.bin");
+}
+
+#[test]
+fn a_changed_file_updates_only_its_row_and_keeps_colors_and_folder_hints() {
+    let mut h = native::Harness::watched(0);
+    let folder = h.left.clone();
+    fs::write(folder.join("main.rs"), b"fn main() {}").unwrap();
+    settle_decorated(&mut h);
+    let before = h.rows(PaneId::Left);
+    let listings = h.listings[0];
+    fs::write(folder.join("file-02.bin"), vec![2; 9_999]).unwrap();
+    assert_rows_kept(
+        &mut h,
+        &before,
+        listings,
+        Some("file-02.bin"),
+        Duration::from_millis(1_500),
+    );
+    let changed = h
+        .rows(PaneId::Left)
+        .into_iter()
+        .find(|row| row.name == "file-02.bin")
+        .unwrap();
+    let old = before.iter().find(|row| row.name == "file-02.bin").unwrap();
+    assert_ne!(
+        changed.size, old.size,
+        "the grown file shows its new length"
+    );
+    assert_eq!(
+        changed.identity, old.identity,
+        "the row was updated in place"
+    );
+}
+
+/// Sorted newest first, a rewritten file jumps from the bottom of a long list
+/// to its top: the re-read moves that one row instead of refilling the rows
+/// it passed, as it would when every passed row counted as an edit.
+#[test]
+fn a_file_that_jumps_to_the_top_moves_without_refilling_the_rows_it_passed() {
+    let mut h = native::Harness::watched(600);
+    let folder = h.left.clone();
+    h.until(|h| !h.ui.window.get_left_loading());
+    // The modification time column; its second click sorts newest first.
+    let resorts = count_resets(&h);
+    for _ in 0..2 {
+        h.ui.window.invoke_sort(0, 2);
+        h.until(|h| !h.ui.window.get_left_loading());
+    }
+    assert!(resorts.0.get() > 0, "a new order refills the rows");
+    let rows = h.rows(PaneId::Left);
+    let oldest = rows
+        .iter()
+        .rposition(|row| row.name.ends_with(".o"))
+        .unwrap();
+    assert!(oldest > 500, "the oldest object is far down: {oldest}");
+    let name = rows[oldest].name.to_string();
+    let resets = count_resets(&h);
+    let listings = h.listings[0];
+    fs::write(folder.join(&name), b"rewritten, now the newest file").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        h.settle();
+        let rows = h.rows(PaneId::Left);
+        if h.listings[0] > listings
+            && rows
+                .iter()
+                .position(|row| row.name == name)
+                .is_some_and(|row| row < 10)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{name} never moved to the top");
+        h.idle(Duration::from_millis(10));
+    }
+    assert!(!h.ui.window.get_left_loading());
+    assert_eq!(resets.0.get(), 0, "the rows were refilled");
 }

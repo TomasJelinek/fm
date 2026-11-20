@@ -32,6 +32,8 @@ enum Phase {
 pub(super) struct MoveWork {
     captures: Vec<Arc<dyn TransferMoveCapture>>,
     link_captures: HashMap<TransferIdentity, LinkAuthority>,
+    /// The job's frozen link policy; Preserve admits links as movable entries.
+    links: CopyLinkPolicy,
     pub(super) metadata_policy: TransferMetadataPolicy,
     pub(super) stages: HashMap<TransferIdentity, Box<dyn StagedTransferFile>>,
     pub(super) proofs: Vec<VerifiedFileProof>,
@@ -228,10 +230,21 @@ fn move_links(
     metadata: TransferMetadataPolicy,
     links: CopyLinkPolicy,
 ) -> Result<CopyLinkPolicy, FsError> {
-    if links == CopyLinkPolicy::Preserve {
-        return Err(unsupported(destination, "Link preservation requires Copy."));
+    // Move moves links themselves (Preserve); it never copies what they point to.
+    if links == CopyLinkPolicy::FollowLinks {
+        return Err(unsupported(
+            destination,
+            "Following links is available only for Copy.",
+        ));
     }
     Ok(input::source_link_policy(links, metadata))
+}
+
+/// Whether `kind` may be a Move entry: ordinary files and folders, and links
+/// when the job moves links themselves.
+fn movable_kind(kind: EntryKind, links: CopyLinkPolicy) -> bool {
+    matches!(kind, EntryKind::File | EntryKind::Directory)
+        || (links == CopyLinkPolicy::Preserve && link_job::is_link_kind(kind))
 }
 
 fn prepare_sources_inner(
@@ -271,7 +284,7 @@ fn prepare_sources_inner(
         let (source, original) = match prepared {
             PreparedTransferMoveEntry::Ordinary(prepared) => {
                 let entry = prepared.source.entry();
-                if !matches!(entry.item.kind, EntryKind::File | EntryKind::Directory)
+                if !movable_kind(entry.item.kind, links)
                     || (entry.item.kind == EntryKind::File && entry.item.metadata.size.is_none())
                     || prepared.source.native_identity() != Some(entry.identity)
                     || !same_move_entry(prepared.capture.entry(), entry)
@@ -338,6 +351,7 @@ fn prepare_sources_inner(
     job.move_work = Some(MoveWork {
         captures,
         link_captures,
+        links,
         metadata_policy: metadata,
         stages: HashMap::new(),
         proofs: vec![],
@@ -636,7 +650,7 @@ impl MoveWork {
             || prepared.source.native_identity() != Some(entry.identity)
             || prepared.capture.entry().identity != entry.identity
             || prepared.capture.entry().item.path != entry.item.path
-            || !matches!(entry.item.kind, EntryKind::File | EntryKind::Directory)
+            || !movable_kind(entry.item.kind, self.links)
             || self
                 .captures
                 .iter()

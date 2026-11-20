@@ -6,6 +6,7 @@ import { MenuActionButton } from "menu-action-button.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { ActionAvailability } from "action-availability.slint";
+import { PanelChoices } from "select-mask-dialog.slint";
 
 struct MainMenuEntry {
     action: string,
@@ -58,6 +59,9 @@ export component MainMenuBody inherits Rectangle {
         { action: "selection.clear", label: "Deselect files and folders", category: 2, fallback-icon: FallbackIcons.close },
         { action: "selection.invert", label: "Invert files only", category: 2, fallback-icon: FallbackIcons.refresh },
         { action: "selection.invert-all", label: "Invert files and folders", category: 2, fallback-icon: FallbackIcons.refresh },
+        { action: "selection.mask-select", label: "Select by mask…", category: 2, fallback-icon: FallbackIcons.done },
+        { action: "selection.mask-deselect", label: "Deselect by mask…", category: 2, fallback-icon: FallbackIcons.close },
+        { action: "selection.mask-invert", label: "Invert, folders as in Select by mask", category: 2, fallback-icon: FallbackIcons.refresh },
         { action: "panel.refresh", label: "Refresh active folder", category: 3, native-icon: root.icons.refresh, fallback-icon: FallbackIcons.refresh },
         { action: "panel.parent", label: "Parent folder", category: 3, native-icon: root.icons.parent, fallback-icon: FallbackIcons.parent },
         { action: "panel.root", label: "Filesystem root", category: 3, fallback-icon: FallbackIcons.drive },
@@ -68,6 +72,7 @@ export component MainMenuBody inherits Rectangle {
         { action: "panel.swap", label: "Swap panels", category: 3, fallback-icon: FallbackIcons.refresh },
         { action: "panel.zoom", label: "Enlarge / restore active panel", category: 3, fallback-icon: FallbackIcons.view },
         { action: "panel.filter", label: "Filter panel…", category: 3, fallback-icon: FallbackIcons.filter },
+        { action: "panel.hidden-files", label: PanelChoices.show-hidden-files ? "Hide hidden files" : "Show hidden files", category: 3, fallback-icon: FallbackIcons.view },
         { action: "view.brief", label: "Brief view", category: 3, fallback-icon: FallbackIcons.menu },
         { action: "view.detailed", label: "Detailed view", category: 3, fallback-icon: FallbackIcons.menu },
         { action: "view.thumbnails", label: "Thumbnail view", category: 3, fallback-icon: FallbackIcons.view },

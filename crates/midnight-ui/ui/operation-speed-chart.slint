@@ -139,11 +139,12 @@ export component OperationSpeedChart inherits Rectangle {
             Text { text: root.chart.scale == "" ? "" : "Scale: " + root.chart.scale; color: Theme.secondary-text; font-size: Theme.small-font; }
         }
     }
+    // job_speed.rs sets the scale from the recent sustained speed (`sustained_scale`).
     Tip {
         text: root.deletion
-            ? "Reported deleted items per second, including folders. System Trash may report only top-level items. The graph covers the entire operation from time zero; older intervals retain peak speeds."
+            ? "Reported deleted items per second, including folders. System Trash may report only top-level items. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale follows the recent speed, so a brief peak above it is cut off at the top."
             : root.verification-phase ? "Current-file readback only. The chart starts fresh for each verification attempt; pause and resume keep the same attempt. Readback progress fills the 0 to 100% range; speed samples span elapsed time within its filled part. Reading every planned byte does not establish a successful checksum or publication."
             : root.chart.native-move ? "Native renames per second. A whole renamed folder counts once; descendants are not enumerated and no content is copied. The graph retains the entire operation."
-            : "Write: bytes written per second. Verify: destination readback and additional Move validation reads under the job's selected policy. The graph covers the entire operation from time zero; older intervals retain peak speeds. Current labels show the latest measured interval, not a completion percentage.";
+            : "Write: bytes written per second. Verify: destination readback and additional Move validation reads under the job's selected policy. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale follows the recent speed, so a brief peak above it is cut off at the top. Current labels show the latest measured interval, not a completion percentage.";
     }
 }

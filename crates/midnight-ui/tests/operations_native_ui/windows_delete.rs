@@ -1,6 +1,8 @@
-//! A real Windows sharing refusal must reach the embedded file-operation notice.
+//! A real Windows sharing refusal must reach the failed Delete's own progress window,
+//! with no notice repeating it.
 use super::*;
 use midnight_ui::NoticePresentation;
+use slint::Model;
 use std::os::windows::fs::OpenOptionsExt;
 
 #[test]
@@ -28,13 +30,8 @@ fn locked_directory_delete_reports_an_error_and_succeeds_after_release() {
         h.operations
             .iter()
             .any(|p| p.id == first && p.state.is_terminal())
-            && !h
-                .ui
-                .window
-                .global::<NoticePresentation>()
-                .get_token()
-                .is_empty()
     });
+    h.settle();
     let failure = h
         .operations
         .iter()
@@ -51,28 +48,32 @@ fn locked_directory_delete_reports_an_error_and_succeeds_after_release() {
     assert!(target.is_dir());
     assert_eq!(fs::read(&file).unwrap(), b"locked owned fixture");
 
-    let notice = h.ui.window.global::<NoticePresentation>();
-    assert_eq!(notice.get_title().as_str(), "File operation failed");
-    assert!(notice.get_error());
-    let details = format!(
-        "{}\n{}\n{}",
-        notice.get_body(),
-        notice.get_folder_path(),
-        notice.get_details(),
-    );
-    assert!(details.contains(".claude"), "{details}");
-    assert!(details.contains(&failure.errors[0].message), "{details}");
-
-    drop(locked);
-    notice.invoke_dismiss(notice.get_token());
-    h.until(|h| {
+    // The Delete's own progress window lists the error with its path and message.
+    assert!(
         h.ui.window
             .global::<NoticePresentation>()
             .get_token()
-            .is_empty()
-            && !h.ui.window.get_left_loading()
-    });
-    // Closing the notice leaves the failed Delete's modeless progress available.
+            .is_empty(),
+        "no notice repeats what the progress window shows"
+    );
+    let row =
+        h.ui.window
+            .get_operations()
+            .iter()
+            .find(|row| row.identity == first.0.to_string())
+            .expect("the failed Delete is listed");
+    assert_eq!(row.issue_summary, "1 error");
+    let issue = row.issues.row_data(0).expect("its error is listed");
+    assert!(issue.path.contains(".claude"), "{}", issue.path);
+    assert!(
+        issue.detail.contains(failure.errors[0].message.trim()),
+        "{}",
+        issue.detail
+    );
+
+    drop(locked);
+    h.until(|h| !h.ui.window.get_left_loading());
+    // Close the failed Delete's progress window.
     h.click_decision("Close");
     h.focus(PaneId::Left, ".claude", false);
     let second = confirm_permanent_delete(&mut h);

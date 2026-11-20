@@ -1,10 +1,10 @@
 import { DialogFrame, DialogHeader, PopupFocus } from "dialog-frame.slint";
-import { EmbeddedPanelFilter, PanelFilterPresentation } from "embedded-panel-filter.slint";
+import { EmbeddedPanelFilter, PanelFilterPresentation, PanelChoices } from "embedded-panel-filter.slint";
 import { EmbeddedHotPaths, HotPathsPresentation } from "embedded-hot-paths.slint";
 import { EmbeddedOperation, OperationPresentation } from "embedded-operation.slint";
 import { EmbeddedFileList, FileListPresentation } from "embedded-file-list.slint";
 import { EmbeddedNotice, NoticePresentation } from "embedded-notice.slint";
-export { PanelFilterPresentation, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, PopupFocus }
+export { PanelFilterPresentation, PanelChoices, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, PopupFocus }
 import { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths } from "find-window.slint";
 export { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths }
 import { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft } from "checksum-window.slint";
@@ -14,8 +14,8 @@ export { UserCommandRow }
 import { ShortcutHints } from "shortcut-hints.slint";
 export { ShortcutHints }
 import { HelpWindow } from "help-window.slint";
-import { AboutDialog, LicenseRow } from "about-dialog.slint";
-export { HelpWindow, LicenseRow }
+import { AboutDialog, AboutView, LicenseRow } from "about-dialog.slint";
+export { HelpWindow, AboutView, LicenseRow }
 import { JobProgressWindow } from "job-progress-window.slint";
 export { JobProgressWindow }
 import { JobsWindow } from "jobs-window.slint";
@@ -25,7 +25,7 @@ export { JobsWindow, DecisionWindow }
 import { HintedActionButton } from "hinted-inputs.slint";
 import { Palette } from "std-widgets.slint";
 import { ScrollStrip } from "scroll-strip.slint";
-import { CommandMenuBody } from "command-menu.slint";
+import { UserMenuBody } from "command-menu.slint";
 import { MainMenuBody } from "main-menu.slint";
 import { Theme } from "theme.slint";
 import { Tip, CompactPicker, TooltipPlacement } from "controls.slint";
@@ -38,28 +38,29 @@ import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { PanelSplitter } from "panel-splitter.slint";
 import { TerminalControl } from "terminal-control.slint";
 import { OptionsBody } from "options-dialog.slint";
-import { ColorPickerDialog } from "color-picker.slint";
+import { OptionsPopups } from "options-popups.slint";
 import { EditorOptionsView, EditorOptionsDraft } from "editor-options.slint";
 export { EditorOptionsView, EditorOptionsDraft }
 import { ComparatorOptionsView, ComparatorOptionsDraft } from "comparator-options.slint";
 export { ComparatorOptionsView, ComparatorOptionsDraft }
 import { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm } from "user-command-options.slint";
 export { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm }
-import { KeyboardEditorView, ShortcutCommandRow, ShortcutReplacementDialog } from "keyboard-editor.slint";
+import { KeyboardEditorView, ShortcutCommandRow } from "keyboard-editor.slint";
 export { KeyboardEditorView, ShortcutCommandRow }
 import { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
 export { ViewerPluginsView, ViewerPluginRow }
 import { ArchiveOptionsView, ArchiveAssociationRow } from "archive-options.slint";
 export { ArchiveOptionsView, ArchiveAssociationRow }
+import { ArgumentEditing } from "argument-editor.slint";
 import { ColorOptionsView, FilenameColorDraft } from "color-options.slint";
 export { ColorOptionsView, FilenameColorDraft }
 import { FilenameColorPresentation } from "filename-colors.slint";
 export { FilenameColorPresentation }
 
-import { OperationRow, JobsView } from "jobs-dialog.slint";
+import { OperationRow, JobIssue, JobsView } from "jobs-dialog.slint";
 import { SpeedChartData } from "operation-speed-chart.slint";
 export { SpeedChartData }
-export { JobsView }
+export { JobsView, JobIssue }
 import { MetadataDialog, MetadataDraft } from "metadata-controls.slint";
 export { MetadataDraft }
 import { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeStep, MetadataMonthView, MetadataEditFormat } from "metadata-time-field.slint";
@@ -80,6 +81,9 @@ export { TooltipPlacement }
 import { LocationRow } from "navigation-models.slint";
 export { LocationRow }
 import { FilePane } from "file-pane.slint";
+import { PanelHold } from "panel-hold.slint";
+import { FindFeedPanel, FeedRow, FeedView, FeedPresentation } from "find-feed.slint";
+export { FeedRow, FeedView, FeedPresentation }
 import { DragBadge } from "drag-feedback.slint";
 import { SharedToolbar } from "shared-toolbar.slint";
 import { NavigationFocus } from "navigation-controls.slint";
@@ -94,21 +98,25 @@ export { FunctionSlot } from "function-models.slint";
 
 export component MainWindow inherits Window {
     in property <bool> dialog-input-blocked;
-    // A file job until its panels show its change. Bounded, so a stalled job or
-    // re-read never leaves the window without input.
-    in property <bool> mutation-settling;
-    private property <bool> mutation-settle-expired;
-    out property <bool> mutation-input-blocked: root.mutation-settling && !root.mutation-settle-expired;
-    changed mutation-settling => {
-        mutation-settle-limit.stop();
-        root.mutation-settle-expired = false;
-        if root.mutation-settling { mutation-settle-limit.start(); mutation-settle-limit.restart(); }
-    }
-    mutation-settle-limit := Timer {
-        interval: 3s;
-        running: false;
-        triggered => { self.stop(); root.mutation-settle-expired = true; }
-    }
+    // Per panel, how its input waits for a file job's change (`PanelHold`).
+    in property <int> left-mutation-hold;
+    in property <int> right-mutation-hold;
+    // The running job, as a held panel describes it.
+    in property <string> mutation-job-text;
+    // Escape ended the panel's current wait (`hold-key`).
+    in-out property <bool> left-hold-released;
+    in-out property <bool> right-hold-released;
+    out property <bool> left-input-held: left-hold.held;
+    out property <bool> right-input-held: right-hold.held;
+    out property <string> left-hold-status: left-hold.status;
+    out property <string> right-hold-status: right-hold.status;
+    // Keys typed into a held panel that still wait to be replayed.
+    in property <bool> held-keys-pending;
+    out property <bool> mutation-input-blocked: root.left-input-held || root.right-input-held || root.held-keys-pending;
+    // Returns whether a key event waits for its held panel; called for every key.
+    callback hold-key(KeyEvent, bool) -> bool;
+    // A panel's hold ended: replay its waiting keys.
+    callback release-held-keys();
     out property <bool> modal-overlay-open: filter-overlay.active || hot-paths-overlay.active
         || operation-overlay.active || file-list-overlay.active || notice-overlay.active;
     out property <bool> embedded-modal-open: root.modal-overlay-open
@@ -118,6 +126,13 @@ export component MainWindow inherits Window {
             root.drag-invalidate-targets();
             root.cancel-function-press();
             SelectionRectangle.cancel();
+        }
+        // A dialog opened by a chord (Ctrl+F2) receives that chord's modifier release,
+        // so without native modifier state the footer would stay on the Ctrl layer
+        // behind it. Opening and closing a dialog return the footer to the base layer.
+        if !root.native-shortcuts-authoritative {
+            root.function-modifiers = 0;
+            root.control-layer = false;
         }
     }
     callback open-help-window();
@@ -165,6 +180,9 @@ export component MainWindow inherits Window {
     callback find-files(int);
     callback refresh-find-windows();
     callback close-find-windows();
+    // `FeedPresentation` holds the panels' search results; the acceptance scenarios read these.
+    out property <FeedView> left-feed: FeedPresentation.left;
+    out property <[FeedRow]> left-feed-rows: FeedPresentation.left-rows;
     callback calculate-checksums(int);
     callback make-file-list(int);
     callback refresh-file-list-window();
@@ -180,6 +198,10 @@ export component MainWindow inherits Window {
     callback physical-shortcut(string, bool, bool, bool, bool) -> bool;
     in property <bool> native-alt-gr;
     in property <bool> native-digit-event;
+    // The text of the key the native window hook handles: a held panel keeps it
+    // with the key's `physical-shortcut` and types it if, once replayed, the
+    // shortcut no longer applies.
+    in property <string> native-key-text;
     out property <int> volume-popup-pane: left.volume-popup-open ? 0 : right.volume-popup-open ? 1 : toolbar.hot-path-popup-open ? root.active-pane : -1;
     out property <int> hot-path-popup-pane: toolbar.hot-path-popup-open ? root.active-pane : -1;
     in property <string> file-menu-token;
@@ -297,7 +319,7 @@ export component MainWindow inherits Window {
     in property <PanelFilterView> panel-filter-view;
     in property <string> left-filter-label;
     in property <string> right-filter-label;
-    callback submit-comparison(bool, bool, bool, string, bool);
+    callback submit-comparison(bool, bool, bool, string, bool, bool, bool);
     callback cancel-comparison();
     callback clear-panel-filter(int);
     private property <bool> comparison-open: root.comparison-view.open;
@@ -362,6 +384,9 @@ export component MainWindow inherits Window {
     in property <int> history-revision;
     in property <[PathPartRow]> left-path-parts;
     in property <[PathPartRow]> right-path-parts;
+    // The part each path keeps whole when it shortens: an archive's name (-1: none).
+    in property <int> left-path-anchor: -1;
+    in property <int> right-path-anchor: -1;
     in property <[DetailRow]> left-details;
     in property <[DetailRow]> right-details;
     in property <string> left-free-space;
@@ -391,6 +416,9 @@ export component MainWindow inherits Window {
     in property <bool> preferences-save-failed;
     in property <string> preferences-save-status;
     out property <int> focused-pane: left.list-focused ? 0 : right.list-focused ? 1 : -1;
+    // The panel whose search results (Feed to panel) have the keyboard: shortcuts,
+    // native-hook keys among them, resolve as that panel's file keys.
+    out property <int> feed-focused-pane: left-feed-panel.list-focused ? 0 : right-feed-panel.list-focused ? 1 : -1;
     out property <bool> shell-focused: shortcuts.has-focus;
     out property <length> left-pane-left: left.absolute-position.x;
     out property <length> left-pane-top: left.absolute-position.y;
@@ -526,6 +554,9 @@ export component MainWindow inherits Window {
     in property <string> right-size-column-sample;
     in property <string> right-date-column-sample;
     in property <string> right-time-column-sample;
+    // What each panel says below `..` while it shows no entry (empty, hidden, filtered).
+    in property <string> left-empty-message;
+    in property <string> right-empty-message;
     in-out property <bool> remember-command-history: true;
     in-out property <bool> copy-checksum-verification: true;
     in-out property <int> disk-io-concurrency-index;
@@ -692,7 +723,17 @@ export component MainWindow inherits Window {
     }
     public function focus-files() {
         if root.embedded-modal-open { return; }
-        if root.active-pane == 0 { left.focus-list(); } else { right.focus-list(); }
+        if root.active-pane == 0 {
+            if FeedPresentation.left.open { left-feed-panel.focus-list(); } else { left.focus-list(); }
+        } else {
+            if FeedPresentation.right.open { right-feed-panel.focus-list(); } else { right.focus-list(); }
+        }
+    }
+    // A key of search results fed to a panel (`find_feed::dispatch`).
+    function feed-key(pane: int, event: KeyEvent) -> bool {
+        let result = root.files-key(pane, event, false, false);
+        if result >= 2 { root.apply-file-input-action(pane, result); }
+        return result != 0;
     }
     public function reset-files-input(pane: int) {
         if pane == 0 { left.reset-search-context(); } else { right.reset-search-context(); }
@@ -734,18 +775,9 @@ export component MainWindow inherits Window {
         else { main-menu.show(); }
     }
     in-out property <bool> about-open;
-    in property <[LicenseRow]> license-rows;
-    in property <string> license-summary;
-    callback license-filter(string);
-    callback license-open(string, string);
-    in-out property <bool> license-detail-open;
-    in property <string> license-detail-title;
-    in property <string> license-detail-license;
-    in property <string> license-detail-authors;
-    in property <string> license-detail-text;
     changed about-open => {
         PopupFocus.update();
-        if root.about-open { about-popup.show(); } else { about-popup.close(); root.license-detail-open = false; root.focus-files(); }
+        if root.about-open { about-popup.show(); } else { about-popup.close(); AboutView.detail-open = false; root.focus-files(); }
         PopupFocus.update();
     }
     public function show-about() { if root.about-open { return; } root.drag-invalidate-targets(); root.about-open = true; }
@@ -771,7 +803,8 @@ export component MainWindow inherits Window {
         if root.options-open { return; }
         root.drag-invalidate-targets();
         ColorOptionsView.picker-field = -1;
-        ArchiveOptionsView.draft = "";
+        ArchiveOptionsView.draft = ""; ArchiveOptionsView.adding = false;
+        ArgumentEditing.escape-cancels = false;
         root.options-opened();
         root.options-open = true;
     }
@@ -802,9 +835,9 @@ export component MainWindow inherits Window {
       preferred-width: 0px; preferred-height: 0px;
       capture-key-pressed(event) => {
         NavigationFocus.keyboard = true;
+        if root.hold-key(event, true) { return accept; }
         if root.dialog-input-blocked { return accept; }
         if root.modal-overlay-open { return reject; }
-        if root.mutation-input-blocked { return accept; }
         root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
         if event.text == Key.Escape && SelectionRectangle.cancel() { return accept; }
         if event.text == Key.Escape && root.drag-escape() { return accept; }
@@ -812,9 +845,9 @@ export component MainWindow inherits Window {
         reject
       }
       capture-key-released(event) => {
+        if root.hold-key(event, false) { return accept; }
         if root.dialog-input-blocked { return accept; }
         if root.modal-overlay-open { return reject; }
-        if root.mutation-input-blocked { return accept; }
         root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
         root.window-key-release(event); reject
       }
@@ -903,11 +936,12 @@ export component MainWindow inherits Window {
                 tabs: root.left-tabs; bookmarks: root.bookmarks; bookmark-name: root.left-bookmark-name;
                 hot-path-choices: root.hot-path-choices;
                 back-history: root.left-back-history; forward-history: root.left-forward-history;
-                history-revision: root.history-revision; path-parts: root.left-path-parts; details: root.left-details; free-space: root.left-free-space;
+                history-revision: root.history-revision; path-parts: root.left-path-parts; path-anchor: root.left-path-anchor; details: root.left-details; free-space: root.left-free-space;
                 sizes-in-bytes: root.sizes-in-bytes;
                 size-column-sample: root.left-size-column-sample;
                 date-column-sample: root.left-date-column-sample;
                 time-column-sample: root.left-time-column-sample;
+                empty-message: root.left-empty-message;
                 path-part(identity) => { root.path-part(0, identity); }
                 path-copy(identity) => { root.path-copy(0, identity); }
                 history-choice(forward, identity) => { root.history-choice(0, forward, identity); }
@@ -927,7 +961,8 @@ export component MainWindow inherits Window {
                 volume-tooltips: root.volume-tooltips;
                 volumes-revision: root.volumes-revision;
                 path: root.left-path; status: root.left-status; error: root.left-error; error-revision: root.left-error-revision; loading: root.left-loading;
-                watch-status: root.left-watch-status; watch-details: root.left-watch-details;
+                watch-status: root.left-hold-status != "" ? root.left-hold-status : root.left-watch-status;
+                watch-details: root.left-hold-status != "" ? "" : root.left-watch-details;
                 cursor-index: root.left-cursor; sort-column: root.left-sort; descending: root.left-descending;
                 action(a) => { root.action(0, a); } navigate(p) => { root.navigate(0, p); } volume(v) => { root.volume(0, v); }
                 sort(c) => { root.sort(0, c); } row-click(r, c, s) => { root.row-click(0, r, c, s); } open(r) => { root.open(0, r); }
@@ -990,11 +1025,12 @@ export component MainWindow inherits Window {
                 tabs: root.right-tabs; bookmarks: root.bookmarks; bookmark-name: root.right-bookmark-name;
                 hot-path-choices: root.hot-path-choices;
                 back-history: root.right-back-history; forward-history: root.right-forward-history;
-                history-revision: root.history-revision; path-parts: root.right-path-parts; details: root.right-details; free-space: root.right-free-space;
+                history-revision: root.history-revision; path-parts: root.right-path-parts; path-anchor: root.right-path-anchor; details: root.right-details; free-space: root.right-free-space;
                 sizes-in-bytes: root.sizes-in-bytes;
                 size-column-sample: root.right-size-column-sample;
                 date-column-sample: root.right-date-column-sample;
                 time-column-sample: root.right-time-column-sample;
+                empty-message: root.right-empty-message;
                 path-part(identity) => { root.path-part(1, identity); }
                 path-copy(identity) => { root.path-copy(1, identity); }
                 history-choice(forward, identity) => { root.history-choice(1, forward, identity); }
@@ -1014,7 +1050,8 @@ export component MainWindow inherits Window {
                 volume-tooltips: root.volume-tooltips;
                 volumes-revision: root.volumes-revision;
                 path: root.right-path; status: root.right-status; error: root.right-error; error-revision: root.right-error-revision; loading: root.right-loading;
-                watch-status: root.right-watch-status; watch-details: root.right-watch-details;
+                watch-status: root.right-hold-status != "" ? root.right-hold-status : root.right-watch-status;
+                watch-details: root.right-hold-status != "" ? "" : root.right-watch-details;
                 cursor-index: root.right-cursor; sort-column: root.right-sort; descending: root.right-descending;
                 action(a) => { root.action(1, a); } navigate(p) => { root.navigate(1, p); } volume(v) => { root.volume(1, v); }
                 sort(c) => { root.sort(1, c); } row-click(r, c, s) => { root.row-click(1, r, c, s); } open(r) => { root.open(1, r); }
@@ -1332,7 +1369,10 @@ export component MainWindow inherits Window {
         x: 0px; y: 0px; width: root.width; height: root.height;
         metadata-popup-frame := DialogFrame {
             desired-width: max(640px, Theme.font-size * 28);
-            desired-height: max(metadata-body.unix-visible ? 620px : 440px, Theme.font-size * 20);
+            // Touch rows are taller: the permissions page needs about 140px more to show
+            // Leave permissions unchanged and the review hint without scrolling.
+            desired-height: max(metadata-body.unix-visible ? (Theme.touch ? 760px : 620px) : 440px,
+                Theme.font-size * 20);
             dismiss-on-outside: false;
             dismiss => { root.cancel-metadata(root.metadata-token); }
             metadata-body := MetadataDialog {
@@ -1370,13 +1410,7 @@ export component MainWindow inherits Window {
             AboutDialog {
                 application-version: root.application-version;
                 application-icon: root.icon;
-                licenses: root.license-rows; license-summary: root.license-summary;
                 move-dialog(dx, dy) => { about-frame.move-by(dx, dy); }
-                license-filter(query) => { root.license-filter(query); }
-                license-open(name, version) => { root.license-open(name, version); }
-                detail-open <=> root.license-detail-open;
-                detail-title: root.license-detail-title; detail-license: root.license-detail-license;
-                detail-authors: root.license-detail-authors; detail-text: root.license-detail-text;
                 close => { root.about-open = false; }
             }
         }
@@ -1394,7 +1428,7 @@ export component MainWindow inherits Window {
                 private property <bool> opened: self.model.open;
                 init => { self.begin(); }
                 changed opened => { if self.opened { self.begin(); } }
-                submit(size, time, names, tolerance, directories) => { root.submit-comparison(size, time, names, tolerance, directories); }
+                submit(size, time, names, tolerance, directories, contents, subfolders) => { root.submit-comparison(size, time, names, tolerance, directories, contents, subfolders); }
                 cancel => { root.cancel-comparison(); }
             }
         }
@@ -1403,87 +1437,9 @@ export component MainWindow inherits Window {
     options := PopupWindow {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
-      shortcut-replacement-popup := PopupWindow {
-        close-policy: no-auto-close;
-        x: 0px; y: 0px; preferred-width: root.width; preferred-height: root.height;
-        replacement-frame := DialogFrame {
-            x: 0px; y: 0px; width: root.width; height: root.height;
-            private property <string> occurrence-token;
-            init => {
-                self.occurrence-token = options-frame.presented-replacement-token;
-                self.reset();
-            }
-            desired-width: max(560px, Theme.font-size * 26);
-            desired-height: max(300px, Theme.font-size * 13);
-            dismiss-on-outside: false; dim: true;
-            dismiss => { KeyboardEditorView.decide-replacement(self.occurrence-token, false); }
-            replacement-body := ShortcutReplacementDialog {
-                token: options-frame.presented-replacement-token;
-                body: options-frame.presented-replacement-body;
-                decide(token, replace) => { KeyboardEditorView.decide-replacement(token, replace); }
-            }
-        }
-      }
-      color-picker-popup := PopupWindow {
-        close-policy: no-auto-close;
-        x: 0px; y: 0px;
-        preferred-width: root.width; preferred-height: root.height;
-        color-picker-frame := DialogFrame {
-            // Popup WindowItem dimensions may retain their opening size. Anchor
-            // the frame explicitly so Slint cannot center it in those old bounds.
-            x: 0px; y: 0px; width: root.width; height: root.height;
-            desired-width: max(480px, Theme.font-size * 22);
-            desired-height: max(600px, Theme.font-size * 28);
-            dismiss-on-outside: false; dim: true;
-            color-picker-body := ColorPickerDialog {
-                title: options-frame.picker-field == 0 ? "Foreground color" : "Background color";
-                initial: options-frame.picker-initial; generation: options-frame.picker-generation;
-                moved(dx, dy) => { color-picker-frame.move-by(dx, dy); }
-                accepted(value) => {
-                    ColorOptionsView.choose-color(options-frame.picker-field, value);
-                    ColorOptionsView.picker-field = -1;
-                }
-                cancelled => { ColorOptionsView.picker-field = -1; }
-            }
-        }
-      }
+        // The shortcut replacement question and the color picker over the dialog.
+        OptionsPopups { x: 0px; y: 0px; width: root.width; height: root.height; options-open: root.options-open; }
         options-frame := DialogFrame {
-            private property <string> replacement-request: KeyboardEditorView.replacement-token;
-            private property <bool> replacement-options-open: root.options-open;
-            private property <string> presented-replacement-token;
-            private property <string> presented-replacement-body;
-            changed replacement-request => { self.update-shortcut-replacement(); }
-            changed replacement-options-open => { self.update-shortcut-replacement(); }
-            function update-shortcut-replacement() {
-                PopupFocus.update();
-                if self.replacement-request != "" && root.options-open {
-                    if self.presented-replacement-token != self.replacement-request {
-                        shortcut-replacement-popup.close();
-                        self.presented-replacement-body = KeyboardEditorView.replacement-body;
-                        self.presented-replacement-token = self.replacement-request;
-                        shortcut-replacement-popup.show();
-                    }
-                } else {
-                    shortcut-replacement-popup.close();
-                    self.presented-replacement-token = "";
-                    self.presented-replacement-body = "";
-                }
-                PopupFocus.update();
-            }
-            private property <int> picker-field: ColorOptionsView.picker-field;
-            private property <color> picker-initial;
-            private property <int> picker-generation;
-            changed picker-field => {
-                PopupFocus.update();
-                if self.picker-field >= 0 && root.options-open {
-                    self.picker-initial = self.picker-field == 0
-                        ? (ColorOptionsView.preview-foreground-set ? ColorOptionsView.preview-foreground : Theme.text)
-                        : (ColorOptionsView.preview-background-set ? ColorOptionsView.preview-background : Theme.pane-background);
-                    self.picker-generation += 1;
-                    color-picker-popup.show();
-                } else { color-picker-popup.close(); }
-                PopupFocus.update();
-            }
             desired-width: max(840px, Theme.font-size * 28); desired-height: max(660px, Theme.font-size * 23);
             changed body-left => { root.options-left = self.body-left; }
             changed body-top => { root.options-top = self.body-top; }
@@ -1538,20 +1494,14 @@ export component MainWindow inherits Window {
         // Exactly the title and every row, without scrolling when the window is tall
         // enough: no floor, so no blank band below Close at small fonts.
         height: min(root.height - 8px, user-menu-body.natural-height);
-        user-menu-body := CommandMenuBody {
+        user-menu-body := UserMenuBody {
             dismissed => { user-menu.close(); }
-            title: "User menu";
-            // The number of `rows`, kept constant (not `rows.length`) so that arriving
-            // icons or shortcut hints never rebuild the rows during a gesture.
-            item-count: 6;
-            rows: [
-                { native-icon: root.action-icons.terminal, fallback-icon: FallbackIcons.terminal, label: "Command line", hint: ShortcutHints.hint("Toggle command editor focus without running a command", "command.focus") },
-                { native-icon: root.action-icons.bookmarks, fallback-icon: FallbackIcons.bookmarks, label: "Bookmarks and Hot Paths", hint: "Save, open or remove a favorite folder. Hot Paths provide ten numbered shortcuts." },
-                { native-icon: root.action-icons.properties, fallback-icon: FallbackIcons.properties, label: "Properties" + (ShortcutHints.key("files.properties") == "" ? "" : " · " + ShortcutHints.key("files.properties")), hint: ShortcutHints.hint("Show Properties for selected items, or the focused file or folder", "files.properties") },
-                { native-icon: root.action-icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes, label: "Calculate / cancel folder sizes", hint: ShortcutHints.hint("Measure selected folders, or all folders when nothing is selected; choose again to cancel", "panel.folder-sizes") },
-                { fallback-icon: FallbackIcons.checksums, label: "Checksums", hint: ShortcutHints.hint("Calculate, save or verify SFV, MD5, SHA-1, SHA-256 and SHA-512", "files.checksums") },
-                { native-icon: root.action-icons.close, fallback-icon: FallbackIcons.close, label: "Close", hint: "Close this dialog and return to the file manager." },
-            ];
+            icons: root.action-icons; commands: root.user-commands;
+            run-command(id, revision) => { user-menu.close(); root.execute-user-command(id, revision); }
+            set-up-commands => {
+                user-menu.close();
+                root.options-topic-index = 9; root.show-options();
+            }
             selected(index) => {
                 if index == 0 { user-menu.close(); root.focus-command(); }
                 if index == 1 { user-menu.close(); if root.active-pane == 0 { left.open-bookmarks(); } else { right.open-bookmarks(); } }
@@ -1588,15 +1538,38 @@ export component MainWindow inherits Window {
         x: max(4px, min(root.drag-x + 16px, root.width - self.width - 4px));
         y: max(4px, min(root.drag-y + 20px, root.height - self.height - 4px));
     }
+    // Search results fed to a panel cover that panel until it is left. Hidden,
+    // not conditional, so the focus function can reach them.
+    left-feed-panel := FindFeedPanel {
+        x: root.left-pane-left; y: root.left-pane-top; width: root.left-pane-width; height: root.left-pane-height;
+        pane: 0; active: root.active-pane == 0; shown: !root.single-panel || root.active-pane == 0;
+        key(event) => { return root.feed-key(0, event); }
+        activate => { if root.active-pane != 0 { root.activate(0); } }
+    }
+    right-feed-panel := FindFeedPanel {
+        x: root.right-pane-left; y: root.right-pane-top; width: root.right-pane-width; height: root.right-pane-height;
+        pane: 1; active: root.active-pane == 1; shown: !root.single-panel || root.active-pane == 1;
+        key(event) => { return root.feed-key(1, event); }
+        activate => { if root.active-pane != 1 { root.activate(1); } }
+    }
     // Native owner-modal dialogs retain the main surface but gate its input.
     // Disabled instead of conditional (an `if` is one more generated component):
     // a disabled area passes every event on. The explicit origin keeps it out
     // of the window's size constraints.
     TouchArea {
-        enabled: root.dialog-input-blocked || root.mutation-input-blocked;
-        mouse-cursor: root.mutation-input-blocked ? MouseCursor.wait : MouseCursor.default;
+        enabled: root.dialog-input-blocked;
         x: 0px; y: 0px; width: root.width; height: root.height;
         scroll-event(event) => { accept }
+    }
+    left-hold := PanelHold {
+        x: root.left-pane-left; y: root.left-pane-top; width: root.left-pane-width; height: root.left-pane-height;
+        hold: root.left-mutation-hold; job: root.mutation-job-text; dialog-blocked: root.dialog-input-blocked;
+        released <=> root.left-hold-released; ended => { root.release-held-keys(); }
+    }
+    right-hold := PanelHold {
+        x: root.right-pane-left; y: root.right-pane-top; width: root.right-pane-width; height: root.right-pane-height;
+        hold: root.right-mutation-hold; job: root.mutation-job-text; dialog-blocked: root.dialog-input-blocked;
+        released <=> root.right-hold-released; ended => { root.release-held-keys(); }
     }
     operation-overlay := EmbeddedOperation { x: 0px; y: 0px; width: root.width; height: root.height; }
     file-list-overlay := EmbeddedFileList { x: 0px; y: 0px; width: root.width; height: root.height; }

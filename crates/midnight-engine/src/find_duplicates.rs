@@ -273,6 +273,7 @@ fn publish_group(bucket: &[Candidate], members: &[usize], work: &mut Work<'_>) -
                 entry,
                 duplicate_group: Some(group),
                 duplicate_group_size: members.len(),
+                archive: None,
             })
         })
         .collect();

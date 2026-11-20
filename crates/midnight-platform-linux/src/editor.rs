@@ -94,6 +94,7 @@ fn prepare(
         .arguments_for(file)
         .map_err(|cause| error(file, io::Error::new(io::ErrorKind::InvalidInput, cause)))?;
     let mut command = Command::new(&spec.executable);
+    crate::open_files::with_original_open_file_limit(&mut command);
     command
         .args(arguments)
         .stdin(Stdio::null())
@@ -109,27 +110,45 @@ fn prepare(
     Ok(command)
 }
 
-pub(crate) fn validate_program(executable: &Path) -> Result<(), FsError> {
+/// Why a configured program cannot be launched. The editor and Custom Commands share the
+/// rule and word it for their own program.
+pub(crate) enum ProgramIssue {
+    /// Not an absolute path, or a path with NUL.
+    NotAbsolute,
+    /// Not an executable regular file.
+    NotExecutable,
+    /// The path cannot be inspected; `NotFound` when nothing is there.
+    Unavailable(io::Error),
+}
+
+pub(crate) fn check_program(executable: &Path) -> Result<(), ProgramIssue> {
     if !executable.is_absolute() || executable.as_os_str().as_encoded_bytes().contains(&0) {
-        return Err(error(
-            executable,
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Editor executable must be an absolute path without NUL.",
-            ),
-        ));
+        return Err(ProgramIssue::NotAbsolute);
     }
-    let metadata = fs::metadata(executable).map_err(|cause| error(executable, cause))?;
+    let metadata = fs::metadata(executable).map_err(ProgramIssue::Unavailable)?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
-        return Err(error(
-            executable,
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Editor executable must be an executable regular file.",
-            ),
-        ));
+        return Err(ProgramIssue::NotExecutable);
     }
     Ok(())
+}
+
+pub(crate) fn validate_program(executable: &Path) -> Result<(), FsError> {
+    check_program(executable).map_err(|issue| {
+        error(
+            executable,
+            match issue {
+                ProgramIssue::NotAbsolute => io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Editor executable must be an absolute path without NUL.",
+                ),
+                ProgramIssue::NotExecutable => io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Editor executable must be an executable regular file.",
+                ),
+                ProgramIssue::Unavailable(cause) => cause,
+            },
+        )
+    })
 }
 
 fn error(path: &Path, cause: io::Error) -> FsError {

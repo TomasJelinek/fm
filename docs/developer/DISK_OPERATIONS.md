@@ -22,15 +22,15 @@ only positive local-SSD evidence allows Shared; HDD, network and unknown storage
 use Exclusive. Transfers (Copy/Move jobs) request a *retained* Shared slot whatever
 the storage class: the job keeps one slot identity for its lifetime but holds
 capacity only while it executes native steps. It releases the slot while paused,
-waiting for a user decision or for a namespace grant; at each step boundary it
-yields the slot while a call-scoped request is queued; and it readmits the slot
-through the FIFO queue before its next step. A queued exclusive request therefore
-waits for at most one step of each transfer, not for whole transfers, and later
-requests are not stuck behind it. Most steps are bounded (one 256 KiB chunk, one
-name change), but discovering one selected root's tree for progress totals is a
-single native step: a large or slow tree delays the yield (and an acknowledged
-pause) until that discovery returns. Retained requests queued for a slot never force a
-yield. Teardown reclaims a released slot at once, so cancellation cleanup never
+waiting for a user decision or for another job's namespace; at each step boundary it
+yields the slot while any request is queued (a call-scoped one or another transfer);
+and it readmits the slot through the FIFO queue before its next step. A queued
+request therefore waits for at most one step of each transfer, not for whole
+transfers, later requests are not stuck behind it, and transfers sharing the limit
+(even a limit of one) interleave step by step. Most steps are bounded (one 256 KiB
+chunk, one name change), but discovering one selected root's tree for progress
+totals is a single native step: a large or slow tree delays the yield (and an
+acknowledged pause) until that discovery returns. Teardown reclaims a released slot at once, so cancellation cleanup never
 queues (it may briefly exceed the limit). The limit thus bounds how many transfers
 execute native steps at once; it does not enable streams within one transfer or
 establish SSD proof at both endpoints. Existing stricter copy, checksum and

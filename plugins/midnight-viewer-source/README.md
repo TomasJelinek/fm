@@ -30,11 +30,18 @@ no host-source, other-plugin, Slint, filesystem-open or network dependency.
 | Lua | lua |
 | XML / XAML / MSBuild projects, resources and Windows manifests | xml, xsd, xsl, xslt, xaml, csproj, fsproj, vbproj, vcxproj, props, targets, resx, manifest |
 | Universal Scene Description ASCII (USDA) | usda |
+| CSS | css |
+| GNU make | mk, mak, and the whole names makefile and gnumakefile (`Makefile`, `GNUmakefile`) |
+| CSV (comma-separated values) | csv |
+| TSV (tab-separated values) | tsv |
 
-Extension recognition is ASCII case insensitive. Extensionless Python, shell
+Extension recognition is ASCII case insensitive. The host also matches an
+association entry against a whole file name, so the `makefile` and `gnumakefile`
+entries route `Makefile` and `GNUmakefile`; hosts that predate that rule open them
+as plain text. Extensionless Python, shell
 Node and Lua scripts are recognized from their first shebang line after Open.
 Host routing must choose this package before a shebang can be inspected; the
-manifest does not claim every extensionless file. The 21 profiles have fixtures
+manifest does not claim every extensionless file. The 25 profiles have fixtures
 checking their actual lexical styles (JSON has no comments). These are lexical profiles, not compiler grammars: interpolation,
 heredocs, JSX markup, macro expansion and language-specific semantic analysis
 are not promised. Unknown names remain plain text.
@@ -61,6 +68,47 @@ state for distant windows. No USD document, layer, asset or scene is parsed,
 evaluated or loaded. `.usd`, `.usdc` and `.usdz` are not claimed. Default extension
 advertisements do not replace an explicit saved per-plugin extension override,
 including an empty override; explicit Text mode remains unhighlighted.
+
+CSS colours selectors (type, class, ID, pseudo and attribute names), property
+names including custom properties, at-rules, `!important`, comments, strings and
+unquoted `url(...)` contents, numbers with units and percentages, 3/4/6/8-digit
+hexadecimal colours and function names. Rule blocks and declaration blocks are told
+apart from the enclosing at-rule: `@media`, `@supports`, `@container`, `@layer`,
+`@scope`, `@starting-style`, `@document` and `@-moz-document` hold what the block
+around them holds (rules at the top level), `@keyframes` and its `-webkit-`, `-moz-`
+and `-o-` forms hold keyframe selectors, and others hold declarations. Nesting depth
+is a counter with 64 remembered levels, deeper blocks hold declarations. Inside a
+declaration block a name followed by a colon is a property, otherwise a nested
+selector, so a nested `a:hover` without `&` reads as a property. Values, cascade and
+imported resources are never evaluated.
+
+GNU make colours targets (special targets such as `.PHONY` as keywords), variable
+names before `=`, `:=`, `::=`, `:::=`, `?=`, `+=` and `!=`, `$(...)`, `${...}`, `$x`
+and automatic-variable references, the names of make's built-in functions,
+directives at the start of a line (`include`, `ifeq`, `define`, `export`, ...),
+comments including backslash-continued comment lines, and recipes: a line that
+starts with a tab after a rule, or the text after `;` on a rule line, is shell
+text with its `@`, `-` and `+` prefixes marked and a leading `#` line shown as a
+comment. A tab-indented line before any rule is ordinary make syntax. `define`
+bodies are literal text up to their `endef`, nested `define`s included. Backslash
+newlines continue a logical line; an escaped backslash does not. Nothing is
+expanded, included or run, and `.RECIPEPREFIX` is not honoured.
+
+CSV and TSV colour every field by its column, in the manner of Rainbow CSV: the
+first column keeps the text colour, the next four take the string, number, function
+and type colours, and the cycle repeats every five columns. The header line uses the
+same colours, so it names each colour's columns. Delimiters and the quotes around a
+quoted field stay plain. CSV follows RFC 4180 quoting: a field that starts with a
+quote may contain commas, doubled quotes and line breaks, and its column continues
+across those line breaks; a record ends at an unquoted LF, CR or CRLF. A quote later
+in a field and text after a closing quote stay in that field. An opening quote that
+is never closed keeps the following lines in its field up to the next quote. TSV is
+the IANA tab-separated form: tabs separate fields, each line is one record and quotes
+are ordinary text, so a stray quote cannot affect later lines. The lexer keeps only a
+column number and a quoting mode, so long lines and huge files are coloured in one
+pass without buffering a field. Only commas (`.csv`) and tabs (`.tsv`) separate
+fields: a `.csv` file separated by semicolons is split at any commas it contains.
+Values are not typed or validated.
 
 Lua highlights keywords, numbers, short strings and comments, and matched-level
 long bracket strings/comments. Short-string escaped newlines and `\z` whitespace

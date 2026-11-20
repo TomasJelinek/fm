@@ -13,6 +13,7 @@ mod difference_navigation;
 mod file_choice;
 mod find;
 mod fonts;
+mod hex_comparison;
 mod image_composition;
 mod keyboard;
 mod path_elision;

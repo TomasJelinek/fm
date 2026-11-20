@@ -92,6 +92,11 @@ export component ComparatorWindow inherits Window {
     in-out property <color> background-color: Theme.pane-background;
     in-out property <color> accent: Theme.accent;
     in property <bool> image-mode;
+    // The content shows the byte comparison (hex view); `bytes-only` pairs have no text
+    // view to return to (they are not text, or not two images).
+    in property <bool> bytes-mode;
+    in property <bool> bytes-only;
+    callback show-bytes(bool);
     in-out property <bool> search-visible;
     in-out property <string> query;
     in-out property <bool> case-sensitive;
@@ -117,6 +122,8 @@ export component ComparatorWindow inherits Window {
     in property <int> rendered-mode: -1;
     in-out property <int> mode;
     in-out property <float> amount: 0.5;
+    out property <length> content-left: canvas.absolute-position.x;
+    out property <length> content-top: canvas.absolute-position.y;
     out property <length> content-width: canvas.width;
     out property <length> content-height: canvas.height;
     // Physical pixels per logical pixel: a DPI change re-renders even at the same logical size.
@@ -204,13 +211,24 @@ export component ComparatorWindow inherits Window {
                     selected(index) => { root.change-font(index); content.focus(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
+                // Switches a text pair between its lines and its bytes; checked and disabled
+                // for a pair that is only compared as bytes.
                 if !root.image-mode: ActionButton {
+                    font-size: root.effective-ui-size; control-height: root.control-height;
+                    compact: root.compact; horizontal-stretch: 0; text: "Hex";
+                    primary: root.bytes-mode; enabled: !root.bytes-only;
+                    accessible-label: "Compare bytes (hex)";
+                    accessible-checkable: true; accessible-checked: root.bytes-mode;
+                    clicked => { root.show-bytes(!root.bytes-mode); content.focus(); }
+                }
+                if !root.image-mode && !root.bytes-mode: ActionButton {
                     font-size: root.effective-ui-size; control-height: root.control-height;
                     compact: root.compact; horizontal-stretch: 0; text: "Find…";
                     accessible-label: "Find in compared files (Ctrl+F)";
                     clicked => { root.focus-search(); }
                 }
-                if root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; min-width: root.compact ? 45px : 0px; max-width: root.compact ? 45px : 1000000px; text: "Close"; clicked => { root.close-comparator(); } }
+                // Sized by its glyph and caption: a fixed compact width would cut "Close".
+                if root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; text: "Close"; clicked => { root.close-comparator(); } }
             }
             if root.image-mode: HorizontalLayout {
                 height: root.control-height; spacing: 6px;
@@ -239,7 +257,7 @@ export component ComparatorWindow inherits Window {
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
-            if root.search-visible && !root.image-mode: CompareFindBar {
+            if root.search-visible && !root.image-mode && !root.bytes-mode: CompareFindBar {
                 height: 2 * root.control-height + 4px;
                 focus-request: root.search-focus-request;
                 font-size: root.effective-ui-size; control-height: root.control-height;

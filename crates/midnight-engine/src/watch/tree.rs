@@ -23,6 +23,11 @@ pub(crate) struct ScopeTarget {
     /// state and needs no maintenance; without it, a first probe always does.
     pub(crate) full: Option<[u8; 32]>,
     pub(crate) folders_only: bool,
+    /// Probes leave hidden entries out, as the accepted listing did: the root
+    /// while its rows are still the flat listing the tree was adopted from and
+    /// that listing left them out. The tree's own listings (an expanded branch,
+    /// the root once listed again) keep them in the model and so in probes.
+    pub(crate) hide: bool,
     pub(crate) path_bytes: usize,
     pub(crate) _mounted: MountedTarget,
     pub(crate) _registration: Arc<RootRegistrationLease>,
@@ -65,7 +70,8 @@ impl ScopeTarget {
         }
         self.check_native_target()?;
         self.check_directory_identity(filesystem, cancel)?;
-        let observation = signature::probe(filesystem, &self.path, self.folders_only, cancel)?;
+        let observation =
+            signature::probe_shown(filesystem, &self.path, self.folders_only, self.hide, cancel)?;
         self.check_directory_identity(filesystem, cancel)?;
         self.check_native_target()?;
         if cancel.is_cancelled() {
@@ -501,7 +507,12 @@ impl Runtime {
             let Some(target) = targets.get(branch) else {
                 return false;
             };
-            if !scope.eligible.contains(branch) || !observed.basis.same_basis(target) {
+            // An observation that left hidden entries out, or kept them, cannot
+            // be compared with the other kind: the target starts unobserved.
+            if !scope.eligible.contains(branch)
+                || !observed.basis.same_basis(target)
+                || observed.basis.hide != target.hide
+            {
                 return false;
             }
             observed.basis = Arc::clone(target);

@@ -103,8 +103,89 @@ impl State {
                 && Arc::ptr_eq(&root.index, &pane.index)
         })
     }
+    /// Whether these hints describe the rows the pane shows: its current root,
+    /// or the shown rows a background re-read keeps (`row_continuity`).
+    fn describes(&self, pane: &Pane) -> bool {
+        self.same_root(pane)
+            || (pane.keeps_rows_in_background()
+                && self.root.as_ref().is_some_and(|root| {
+                    Arc::ptr_eq(&root.entries, &pane.entries)
+                        && Arc::ptr_eq(&root.index, &pane.index)
+                }))
+    }
 }
 impl Pane {
+    /// Called when a background re-read commits `entries` in place of the
+    /// shown rows (`row_continuity`). Hints of folders that kept their
+    /// identity, modification time, permissions and attributes describe the
+    /// new root; a pending probe of the old root is cancelled, and new or
+    /// changed folders are probed. A directory link's listing metadata
+    /// describes the link rather than its target, and an unavailable folder
+    /// may have become readable without a visible change, so their hints are
+    /// probed again too.
+    pub(super) fn carry_folder_presence(
+        &mut self,
+        navigation: NavigationId,
+        entries: &Arc<[Entry]>,
+        index: &Arc<DirectoryIndex>,
+        retired: &mut Vec<DeferredDrop>,
+    ) {
+        let Some(root) = self.folder_presence.root.as_mut().filter(|root| {
+            Arc::ptr_eq(&root.entries, &self.entries) && Arc::ptr_eq(&root.index, &self.index)
+        }) else {
+            return;
+        };
+        let pane = root.pane;
+        let before = std::mem::replace(
+            root,
+            TreeRootSnapshot {
+                pane,
+                navigation,
+                entries: entries.clone(),
+                index: index.clone(),
+            },
+        );
+        let unchanged = |id: &EntryId, value: &FolderPresence| {
+            if matches!(value, FolderPresence::Unavailable(_)) {
+                return false;
+            }
+            let find = |entries: &[Entry], index: &DirectoryIndex| {
+                index
+                    .by_id
+                    .get(id)
+                    .and_then(|row| entries.get(*row))
+                    .filter(|entry| entry.kind == EntryKind::Directory)
+                    .map(|entry| {
+                        (
+                            entry.path.clone(),
+                            entry.metadata.modified,
+                            entry.metadata.unix_mode,
+                            entry.metadata.native_attributes,
+                        )
+                    })
+            };
+            let old = find(&before.entries, &before.index);
+            old.is_some() && old == find(entries, index)
+        };
+        let state = &mut self.folder_presence;
+        let stale: Vec<_> = state
+            .values
+            .iter()
+            .filter(|(id, value)| !unchanged(id, value))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            retired.push(Box::new(state.values.remove(&id)));
+        }
+        state.order.retain(|id| state.values.contains_key(id));
+        if let Some((request, _)) = state.pending.take() {
+            request.cancel.cancel();
+            retired.push(Box::new(request));
+        }
+        state.viewport.clear();
+        retired.push(Box::new(before));
+    }
+
     pub(super) fn retain_folder_errors(&mut self, retired: &mut Vec<DeferredDrop>) {
         let Some(source) = Source::capture(self) else {
             return;
@@ -175,13 +256,13 @@ impl Pane {
             return 6;
         }
         if !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
-            || !self.root_disclosure_available()
+            || !self.root_disclosure_shown()
         {
             return 0;
         }
         match self
             .folder_presence
-            .same_root(self)
+            .describes(self)
             .then(|| self.folder_presence.values.get(&entry.id))
             .flatten()
         {
@@ -215,7 +296,7 @@ impl Pane {
         if let Some(error) = entry.and_then(|entry| self.retained_folder_diagnostic(entry)) {
             return Some(error);
         }
-        if self.folder_presence.same_root(self)
+        if self.folder_presence.describes(self)
             && let Some(FolderPresence::Unavailable(error)) = self.folder_presence.values.get(&id)
         {
             Some(error)
@@ -240,6 +321,11 @@ impl Presenter {
         }
         for side in [PaneId::Left, PaneId::Right] {
             let p = &mut self.panes[side.index()];
+            // The shown rows' hints stay while a background re-read keeps them;
+            // an in-place commit carries them over (`carry_folder_presence`).
+            if p.tree_view().is_none() && p.keeps_rows_in_background() {
+                continue;
+            }
             if p.tree_view().is_some() || !p.root_disclosure_available() {
                 if p.folder_presence.root.is_some() {
                     self.retired.push(Box::new(p.folder_presence.retire()));

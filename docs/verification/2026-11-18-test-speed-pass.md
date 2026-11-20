@@ -174,8 +174,9 @@ stay separate executables: on Linux an empty executable starts in 1 to 2 ms (0.7
    changed packages in a separate WSL mirror (`spfix`), whose dependencies lack some
    workspace features (for example `regex-automata` without its DFA features).
 
-The scripts are in the session scratchpad (`speed-pass/`: `snap.py`, `inplace.py`,
-`ab.py`, `probe2.py`, the drivers `win-ab.ps1` and `linux-ab.sh`, and report scripts;
+The scripts were kept in a private scratch folder outside the repository
+(`speed-pass/`: `snap.py`, `inplace.py`, `ab.py`, `probe2.py`, the drivers
+`win-ab.ps1` and `linux-ab.sh`, and report scripts;
 `speed-fix/` for the second session and the probe); the results are in the worktree's
 `_build/qa/speed-pass/` (`win-final`, `linux-final`, `win-probe`, `regex-probe`, the
 second session's `fix-*`, and the earlier `win-ab`, `linux-ab`, `win-lists` and

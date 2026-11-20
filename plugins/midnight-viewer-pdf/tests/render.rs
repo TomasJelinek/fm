@@ -5,6 +5,11 @@ use midnight_image_viewer_sdk::{
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 fn pdf(pages: &[(&str, &str)]) -> Vec<u8> {
+    pdf_with(pages, "")
+}
+
+/// A generated PDF whose trailer also holds `trailer` entries.
+fn pdf_with(pages: &[(&str, &str)], trailer: &str) -> Vec<u8> {
     let ids = (0..pages.len())
         .map(|index| format!("{} 0 R", 3 + 2 * index))
         .collect::<Vec<_>>()
@@ -33,7 +38,7 @@ fn pdf(pages: &[(&str, &str)]) -> Vec<u8> {
     }
     bytes.extend_from_slice(
         format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            "trailer\n<< /Size {} /Root 1 0 R {trailer}>>\nstartxref\n{xref}\n%%EOF\n",
             offsets.len()
         )
         .as_bytes(),
@@ -214,6 +219,56 @@ impl Seek for Oversized {
 #[test]
 fn rejects_encoded_source_budget_before_allocation_or_read() {
     assert!(midnight_viewer_pdf::decode(&mut Oversized).is_err());
+}
+
+/// Decode errors reach the viewer's status line as the failure's reason.
+#[test]
+fn rejections_say_why_in_short_path_free_words() {
+    let reason = |error: io::Error| (error.kind(), error.to_string());
+    let encrypted = pdf_with(
+        &[("[0 0 20 20]", "")],
+        &format!(
+            "/Encrypt << /Filter /Standard /V 2 /R 3 /Length 128 /O <{}> /U <{}> /P -4 >> \
+             /ID [<{}> <{}>] ",
+            "11".repeat(32),
+            "22".repeat(32),
+            "33".repeat(16),
+            "33".repeat(16)
+        ),
+    );
+    for (bytes, kind, text) in [
+        (Vec::new(), io::ErrorKind::InvalidData, "The file is empty"),
+        (
+            b"not a PDF".to_vec(),
+            io::ErrorKind::InvalidData,
+            "The PDF structure is invalid or incomplete",
+        ),
+        (
+            encrypted,
+            io::ErrorKind::Unsupported,
+            "The document needs a password or uses unsupported encryption",
+        ),
+        (
+            pdf(&[("[0 0 999999 20]", "")]),
+            io::ErrorKind::Unsupported,
+            "A page is larger than this viewer supports",
+        ),
+    ] {
+        let error = midnight_viewer_pdf::decode(&mut Cursor::new(bytes))
+            .err()
+            .expect("a rejected document");
+        assert_eq!(reason(error), (kind, text.to_owned()));
+    }
+    let error = midnight_viewer_pdf::decode(&mut Oversized)
+        .err()
+        .expect("an oversized document");
+    assert_eq!(
+        reason(error),
+        (
+            io::ErrorKind::Unsupported,
+            "The document is larger than the 128 MiB this viewer reads".to_owned()
+        )
+    );
 }
 
 #[test]

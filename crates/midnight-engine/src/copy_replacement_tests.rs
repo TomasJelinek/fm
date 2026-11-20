@@ -326,8 +326,9 @@ async fn merge_consent_keeps_existing_children_and_does_not_authorize_file_repla
         })
         .await;
     let done = h.terminal(1).await;
-    assert_eq!(done.state, CopyOperationState::CompletedWithErrors);
-    assert_eq!(done.skipped, 1);
+    // Merge, then Skip for one name: the user's choices, not an error.
+    assert_eq!(done.state, CopyOperationState::Completed);
+    assert_eq!((done.skipped, done.failed), (1, 0));
     assert_eq!(
         fs::read(destination.join("source/new")).unwrap(),
         b"new child"

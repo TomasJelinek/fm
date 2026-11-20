@@ -77,6 +77,7 @@ fn find_rejects_ambiguous_roots_and_empty_or_unbounded_content_queries() {
         text: String::new(),
         case_sensitive: false,
         whole_words: false,
+        regex: false,
     });
     assert!(request.validate().is_err());
     request.content.as_mut().unwrap().text = "č".repeat(4097);

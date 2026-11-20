@@ -424,6 +424,7 @@ impl State {
                         }
                     }
                 }
+                SelectionAction::Mask(mask) => apply_mask(view, &mut bits, mask)?,
                 SelectionAction::Rebase => {}
             }
             let count = self.current.basis().by_id.len();
@@ -527,6 +528,9 @@ impl State {
                 SelectionAction::Ranges { .. } => {
                     return Err("Selection rectangles require a complete immutable view");
                 }
+                SelectionAction::Mask(_) => {
+                    return Err("Wait until the folder has finished loading, then select by mask.");
+                }
                 SelectionAction::Remove(paths) => {
                     for path in paths.iter() {
                         if deferred.contains(path) && !deferred.toggles.remove(path) {
@@ -585,6 +589,7 @@ impl Deferred {
             by_id,
             by_path,
             directory_bits,
+            hidden: 0,
         })
     }
 
@@ -601,6 +606,34 @@ impl Deferred {
         }
         Ok(Arc::new(blank.with_bits(bits)?))
     }
+}
+
+/// Select or deselect the view's rows whose native names match the masks. Only
+/// rows of the captured view change; names come from their raw native paths.
+fn apply_mask(
+    view: &DirectoryIndex,
+    bits: &mut [u64],
+    mask: &MaskSelection,
+) -> Result<(), &'static str> {
+    let matcher = crate::mask_selection::compile(mask)
+        .map_err(|error| crate::mask_selection::fixed_error(&error))?;
+    for (path, id) in &view.by_path {
+        let Some(position) = view.by_id.get(id).copied() else {
+            continue;
+        };
+        if !mask.includes(view.is_directory(*id))
+            || !path.file_name().is_some_and(|name| matcher.matches(name))
+        {
+            continue;
+        }
+        let bit = 1u64 << (position % 64);
+        if mask.select {
+            bits[position / 64] |= bit;
+        } else {
+            bits[position / 64] &= !bit;
+        }
+    }
+    Ok(())
 }
 
 fn rebase(
@@ -623,6 +656,8 @@ fn rebase(
 pub(crate) struct PreparedProperties {
     pub(crate) request: DesktopRequestId,
     pub(crate) paths: Vec<PathBuf>,
+    /// Stops a folder-contents count that the summary continues with.
+    pub(crate) cancel: Cancellation,
     _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
 }
 
@@ -631,6 +666,7 @@ pub(crate) struct PropertiesInput {
     pub(crate) selection: Arc<SelectionSnapshot>,
     pub(crate) view: Arc<DirectoryIndex>,
     pub(crate) fallback: Option<PathBuf>,
+    pub(crate) cancel: Cancellation,
 }
 
 pub(crate) async fn prepare_properties(
@@ -645,6 +681,7 @@ pub(crate) async fn prepare_properties(
         selection,
         view,
         fallback,
+        cancel,
     } = input;
     let Ok(permit) = budget.try_acquire_owned() else {
         outbox
@@ -678,6 +715,7 @@ pub(crate) async fn prepare_properties(
             .map(|paths| PreparedProperties {
                 request,
                 paths,
+                cancel,
                 _permit: permit,
             })
         })
@@ -1240,6 +1278,7 @@ mod tests {
                 selection,
                 view: view(&["new"]),
                 fallback: None,
+                cancel: Cancellation::default(),
             },
             Arc::new(tokio::sync::Semaphore::new(2)),
             Outbox {
@@ -1279,6 +1318,7 @@ mod tests {
                 selection,
                 view: index,
                 fallback: None,
+                cancel: Cancellation::default(),
             },
             Arc::new(tokio::sync::Semaphore::new(2)),
             Outbox {
@@ -1646,3 +1686,6 @@ mod tests {
 #[cfg(test)]
 #[path = "selection_invert_tests.rs"]
 mod invert_tests;
+#[cfg(test)]
+#[path = "selection_mask_tests.rs"]
+mod mask_tests;

@@ -2,11 +2,50 @@
 use super::*;
 use i_slint_core::window::{WindowInner, WindowKind};
 use midnight_core::viewer_web as api;
+use midnight_ui_input::WheelMotion;
 use slint::winit_030::winit::{
     event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
     keyboard::{Key, PhysicalKey},
     platform::modifier_supplement::KeyEventExtModifierSupplement,
 };
+
+/// Logical pixels per wheel line, as the text viewer scrolls (`image_motion::route`)
+/// and as Slint converts touchpad lines.
+const LINE: f32 = 60.0;
+/// A wheel event with Ctrl, Alt or Super acts once instead of scrolling: Chromium
+/// zooms with Ctrl, counting 120 units as one step. It keeps the browser's previous
+/// 40 px line, so Ctrl+wheel zooms as fast as before.
+const ACTING_LINE: f64 = 40.0;
+/// Chromium reports no scroll position: a newly presented page frame is the only sign
+/// that the page moved. Once its position is known (see [`Began`]), a page that paints
+/// nothing new for this long while deltas arrive is at an edge. The shared kinetic
+/// scroller stops momentum after the same time.
+const STALL: Duration = Duration::from_millis(120);
+/// Chromium took up to 650 ms to paint the first scroll of a freshly loaded page (4 of
+/// 96 measured gestures), so an unpainted scroll is not taken to be at an edge sooner.
+const FIRST_PAINT: Duration = Duration::from_secs(1);
+
+/// When a scroll began and the page frame shown then.
+#[derive(Clone, Copy, Default)]
+struct Began {
+    frame: u64,
+    at: Duration,
+}
+
+impl Began {
+    fn now(open: &OpenWindow) -> Self {
+        Self {
+            frame: open.frame.get(),
+            at: image_motion::now(open),
+        }
+    }
+
+    /// The page's position is known once it painted since the scroll began, or once a
+    /// first scroll frame would have been painted.
+    fn known(&self, frame: u64, now: Duration) -> bool {
+        frame != self.frame || now.saturating_sub(self.at) >= FIRST_PAINT
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Native {
@@ -17,6 +56,203 @@ pub(super) struct Native {
     shortcut_keys: std::collections::HashMap<String, String>,
     /// Document policy in force (offline for every new document).
     policy: api::Policy,
+    glide: Glide,
+    /// Requests a redraw (or steps the glide without native events) while it runs.
+    redraw: Timer,
+    /// Touchpad reports and momentum sent at once: when the stream began, and when its
+    /// newest delta went out.
+    stream: Option<(Began, Duration)>,
+}
+
+/// Wheel notches over the page glide exactly as in the text viewer: the shared
+/// [`WheelMotion`] runs here, and each presented frame sends its share to the page as
+/// one pixel delta. The provider turns Chromium's own wheel animation off.
+#[derive(Default)]
+struct Glide {
+    motion: WheelMotion,
+    /// Surface point and modifiers of the newest notch; every frame's delta goes there.
+    target: Option<([f64; 2], api::Modifiers)>,
+    /// A frame's physical delta that the backend queue refused. It goes out first, and
+    /// the glide's clock waits for it instead of collecting a catch-up jump.
+    unsent: Option<[f64; 2]>,
+    /// Content generation the glide scrolls.
+    generation: u64,
+    began: Began,
+    /// Newest presented page frame the glide has seen, and when the first delta after
+    /// it went out.
+    painted: u64,
+    quiet: Option<Duration>,
+}
+
+impl Glide {
+    fn active(&self) -> bool {
+        self.motion.active() || self.unsent.is_some()
+    }
+
+    fn cancel(&mut self) {
+        self.motion.cancel();
+        self.target = None;
+        self.unsent = None;
+        self.quiet = None;
+    }
+}
+
+/// Physical scale and the surface pixels per drawn pixel on each axis. The surface is
+/// drawn over its logical raster viewport (1:1 physical pixels at native resolution),
+/// which can differ from the canvas by a clipped half pixel.
+fn surface_scale(open: &OpenWindow) -> (f64, [f64; 2]) {
+    let scale = f64::from(open.window.window().scale_factor());
+    let (raster_width, raster_height) = open.raster_size.get();
+    let drawn = [
+        f64::from(open.window.get_raster_viewport_width()) * scale,
+        f64::from(open.window.get_raster_viewport_height()) * scale,
+    ];
+    (
+        scale,
+        [
+            f64::from(raster_width) / drawn[0].max(1.0),
+            f64::from(raster_height) / drawn[1].max(1.0),
+        ],
+    )
+}
+
+/// The page's position for touchpad momentum: its newest presented frame (see
+/// [`STALL`]), or unknown while the touchpad stream's first scroll may still be painting.
+pub(super) fn content_position(open: &OpenWindow) -> [Option<f64>; 2] {
+    let frame = open.frame.get();
+    let now = image_motion::now(open);
+    let known = open
+        .web_native
+        .borrow()
+        .stream
+        .is_none_or(|(began, _)| began.known(frame, now));
+    [known.then_some(frame as f64); 2]
+}
+
+/// A touchpad report or momentum frame goes to the page now.
+fn streamed(open: &OpenWindow, native: &mut Native) {
+    let now = image_motion::now(open);
+    native.stream = Some(match native.stream {
+        Some((began, last)) if now.saturating_sub(last) < STALL => (began, now),
+        _ => (Began::now(open), now),
+    });
+}
+
+fn cancel_glide(open: &OpenWindow) {
+    let mut native = open.web_native.borrow_mut();
+    native.glide.cancel();
+    native.redraw.stop();
+}
+
+/// Tests: the glide's frame clock runs.
+#[cfg(test)]
+pub(super) fn gliding(open: &OpenWindow) -> bool {
+    open.web_native.borrow().redraw.running()
+}
+
+/// One presented frame of the notch glide: send this frame's delta to the page.
+fn step(open: &OpenWindow) {
+    let now = image_motion::now(open);
+    let next = {
+        let mut native = open.web_native.borrow_mut();
+        let native = &mut *native;
+        let glide = &mut native.glide;
+        if !glide.active() {
+            native.redraw.stop();
+            return;
+        }
+        if open.closed.get()
+            || !open.window.get_web_mode()
+            || open.window.get_sandbox_notice_visible()
+            || open.layout.borrow().awaiting_frame
+            || glide.generation != open.frame_generation.get()
+        {
+            glide.cancel();
+            native.redraw.stop();
+            return;
+        }
+        let painted = open.frame.get();
+        if painted != glide.painted {
+            glide.painted = painted;
+            glide.quiet = None;
+        }
+        if glide.began.known(painted, now)
+            && glide
+                .quiet
+                .is_some_and(|since| now.saturating_sub(since) >= STALL)
+        {
+            glide.cancel();
+            native.redraw.stop();
+            return;
+        }
+        let delta = glide.unsent.take().or_else(|| {
+            let (x, y) = glide.motion.tick(now)?;
+            let (scale, ratio) = surface_scale(open);
+            Some([
+                f64::from(x) * scale * ratio[0],
+                f64::from(y) * scale * ratio[1],
+            ])
+        });
+        match (delta, glide.target) {
+            (Some(delta), Some(target)) => (delta, target),
+            _ => {
+                if !glide.active() {
+                    glide.cancel();
+                    native.redraw.stop();
+                }
+                return;
+            }
+        }
+    };
+    let ([delta_x, delta_y], ([x, y], modifiers)) = next;
+    let sent = send(
+        open,
+        api::CommandKind::Wheel(api::Wheel {
+            x,
+            y,
+            delta_x,
+            delta_y,
+            modifiers,
+        }),
+    );
+    let glide = &mut open.web_native.borrow_mut().glide;
+    if sent {
+        glide.quiet.get_or_insert(now);
+    } else {
+        glide.unsent = Some([delta_x, delta_y]);
+    }
+}
+
+/// Add a notch to the glide. Like the text viewer, only undelivered distance adds up,
+/// and a reversed notch drops the old direction's remainder.
+fn glide(open: &OpenWindow, native: &mut Native, target: [f64; 2], lines: (f32, f32)) {
+    let generation = open.frame_generation.get();
+    let glide = &mut native.glide;
+    if !glide.active() || glide.generation != generation {
+        glide.cancel();
+        glide.generation = generation;
+        glide.began = Began::now(open);
+        glide.painted = glide.began.frame;
+    }
+    let (x, y) = (lines.0 * LINE, lines.1 * LINE);
+    if !glide.motion.push(x, y, image_motion::now(open)) {
+        return;
+    }
+    if let Some(unsent) = &mut glide.unsent {
+        for (old, new) in unsent.iter_mut().zip([x, y]) {
+            if new != 0.0 && old.signum() != f64::from(new).signum() {
+                *old = 0.0;
+            }
+        }
+        if *unsent == [0.0; 2] {
+            glide.unsent = None;
+        }
+    }
+    glide.target = Some((target, native.modifiers));
+    if !native.redraw.running() {
+        native.redraw.restart();
+    }
+    open.window.window().request_redraw();
 }
 
 /// Show the policy in force. Online/JavaScript are two-way bound check boxes that
@@ -231,7 +467,38 @@ pub(super) fn received(open: &OpenWindow, value: api::HostShortcut) {
     }
 }
 
+/// Tests: a native event the shared tracker did not classify; a wheel line is a notch.
+#[cfg(test)]
 pub(super) fn observe(open: &OpenWindow, event: &WindowEvent, shortcuts: bool) -> bool {
+    observe_native(open, event, shortcuts, false)
+}
+
+/// `finger`: the shared tracker classified this wheel event as touchpad motion, or it
+/// is a momentum frame. It reaches the page at once, like the text viewer's touchpad
+/// path; wheel notches glide instead.
+pub(super) fn observe_native(
+    open: &OpenWindow,
+    event: &WindowEvent,
+    shortcuts: bool,
+    finger: bool,
+) -> bool {
+    if matches!(event, WindowEvent::RedrawRequested) {
+        step(open);
+        return false;
+    }
+    // As in the text viewer: a press, key, touch or focus change stops a notch glide.
+    if matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } | WindowEvent::Touch(_)
+            | WindowEvent::Focused(false)
+            | WindowEvent::PinchGesture { .. }
+    ) || matches!(event, WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed)
+    {
+        cancel_glide(open);
+    }
     // Modifier state and host shortcut releases remain authoritative while a file
     // change presents another viewer mode or a shortcut moves focus into Find.
     if let WindowEvent::ModifiersChanged(value) = event {
@@ -267,7 +534,8 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent, shortcuts: bool) -
         native.modifiers = Default::default();
         native.dragging = false;
     }
-    if !open.window.get_web_mode() {
+    // A notice in the page's place (a refused browser) takes input like any control.
+    if !open.window.get_web_mode() || open.window.get_sandbox_notice_visible() {
         return false;
     }
     // Embedded SDK popups own pointer, wheel, keyboard and IME input even when
@@ -289,9 +557,10 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent, shortcuts: bool) -
         }
         native.dragging = false;
         native.last_click = None;
+        native.glide.cancel();
         return false;
     }
-    let scale = f64::from(open.window.window().scale_factor());
+    let (scale, ratio) = surface_scale(open);
     let left = f64::from(open.window.get_content_left()) * scale;
     let top = f64::from(open.window.get_content_top()) * scale;
     let width = f64::from(open.window.get_content_width()) * scale;
@@ -299,17 +568,6 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent, shortcuts: bool) -
     let mut native = open.web_native.borrow_mut();
     let point = native.cursor.map(|[x, y]| [x - left, y - top]);
     let inside = point.is_some_and(|[x, y]| x >= 0.0 && y >= 0.0 && x < width && y < height);
-    // The surface is drawn over its logical raster viewport (1:1 physical pixels
-    // at native resolution), which can differ from the canvas by a clipped half pixel.
-    let (raster_width, raster_height) = open.raster_size.get();
-    let drawn = [
-        f64::from(open.window.get_raster_viewport_width()) * scale,
-        f64::from(open.window.get_raster_viewport_height()) * scale,
-    ];
-    let ratio = [
-        f64::from(raster_width) / drawn[0].max(1.0),
-        f64::from(raster_height) / drawn[1].max(1.0),
-    ];
     let surface_point = |[x, y]: [f64; 2]| [x * ratio[0], y * ratio[1]];
     let modifiers = native.modifiers;
     let command = match event {
@@ -399,12 +657,26 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent, shortcuts: bool) -
         }
         WindowEvent::MouseWheel { delta, .. } if inside => {
             let [x, y] = surface_point(point.unwrap_or([0.0; 2]));
+            let acting = modifiers.control || modifiers.alt || modifiers.meta;
             let (delta_x, delta_y) = match delta {
-                MouseScrollDelta::PixelDelta(value) => (value.x, value.y),
-                MouseScrollDelta::LineDelta(x, y) => {
-                    (f64::from(*x) * 40.0 * scale, f64::from(*y) * 40.0 * scale)
+                MouseScrollDelta::LineDelta(lines_x, lines_y) if !finger && !acting => {
+                    glide(open, &mut native, [x, y], (*lines_x, *lines_y));
+                    return true;
                 }
+                MouseScrollDelta::LineDelta(lines_x, lines_y) => {
+                    let line = if acting { ACTING_LINE } else { f64::from(LINE) };
+                    (
+                        f64::from(*lines_x) * line * scale,
+                        f64::from(*lines_y) * line * scale,
+                    )
+                }
+                MouseScrollDelta::PixelDelta(value) => (value.x, value.y),
             };
+            // Finger motion, momentum and acting wheels replace a notch glide.
+            native.glide.cancel();
+            if !acting {
+                streamed(open, &mut native);
+            }
             api::CommandKind::Wheel(api::Wheel {
                 x,
                 y,
@@ -412,6 +684,11 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent, shortcuts: bool) -
                 delta_y: delta_y * ratio[1],
                 modifiers,
             })
+        }
+        WindowEvent::MouseWheel { .. } => {
+            // A wheel over the toolbar or a scrollbar scrolls that instead.
+            native.glide.cancel();
+            return false;
         }
         WindowEvent::KeyboardInput {
             event,
@@ -495,4 +772,23 @@ pub(super) fn bind(open: &Rc<OpenWindow>) {
             }
         }
     });
+    // Like the text viewer's wheel clock: wake the native redraw that steps the glide,
+    // or step it directly when no native events arrive.
+    let weak = Rc::downgrade(open);
+    let native = open.web_native.borrow();
+    native.redraw.start(
+        TimerMode::Repeated,
+        midnight_ui_input::WHEEL_FRAME,
+        move || {
+            let Some(open) = weak.upgrade() else { return };
+            if open.closed.get() || !open.web_native.borrow().glide.active() {
+                cancel_glide(&open);
+            } else if open.image_native.borrow().active {
+                open.window.window().request_redraw();
+            } else {
+                step(&open);
+            }
+        },
+    );
+    native.redraw.stop();
 }

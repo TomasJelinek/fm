@@ -686,6 +686,182 @@ fn enter(stdin: &mut impl Write, sequence: &mut u64, shift: bool) {
     );
 }
 
+/// A tall page of 10 px blocks whose colors number them, so a frame shows the page's
+/// scroll offset.
+fn ruler_page(blocks: u32) -> Vec<u8> {
+    let mut html = String::from(
+        "<!doctype html><title>Wheel fixture</title><style>html,body{margin:0}div{height:10px}</style>",
+    );
+    for index in 0..blocks {
+        let (red, green) = (index % 256, index / 256 * 16 + 8);
+        html.push_str(&format!(
+            "<div style=background:rgb({red},{green},100)></div>"
+        ));
+    }
+    html.into_bytes()
+}
+
+/// Scroll offset (CSS px at scale 1) of the frame's top edge: where the second block
+/// in its middle column starts on the page, less the row it starts at in the frame.
+fn ruler_offset(frame: &Frame) -> Option<u32> {
+    let x = frame.width / 2;
+    let block = |y: u32| {
+        let pixel = ((y * frame.width + x) * 4) as usize;
+        let [red, green, blue] = [
+            frame.rgba[pixel],
+            frame.rgba[pixel + 1],
+            frame.rgba[pixel + 2],
+        ];
+        let high = green.checked_sub(8).filter(|value| value % 16 == 0)?;
+        (blue == 100).then(|| u32::from(red) + u32::from(high) / 16 * 256)
+    };
+    let first = block(0)?;
+    (1..frame.height).find_map(|y| {
+        block(y)
+            .filter(|index| *index != first)
+            .and_then(|index| (index * 10).checked_sub(y))
+    })
+}
+
+/// The host glides wheel notches and coasts touchpad flicks itself, one delta per frame,
+/// so Chromium must apply each wheel event at once instead of animating it again.
+#[test]
+#[ignore = "requires matching packaged CEF runtime and interactive Windows or Linux desktop"]
+fn chromium_applies_each_wheel_event_at_once() {
+    let executable =
+        std::env::var_os("MIDNIGHT_HTML_TEST_EXECUTABLE").expect("set packaged bootstrap path");
+    let profile = std::path::PathBuf::from(
+        std::env::var_os("MIDNIGHT_WEB_VIEWER_PROFILE").expect("set owned private profile"),
+    )
+    .join("wheel-at-once");
+    let mut child = Process::new(executable)
+        .env("MIDNIGHT_WEB_VIEWER_PROFILE", profile)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::sync_channel(8);
+    std::thread::spawn(move || {
+        while let Ok(message) = read_message(&mut stdout) {
+            if tx.send(message).is_err() {
+                break;
+            }
+        }
+    });
+    let html = ruler_page(1000);
+    let mut sequence = 0;
+    send(
+        &mut stdin,
+        &mut sequence,
+        CommandKind::Open {
+            source: Resource {
+                id: 1,
+                length: html.len() as u64,
+                mime: "text/html".into(),
+            },
+            viewport: Viewport {
+                revision: 1,
+                width: 320,
+                height: 200,
+                scale: 1.0,
+            },
+            policy: Policy::default(),
+        },
+    );
+    // Offsets of the frames painted until the page is still for 300 ms.
+    let mut settle = |stdin: &mut std::process::ChildStdin, sequence: &mut u64| {
+        let mut offsets = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut quiet = Instant::now();
+        while Instant::now() < deadline
+            && (offsets.is_empty() || quiet.elapsed() < Duration::from_millis(300))
+        {
+            let Ok(Message::Event(event)) = rx.recv_timeout(Duration::from_millis(20)) else {
+                if let Some(status) = child.try_wait().unwrap() {
+                    panic!("Chromium terminated during the wheel fixture: {status}");
+                }
+                continue;
+            };
+            match event.kind {
+                EventKind::ResourceRead {
+                    request,
+                    resource,
+                    offset,
+                    length,
+                } => {
+                    let end = (offset as usize + length as usize).min(html.len());
+                    send(
+                        stdin,
+                        sequence,
+                        CommandKind::ResourceReply(ResourceReply::Data {
+                            request,
+                            resource,
+                            offset,
+                            bytes: html[offset as usize..end].to_vec(),
+                        }),
+                    );
+                }
+                EventKind::ResourceResolve { request, .. } => send(
+                    stdin,
+                    sequence,
+                    CommandKind::ResourceReply(ResourceReply::Denied {
+                        request,
+                        reason: "fixture has no siblings".into(),
+                    }),
+                ),
+                EventKind::Frame(frame) => {
+                    if let Some(offset) = ruler_offset(&frame) {
+                        offsets.push(offset);
+                        quiet = Instant::now();
+                    }
+                }
+                EventKind::Error { message, .. } => panic!("wheel provider error: {message}"),
+                _ => {}
+            }
+        }
+        offsets
+    };
+    assert_eq!(settle(&mut stdin, &mut sequence).last(), Some(&0));
+    let wheel = |stdin: &mut std::process::ChildStdin, sequence: &mut u64, delta_y: f64| {
+        send(
+            stdin,
+            sequence,
+            CommandKind::Wheel(Wheel {
+                x: 160.0,
+                y: 100.0,
+                delta_x: 0.0,
+                delta_y,
+                modifiers: Modifiers::default(),
+            }),
+        );
+    };
+    // One event scrolls the whole distance in the next frame. Chromium's own wheel
+    // animation would show it in about ten frames over 170 ms instead.
+    wheel(&mut stdin, &mut sequence, -120.0);
+    let down = settle(&mut stdin, &mut sequence);
+    assert!(
+        !down.is_empty() && down.iter().all(|offset| *offset == 120),
+        "frames after one wheel event: {down:?}"
+    );
+    // A wheel past the top stops at the edge.
+    wheel(&mut stdin, &mut sequence, 240.0);
+    let up = settle(&mut stdin, &mut sequence);
+    assert!(
+        !up.is_empty() && up.iter().all(|offset| *offset == 0),
+        "frames after a wheel past the top: {up:?}"
+    );
+    send(&mut stdin, &mut sequence, CommandKind::Close);
+    drop(stdin);
+    let status = wait_for_exit(child);
+    assert!(
+        status.is_some_and(|status| status.success()),
+        "CEF did not close cleanly"
+    );
+}
+
 fn click(stdin: &mut impl Write, sequence: &mut u64, x: f64, y: f64) {
     for kind in [PointerKind::Down, PointerKind::Up] {
         send(

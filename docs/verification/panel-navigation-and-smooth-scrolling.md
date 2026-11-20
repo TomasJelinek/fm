@@ -146,7 +146,7 @@ cargo test --workspace --offline --locked --doc
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings
 cargo build -p fm-app --offline --locked
 bash scripts/check-source-size.sh
-_build/linux/debug/fm-app --smoke-test --left /mnt/d/experiments/dev/FM --right /mnt/d/experiments/dev/FM/crates
+_build/linux/debug/fm-app --smoke-test --left <repo> --right <repo>/crates
 ```
 
 Doc-test processing passed for all seven library crates (zero doctest cases).

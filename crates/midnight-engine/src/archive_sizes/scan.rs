@@ -5,8 +5,11 @@ use midnight_core::{
 };
 use std::{collections::HashSet, fmt, io, path::Path, sync::Arc};
 
-pub(super) const MAX_NODES: usize = 100_000;
-const MAX_NAMES: usize = 8 * 1024 * 1024;
+/// Longest raw or display member name: the archive protocol's per-name bound. Nothing
+/// limits how many members a folder or a scan holds, or the total of their names: a
+/// scan keeps the identities it has met (a few dozen bytes per member) and the
+/// subfolders still to visit along its path; each listing is dropped once counted.
+const MAX_NAME: usize = 64 * 1024;
 
 struct Child {
     id: VirtualEntryId,
@@ -93,7 +96,6 @@ struct Scan<'a> {
     cancel: &'a Cancellation,
     log: ReportLog,
     seen: HashSet<u64>,
-    names: usize,
     path: Vec<Arc<[u8]>>,
 }
 impl Scan<'_> {
@@ -208,41 +210,25 @@ impl Scan<'_> {
         if !self.validate(&mut frame.size) {
             return (frame, false);
         }
-        if children.len() > MAX_NODES {
-            self.issue(
-                &mut frame.size,
-                "list archive directory",
-                io::ErrorKind::OutOfMemory,
-                "Archive directory listing exceeds the existing node budget",
-            );
-            return (frame, true);
-        }
         let mut directories = Vec::new();
         for node in children {
             if self.cancel.is_cancelled() {
                 return (frame, false);
             }
-            self.names = self
-                .names
-                .saturating_add(node.raw_name.len())
-                .saturating_add(node.display_name.len());
             self.path.push(node.raw_name.clone());
-            if self.names > MAX_NAMES || self.seen.len() >= MAX_NODES {
-                self.issue(
-                    &mut frame.size,
-                    "retain archive metadata",
-                    io::ErrorKind::OutOfMemory,
-                    "Archive size traversal exceeds the existing name or node budget",
-                );
-                self.path.pop();
-                break;
-            }
             if !valid_component(&node.raw_name) {
                 self.issue(
                     &mut frame.size,
                     "validate archive member",
                     io::ErrorKind::InvalidData,
                     "Invalid archive member component",
+                );
+            } else if node.raw_name.len() > MAX_NAME || node.display_name.len() > MAX_NAME {
+                self.issue(
+                    &mut frame.size,
+                    "validate archive member",
+                    io::ErrorKind::InvalidData,
+                    "Archive member name exceeds 64 KiB",
                 );
             } else if node.parent != id.entry
                 || node.id.mount != self.mount.id()
@@ -338,16 +324,11 @@ pub(crate) fn compute_checked(
         || cancel.is_cancelled()
         || mount.id() == 0
         || parent == 0
-        || roots.len() > MAX_NODES
     {
         return Ok(false);
     }
     let mut seen: HashSet<u64> = ancestors.iter().copied().collect();
-    if ancestors.len() > 257
-        || ancestors.first() != Some(&1)
-        || seen.len() != ancestors.len()
-        || reserved.len() > MAX_NODES
-    {
+    if ancestors.len() > 257 || ancestors.first() != Some(&1) || seen.len() != ancestors.len() {
         return Ok(false);
     }
     seen.extend(reserved.iter().copied());
@@ -370,7 +351,6 @@ pub(crate) fn compute_checked(
         cancel,
         log: ReportLog::for_scan(reports),
         seen,
-        names: 0,
         path: Vec::new(),
     };
     for (root_index, root) in roots.iter().enumerate() {

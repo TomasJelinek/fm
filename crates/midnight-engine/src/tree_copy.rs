@@ -211,14 +211,16 @@ impl CapturedTransferSources for Sources {
         links: CopyLinkPolicy,
         cancel: &Cancellation,
     ) -> Result<PreparedCapturedTransfer, FsError> {
-        if links == CopyLinkPolicy::Preserve && self.intent != TransferIntent::Copy {
+        if links == CopyLinkPolicy::FollowLinks && self.intent != TransferIntent::Copy {
             return Err(FsError {
                 kind: io::ErrorKind::Unsupported,
-                ..failure("Tree link preservation is available only for Copy.")
+                ..failure("Following links is available only for Copy.")
             });
         }
         if self.intent == TransferIntent::Move {
-            if links.materializes_directory_links() {
+            // Any explicit policy carries per-entry link authority; Preserve moves
+            // each link itself.
+            if links != CopyLinkPolicy::Reject {
                 return self
                     .prepare_move_entries(service, links, cancel)
                     .map(PreparedCapturedTransfer::MoveWithDirectoryLinks);
@@ -240,7 +242,7 @@ impl CapturedTransferSources for Sources {
                 .value()
                 .map_err(|error| failure(&error.to_string()))?
             {
-                if links == CopyLinkPolicy::Preserve {
+                if links.recreates_links() {
                     return Err(FsError {
                         kind: io::ErrorKind::Unsupported,
                         ..failure("Archive sources do not support link preservation.")
@@ -560,6 +562,9 @@ impl TransferSource for LeasedSource {
     ) -> Result<TransferLinkRepresentation, FsError> {
         self.source.link_representation(cancel)
     }
+    fn link_not_followed(&self) -> Option<String> {
+        self.source.link_not_followed()
+    }
     fn open_child(
         &self,
         name: &OsStr,
@@ -628,6 +633,14 @@ impl TransferSource for LeasedSource {
         self.source
             .next_child(cancel)
             .map(|child| child.map(|source| self.child(source)))
+    }
+    fn next_child_or_failure(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferChild>, FsError> {
+        self.source
+            .next_child_or_failure(cancel)
+            .map(|child| child.map(|child| child.map(|source| self.child(source))))
     }
 }
 

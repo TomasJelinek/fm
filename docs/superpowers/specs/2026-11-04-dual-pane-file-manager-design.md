@@ -515,7 +515,7 @@ macOS následuje po stabilizaci základních operací na Windows/Linuxu. Zachov�
 
 ## 13. Zdroje Salamanderu a zbývající implementační volby
 
-Dodané C++ zdroje v `D:\experiments\salamander-main` se průběžně kontrolují jako reference pro každou novou funkci, chování panelů a Windows hraniční případy. Implementace v Rustu vzniká nezávisle; kód, prostředky a řetězce Salamanderu se nekopírují. Konkrétní dohledané reference jsou v doplňujícím návrhu commander ovládání. Unicode a dynamické cesty jsou vlastní závazky produktu, nikoli převzaté limity Salamanderu.
+Dodané C++ zdroje v `<salamander-source>` se průběžně kontrolují jako reference pro každou novou funkci, chování panelů a Windows hraniční případy. Implementace v Rustu vzniká nezávisle; kód, prostředky a řetězce Salamanderu se nekopírují. Konkrétní dohledané reference jsou v doplňujícím návrhu commander ovládání. Unicode a dynamické cesty jsou vlastní závazky produktu, nikoli převzaté limity Salamanderu.
 
 Slint umožňuje desktopovou aplikaci pod více licenčními variantami. Konkrétní licenci projektu a případnou atribuci je potřeba určit před distribucí podle skutečně připnuté verze. [Slint: licence](https://github.com/slint-ui/slint/blob/master/LICENSE.md)
 

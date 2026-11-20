@@ -77,7 +77,7 @@ fn prepare(
         },
     }
     .check(cancel)?;
-    crate::editor::validate_program(executable)?;
+    validate_program(executable)?;
     if !fs::metadata(directory)
         .map_err(|cause| error(directory, cause))?
         .is_dir()
@@ -110,6 +110,30 @@ fn prepare(
 }
 fn error(path: &Path, cause: io::Error) -> FsError {
     FsError::from_io("Custom Command", path, cause)
+}
+
+/// The editor's program rule, reported as this Custom Command's program.
+fn validate_program(executable: &Path) -> Result<(), FsError> {
+    use crate::editor::ProgramIssue;
+    crate::editor::check_program(executable).map_err(|issue| {
+        error(
+            executable,
+            match issue {
+                ProgramIssue::Unsupported => io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "The program must be an absolute .exe or .com path; shell scripts are unsupported.",
+                ),
+                ProgramIssue::NotFile => io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "The program is not a file.",
+                ),
+                ProgramIssue::Unavailable(cause) if cause.kind() == io::ErrorKind::NotFound => {
+                    io::Error::new(io::ErrorKind::NotFound, "The program was not found.")
+                }
+                ProgramIssue::Unavailable(cause) => cause,
+            },
+        )
+    })
 }
 
 /// Thread-local suppression of native loader dialogs; no process-wide state changes.

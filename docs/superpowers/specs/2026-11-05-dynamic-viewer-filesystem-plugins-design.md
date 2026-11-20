@@ -669,7 +669,7 @@ a generovaného UI. Nehodnotit jen zmenšení EXE přesunutím týchž bytes do 
 
 ## 12. Reference Salamanderu a hranice přejímky
 
-Znovu porovnáno se zdroji `D:\experiments\salamander-main`; žádný GPL kód ani
+Znovu porovnáno se zdroji `<salamander-source>`; žádný GPL kód ani
 prostředky se nekopírují:
 
 - `src/plugins/shared/spl_view.h:38–65`: oddělený CanViewFile/ViewFile a lifetime

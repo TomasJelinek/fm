@@ -62,7 +62,7 @@ all within 100000 bytes. Changed-source/document LF and Git whitespace checks pa
 
 ## Debug deployment and startup
 
-The new `D:/experiments/dev/FM/_build/debug/me.exe` SHA-256 is:
+The new `_build/debug/me.exe` SHA-256 is:
 
 `2da12aa577aef0b8903af3059f839a2fc5a7badc10875d58856be8a231afb003`
 

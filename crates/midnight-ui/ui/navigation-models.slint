@@ -24,6 +24,8 @@ export struct BookmarkRow {
     identity: string,
     label: string,
     path: string,
+    // The end of `path` that a shortened label keeps: its last component.
+    path-tail: string,
     slot: int,
 }
 

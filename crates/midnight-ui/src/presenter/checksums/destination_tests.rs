@@ -1,11 +1,6 @@
 use super::*;
-
-#[cfg(unix)]
-#[path = "destination_unix_tests.rs"]
-mod native;
-#[cfg(windows)]
-#[path = "destination_windows_tests.rs"]
-mod native;
+// The presenter's checksum tests include the platform's raw-path helpers once.
+use crate::presenter::checksums_tests::raw_paths as native;
 
 #[test]
 fn untouched_suggestion_keeps_the_exact_native_parent() {

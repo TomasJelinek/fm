@@ -19,6 +19,8 @@ pub const MIN_SCALE: f64 = 1.0 / MAX_DECODED_EDGE as f64;
 pub const MAX_SCALE: f64 = 64.0;
 /// Maximum pages in a paginated document. Metadata is bounded independently of raster pixels.
 pub const MAX_DOCUMENT_PAGES: usize = 4096;
+/// Longest failure reason in bytes. Reasons are printable ASCII, so also in characters.
+pub const MAX_REASON_BYTES: usize = 160;
 
 /// Original dimensions after orientation. Animated sources expose the first still frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,8 +100,91 @@ pub struct Frame {
     pub rgba: Vec<u8>,
 }
 
+/// A provider's short explanation of a `Failure`, for the viewer's status line: 1 to
+/// `MAX_REASON_BYTES` printable ASCII characters (0x20-0x7E) without `/` or `\`, so it can
+/// carry neither control or direction characters nor a path or URL. It comes from
+/// untrusted content and is shown as text only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailureReason(String);
+
+impl FailureReason {
+    /// Accept text that already has the wire form; anything else is invalid.
+    pub fn new(text: &str) -> io::Result<Self> {
+        if text.is_empty()
+            || text.len() > MAX_REASON_BYTES
+            || !text
+                .bytes()
+                .all(|byte| (0x20..=0x7e).contains(&byte) && byte != b'/' && byte != b'\\')
+        {
+            return Err(invalid());
+        }
+        Ok(Self(text.to_owned()))
+    }
+
+    /// Reduce arbitrary decoder text to the wire form. Whitespace and control characters
+    /// become single spaces, other non-ASCII characters `?`, and each word that contains
+    /// `/` or `\` (a path or URL) `...`. Longer text is cut and ends with `...`. Text
+    /// without a letter or digit left gives `None`. Only a bounded prefix is examined.
+    pub fn sanitize(text: &str) -> Option<Self> {
+        // Each output byte needs at least one input character; a few more let a long
+        // replaced word or collapsed whitespace still fill the bound.
+        const EXAMINED: usize = MAX_REASON_BYTES * 4;
+        let mut characters = text.chars();
+        let mut normalized = String::with_capacity(EXAMINED);
+        for character in characters.by_ref().take(EXAMINED) {
+            normalized.push(match character {
+                ' '..='~' => character,
+                _ if character.is_whitespace() || character.is_control() => ' ',
+                _ => '?',
+            });
+        }
+        let mut cut = characters.next().is_some();
+        let mut reason = String::with_capacity(MAX_REASON_BYTES + 4);
+        for word in normalized.split(' ').filter(|word| !word.is_empty()) {
+            let word = if word.contains(['/', '\\']) {
+                "..."
+            } else {
+                word
+            };
+            if !reason.is_empty() {
+                reason.push(' ');
+            }
+            reason.push_str(word);
+            if reason.len() > MAX_REASON_BYTES {
+                cut = true;
+                break;
+            }
+        }
+        if cut {
+            // Everything is ASCII here, so any byte index is a character boundary. End at
+            // a word boundary unless the text is one long word.
+            let end = MAX_REASON_BYTES - 3;
+            if let Some(&next) = reason.as_bytes().get(end) {
+                reason.truncate(end);
+                if next != b' '
+                    && let Some(space) = reason.rfind(' ')
+                {
+                    reason.truncate(space);
+                }
+            }
+            reason.truncate(reason.trim_end().len());
+            reason.push_str("...");
+        }
+        if !reason.bytes().any(|byte| byte.is_ascii_alphanumeric()) {
+            return None;
+        }
+        Self::new(&reason).ok()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Raster protocol. Only Open may cause source reads; viewports use retained content.
 /// Protocol-2 document packages use the additive document metadata and page viewport messages.
+/// `FailureReason` (API 0.3.0) may only follow `Failure`, as the worker's last message.
+/// Hosts before 0.3.0 stop reading at `Failure`, so the trailer never reaches them.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
     Open {
@@ -126,6 +211,7 @@ pub enum Message {
         page: u32,
         viewport: Viewport,
     },
+    FailureReason(FailureReason),
 }
 
 fn invalid() -> io::Error {
@@ -225,6 +311,10 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<(
             header.extend_from_slice(&viewport.scale.to_le_bytes());
             header.extend_from_slice(&viewport.origin_x.to_le_bytes());
             header.extend_from_slice(&viewport.origin_y.to_le_bytes());
+        }
+        Message::FailureReason(reason) => {
+            header.push(10);
+            bytes = reason.as_str().as_bytes();
         }
     }
     writer.write_all(b"MIV1")?;
@@ -335,6 +425,12 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
             }
             .validate()?;
             Ok(Message::PageViewport { id, page, viewport })
+        }
+        (10, length) if (2..=MAX_REASON_BYTES + 1).contains(&length) => {
+            let mut bytes = vec![0; length - 1];
+            reader.read_exact(&mut bytes)?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
+            Ok(Message::FailureReason(FailureReason::new(text)?))
         }
         _ => Err(invalid()),
     }

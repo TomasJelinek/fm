@@ -310,6 +310,25 @@ fn pre_spawn_error_preserves_kind_and_marks_confirmed_cleanup() {
 }
 
 #[test]
+fn cleanup_state_stays_typed_and_out_of_the_failure_text() {
+    let events = Events::default();
+    let mut owner = Owner::<Transport, _, _>::new(Identity {
+        events,
+        failure: Failure::None,
+    });
+    let error = owner.fail(io::Error::other("This image is damaged or incomplete."));
+    assert_eq!(cleanup_status(&error), Some(CleanupStatus::Confirmed));
+    assert_eq!(error.to_string(), "This image is damaged or incomplete.");
+    let mut owner = Owner::<Transport, Identity, ()>::empty(None);
+    let error = owner.fail(classified(
+        CleanupStatus::PinUnconfirmed,
+        io::Error::other("Image worker did not start"),
+    ));
+    assert_eq!(cleanup_status(&error), Some(CleanupStatus::PinUnconfirmed));
+    assert_eq!(error.to_string(), "Image worker did not start");
+}
+
+#[test]
 fn failed_pin_constructor_marker_survives_confirmed_no_process_cleanup() {
     let events = Events::default();
     let caller = Arc::new(Reservation(events.clone()));

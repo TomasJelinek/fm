@@ -57,6 +57,8 @@ mod palette;
 mod position;
 #[path = "worker_raster.rs"]
 mod raster;
+#[path = "worker_sandbox.rs"]
+mod sandbox;
 #[path = "worker_scroll_map.rs"]
 mod scroll_map;
 #[path = "scroll_trace.rs"]
@@ -66,6 +68,21 @@ mod syntax;
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
+/// Viewport requests that a test worker without a plugin session would have sent.
+#[cfg(test)]
+mod unsent {
+    use std::cell::RefCell;
+    thread_local! {
+        static REQUESTS: RefCell<Vec<super::messages::Viewport>> = const { RefCell::new(Vec::new()) };
+    }
+    pub(super) fn record(viewport: &super::messages::Viewport) {
+        REQUESTS.with_borrow_mut(|requests| requests.push(viewport.clone()));
+    }
+    /// The requests recorded on this thread since the previous call, oldest first.
+    pub(super) fn take() -> Vec<super::messages::Viewport> {
+        REQUESTS.take()
+    }
+}
 #[path = "worker_text.rs"]
 mod text;
 #[path = "worker_web.rs"]
@@ -148,6 +165,20 @@ impl RelativeMotion {
         }
     }
 
+    /// Whether the steps deferred for `owner` move, in all, against a page request in
+    /// direction `backwards` (towards the start when true, towards the end when false).
+    fn reverses(&self, owner: MotionOwner, backwards: bool) -> bool {
+        if self.owner != Some(owner) {
+            return false;
+        }
+        let vertical: f32 = self.steps.iter().map(|step| step.delta[1]).sum();
+        if backwards {
+            vertical > 0.0
+        } else {
+            vertical < 0.0
+        }
+    }
+
     fn is_idle(&self) -> bool {
         self.owner.is_none()
     }
@@ -169,6 +200,8 @@ struct Worker {
     web: Option<web::WebView>,
     closing_web: Option<Box<dyn web::Browser>>,
     web_retirement_error: Option<String>,
+    /// The permission Chromium's sandbox lacks where the system refused it.
+    sandbox: sandbox::Sandbox,
     image_ids: Arc<std::sync::atomic::AtomicU64>,
     image: Option<crate::image_view::ImageView>,
     closing_image: Option<crate::image_worker::ImageWorker>,
@@ -226,6 +259,9 @@ struct Worker {
     wrap: bool,
     land_at_bottom: bool,
     continuation: Option<crate::viewport::Continuation>,
+    /// The page edge to continue at once the current reply has completed, because that
+    /// reply could not pass the edge the motion wanted to cross (`Continuation::seam`).
+    seam: Option<(u64, bool)>,
     motion: RelativeMotion,
     caption: String,
     status: String,
@@ -244,6 +280,8 @@ pub(crate) struct Services {
     pub preferences: Arc<crate::preferences::Preferences>,
     pub palette: Arc<crate::palette::State>,
     pub negotiate_layout: bool,
+    /// The service's installed video support, discovered when an opening may route to it.
+    pub video: Box<dyn FnOnce() -> Option<VideoInstallation> + Send>,
 }
 
 pub(crate) use crate::input_queue::Message;
@@ -268,6 +306,7 @@ pub(crate) fn run(
         preferences: preference_state,
         palette: palette_state,
         negotiate_layout,
+        video,
     } = services;
     output.put(ViewerOutput::Status(PREPARING.into()));
     let order = crate::capture::prepare_with(&launch, closed, capture)?;
@@ -294,9 +333,7 @@ pub(crate) fn run(
     {
         None
     } else {
-        midnight_plugin_host::installed_executable()
-            .ok()
-            .and_then(|executable| VideoInstallation::discover(&executable).ok())
+        video()
     };
     // Ambiguous identities are disabled across transports before any code loads.
     let mut identities = std::collections::HashMap::new();
@@ -336,6 +373,7 @@ pub(crate) fn run(
         web: None,
         closing_web: None,
         web_retirement_error: None,
+        sandbox: sandbox::Sandbox::new(sandbox::system_offer()),
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
@@ -386,6 +424,7 @@ pub(crate) fn run(
         wrap: preferences.wrap,
         land_at_bottom: false,
         continuation: None,
+        seam: None,
         motion: RelativeMotion::default(),
         caption: String::new(),
         status: String::new(),
@@ -438,6 +477,7 @@ pub(crate) fn run(
         }
         worker.poll_image(output);
         worker.poll_web(output);
+        worker.poll_sandbox(output);
         worker.poll_video(output);
         if worker.dirty {
             worker.dirty = false;
@@ -586,6 +626,7 @@ impl Worker {
     }
 
     fn open(&mut self, output: &Mailbox) {
+        self.clear_sandbox_notice(output);
         if self.video.is_some() || self.mode == VIEWER_MODE_VIDEO {
             output.discard_pending_video();
         }
@@ -682,6 +723,7 @@ impl Worker {
         self.anchor = 0;
         self.viewport_request = None;
         self.continuation = None;
+        self.seam = None;
         self.motion = RelativeMotion::default();
         self.search_request = None;
         self.search_cursor = Default::default();
@@ -743,7 +785,11 @@ impl Worker {
         ));
         // SOURCE_COMPLETION_OBSERVATION_V2_END admission_viewport
         self.continuation = None;
+        // A new request replaces whatever edge an earlier reply left to continue at.
+        self.seam = None;
         let Some(session) = &self.session else {
+            #[cfg(test)]
+            unsent::record(&viewport);
             // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN admission_no_session
             #[cfg(test)]
             if position::observation::enabled(self) {
@@ -891,7 +937,7 @@ impl Worker {
         if matches!(input, ViewerInput::Close) {
             self.close_source_target();
             self.layout.close();
-            self.pending_layout = None;
+            self.retire_pending_layout();
             self.pending_open = false;
             return;
         }
@@ -919,6 +965,10 @@ impl Worker {
                 | ViewerInput::RetainedRaster(_) => {}
                 _ => return,
             }
+        }
+        if matches!(input, ViewerInput::InstallSandboxPermission) {
+            self.install_sandbox_permission(output);
+            return;
         }
         // A window-level choice also applies to text files shown after HTML or images.
         if let ViewerInput::RetainedRaster(enabled) = input {
@@ -1155,6 +1205,7 @@ impl Worker {
                     [self.origin[0] + x, self.origin[1]],
                     y,
                 )
+                .map(|continuation| continuation.bounded_by(page))
             });
             let continuation = continuation.filter(|continuation| {
                 let progresses = if continuation.backwards {
@@ -1558,6 +1609,18 @@ impl Worker {
                     {
                         self.seek_position(sequence, position, output);
                     }
+                    if let Some((anchor, backwards)) = self.seam.take()
+                        && completed
+                        && self.viewport_request.is_none()
+                        // Motion that came meanwhile and turned back wins: it is replayed
+                        // on this page below, instead of a jump past the edge.
+                        && !self.motion.reverses(MotionOwner::Viewport(id), backwards)
+                    {
+                        // Continue at the edge the reply could not pass, once: this
+                        // request carries no continuation, so a reply that still cannot
+                        // advance ends there. Deferred motion then waits for its page.
+                        self.request_page(anchor, backwards, output);
+                    }
                     let viewport_motion = MotionOwner::Viewport(id);
                     if !source_position && completed {
                         self.resume_motion(viewport_motion, output);
@@ -1615,6 +1678,7 @@ impl Worker {
         self.source_foreground_finished(id, false);
         self.motion.retire_viewport();
         self.continuation = None;
+        self.seam = None;
         completion
     }
 
@@ -1708,6 +1772,11 @@ impl Worker {
     fn set_page(&mut self, page: Page, output: &Mailbox) -> bool {
         match self.shape_page(&page) {
             Ok(shaped) => {
+                self.seam = self.continuation.as_ref().and_then(|continuation| {
+                    continuation
+                        .seam(&page)
+                        .map(|anchor| (anchor, continuation.backwards))
+                });
                 self.publish_page(page, shaped, None, output);
                 true
             }

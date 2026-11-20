@@ -1,9 +1,14 @@
 //! Presentation of discovered work. I/O rates never masquerade as committed bytes.
 use midnight_core::{
-    CopyOperationState, CopyProgress, DiscoveryScope, DiscoveryState, NumberLocale,
+    CopyOperationState, CopyProgress, DeleteMode, DiscoveryScope, DiscoveryState, NumberLocale,
     OperationDiscovery, OperationProgress, OperationState,
 };
 use slint::SharedString;
+
+/// Below this average size of the files still to copy, a copy's time goes mostly to
+/// per-file work (creating, saving, reading back and publishing each file), so its
+/// estimate follows the item rate; well above it, the byte rate.
+const SMALL_FILE_BYTES: f64 = 1024.0 * 1024.0;
 
 #[derive(Default)]
 pub(super) struct Meter {
@@ -29,13 +34,13 @@ pub(super) fn copy_waiting_label(p: &CopyProgress) -> Option<&'static str> {
     {
         return None;
     }
+    use midnight_core::TransferWaitReason as Reason;
     match p.wait_reason.as_ref() {
-        Some(midnight_core::TransferWaitReason::EarlierTransfers) => {
-            Some("Queued — waiting for earlier transfers")
-        }
-        Some(midnight_core::TransferWaitReason::Resources) => {
-            Some("Waiting for available capacity")
-        }
+        Some(Reason::EarlierTransfers) => Some("Queued — waiting for earlier transfers"),
+        Some(Reason::Resources) => Some("Waiting for available capacity"),
+        Some(Reason::DiskCapacity) => Some("Waiting for disk capacity"),
+        Some(Reason::SameFolders) => Some("Waiting for another job in the same folders to finish"),
+        Some(Reason::OtherOperation) => Some("Waiting for another file operation"),
         None if p.state == CopyOperationState::Queued => Some("Queued"),
         None => None,
     }
@@ -93,46 +98,10 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
         known.then_some(work).flatten(),
         p.state == CopyOperationState::Completed && p.skipped == 0,
         p.state.is_terminal(),
+        true,
         locale,
     );
-    if p.discovery.state == DiscoveryState::Complete {
-        let mut totals = if recursive {
-            let done = copy_files_completed(p);
-            if done <= p.discovery.files {
-                format!(
-                    "Files: {} / {}",
-                    locale.format_u64(done),
-                    locale.format_u64(p.discovery.files)
-                )
-            } else {
-                format!("Files completed: {}", locale.format_u64(done))
-            }
-        } else if let Some(total) = total.filter(|total| p.completed_roots <= *total) {
-            format!(
-                "Selected items: {} / {}",
-                locale.format_u64(p.completed_roots),
-                locale.format_u64(total)
-            )
-        } else {
-            format!(
-                "Selected items completed: {}",
-                locale.format_u64(p.completed_roots)
-            )
-        };
-        if recursive {
-            let done = p.completed_bytes;
-            if let Some(total) = bytes.filter(|total| done <= *total) {
-                totals.push_str(&format!(
-                    " · Bytes: {} / {}",
-                    locale.format_u64(done),
-                    locale.format_u64(total)
-                ));
-            } else {
-                totals.push_str(&format!(" · Bytes completed: {}", locale.format_u64(done)));
-            }
-        }
-        meter.totals = totals.into();
-    }
+    meter.totals = copy_totals(p, live_bytes.unwrap_or(p.completed_bytes), locale);
     if let Some(label) = status {
         meter.discovering = false;
         meter.label = label.into();
@@ -152,26 +121,85 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
         )
         .into();
     }
-    if known && status.is_none() && p.state == CopyOperationState::Running {
-        let seconds = if bytes.is_some_and(|total| total > 0) {
-            // The backend budgets selected sample ranges and outstanding Move proof
-            // passes. Rates measure the same writes/readback categories, including
-            // actual retry activity; retries never reduce remaining logical work.
-            p.remaining_work.and_then(|work| {
-                estimate_seconds(
-                    work.write_bytes as f64 + work.verification_bytes as f64,
-                    p.throughput.transfer_per_second + p.throughput.verification_per_second,
-                )
-            })
-        } else {
-            estimate_seconds(
-                total.unwrap_or(0).saturating_sub(completed.unwrap_or(0)) as f64,
-                p.throughput.items_per_second,
-            )
-        };
-        meter.eta = eta(seconds, locale);
+    // A pause holds the estimate still (the work and the averages stop together); a
+    // wait, a decision or a cancellation has none.
+    if known && p.state == CopyOperationState::Running && (p.paused || p.wait_reason.is_none()) {
+        let seconds = copy_estimate(p, bytes, total.zip(completed));
+        meter.eta = eta(seconds, p.paused, locale);
     }
     meter
+}
+
+/// Remaining seconds from the backend's smoothed rates: from bytes when the job has
+/// a byte budget, from items when it has none (a link or a size unknown in the tree,
+/// or only selected items counted), and weighted toward items the smaller the files
+/// that remain are.
+fn copy_estimate(p: &CopyProgress, bytes: Option<u64>, items: Option<(u64, u64)>) -> Option<u64> {
+    let rates = &p.throughput;
+    let remaining_items = items.and_then(|(total, done)| total.checked_sub(done));
+    let by_items = remaining_items
+        .and_then(|items| seconds_at(items as f64, rates.smoothed_entries_per_second));
+    // The backend budgets writes and the selected readback, including a Move's
+    // outstanding proofs. The rates measure the same categories, retries included;
+    // retries never reduce the remaining logical work.
+    let budget = p
+        .remaining_work
+        .filter(|_| bytes.is_some_and(|total| total > 0));
+    let by_bytes = budget.and_then(|work| {
+        seconds_at(
+            work.write_bytes as f64 + work.verification_bytes as f64,
+            rates.smoothed_transfer_per_second + rates.smoothed_verification_per_second,
+        )
+    });
+    let seconds = match (by_bytes, by_items, budget, remaining_items) {
+        (Some(by_bytes), Some(by_items), Some(work), Some(items)) => {
+            // What each remaining item still needs; once written, its readback.
+            let left = work.write_bytes.max(work.verification_bytes);
+            let average = left as f64 / items.max(1) as f64;
+            let toward_items = SMALL_FILE_BYTES / (SMALL_FILE_BYTES + average);
+            toward_items * by_items + (1.0 - toward_items) * by_bytes
+        }
+        (by_bytes, by_items, ..) => by_bytes.or(by_items)?,
+    };
+    whole_seconds(seconds)
+}
+
+/// "Files: 2 of 8 · Bytes: 1.2 MiB of 3.4 MiB" once discovery has the totals. While
+/// it still counts, the headline says so and shows the count so far.
+fn copy_totals(p: &CopyProgress, copied: u64, locale: &NumberLocale) -> SharedString {
+    let n = |value: u64| locale.format_u64(value);
+    let size = |bytes: u64| crate::format_size(bytes, locale);
+    let complete = p.discovery.state == DiscoveryState::Complete;
+    if p.discovery.scope == DiscoveryScope::SelectedRoots {
+        return match p
+            .discovery
+            .entries()
+            .filter(|total| complete && p.completed_roots <= *total)
+        {
+            Some(total) => format!("Selected items: {} of {}", n(p.completed_roots), n(total)),
+            None if complete => format!("Selected items: {}", n(p.completed_roots)),
+            None => String::new(),
+        }
+        .into();
+    }
+    if !matches!(
+        p.discovery.state,
+        DiscoveryState::Complete | DiscoveryState::Unavailable
+    ) {
+        return SharedString::default();
+    }
+    let done = copy_files_completed(p);
+    let files = if complete && done <= p.discovery.files {
+        format!("Files: {} of {}", n(done), n(p.discovery.files))
+    } else {
+        format!("Files: {}", n(done))
+    };
+    let bytes = match p.discovery.bytes.filter(|_| complete) {
+        Some(total) if copied <= total => format!("Bytes: {} of {}", size(copied), size(total)),
+        None if complete => format!("Bytes: {} (total size unknown)", size(copied)),
+        _ => format!("Bytes: {}", size(copied)),
+    };
+    format!("{files} · {bytes}").into()
 }
 
 fn copy_files_completed(p: &CopyProgress) -> u64 {
@@ -187,7 +215,7 @@ fn copy_items_completed(p: &CopyProgress) -> Option<u64> {
 }
 
 pub(super) fn deletion(p: &OperationProgress, locale: &NumberLocale) -> Meter {
-    if !matches!(p.kind, midnight_core::MutationKind::Delete(_)) {
+    let midnight_core::MutationKind::Delete(mode) = p.kind else {
         return meter(
             &OperationDiscovery {
                 state: DiscoveryState::Complete,
@@ -199,15 +227,17 @@ pub(super) fn deletion(p: &OperationProgress, locale: &NumberLocale) -> Meter {
             Some((p.completed, p.total)),
             p.state == OperationState::Completed,
             p.state.is_terminal(),
+            false,
             locale,
         );
-    }
+    };
     let completed = if p.discovery.scope == DiscoveryScope::SelectedRoots {
         p.completed
     } else {
         p.processed_entries
     };
     let known = p.discovery.state == DiscoveryState::Complete && p.failed == 0;
+    // A Delete counts items; the size of what it removes is no measure of its work.
     let mut meter = meter(
         &p.discovery,
         Some(completed),
@@ -216,8 +246,10 @@ pub(super) fn deletion(p: &OperationProgress, locale: &NumberLocale) -> Meter {
             .flatten(),
         p.state == OperationState::Completed,
         p.state.is_terminal(),
+        false,
         locale,
     );
+    meter.totals = deletion_totals(p, mode, completed, locale);
     use OperationState as S;
     let status = match p.state {
         S::CancelRequested => Some("Cancelling..."),
@@ -241,16 +273,46 @@ pub(super) fn deletion(p: &OperationProgress, locale: &NumberLocale) -> Meter {
     } else if p.state == S::Running && !meter.determinate {
         meter.activity_label = "Deleting items...";
     }
-    if known && status.is_none() && p.state == S::Running {
-        meter.eta = eta(
-            estimate_seconds(
-                p.discovery.entries().unwrap_or(0).saturating_sub(completed) as f64,
-                p.throughput.items_per_second,
-            ),
-            locale,
-        );
+    // A pause holds the estimate still; it resumes from the same averages.
+    if known && p.state == S::Running {
+        let remaining = p.discovery.entries().unwrap_or(0).saturating_sub(completed);
+        let seconds = seconds_at(remaining as f64, p.throughput.smoothed_entries_per_second);
+        meter.eta = eta(seconds.and_then(whole_seconds), p.paused, locale);
     }
     meter
+}
+
+/// "Items deleted: 3 of 10" once discovery has counted them.
+fn deletion_totals(
+    p: &OperationProgress,
+    mode: DeleteMode,
+    completed: u64,
+    locale: &NumberLocale,
+) -> SharedString {
+    let Some(total) = p
+        .discovery
+        .entries()
+        .filter(|_| p.discovery.state == DiscoveryState::Complete)
+    else {
+        return SharedString::default();
+    };
+    let scope = if p.discovery.scope == DiscoveryScope::SelectedRoots {
+        "Selected items"
+    } else {
+        "Items"
+    };
+    let verb = if mode == DeleteMode::Trash {
+        "moved to the Trash"
+    } else {
+        "deleted"
+    };
+    let n = |value: u64| locale.format_u64(value);
+    if completed <= total {
+        format!("{scope} {verb}: {} of {}", n(completed), n(total))
+    } else {
+        format!("{scope} {verb}: {}", n(completed))
+    }
+    .into()
 }
 
 fn meter(
@@ -259,6 +321,7 @@ fn meter(
     work: Option<(u64, u64)>,
     success: bool,
     terminal: bool,
+    with_bytes: bool,
     locale: &NumberLocale,
 ) -> Meter {
     let discovering = !terminal
@@ -271,13 +334,17 @@ fn meter(
         ..Meter::default()
     };
     if discovering {
+        // The count so far, updated as discovery goes.
         output.label = format!(
             "Discovering: {} items{}",
             locale.format_u64(discovery.entries().unwrap_or(0)),
-            discovery.bytes.map_or(String::new(), |bytes| format!(
-                " ({})",
-                crate::format_size(bytes, locale)
-            ))
+            discovery
+                .bytes
+                .filter(|_| with_bytes)
+                .map_or(String::new(), |bytes| format!(
+                    " ({})",
+                    crate::format_size(bytes, locale)
+                ))
         )
         .into();
         return output;
@@ -315,21 +382,31 @@ fn meter(
     output
 }
 
-fn estimate_seconds(remaining: f64, rate: f64) -> Option<u64> {
+/// Seconds that `remaining` work takes at `rate`; none without work or a rate.
+fn seconds_at(remaining: f64, rate: f64) -> Option<f64> {
     if remaining <= 0.0 || !remaining.is_finite() || !rate.is_finite() || rate <= 0.0 {
         return None;
     }
-    let seconds = (remaining / rate).ceil();
-    (seconds.is_finite() && seconds <= u64::MAX as f64).then_some(seconds as u64)
+    Some(remaining / rate).filter(|seconds| seconds.is_finite())
 }
-fn eta(seconds: Option<u64>, locale: &NumberLocale) -> SharedString {
+
+fn whole_seconds(seconds: f64) -> Option<u64> {
+    let seconds = seconds.ceil();
+    (seconds.is_finite() && seconds >= 0.0 && seconds <= u64::MAX as f64).then_some(seconds as u64)
+}
+fn eta(seconds: Option<u64>, paused: bool, locale: &NumberLocale) -> SharedString {
     seconds.map_or_else(SharedString::default, |seconds| {
-        if seconds < 60 {
+        let estimate = if seconds < 60 {
             format!("About {} s", locale.format_u64(seconds))
         } else if seconds < 3600 {
             format!("About {} min", locale.format_u64(seconds.div_ceil(60)))
         } else {
             format!("About {} h", locale.format_u64(seconds.div_ceil(3600)))
+        };
+        if paused {
+            format!("{estimate} (paused)")
+        } else {
+            estimate
         }
         .into()
     })
@@ -378,6 +455,7 @@ mod tests {
                 Some((done, total)),
                 false,
                 false,
+                true,
                 &NumberLocale::default(),
             )
             .label
@@ -431,7 +509,7 @@ mod tests {
     fn changed_counts_errors_and_pauses_do_not_produce_misleading_eta() {
         let mut p = transfer();
         p.throughput = Arc::new(OperationThroughput {
-            transfer_per_second: 100.0,
+            smoothed_transfer_per_second: 100.0,
             ..Default::default()
         });
         assert!(copy(&p, &NumberLocale::default()).eta.contains("20 s"));
@@ -448,9 +526,13 @@ mod tests {
         p.copied_bytes = 50_000;
         p.verified_bytes = 30_000;
         assert!(copy(&p, &NumberLocale::default()).eta.contains("5 s"));
+        // Until its checkpoint the job runs on; once paused its estimate holds.
         p.pause_requested = true;
-        assert!(copy(&p, &NumberLocale::default()).eta.is_empty());
+        assert_eq!(copy(&p, &NumberLocale::default()).eta, "About 5 s");
+        p.paused = true;
+        assert_eq!(copy(&p, &NumberLocale::default()).eta, "About 5 s (paused)");
         p.pause_requested = false;
+        p.paused = false;
         p.discovery.state = DiscoveryState::Unavailable;
         assert!(!copy(&p, &NumberLocale::default()).determinate);
         assert!(copy(&p, &NumberLocale::default()).eta.is_empty());

@@ -57,7 +57,8 @@ pub trait CapturedTransferSources: std::fmt::Debug + Send + Sync {
     /// legacy preparation. Unimplemented policies fail before opening roots.
     /// Keep the exact original occurrence and its retained pins through recursion
     /// and retry. A browsed referent does not grant authority for the selected link.
-    /// Preserve is available only for Copy.
+    /// FollowLinks is available only for Copy; a Move with Preserve moves links
+    /// themselves and prepares `MoveWithDirectoryLinks` entries.
     fn prepare_with_links(
         &self,
         service: &dyn TransferService,
@@ -66,7 +67,7 @@ pub trait CapturedTransferSources: std::fmt::Debug + Send + Sync {
     ) -> Result<PreparedCapturedTransfer, FsError> {
         match links {
             CopyLinkPolicy::Reject => self.prepare(service, cancel),
-            CopyLinkPolicy::Preserve => Err(FsError::from_io(
+            CopyLinkPolicy::Preserve | CopyLinkPolicy::FollowLinks => Err(FsError::from_io(
                 "prepare captured transfer",
                 std::path::Path::new(""),
                 std::io::Error::new(

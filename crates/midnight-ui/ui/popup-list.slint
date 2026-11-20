@@ -1,0 +1,18 @@
+import { TooltipPlacement } from "tooltip-placement.slint";
+
+// Dropdown list geometry shared by CompactPicker and the Find folders list.
+// Slint moves a popup back into the window but never shrinks it, so a list sizes
+// itself to the room on the side it opens to and scrolls its browsed row into view.
+export global PopupList {
+    // Room for a list under or over an anchor, inside the window surface.
+    public pure function room-below(anchor-y: length, anchor-height: length) -> length {
+        return max(1px, TooltipPlacement.surface-height - anchor-y - anchor-height - 8px);
+    }
+    public pure function room-above(anchor-y: length) -> length {
+        return max(1px, anchor-y - 8px);
+    }
+    // The list offset that shows row `index`, with up to five rows before it.
+    public pure function reveal(index: int, count: int, row: length, visible: length) -> length {
+        return -min(max(0px, count * row - visible), max(0, index - 5) * row);
+    }
+}

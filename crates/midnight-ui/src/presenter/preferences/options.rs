@@ -37,6 +37,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.file_list.destination = from.file_list.destination;
     to.file_list.append = from.file_list.append;
     to.quick_search_filter = from.quick_search_filter;
+    to.show_hidden_files = from.show_hidden_files;
     to.size_display = from.size_display;
     to.remember_command_history = from.remember_command_history;
     to.copy_checksum_verification = from.copy_checksum_verification;
@@ -155,6 +156,8 @@ impl Presenter {
             restore_fields(&mut restored, &baseline);
             let filter_changed =
                 restored.quick_search_filter != self.preferences.values.quick_search_filter;
+            let hidden_changed =
+                restored.show_hidden_files != self.preferences.values.show_hidden_files;
             // The baseline was previously accepted. Rebuild shortcut hints along
             // with the values; don't route rollback through an autosave callback.
             if let Err(error) = self
@@ -172,6 +175,9 @@ impl Presenter {
             self.retired.push(baseline);
             if filter_changed {
                 self.search_filter_changed();
+            }
+            if hidden_changed {
+                self.flush_hidden_entries(send);
             }
         }
         self.preferences.options.open = false;

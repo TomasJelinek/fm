@@ -219,7 +219,7 @@ Its cached build completed in 1m45s. Formatting and scoped whitespace checks pas
   strict Clippy for the application/UI/viewer packages with `--all-targets` pass.
   The unchanged vendored femtovg dependency still emits two nonfatal warnings.
 - The final debug build completed in 26.11 seconds (`final-debug-build.log`).
-  `D:/experiments/dev/FM/_build/debug/me.exe` has SHA-256
+  `_build/debug/me.exe` has SHA-256
   `fed5b6aa80f45b48a5e5efbd2e7c35878a6d918541af7b6235c97dd9edfa8267`.
 - The matching private plugin runtime is registered at
   `<user-profile>/MidnightExplorer-20261111-dialogs-fed5b6aa`.

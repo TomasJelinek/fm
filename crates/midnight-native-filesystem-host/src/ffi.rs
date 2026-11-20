@@ -205,17 +205,16 @@ impl Transport for Instance {
             // its final destroy is the only safe cleanup for unknown handles.
             self.poisoned.store(true, Ordering::Release);
         }
-        // The plugin retires a listing or reader itself when a call on it fails
-        // (cancelled, source changed, I/O error). Closing that already-retired
-        // handle is then a harmless stale reference, not a faulty cleanup.
-        let already_retired = matches!(
-            request,
-            Request::CloseList { .. } | Request::CloseRead { .. }
-        ) && matches!(
-            &response,
-            Ok(Response::Failed(failure))
-                if failure.code == midnight_filesystem_plugin_api::ErrorCode::StaleReference
-        );
+        // The plugin retires a listing itself when a page fails (cancelled, source
+        // changed, I/O error), so the CloseList the protocol still requires finds a
+        // stale reference: a harmless retired handle, not a faulty cleanup. A failed
+        // read never retires its reader, so a stale CloseRead is a double close.
+        let already_retired = matches!(request, Request::CloseList { .. })
+            && matches!(
+                &response,
+                Ok(Response::Failed(failure))
+                    if failure.code == midnight_filesystem_plugin_api::ErrorCode::StaleReference
+            );
         if cleanup && !already_retired && !matches!(&response, Ok(Response::Unit)) {
             // Reserved admission makes transient SDK call/buffer exhaustion
             // impossible here. Any remaining cleanup failure stops new work.

@@ -169,6 +169,7 @@ impl LocaleService for LinuxFileSystem {
             minute: u8::try_from(calendar.tm_min).ok()?,
             // A leap second is shown as the last ordinary second.
             second: u8::try_from(calendar.tm_sec.min(59)).ok()?,
+            nanosecond: midnight_core::LocalCalendarTime::nanosecond_of(value),
             offset_seconds: i32::try_from(calendar.tm_gmtoff).ok()?,
         })
     }

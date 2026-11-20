@@ -87,6 +87,17 @@ pub fn controls(window: &slint::Window, role: AccessibleRole) -> Vec<(String, It
     found
 }
 
+/// A file system path. Paths are elided in the middle by design, with the full path in
+/// their tooltip and accessible label, so they are not captions that must fit whole.
+fn looks_like_path(text: &str) -> bool {
+    let text = text.trim_start_matches(['…', '.']);
+    let bytes = text.as_bytes();
+    text.starts_with('/')
+        || text.starts_with('~')
+        || text.starts_with("\\\\")
+        || (bytes.len() > 2 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/'))
+}
+
 fn text_of(item: &ItemRc) -> Option<(String, f32)> {
     if let Some(text) = item.downcast::<SimpleText>() {
         let text = text.as_pin_ref();
@@ -304,6 +315,7 @@ fn check_root(root: &ItemRc, width: f32, height: f32, findings: &mut Vec<Finding
             walk(item, &mut |child| {
                 if let Some((text, _)) = text_of(child)
                     && !text.trim().is_empty()
+                    && !looks_like_path(&text)
                     && visible_rect(child).is_some()
                     && let Some(preferred) = preferred_width(child)
                 {

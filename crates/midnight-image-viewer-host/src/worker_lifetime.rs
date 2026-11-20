@@ -25,13 +25,11 @@ struct CleanupError {
     status: CleanupStatus,
     original: io::Error,
 }
+/// Users see the original failure only. The cleanup state stays typed for the owners that
+/// retain capacity on it (`cleanup_status`), never in the viewer's status text.
 impl fmt::Display for CleanupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{} [image cleanup: {:?}]",
-            self.original, self.status
-        )
+        self.original.fmt(formatter)
     }
 }
 impl std::error::Error for CleanupError {

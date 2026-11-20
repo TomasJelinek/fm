@@ -381,9 +381,10 @@ fn async_admission_is_fifo_wakes_only_the_new_head_and_withdraws_on_drop() {
 }
 
 /// A running transfer (no pause, no decision) yields its retained slot at a step boundary
-/// only to call-scoped requests; other transfers queued for a slot wait for whole jobs.
+/// to every queued request, another transfer included: transfers sharing the limit
+/// interleave step by step, and none waits for a whole job.
 #[test]
-fn retained_owner_yields_only_to_queued_call_scoped_requests() {
+fn retained_owner_yields_to_every_queued_request_at_a_step_boundary() {
     let gate = Arc::new(Gate::new(1));
     let running = gate.try_acquire_retained(Admission::Shared).unwrap();
     assert!(!running.is_contended());
@@ -391,12 +392,11 @@ fn retained_owner_yields_only_to_queued_call_scoped_requests() {
     let mut next_transfer = gate.acquire_retained(Admission::Shared);
     assert!(poll(&mut next_transfer, &wakes).is_pending());
     assert!(
-        !running.is_contended(),
-        "queued transfers wait for whole jobs"
+        running.is_contended(),
+        "a queued transfer is served at the next step boundary"
     );
     let checksum = Waiting::new(gate.clone(), Admission::Exclusive);
     queued(&gate, 2);
-    assert!(running.is_contended());
     // Step boundary: yield, then rejoin the queue behind both earlier requests.
     assert!(running.release());
     let mut resume = running.reacquire();
@@ -423,10 +423,16 @@ fn retained_owner_yields_only_to_queued_call_scoped_requests() {
         thread::yield_now();
     }
     assert!(running.is_held() && !next.is_held());
-    assert!(!running.is_contended());
+    assert!(
+        running.is_contended(),
+        "the other transfer gets the next step"
+    );
+    assert!(running.release());
+    assert!(poll(&mut next_resume, &wakes).is_ready());
+    assert!(next.is_held() && !running.is_held());
     drop(resume);
     drop(running);
-    assert!(poll(&mut next_resume, &wakes).is_ready());
+    assert!(!next.is_contended());
 }
 
 #[test]
@@ -486,7 +492,7 @@ fn reclaim_charges_a_released_shared_permit_without_queuing() {
     drop(exclusive);
     waiting.assert_entered();
     drop(waiting);
-    let exclusive = Permit::new(gate.clone(), Admission::Exclusive, false, false);
+    let exclusive = Permit::new(gate.clone(), Admission::Exclusive, false);
     let blocker = gate.try_acquire(Admission::Shared).unwrap();
     assert!(
         !exclusive.reclaim(),

@@ -3,7 +3,8 @@ import { Tip } from "controls.slint";
 import { TooltipPlacement } from "tooltip-placement.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 
-// One timestamp of the draft: mode 0 keeps it, 1 sets the typed value, 2 uses Now.
+// One timestamp of the draft: mode 0 keeps it, 1 sets the typed value. The input
+// also accepts 2 (the moment of review), which this dialog no longer offers.
 export struct MetadataTimeDraft { mode: int, date: string, time: string, offset: string }
 export struct MetadataTimeValue { date: string, time: string, offset: string }
 export struct MetadataTimeStep { text: string, start: int, end: int, valid: bool }
@@ -30,6 +31,9 @@ export global MetadataTimeCodec {
     pure callback month(string, string) -> MetadataMonthView;
     pure callback shift(string, string, int, int) -> string;
     pure callback compose(int, int, int) -> string;
+    // The current moment for a row (0 created, 1 modified, 2 accessed), in local time;
+    // the host keeps its exact instant for Apply.
+    callback now(int) -> MetadataTimeValue;
     // A date written in the form of another date text: system order or year-month-day.
     pure callback restyle(string, string) -> string;
 }
@@ -136,6 +140,8 @@ component PopupCell inherits Rectangle {
     border-radius: 3px;
     background: root.selected ? Theme.active-header : area.has-hover ? Theme.hover : transparent;
     border-width: root.selected ? 1px : 0px; border-color: Theme.active-frame;
+    accessible-role: button;
+    accessible-action-default => { root.activate(); }
     Text {
         text: root.text; color: Theme.text; font-size: Theme.font-size;
         font-weight: root.selected || root.strong ? 600 : 400;
@@ -199,10 +205,18 @@ component DateField inherits HorizontalLayout {
                 max(8px, TooltipPlacement.surface-width - self.frame-width - 8px)) - anchor.absolute-position.x;
             y: self.above ? -self.frame-height - 2px : anchor.height + 2px;
             width: self.frame-width; height: self.frame-height;
+            // Month buttons keep it open; choosing a day, Escape or an outside click close it.
+            close-policy: close-on-click-outside;
             forward-focus: keys;
             PickerFrame {
                 accessible-role: groupbox; accessible-label: root.label + " calendar";
                 keys := FocusScope {
+                    // The keyboard cursor: arrows move this date, Enter chooses it.
+                    accessible-role: spinbox; accessible-label: root.label + " calendar date";
+                    accessible-value: root.cursor;
+                    accessible-action-increment => { root.move(1, 0); }
+                    accessible-action-decrement => { root.move(-1, 0); }
+                    accessible-action-default => { root.choose(root.cursor); }
                     key-pressed(event) => {
                         if event.text == Key.LeftArrow { root.move(-1, 0); return accept; }
                         if event.text == Key.RightArrow { root.move(1, 0); return accept; }
@@ -291,10 +305,18 @@ component TimeField inherits HorizontalLayout {
                 max(8px, TooltipPlacement.surface-width - self.frame-width - 8px)) - anchor.absolute-position.x;
             y: self.above ? -self.frame-height - 2px : anchor.height + 2px;
             width: self.frame-width; height: self.frame-height;
+            // The ▲/▼ buttons keep it open; Enter, Escape or an outside click close it.
+            close-policy: close-on-click-outside;
             forward-focus: keys;
             PickerFrame {
                 accessible-role: groupbox; accessible-label: root.label + " time picker";
                 keys := FocusScope {
+                    // The chosen part: Left/Right choose it, Up/Down change it.
+                    accessible-role: spinbox;
+                    accessible-label: root.label + " " + (root.part == 0 ? "hour" : root.part == 1 ? "minute" : "second");
+                    accessible-value: root.values[root.part];
+                    accessible-action-increment => { field.step-part(root.part, 1); }
+                    accessible-action-decrement => { field.step-part(root.part, -1); }
                     key-pressed(event) => {
                         if event.text == Key.LeftArrow { root.part = max(0, root.part - 1); return accept; }
                         if event.text == Key.RightArrow { root.part = min(root.columns - 1, root.part + 1); return accept; }
@@ -341,12 +363,13 @@ component TimeField inherits HorizontalLayout {
 // One timestamp row: change checkbox, date and time with pickers, UTC offset, Now.
 export component MetadataTime inherits GridLayout {
     in property <string> label;
+    // 0 created, 1 modified, 2 accessed.
+    in property <int> index;
     in property <bool> enabled;
     in property <bool> narrow;
     in property <MetadataTimeValue> default;
     in-out property <MetadataTimeDraft> value;
     callback edited();
-    private property <bool> typed: root.enabled && root.value.mode != 2;
     spacing: 8px;
     // Editing a field selects the row and completes its other, still empty fields.
     function complete(edited-field: int) {
@@ -355,7 +378,10 @@ export component MetadataTime inherits GridLayout {
         if edited-field != 2 && root.value.offset == "" { root.value.offset = root.default.offset; }
         root.value.mode = 1; root.edited();
     }
-    WrappingCheckBox {
+    // A click on the box assigns `checked`, which ends its binding; typing, the pickers
+    // and Now still tick the row through the draft, so the box follows the draft's mode.
+    changed value => { tick.checked = root.value.mode != 0; }
+    tick := WrappingCheckBox {
         row: 0; col: 0; colspan: root.narrow ? 2 : 1;
         text: root.label; accessible-name: "Change " + root.label;
         checked: root.value.mode != 0; enabled: root.enabled;
@@ -367,21 +393,21 @@ export component MetadataTime inherits GridLayout {
         row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 3 : 1;
         spacing: 6px;
         DateField {
-            label: root.label; enabled: root.typed; text <=> root.value.date;
-            placeholder: root.value.mode == 2 ? "Now" : root.default.date; fallback: root.default.date;
+            label: root.label; enabled: root.enabled; text <=> root.value.date;
+            placeholder: root.default.date; fallback: root.default.date;
             horizontal-stretch: 3;
             edited => { root.complete(0); }
         }
         TimeField {
-            label: root.label; enabled: root.typed; text <=> root.value.time;
-            placeholder: root.value.mode == 2 ? "" : root.default.time; fallback: root.default.time;
+            label: root.label; enabled: root.enabled; text <=> root.value.time;
+            placeholder: root.default.time; fallback: root.default.time;
             horizontal-stretch: 2;
             edited => { root.complete(1); }
         }
         SegmentField {
-            field: 2; label: root.label + " UTC offset"; enabled: root.typed;
+            field: 2; label: root.label + " UTC offset"; enabled: root.enabled;
             text <=> root.value.offset;
-            placeholder: root.value.mode == 2 ? "" : root.default.offset; fallback: root.default.offset;
+            placeholder: root.default.offset; fallback: root.default.offset;
             min-width: Theme.font-size * 4.2; horizontal-stretch: 1;
             hint: "UTC offset of the typed time, e.g. +01:00, -05:00 or Z. Up/Down change hours or quarter hours. It is used exactly as entered.";
             edited => { root.complete(2); }
@@ -390,29 +416,33 @@ export component MetadataTime inherits GridLayout {
     now := Rectangle {
         row: 0; col: 2;
         min-width: max(52px, Theme.font-size * 3.5); height: Theme.control-height; horizontal-stretch: 0;
-        background: root.value.mode == 2 ? Theme.active-header : now-area.has-hover ? Theme.hover : Theme.secondary-surface;
+        background: now-area.has-hover && root.enabled ? Theme.hover : Theme.secondary-surface;
         border-width: 1px; border-radius: 3px;
-        border-color: root.value.mode == 2 || now-focus.has-focus ? Theme.active-frame : Theme.frame;
+        border-color: now-focus.has-focus ? Theme.active-frame : Theme.frame;
         accessible-role: button; accessible-label: root.label + ": Now";
-        accessible-checkable: true; accessible-checked: root.value.mode == 2;
         accessible-enabled: root.enabled;
-        accessible-action-default => { if root.enabled { root.toggle-now(); } }
+        accessible-action-default => { if root.enabled { root.fill-now(); } }
         Text {
             text: "Now"; color: root.enabled ? Theme.text : Theme.muted-text;
-            font-size: Theme.font-size; font-weight: root.value.mode == 2 ? 600 : 400;
+            font-size: Theme.font-size;
             horizontal-alignment: center; vertical-alignment: center;
         }
         now-focus := FocusScope {
             enabled: root.enabled;
             key-pressed(event) => {
-                if event.text == Key.Space || event.text == Key.Return { root.toggle-now(); return accept; }
+                if event.text == Key.Space || event.text == Key.Return { root.fill-now(); return accept; }
                 reject
             }
-            now-area := TouchArea { enabled: root.enabled; clicked => { now-focus.focus(); root.toggle-now(); } }
+            now-area := TouchArea { enabled: root.enabled; clicked => { now-focus.focus(); root.fill-now(); } }
         }
-        Tip { text: "Set this timestamp to the moment you review the changes. Click again to type a time instead."; }
+        Tip { text: "Fill in the current date, time and UTC offset. Apply sets exactly this moment."; }
     }
-    function toggle-now() {
-        if root.value.mode == 2 { root.complete(-1); } else { root.value.mode = 2; root.edited(); }
+    // The fields show the current moment and the row is ticked; Apply sets that moment.
+    function fill-now() {
+        let moment = MetadataTimeCodec.now(root.index);
+        if moment.date != "" {
+            root.value.date = moment.date; root.value.time = moment.time; root.value.offset = moment.offset;
+        }
+        root.complete(-1);
     }
 }

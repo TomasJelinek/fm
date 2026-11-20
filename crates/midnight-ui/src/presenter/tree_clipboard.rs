@@ -260,6 +260,10 @@ impl Presenter {
                 if !matches!(pending.purpose, Purpose::Menu(_)) {
                     self.desktop.requests.insert(request);
                 }
+                if matches!(pending.purpose, Purpose::Properties) {
+                    // The capture's cancellation also stops the folder count.
+                    self.properties_requested(request, pending.capture.cancel.clone());
+                }
             }
         }
         self.file_actions.tree_clipboard = Some(pending);

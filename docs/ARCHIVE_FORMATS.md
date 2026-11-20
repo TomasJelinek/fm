@@ -93,9 +93,10 @@ trust or enable a missing decoder, and does not change OS associations.
 ## ZIP containers
 
 These 51 suffixes share the ZIP decoder. Case is ignored for the ASCII suffix;
-native Unicode and non-Unicode filenames remain lossless. Only regular native files
-receive a badge: a directory named `example.egg` stays an ordinary directory, and
-links/nested virtual archives do not promise unsupported mounting.
+native Unicode and non-Unicode filenames remain lossless. Only regular files receive
+a badge: a directory named `example.egg` stays an ordinary directory, and links never
+do. Readable members of an archive whose names have an enabled association carry the
+badge too, since Enter opens them as [archives inside the archive](#archives-inside-archives).
 
 | Purpose | Extensions | Default | Format reference |
 | --- | --- | --- | --- |
@@ -164,15 +165,93 @@ explicit unavailable location, with native file operations disabled. Core/codec
 and presenter tests cover this implementation; final integrated UI qualification
 is tracked in the [current extension](superpowers/specs/2026-11-07-panel-viewer-followups.md#archive-hot-paths).
 
+A failed listing in an archive panel can mean that the archive's worker was
+stopped, for example by its 20-second idle watchdog while a viewer read a member;
+every later request through that session fails too. The panel then never lists
+through that session again: it opens the archive once more at the requested folder
+(Backspace, Enter on `..`, Refresh, sorting or a re-listed tree), and if that fails
+as well it returns to the native folder that contains the archive, with the archive
+under the cursor, and shows the error. A cancelled listing changes nothing.
+
 ZIP support is currently Stored/Deflate without passwords; other codecs, encrypted
 Office containers, DRM and corrupt archives may fail explicitly. The current worker
 has no artificial source, member or expansion-ratio byte ceiling: available spool
-storage limits decoded content, while archive metadata stays bounded to 100,000
-entries and 8 MiB of names (protocol-1 workers keep their legacy 64 MiB source
-limit). Nested mounts and RAR are unavailable. See the
-[filesystem API](developer/FILESYSTEM_API.md) and the
+storage limits decoded content. Nothing limits how many members an archive has, how
+many a folder lists or how long their names are in total: the archive's index lives
+in its worker, whose 1 GiB of memory holds about nine million TAR, two million 7z or
+one and a half million ZIP members, and panels, F5 copy-out, folder sizes and Find
+all take a folder of any size; F5 also copies a selection of any size. A panel
+showing an archive folder holds about 650 bytes per member in the application (about
+620 MiB for a million members). An
+archive that needs more than its worker has says that the worker ran out of memory;
+the worker SDK grants no worker more than 1 GiB, so this is the remaining limit
+(protocol-1 workers keep their legacy limits, including a 64 MiB source). A source
+that cannot be read, such as a dropped share, is reported as such, never as an
+invalid archive. RAR is unavailable; archives inside archives are described below.
+See the [filesystem API](developer/FILESYSTEM_API.md) and the
 [archive worker](../plugins/midnight-fs-archive/README.md) for exact limits and the
 plugin contract.
+
+## Archives inside archives
+
+Enter or a left double-click on a readable archive member whose name has an enabled
+archive association opens that member as an archive in the same panel: a ZIP inside a
+ZIP, a TAR or gzipped TAR inside a ZIP, or any supported format inside any other. The
+path bar names the whole path, for example `/data/outer.zip/folder/inner.zip/sub`, and
+its parts open their folders, including the folders of the enclosing archives.
+Backspace and `..` go up through the levels: from the root of an inner archive to the
+enclosing folder with the inner archive under the cursor, and from the outermost root
+to the native folder with the archive file under the cursor. Back and forward history
+covers every level. Enter on an inner archive that the panel still remembers lists it
+through its existing session without staging it again; opening another archive inside
+an archive first ends the sessions of inner archives the panel has left, whose folders
+then leave its history. F3 views the members of an inner archive and F5 copies them out
+with the usual SHA-256 destination readback; folder sizes and member previews go
+through the inner archive's session as in any archive.
+
+Opening stages the member through the enclosing archive's session: its worker decodes
+and verifies the whole member (lengths and CRCs, as for F3), and the host keeps the
+result as a private lease, in memory when it fits the 16 MiB stage limit and the
+shared 128 MiB staging budget, and otherwise in an anonymous private spool file under
+the same free-space reserve as every member. The inner archive gets a restricted worker
+of its own, which reads that lease through the ordinary bounded source broker. The
+lease no longer depends on the enclosing mount's member cache or worker, and every read
+of the inner archive revalidates the enclosing chain down to the native file: a changed
+outer file makes the inner archive fail instead of serving old bytes. While a large
+member is staged, the status bar shows its progress (`Opening inner.zip: 12 of 340
+MiB…`), at most five times a second. Backspace or any other navigation of the panel
+cancels the staging between bounded steps; the enclosing archive's worker keeps
+serving its other users.
+
+Limits:
+
+- At most 4 archive levels, counting the archive opened from a native file. Enter on
+  an archive at the deepest level explains the limit; copy it out with F5 to open it.
+- At most 3 mounts of archives inside archives at once, besides the two archives
+  opened from native files and the two that Find's Search inside archives may hold
+  (each search opens one archive at a time), each worker with the usual 1 GiB
+  memory limit.
+- No additional byte, expansion-ratio or member-count ceiling, consistent with the
+  limits above: decoded content is bounded by the spool volume's free-space reserve,
+  each level's index by its own worker's memory, and decoder windows and dictionaries
+  by their usual bounds. Each level opens only on an explicit Enter, so an archive
+  that contains itself is never unpacked recursively.
+- Member names stay opaque provider identities. No worker receives a path, the staged
+  member has no pathname, and copying out uses the existing safe destination traversal.
+
+Errors name the member's place inside the enclosing archives. A member that is not a
+valid archive, such as a text file named `.zip`, reports
+`This file is not a valid ZIP archive.`; a corrupt inner archive reports the decoder's
+reason. The panel then stays in the enclosing folder. When the worker of an inner
+archive stops, for example by its idle watchdog, the panel does not reopen it: it
+returns to the enclosing folder with the inner archive under the cursor, and says why.
+
+An archive inside an archive is opened for the session only. Saved tabs and Hot Paths
+keep the folder of the outermost archive that leads to it, and restoring them reopens
+that folder. Persistent preview caching of its members applies only while every
+enclosing provider grants stable member IDs. Inline folder branches do not expand
+archives: Enter opens an archive inside an archive from the panel's own folder, while
+archive members shown in expanded branches below it do not open.
 
 The canonical host table is
 [`archive_format.rs`](../crates/midnight-core/src/archive_format.rs).

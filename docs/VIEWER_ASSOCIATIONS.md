@@ -3,7 +3,13 @@
 Open **Options > Plugins** to select a viewer and edit which extensions it handles.
 Enter literal suffixes separated by spaces, commas or semicolons, for example
 `rs; py; custom.txt`. Leading `.` or `*.` is accepted and normalized. Matching
-ignores case. **Reset** removes that viewer's override.
+ignores case. An entry also matches a file whose whole name it is: the Source
+viewer's default `makefile` entry opens `Makefile`, and adding `dockerfile` to a
+viewer's list routes `Dockerfile` to it. **Reset** removes that viewer's override.
+
+The Source viewer's defaults include `csv` and `tsv`, which colour each column;
+removing them from its list returns those files to the Basic viewer. A list saved for
+it before they were added does not gain them; **Reset** restores the defaults.
 
 The list includes text, source, Markdown, image, PDF and HTML viewers when installed.
 Move a viewer higher in the priority list to prefer it when more than one viewer

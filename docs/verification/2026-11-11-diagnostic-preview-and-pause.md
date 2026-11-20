@@ -1,6 +1,6 @@
 # Diagnostic preview and cooperative job pause verification — 2026-11-11
 
-Authoritative workspace: `D:/experiments/dev/FM`. These checks cover backend behavior;
+Authoritative workspace: the primary checkout. These checks cover backend behavior;
 final native window interaction and packaged application checks are recorded separately.
 
 ## Captured diagnostic preview

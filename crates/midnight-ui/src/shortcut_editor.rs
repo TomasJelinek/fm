@@ -174,6 +174,7 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
         state.error.as_str().into()
     });
     view.set_can_assign(inspection.can_assign);
+    view.set_can_restore(inspection.can_restore);
     crate::update_strings(
         view.get_aliases(),
         state

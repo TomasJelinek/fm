@@ -1691,3 +1691,37 @@ fn refused_incomplete_announcement_is_a_retryable_would_block_like_a_refused_pin
     assert!(!change.complete);
     assert_eq!(turn.opaque, 0);
 }
+
+/// Btrfs never folds case, so its names compare byte for byte like ext4's; XFS only on a
+/// volume made without ASCII-CI. No Btrfs or XFS volume can be mounted here, so these
+/// check the decisions with the filesystem's answers injected.
+#[test]
+fn btrfs_and_case_sensitive_xfs_compare_names_byte_for_byte() {
+    assert!(qualified_lookup(BTRFS_MAGIC, Some(0)));
+    assert!(!qualified_lookup(BTRFS_MAGIC, None));
+    assert!(!qualified_lookup(BTRFS_MAGIC, Some(0x0000_0800)));
+    assert!(!qualified_lookup(BTRFS_MAGIC, Some(0x4000_0000)));
+    // XFS is decided by its geometry, never by the flags alone.
+    assert!(!qualified_lookup(XFS_MAGIC, Some(0)));
+    assert!(qualified_xfs_lookup(Some(0), Some(false)));
+    assert!(!qualified_xfs_lookup(Some(0), Some(true)));
+    assert!(!qualified_xfs_lookup(Some(0), None));
+    assert!(!qualified_xfs_lookup(None, Some(false)));
+    assert!(!qualified_xfs_lookup(Some(0x0000_0800), Some(false)));
+    // Overlayfs, NFS, SMB (cifs, smb2) and FUSE stay Unknown.
+    for magic in [0x794c_7630, 0x6969, 0xff53_4d42, 0xfe53_4d42, 0x6573_5546] {
+        assert!(!qualified_lookup(magic, Some(0)), "{magic:x}");
+    }
+}
+
+/// Another filesystem refuses the XFS geometry request: no answer, never a guess.
+#[test]
+fn the_xfs_geometry_of_another_filesystem_is_unknown() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = File::open(temp.path()).unwrap();
+    if rustix::fs::fstatfs(&file).unwrap().f_type as u64 == XFS_MAGIC {
+        eprintln!("SKIP: the temporary folder is on XFS");
+        return;
+    }
+    assert_eq!(xfs_ascii_ci(&file), None);
+}

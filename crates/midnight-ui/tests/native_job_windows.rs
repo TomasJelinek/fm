@@ -225,10 +225,10 @@ impl Harness {
     }
 }
 
-/// A decision window's two Decide later controls: the themed header close, then the
-/// footer button.
-fn later_controls(decision: &MinimalSoftwareWindow) -> [i_slint_core::item_tree::ItemRc; 2] {
-    modeless::accessible_items(
+/// A decision window's one Decide later control, the footer button: the native
+/// frame's X closes the window, so the header has no second X.
+fn later_control(decision: &MinimalSoftwareWindow) -> i_slint_core::item_tree::ItemRc {
+    let [later] = modeless::accessible_items(
         decision,
         i_slint_core::items::AccessibleRole::Button,
         "Decide later",
@@ -236,10 +236,11 @@ fn later_controls(decision: &MinimalSoftwareWindow) -> [i_slint_core::item_tree:
     .try_into()
     .unwrap_or_else(|found: Vec<_>| {
         panic!(
-            "expected the header close and the footer button, found {}",
+            "expected only the footer's Decide later, found {}",
             found.len()
         )
-    })
+    });
+    later
 }
 
 /// The Jobs row whose accessible value is this job identity.
@@ -319,7 +320,7 @@ fn native_decision_later_keeps_jobs_and_retry_uses_the_exact_revision() {
     let children = h.children(2);
     assert!(Rc::ptr_eq(&jobs, &children[0]));
     let decision = children[1].clone();
-    let [_, footer] = later_controls(&decision);
+    let footer = later_control(&decision);
     modeless::click_item(&decision, &footer, "Decide later");
     assert!(h.choices().is_empty(), "Later must not send Cancel or Skip");
     assert!(Rc::ptr_eq(&jobs, &h.children(1)[0]));
@@ -346,8 +347,8 @@ fn native_decision_later_keeps_jobs_and_retry_uses_the_exact_revision() {
 #[test]
 fn native_decision_escape_and_x_defer_exact_jobs_without_cancelling() {
     let h = Harness::new();
-    // Escape, the window's X and the themed header close only close the window.
-    for (id, dismissal) in [(1, "Escape"), (2, "X"), (3, "header close")] {
+    // Escape, the window's X and Decide later only close the window.
+    for (id, dismissal) in [(1, "Escape"), (2, "X"), (3, "Decide later")] {
         h.start(id);
         h.failure(id, id + 100);
         // Each started job keeps its progress window, plus this decision.
@@ -359,8 +360,8 @@ fn native_decision_escape_and_x_defer_exact_jobs_without_cancelling() {
                 .window()
                 .dispatch_event(WindowEvent::CloseRequested),
             _ => {
-                let [header, _] = later_controls(&decision);
-                modeless::click_item(&decision, &header, "Decide later");
+                let later = later_control(&decision);
+                modeless::click_item(&decision, &later, "Decide later");
             }
         }
         assert!(
@@ -453,7 +454,7 @@ fn native_metadata_decision_later_and_cancel_keep_exact_tokens() {
     };
     h.apply(conflict(8));
     let decision = h.children(2).pop().unwrap();
-    let [_, footer] = later_controls(&decision);
+    let footer = later_control(&decision);
     modeless::click_item(&decision, &footer, "Decide later");
     assert!(!resolved());
     let jobs = h.children(1).remove(0);
@@ -999,7 +1000,7 @@ fn progress_close_retains_window_if_cancellation_cannot_be_admitted() {
         modeless::accessible_item(
             &progress,
             i_slint_core::items::AccessibleRole::Text,
-            "Selected items completed: 0 · Not completed: 1"
+            "Copy cancelled; nothing was copied.\nSelected items copied: 0 · Not copied: 1"
         )
         .is_some()
     );
@@ -1062,3 +1063,7 @@ fn pause_and_resume_are_exact_job_requests_and_wait_for_backend_acknowledgement(
 
 #[path = "native_job_windows/confirmation.rs"]
 mod confirmation;
+#[path = "native_job_windows/outcome_notices.rs"]
+mod outcome_notices;
+#[path = "native_job_windows/outcome_view.rs"]
+mod outcome_view;

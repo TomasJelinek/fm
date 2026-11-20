@@ -75,6 +75,7 @@ mod tool_window_shutdown_tests;
 #[cfg(test)]
 mod watch_status_tests;
 pub use owned_commands::{BeginOwned, OwnedCommandScope, with_owned_commands};
+mod panel_choices;
 mod panel_filter_windows;
 mod panel_models;
 mod panel_pointer;
@@ -109,6 +110,7 @@ mod metadata_column_presentation;
 mod time_presentation;
 mod tool_window_failure;
 mod tooltip;
+mod transfer_link_option;
 mod user_command_presentation;
 mod user_command_settings_presentation;
 pub use thumbnail_content::ThumbnailContent;
@@ -399,6 +401,26 @@ pub(crate) fn shown_text(text: &str) -> SharedString {
     visible_name(text).as_ref().into()
 }
 
+/// The end of a shown path that a shortened path label keeps in view: its last component
+/// with the separator before it (`/home/user/report` → `/report`). The label then omits
+/// the middle, so saved folders with a common parent stay distinct. Empty when there is
+/// no separator before a last component; such a label omits its end.
+pub(crate) fn path_tail(shown: &str) -> SharedString {
+    let trimmed = shown.trim_end_matches(['/', '\\']);
+    trimmed
+        .rfind(['/', '\\'])
+        .map(|separator| SharedString::from(&shown[separator..]))
+        .unwrap_or_default()
+}
+
+/// A shown name on a line of its own, kept left to right as the rest of the window:
+/// without the isolation marks, `עברית.txt` would show as `txt.עברית` because its first
+/// strong character is right-to-left. `shown` is already [`shown_text`]; the marks are
+/// added after it, so they are never escaped, and only to displayed text.
+pub(crate) fn isolated_name(shown: &str) -> String {
+    format!("\u{2066}{shown}\u{2069}")
+}
+
 /// [`shown_text`] in place; text without such controls keeps its allocation.
 pub(crate) fn make_shown(text: &mut SharedString) {
     let shown = match visible_name(text) {
@@ -492,6 +514,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     drag_bridge::refresh(window, presenter);
     commander_presentation::refresh(window, presenter);
     metadata_presentation::refresh(window, presenter);
+    about_licenses::refresh(window, presenter);
     shortcut_bridge::refresh_bindings(window, presenter);
     shell_bridge::update(window, presenter);
     operation_presentation::refresh(window, presenter);
@@ -580,11 +603,15 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         presenter
             .bookmarks()
             .iter()
-            .map(|bookmark| BookmarkRow {
-                identity: bookmark.id.0.to_string().into(),
-                label: shown_text(&bookmark.name),
-                path: shown_text(&bookmark.display_text()),
-                slot: i32::from(bookmark.slot.unwrap_or(0)),
+            .map(|bookmark| {
+                let path = shown_text(&bookmark.display_text());
+                BookmarkRow {
+                    identity: bookmark.id.0.to_string().into(),
+                    label: shown_text(&bookmark.name),
+                    path_tail: path_tail(&path),
+                    path,
+                    slot: i32::from(bookmark.slot.unwrap_or(0)),
+                }
             })
             .collect(),
         |model| window.set_bookmarks(model),
@@ -607,6 +634,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_left_bookmark_name(bookmark_name(PaneId::Left));
     window.set_right_bookmark_name(bookmark_name(PaneId::Right));
     window.invoke_refresh_panel_filter_window();
+    panel_choices::refresh(window, presenter);
     window.invoke_refresh_hot_paths_window();
     let volume_icons = presenter
         .volumes
@@ -639,8 +667,12 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_restored_panel_ratio(
         f32::from(presenter.preferences.values.panel_split_basis_points) / 10_000.0,
     );
+    // A directory comparison's result also uses this line: the user asked for no
+    // window after Compare, and the panels show the differences selected.
     window.set_desktop_feedback_important(
-        presenter.desktop.terminal_guidance.is_some() || !presenter.desktop.error.is_empty(),
+        presenter.desktop.terminal_guidance.is_some()
+            || !presenter.desktop.error.is_empty()
+            || presenter.comparison_status().is_some(),
     );
     window.set_preferences_unsaved(presenter.preferences.unsaved);
     window.set_preferences_saving(presenter.preferences.saving);
@@ -742,6 +774,10 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
                 .map_or_else(|| p.rows().len(), |view| view.rows.len()),
             p.selected_count()
         );
+        let hidden = p.hidden_count();
+        if hidden > 0 {
+            status.push_str(&format!("  ·  {hidden} hidden"));
+        }
         if p.size_scan.is_some() {
             status.push_str("  ·  Measuring folders…");
             let keys = presenter.shortcut_hint("panel.folder-sizes");
@@ -794,7 +830,10 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_right_descending(p.sort.descending);
         }
     }
-    window.set_mutation_settling(presenter.mutation_settling());
+    let [left_hold, right_hold] = presenter.mutation_holds();
+    window.set_left_mutation_hold(left_hold.code());
+    window.set_right_mutation_hold(right_hold.code());
+    window.set_mutation_job_text(presenter.mutation_job_text().into());
     navigation_models::update(
         window.get_left_locations(),
         navigation_models::locations(
@@ -852,10 +891,12 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_desktop_status(shown_text(
         if let Some(guidance) = presenter.desktop.terminal_guidance {
             guidance
-        } else if presenter.desktop.error.is_empty() {
-            &presenter.desktop.status
-        } else {
+        } else if !presenter.desktop.error.is_empty() {
             &presenter.desktop.error
+        } else if let Some(compared) = presenter.comparison_status() {
+            compared
+        } else {
+            &presenter.desktop.status
         },
     ));
     // Notice windows copy these; Copy details reads the presenter's own text.
@@ -1037,11 +1078,11 @@ pub fn install_with_owned(
         }
     });
     dialog_focus::install(window);
-    about_licenses::install(window);
+    about_licenses::install(window, presenter.clone(), send.clone());
     information_windows::install(window, presenter.clone(), send.clone());
     shortcut_bridge::install(window, presenter.clone(), send.clone());
     path_paste::install(window, presenter.clone(), send.clone());
-    find_windows::install(window, presenter.clone(), send.clone());
+    find_windows::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     checksum_windows::install(window, presenter.clone(), send.clone());
     file_list_windows::install(window, presenter.clone(), send.clone());
     user_command_presentation::install(window, presenter.clone(), send.clone());
@@ -1053,6 +1094,7 @@ pub fn install_with_owned(
     color_options::install(window, presenter.clone(), send.clone());
     commander_presentation::bind(window, &presenter, &send);
     panel_filter_windows::install(window, presenter.clone(), send.clone());
+    panel_choices::install(window, presenter.clone(), send.clone());
     hot_path_windows::install(window, presenter.clone(), send.clone());
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
@@ -1177,6 +1219,9 @@ pub fn install_with_owned(
                         .is_some_and(|(id, _)| token == format!("copy-job:{}", id.0))
                         || p.active_rename_decision()
                             .is_some_and(|(id, _)| token == format!("rename-job:{}", id.0))
+                        || p.active_delete_decision().is_some_and(|(id, _)| {
+                            token == id.0.to_string() || token == format!("delete-job:{}", id.0)
+                        })
                 } else {
                     false
                 };
@@ -1317,6 +1362,7 @@ pub fn install_with_owned(
             4 => {
                 p.go_root(id, s);
             }
+            5 => p.toggle_hidden_files(s),
             _ => {
                 p.refresh_location(id, s);
             }
@@ -1337,6 +1383,14 @@ pub fn install_with_owned(
             3 => SelectionOperation::FilesOnly,
             4 => SelectionOperation::InvertAll,
             5 => SelectionOperation::ClearFilesOnly,
+            // Keypad + and −: Select/Deselect by mask; * inverts like the dialog.
+            6 | 7 => {
+                p.active = pane(id);
+                w.set_active_pane(id);
+                p.open_mask_selection(pane(id), operation == 6);
+                return;
+            }
+            8 => p.mask_invert_operation(),
             _ => return,
         };
         let id = pane(id);
@@ -1539,6 +1593,10 @@ pub fn install_with_owned(
         insert_literal(&w, p, &path, CommandInsertion::Directory);
     });
     callback!(on_insert_name, |w, p, _s| {
+        // Under search results the full path (`focused_full_path`) names the result.
+        if p.feed_refuses(p.active, "Inserting the focused name") {
+            return;
+        }
         if let Some(name) = p.focused_name(p.active) {
             insert_literal(&w, p, &name, CommandInsertion::Filename);
         }

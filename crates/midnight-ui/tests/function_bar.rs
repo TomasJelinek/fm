@@ -387,6 +387,79 @@ fn every_function_modifier_layer_matches_the_effective_actions_and_visible_butto
     assert!(erase.hint.to_lowercase().contains("permanent"));
 }
 
+/// The caption a function key draws, its width and the width it needs.
+fn drawn_caption(test: &ui::TestUi, button: ItemRc) -> Option<(String, f32, f32)> {
+    use i_slint_core::items::{ComplexText, Orientation, SimpleText};
+    let adapter: Rc<dyn slint::platform::WindowAdapter> = test.native.clone();
+    let mut pending = vec![button];
+    while let Some(item) = pending.pop() {
+        let text = item
+            .downcast::<SimpleText>()
+            .map(|text| text.as_pin_ref().text())
+            .or_else(|| {
+                item.downcast::<ComplexText>()
+                    .map(|text| text.as_pin_ref().text())
+            });
+        if let Some(text) = text
+            && !text.is_empty()
+            && item.is_visible()
+        {
+            let preferred = item
+                .borrow()
+                .as_ref()
+                .layout_info(Orientation::Horizontal, -1.0, &adapter, &item)
+                .preferred;
+            return Some((text.to_string(), item.geometry().width(), preferred));
+        }
+        let mut child = item.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            pending.push(next);
+        }
+    }
+    None
+}
+
+#[test]
+fn narrow_function_keys_show_the_whole_caption_or_the_key_alone() {
+    let mut test = ready();
+    test.window.set_network_available(false);
+    for (density, width, height) in [(0, 960, 600), (1, 960, 600), (1, 820, 600), (0, 640, 480)] {
+        test.window.invoke_apply_preferences(0, density);
+        test.resize(width, height);
+        test.draw();
+        let mut keys_alone = 0;
+        for index in 0..10 {
+            let slot = test
+                .window
+                .global::<ShortcutHints>()
+                .invoke_lookup_function(index, 0, false);
+            let key = format!("F{}", index + 1);
+            let caption = format!("{key} {}", slot.label);
+            let button = visible_button(&test.window, &caption)
+                .or_else(|| visible_button(&test.window, &format!("{caption} — unavailable")))
+                .unwrap_or_else(|| panic!("missing {caption}"));
+            let (shown, room, needed) = drawn_caption(&test, button)
+                .unwrap_or_else(|| panic!("{caption} draws no caption"));
+            let case = format!("density={density}, {width}x{height}, {caption}");
+            assert!(
+                shown == key || shown == caption,
+                "{case}: shows {shown:?} instead of the whole caption or the key alone"
+            );
+            assert!(
+                needed <= room + 1.0,
+                "{case}: {shown:?} needs {needed}px but has {room}px, so it would be cut"
+            );
+            keys_alone += usize::from(shown == key);
+        }
+        if (density, width) == (1, 960) {
+            assert!(keys_alone > 0, "touch at 960px cannot fit every caption");
+            assert!(keys_alone < 10, "short captions such as F3 View still fit");
+        }
+        render::snapshot(&test, &format!("function-bar-narrow-{density}-{width}"));
+    }
+}
+
 #[test]
 fn control_f4_keeps_its_extension_caption_visible_at_desktop_widths() {
     let mut test = ready();
@@ -454,6 +527,49 @@ fn modified_function_buttons_and_keyboard_dispatch_the_same_action_and_pane() {
                 &actions.borrow()[before..],
                 &[(action.into(), pane, value)],
                 "mouse {label}"
+            );
+            modifiers(&test, mask, false);
+        }
+    }
+}
+
+/// An unassigned function key ignores the pointer: a click on it in any modifier
+/// layer leaves the keyboard in the file list and a running filename search as is.
+#[test]
+fn clicking_an_unassigned_function_key_leaves_the_keyboard_in_the_file_list() {
+    let mut test = ready();
+    for query in ["", "a"] {
+        test.window.set_left_search_query(query.into());
+        for (mask, index) in [(4, 0), (4, 11), (2, 4), (2, 11), (5, 0)] {
+            let searching = !query.is_empty();
+            test.window.set_active_pane(0);
+            test.window.invoke_focus_files();
+            modifiers(&test, mask, true);
+            test.draw();
+            let label = format!("{} — unavailable", chord(mask, index));
+            assert!(
+                test.window
+                    .global::<ShortcutHints>()
+                    .invoke_lookup_function(index as i32, mask, searching)
+                    .action
+                    .is_empty(),
+                "{label}"
+            );
+            assert_eq!(test.window.get_focused_pane(), 0, "{label}: before");
+            ui::click_root(&test.window, &label, AccessibleRole::Button);
+            test.draw();
+            assert_eq!(
+                test.window.get_focused_pane(),
+                0,
+                "{label} (searching {searching}): the keyboard stays in the file list"
+            );
+            assert_eq!(
+                (
+                    test.window.get_left_search_active(),
+                    test.window.get_left_search_query().as_str()
+                ),
+                (searching, query),
+                "{label}: the search"
             );
             modifiers(&test, mask, false);
         }

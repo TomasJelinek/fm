@@ -2,6 +2,8 @@ import { PanelFilterDialog, PanelFilterView } from "panel-filter-dialog.slint";
 import { HelpBody } from "help-dialog.slint";
 import { DialogFrame, PopupFocus } from "dialog-frame.slint";
 import { Theme } from "theme.slint";
+import { MaskSelectionDialog, PanelChoices } from "select-mask-dialog.slint";
+export { PanelChoices }
 
 export global PanelFilterPresentation {
     in-out property <PanelFilterView> model;
@@ -16,15 +18,45 @@ export global PanelFilterPresentation {
 }
 
 // The native window stays enabled; both modal layers live in its popup stack.
+// It also hosts Select/Deselect by mask, the other pattern dialog of a panel.
 export component EmbeddedPanelFilter inherits Rectangle {
     private property <string> token: PanelFilterPresentation.token;
-    out property <bool> active: root.token != "";
+    private property <string> mask-token: PanelChoices.mask-token;
+    out property <bool> active: root.token != "" || root.mask-token != "";
     background: transparent;
     changed token => {
         PopupFocus.update();
         if root.token != "" { filter-popup.close(); filter-popup.show(); }
         else { filter-popup.close(); }
         PopupFocus.update();
+    }
+    changed mask-token => {
+        PopupFocus.update();
+        if root.mask-token != "" { mask-popup.close(); mask-popup.show(); }
+        else { mask-popup.close(); }
+        PopupFocus.update();
+    }
+    mask-popup := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        mask-frame := DialogFrame {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            // Wide enough that OK and Cancel share one footer row.
+            desired-width: max(500px, Theme.font-size * 26);
+            desired-height: max(260px, Theme.control-height * 5 + 110px);
+            dim: true; dismiss-on-outside: false;
+            init => { self.reset(); }
+            MaskSelectionDialog {
+                x: 0px; y: 0px;
+                width: mask-frame.body-width; height: mask-frame.body-height;
+                private property <string> occurrence;
+                input-enabled: self.occurrence == PanelChoices.mask-token;
+                init => { self.occurrence = PanelChoices.mask-token; self.begin(); }
+                move-dialog(dx, dy) => { mask-frame.move-by(dx, dy); }
+                apply(pattern, folders) => { PanelChoices.mask-apply(self.occurrence, pattern, folders); }
+                cancel => { PanelChoices.mask-dismiss(self.occurrence); }
+            }
+        }
     }
     filter-popup := PopupWindow {
         x: 0px; y: 0px; width: root.width; height: root.height;

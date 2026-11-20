@@ -30,6 +30,67 @@ transmitted by scripts. Local paths, shell execution, downloads and permission
 prompts are unavailable to web content. The backend owns private session state,
 resource containment, process-tree budgets and cleanup. See the
 [interactive viewer contract](docs/developer/WEB_VIEWER_API.md).
+On Linux systems where AppArmor restricts unprivileged user namespaces, the optional
+`midnight-explorer-html-viewer` profile grants only `userns` to one installation's
+viewer executable and confines nothing else; there is one such profile per machine, so
+installing it for another installation moves the permission there (the installer says
+which installation lost it). Without it, or a setuid-root `chrome-sandbox`, the viewer
+reports the missing permission and never starts Chromium without its sandbox. Where the
+kernel itself denies user namespaces to programs without administrator rights
+(`kernel.unprivileged_userns_clone` or `user.max_user_namespaces` is 0, confirmed by a
+refused namespace probe), no profile could help: the viewer names that setting, says what
+an administrator can change, and offers no profile. Its message suggests `sudo` with the
+installation's `install-html-viewer-apparmor.sh` only when that script is no link and it
+and every folder above it are owned by root and not group- or other-writable; for any
+other installer, which a program running as the user could have replaced, it asks for an
+administrator to install the package's profile instead. The script follows the same rule
+for the `sudo` command it suggests itself, and the package README never suggests `sudo`
+with a copy that the user can change. Installing the profile for a path that can be
+changed without root extends that permission to any program placed there; the script
+refuses a path through a folder that users other than its owner can write to (even a
+sticky one such as `/tmp`), where another user could place a program at the viewer's path,
+now or once the installation is gone.
+
+The viewer can also install that profile itself, but only after an HTML document's
+browser was refused for exactly this reason (a typed refusal, never message text) and
+only when the user chooses **Install…** there. Nothing is checked, offered or installed
+at startup, by packaging or for any other document. The button is offered only when
+`/usr/bin/pkexec` and every folder above it are no links, belong to root and are neither
+group- nor other-writable (the check the authorized listing uses; it is repeated right
+before pkexec runs) and the installation's canonical path qualifies (below), including
+that no folder on the way to the viewer (its own folder up to `/`, or a checkout's
+`_build` up to `/`) can be written by users other than its owner, as the script requires;
+otherwise the viewer shows the manual instructions above. Before anyone is asked, the
+notice names the viewer path the permission is for and that one installation at a time
+has it, and, where someone other than root can change a folder on that path (a per-user
+installation, an extracted package or a checkout), warns that a program put at that path
+could use user namespaces too. A backend thread, never the UI thread,
+then runs exactly `/usr/bin/pkexec --disable-internal-agent /bin/sh -c '<script>'`
+with `LC_ALL=C` as its only change to the environment, so that pkexec's own messages are
+English, where the script is a constant compiled into the application
+(`crates/midnight-elevation/src/sandbox_profile_linux.rs`). As root, that script only:
+sets `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and `umask 022`; reads the profile text from
+its standard input into a `mktemp` file in `/etc/apparmor.d` (a dot name, which AppArmor
+skips when it loads the folder); refuses an empty text; makes the file mode 0644; checks
+it with `apparmor_parser -QTK`; renames it over `/etc/apparmor.d/midnight-explorer-html-viewer`
+(`mv -T`, so a folder there is never written into); and loads it with `apparmor_parser -r`.
+Its own failures exit 1, so 126 and 127 come only from pkexec: a dismissed, refused or
+unobtainable authorization, which changes nothing. Install… then asks again, except when
+pkexec found no authentication agent in the session (status 127 with its message "No
+authentication agent found"): asking again could never work there, so the viewer
+withdraws Install… and says why, with the manual instructions. Closing the window stops
+an authorization that is still pending; a command that pkexec already runs as root cannot
+be stopped, is waited for, and its own result counts. No file of the installation or source checkout is
+executed, sourced or read as root, because the user may be able to change them: neither
+`install-html-viewer-apparmor.sh` nor the viewer runs there. The unprivileged application
+generates the text with the script's rules (a test compares it with the script's
+`--print` output) from the canonical installation path, which may contain only letters,
+digits, spaces and `._+-@:`; the attachment is quoted and the only `*` is the one the
+checkout pattern `<checkout>/_build/*/viewers/…` adds, so a path can neither end the
+quoted attachment nor add rules. Polkit authorizes that constant command, not the text,
+and a program running as the user could ask polkit for any root command itself, so the
+text gives such a program nothing beyond what the administrator authorizes. Unlike the
+script, the button does not remove other files that define the same profile.
 
 Checksum manifests are untrusted input. The checksum worker bounds encoded input,
 decoded text and retained rows, validates the whole document, and opens only named
@@ -38,8 +99,11 @@ parent traversal, aliases, malformed hashes and duplicate entries fail validatio
 Windows/Linux readers reject link ancestry and cross-device descendants and check
 file identity/revision around reads; changed or unreadable sources never become
 Verified. Calculation and verification remain cancellable, bounded background jobs.
-Native Open/Save choices only fill a draft. Saving uses exclusive staging and
-independent SHA-256 readback; it never silently replaces an existing manifest.
+A native Open choice only fills the Verify file field; choosing a Save destination
+requests that save. Saving uses exclusive staging and independent SHA-256 readback.
+It never silently replaces an existing manifest: only an explicit Replace answer
+does, through recoverable replacement that keeps the old file beside it and reports
+where.
 SFV/CRC32, MD5 and SHA-1 support compatibility, not authenticity. A matching checksum
 does not establish the origin or trustworthiness of the manifest itself.
 
@@ -108,8 +172,13 @@ authentication limitations.
 ## Current browsing and explicit-operation milestone
 
 Rename/F2, empty-file creation/Shift+F4, create-directory/F7 and deletion are
-explicit, confirmed operations. Empty-file creation accepts one basename,
-uses exclusive creation and never overwrites or truncates an existing entry.
+explicit, confirmed operations. Empty-file creation accepts one basename and uses
+exclusive creation. A name the panel lists as a file is asked about first, and only
+the dialog's Replace file button (never a repeated or held Enter) replaces it: an
+empty file is published through verified staging and recoverable replacement in the
+folder pinned at preparation, the original is kept in a private recovery folder and
+the completion reports its path. It never truncates a file or replaces a folder,
+link or special entry.
 Preparation pins native identity before showing the confirmation; navigation never
 retargets a queued job. The backend permits at most 32 preparing/prepared/queued/
 running mutation jobs and 32 copy jobs, two mutation preparation workers and one
@@ -117,7 +186,8 @@ active mutating job across both queues. Copy admission is FIFO, including native
 drop reservations awaiting UI handoff. Existing-entry mutation confirmations wait
 for all copies still outstanding at confirmation before acquiring the shared gate;
 an incomplete predecessor rejects the mutation for explicit review. Later copies
-and creation jobs are independent. Native handles
+and new-entry creation jobs are independent; an empty file replacing an existing
+one waits like any other existing-entry change. Native handles
 scale with the selected root count and traversal depth; resource failure is an
 error, never permission to substitute a target. Duplicate operation IDs cannot
 execute twice. Rename collisions require the shared, versioned overwrite prompt; explicit
@@ -140,6 +210,34 @@ symlinks/junctions/mount boundaries. These are live operations, not atomic snaps
 cancellation retains completed changes. Normal window close requests cancellation
 and waits responsively for terminal job events before exiting.
 
+Deleting changes permissions only inside the tree the user confirmed. On Linux, a
+folder of that tree (a selected folder or any folder below it) that the current user
+owns and that lacks owner write or search permission gets both before its entries
+are removed, or before a selected folder moves into staging or the Trash (moving a
+folder changes its `..` entry). The change goes through a descriptor opened beneath
+the parent without following links or crossing mounts and checked against the
+traversal's identity, never through a path, so a link to a folder elsewhere never
+changes that folder. A folder that stays (it still holds skipped items, its removal
+failed, or the deletion stopped) gets its original mode back, and a folder moved to
+the Trash keeps its original mode. A read-only file needs nothing (unlink depends
+only on its folder). The folder that contains the selection, anything outside the
+confirmed tree and anything owned by another user is never changed: a removal they
+refuse pauses the job with Retry, Skip, Skip all errors and Cancel, and says why
+("write-protected" or "owned by another user"). Windows does not yet clear the
+read-only attribute of the items it deletes (a recorded follow-up), and Move's
+removal of its source after a cross-volume copy does not yet apply this rule.
+
+A same-volume Move on Linux renames a folder into another folder, which changes its
+`..` entry and so needs write permission on the folder itself. A folder the current
+user owns that lacks owner write gets it only for these renames, through the
+descriptor retained when the Move was prepared (its `/proc/self/fd` entry, since
+`fchmod` refuses that path-only descriptor), never through a path, and gets its
+original mode back as soon as the native Move returns, wherever the folder then is.
+Folders owned by another user, links and any other item are never changed. A
+prepared Move source is rechecked by identity, size and modified time before each
+attempt; its permissions and change time may differ, because the user may fix them
+to retry.
+
 The Windows Shell recycle API remains path-based inside its native call; a
 concurrent namespace substitution there cannot be excluded. Linux private staging
 narrows pathname races but is not a boundary against the same UID, root or previously
@@ -159,7 +257,10 @@ directory refused after creation is removed again; one that cannot be removed is
 reported with its path.
 See [Windows guarantees](crates/midnight-platform-windows/MUTATION_SAFETY.md)
 and the Linux mutation module's safety comments. No claim of universal race freedom
-is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash.
+is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash. The
+acceptance suite's Trash checks run in a child process whose `XDG_DATA_HOME` is a
+private folder, so they neither use nor read the account's Trash, and a run deletes only
+inside the run folder it created itself (docs/developer/ACCEPTANCE.md).
 
 When a Linux rename, Trash move or permanent deletion completed but its staging
 directory cannot be removed afterwards (for example because another program created an
@@ -236,6 +337,16 @@ inspected as possibly holding the item; neither is described as unneeded.
   No terminal is started by selection, navigation, icons or path insertion.
   Native Properties is also an explicit host-UI action. Unsupported native
   properties fall back to read-only metadata rather than opening/executing files.
+  On Linux that summary reads the entry itself without following a final link
+  (`statx` with `AT_SYMLINK_NOFOLLOW`): owner and group, whose names come only from
+  parsing `/etc/passwd` and `/etc/group` (no NSS module or service is loaded; other
+  accounts show their numeric id), mode and times; a birth time is shown only when
+  the filesystem reports one. A single folder's contents are then counted on a
+  backend worker with the read-only listing interface: links inside are counted and
+  never followed, other filesystems are not entered, ancestry identities stop
+  cycles, and the pending-path frontier is bounded (16 MiB). The count is a live
+  estimate that marks what it could not read; closing or replacing the summary
+  cancels it, and it never blocks the UI thread.
 - Read-only native size scans never follow links met inside the measured tree:
   file links, directory links and junctions are counted as skipped without
   resolving their targets, so aliases cannot double-count or escape the measured
@@ -263,10 +374,12 @@ inspected as possibly holding the item; neither is described as unneeded.
   the sysfs walk. Any missing, remote, virtual, removable or unknown leaf keeps
   the result unknown; network preview opt-in is unchanged.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Supported schemas through version 32 include window geometry, monitor identity
+  Supported schemas through version 35 include window geometry, monitor identity
   and a validated integer panel split ratio,
   typed Network tabs, panel modes, native and archive bookmarks, fonts, command history, shortcuts,
-  filters, editor, viewer, archive, preview size, archive-preview and filename-color choices. Earlier
+  filters, editor, viewer, archive, preview size, archive-preview and filename-color choices,
+  file comparator rules (version 33), the text rendering choice (version 34) and the
+  hidden-files and selection-by-mask choices (version 35). Earlier
   schemas migrate with explicit defaults; unsupported fields and versions fail
   atomically. Viewer options store presentation choices, never query text,
   document contents or per-file reading positions.
@@ -480,8 +593,9 @@ this. SSD-to-SSD copying within one job also remains serial today.
 Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent
 through the ordinary Copy route is rejected. Explicit native Move accepts at most
 64 ordinary file/directory roots with a conservative 4 MiB active proof-path
-reservation. Links, archive members, duplicate/overlapping sources and unsupported
-locations are rejected before mutation. Qualified same-volume native Move uses
+reservation. Archive members, duplicate/overlapping sources and unsupported
+locations are rejected before mutation; links follow the link rules below.
+Qualified same-volume native Move uses
 held source/destination identities and no-replace rename without content reads,
 CRC or SHA computation. Whole-directory rename does not enumerate descendants.
 Same-volume errors never silently fall back to copying. Proven cross-volume moves
@@ -490,7 +604,41 @@ contract below, with explicit live-namespace and durability limits. F6 consumes 
 captures as well as flat selections; native tree Cut publishes Move intent through
 the clipboard capture contract above. Cut itself removes nothing. Copy remains
 available where Move is unsupported, without silent fallback.
-Copy supports files and ordinary directories; links/special files are rejected.
+Copy supports files and ordinary directories; special files are rejected.
+
+Links (Linux; Windows keeps its directory-link options and recreates no link). A link
+is transferred from its exact `readlink` bytes, never by resolving or rebasing its
+target: Copy without following recreates every link, Move moves the link itself, and
+Copy that follows links opens a target only under the directory-link rules (no mount
+crossing, no magic links, no link back to a folder on the current path, at most 128 links
+followed inside one another, a target this process can read and list) and recreates any
+link it cannot follow, with the reason. An absolute link text on a mount other than `/`
+is followed within the link's own mount: each name is opened alone and not followed, a
+mount point or `..` above the mount's root ends the walk, at most 40 links are read, and
+the mount's lineage is checked first. Copy has no fixed depth limit for ordinary folders
+(Move stops at 128); instead every folder a transfer (or its metadata discovery) works
+inside is one level of a budget shared by all transfers of the process: a quarter of the
+open-file limit at three descriptors per level, between 32 and 4,096 levels. A folder
+past it is refused with a clear error long before the process could run out of
+descriptors (EMFILE) and fail whatever else opens a file. At start the application
+raises its soft open-file limit to the hard limit, at most 65,536 (4,096 levels), and
+gives the programs it starts for the user (an editor, a terminal, a custom command, a
+document's application) the original limit back, as programs that use select() expect.
+Reading a link revalidates its parent binding, identity, revision and text,
+so a link replaced after preparation is refused. A recreated link is created only as
+`item` in a fresh owner-only `.midnight-link-<random>` directory inside the protected
+destination folder, read back without following it, compared with the source text,
+revalidated (stage binding, identity and text) and then published with a no-replace
+rename, or with an exchange into private `.midnight-recovery-*` when the user chose
+Replace for an existing file or link (never a folder); the displaced entry is kept.
+A published link is checked again; an unexpected result keeps everything and is
+reported. Cleanup removes only the stage's own link, by identity, and the empty
+stage; an unknown entry there is kept and reported. A Move across filesystems
+removes the original link only after the recreated one is published and checked,
+through the protected link removal (owned link with one name, staged privately,
+revalidated, unlinked); a failed removal keeps both and reports it. A same-volume
+Move renames the link through the same private capture as a directory link. No link
+target is ever opened, written or deleted by these steps.
 Conflicts show source and target metadata and accept versioned Skip, Skip all for
 this job, another name, explicit recoverable replacement, directory merge, or
 Cancel when the provider supports that choice. All choices apply to this job;
@@ -513,10 +661,18 @@ identities even on errors. No recovery object is automatically deleted on Drop.
 
 Linux uses anonymous O_TMPFILE staging and descriptor-based no-replace publication;
 filesystems without that capability return Unsupported, so Linux Copy and cross-volume
-Move cannot write to FAT/exFAT/NTFS media, NFS/SMB, sshfs or GVfs FUSE shares. New
-copied files are owner-only (0600) and new copy directories private (0700); source
-permissions are not copied, while recoverable replacement keeps the replaced file's
-mode, ACL and extended attributes. Where a filesystem cannot store modes, a new
+Move cannot write to FAT/exFAT/NTFS media, NFS/SMB, sshfs or GVfs FUSE shares. A
+staged file stays an owner-only (0600) unnamed inode until it is published, and a new
+copy directory stays private (0700) until its contents were copied; a cancelled copy
+leaves its unfinished directories private. On publication the copy gets the source's
+read, write and execute bits for user, group and other masked by the process umask,
+as `cp` without `-p` does (a source without modes, such as an archive entry or a
+new file list or checksum manifest, gets those of any new file or folder: 0666 or
+0777 masked by the umask); setuid, setgid
+and sticky bits are never copied (a new directory keeps a set-group-ID bit
+inherited from its parent), and a folder that a copy merges into keeps its own mode. Generated outputs replacing an existing file
+(file lists, checksum manifests, an empty file over an existing one) keep the
+replaced file's mode, ACL and extended attributes. Where a filesystem cannot store modes, a new
 directory keeps the mount-provided permissions only while no other user can write to
 it (group write only for the user's private group, without an access ACL); otherwise
 it is removed again and Copy fails. Creation requires a protected parent:
@@ -617,7 +773,8 @@ removed postorder only after fresh source/destination identity checks and an
 empty-directory-only OS operation. Skips retain the affected source ancestors.
 Overlapping selected roots are rejected before writes. Traversal is bounded to
 64 roots, 128 active directory frames, 100,000 entries and a 4 MiB active path/proof
-budget. Links, mount crossings and generic provider Move remain unsupported.
+budget. Links move as links (above); mount crossings and generic provider Move remain
+unsupported.
 Directory identity validation is live on Linux, not atomic compare-and-unlink;
 see [recursive Move evidence](docs/verification/2026-11-08-recursive-move.md).
 
@@ -972,11 +1129,14 @@ fields and conservative physical-device classifications.
   decompression bomb cannot fill the spool volume. The host queries the volume on
   each stage's first append and at least every 64 MiB; writes by other programs
   between two queries are not counted.
-  Decoder dictionaries/windows, metadata indexes, buffered metadata records and
-  retained verified 7z siblings have explicit bounds inside the 512 MiB worker
-  memory limit; 7z compressed-header decoding and ZIP central-directory parsing
-  (including the duplicate-record check) are bounded only by that limit. Listing
-  never extracts a member to its declared host pathname.
+  Decoder dictionaries/windows, buffered metadata records, the raw 7z next header
+  (an eighth of the worker's memory) and retained verified 7z siblings have
+  explicit bounds inside the 1 GiB worker memory limit; the metadata index (no
+  member-count or name-bytes limit), 7z compressed-header decoding and ZIP
+  central-directory parsing (including the duplicate-record check) are bounded only
+  by that limit, and an index that outgrows it fails its archive. A failed read of
+  the source is reported as such, never as a corrupt archive. Listing never
+  extracts a member to its declared host pathname.
   Copying out uses the common destination readback/SHA-256/publish contract.
   Opaque provider IDs and raw member names are captured; names must be safe
   single destination components, never joined archive display paths. Links,

@@ -65,4 +65,4 @@ Owned files: shared terminal control/icons, presenter terminal, UI callback wiri
 - [x] Compare before/after selection and resize measurements with identical settings.
 - [x] Independent final review; address concrete findings.
 - [x] Update design, hotkeys, README and verification report, including F3/Alt+F3 design.
-- [x] Commit intended sources/docs only and push with TomasJelinek as authorized.
+- [x] Commit intended sources/docs only and push with the maintainer's account as authorized.

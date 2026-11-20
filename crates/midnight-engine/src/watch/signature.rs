@@ -99,10 +99,26 @@ pub(crate) fn listing_metadata(filesystem: &dyn FileSystem, entry: &mut Entry) {
     }
 }
 
+/// `probe_shown` of every entry.
+#[cfg(test)]
 pub(crate) fn probe(
     filesystem: &dyn FileSystem,
     path: &Path,
     folders_only: bool,
+    cancel: &Cancellation,
+) -> Result<Observation, ()> {
+    probe_shown(filesystem, path, folders_only, false, cancel)
+}
+
+/// Observes `path`: `full` signs every entry, `display` every entry or only the
+/// folders. With `hide`, hidden entries join neither, by the listings' own rule
+/// (`hidden_entries`, decided on the enumerated entry), so the observation
+/// matches rows of a listing that left them out.
+pub(crate) fn probe_shown(
+    filesystem: &dyn FileSystem,
+    path: &Path,
+    folders_only: bool,
+    hide: bool,
     cancel: &Cancellation,
 ) -> Result<Observation, ()> {
     let mut full = Signature::default();
@@ -121,6 +137,9 @@ pub(crate) fn probe(
             if !valid || entry.virtual_node.is_some() || entry.network_node.is_some() {
                 failed = true;
                 return false;
+            }
+            if hide && crate::hidden_entries::is_hidden(&entry) {
+                return !cancel.is_cancelled();
             }
             listing_metadata(filesystem, &mut entry);
             if full.add(&entry).is_err()

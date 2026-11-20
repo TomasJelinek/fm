@@ -1,17 +1,21 @@
 import { Theme } from "theme.slint";
 import { Tip } from "controls.slint";
 import { PathPartRow } from "navigation-models.slint";
+import { NameText } from "path-text.slint";
 
-// Shared by the full breadcrumb and its pinned leading components.
+// One whole path component of the breadcrumb.
 export component PathToken inherits Rectangle {
     in property <PathPartRow> part;
     in property <int> revision;
     in property <length> text-size;
     in property <bool> highlighted;
+    // The width of the whole caption. A token narrower than this (only the last one,
+    // when even it alone does not fit) ends its caption with an ellipsis.
+    out property <length> natural-width: caption.preferred-width;
     callback selected(string);
     callback copied(string);
     callback hovered(bool);
-    width: caption.preferred-width;
+    width: root.natural-width;
     background: root.highlighted ? Theme.hover : transparent;
     border-radius: 2px;
     accessible-role: button;
@@ -19,8 +23,10 @@ export component PathToken inherits Rectangle {
     accessible-action-default => { root.selected(root.part.identity); }
     caption := Text {
         width: parent.width; height: parent.height;
-        text: root.part.label; color: root.highlighted ? Theme.accent : Theme.text;
+        text: NameText.ltr(root.part.label); accessible-label: root.part.label;
+        color: root.highlighted ? Theme.accent : Theme.text;
         font-size: root.text-size; vertical-alignment: center;
+        overflow: elide;
     }
     TouchArea {
         private property <string> pressed-id;

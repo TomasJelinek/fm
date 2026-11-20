@@ -8,7 +8,7 @@ reusable Windows driver in `scripts/probe-keyboard-search.ps1`.
 
 Windows Application events 1000/1001 identify one failure at 11:05:25 local time:
 
-- Application: `D:\experiments\dev\FM\_build\release\me.exe`.
+- Application: `_build\release\me.exe`.
 - Faulting module: `ucrtbase.dll` 10.0.26100.9711, offset `0xa527e`.
 - Exception: `0xc0000409`, subcode 7; application timestamp `0x6aeef3e1`.
 - Report ID: `48c3fde8-c3fe-45f5-904e-186474f98bfc`.

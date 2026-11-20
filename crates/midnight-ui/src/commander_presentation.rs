@@ -34,12 +34,14 @@ pub(super) fn bind(
     });
     callback!(
         on_submit_comparison,
-        |p, s, size, modified, case, tolerance, directories| {
+        |p, s, size, modified, case, tolerance, directories, contents, subfolders| {
             match tolerance.trim().parse::<u32>() {
                 Ok(seconds) => p.submit_comparison(
                     CompareOptions {
                         by_size: size,
                         by_modified: modified,
+                        by_content: contents,
+                        recursive: subfolders,
                         case_sensitive: case,
                         time_tolerance_seconds: seconds,
                         unmatched_directories: directories,
@@ -87,6 +89,13 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         case_sensitive: state.options.case_sensitive,
         tolerance_seconds: state.options.time_tolerance_seconds.to_string().into(),
         unmatched_directories: state.options.unmatched_directories,
+        by_content: state.options.by_content,
+        recursive: state.options.recursive,
+        progress: if state.busy && state.in_progress() {
+            shown_text(&state.progress)
+        } else {
+            SharedString::default()
+        },
     });
     let state = &presenter.filter_dialog;
     let (history, history_labels) = filter_history(window, presenter);

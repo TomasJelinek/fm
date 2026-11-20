@@ -21,6 +21,8 @@ mod raw_paths;
 #[cfg(all(test, windows))]
 #[path = "external_outcome_windows_tests.rs"]
 mod raw_paths;
+#[cfg(test)]
+mod scroll_tests;
 // The shared integration-test support names this crate by its public path.
 #[cfg(test)]
 extern crate self as midnight_compare_ui;
@@ -394,6 +396,46 @@ impl ComparatorWindows {
     }
 }
 
+/// The compared content under `point`, unless a popup owns the input.
+fn on_content(window: &ComparatorWindow, point: slint::LogicalPosition) -> bool {
+    let (left, top) = (window.get_content_left(), window.get_content_top());
+    point.x >= left
+        && point.y >= top
+        && point.x < left + window.get_content_width()
+        && point.y < top + window.get_content_height()
+        && !midnight_ui_input::popup_open(window.window())
+}
+
+/// The window's shared wheel/touchpad input: compared content takes pixel deltas
+/// without easing of its own, so wheel notches glide there, and touchpad momentum
+/// continues there (only), stopping when the text position stops moving.
+fn native_scroll(window: &ComparatorWindow) -> midnight_ui_input::NativeScroll {
+    let weak = window.as_weak();
+    let mut scroll =
+        midnight_ui_input::NativeScroll::new(window).glide_content(Box::new(move |point| {
+            weak.upgrade()
+                .is_some_and(|window| on_content(&window, point))
+        }));
+    let contains = window.as_weak();
+    let position = window.as_weak();
+    scroll.set_kinetic_surface(midnight_ui_input::KineticSurface {
+        contains: Box::new(move |point| {
+            contains
+                .upgrade()
+                .is_some_and(|window| on_content(&window, point))
+        }),
+        position: Box::new(move || {
+            position
+                .upgrade()
+                .filter(|window| !window.get_image_mode())
+                .map_or([None; 2], |window| {
+                    [None, Some(f64::from(window.get_position()))]
+                })
+        }),
+    });
+    scroll
+}
+
 fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
     let weak = Rc::downgrade(open);
     open.window.on_search(move |backwards| {
@@ -464,6 +506,12 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
         }
     });
     let weak = Rc::downgrade(open);
+    open.window.on_show_bytes(move |show| {
+        if let Some(open) = weak.upgrade() {
+            open.send(Input::Bytes(show));
+        }
+    });
+    let weak = Rc::downgrade(open);
     open.window.on_change_mode(move |mode| {
         if let Some(open) = weak.upgrade() {
             open.send(Input::Mode(match mode {
@@ -496,7 +544,7 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
     let native = Rc::new(RefCell::new(midnight_ui_input::ShortcutState::default()));
     let state = native.clone();
     let native_keys = keys.clone();
-    let mut scroll = midnight_ui_input::NativeScroll::new(&open.window);
+    let mut scroll = native_scroll(&open.window);
     let weak = Rc::downgrade(open);
     open.window.window().on_winit_window_event(move |_, event| {
         let Some(open) = weak.upgrade() else {
@@ -535,7 +583,8 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
 }
 
 /// Navigation only moves the view, so a full queue may shed it. Every other input sets
-/// state the window already shows (geometry, image mode, font, fit or actual pixels).
+/// state the window already shows (geometry, image mode, Hex view, font, fit or actual
+/// pixels).
 /// Explicit file choices use session admission directly.
 fn navigation(input: &Input) -> bool {
     matches!(
@@ -556,6 +605,7 @@ fn same_state(old: &Input, new: &Input) -> bool {
         (old, new),
         (Input::Resize(..), Input::Resize(..))
             | (Input::Mode(_), Input::Mode(_))
+            | (Input::Bytes(_), Input::Bytes(_))
             | (Input::FontFamily(_), Input::FontFamily(_))
             | (Input::Find { .. }, Input::Find { .. })
             | (Input::FindStep { .. }, Input::FindStep { .. })
@@ -636,11 +686,13 @@ fn key(open: &OpenWindow, action: &str) -> bool {
             open.close();
             return true;
         }
-        "viewer.find" if !open.window.get_image_mode() => {
+        "viewer.find" if !open.window.get_image_mode() && !open.window.get_bytes_mode() => {
             open.window.invoke_focus_search();
             return true;
         }
-        "viewer.find-next" | "viewer.find-previous" if !open.window.get_image_mode() => {
+        "viewer.find-next" | "viewer.find-previous"
+            if !open.window.get_image_mode() && !open.window.get_bytes_mode() =>
+        {
             open.find(action == "viewer.find-previous");
             return true;
         }

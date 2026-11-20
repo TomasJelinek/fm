@@ -47,8 +47,9 @@ fn traversal_and_ads_are_visible_but_never_readable() {
 #[test]
 fn corrupt_archives_and_resource_limits_are_explicit_failures() {
     assert!(Archive::open(Format::Zip, b"bad zip".to_vec(), Limits::default()).is_err());
+    // An embedder's declared-size budget; production keeps it unlimited.
     let limits = Limits {
-        max_entries: 1,
+        max_entry: 1,
         ..Limits::default()
     };
     assert_eq!(
@@ -58,6 +59,45 @@ fn corrupt_archives_and_resource_limits_are_explicit_failures() {
             .code,
         ErrorCode::Limit
     );
+}
+
+#[test]
+fn a_file_that_is_not_a_zip_says_so_before_the_technical_reason() {
+    for bytes in [b"plain text saved as notes.zip\n".to_vec(), Vec::new()] {
+        let error = Archive::open(Format::Zip, bytes, Limits::default())
+            .err()
+            .unwrap();
+        assert_eq!(error.code, ErrorCode::Corrupt);
+        let (reason, details) = error.message.split_once('\n').unwrap();
+        assert_eq!(reason, "This file is not a valid ZIP archive.");
+        assert!(details.contains("EOCD"), "{details}");
+    }
+}
+
+/// An archive member opened as an archive may be any file: each decoder's rejection
+/// leads with the same plain sentence, then its own reason.
+#[test]
+fn files_that_are_no_archive_of_their_format_say_so_for_every_format() {
+    for (format, kind) in [
+        (Format::SevenZip, "7z archive"),
+        (Format::Gzip, "gzip file"),
+        (Format::TarGzip, "gzip-compressed TAR archive"),
+        (Format::Xz, "XZ file"),
+        (Format::Bzip2, "bzip2 file"),
+        (Format::TarZstd, "Zstandard-compressed TAR archive"),
+    ] {
+        let error = Archive::open(
+            format,
+            b"plain text saved with an archive name\n".to_vec(),
+            Limits::default(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.code, ErrorCode::Corrupt, "{format:?}: {error}");
+        let (reason, details) = error.message.split_once('\n').unwrap();
+        assert_eq!(reason, format!("This file is not a valid {kind}."));
+        assert!(!details.is_empty(), "{format:?} keeps the decoder's reason");
+    }
 }
 
 #[test]
@@ -481,4 +521,140 @@ fn cp437_implicit_directory_preserves_decoded_display_and_raw_identity() {
         archive.list(directory.id, 0).unwrap()[0].display,
         "file.txt"
     );
+}
+
+/// A source that fails like a dropped share or a removed drive once `remaining` more
+/// bytes were read from it.
+struct Failing {
+    inner: Cursor<Vec<u8>>,
+    remaining: std::rc::Rc<std::cell::Cell<u64>>,
+}
+impl std::io::Read for Failing {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.remaining.get();
+        if remaining == 0 {
+            return Err(std::io::Error::other("Input/output error"));
+        }
+        let limit = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(output.len());
+        let count = std::io::Read::read(&mut self.inner, &mut output[..limit])?;
+        self.remaining.set(remaining - count as u64);
+        Ok(count)
+    }
+}
+impl std::io::Seek for Failing {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        std::io::Seek::seek(&mut self.inner, from)
+    }
+}
+
+fn open_failing(
+    format: Format,
+    bytes: Vec<u8>,
+    remaining: u64,
+) -> (
+    Result<Archive, midnight_fs_archive::Error>,
+    std::rc::Rc<std::cell::Cell<u64>>,
+) {
+    let remaining = std::rc::Rc::new(std::cell::Cell::new(remaining));
+    let length = bytes.len() as u64;
+    let source = Failing {
+        inner: Cursor::new(bytes),
+        remaining: remaining.clone(),
+    };
+    let opened = Archive::open_stream(
+        format,
+        Box::new(source),
+        length,
+        std::rc::Rc::new(midnight_fs_archive::storage::MemoryStorage::default()),
+        Limits::default(),
+    );
+    (opened, remaining)
+}
+
+/// Incompressible bytes, so that every format spans several source reads.
+fn noise(length: usize) -> Vec<u8> {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    (0..length)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect()
+}
+
+fn assert_source_failure(error: &midnight_fs_archive::Error, context: &str) {
+    assert_eq!(error.code, ErrorCode::Io, "{context}: {error}");
+    assert_eq!(error.message, "Input/output error", "{context}");
+}
+
+#[test]
+fn a_failed_source_read_is_an_io_failure_never_an_invalid_archive() {
+    let data = noise(2_000_000);
+    let mut tar = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(data.len() as u64);
+    header.set_mode(0o644);
+    tar.append_data(&mut header, "data.bin", data.as_slice())
+        .unwrap();
+    let tar = tar.into_inner().unwrap();
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gzip.write_all(&tar).unwrap();
+    let tar_gz = gzip.finish().unwrap();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("data.bin", stored).unwrap();
+    zip.write_all(&data).unwrap();
+    let zip = zip.finish().unwrap().into_inner();
+    let mut sevenzip = sevenz_rust2::ArchiveWriter::new(Cursor::new(Vec::new())).unwrap();
+    sevenzip.set_content_methods(vec![sevenz_rust2::EncoderConfiguration::new(
+        sevenz_rust2::EncoderMethod::COPY,
+    )]);
+    sevenzip
+        .push_archive_entry(
+            sevenz_rust2::ArchiveEntry::new_file("data.bin"),
+            Some(data.as_slice()),
+        )
+        .unwrap();
+    let sevenzip = sevenzip.finish().unwrap().into_inner();
+    // Opening fails at the first read, or halfway through a compressed TAR. Every
+    // decoder wraps or reports the failure its own way.
+    let half = tar_gz.len() as u64 / 2;
+    for (format, bytes, remaining) in [
+        (Format::TarGzip, tar_gz.clone(), 0),
+        (Format::TarGzip, tar_gz.clone(), half),
+        (Format::Gzip, tar_gz.clone(), 0),
+        (Format::Zip, zip.clone(), 0),
+        (Format::Tar, tar.clone(), 0),
+        (Format::Xz, tar_gz.clone(), 0),
+        (Format::SevenZip, sevenzip.clone(), 0),
+    ] {
+        let context = format!("opening {format:?} after {remaining} bytes");
+        let (opened, _) = open_failing(format, bytes, remaining);
+        assert_source_failure(&opened.err().unwrap(), &context);
+    }
+    // A member read that fails after the archive opened, while it is staged.
+    for (format, bytes) in [
+        (Format::Zip, zip),
+        (Format::Tar, tar),
+        (Format::SevenZip, sevenzip),
+    ] {
+        let context = format!("reading a {format:?} member");
+        let (opened, remaining) = open_failing(format, bytes, u64::MAX);
+        let mut archive = opened.unwrap_or_else(|error| panic!("{context}: {error}"));
+        let member = archive.list(1, 0).unwrap()[0].id;
+        remaining.set(0);
+        assert_source_failure(&archive.read(member, 0, 4).unwrap_err(), &context);
+        // The archive still serves the member once its source reads again.
+        remaining.set(u64::MAX);
+        assert_eq!(
+            archive.read(member, 0, 4).unwrap().0,
+            data[..4],
+            "{context}"
+        );
+    }
 }

@@ -45,12 +45,12 @@ consistent with their density profile.
 
 Inspected the supplied local Salamander source:
 
-- [drivelst.cpp:1585](D:/experiments/salamander-main/src/drivelst.cpp:1585),
+- `src/drivelst.cpp:1585`,
   `CDrivesList::BuildData`, constructs the common inventory; Network Neighborhood
-  is added at [line 2032](D:/experiments/salamander-main/src/drivelst.cpp:2032).
-- [drivelst.cpp:2479](D:/experiments/salamander-main/src/drivelst.cpp:2479),
+  is added at line 2032.
+- `src/drivelst.cpp:2479`,
   `IncludeDriveInDriveBar`, includes the Network target; `FillDriveBar` at
-  [line 2502](D:/experiments/salamander-main/src/drivelst.cpp:2502) walks the same
+  line 2502 walks the same
   inventory in order and filters the supported toolbar entries.
 - Source SHA-256:
   `B93CD21C98B0B345050E740E57422DD5810CFF78E2200FCBDBBF95E4AC7E2CA8`.

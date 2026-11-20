@@ -127,7 +127,16 @@ pub fn create_rename(context: &mut Context) -> Result<(), String> {
     if fs::read(folder.join("keep.txt")).map_err(|error| error.to_string())? != b"keep\n" {
         return Err("the existing file changed before the replacement was confirmed".into());
     }
+    // Another Return in the name field (a reflexive double Enter) must not replace it.
     input::key(app.slint(), Key::Return);
+    app.settle();
+    if app.window.get_operation_token().is_empty()
+        || fs::read(folder.join("keep.txt")).map_err(|error| error.to_string())? != b"keep\n"
+    {
+        return Err("a second Return in the name field replaced the existing file".into());
+    }
+    // The replacement is confirmed with the dialog's Replace file button.
+    input::click_button(app.slint(), "Replace file")?;
     let kept = folder.join("keep.txt");
     let state = wait_done(&mut app, start, move |_| {
         fs::metadata(&kept).is_ok_and(|metadata| metadata.len() == 0)
@@ -142,6 +151,31 @@ pub fn create_rename(context: &mut Context) -> Result<(), String> {
             replaced.len()
         ));
     }
+    // The completed replacement says where the original is kept for recovery.
+    app.until("the replacement notice", |app| app.notice().is_some());
+    let (title, body) = app.notice().unwrap_or_default();
+    let recovery = body
+        .lines()
+        .map(str::trim)
+        .find(|line| line.contains(".midnight-recovery-"))
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| format!("the notice {title:?} names no recovery copy: {body:?}"))?;
+    if fs::read(&recovery).map_err(|error| format!("{}: {error}", recovery.display()))? != b"keep\n"
+    {
+        return Err(format!(
+            "the recovery copy {} does not hold the original content",
+            recovery.display()
+        ));
+    }
+    app.screenshot(
+        context,
+        "new-file-replaced-notice",
+        "Where Shift+F4 kept the replaced original",
+    );
+    input::key(app.slint(), Key::Escape);
+    app.until("the replacement notice to close", |app| {
+        app.notice().is_none()
+    });
 
     // F7: a new folder.
     panel::wait_input(&mut app);

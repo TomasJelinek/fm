@@ -65,6 +65,9 @@ fn frame(generation: u64) -> Output {
             accessible_text: String::new(),
             status: "obsolete built-in frame".into(),
             image: false,
+            bytes: false,
+            bytes_only: false,
+            scanning: false,
             position: 0.0,
         },
     }

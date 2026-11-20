@@ -165,7 +165,8 @@ fn small_progress_scrolls_chart_and_details_without_moving_close() {
     test.window.set_job(OperationRow {
         identity: "copy".into(), title: "Copy files".into(),
         detail: "Source\nD:\\文档\\source.txt\nDestination\nE:\\target.txt\nComplete diagnostics remain scrollable.".into(),
-        cancellable: true, ..Default::default()
+        // A running job shows its progress; one cancelling is closed with Close.
+        active: true, ..Default::default()
     });
     test.window.show().unwrap();
     test.draw();

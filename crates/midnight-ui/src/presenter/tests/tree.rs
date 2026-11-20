@@ -518,9 +518,10 @@ fn dropped_adopted_session_cancels_a_comparison_that_waits_for_it() {
         },
     );
     assert!(!p.comparison.busy, "the comparison stops waiting");
+    // The dialog closed on Compare, so the cancellation is reported as a notice.
     assert_eq!(
-        p.comparison.error,
-        "Comparison cancelled because a panel or selection changed."
+        p.desktop.notice.as_ref().map(|(_, body)| body.as_str()),
+        Some("Comparison cancelled because a panel or selection changed.")
     );
     assert!(
         sent.borrow().iter().any(|command| matches!(
@@ -661,6 +662,52 @@ fn dropped_archive_tree_session_relists_the_archive_folder() {
         let retired = p.take_retired();
         std::thread::spawn(move || drop(retired)).join().unwrap();
     }
+}
+
+#[test]
+fn a_stopped_archive_session_behind_an_expanded_tree_is_reopened() {
+    let mut p = super::archives::archive_pane();
+    let root = adopt_archive_tree(&mut p);
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let listing = |sent: &RefCell<Vec<Command>>| match sent.borrow().last() {
+        Some(Command::ArchiveNavigate {
+            action: ArchiveAction::List(location),
+            ..
+        }) => location.mount_id(),
+        other => panic!("expected an archive listing, got {other:?}"),
+    };
+    // The provider stopped the session: the tree is dropped and the folder re-listed.
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Unavailable {
+            root,
+            error: TreeDiagnostic::new("Archive worker made no progress and was stopped"),
+        })),
+        &send,
+    );
+    assert_eq!(listing(&sent), Some(42));
+    let navigation = NavigationId(p.panes[0].generation);
+    p.apply_with_sender(
+        Event::ArchiveListed {
+            pane: PaneId::Left,
+            navigation,
+            result: Err(FsError::from_io(
+                "archive navigation",
+                Path::new(""),
+                io::Error::new(io::ErrorKind::TimedOut, "Archive worker was stopped"),
+            )),
+        },
+        &send,
+    );
+    // That re-list fails through the stopped session; a fresh one is opened.
+    assert_eq!(listing(&sent), None);
+    assert!(p.panes[0].loading && p.panes[0].tree_view().is_none());
+    p.retire_all();
+    let retired = p.take_retired();
+    std::thread::spawn(move || drop(retired)).join().unwrap();
 }
 
 #[test]

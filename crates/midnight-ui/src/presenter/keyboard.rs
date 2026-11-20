@@ -120,6 +120,9 @@ fn display_key(key: &ShortcutChord) -> String {
             "Semicolon" => ";",
             "Quote" => "'",
             "Backquote" => "`",
+            "NumpadAdd" => "Num +",
+            "NumpadSubtract" => "Num -",
+            "NumpadMultiply" => "Num *",
             other => other,
         }
         .to_owned();

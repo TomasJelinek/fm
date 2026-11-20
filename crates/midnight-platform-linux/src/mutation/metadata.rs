@@ -348,8 +348,46 @@ fn apply_fields(
         }
         result.changes.modified = patch.modified != TimeEdit::Keep;
         result.changes.accessed = patch.accessed != TimeEdit::Keep;
+        // The kernel clamps a time outside the filesystem's range without an error.
+        let actual = fstat(&item._source).map_err(|e| native_error(&result.current_path, e))?;
+        for (edit, stored, name) in [
+            (
+                patch.modified,
+                modified_time(actual.st_mtime, actual.st_mtime_nsec),
+                "modified",
+            ),
+            (
+                patch.accessed,
+                modified_time(actual.st_atime, actual.st_atime_nsec),
+                "accessed",
+            ),
+        ] {
+            if let TimeEdit::Set(requested) = edit
+                && !time_kept(requested, stored)
+            {
+                return Err(error(
+                    &result.current_path,
+                    ErrorKind::Other,
+                    &format!(
+                        "the filesystem kept a different {name} time, usually because the date is outside the range it can store"
+                    ),
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+/// Filesystems store times at their own precision (FAT keeps only the access date),
+/// so only a larger difference means that the requested time was not kept.
+fn time_kept(requested: SystemTime, stored: Option<SystemTime>) -> bool {
+    const PRECISION: Duration = Duration::from_secs(2 * 86_400);
+    stored.is_some_and(|stored| {
+        stored
+            .duration_since(requested)
+            .unwrap_or_else(|earlier| earlier.duration())
+            <= PRECISION
+    })
 }
 
 /// Renames through private staging. Once published the rename has completed: a

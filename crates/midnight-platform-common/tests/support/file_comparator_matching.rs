@@ -135,7 +135,11 @@ fn disabled_invalid_regex_reports_its_submitted_row_and_expression_field() {
     let error = comparator_rules::validate(&raw).unwrap_err();
     assert_eq!(error.rule, Some(1));
     assert_eq!(error.field, FileComparatorField::Expression);
-    assert!(!error.message.is_empty());
+    // One sentence naming the problem, without the matcher size limits.
+    assert_eq!(
+        error.message,
+        "Invalid regular expression: unclosed character class."
+    );
     assert!(comparator_rules::compile(Arc::new(raw)).is_err());
 }
 
@@ -192,6 +196,12 @@ fn oversized_regex_is_rejected_with_a_row_and_field_diagnostic() {
     .unwrap_err();
     assert_eq!(error.rule, Some(0));
     assert_eq!(error.field, FileComparatorField::Expression);
+    // Only a matcher that is too large explains the size limits.
+    assert!(
+        error.message.contains("Comparator matcher limits are"),
+        "{}",
+        error.message
+    );
 }
 
 #[test]

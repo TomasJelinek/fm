@@ -40,7 +40,10 @@ fn polling_only(path: &Path) -> WatchStatus {
     WatchStatus::PollingOnly(FsError::from_io(
         "watch directory",
         path,
-        io::Error::other("OS file watch limit reached"),
+        io::Error::new(
+            io::ErrorKind::QuotaExceeded,
+            "The system's limit on watched folders is reached (fs.inotify.max_user_watches).",
+        ),
     ))
 }
 
@@ -61,7 +64,7 @@ fn shown(h: &Harness) -> Option<(String, String)> {
     let item = h.find(|item| {
         item.accessible_role() == AccessibleRole::Text && {
             let label = property(item, AccessibleStringProperty::Label);
-            label.starts_with("Change notifications") || label.starts_with("Automatic refresh")
+            label.starts_with("Live updates") || label.starts_with("Automatic refresh")
         }
     })?;
     Some((
@@ -83,9 +86,9 @@ fn the_current_views_watch_status_is_shown_in_its_pane_until_native_or_another_v
 
     report(&mut h, first, polling_only(&root));
     let (text, details) = shown(&h).expect("a polling-only folder says so in its pane");
-    assert!(text.contains("about every 15 seconds"), "{text}");
+    assert!(text.contains("checked for changes regularly"), "{text}");
     assert!(
-        details.contains("OS file watch limit reached"),
+        details.contains("limit on watched folders"),
         "the registration error explains it: {details}"
     );
     assert_eq!(h.window.get_left_watch_status(), text.as_str());

@@ -40,7 +40,7 @@ impl Presenter {
         let archive = displayed
             .archive
             .as_ref()
-            .map(|state| state.location.address.clone());
+            .map(archives::ArchivePane::saved_address);
         let path = displayed.network.as_ref().map_or_else(
             || {
                 archive

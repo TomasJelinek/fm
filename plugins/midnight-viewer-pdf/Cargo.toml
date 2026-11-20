@@ -3,7 +3,7 @@ resolver = "2"
 
 [package]
 name = "midnight-viewer-pdf"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
@@ -11,8 +11,19 @@ license = "MIT"
 description = "Independent restricted paginated PDF viewer for Midnight Explorer"
 
 [dependencies]
-midnight-image-viewer-sdk = { version = "=0.3.0", registry = "midnight" }
+midnight-image-viewer-sdk = { version = "=0.4.0", registry = "midnight" }
 hayro = { version = "=0.9.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
+
+# The development application loads development plugin builds. Unoptimized decoders,
+# text and pixel loops made debug viewers several times slower than shipped ones
+# (a 3840x2160 JPEG took 8.5 s instead of 0.8 s), which hid real costs and invented
+# others. Optimize all dependencies; this crate's own pixel loops get level 2 and
+# keep their debug assertions. Measurements: docs/verification/2026-11-20-viewer-speed.md.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

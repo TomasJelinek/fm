@@ -49,11 +49,38 @@ TEMP filesystem primitives fail explicitly. Final file cleanup stays on backend
 workers and waits for outstanding native I/O. These are ephemeral files, not a
 crash-recovery or persistent caching product.
 
+## Archives inside archives (decided 2026-11-20)
+
+A member opened as an archive becomes another mount's captured source. The enclosing
+mount stages it with one ordinary member read (`ArchiveMount::stage_member`): the same
+cooperative cancellation, integrity checks and memory/spool policy as F3, plus progress
+at each `StageAck`, and the sealed lease is handed to the caller instead of only the
+member cache. The lease outlives cache eviction and the enclosing worker. A nested
+`Mount` (`Mount::open_nested`) reads it through `CapturedFile::from_source`, so the
+inner worker receives `Open` with the member length and bounded `SourceRead`s like any
+other source; no protocol, worker or plugin change is involved. Every source read
+validates the enclosing chain down to the native capture, outside any lock the UI
+reads. The nested mount holds its enclosing mount only through that source, which
+gives it up through `release_on_worker` after its staged content closes; the mount
+reports its enclosing folder through `ArchiveMount::parent` (callers receive their own
+location clones), which every engine wrapper forwards.
+
+Bounds: `MAX_ARCHIVE_DEPTH` = 4 archive levels counting the native archive, checked
+in the presenter, the engine and the host; at most 3 nested mounts per process besides
+the two native-archive mounts (each worker keeps its 512 MiB limit); no additional byte
+or ratio ceiling, so staged bytes stay bounded by the staging budget and the spool
+volume's free-space reserve. The nested revision is the enclosing revision plus the
+member ID when every enclosing provider grants stable IDs and it fits the 256-byte
+address budget; otherwise it is unique to the mount and grants no persistent preview
+identity. Nested addresses are never persisted: tabs and Hot Paths save the outermost
+archive's folder. A failed nested session is not re-opened; the pane returns to the
+enclosing folder with the inner archive under the cursor.
+
 ## Salamander source inspection, 9 November 2026
 
 The requested local source tree was inspected directly. Relevant references are:
 
-- `D:/experiments/salamander-main/src/plugins/zip/list.cpp:28` opens a read-cached
+- `<salamander-source>/src/plugins/zip/list.cpp:28` opens a read-cached
   ZIP source; `:97` iterates central headers from the central-directory offset.
   This supports separating index browsing from member decompression.
 - `src/plugins/zip/extract.cpp:578` connects refill/flush buffers and a sliding
@@ -140,11 +167,13 @@ their independent validation shows a concrete need for a dependency change.
    data or waits for a worker.
 
 For compressed TAR, Open streams the entire outer codec to one private scratch
-object and checks its final checksum/trailer and all concatenated frames. After
-verification it becomes a sealed, mount-owned seekable TAR source; the worker
-indexes it through spool reads. Member ranges share that one object and do not
-create copies. This preserves current whole-stream verification before listing;
-it improves RAM use, not time to first listing. Standalone gzip/xz/bzip2/zstd uses
+object and checks its final checksum/trailer and all concatenated frames. The worker
+indexes the TAR headers in the same pass, as each decoded block is staged, and
+skips member data without reading it back (2026-11-20: reading the scratch back for
+the index had cost as much host traffic as staging it). After verification the
+sealed scratch is the mount-owned source of member ranges, which share that one
+object and do not create copies. This preserves whole-stream verification before
+listing. Standalone gzip/xz/bzip2/zstd uses
 the same decode path but publishes its single content object instead of TAR
 indexing. Plain TAR has header checksums, not a payload CRC; do not claim payload
 authenticity or invent an archive checksum for it.
@@ -244,7 +273,23 @@ source sizes are u64 and seekable sources are not copied just to enforce a size
 ceiling. Aggregate disk reservations include in-progress writes and every live
 lease; reserve before writing and release only after the file really closes.
 Unknown expanded lengths reserve incrementally, aborting before quota overrun.
-Free-space checks are advisory; ENOSPC/write/flush failure remains authoritative.
+Free-space checks are advisory; ENOSPC/write failure remains authoritative. Sealing
+does not flush the private spool to storage: every read verifies the CRC-32 recorded
+for each 64 KiB block it touches, so lost or failed write-back is a read error,
+never content (2026-11-20; a synchronous flush made opening a large compressed TAR
+wait seconds for the disk).
+Implemented memory staging (decided 2026-11-20, replacing the RAM proposals above for
+staged content): a stream or member of at most 16 MiB stays in host memory while a
+128 MiB budget shared by every archive mount of the process has room. Creating each
+spool file waited up to 12 s for the volume's journal while another program flushed.
+Content declared larger gets a spool file at once. A stage that outgrows 16 MiB or the
+budget moves its bytes to a new spool file and continues there, and those bytes count
+against the disk reserve. Memory returns to the budget when the stage moves or when its
+last lease closes. In-memory bytes need no CRC. The private spool root is chosen once
+per process, with one test spool, and again after a spool failure in it; per-process
+roots are checked by every mount. The engine makes that choice in the background after
+plugin discovery (`Catalog::prepare_staging`), so the first archive opened does not
+wait for the test spool.
 Never fall back to an unbounded Vec when disk is unavailable.
 
 Two existing 512 MiB archive worker limits remain a hard 1 GiB aggregate ceiling
@@ -300,7 +345,7 @@ documents its generic reader and decode-into interfaces. PSD remains unsupported
 adding a PSD codec, layer loading or embedded-preview selection is a separate task.
 
 Salamander provides useful lifecycle precedent, not reusable sandbox design:
-`D:/experiments/salamander-main/src/cache.h` defines GetName, NamePrepared,
+`<salamander-source>/src/cache.h` defines GetName, NamePrepared,
 AssignName and ReleaseName; `src/zip.cpp` connects prepared temp files and viewer
 locks. Its viewer receives a temp filename. Reuse the idea of private preparation,
 publication and reader lifetime, while preserving Midnight's path-free workers

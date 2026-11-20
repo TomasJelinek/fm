@@ -34,6 +34,13 @@ budget. The host enforces read volume, read
 count, source revision, per-response deadlines and a 512 MiB/60 CPU-second process limit.
 The CPU allowance is cumulative across a session; exhaustion ends that session.
 
+Version 0.3.0 pins SDK 0.4.0 (API 0.3.0). When decoding fails, the SDK sends the
+decoder's error text, sanitized to at most 160 printable ASCII characters without
+paths, after the failure, and the host shows it after its own sentence, for example
+"This image is damaged or incomplete: the file is empty". The shared decoder names
+empty sources and content that is not an image before trying SVG; codec errors keep
+image-rs wording, such as "unexpected end of file" for a cut PNG.
+
 Use a separately released offline SDK registry. The project never edits host
 sources. All build/test output must lie below a `_build` directory: this project's own
 (`./_build`), that of the repository holding it in `plugins/`, or otherwise the first

@@ -8,7 +8,7 @@ readers. Preserve immutable captured generations, cancellation, raw paths and
 verified no-replace publication. Parsing, hashing and file dialogs stay on backend
 workers; the UI displays results and requests explicit actions.
 
-**Reference:** `D:/experiments/salamander-main/src/plugins/checksum/checksum.cpp`
+**Reference:** `<salamander-source>/src/plugins/checksum/checksum.cpp`
 (HashInfo) and `dialogs.cpp` (`SaveHashes`, `AnalyzeSourceFile`, `LoadSourceFile`).
 SFV stores filename then CRC; MD5/SHA store hash then filename. Verification also
 accepts BSD `ALGORITHM (name) = digest`, comments and hash-only sidecar files.

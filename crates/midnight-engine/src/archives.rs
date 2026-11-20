@@ -164,6 +164,14 @@ impl Controller {
             let available = discovered.available_formats();
             let _ = catalog.set(discovered);
             ready.notify_waiters();
+            // Check the archive spool root now, in the background: the check can wait
+            // seconds for a busy disk, and the first archive opened would wait with it.
+            let prepared = catalog.clone();
+            drop(tokio::task::spawn_blocking(move || {
+                if let Some(Err(error)) = prepared.get().map(Catalog::prepare_staging) {
+                    eprintln!("Archive spool check: {error}");
+                }
+            }));
             outbox.send(Event::ArchiveAvailability(available)).await;
         }));
         result
@@ -274,8 +282,9 @@ impl Controller {
                 notified.await;
             }
             let worker = request.clone();
+            let progress = outbox.clone();
             let result = tokio::task::spawn_blocking(
-                scope.blocking(move || navigation::run(&worker, &mounts)),
+                scope.blocking(move || navigation::run(&worker, &mounts, &progress)),
             )
             .await
             .unwrap_or_else(|e| Err(error(e.to_string())));

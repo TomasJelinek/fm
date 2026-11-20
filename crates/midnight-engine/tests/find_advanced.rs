@@ -274,6 +274,7 @@ fn content_name_and_recent_filters_apply_before_duplicate_grouping() {
         text: "needle".into(),
         case_sensitive: true,
         whole_words: false,
+        regex: false,
     });
     let (summary, rows) = execute_at(&query, at);
     assert_eq!(summary.completion, FindCompletion::Completed, "{summary:?}");

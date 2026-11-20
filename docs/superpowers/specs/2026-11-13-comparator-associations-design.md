@@ -12,7 +12,7 @@ The current comparison implementation is built into `midnight-compare-engine` an
 `Ctrl+Shift+C`, F10 Compare files and the toolbar continue through the same existing action. Empty settings preserve current behavior, including manual A/B choice when the panel capture is incomplete.
 Alternatives considered: an external-only switch cannot express per-type assignments; a dynamic comparator ABI adds packaging/lifetime/security work without serving this request. Ordered rules plus existing built-ins are the selected minimal design.
 
-Source anchors (all FM paths below are relative to `D:/experiments/dev/FM`):
+Source anchors (all FM paths below are relative to the repository root):
 
 - `crates/midnight-compare-engine/src/worker.rs:108`: native captures, decoder discovery and current Automatic routing; `src/text.rs:10`: existing text budgets.
 - `crates/midnight-core/src/file_compare.rs:6`, `crates/midnight-ui/src/presenter/file_compare.rs:9`, `crates/midnight-compare-engine/src/file_choice.rs:90`: immutable pair capture/resolution.
@@ -95,7 +95,7 @@ Do not present failed persistence as applied. In-flight sessions retain their ca
 
 ## Reference behavior and acceptance boundary
 
-Read-only Salamander reference: `D:/experiments/salamander-main/src/cfgdlg.h:120` and `src/dialogs5.cpp:2348` define ordered editor masks, executable, arguments, cwd and a staged settings copy; `src/plugins/filecomp/filecomp.cpp:429` registers its comparison plugin action and `:173` stores that plugin's own display/diff options. `src/plugins/filecomp/dialogs.cpp:55` supplies its two-file chooser.
+Read-only Salamander reference: `<salamander-source>/src/cfgdlg.h:120` and `src/dialogs5.cpp:2348` define ordered editor masks, executable, arguments, cwd and a staged settings copy; `src/plugins/filecomp/filecomp.cpp:429` registers its comparison plugin action and `:173` stores that plugin's own display/diff options. `src/plugins/filecomp/dialogs.cpp:55` supplies its two-file chooser.
 That repository's comparator is a menu plugin; this application's comparators are built in. Adopt only the useful association/editing concepts, not C++/assets, ANSI conversions, MAX_PATH or shell-style command-line expansion. No evidence found for a general Salamander comparator-association table; do not claim one exists.
 No new third-party package, dynamic comparator dependency or paid component is proposed. An internal compare-engine -> platform-common edge can reuse the existing filename compiler/cache; verify its resolved feature graph under dependency policy rather than adding a second matcher. Performance constraints were reconciled with the dated private Perf review under `_build/verification/perf-comparator-settings-20261113/`; its request for zero INTERNAL capture does not prohibit the two metadata/authority captures required for a safe external handoff, and it does not authorize changed session-snapshot semantics or a preview feature.
 Meaningful acceptance covers BOTH-basename priority, raw argv/path preservation, strict v31/v32 migration and mandatory-field cascade, Options isolation/late load, forced routing/no fallback, failed B capture preventing launch, cancellation/ambiguous launch, tracker survival and unchanged built-in behavior. Exact tests and ownership are in the [implementation plan](../plans/2026-11-13-comparator-associations.md).

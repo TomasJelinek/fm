@@ -204,6 +204,8 @@ fn fake_volume(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
 fn staging_on_fake_volume(above_reserve: u64) -> (tempfile::TempDir, Staging) {
     let (temp, mut staging) = staging();
     staging.space = fake_volume;
+    // These tests cover the spool file's volume checks, so no stage stays in memory.
+    staging.spool_files_only();
     ABOVE_RESERVE.set(above_reserve);
     QUERIES.set(0);
     (temp, staging)

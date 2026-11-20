@@ -2,6 +2,8 @@
 use super::Browser;
 #[path = "browser_cgroup_linux.rs"]
 mod cgroup;
+#[path = "browser_sandbox_linux.rs"]
+mod sandbox;
 #[path = "browser_temporary_linux.rs"]
 mod temporary;
 #[cfg(test)]
@@ -67,6 +69,7 @@ pub(super) fn spawn(
     profile: super::profile::Profile,
     host_shortcuts: bool,
 ) -> io::Result<Browser> {
+    let namespaces = sandbox::namespaces(executable);
     let cgroup = cgroup::Session::new()?;
     let mut temporary = temporary::Directory::new()?;
     let mut command = Command::new(executable);
@@ -107,6 +110,12 @@ pub(super) fn spawn(
         cgroup,
         temporary,
     };
+    // Checked as soon as Chromium has executed, when its AppArmor label is final and long
+    // before it tries its sandbox. Dropping the process stops and reaps its tree.
+    if let Some(refused) = sandbox::refusal(process.child.id(), namespaces, executable) {
+        drop(process);
+        return Err(refused);
+    }
     let input = process
         .child
         .stdin

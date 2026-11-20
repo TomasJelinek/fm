@@ -20,6 +20,7 @@ fn mount(root: &Path) -> Mount {
         protocol: Protocol::V2,
         staging: Arc::new(Mutex::new(None)),
         close: Arc::new(close::CloseReceipt::new()),
+        nested: None,
     }
 }
 

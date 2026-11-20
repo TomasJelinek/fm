@@ -23,13 +23,19 @@ export component NoticeDialog inherits Rectangle {
     // EmbeddedNotice sizes its dialog from it.
     out property <length> natural-height: 40px + header.regular-height
         + 12px + body-measure.preferred-height
-        + (root.folder-path == "" ? 0px : 12px + root.folder-height)
+        + (root.folder-path == "" ? 0px : 12px + root.folder-natural)
         + (root.can-authorize ? 12px + hint-measure.preferred-height : 0px)
         + (root.can-authorize && root.narrow ? 12px + copy-button.preferred-height : 0px)
         + 12px + root.action-row-height;
     // Below this width the authorization offer is a row of its own.
     private property <bool> narrow: root.width < 500px;
+    // The folder box shows its whole wrapped path when the dialog has room: its natural
+    // height is the label and the measured path inside the box's padding and border, and
+    // it takes the height the dialog has to spare. A smaller dialog keeps at least the
+    // old three-line box, whose path then scrolls.
     private property <length> folder-height: min(88px, Theme.font-size * 3 + 18px);
+    private property <length> folder-natural: 2px + 16px + 3px + folder-label-measure.preferred-height
+        + folder-measure.preferred-height;
     private property <length> action-row-height: max(32px, Theme.control-height, copy-button.preferred-height)
         + (root.narrow ? 14px : 0px);
     private property <string> authorization-hint: "Your operating system will ask for permission to read this folder.";
@@ -55,6 +61,17 @@ export component NoticeDialog inherits Rectangle {
         width: max(1px, root.width - 40px);
         text: root.authorization-hint; font-size: Theme.small-font; wrap: word-wrap;
     }
+    // The folder path wraps inside the box's 8px padding and DialogText's 16px.
+    folder-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.width - 72px);
+        text: root.folder-path; wrap: word-wrap;
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    folder-label-measure := Text {
+        visible: false; accessible-role: none;
+        text: "Folder"; font-size: Theme.small-font;
+    }
     FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
@@ -71,11 +88,18 @@ export component NoticeDialog inherits Rectangle {
                 close-label: "Close dialog"; close => { root.close(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
-            DialogText { text: root.body; vertical-stretch: 1; min-height: 0px; }
+            // With a folder box the message keeps its own height and the box takes the rest.
+            DialogText {
+                text: root.body; min-height: 0px;
+                preferred-height: body-measure.preferred-height;
+                vertical-stretch: root.folder-path == "" ? 1 : 0;
+            }
             if root.folder-path != "": Rectangle {
                 background: Theme.secondary-surface; border-color: Theme.frame;
                 border-width: 1px; border-radius: 3px;
-                height: root.folder-height;
+                min-height: min(root.folder-natural, root.folder-height);
+                preferred-height: root.folder-natural;
+                vertical-stretch: 1;
                 VerticalLayout {
                     padding: 8px; spacing: 3px;
                     Text { text: "Folder"; color: Theme.secondary-text; font-size: Theme.small-font; }

@@ -13,6 +13,11 @@ mod retirement;
 #[allow(dead_code)] // This fixture does not include the tree-capture admission caller.
 mod checksum;
 
+// Manifest saves publish through it; the empty-file replacement is not included.
+#[path = "../src/verified_output.rs"]
+#[allow(dead_code)]
+mod verified_output;
+
 use midnight_core::*;
 use std::{fs, sync::Arc, time::Duration};
 
@@ -134,6 +139,34 @@ async fn native_mismatch_and_missing_are_explicit_and_cannot_look_verified() {
     assert!(run.rows[0].digest(ChecksumAlgorithm::Md5).is_some());
     assert_eq!(run.rows[1].state, ChecksumRowState::Missing);
     assert!(run.rows[1].digests.is_empty());
+}
+
+#[tokio::test]
+async fn a_manifest_mixing_sha256_and_md5_lines_fails_with_its_reason() {
+    let _quota = checksum::test_quota_fixture().await;
+    let fixture = native_fixture::fixture();
+    let manifest = fixture.path().join("mixed.sha256");
+    fs::write(
+        &manifest,
+        format!(
+            "{} *abc\n900150983cd24fb0d6963f7d28e17f72 *other\n",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        ),
+    )
+    .unwrap();
+    let run = verify(&manifest).await;
+    assert_eq!(run.summary.completion, ChecksumCompletion::Failed);
+    assert!(run.rows.is_empty());
+    // The window shows the first diagnostic as the reason (`issue`).
+    assert_eq!(
+        run.summary
+            .diagnostics
+            .first()
+            .map(|error| error.message.as_str()),
+        Some("Checksum manifest mixes different algorithms."),
+        "{:?}",
+        run.summary.diagnostics
+    );
 }
 
 #[tokio::test]

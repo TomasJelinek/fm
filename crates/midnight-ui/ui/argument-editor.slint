@@ -11,6 +11,12 @@ export struct LiteralArgumentInsertion {
     hint: string,
 }
 
+// The focused new-argument field takes Escape to cancel only that add; Options
+// leaves the key to it instead of closing.
+export global ArgumentEditing {
+    in-out property <bool> escape-cancels;
+}
+
 // Each selected list row is exactly one argument, including an empty string.
 export component ArgumentEditor inherits VerticalLayout {
     in property <[string]> values;
@@ -32,6 +38,8 @@ export component ArgumentEditor inherits VerticalLayout {
     private property <int> count: root.values.length;
     private property <string> selected-value: root.selected >= 0 && root.selected < root.count ? root.values[root.selected] : "";
     private property <length> row-height: Theme.control-height;
+    private property <bool> escape-cancels: root.adding && argument-value.has-focus;
+    changed escape-cancels => { ArgumentEditing.escape-cancels = self.escape-cancels; }
     spacing: 6px; alignment: start;
     changed count => {
         root.selected = root.count == 0 ? -1 : clamp(root.selected, 0, root.count - 1);
@@ -72,6 +80,12 @@ export component ArgumentEditor inherits VerticalLayout {
     function begin-argument() {
         if !root.enabled || root.count >= 64 { return; }
         root.adding = true; argument-value.text = ""; argument-value.focus();
+    }
+    // Leaves the new argument unadded and returns to the selected row.
+    function cancel-argument() {
+        root.adding = false;
+        argument-value.text = root.selected-value;
+        list-focus.focus();
     }
     function append(value: string) {
         if !root.enabled || root.count >= 64 { return; }
@@ -163,9 +177,13 @@ export component ArgumentEditor inherits VerticalLayout {
             : root.label-prefix + " argument " + (root.selected + 1);
         placeholder-text: root.adding ? "Type a new argument…"
             : root.selected >= 0 ? "Empty string" : "Select an argument";
-        hint: root.adding ? "Typing adds one argument. Enter on a blank value adds an empty string."
+        hint: root.adding ? "Typing adds one argument. Enter on a blank value adds an empty string; Escape cancels."
             : "Edit one literal argument. Spaces stay inside it; quotes are literal characters.";
         min-width: 0px; horizontal-stretch: 1;
+        key-pressed(event) => {
+            if event.text == Key.Escape && root.adding { root.cancel-argument(); return accept; }
+            reject
+        }
         edited => {
             if root.adding {
                 if self.text != "" { root.append(self.text); }

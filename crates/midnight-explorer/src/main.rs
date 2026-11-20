@@ -133,10 +133,17 @@ fn options() -> Result<Option<Options>, String> {
 }
 
 fn main() -> std::process::ExitCode {
+    // First, before any thread opens files: on Linux, raise the soft open-file limit to
+    // the hard limit (at most 65,536), from which the transfers' folder budget is sized;
+    // programs started for the user get the original limit back.
+    let open_files = midnight_platform::raise_open_file_limit();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
+    if let Err(error) = open_files {
+        tracing::warn!("The limit on open files could not be raised: {error}");
+    }
     let result = run();
     match result {
         Ok(status) => std::process::ExitCode::from(status),
@@ -437,16 +444,17 @@ fn run_window(
         main_events.clone(),
     );
     // The renderer reads its text fitting before the first window, earlier than the
-    // asynchronous preference load. Probes and smoke runs keep the defaults and
-    // never read the user's profile.
-    let stored_fitting = if options.ui_smoke || wakeup_probe.is_some() {
-        midnight_core::GlyphFitting::default()
+    // asynchronous preference load, which then reuses this one read. Probes and
+    // smoke runs keep the defaults and never read the user's profile.
+    let prefetched = if options.ui_smoke || wakeup_probe.is_some() {
+        None
     } else {
-        settings
-            .load_preferences()
-            .map(|preferences| preferences.glyph_fitting)
-            .unwrap_or_default()
+        startup_settings::prefetch(settings.as_ref())
     };
+    let stored_fitting = prefetched
+        .as_ref()
+        .map(|preferences| preferences.glyph_fitting)
+        .unwrap_or_default();
     if let Err(error) = window_backend::select(options.software, observer, stored_fitting) {
         return startup_recovery::native_failure(
             format!("Cannot initialize renderer: {error}"),
@@ -467,7 +475,7 @@ fn run_window(
         Some(probe) => smoke_settings::for_probe(probe.thumbnails),
         None => smoke_settings::for_run(options.ui_smoke, settings),
     };
-    let settings = startup_settings::for_startup(settings, startup_owner.gate());
+    let settings = startup_settings::for_startup(settings, startup_owner.gate(), prefetched);
     let package_version = env!("CARGO_PKG_VERSION");
     let display_version = package_version
         .strip_suffix(".0")

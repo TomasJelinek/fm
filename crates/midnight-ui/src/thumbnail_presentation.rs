@@ -49,12 +49,24 @@ pub(crate) fn identity(pane: &Pane, entry: &Entry, side: PaneId) -> String {
         format!("{}:{}", side.index(), pane.row_identity(entry))
     } else {
         // Pixels belong to the displayed listing, which stays in place while a
-        // refresh is pending. Input identities still include the pending intent.
+        // refresh is pending, and to the file's length and modification time:
+        // a background re-read that keeps the rows (`row_continuity`) keeps the
+        // pixels of unchanged files. Input identities still include the
+        // pending intent. Listings carry no change stamp (such as an inode
+        // change time), so a rewrite that keeps the length and modification
+        // time (`cp -p`, `rsync -t`, a 2 s FAT timestamp) keeps its old pixels
+        // until the folder is opened or refreshed explicitly.
+        let modified = entry
+            .metadata
+            .modified
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |time| time.as_nanos());
         format!(
-            "{}:{}:entry:{}",
+            "{}:{}:entry:{}:{}:{modified}",
             side.index(),
-            pane.displayed_generation().0,
-            entry.id.0
+            pane.row_displayed_generation().0,
+            entry.id.0,
+            entry.metadata.size.unwrap_or(u64::MAX),
         )
     }
 }
@@ -451,7 +463,7 @@ mod tests {
         let targets = p.thumbnail_targets([(offset, offset + 300), (0, 40)], ["", ""]);
         assert_eq!(targets.len(), MAX_THUMBNAIL_TARGETS);
         assert!(
-            targets[0].identity.ends_with(":entry:0"),
+            targets[0].identity.contains(":entry:0:"),
             "the top of the grid keeps priority"
         );
     }

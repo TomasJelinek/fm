@@ -35,7 +35,7 @@ fn edge_source(after: bool) -> String {
     source
 }
 
-fn edge_page(source: &str, start: usize, end: usize) -> viewer::TextPage {
+pub(super) fn edge_page(source: &str, start: usize, end: usize) -> viewer::TextPage {
     let text = &source[start..end];
     let page = viewer::TextPage {
         revision: 1,
@@ -59,7 +59,7 @@ fn edge_page(source: &str, start: usize, end: usize) -> viewer::TextPage {
     page
 }
 
-fn edge_worker(page: viewer::TextPage, length: u64) -> (Worker, Mailbox) {
+pub(super) fn edge_worker(page: viewer::TextPage, length: u64) -> (Worker, Mailbox) {
     let (mut worker, output) = worker();
     worker.mode = viewer::MODE_TEXT;
     worker.length = length;
@@ -183,30 +183,58 @@ fn text_edge_correction_grows_the_existing_window_before_acknowledging_actual_pi
     }
 }
 
+/// The frame painted after a terminal event, and whether the position was refused.
+pub(super) fn settled_frame(worker: &mut Worker, output: &Mailbox) -> (ViewerFrame, bool) {
+    worker.paint(output).unwrap();
+    let mut frame = None;
+    let mut unavailable = false;
+    for message in output.take() {
+        match message {
+            ViewerOutput::Frame(current) => frame = Some(*current),
+            ViewerOutput::VerticalPositionUnavailable { .. } => unavailable = true,
+            _ => {}
+        }
+    }
+    (frame.expect("a painted frame"), unavailable)
+}
+
 #[test]
-fn text_edge_uncovered_corrected_reply_cannot_acknowledge_or_request_a_third_read() {
-    let (mut worker, output, source, first, _) = edge_pending(true);
+fn text_edge_uncovered_corrected_reply_settles_at_the_nearest_edge_without_a_third_read() {
+    let (mut worker, output, source, first, target) = edge_pending(true);
     let _viewport = edge_correction(&mut worker, true);
     worker.positions.requested(92, 4);
     worker.viewport_request = Some(92);
+    unsent::take();
     worker.event(
         92,
         EventKind::TextPage(edge_page(&source, 92_140, 92_600)),
         &output,
     );
-    assert_eq!(
-        worker.refine_position(),
-        LoadedPosition::Unavailable,
-        "a still-uncovered camera cannot reserve a third read"
-    );
     assert_eq!(worker.positions.acknowledged, first.position_sequence);
     worker.event(92, EventKind::Completed, &output);
-    worker.paint(&output).unwrap();
-    assert!(!output.take().into_iter().any(|event| matches!(event,
-        ViewerOutput::Frame(frame) if frame.position_sequence[0] == 4)));
-    assert_eq!(worker.positions.acknowledged[0], 0);
+    let (settled, unavailable) = settled_frame(&mut worker, &output);
+    assert!(
+        unsent::take().is_empty(),
+        "a still-uncovered camera cannot reserve a third read"
+    );
+    // The loaded window's bottom is the closest view of the uncovered target.
+    let page = worker.page.as_ref().unwrap();
+    let shaped = worker.shaped.as_ref().unwrap();
+    let maximum = (crate::viewport::available_height(page, shaped, 120.0) - 120.0).max(0.0);
+    assert_eq!(worker.origin[1], maximum);
+    assert!(
+        !unavailable && worker.status.is_empty(),
+        "{}",
+        worker.status
+    );
+    assert_eq!(settled.position_sequence, [4, 0]);
+    assert_eq!(settled.generation, first.generation);
+    assert!(
+        settled.position < target,
+        "the frame reports the view it shows: {}",
+        settled.position
+    );
     assert!(!worker.positions.has_pending() && worker.viewport_request.is_none());
-    assert!(worker.status.contains("not completed"));
 }
 
 #[test]

@@ -11,9 +11,15 @@ export struct FindColumnWidths {
 export struct FindRow {
     token: string, name: string, extension: string, path: string, size: string,
     modified: string, directory: bool, duplicate-group: string, group-start: bool, group-shade: bool,
+    // The last folder of `path` with the separator before it, which a shortened path
+    // keeps: results in sibling folders stay distinct.
+    path-tail: string,
+    // A member found inside an archive; its path column shows the archive path.
+    in-archive: bool,
 }
 
-// The 10px gap after each column; in the header it is a drag separator.
+// The 10px drag separator after each header column. Rows only pad their cells:
+// a grip per row cell would be about 20 items per row for nothing.
 component ColumnGrip inherits Rectangle {
     in property <bool> active;
     in property <length> start-width;
@@ -62,6 +68,7 @@ component Columns inherits HorizontalLayout {
             : index == 2 ? root.widths.path : index == 3 ? root.widths.size : root.widths.modified;
     }
     if root.duplicates: HorizontalLayout {
+        padding-right: root.header ? 0px : 10px;
         Text {
             width: root.widths.group;
             text: root.header ? "Identical group" : root.entry.duplicate-group;
@@ -70,12 +77,13 @@ component Columns inherits HorizontalLayout {
             font-weight: root.header || root.entry.group-start ? 600 : 400;
             vertical-alignment: center; overflow: elide;
         }
-        ColumnGrip {
-            active: root.header; start-width: root.widths.group; title: "Identical group";
+        if root.header: ColumnGrip {
+            active: true; start-width: root.widths.group; title: "Identical group";
             resize(width) => { root.resize(-1, width); }
         }
     }
     for title[index] in ["Name", "Extension", "Path", "Size", "Modified"]: HorizontalLayout {
+      padding-right: root.header ? 0px : 10px;
       Rectangle {
         width: root.column-width(index);
         if root.header || index != 2: Text {
@@ -91,7 +99,8 @@ component Columns inherits HorizontalLayout {
         }
         if !root.header && index == 2: PathText {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
-            text: root.entry.path; foreground: Theme.secondary-text; font-size: Theme.font-size;
+            text: root.entry.path; tail: root.entry.path-tail;
+            foreground: Theme.secondary-text; font-size: Theme.font-size;
         }
         if root.header: Rectangle {
             accessible-role: button; accessible-label: "Sort by " + title;
@@ -99,8 +108,8 @@ component Columns inherits HorizontalLayout {
             TouchArea { clicked => { root.sort(index); } }
         }
       }
-      ColumnGrip {
-          active: root.header; start-width: root.column-width(index); title: title;
+      if root.header: ColumnGrip {
+          active: true; start-width: root.column-width(index); title: title;
           resize(width) => { root.resize(index, width); }
       }
     }
@@ -122,9 +131,17 @@ export component FindResults inherits FocusScope {
         group: Theme.small-font * 16, name: Theme.small-font * 16, extension: Theme.small-font * 8,
         path: Theme.small-font * 24, size: Theme.small-font * 10, modified: Theme.small-font * 18,
     };
-    // Padding plus one 10px separator after each column.
-    private property <length> table-width: root.widths.name + root.widths.extension + root.widths.path
+    // The other columns plus padding and one 10px separator after each column.
+    private property <length> fixed-width: root.widths.name + root.widths.extension
         + root.widths.size + root.widths.modified + (root.duplicates ? root.widths.group + 72px : 62px);
+    // Path takes the spare width; a separator drag starts from that shown width,
+    // and a wider Path scrolls the table.
+    private property <length> path-width: max(root.widths.path, list.visible-width - root.fixed-width);
+    private property <length> table-width: root.fixed-width + root.path-width;
+    private property <FindColumnWidths> shown-widths: {
+        group: root.widths.group, name: root.widths.name, extension: root.widths.extension,
+        path: root.path-width, size: root.widths.size, modified: root.widths.modified,
+    };
     function resize-column(index: int, width: length) {
         if index == -1 { root.widths.group = width; }
         else if index == 0 { root.widths.name = width; }
@@ -179,7 +196,7 @@ export component FindResults inherits FocusScope {
         height: Theme.column-height; width: parent.width; clip: true; background: Theme.header;
         Columns { x: list.content-x; width: list.content-width; height: parent.height;
             header: true; sort-column: root.sort-column; descending: root.descending; duplicates: root.duplicates;
-            widths: root.widths;
+            widths: root.shown-widths;
             sort(column) => { root.sort(column); }
             resize(index, width) => { root.resize-column(index, width); } }
     }
@@ -199,7 +216,7 @@ export component FindResults inherits FocusScope {
             accessible-value: row.token;
             accessible-item-selectable: true; accessible-item-selected: root.selected-row == index; accessible-item-index: index;
             accessible-action-default => { root.selected-row = index; root.focus(); }
-            Columns { entry: row; duplicates: root.duplicates; widths: root.widths; }
+            Columns { entry: row; duplicates: root.duplicates; widths: root.shown-widths; }
             // Hidden instead of conditional: an `if` is one more generated component.
             Rectangle {
                 visible: root.duplicates && row.group-start;

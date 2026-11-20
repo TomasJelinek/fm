@@ -11,6 +11,39 @@ use std::{
 mod probe;
 
 #[test]
+fn a_missing_or_unusable_program_is_reported_as_the_custom_commands_own() {
+    let temp = tempfile::tempdir().unwrap();
+    let not_executable = temp.path().join("notes.txt");
+    fs::write(&not_executable, "text").unwrap();
+    for (executable, kind, message) in [
+        (
+            temp.path().join("missing-tool"),
+            std::io::ErrorKind::NotFound,
+            "The program was not found.",
+        ),
+        (
+            not_executable,
+            std::io::ErrorKind::PermissionDenied,
+            "The program is not an executable file.",
+        ),
+    ] {
+        let process = UserCommandProcess {
+            working_directory: temp.path().to_owned(),
+            invocation: UserCommandProcessInvocation::Program {
+                executable: executable.clone(),
+                arguments: Vec::new(),
+            },
+        };
+        let error = LinuxFileSystem::new(None)
+            .validate_user_command(&process, &Cancellation::default())
+            .unwrap_err();
+        assert_eq!(error.operation, "Custom Command");
+        assert_eq!((error.kind, error.message.as_str()), (kind, message));
+        assert_eq!(error.path, executable);
+    }
+}
+
+#[test]
 fn actual_program_preserves_raw_native_argv_and_cwd_without_a_shell() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let executable = probe::helper(&workspace, "program-probe");

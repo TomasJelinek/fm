@@ -1,6 +1,8 @@
 use super::*;
 #[path = "copy_scheduler_fixture.rs"]
 mod fixture;
+#[path = "copy_immediate_start_tests.rs"]
+mod immediate_start;
 use fixture::{Case, Point, Release};
 
 const OBSERVE: Duration = Duration::from_secs(8);
@@ -162,12 +164,12 @@ async fn overlap(moves: [bool; 3], names: [&str; 3]) {
         checkpoint = "enqueue third";
         case.enqueue(&h, 2, 3, moves[2], false).await;
         submitted.push(3);
-        checkpoint = "wait third Resources progress";
+        checkpoint = "wait third disk-capacity progress";
         let waiting = progress_where(&mut h, 3, |p| {
-            p.wait_reason == Some(TransferWaitReason::Resources)
+            p.wait_reason == Some(TransferWaitReason::DiskCapacity)
         })
         .await;
-        eprintln!("scheduler third Resources progress observed={waiting}");
+        eprintln!("scheduler third disk-capacity progress observed={waiting}");
         checkpoint = "check third cannot enter while saturated";
         let third_early = case
             .control
@@ -238,7 +240,7 @@ async fn exact_two_slots_mixed_same_folders_preserves_proof_and_move_removal() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_slot_reports_resources_until_cancelled_predecessor_actual_stage_cleanup_returns() {
+async fn one_slot_reports_disk_capacity_until_cancelled_predecessor_actual_stage_cleanup_returns() {
     let case = Case::new(["one", "two", "three"], false, None);
     let _release = Release(case.control.clone());
     case.control.arm(0, Point::Read);
@@ -250,7 +252,7 @@ async fn one_slot_reports_resources_until_cancelled_predecessor_actual_stage_cle
         let read = case.control.wait(0, Point::Read, OBSERVE).await;
         case.enqueue(&h, 1, 2, false, false).await;
         let resources = progress_where(&mut h, 2, |p| {
-            p.wait_reason == Some(TransferWaitReason::Resources)
+            p.wait_reason == Some(TransferWaitReason::DiskCapacity)
         })
         .await;
         h.controller.cancel(OperationId(1));

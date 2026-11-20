@@ -19,6 +19,7 @@ export struct FindDraft {
     masks: string, mode: int, recursive: bool, name-case: bool,
     content-enabled: bool, content: string, content-case: bool, whole-words: bool,
     modified-enabled: bool, modified-seconds: int, duplicates: bool,
+    content-regex: bool, archives: bool,
 }
 
 // Match the query controls while preserving touch and intrinsic content sizing.
@@ -44,16 +45,12 @@ export component FindWindow inherits ToolWindow {
         : max(0, min(root.selected-root, root.roots.length - 1));
     // Ticked roots, counted by the host.
     in property <int> searched-roots;
-    // The host updates one model in place, so its length is watched instead.
-    private property <int> root-count: root.roots.length;
-    private property <int> known-root-count;
-    changed root-count => {
-        if root.known-root-count > 0 && root.root-count > root.known-root-count {
-            // A folder was added: choose it and finish the Add entry.
-            root.selected-root = root.root-count - 1;
-            root.adding = false;
-        }
-        root.known-root-count = root.root-count;
+    // The host's answer to Add: the added folder, or the listed one that was ticked
+    // again. Choose it and finish the entry; focus leaves the closed entry.
+    public function root-added(index: int) {
+        root.selected-root = index;
+        root.adding = false;
+        roots.focus();
     }
     in property <bool> running;
     in property <bool> stopping;
@@ -69,8 +66,21 @@ export component FindWindow inherits ToolWindow {
     private property <bool> narrow: root.width < max(620px, Theme.font-size * 30);
     private property <bool> compact-query: root.height < 360px;
     private property <int> name-row: root.narrow && !root.compact-query ? 1 : 0;
+    private property <string> folders-label: "Search folders" + (root.roots.length > 1
+        ? " (" + (root.searched-roots < root.roots.length
+            ? root.searched-roots + " of " : "") + root.roots.length + ")" : "");
+    // The label on its own row of a narrow window, at the width it gets there. A short
+    // query area squeezes its grid toward the rows' minimum heights, so the label keeps
+    // this natural height as its minimum instead of collapsing to nothing.
+    folders-label-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, query-scroll.visible-width - FluentScrollMetrics.overlay-size);
+        text: root.folders-label; wrap: word-wrap;
+        font-size: Theme.font-size; font-weight: 600;
+    }
+    // A running compact search hides the query area, so its status moves under the results.
     private property <bool> inline-status: root.height >= 360px
-        || (!root.show-details && Theme.font-size <= 20px);
+        || (!root.show-details && (Theme.font-size <= 20px || root.running));
     in-out property <int> selected-row: -1;
     in-out property <bool> show-details;
     private property <bool> show-advanced;
@@ -90,12 +100,18 @@ export component FindWindow inherits ToolWindow {
     callback remove-root(int);
     callback toggle-root(int, bool);
     callback reveal(string);
+    // Show the results as a list in the panel that opened this Find, then close it.
+    callback feed-panel();
     callback file-action(string, int);
     callback action-key(KeyEvent, string) -> bool;
     in property <string> view-hint;
     in property <string> edit-hint;
     private property <bool> selected-file: root.selected-row >= 0
-        && root.selected-row < root.rows.length && !root.rows[root.selected-row].directory;
+        && root.selected-row < root.rows.length && !root.rows[root.selected-row].directory
+        && !root.rows[root.selected-row].in-archive;
+    // Archive members open from their archive (Go to file), never directly.
+    private property <bool> selected-native: root.selected-row >= 0
+        && root.selected-row < root.rows.length && !root.rows[root.selected-row].in-archive;
     public function act-selected(action: int) {
         if root.selected-row >= 0 && root.selected-row < root.rows.length {
             root.file-action(root.rows[root.selected-row].token, action);
@@ -113,20 +129,38 @@ export component FindWindow inherits ToolWindow {
         root.new-root-text = "";
         root.adding = true;
     }
+    // Slint does not move focus off a destroyed item: closing an overlay that may
+    // hold focus hands it to a control that stays.
+    function close-adding() {
+        root.adding = false;
+        // Search folders cannot take focus while a search runs; the results can.
+        if root.running { results.focus(); } else { roots.focus(); }
+    }
+    function close-help() {
+        root.show-help = false;
+        results.focus();
+    }
     public function submit() {
         if root.running || !advanced.valid { return; }
         root.show-help = false;
         root.search({masks: masks.text, mode: mode.current-index, recursive: recursive.checked, name-case: names.checked,
             content-enabled: content-enabled.checked, content: content.text, content-case: content-case.checked,
             whole-words: advanced.whole-words, modified-enabled: advanced.modified-enabled,
-            modified-seconds: advanced.modified-seconds, duplicates: advanced.duplicates});
+            modified-seconds: advanced.modified-seconds, duplicates: advanced.duplicates,
+            content-regex: content-regex.checked, archives: advanced.archives && !advanced.duplicates});
     }
     FocusScope {
         min-width: 0px; min-height: 0px;
         preferred-width: 0px; preferred-height: 0px;
-        // F1 bubbles here from the query editors and the results.
+        // A key router, not a Tab stop. A click on empty space still focuses it rather
+        // than the window's outer scope, which would close the window on Escape.
+        focus-on-tab-navigation: false;
+        // F1 and Escape bubble here from the query editors and the results; the open
+        // help handles its own. Escape closes an open overlay before the window.
         key-pressed(event) => {
             if event.text == Key.F1 { root.show-help = !root.show-help; return accept; }
+            if event.text == Key.Escape && root.adding { root.close-adding(); return accept; }
+            if event.text == Key.Escape && root.show-help { root.show-help = false; return accept; }
             reject
         }
         VerticalLayout {
@@ -188,10 +222,8 @@ export component FindWindow inherits ToolWindow {
                             row: root.narrow ? root.name-row + 2 : 2; col: 0; colspan: root.narrow ? 2 : 1;
                             alignment: start;
                             Text {
-                                min-height: root.narrow ? 0px : Theme.control-height;
-                                text: "Search folders" + (root.roots.length > 1
-                                    ? " (" + (root.searched-roots < root.roots.length
-                                        ? root.searched-roots + " of " : "") + root.roots.length + ")" : "");
+                                min-height: root.narrow ? folders-label-measure.preferred-height : Theme.control-height;
+                                text: root.folders-label;
                                 color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
                                 vertical-alignment: center; min-width: 0px; wrap: word-wrap;
                             }
@@ -207,9 +239,11 @@ export component FindWindow inherits ToolWindow {
                                 selected(index) => { root.selected-root = index; }
                                 toggled(index, searched) => { root.toggle-root(index, searched); }
                             }
-                            if root.adding: HorizontalLayout {
+                            // Narrow windows give the path its own line, Browse and OK under it.
+                            if root.adding: GridLayout {
                                 spacing: 6px;
                                 HintedLineEdit {
+                                    row: 0; col: 0; colspan: root.narrow ? 3 : 1;
                                     enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
                                     min-height: Theme.control-height;
                                     accessible-label: "Folder to add";
@@ -219,13 +253,16 @@ export component FindWindow inherits ToolWindow {
                                     edited(text) => { root.new-root-text = text; }
                                     accepted(text) => { if text != "" { root.add-root(text); } }
                                 }
+                                Rectangle { row: root.narrow ? 1 : 0; col: 0; horizontal-stretch: 1; }
                                 FindActionButton {
+                                    row: root.narrow ? 1 : 0; col: 1; horizontal-stretch: 0;
                                     text: "Browse…"; fallback-icon: FallbackIcons.open-path;
                                     enabled: !root.running;
                                     hint: "Choose a folder with the system folder chooser.";
                                     clicked => { root.browse-root(); }
                                 }
                                 FindActionButton {
+                                    row: root.narrow ? 1 : 0; col: 2; horizontal-stretch: 0;
                                     text: "OK"; enabled: !root.running && root.new-root-text != "";
                                     hint: "Add the typed folder to Search folders.";
                                     clicked => { root.add-root(root.new-root-text); }
@@ -262,15 +299,21 @@ export component FindWindow inherits ToolWindow {
                         content-enabled := WrappingCheckBox {
                             row: root.narrow ? root.name-row + 5 : 4; col: 0; colspan: root.narrow ? 2 : 1;
                             text: "Containing text"; enabled: !root.running;
-                            hint: "Search literal text in UTF-8, or BOM-marked UTF-16 files. Unsupported encodings are reported, not silently skipped.";
+                            hint: "Search text, or a regular expression, in UTF-8 or BOM-marked UTF-16 files. Unsupported encodings are reported, not silently skipped.";
                         }
-                        content := HintedLineEdit {
+                        // Top-aligned: the option boxes beside it take two lines.
+                        VerticalLayout {
                             row: root.narrow ? root.name-row + 6 : 4; col: root.narrow ? 0 : 1; colspan: root.narrow ? 2 : 1;
-                            enabled: !root.running && content-enabled.checked;
-                            min-width: 0px; min-height: Theme.control-height; horizontal-stretch: 1;
-                            accessible-label: "Text to find";
-                            hint: "Literal text, read incrementally on a backend worker.";
-                            accepted => { root.submit(); }
+                            alignment: start; horizontal-stretch: 1;
+                            content := HintedLineEdit {
+                                enabled: !root.running && content-enabled.checked;
+                                min-width: 0px; min-height: Theme.control-height; horizontal-stretch: 1;
+                                accessible-label: "Text to find";
+                                hint: content-regex.checked
+                                    ? "Regular expression, matched within each line on a backend worker. Example: TODO|FIXME, or ^fn \\w+. An invalid pattern is explained in the details."
+                                    : "Literal text, read incrementally on a backend worker.";
+                                accepted => { root.submit(); }
+                            }
                         }
                         GridLayout {
                             row: root.narrow ? root.name-row + 7 : 4; col: root.narrow ? 0 : 2; colspan: root.narrow ? 2 : 1;
@@ -285,6 +328,12 @@ export component FindWindow inherits ToolWindow {
                                 enabled: !root.running && content-enabled.checked;
                                 hint: "Match the containing text only at word boundaries.";
                             }
+                            content-regex := WrappingCheckBox {
+                                row: root.narrow ? 2 : 1; col: 0; colspan: root.narrow ? 1 : 2;
+                                text: "Regular expression";
+                                enabled: !root.running && content-enabled.checked;
+                                hint: "Treat the containing text as a bounded regular expression, matched within each line (lines longer than 1 MiB are matched in overlapping windows). Match case and Whole words still apply.";
+                            }
                         }
                     }
                     GridLayout {
@@ -296,12 +345,20 @@ export component FindWindow inherits ToolWindow {
                             clicked => { root.show-advanced = !root.show-advanced; }
                         }
                         Text {
-                            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 3 : 1;
                             visible: !root.show-advanced && advanced.summary != "";
                             text: advanced.summary;
                             color: advanced.valid ? Theme.secondary-text : Theme.error-text;
                             font-size: Theme.small-font; wrap: word-wrap; min-width: 0px;
                             horizontal-stretch: 1; vertical-alignment: center;
+                        }
+                        // A results action, kept out of the full footer: right above the list.
+                        FindActionButton {
+                            row: 0; col: 2;
+                            text: "Feed to panel"; fallback-icon: FallbackIcons.make-file-list;
+                            enabled: !root.running && root.rows.length > 0;
+                            hint: "Show the results as a list in the panel that opened this Find, and close this window. View, Edit, Copy, Move, Delete and selection there act on the real files; Backspace returns to the folder.";
+                            clicked => { root.feed-panel(); }
                         }
                     }
                     advanced := FindAdvanced {
@@ -368,8 +425,9 @@ export component FindWindow inherits ToolWindow {
                 if root.show-help: FindSyntaxHelp {
                     x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                     mode: mode.current-index; enabled: !root.running;
+                    init => { self.focus(); }
                     use-example(query) => { masks.text = query; masks.focus(); }
-                    close => { root.show-help = false; }
+                    close => { root.close-help(); }
                 }
             }
             if root.current-directory != "" && root.inline-status: PathText {
@@ -381,9 +439,11 @@ export component FindWindow inherits ToolWindow {
                 text: root.progress; error: root.attention; font-size: Theme.small-font;
                 details => { root.show-details = true; }
             }
-            DialogFooter {
+            find-footer := DialogFooter {
                 compact-height: root.height < 350px;
                 compact-controls: true;
+                // The captions of every query action, Copy details included.
+                measure-text: "Find" + "Go to file" + "View" + "Edit" + "Open" + "Copy details";
                 dismiss-text: "Close";
                 dismiss-hint: "Close this Find window and cancel its search (Escape).";
                 dismiss => { root.close-session(); }
@@ -403,14 +463,20 @@ export component FindWindow inherits ToolWindow {
                         enabled: root.selected-file; hint: root.edit-hint;
                         clicked => { root.act-selected(2); } }
                     FindActionButton { text: "Open"; fallback-icon: FallbackIcons.run;
-                        enabled: root.selected-row >= 0 && root.selected-row < root.rows.length;
-                        hint: "Open the selected file with its system association. This may run a program. Folders use Go to file.";
+                        enabled: root.selected-native;
+                        hint: "Open the selected file with its system association. This may run a program. Folders and archive members use Go to file.";
                         clicked => { root.act-selected(3); } }
                 }
                 // Details open from the error or status line; Back returns to the query.
                 if root.show-details: FindActionButton { text: "Back"; fallback-icon: FallbackIcons.find;
                     hint: "Return to the query."; clicked => { root.show-details = false; } }
-                if root.width >= 600px && !root.show-details: FindActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
+                // Only where all six query actions fit beside Close (each caption plus its
+                // glyph and 28px of padding, 8px apart); in a narrower window it would sit
+                // half outside the scroller. The status line opens the details, whose
+                // Copy is always shown.
+                if !root.show-details && find-footer.action-room
+                    >= find-footer.measured-width + 6 * (Theme.icon-size + 28px) + 5 * 8px:
+                    FindActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
             }
         }
     }

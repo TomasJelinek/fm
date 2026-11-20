@@ -153,6 +153,9 @@ fn copy_move_delete_and_trash_ask_on_both_close_routes_and_continue_is_default()
                 h.commands.borrow().as_slice(),
                 [Command::CancelOperation(target)] if target.0 == id
             ));
+            // As Copy's, a cancelled Delete's window stays to show how the job ends.
+            h.children(1);
+            input::key(&progress, Key::Escape);
         }
         h.children(0);
     }
@@ -281,13 +284,15 @@ fn cancelling_delete_exposes_close_actions_in_progress_window() {
         matches!(h.commands.borrow().as_slice(), [Command::CancelOperation(actual)] if *actual == id)
     );
 
-    for label in ["Close", "Close progress"] {
-        assert!(
-            modeless::accessible_item(&progress, AccessibleRole::Button, label)
-                .is_some_and(|item| item.is_visible()),
-            "missing visible {label} action during cancellation"
-        );
-    }
+    assert!(
+        modeless::accessible_item(&progress, AccessibleRole::Button, "Close")
+            .is_some_and(|item| item.is_visible()),
+        "missing visible Close action during cancellation"
+    );
+    // The native frame has the window's only other close button.
+    assert!(
+        modeless::accessible_item(&progress, AccessibleRole::Button, "Close progress").is_none()
+    );
     assert!(
         modeless::accessible_item(&progress, AccessibleRole::Button, "Cancel operation").is_none()
     );
@@ -347,7 +352,7 @@ fn cancelling_delete_shows_one_status_with_progress_and_details() {
         .strip_prefix("Permanently delete\nCancelling\n\n")
         .and_then(|body| body.strip_suffix("\n\nCancelling..."))
         .expect("Jobs clipboard details retain their full title, state and message");
-    for label in ["Close", "Close progress", "Details", "Jobs"] {
+    for label in ["Close", "Details", "Jobs"] {
         assert!(modeless::accessible_item(&progress, AccessibleRole::Button, label).is_some());
     }
     modeless::draw(&progress, 350, 300, "delete-cancelling-polish-compact");

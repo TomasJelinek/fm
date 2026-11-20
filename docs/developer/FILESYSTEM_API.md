@@ -186,6 +186,13 @@ queue; the plugin still receives no extraction or write request. The host valida
 raw destination basenames and requires independent SHA-256 readback before native
 no-replace publication. Linux preserves raw filename bytes; Windows rejects names
 that cannot be represented losslessly as Unicode. Existing targets remain conflicts.
+Copying out takes folders and selections of any size: nothing limits how many
+members one copy takes or how many bytes their names hold in all. A selection is
+resolved in one pass over its folder's listing, keeping only the selected members and
+checking Stop every few thousand rows; the copy then takes its roots one at a time,
+and each selected member holds one root source until it is copied. It keeps the
+identities it has met (a member listed twice, a cycle or a duplicate identity, fails
+the copy) and the listing of each folder on its current path.
 
 Archive folder sizes are a host backend service over these listing capabilities.
 Ctrl+Shift+S captures the exact committed mount/listing and opaque selected IDs;
@@ -194,7 +201,11 @@ falls back to all folders. Space measures the focused ordinary folder while
 advancing selection. The iterative scan sums stored logical file lengths, excludes
 links and special nodes, validates parent/ID relationships and reports partial
 results for missing lengths or errors. It never requests member content, extracts
-files or uses viewer TEMP paths. Sorting and navigation within the same live
+files or uses viewer TEMP paths. A listing or scan of any size is measured: nothing
+limits how many members or folders it holds or the bytes of their names, beyond the
+protocol's 64 KiB per name. The scan keeps the identities it has met and the
+folders still to visit along its path, and drops each folder's listing once it has
+counted it; the results keep one size per folder. Sorting and navigation within the same live
 mount preserve cached values and running scans. The status line includes known
 selected-folder totals; no unknown-size placeholder is added.
 
@@ -242,19 +253,36 @@ still owns the whole mount, is hard-cancellable. Mount teardown, protocol
 violations and the idle watchdog always terminate the worker. Deadlines apply to
 blocking pipe reads as well as decoding. A request in flight when the worker ends,
 and every later request of that mount, reports why it ended: the failed exchange
-with its failure, or idle-deadline expiry as a timeout. Only a request's own
+with its failure, or idle-deadline expiry as a timeout. A worker that ends by itself
+(its pipe closes mid-request) is reported as having ended unexpectedly, for example
+because the archive needs more than the worker's memory. Only a request's own
 cancellation, including a cancelled startup, is reported as interrupted, and a
 `Failed(Cancelled)` that acknowledges no host cancellation is a protocol violation.
+The bundled worker reports a failed read of its source with the reply's own code
+(`Io` for a source that failed outside the protocol), never as `Corrupt`.
 
-Current application limits are at most two live archive mounts, 512 MiB process
-memory and a 20-second idle-progress watchdog. Protocol 2 adds no aggregate CPU
+Current application limits are at most two live archive mounts for panels, tabs and
+viewers, 1 GiB process memory (`WORKER_MEMORY`, the most the worker SDK grants; 512
+MiB for protocol 1) and a 20-second idle-progress watchdog. Find's private
+sessions (`Mount::open_for_search`, at most two: one archive per running search) and
+archives inside archives (at most three, below) are counted apart, so none of these
+uses refuses another's mounts. Protocol 2 adds no aggregate CPU
 ceiling; inherited OS resource policy remains in effect. Only successful bounded
 byte I/O and monotonic decoded work renew the watchdog. Protocol 1 retains its
 legacy limits. Shared tab/viewer leases count as the same mount. Source reads may
-revisit captured ranges and are bounded to 256 KiB. Host listing validation
-also limits a directory to 100,000 nodes and 8 MiB aggregate raw/display names.
-These are host limits, not protocol violations: a legitimate large directory can
-reach them, so reaching one fails only that listing and keeps the worker.
+revisit captured ranges and are bounded to 256 KiB. Nothing limits how many members
+a directory lists or how many bytes their names take: the host requests page after
+page for as long as the worker says more follow, checking cancellation between
+pages, and each page stays within the frame and batch bounds above. The worker's
+memory bounds an archive's index instead: measured at about 105 bytes per TAR
+member, 420 per 7z member and 690 per ZIP member at peak (a million members), 1 GiB
+holds about nine million TAR, two million 7z or one and a half million ZIP members.
+That 1 GiB, the worker SDK's maximum, is the remaining limit. In the application
+process a listed folder costs per member about 187 bytes for the host's rows, 649
+for a panel listing (its rows, collation keys and index) and 321 for the tree
+provider's capture (a million 16-byte names: `archive_folder_memory_per_member` in
+`crates/midnight-engine/src/providers/archive_tests.rs`), so a panel showing a folder
+of a million members holds about 620 MiB.
 The idle supervisor waits without polling; it observes startup cancellation every
 10 ms only while that exchange is active. A failed `release_on_worker` retains its
 host reference instead of dropping it. Once every host reference of a session whose
@@ -270,21 +298,38 @@ bounds decoded content. The host stops staging with a disk-full (`StorageFull`)
 error before that volume's free space falls below max(1 GiB, 2% of capacity); it
 queries the volume on each stage's first append and at least every 64 MiB, and
 writes by other programs between two queries are not counted. The
-parser retains 100,000-node and 8 MiB name limits, a 16 MiB bound on each buffered
-TAR long-name/long-link/PAX record, 64 MiB XZ/Zstandard windows, a 256 MiB 7z
-LZMA/LZMA2 dictionary check (larger blocks' members are unreadable) and a 64 MiB raw
-7z next-header guard. Compressed 7z header decoding and ZIP central-directory
-parsing are bounded only by the worker memory limit. Source reads use a
+parser sets no member-count or name-bytes limit. It retains the protocol's 64 KiB
+per-name limit, a 16 MiB bound on each buffered TAR long-name/long-link/PAX record,
+64 MiB XZ/Zstandard windows, a 256 MiB 7z LZMA/LZMA2 dictionary check (larger
+blocks' members are unreadable) and a raw 7z next header that must lie inside the
+source and fit an eighth of the worker's memory (128 MiB, the uncompressed header of
+about two and a half million members). An index that outgrows the worker's memory
+fails the archive with `Limit`; compressed 7z header decoding and ZIP
+central-directory parsing are bounded only by the worker memory limit. Source reads use a
 seek-preserving 256 KiB window. ZIP and plain TAR browse indexes without
 whole-source buffering; selected members stream directly to disk. Solid 7z verifies
 the full required block and stages only the selected member. The block's other
 readable members stay in worker memory (up to 128 MiB, later members first) until
 read: members read within that window need no further block decode, while a larger
 block or a read outside the window decodes the block again.
-Compressed TAR verifies one complete scratch stream and reuses checked ranges.
+Compressed TAR verifies one complete scratch stream, indexing its headers while
+staging it, and reuses checked ranges. The host records a CRC-32 for every 64 KiB
+block of a spool file as it appends, and a read checks each block it touches, read
+whole, instead of the spool being flushed when it is sealed: lost or failed write-back
+is a read error, never content.
+A staged stream or member of at most 16 MiB stays in host memory instead of a spool
+file while the process's in-memory staging budget has room: 128 MiB, shared by every
+archive mount of the process. Creating a spool file waits for the volume's journal
+while other programs flush their writes, which takes seconds on a busy disk. Content
+declared larger than 16 MiB gets a spool file at once. A stage that outgrows 16 MiB,
+or whose next chunk no longer fits the budget, moves its bytes to a new spool file and
+continues there; those bytes count against the volume's reserve like any other. Its
+memory returns to the budget when it moves, or when the mount and the last read of that
+content close. Memory needs no CRC: only spool files can change behind the process.
 Disk errors abort staging; final spool cleanup runs on backend workers after any
 outstanding native I/O returns. Each mount keeps up to 16 decoded members for
-repeated reads. Beyond 512 MiB of their spool storage, least recently read members
+repeated reads. Beyond 512 MiB of their staged content (in memory or in spool files),
+least recently read members
 leave first, except members in active use: one of the four most recently read
 members that was also read within the mount's last 64 member reads stays even
 beyond the budget. A sequential reader whose chunks interleave with reads of up to
@@ -303,8 +348,15 @@ directory owned by the user with mode 0700. A candidate that cannot be opened th
 way or cannot hold anonymous files yields to the next, so a directory that another
 account pre-creates only disables that candidate. A mount uses the first usable
 candidate whose volume has at least 64 MiB free above its reserve, or else the first
-usable one. A `<pid>` root serves only this process and is removed after its last
-spool closes. A fixed shared name is never used.
+usable one. The process makes that choice once, creating one test spool, and later
+mounts reuse the root. The engine makes it on a background thread right after plugin
+discovery when an installed worker stages content (`Catalog::prepare_staging`), so the
+first archive opened does not wait for the test spool; a mount that starts during that
+check waits for its choice instead of making its own. A spool that cannot be created,
+written or sized there, or a refusal at the volume's reserve, makes the next mount
+choose again. A `<pid>` root serves only this process: every mount that uses it checks
+it again, and it is removed after its last spool closes. A fixed shared name is never
+used.
 
 Protocol-2 nodes also carry optional typed UTC seconds/nanoseconds or timezone-free
 local civil timestamps. ZIP DOS times never acquire an invented UTC offset.
@@ -323,7 +375,23 @@ or the Info-ZIP Unicode Path replacing it) into a single entry, which is listed 
 unreadable, and a ZIP whose records the worker cannot reconcile with the reader's
 index is refused. Encrypted or unsupported ZIP members
 and 7z blocks are unreadable without hiding the rest of the archive. Passwords,
-multi-volume archives, RAR, nested mounts and archive writing are unsupported.
+multi-volume archives, RAR and archive writing are unsupported.
+
+Archives inside archives need no worker change. `ArchiveMount::stage_member` asks the
+enclosing session for one ordinary member read (cooperatively cancellable, with
+progress at each `StageAck`) and keeps the sealed lease that the read publishes; the
+lease stays readable after the member cache evicts it and after that worker ends.
+`Mount::open_nested` then starts another worker whose captured source is that lease
+(`CapturedFile::from_source`): it receives the usual `Open` with the member's length
+and reads it through `SourceRead`, and each read revalidates the enclosing chain down
+to the native file. The nested mount reports its enclosing folder through
+`ArchiveMount::parent`, names the native file of the outermost archive as its
+container, and inherits persistent member identities only from enclosing providers
+with stable member IDs. Nesting stops at `MAX_ARCHIVE_DEPTH` (4) archive levels, and
+at most three nested mounts run beside the two mounts that panels, tabs and viewers
+open from native files (and Find's own two). Protocol-1 workers cannot stage members,
+so archives inside them do not open.
+User-facing behavior is in [archives inside archives](../ARCHIVE_FORMATS.md#archives-inside-archives).
 
 ## Independent builds and verification
 

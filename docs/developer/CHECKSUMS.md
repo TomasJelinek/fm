@@ -15,8 +15,14 @@ fallback, plus job/generation, algorithms, recursion and limits. The UI's existi
 selection-action broker waits for the specific selection revision before opening
 the window. A nonempty selection is authoritative; no parent (`..`) row becomes
 a file target. With no selection, calculation uses a focused regular native file.
-An empty panel opens the Verify file page; a focused checksum sidecar pre-fills
-that page. Neither action automatically verifies a manifest or follows its entries.
+Opening the window calculates nothing; Calculate starts a run. An empty panel opens
+the Verify file page, and so does a checksum file the user points at, with that file
+chosen: the focused file when it is a checksum file and is selected (or nothing is),
+else, in a flat panel, the first selected checksum file in display order. The UI
+finds it from the selection bitset and the displayed rows, looking at no more
+selected rows than one calculation could hold (16,384), never by scanning the
+folder's index. Neither action automatically verifies a manifest or follows its
+entries.
 Folders can be selected and recursion explicitly enabled. Provider/archive content
 is not silently interpreted as a native pathname.
 
@@ -41,9 +47,9 @@ file verification, export and the ordinary checksum job/result budgets are share
 The actor expands the captured selection on backend workers. `StartChecksums`
 also accepts explicit captured targets for internal callers. Both feed the same
 controller and budgets. Later panel navigation, sorting or selection cannot
-retarget an existing session. Recalculate retains the captured roots and increments
-the generation; it reads their current validated native content, not a snapshot
-promised by the original directory listing.
+retarget an existing session. Each Calculate retains the captured roots and
+increments the generation; it reads their current validated native content, not a
+snapshot promised by the original directory listing.
 
 The default is SHA-256. SHA-512, CRC32, MD5 and SHA-1 are optional; CRC32/MD5/SHA-1 are labelled
 legacy compatibility algorithms. A single ordered read stream updates all chosen
@@ -129,28 +135,39 @@ reused, including rejected saves. Results distinguish admission Rejected from
 Queued/Saving/Finished; duplicate rejection is not completion of an accepted save.
 `CancelChecksumManifest` cancels one export by its identity.
 
-The window shows included/known-excluded counts and whether discovery was incomplete.
-Saving partial results requires explicit acknowledgement of that run. Recalculation
-clears the acknowledgement. A running save retains its generation; recalculation
-cannot replace it until completion. The backend independently derives and checks
-the counts from its own retained rows.
+Saving partial results first asks in the window, naming the included and known
+excluded counts and whether discovery was incomplete. The question belongs to its
+run: answering it sends exactly the counts it showed, and a new calculation or
+verification discards it together with a destination chosen for the old run. An
+answer the window cannot act on (other checksum work still active) is reported and
+the question kept. A running save retains its generation; recalculation cannot
+replace it until completion. The backend independently derives and checks the
+counts from its own retained rows and refuses a different acknowledgement.
 
 Exports are SFV (`.sfv`, filename then CRC32) or algorithm-specific GNU-compatible
 UTF-8 manifests (`.md5`, `.sha1`, `.sha256`, `.sha512`, digest then filename). Relative native
 names must round-trip exactly and remain under the output's directory on the same
-device; invalid native text and aliases of selected sources are refused. The
-unchanged suggested output retains its raw PathBuf even when display is lossy.
-The existing staging, sync, independent SHA-256 readback and no-replace publication
-contract protects output. Existing files are not silently overwritten. Overwrite
-remains unavailable; verification is described below. The native Save picker offers
-the chosen format's filter/default extension. Picking a name does not publish it.
+device; invalid native text and aliases of selected sources are refused. A chosen
+destination keeps its raw PathBuf, also through the replace question, even when
+display is lossy. Output uses exclusive staging, sync and independent SHA-256
+readback before publication (shared with the Shift+F4 empty-file replacement).
+An existing file is never silently overwritten: the backend refuses it with
+`AlreadyExists`, the window asks, and only Replace sends an explicit `overwrite`.
+A confirmed replacement pins the existing regular file and publishes through the
+platform's recoverable replacement; the replaced file is kept in a private
+`.midnight-recovery-…` folder beside it. The native Save picker offers the chosen
+format's filter and default extension; choosing a file there starts the save.
 
-Successful export receipts report actual path, included/excluded counts and verified
-bytes. Visible flat native panels showing the output folder re-read it; adopted
+Successful export receipts report the actual path (an appended extension
+included), included/excluded counts, verified bytes and where a replaced file is
+kept. The window shows them in a save line under the results; Details shows the
+full paths, including the recovery path to delete once the old file is no longer
+needed. Visible flat native panels showing the output folder re-read it; adopted
 native trees reconcile their loaded branches through tree maintenance instead.
-Neither retargets a later location.
-An error or cancellation never invents a successful export. A post-publication
-durability failure may leave a published file and is reported by the backend.
+Neither retargets a later location. An error or cancellation never invents a
+successful export. A failure after publication (folder durability, the recovery
+proof) is reported as an error that says the manifest was created or replaced and
+names the recovery path; it never removes the published file or the kept one.
 
 ## Verification from a file
 
@@ -193,36 +210,48 @@ component limit and is refused before publication with that budget named. These
 resource budgets do not truncate filenames or impose MAX_PATH. Native Open/Save pickers run
 on their existing dedicated backend worker. Their replies are checked against the
 session/generation; closure cancels the picker, and a late reply cannot start work
-or overwrite another draft. Browse only fills a field; Verify/Save is explicit.
+or overwrite another draft. On Verify file, Browse only fills the field and Verify
+is explicit; Save manifest… is itself the explicit request, so the file chosen
+there is saved at once (partial results and an existing file are asked first).
 
 ## Presentation, settings and compatibility
 
 `files.checksums` defaults to Ctrl+F8; Ctrl+F7 stays case conversion. Saved explicit
 overlapping bindings take precedence over the new default. The Ctrl footer and
-User menu dispatch the same captured-selection action. Results, Options, Save
-manifest, Details and Verify file are views of one movable native tool window, with Escape routed through
-the shared tool-window focus scope. Inputs, result list and details scroll at the
+User menu dispatch the same captured-selection action. Calculate and Verify file are
+the two pages of one movable native tool window, with Escape routed through the
+shared tool-window focus scope. The window opens with the keyboard focus on the
+shown page: the result list, or the window itself on Verify file. A control that
+removes itself when used (an answer to the save question, Details, Back, a dismiss
+button) first moves the focus back to the page, so Escape keeps closing the window.
+Details replaces the page on request and Back returns to it. The result list, the Verify file page and Details scroll at the
 320x200 minimum. Native editing/IME is not replaced by a global key interceptor.
 
-Results receive most of the initial window. The selected output algorithm controls
-both the displayed hash column and Copy; the chooser contains only algorithms in
-the captured run. File/bytes/status stay before the hash. The complete digest uses
-measured monospace width with horizontal scrolling when needed. Other algorithms
-and full-row copy remain in the row context menu. Ctrl+C copies the chosen digest;
-Ctrl+Shift+C copies the full row in this window, while that chord continues to
-compare files in a main panel. Options holds algorithm and recursion controls and
-locks them while calculation/export is active. Calculate requires a nonempty set.
+Results receive most of the initial window. The algorithm dropdown next to the page
+tabs lists all five algorithms: each row's checkbox includes that algorithm in the
+next calculation, and choosing a calculated one shows its column; algorithms the
+current run did not calculate cannot be shown. Include subfolders is its last row.
+The checkboxes lock while calculation, a save or a file chooser is active, and
+Calculate requires a nonempty set. The dropdown works from the keyboard: Enter,
+Space or an arrow opens it; Up/Down/Home/End move, Space ticks the row, Enter shows
+the row's column (or ticks Include subfolders), and Escape or Tab closes it. The
+shown algorithm controls the hash column, Copy and the format Save manifest… offers.
+File/bytes/status stay before the hash. The complete digest uses measured monospace
+width with horizontal scrolling when needed. Other algorithms and full-row copy
+remain in the row context menu. Ctrl+C copies the chosen digest; Ctrl+Shift+C copies
+the full row in this window, while that chord continues to compare files in a main
+panel.
 
-Save manifest opens the destination form; Save writes only after a destination and
-any partial-run acknowledgement are present. Drafts survive page changes; a new
-generation clears consent. Backend validation remains authoritative. The footer
+An issue line above the results names the window's error, else the first backend
+diagnostic of the finished run (for example a refused manifest: absolute path,
+parent traversal, malformed or duplicate line, a limit), else the resource limits
+the run reached. Its Details button, and the one on the save line, show every
+retained diagnostic, the limits reached in words, the counts, the checksum file
+being verified and the last save's full paths; Copy details copies that text with
+exact paths. Both lines can be dismissed; a new run closes Details. The footer
 contains only actions relevant to the page and keeps Close reachable independently
-of overflow. Error notices can be dismissed without losing Details. Large-font and
-small-window pages scroll instead of enlarging the single-line destination input.
-When height is tight, results use single-line rows and hide the header if it would
-consume the last complete row. Both output selectors explicitly synchronize their
-indices after native selection/model replacement; displayed and submitted algorithms
-cannot diverge after switching pages.
+of overflow. When height is tight, results use single-line rows and hide the header
+if it would consume the last complete row.
 
 Preferences schema 16 stores a nonempty algorithm set as stable names `sha256`,
 `sha512`, `md5`, `sha1`, `crc32`. Older settings default to SHA-256. Invalid, repeated,

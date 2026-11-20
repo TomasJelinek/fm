@@ -93,7 +93,7 @@ This is a debug deployment, not a published release or completion of the broader
 ## References
 
 The read-only source comparison used Salamander's
-`D:/experiments/salamander-main/src/fileswn2.cpp:336` denied-junction navigation and
+`<salamander-source>/src/fileswn2.cpp:336` denied-junction navigation and
 `salamdr2.cpp:1405` native reparse-target helper. The new implementation uses the
 existing Rust API and does not copy Salamander's ANSI or fixed-length parser.
 

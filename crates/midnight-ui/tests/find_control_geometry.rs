@@ -117,6 +117,99 @@ fn assert_action(
     assert_inside(&button, &icon, label);
 }
 
+fn draw_at(native: &MinimalSoftwareWindow, width: u32, height: u32) {
+    native.set_size(slint::PhysicalSize::new(width, height));
+    native.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(width as f32, height as f32),
+    });
+    slint::platform::update_timers_and_animations();
+    let mut pixels = vec![slint::Rgb8Pixel::default(); (width * height) as usize];
+    native.window().request_redraw();
+    native.draw_if_needed(|renderer| {
+        renderer.render(&mut pixels, width as usize);
+    });
+}
+
+#[test]
+fn query_footer_never_cuts_an_action_and_keeps_copy_details_where_it_fits() {
+    use i_slint_core::item_tree::ParentItemTraversalMode;
+    use i_slint_core::items::Flickable;
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let window = FindWindow::new().unwrap();
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    let adapter: Rc<dyn WindowAdapter> = native.clone();
+    // The UI review's Find window at 960x600 is 672x450; at 1340x820 it is 938x615.
+    for (density, width, height, copy_details) in [
+        (1, 672, 450, false),
+        (0, 672, 450, true),
+        (1, 938, 615, true),
+    ] {
+        let case = format!("density={density}, {width}x{height}");
+        window.invoke_apply_preferences(0, density, "".into(), 12, 15);
+        draw_at(&native, width, height);
+        assert_eq!(
+            modeless::accessible_item(&native, AccessibleRole::Button, "Copy details").is_some(),
+            copy_details,
+            "{case}: Copy details"
+        );
+        for label in [
+            "Find",
+            "Go to file",
+            "View",
+            "Edit",
+            "Open",
+            "Copy details",
+            "Close",
+        ] {
+            let Some(button) = modeless::accessible_item(&native, AccessibleRole::Button, label)
+            else {
+                continue;
+            };
+            let bounds = button.geometry();
+            let at = button.map_to_native_window(bounds.origin);
+            // Inside the footer's scroller (when it has one) and inside the window.
+            let mut ancestor = button.parent_item(ParentItemTraversalMode::StopAtPopups);
+            while let Some(item) = ancestor {
+                if item.downcast::<Flickable>().is_some() {
+                    let area = item.geometry();
+                    let clip = item.map_to_native_window(area.origin);
+                    if at.x + bounds.width() <= clip.x + area.width() + 0.5 && at.x >= clip.x - 0.5
+                    {
+                        break;
+                    }
+                    // A scrolled-out action is fine; a half-shown one is not.
+                    assert!(
+                        at.x >= clip.x + area.width() - 0.5
+                            || at.x + bounds.width() <= clip.x + 0.5,
+                        "{case}: {label} is cut by the footer scroller: {at:?} {bounds:?} in {clip:?} {area:?}"
+                    );
+                    break;
+                }
+                ancestor = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+            }
+            let caption = descendant(button.clone(), &|item| {
+                item.is_visible()
+                    && (item.downcast::<SimpleText>().is_some()
+                        || item.downcast::<ComplexText>().is_some())
+            })
+            .unwrap_or_else(|| panic!("{case}: {label} has no caption"));
+            let needed = caption
+                .borrow()
+                .as_ref()
+                .layout_info(Orientation::Horizontal, -1.0, &adapter, &caption)
+                .preferred;
+            assert!(
+                needed <= caption.geometry().width() + 0.5,
+                "{case}: {label} needs {needed}px, has {}",
+                caption.geometry().width()
+            );
+        }
+    }
+    window.hide().unwrap();
+}
+
 #[test]
 fn find_actions_match_normal_controls_and_preserve_scaled_content() {
     let windows = Rc::new(RefCell::new(Vec::new()));

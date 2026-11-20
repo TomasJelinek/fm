@@ -1,5 +1,5 @@
 //! Worker-side comparator compilation and ordered matching of original native basenames.
-use crate::filter::{CompiledFilter, FilterPlan, REGEX_BYTES};
+use crate::filter::{CompiledFilter, FilterPlan, PatternError, REGEX_BYTES};
 use midnight_core::{
     CompiledFileComparatorPolicy, FileComparatorDiagnostic, FileComparatorField,
     FileComparatorPreferences, MAX_FILE_COMPARATOR_MATCHER_BYTES,
@@ -41,13 +41,16 @@ pub fn compile(
     let (engine_bytes, matcher_budget_bytes) = engine_budget(engines)?;
     let mut patterns = Vec::with_capacity(plans.len());
     for (index, plan) in plans.into_iter().enumerate() {
-        patterns.push(plan.compile(engine_bytes).map_err(|message| {
+        patterns.push(plan.compile(engine_bytes).map_err(|error| {
             pattern_error(
                 index,
-                format!(
-                    "{message} Comparator matcher limits are {engine_bytes} bytes each for \
-                     the program and DFA of every include/exclude engine (16 MiB per rule set)."
-                ),
+                match error {
+                    PatternError::TooLarge(message) => format!(
+                        "{message} Comparator matcher limits are {engine_bytes} bytes each for \
+                         the program and DFA of every include/exclude engine (16 MiB per rule set)."
+                    ),
+                    PatternError::Invalid(message) => invalid_pattern(message),
+                },
             )
         })?);
     }
@@ -105,6 +108,22 @@ impl CompiledFileComparatorPolicy for CompiledComparators {
 
     fn matcher_budget_bytes(&self) -> usize {
         self.matcher_budget_bytes
+    }
+}
+
+/// A regex parse report as one sentence. The report draws a caret under the pattern on lines
+/// of its own, which the settings page cannot align; its last line names the problem.
+fn invalid_pattern(message: String) -> String {
+    match message
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("error: "))
+    {
+        Some(problem) => format!(
+            "Invalid regular expression: {}.",
+            problem.trim_end_matches('.')
+        ),
+        None => message,
     }
 }
 

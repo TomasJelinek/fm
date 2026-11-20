@@ -154,7 +154,7 @@ fn command_hint(command: &UserCommand, shortcut: &str) -> String {
         hint.push('\n');
         hint.push_str(shortcut);
     }
-    hint.push_str("\nRight-click for Custom Commands settings");
+    // The toolbar adds its right-click settings line; the F9 User menu has none.
     hint
 }
 

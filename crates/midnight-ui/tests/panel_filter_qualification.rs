@@ -105,18 +105,54 @@ fn form_property(
         .to_string()
 }
 
-fn contains_visible_image(item: ItemRc) -> bool {
+/// The visible images inside `item`.
+fn visible_images(item: ItemRc, found: &mut Vec<ItemRc>) {
     if item.is_visible() && item.downcast::<ImageItem>().is_some() {
-        return true;
+        found.push(item.clone());
     }
     let mut child = item.first_child();
     while let Some(item) = child {
         child = item.next_sibling();
-        if contains_visible_image(item) {
-            return true;
-        }
+        visible_images(item, found);
     }
-    false
+}
+
+/// `inner` lies within `outer`, both in window coordinates.
+fn lies_within(inner: &ItemRc, outer: &ItemRc) -> bool {
+    let (at, size) = (
+        inner.map_to_native_window(inner.geometry().origin),
+        inner.geometry().size,
+    );
+    let (bounds, limit) = (
+        outer.map_to_native_window(outer.geometry().origin),
+        outer.geometry().size,
+    );
+    at.x >= bounds.x - 0.5
+        && at.y >= bounds.y - 0.5
+        && at.x + size.width <= bounds.x + limit.width + 0.5
+        && at.y + size.height <= bounds.y + limit.height + 0.5
+}
+
+/// The draft's clear lies inside the expression field at its right edge, like the
+/// filename search box's, and is the field's only icon.
+fn assert_inline_clear(expression: &ItemRc, clear: &ItemRc) {
+    assert!(
+        lies_within(clear, expression),
+        "the draft clear lies inside the expression field"
+    );
+    let right = |item: &ItemRc| {
+        item.map_to_native_window(item.geometry().origin).x + item.geometry().width()
+    };
+    assert!(
+        right(expression) - right(clear) <= 4.0,
+        "the draft clear sits at the field's right edge"
+    );
+    let mut images = Vec::new();
+    visible_images(expression.clone(), &mut images);
+    assert!(
+        !images.is_empty() && images.iter().all(|image| lies_within(image, clear)),
+        "the inline clear is the expression field's only icon"
+    );
 }
 
 /// A control of a native window is visible inside it and every scroll viewport.
@@ -192,29 +228,22 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
                 }
                 let expression =
                     form_inside(&host, AccessibleRole::TextInput, "File filter expression");
+                // The draft "*.old" has text: its clear is shown inside the field.
                 let clear = form_inside(&host, AccessibleRole::Button, "Clear filter expression");
                 let history = form_inside(&host, AccessibleRole::Combobox, "Filter history");
                 let edit_at = expression.map_to_native_window(expression.geometry().origin);
-                let clear_at = clear.map_to_native_window(clear.geometry().origin);
                 let history_at = history.map_to_native_window(history.geometry().origin);
                 assert!(
-                    (clear_at.x - edit_at.x - expression.geometry().width()).abs() <= 1.0
-                        && (history_at.x - clear_at.x - clear.geometry().width()).abs() <= 1.0,
-                    "expression, sole draft clear and history must form one contiguous row"
+                    (history_at.x - edit_at.x - expression.geometry().width()).abs() <= 1.0,
+                    "expression and history must form one contiguous row"
                 );
                 assert!(
                     (history_at.y - edit_at.y).abs() <= 1.0
-                        && (clear_at.y - edit_at.y).abs() <= 1.0
                         && (history.geometry().height() - expression.geometry().height()).abs()
-                            <= 1.0
-                        && (clear.geometry().height() - expression.geometry().height()).abs()
                             <= 1.0,
-                    "expression, draft clear and history must have equal height and top"
+                    "expression and history must have equal height and top"
                 );
-                assert!(
-                    !contains_visible_image(expression.clone()),
-                    "the focused expression must not add another inline clear icon"
-                );
+                assert_inline_clear(&expression, &clear);
                 assert!(history.geometry().width() <= history.geometry().height() + 1.0);
                 form_inside(&host, AccessibleRole::Checkbox, "Case sensitive");
                 for label in ["Help", "Show all", "OK", "Cancel"] {
@@ -275,14 +304,11 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                 ),
                 ""
             );
-            assert_eq!(
-                form_property(
-                    &host,
-                    AccessibleRole::Button,
-                    "Clear filter expression",
-                    AccessibleStringProperty::Enabled
-                ),
-                "false"
+            host.layout(564, 384);
+            assert!(
+                host.try_item(AccessibleRole::Button, "Clear filter expression")
+                    .is_none(),
+                "an empty draft shows no clear"
             );
             assert!(presentation.get_model().enabled);
             assert_eq!(
@@ -290,7 +316,9 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                 0,
                 "draft Clear must not remove an applied filter"
             );
+            // Clear left the keyboard in the field: the typed draft lands there.
             input::key(&native, "*.文档");
+            host.layout(564, 384);
             assert_eq!(
                 form_property(
                     &host,
@@ -299,6 +327,10 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                     AccessibleStringProperty::Enabled
                 ),
                 "true"
+            );
+            assert_inline_clear(
+                &host.item(AccessibleRole::TextInput, "File filter expression"),
+                &host.item(AccessibleRole::Button, "Clear filter expression"),
             );
             let history = form_inside(&host, AccessibleRole::Combobox, "Filter history");
             input::click(&native, &history);

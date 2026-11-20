@@ -188,14 +188,22 @@ fn modified_date_and_time_are_independent_aligned_locale_fields() {
     assert_eq!(sorts.borrow().as_slice(), &[(0, 2), (0, 2)]);
 }
 
+/// A drawn name is wrapped in left-to-right isolation marks; compare what it says.
+fn same_caption(text: &str, caption: &str) -> bool {
+    text.strip_prefix('\u{2066}')
+        .and_then(|text| text.strip_suffix('\u{2069}'))
+        .unwrap_or(text)
+        == caption
+}
+
 fn text_item(item: ItemRc, caption: &str) -> Option<ItemRc> {
     if item.is_visible()
         && (item
             .downcast::<SimpleText>()
-            .is_some_and(|text| text.as_pin_ref().text() == caption)
+            .is_some_and(|text| same_caption(&text.as_pin_ref().text(), caption))
             || item
                 .downcast::<ComplexText>()
-                .is_some_and(|text| text.as_pin_ref().text() == caption))
+                .is_some_and(|text| same_caption(&text.as_pin_ref().text(), caption)))
     {
         return Some(item);
     }

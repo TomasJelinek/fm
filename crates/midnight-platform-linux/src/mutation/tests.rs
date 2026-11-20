@@ -438,7 +438,8 @@ fn staged_identity_is_checked_before_any_unlink() {
             prepared.identity,
             &source,
             &cancel,
-            &mut |_| {}
+            &mut |_| {},
+            &mut |failure| Err(failure.error)
         )
         .is_err()
     );

@@ -75,7 +75,7 @@ of every installed desktop font configuration.
 
 `cargo build` completed in 43.27 s. The executable is:
 
-`D:/experiments/dev/FM/_build/debug/me.exe`
+`_build/debug/me.exe`
 
 - Size: 99,159,552 bytes.
 - SHA-256: `b3fdb18826381c704e5b3133e3dbde5e8fb11a3cf541d7435c1c279d35028a67`.

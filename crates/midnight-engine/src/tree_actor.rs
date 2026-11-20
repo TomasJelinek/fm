@@ -79,6 +79,8 @@ pub(crate) struct Session {
     // Size lookup the current projection was sorted with; a size invalidation
     // replaces `options.sizes` without rebuilding. Compared by content.
     built_sizes: Arc<HashMap<TreeRowId, midnight_core::FolderSize>>,
+    // The hidden-files choice the current projection was built with.
+    built_hide_hidden: bool,
     queue: VecDeque<PendingBranch>,
     versions: HashMap<BranchId, u64>,
     next_work: u64,
@@ -352,6 +354,11 @@ impl WorkerBudget {
 }
 
 impl Session {
+    /// Later builds leave hidden rows out, or list them again. The next build
+    /// (a maintenance refresh, reprojection or branch change) publishes it.
+    pub(crate) fn set_hide_hidden(&mut self, hide: bool) {
+        self.options.hide_hidden = hide;
+    }
     pub(crate) fn retains_row(&self, row: TreeRowId) -> bool {
         self.projection_state.branch(row).is_some()
     }
@@ -393,6 +400,7 @@ impl Session {
             filter: request.options.filter.clone(),
             search: request.options.search.clone(),
             locale: self.options.locale.clone(),
+            hide_hidden: self.options.hide_hidden,
         };
         // build() also updates occurrence records and locale keys. Keep that
         // bounded bookkeeping private until the complete replacement succeeds.
@@ -417,6 +425,7 @@ impl Session {
         self.projection = projection;
         self.selection = selection;
         self.built_sizes = options.sizes.clone();
+        self.built_hide_hidden = options.hide_hidden;
         self.options = options;
         self.last_request = request.request;
         self.selection_seeded = true;
@@ -484,6 +493,7 @@ impl Session {
             selection_seeded: false,
             accepted: None,
             built_sizes: options.sizes.clone(),
+            built_hide_hidden: options.hide_hidden,
             options,
             queue: VecDeque::new(),
             versions: HashMap::new(),
@@ -575,6 +585,7 @@ impl Session {
             }
         };
         self.built_sizes = options.sizes.clone();
+        self.built_hide_hidden = options.hide_hidden;
         self.options = options;
         self.projection_state = state;
         self.projection = projection;
@@ -1115,6 +1126,10 @@ mod tests;
 #[cfg(test)]
 #[path = "tree_actor_selection_tests.rs"]
 mod selection_tests;
+
+#[cfg(test)]
+#[path = "tree_mask_selection_tests.rs"]
+mod mask_selection_tests;
 
 #[cfg(test)]
 #[path = "tree_action_capture_tests.rs"]

@@ -3,6 +3,9 @@ use super::*;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::VecDeque;
 
+#[path = "desktop_properties.rs"]
+mod properties;
+
 /// The backend loads each icon once and does not resend one among its
 /// `DESKTOP_ICON_CAPACITY` most recent ones, so this cache holds that many, each
 /// at every edge it was delivered at; an evicted icon falls back to its generic
@@ -81,6 +84,8 @@ pub(crate) struct DesktopState {
     open_requests: HashMap<DesktopRequestId, (PaneId, NavigationId, PathBuf)>,
     open_directories: [Option<(NavigationId, PathBuf)>; 2],
     generation: u64,
+    /// The Properties request whose summary may still be completed in place.
+    properties: Option<properties::Pending>,
 }
 
 impl DesktopState {
@@ -266,6 +271,11 @@ impl Presenter {
                 target,
             } => self.apply_directory_link_target(request, pane, navigation, target),
             Event::VolumeInformationLoaded(loaded) => self.volume_information_loaded(*loaded),
+            Event::PropertiesUpdated {
+                request,
+                title,
+                body,
+            } => self.properties_updated(request, title, body),
             Event::ViewerPluginsListed(result) => self.viewer_plugins_listed(result),
             Event::ComparatorCapabilitiesListed(snapshot) => {
                 self.comparator_capabilities_listed(snapshot)
@@ -358,7 +368,8 @@ impl Presenter {
                         self.desktop.status = "Properties opened".into()
                     }
                     Ok(DesktopActionResult::PropertiesInfo { title, body }) => {
-                        self.desktop.inform(&title, body)
+                        self.desktop.inform(&title, body);
+                        self.properties_shown(request);
                     }
                     Ok(DesktopActionResult::FileOpened) => {
                         if opened.is_some() || captured_open.is_some() {
@@ -572,6 +583,12 @@ impl Presenter {
     }
 
     pub(crate) fn properties(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        // Search results fed to the panel: their marked or focused results (the
+        // toolbar and F9 menu, as the list's own key does).
+        if self.feed(pane).is_some() {
+            self.feed_action(pane, find::feed::FeedAction::Properties, send);
+            return;
+        }
         self.request_selection_properties(pane, send);
     }
 
@@ -623,6 +640,9 @@ impl Presenter {
     }
 
     pub(crate) fn folder_sizes(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.feed_refuses(pane, "Folder sizes") {
+            return;
+        }
         if self.panes[pane.index()].tree_view().is_some() {
             self.tree_folder_sizes(pane, send);
             return;

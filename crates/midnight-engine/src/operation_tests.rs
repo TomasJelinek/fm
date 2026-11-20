@@ -11,6 +11,8 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+#[path = "delete_decision_tests.rs"]
+mod decisions;
 #[path = "delete_pause_tests.rs"]
 mod pause;
 #[path = "operation_residue_tests.rs"]
@@ -50,6 +52,12 @@ struct Calls {
     /// Entries each target's discovery reports beyond the target itself, as if
     /// another program removed them before the deletion.
     discovered_extra: AtomicUsize,
+    /// Failures a target offers for decision before its deletion completes.
+    entry_failures: Mutex<std::collections::HashMap<PathBuf, usize>>,
+    /// Their folders became writable: a retried entry is then removed.
+    writable: std::sync::atomic::AtomicBool,
+    /// Failures offered for decision, including those Skip all errors skipped.
+    offered: AtomicUsize,
 }
 struct FakeService(Arc<Calls>);
 struct FakeTarget {
@@ -217,7 +225,65 @@ impl PreparedMutation for FakeTarget {
         }
         Ok(DeleteCompletion {
             residue: self.calls.residue.lock().unwrap().take(),
+            skipped: 0,
         })
+    }
+    /// Offers `Calls::entry_failures` failures for this target first, each for one
+    /// entry below it; Retry succeeds once `Calls::writable` is set.
+    fn delete_with_decisions(
+        &self,
+        mode: DeleteMode,
+        cancel: &Cancellation,
+        progress: &mut dyn FnMut(&Path),
+        failed: &mut dyn FnMut(DeleteEntryFailure) -> DeleteFailureChoice,
+    ) -> Result<DeleteCompletion, FsError> {
+        let failures = self
+            .calls
+            .entry_failures
+            .lock()
+            .unwrap()
+            .get(&self.item.path)
+            .copied()
+            .unwrap_or(0);
+        let mut skipped = 0;
+        for index in 0..failures {
+            let entry = self.item.path.join(format!("locked-{index}"));
+            loop {
+                if self.calls.writable.load(Ordering::Acquire) {
+                    progress(&entry);
+                    break;
+                }
+                self.calls.offered.fetch_add(1, Ordering::AcqRel);
+                match failed(DeleteEntryFailure {
+                    error: FsError::from_io(
+                        "mutate entry",
+                        &entry,
+                        std::io::ErrorKind::PermissionDenied.into(),
+                    ),
+                    can_retry: true,
+                }) {
+                    DeleteFailureChoice::Retry => {}
+                    DeleteFailureChoice::Skip => {
+                        skipped += 1;
+                        break;
+                    }
+                    DeleteFailureChoice::Cancel => {
+                        return Err(FsError::from_io(
+                            "mutate entry",
+                            &entry,
+                            std::io::ErrorKind::Interrupted.into(),
+                        ));
+                    }
+                }
+            }
+        }
+        if skipped > 0 {
+            return Ok(DeleteCompletion {
+                residue: None,
+                skipped,
+            });
+        }
+        self.delete(mode, cancel, progress)
     }
 }
 
@@ -246,6 +312,28 @@ impl Harness {
     fn in_directory(
         kind: MutationKind,
         service: Option<Arc<dyn MutationService>>,
+        path: PathBuf,
+        entries: Arc<[Entry]>,
+    ) -> Self {
+        Self::serving(kind, service, None, path, entries)
+    }
+
+    /// The local platform's mutation and transfer services on a real folder.
+    fn native(kind: MutationKind, path: &Path, entries: Arc<[Entry]>) -> Self {
+        let local = Arc::new(midnight_platform::LocalFileSystem::new(None));
+        Self::serving(
+            kind,
+            Some(local.clone()),
+            Some(local),
+            path.to_owned(),
+            entries,
+        )
+    }
+
+    fn serving(
+        kind: MutationKind,
+        service: Option<Arc<dyn MutationService>>,
+        transfer: Option<Arc<dyn TransferService>>,
         path: PathBuf,
         entries: Arc<[Entry]>,
     ) -> Self {
@@ -280,7 +368,7 @@ impl Harness {
             Services {
                 mutation: Some(service.unwrap_or_else(|| Arc::new(FakeService(calls.clone())))),
                 locale: None,
-                transfer: None,
+                transfer,
             },
             snapshots,
             Outbox {
@@ -329,6 +417,32 @@ impl Harness {
                 && progress.state.is_terminal()
             {
                 return progress;
+            }
+        }
+    }
+    /// The terminal progress, answering each Delete failure on the way with `choice`,
+    /// and the failures it answered.
+    async fn finished_deciding(
+        &mut self,
+        choice: CopyChoice,
+    ) -> (Arc<OperationProgress>, Vec<Arc<DeleteFailure>>) {
+        let mut asked = Vec::new();
+        loop {
+            match self.next().await {
+                OperationEvent::Progress(progress) if progress.state.is_terminal() => {
+                    return (progress, asked);
+                }
+                OperationEvent::DeleteFailure(failure) => {
+                    self.controller
+                        .decide_delete(CopyDecision {
+                            id: failure.id,
+                            version: failure.version,
+                            choice: choice.clone(),
+                        })
+                        .await;
+                    asked.push(failure);
+                }
+                _ => {}
             }
         }
     }
@@ -642,7 +756,10 @@ async fn partial_recursive_failure_reports_changes_and_original_target_after_nav
     h.preview().await;
     h.controller.snapshots.lock().unwrap()[0].visible = None;
     h.controller.confirm(h.request.id, None).await;
-    let progress = h.finished().await;
+    // The failure that ended the target waits for a decision; Skip goes on.
+    let (progress, asked) = h.finished_deciding(CopyChoice::Skip).await;
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].can_skip);
     assert_eq!(progress.state, OperationState::CompletedWithErrors);
     assert_eq!(
         (
@@ -802,4 +919,105 @@ async fn create_file_invalid_confirmation_and_collisions_do_not_report_success()
     );
     assert_eq!(result.errors[0].kind, std::io::ErrorKind::AlreadyExists);
     assert!(h.calls.created.lock().unwrap().is_empty());
+}
+
+/// A real folder holding `name` with `contents`, and a New empty file job prepared there.
+async fn prepared_replacement(folder: &Path, name: &str, contents: &[u8]) -> (Harness, PathBuf) {
+    let existing = folder.join(name);
+    std::fs::write(&existing, contents).unwrap();
+    let mut h = Harness::native(
+        MutationKind::CreateFile,
+        folder,
+        Arc::from([Entry::new(EntryId(7), existing.clone(), EntryKind::File)]),
+    );
+    h.request.focused = None;
+    h.controller.prepare(h.request.clone()).await;
+    h.preview().await;
+    (h, existing)
+}
+
+#[tokio::test]
+async fn a_confirmed_replacement_keeps_the_original_and_says_where() {
+    let folder = tempfile::tempdir().unwrap();
+    let (mut h, existing) =
+        prepared_replacement(folder.path(), "video 文档.mkv", b"original contents").await;
+    h.controller
+        .confirm_with(h.request.id, Some("video 文档.mkv".into()), true)
+        .await;
+    let progress = h.finished().await;
+    assert_eq!(
+        progress.state,
+        OperationState::Completed,
+        "{}",
+        progress.message
+    );
+    assert_eq!(progress.renamed_to.as_deref(), Some(existing.as_path()));
+    assert_eq!(std::fs::read(&existing).unwrap(), b"");
+    // The completion names where the original is kept, and it is there unchanged.
+    let kept = progress
+        .message
+        .lines()
+        .find(|line| line.contains(".midnight-recovery-"))
+        .unwrap_or_else(|| panic!("no recovery path in {:?}", progress.message));
+    assert_eq!(std::fs::read(kept).unwrap(), b"original contents");
+    assert!(
+        progress
+            .message
+            .contains("Delete it when you no longer need it."),
+        "{}",
+        progress.message
+    );
+}
+
+#[tokio::test]
+async fn a_replacement_never_follows_its_folder_path_to_another_folder() {
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    let (mut h, existing) = prepared_replacement(&folder, "a.txt", b"pinned").await;
+    // Another program moves the prepared folder away and puts a new one at its path.
+    let moved = parent.path().join("moved");
+    std::fs::rename(&folder, &moved).unwrap();
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(&existing, b"newcomer").unwrap();
+    h.controller
+        .confirm_with(h.request.id, Some("a.txt".into()), true)
+        .await;
+    let progress = h.finished().await;
+    assert_eq!(progress.state, OperationState::Failed);
+    assert!(
+        progress.message.contains("moved or replaced"),
+        "{}",
+        progress.message
+    );
+    assert_eq!(std::fs::read(&existing).unwrap(), b"newcomer");
+    assert_eq!(std::fs::read(moved.join("a.txt")).unwrap(), b"pinned");
+}
+
+#[tokio::test]
+async fn a_replacement_waits_for_copies_outstanding_when_it_is_confirmed() {
+    let folder = tempfile::tempdir().unwrap();
+    let (mut h, existing) = prepared_replacement(folder.path(), "a.txt", b"original").await;
+    // A copy still running at confirmation may be writing this very file.
+    let copy = h.controller.copies.register();
+    h.controller
+        .confirm_with(h.request.id, Some("a.txt".into()), true)
+        .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), h.finished())
+            .await
+            .is_err(),
+        "the replacement must wait for the earlier copy"
+    );
+    assert_eq!(std::fs::read(&existing).unwrap(), b"original");
+    // That copy ends without a verified publication: the replacement is refused.
+    drop(copy);
+    let progress = h.finished().await;
+    assert_eq!(progress.state, OperationState::Failed);
+    assert!(
+        progress.message.contains("earlier copy"),
+        "{}",
+        progress.message
+    );
+    assert_eq!(std::fs::read(&existing).unwrap(), b"original");
 }

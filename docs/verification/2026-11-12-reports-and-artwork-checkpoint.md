@@ -28,7 +28,7 @@ service once. That API follow-up remains open; no unbounded deferred-owner colle
 ## Debug deployment
 
 Fresh app and elevation-helper build passed in 7.13 seconds. Executable:
-`D:/experiments/dev/FM/_build/debug/me.exe`, 98,880,512 bytes, SHA-256
+`_build/debug/me.exe`, 98,880,512 bytes, SHA-256
 `89a4a1095d1e48b3a355044630b0594eed9f6d7f2fd011246c9693da37d82690`.
 
 Registered private runtime:

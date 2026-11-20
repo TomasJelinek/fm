@@ -410,6 +410,16 @@ one, which then releases or drops the session as described above; a give-up that
 consumes the last reference of a session that is not tainted keeps it retained with
 its worker, as a quarantined release does.
 
+An [archive inside an archive](../ARCHIVE_FORMATS.md#archives-inside-archives) holds
+its enclosing archive's guard only through its host session's captured source
+(`filesystem-host/src/nested.rs`). That session's last release ends its own worker
+first, then closes the staged member and releases the enclosing guard like any other
+owner, so the enclosing session may end with it. The enclosing session's unconfirmed
+cleanup also taints the nested one, which then follows the tainted path above. Its
+enclosing folder is reported by `ArchiveMount::parent` (every wrapper forwards it), and
+nested sessions use their own allowance of three host processes beside the two archive
+process permits.
+
 Limitations: a Copy job whose seal is quarantined before its payload is dropped,
 because it observed the taint during the job or because a teardown cleanup step such
 as closing the current entry failed, keeps its whole payload with the rest of its

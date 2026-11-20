@@ -287,7 +287,8 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
     ui::click_popup(&test.window, "Change Modified", AccessibleRole::Checkbox);
     ui::click_popup(&test.window, "Modified: Now", AccessibleRole::Button);
     ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
-    assert_eq!(drafts.borrow().last().unwrap().modified.mode, 2);
+    // Now fills in a time to apply; nothing is left for the moment of review.
+    assert_eq!(drafts.borrow().last().unwrap().modified.mode, 1);
     assert_eq!(drafts.borrow().last().unwrap().created.mode, 0);
     ui::click_popup(&test.window, "Times", AccessibleRole::Button);
     ui::click_popup(&test.window, "Change Modified", AccessibleRole::Checkbox);
@@ -345,7 +346,7 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
                 if tab == "Times" {
                     let explanation = ui::popup_item(
                         &test.window,
-                        "Times start from the current value. The UTC offset is used exactly as shown; around a daylight-saving change, choose the offset that matches the intended hour. Now uses the moment you review.",
+                        "Times start from the current value, and Now fills in the current one. The UTC offset is used exactly as shown: after moving a date into or out of daylight-saving time, change the offset too. Review notes any offset that differs from local time.",
                         AccessibleRole::Text,
                     );
                     let status = ui::popup_item(

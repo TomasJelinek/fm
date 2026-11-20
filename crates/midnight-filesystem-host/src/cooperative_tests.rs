@@ -123,6 +123,7 @@ impl Fixture {
                 crate::staging::Staging::open(&temp.path().join("spool")).unwrap(),
             ))),
             close: Arc::new(close::CloseReceipt::new()),
+            nested: None,
         };
         *source.supervision.lock().unwrap() = Arc::downgrade(&mount.supervision);
         Self {
@@ -516,14 +517,13 @@ fn volume_at_reserve(
 #[test]
 fn a_member_refused_at_the_spool_reserve_ends_the_worker_and_teardown_frees_its_stage() {
     let fixture = Fixture::new(Protocol::V3, vec![begin(1), append(1, 1)]);
-    fixture
-        .mount
-        .staging
-        .lock()
-        .unwrap()
-        .as_mut()
-        .unwrap()
-        .set_space(volume_at_reserve);
+    {
+        let mut staging = fixture.mount.staging.lock().unwrap();
+        let staging = staging.as_mut().unwrap();
+        // Only content in a spool file meets the volume's reserve.
+        staging.spool_files_only();
+        staging.set_space(volume_at_reserve);
+    }
     let error = fixture
         .mount
         .read(2, 0, 4, &Cancellation::default())
@@ -964,23 +964,37 @@ fn protocol_one_content_longer_than_requested_ends_the_shared_worker() {
 }
 
 #[test]
-fn host_listing_limits_fail_only_that_listing_and_keep_the_shared_worker() {
-    // The host applies its limits after each page exchange, the same way for every
-    // protocol, so the costly member count case (hundreds of pages) runs on protocol 3
-    // only.
-    for (limit, protocols, count, name_bytes, per_page) in [
-        (
-            "members",
-            &[Protocol::V3][..],
-            MAX_LISTED_NODES + 1,
-            1,
-            api::MAX_BATCH,
-        ),
+fn a_worker_that_ends_by_itself_is_reported_with_its_memory() {
+    // No reply at all: the worker's pipe closed, as when an archive whose index
+    // outgrows the worker's memory ends it.
+    for (protocol, memory) in [(Protocol::V1, "512 MiB"), (Protocol::V3, "1024 MiB")] {
+        let fixture = Fixture::new(protocol, Vec::new());
+        let error = fixture.mount.list(1, &Cancellation::default()).unwrap_err();
+        assert_eq!(error.kind, io::ErrorKind::UnexpectedEof, "{protocol:?}");
+        assert_eq!(
+            error.message,
+            format!(
+                "The archive worker ended unexpectedly, for example because the archive \
+                 needs more than the {memory} of memory that the worker may use"
+            ),
+            "{protocol:?}"
+        );
+        assert_worker_ended(&fixture, &format!("{protocol:?}"));
+    }
+}
+
+#[test]
+fn a_folder_beyond_the_former_listing_limits_lists_completely_across_pages() {
+    // The host once refused a folder of more than 100,000 members or 8 MiB of raw and
+    // display names. It pages the same way on every protocol, so the costly member
+    // count case (hundreds of pages) runs on protocol 3 only.
+    for (case, protocols, count, name_bytes, per_page) in [
+        ("members", &[Protocol::V3][..], 100_001, 1, api::MAX_BATCH),
         // Maximal raw and display names fit the 1 MiB frame budget seven to a page.
         (
             "name bytes",
             &[Protocol::V1, Protocol::V2, Protocol::V3][..],
-            MAX_LISTED_NAME_BYTES / (2 * api::MAX_NAME) + 1,
+            8 * 1024 * 1024 / (2 * api::MAX_NAME) + 1,
             api::MAX_NAME,
             7,
         ),
@@ -993,23 +1007,40 @@ fn host_listing_limits_fail_only_that_listing_and_keep_the_shared_worker() {
                 ..member(id, 1)
             })
             .collect();
+        let chunks: Vec<&[api::Node]> = members.chunks(per_page).collect();
         for &protocol in protocols {
-            let context = format!("{protocol:?}, {limit}");
-            let pages = members
-                .chunks(per_page)
-                .map(|chunk| (chunk.to_vec(), true))
+            let context = format!("{protocol:?}, {case}");
+            let pages = chunks
+                .iter()
+                .enumerate()
+                .map(|(index, chunk)| (chunk.to_vec(), index + 1 < chunks.len()))
                 .collect();
             let fixture = Fixture::new(protocol, listing_then_next(pages));
-            assert_eq!(
-                fixture
-                    .mount
-                    .list(1, &Cancellation::default())
-                    .unwrap_err()
-                    .kind,
-                io::ErrorKind::InvalidData,
+            let listed = fixture.mount.list(1, &Cancellation::default()).unwrap();
+            assert_eq!(listed.len(), count, "{context}");
+            assert!(
+                listed.iter().zip(&members).all(|(listed, member)| {
+                    listed.id.entry == member.id
+                        && *listed.raw_name == *member.name
+                        && listed.display_name == member.display
+                }),
                 "{context}"
             );
-            // A legitimate large directory reaches these limits, so the worker stays.
+            // Each page was asked for once, after the last member of the page before.
+            let asked: Vec<u64> = fixture
+                .sent()
+                .iter()
+                .filter_map(|message| match message {
+                    Message::List { after, .. } => Some(*after),
+                    _ => None,
+                })
+                .collect();
+            let cursors: Vec<u64> = std::iter::once(0)
+                .chain(chunks.iter().map(|chunk| chunk[chunk.len() - 1].id))
+                .take(chunks.len())
+                .collect();
+            assert_eq!(asked, cursors, "{context}");
+            // The worker serves the next listing of the mount.
             assert!(!fixture.mount.supervision.stopped(), "{context}");
             assert_eq!(
                 fixture

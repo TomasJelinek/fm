@@ -31,6 +31,9 @@ struct Output {
     /// The session's end, a terminal error or the protocol's Closed event, is published.
     /// The first end stays the last output: nothing follows or replaces it.
     ended: bool,
+    /// The system refused the browser its sandbox when it started: the typed reason of
+    /// the session's terminal error (see `Session::sandbox_refusal`).
+    refusal: Option<crate::SandboxRefusal>,
 }
 impl Output {
     fn put_source_changed(&mut self, origin: api::Event) -> Result<(), String> {
@@ -514,6 +517,16 @@ impl Session {
         self.ceiling == PolicyCeiling::UserChoice
     }
 
+    /// Why the session's terminal error stopped it: the system refused the browser its
+    /// sandbox at startup. Set before that error is published, so a consumer that drained
+    /// the error finds it; `None` for every other end and while the session runs.
+    pub fn sandbox_refusal(&self) -> Option<crate::SandboxRefusal> {
+        self.output
+            .lock()
+            .ok()
+            .and_then(|output| output.refusal.clone())
+    }
+
     /// Consume on the viewer backend and qualify all captured-resource cleanup.
     pub fn release_on_worker(mut self) -> Result<(), String> {
         self.finish()
@@ -919,6 +932,52 @@ mod tests {
         assert!(!session.send(api::CommandKind::Copy));
         assert_eq!(kinds(&session), [runtime("Chromium disconnected")]);
     }
+    #[test]
+    fn a_refused_sandbox_is_the_typed_reason_of_the_drained_terminal_error() {
+        let refusal = crate::SandboxRefusal::UserNamespaces {
+            executable: "/opt/me/viewers/midnight-viewer-html/midnight-viewer-html".into(),
+        };
+        let denied = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            midnight_worker_platform::browser::SandboxUnavailable::new(
+                "Sandbox refused.",
+                refusal.clone(),
+            ),
+        );
+        let refused = std::io::Error::new(std::io::ErrorKind::NotFound, "missing browser");
+        for (error, message, reason) in [
+            (denied, "Sandbox refused.", Some(refusal)),
+            (refused, "Chromium startup: missing browser", None),
+        ] {
+            let woken = Arc::new(AtomicU64::new(0));
+            let count = woken.clone();
+            let session = Session::start(
+                Arc::new(move || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    true
+                }),
+                PolicyCeiling::UserChoice,
+                Arc::new(Mutex::new(None)),
+                move |shared| Err(actor::launch_failed(shared, &error)),
+            )
+            .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !session.finished() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the actor never ended"
+                );
+                std::thread::yield_now();
+            }
+            assert!(
+                woken.load(Ordering::SeqCst) >= 1,
+                "the error wakes the consumer"
+            );
+            assert_eq!(kinds(&session), [runtime(message)]);
+            assert_eq!(session.sandbox_refusal(), reason, "{message}");
+        }
+    }
+
     #[test]
     fn a_panicking_actor_still_ends_the_session_with_a_failure() {
         let woken = Arc::new(AtomicU64::new(0));

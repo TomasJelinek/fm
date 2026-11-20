@@ -136,6 +136,17 @@ impl ArchiveMount for GuardedMount {
     ) -> Result<Option<Vec<u8>>, FsError> {
         self.source().persistent_member_identity(entry, expected)
     }
+    fn parent(&self) -> Option<ArchiveParent> {
+        self.source().parent()
+    }
+    fn stage_member(
+        &self,
+        entry: u64,
+        cancelled: &dyn Fn() -> bool,
+        progress: &dyn Fn(u64),
+    ) -> Result<Arc<dyn ArchiveContent>, FsError> {
+        self.source().stage_member(entry, cancelled, progress)
+    }
 }
 struct Identity {
     source: Weak<dyn ArchiveMount>,

@@ -129,7 +129,7 @@ fn solid_native(width: u32, height: u32) -> Image {
 }
 
 #[test]
-fn footer_icons_and_labels_render_centered_without_resizing_or_tinting_native_images() {
+fn footer_glyphs_and_labels_render_centered_in_the_shared_tint_whatever_the_host_artwork() {
     let test = ui::TestUi::new();
     let window = test.window.clone_strong();
     let native = test.native.clone();
@@ -170,31 +170,38 @@ fn footer_icons_and_labels_render_centered_without_resizing_or_tinting_native_im
             native.draw_if_needed(|renderer| {
                 renderer.render(&mut pixels, WIDTH);
             });
-            let image = bounds(&pixels, WIDTH, 0..WIDTH, band.clone(), |pixel| {
-                [pixel.r, pixel.g, pixel.b] == NATIVE_RGB
+            // Function keys draw the shared action glyph in the dimmed theme tint;
+            // host artwork never replaces it.
+            assert!(
+                bounds(&pixels, WIDTH, 0..WIDTH, band.clone(), |pixel| {
+                    [pixel.r, pixel.g, pixel.b] == NATIVE_RGB
+                })
+                .is_none(),
+                "native artwork must not replace the Help glyph: density={density}, font={font}, source={source_width}x{source_height}"
+            );
+            let tint = rgb(theme.get_secondary_text());
+            let icon_left = (theme.get_window_padding() + 4.0) as usize;
+            let icon_right = (theme.get_window_padding() + 6.0 + theme.get_icon_size()) as usize;
+            let image = bounds(&pixels, WIDTH, icon_left..icon_right, band.clone(), |pixel| {
+                pixel.r.abs_diff(tint.r) <= 48
+                    && pixel.g.abs_diff(tint.g) <= 48
+                    && pixel.b.abs_diff(tint.b) <= 48
             })
             .unwrap_or_else(|| panic!(
-                "enabled Help must preserve native RGB: density={density}, font={font}, source={source_width}x{source_height}, window={WIDTH}x{HEIGHT}"
+                "enabled Help must show its tinted glyph: density={density}, font={font}, window={WIDTH}x{HEIGHT}"
             ));
             assert!(
-                (image.center_y() - center).abs() <= 0.75,
-                "icon must be vertically centered: density={density}, font={font}, source={source_width}x{source_height}, icon={image:?}, button_center={center}"
-            );
-            let scale = theme.get_icon_size() / source_width.max(source_height) as f32;
-            let expected_width = source_width as f32 * scale;
-            let expected_height = source_height as f32 * scale;
-            assert!(
-                (image.width() - expected_width).abs() <= 1.0
-                    && (image.height() - expected_height).abs() <= 1.0,
-                "native aspect ratio and themed icon dimensions must remain intact: {image:?}"
+                (image.center_y() - center).abs() <= 1.5,
+                "icon must be vertically centered: density={density}, font={font}, icon={image:?}, button_center={center}"
             );
             assert!(
-                image.pixels as f32 >= expected_width * expected_height * 0.6,
-                "the native image's full interior must retain its RGB"
+                image.width() <= theme.get_icon_size() + 1.0
+                    && image.height() <= theme.get_icon_size() + 1.0,
+                "the glyph keeps the themed icon size: {image:?}"
             );
             assert!(
                 image.top as f32 > top && (image.bottom as f32) < bottom,
-                "native icon paint must stay within the existing button height"
+                "icon paint must stay within the existing button height"
             );
 
             // Locate the first actual inter-button gap rather than assuming

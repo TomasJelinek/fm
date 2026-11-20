@@ -102,6 +102,10 @@ fn canonical_key(key: &str) -> Result<String, String> {
         "left" | "leftarrow" | "arrowleft" | "←" => "Left",
         "right" | "rightarrow" | "arrowright" | "→" => "Right",
         "plus" => "Plus",
+        // Numeric keypad keys come from physical key events, never from text.
+        "numpadadd" | "numplus" | "keypadplus" => "NumpadAdd",
+        "numpadsubtract" | "numminus" | "keypadminus" => "NumpadSubtract",
+        "numpadmultiply" | "nummultiply" | "numstar" | "keypadmultiply" => "NumpadMultiply",
         "minus" | "-" => "Minus",
         "equal" | "equals" | "=" => "Equal",
         "backslash" | "\\" => "Backslash",
@@ -344,6 +348,9 @@ impl ShortcutDefinition {
                 key,
                 "Space"
                     | "Plus"
+                    | "NumpadAdd"
+                    | "NumpadSubtract"
+                    | "NumpadMultiply"
                     | "Minus"
                     | "Equal"
                     | "Backslash"
@@ -487,6 +494,10 @@ impl ShortcutMap {
                         | "selection.clear-files"
                         | "selection.clear"
                         | "selection.invert-all"
+                        | "selection.mask-select"
+                        | "selection.mask-deselect"
+                        | "selection.mask-invert"
+                        | "panel.hidden-files"
                         | "files.make-list"
                         | "panel.previous-selected"
                         | "panel.next-selected"

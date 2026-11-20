@@ -19,7 +19,7 @@ pub(super) fn validate_options(
             "This source preparation requires Copy authority.",
         ));
     }
-    if links == CopyLinkPolicy::Preserve && metadata != TransferMetadataPolicy::ContentOnly {
+    if links.recreates_links() && metadata != TransferMetadataPolicy::ContentOnly {
         return Err(error(
             path,
             io::ErrorKind::Unsupported,
@@ -35,7 +35,7 @@ pub(super) fn admit_roots(
     links: CopyLinkPolicy,
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
-    if links != CopyLinkPolicy::Preserve {
+    if !links.recreates_links() {
         return Ok(());
     }
     for source in roots {
@@ -198,6 +198,8 @@ pub(super) struct LinkCopy {
     phase: Phase,
     stage_identity: Option<TransferIdentity>,
     cleanup_attempted: bool,
+    /// Why FollowLinks copied this link as a link, recorded once it is published.
+    note: Option<String>,
     // Retains the I/O guard after stage/source destruction on forced retirement.
     retirement: Arc<LinkRetirement>,
 }
@@ -206,6 +208,7 @@ impl LinkCopy {
     fn new(
         source: Box<dyn TransferSource>,
         representation: TransferLinkRepresentation,
+        note: Option<String>,
         retirement: Arc<LinkRetirement>,
     ) -> Self {
         Self {
@@ -215,6 +218,7 @@ impl LinkCopy {
             phase: Phase::Staging,
             stage_identity: None,
             cleanup_attempted: false,
+            note,
             retirement,
         }
     }
@@ -270,17 +274,19 @@ impl LinkCopy {
         Ok(())
     }
 
+    /// `replacement` is the consented target when the next step publishes over it.
     fn step(
         &mut self,
         destination: &dyn TransferDirectory,
         name: &OsStr,
+        replacement: Option<Arc<dyn TransferTarget>>,
         cancel: &Cancellation,
     ) -> Result<Option<TransferPublication>, FsError> {
         if !self.can_retry() {
             return Err(error(
                 &self.source.entry().item.path,
                 io::ErrorKind::InvalidInput,
-                "This link stage cannot be resumed or published.",
+                "This link copy cannot be resumed or finished.",
             ));
         }
         self.revalidate_source(cancel)?;
@@ -339,10 +345,23 @@ impl LinkCopy {
                     return Err(error(
                         &self.source.entry().item.path,
                         io::ErrorKind::InvalidData,
-                        "The owned link stage identity changed before publication.",
+                        "The owned link stage identity changed before the link got its final name.",
                     ));
                 }
-                let publication = stage.publish_no_replace(name, cancel)?;
+                let replacing = replacement.is_some();
+                let publication = match replacement {
+                    // Binding changes no name; a refused binding publishes nothing.
+                    Some(target) => {
+                        stage.prepare_replacement(
+                            name,
+                            target,
+                            TransferReplacementPolicy::RecoverableCurrentEntry,
+                            cancel,
+                        )?;
+                        stage.publish_replace(name, cancel)?
+                    }
+                    None => stage.publish_no_replace(name, cancel)?,
+                };
                 // Set this before any post-mutation observation. Late cancellation
                 // or proof failure can never turn a commit into an unpublished retry.
                 self.phase = Phase::Published;
@@ -353,6 +372,7 @@ impl LinkCopy {
                     &self.representation,
                     identity,
                     &expected_path,
+                    replacing,
                 )));
             }
             Phase::Published | Phase::ConstructionFailed => {
@@ -395,13 +415,14 @@ fn validate_publication(
     representation: &TransferLinkRepresentation,
     identity: TransferIdentity,
     expected_path: &Path,
+    replacing: bool,
 ) -> TransferPublication {
     let validate = |path: &Path| {
         if path != expected_path {
             return Err(error(
                 path,
                 io::ErrorKind::InvalidData,
-                "The link provider reported a different publication destination.",
+                "The link provider reported a different destination for the link.",
             ));
         }
         // Publication already happened. Finish the owned read-only observation
@@ -411,7 +432,7 @@ fn validate_publication(
             return Err(error(
                 path,
                 io::ErrorKind::InvalidData,
-                "The published link is not the independently verified stage.",
+                "The link at the destination is not the independently verified stage.",
             ));
         }
         Ok(())
@@ -431,7 +452,7 @@ fn validate_publication(
                 Err(mut observation) => {
                     observation
                         .message
-                        .push_str(&format!("; publication durability: {error}"));
+                        .push_str(&format!("; durability is also unconfirmed: {error}"));
                     TransferPublication::RecoveryRequired {
                         published: Some(path),
                         recovery: vec![],
@@ -440,13 +461,22 @@ fn validate_publication(
                 }
             }
         }
+        // A consented replacement keeps the displaced entry in recovery.
+        TransferPublication::Replaced { path, recovery } if replacing => match validate(&path) {
+            Ok(()) => TransferPublication::Replaced { path, recovery },
+            Err(error) => TransferPublication::RecoveryRequired {
+                published: Some(path),
+                recovery: vec![recovery],
+                error,
+            },
+        },
         TransferPublication::Replaced { path, recovery } => TransferPublication::RecoveryRequired {
             published: Some(path),
             recovery: vec![recovery],
             error: error(
                 expected_path,
                 io::ErrorKind::InvalidData,
-                "The link provider violated exclusive no-replace publication.",
+                "The link provider replaced an existing entry although no replacement was chosen.",
             ),
         },
         recovery @ TransferPublication::RecoveryRequired { .. } => recovery,
@@ -472,10 +502,7 @@ impl Job {
     }
 
     pub(super) fn prepare_link(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {
-        if self.links != CopyLinkPolicy::Preserve
-            || self.move_work.is_some()
-            || self.metadata.is_some()
-        {
+        if !self.links.recreates_links() || self.move_work.is_some() || self.metadata.is_some() {
             return Err(error(
                 &work.entry.item.path,
                 io::ErrorKind::Unsupported,
@@ -486,23 +513,66 @@ impl Job {
         validate_native_source(source.as_ref())?;
         let representation = source.link_representation(&self.cancel)?;
         work.destination.admit_link(&representation, &self.cancel)?;
+        // Following links, only a link that cannot be followed arrives here.
+        let note = (self.links == CopyLinkPolicy::FollowLinks).then(|| {
+            let reason = source
+                .link_not_followed()
+                .unwrap_or_else(|| "it could not be followed".into());
+            format!(
+                "{} was copied as a link because {reason}.",
+                work.entry.item.path.display()
+            )
+        });
         work.link = Some(LinkCopy::new(
             work.source.take().expect("retained link source"),
             representation,
+            note,
             self.link_retirement.clone(),
         ));
         self.link_step(work)
     }
 
     pub(super) fn link_step(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {
-        if work.link.as_ref().expect("started link copy").needs_stage()
+        let copy = work.link.as_ref().expect("started link copy");
+        if work.consent.is_none()
+            && copy.needs_stage()
             && let Some(target) = self.observe_target(work)?
         {
             return Ok(Action::Conflict(target));
         }
+        // A consented replacement publishes over the pinned target, which must be
+        // unchanged; a changed or new target asks again.
+        let replacement = if work.consent == Some(Consent::Replace)
+            && work.link.as_ref().is_some_and(LinkCopy::publishes_next)
+        {
+            let target = work.target.clone().ok_or_else(|| {
+                error(
+                    &work.entry.item.path,
+                    io::ErrorKind::InvalidData,
+                    "The consented replacement target is missing.",
+                )
+            })?;
+            if target.revalidate(&self.cancel).is_err() {
+                work.consent = None;
+                work.force_prompt = true;
+                if let Some(target) = self.observe_target(work)? {
+                    return Ok(Action::Conflict(target));
+                }
+                None
+            } else {
+                Some(target)
+            }
+        } else {
+            None
+        };
         let copy = work.link.as_mut().expect("started link copy");
         let publishes = copy.publishes_next();
-        let publication = copy.step(work.destination.as_ref(), &work.name, &self.cancel);
+        let publication = copy.step(
+            work.destination.as_ref(),
+            &work.name,
+            replacement,
+            &self.cancel,
+        );
         // Only publication uses the final name; a staging AlreadyExists is no collision.
         let publication = if publishes {
             self.at_final_name(publication)?
@@ -515,8 +585,22 @@ impl Job {
         };
         // Link payloads are representation proofs, never referent content bytes.
         // Reuse publication facts/counts without touching the content byte meters.
+        let published = !matches!(
+            &publication,
+            TransferPublication::RecoveryRequired {
+                published: None,
+                ..
+            }
+        );
+        if published && let Some(note) = copy.note.take() {
+            self.progress.add_note(note);
+        }
         match publication {
             TransferPublication::Published(_) => self.progress.files_completed += 1,
+            TransferPublication::Replaced { recovery, .. } => {
+                self.progress.files_completed += 1;
+                self.record_recovery(recovery.path);
+            }
             TransferPublication::RecoveryRequired {
                 published,
                 recovery,
@@ -534,15 +618,12 @@ impl Job {
             TransferPublication::PublishedDurabilityUnconfirmed { path, mut error } => {
                 self.progress.files_completed += 1;
                 error.message = format!(
-                    "Link published at {}; durability is unconfirmed: {}",
+                    "Link copied to {}; durability is unconfirmed: {}",
                     path.display(),
                     error.message
                 );
                 self.halt = true;
                 self.record(error);
-            }
-            TransferPublication::Replaced { .. } => {
-                unreachable!("link publication converts unauthorized replacement to recovery")
             }
         }
         if let Err(failure) = copy.cleanup() {

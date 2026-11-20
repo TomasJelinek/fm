@@ -8,7 +8,7 @@ comparison, metadata updates and renames run on backend workers.
 
 ## Salamander references and intentional behavior
 
-The local reference is `D:/experiments/salamander-main/src/`: `salamand.rc:63`,
+The local reference is `<salamander-source>/src/`: `salamand.rc:63`,
 `toolbar4.cpp:1251`, `mainwnd5.cpp:1139`, `dialogs6.cpp:1452`, `dialogs3.cpp:24`,
 `fileswn5.cpp:185` and `fileswn6.cpp:2283`. Its default Ctrl row is:
 

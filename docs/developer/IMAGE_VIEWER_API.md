@@ -1,16 +1,18 @@
 # Restricted image and document viewer API
 
 Image and paginated document viewers are independent executable packages. The public workspace is
-`image-viewer-api/`, containing `midnight-image-viewer-api` version 0.2.0 and
-`midnight-image-viewer-sdk` version 0.3.0. Plugins consume immutable released
+`image-viewer-api/`, containing `midnight-image-viewer-api` version 0.3.0 and
+`midnight-image-viewer-sdk` version 0.4.0. Plugins consume immutable released
 registry packages; they never depend on or patch application crates. The SDK
 uses the shared public `midnight-worker-sdk` (0.2.0) for sandbox startup. The
 separate host crate is `midnight-image-viewer-host`.
 
 API version 0.2.0 preserves every existing MIV1 image message and adds paginated
-document messages. SDK 0.3.0 keeps that protocol and builds on
-`midnight-worker-sdk` 0.2.0. Existing 0.1.0 release archives remain immutable; the
-image and PDF plugins explicitly pin SDK 0.3.0 and its lockfile checksums.
+document messages. API 0.3.0 adds the failure reason (tag 10, see
+[Failure reasons](#failure-reasons)); every earlier message is unchanged. SDK 0.3.0
+built on `midnight-worker-sdk` 0.2.0; SDK 0.4.0 also sends the reason. Existing
+0.1.0 release archives remain immutable; the image viewer (0.3.0) and PDF viewer
+(0.2.0) plugins explicitly pin SDK 0.4.0 and its lockfile checksums.
 Both public member manifests declare their version explicitly. They must not
 inherit `version.workspace`: Cargo also adopts the API as a host path dependency,
 where the root application workspace has an independent version. Release archive
@@ -282,10 +284,9 @@ This worker-proof contract is independent of own-EXE default-OFF selection.
 
 ## Source ranges and archive memory
 
-Archive streaming and private disk spooling (ARCH-01) are implemented for the
-protocol-2/3 archive worker, except the small-content RAM budget described at the
-end of this section; qualification of the integrated application with the matching
-package is still pending (see the
+Archive streaming, private disk spooling and the small-content RAM budget (ARCH-01)
+are implemented for the protocol-2/3 archive worker; qualification of the integrated
+application with the matching package is still pending (see the
 [implementation backlog](../IMPLEMENTATION_BACKLOG.md)). The experimental JPEG-only
 adapter remains reverted; all raster formats use the shared image-rs decoder path.
 
@@ -302,21 +303,22 @@ render calls; deferred layer/content loading would need a separately qualified
 protocol extension.
 
 An archive member reaches a viewer as a content lease over the host's member
-staging, not as a streaming source. The worker streams the selected member into a
-private host-owned spool file, which the host publishes only after complete
-integrity verification: the first read of a ZIP member decodes and checks that
-whole member, a 7z read decodes and verifies its whole compression block, and
-compressed TAR first verifies its complete outer stream into one scratch file. A
-small viewer read can therefore cause much more decompression and disk I/O than the
-requested range, even when only a preview is displayed. The worker holds no complete
-encoded archive in RAM; decoded content goes to the spool, except the readable
-siblings of a decoded 7z block, which the worker keeps in memory (up to 128 MiB)
-until they are read. `read_at` then reads checked ranges of the sealed spool, which
-each mount keeps for up to 16 members. Viewer pixels are released with the decoder;
-member spools can outlive the viewer while a panel or another reader retains the
-mount. Thumbnail disk caching is separate. See the
-[filesystem API](FILESYSTEM_API.md) for the staging protocol, the spool budget and
-the spool directories.
+staging, not as a streaming source. The worker streams the selected member to the
+host, which keeps it in memory when it is at most 16 MiB and the process-wide
+128 MiB staging budget has room, and otherwise in a private host-owned spool file.
+The host publishes the stage only after complete integrity verification: the first
+read of a ZIP member decodes and checks that whole member, a 7z read decodes and
+verifies its whole compression block, and compressed TAR first verifies its
+complete outer stream into one scratch stage. A small viewer read can therefore
+cause much more decompression and staging I/O than the requested range, even when
+only a preview is displayed. The worker holds no complete encoded archive in RAM;
+decoded content goes to host staging, except the readable siblings of a decoded 7z
+block, which the worker keeps in memory (up to 128 MiB) until they are read.
+`read_at` then reads checked ranges of the sealed stage, which each mount keeps for
+up to 16 members. Viewer pixels are released with the decoder; staged members can
+outlive the viewer while a panel or another reader retains the mount. Thumbnail
+disk caching is separate. See the [filesystem API](FILESYSTEM_API.md) for the
+staging protocol, the memory and spool budgets and the spool directories.
 
 Replacing the JPEG decoder's own full-input buffer requires separately verified
 streaming decoder behavior; disk spooling cannot remove that allocation.
@@ -324,14 +326,14 @@ streaming decoder behavior; disk spooling cannot remove that allocation.
 The accepted
 [ARCH-01 design](../superpowers/specs/2026-11-09-archive-streaming-design.md) keeps
 small content under an aggregate RAM budget and spills only larger content to
-private disk. That part is not implemented and no recorded decision retires it, so
-it is an open ARCH-01 deviation: the worker stages every member it reads into a
-host spool file, small images included. The design's other requirements remain: no
+private disk. Since 20 November the host does so with the 16 MiB stage limit and
+the 128 MiB process-wide budget above; a stage that outgrows either moves its bytes
+to a spool file. The design's other requirements remain: no
 fixed archive or member byte-size ceiling, bounded working memory, cancellation,
 integrity verification and explicit out-of-space errors (the host stops staging
 before the spool volume would fall below its free-space reserve of max(1 GiB, 2% of
 its capacity); see the [filesystem API](FILESYSTEM_API.md)). Application qualification must
-cover that budget unless a recorded decision retires it, measure peak memory across
+cover that budget, measure peak memory across
 both workers, not just broker chunk sizes, and cover preview-only reads, source
 changes, cancellation, CRC failure and exhausted spool storage.
 
@@ -347,7 +349,9 @@ The `MIV1` envelope and existing tag encoding are unchanged. Protocol 2 uses
 Request IDs bind each returned raster to its viewport. Paths,
 URLs, UI objects, native handles and command strings are absent. Startup first
 performs the worker SDK's sandbox-ready handshake; content is not parsed before
-Windows AppContainer or Linux restriction succeeds.
+Windows AppContainer or Linux restriction succeeds. API 0.3.0 adds `FailureReason`
+(tag 10), which may follow `Failure` in either protocol (see
+[Failure reasons](#failure-reasons)).
 
 | Resource | Bound |
 |---|---|
@@ -356,6 +360,7 @@ Windows AppContainer or Linux restriction succeeds.
 | Document pages | `MAX_DOCUMENT_PAGES = 4096`; nonempty, each logical page size validates as `Metadata` |
 | PDF encoded source | 128 MiB, checked before allocation or source reads |
 | Broker read/reply | `MAX_READ_BYTES = 256 * 1024` |
+| Failure reason | `MAX_REASON_BYTES = 160` printable ASCII bytes, at most one, after `Failure` |
 | Total source reads during Open | 256 MiB and at most 8192 response-loop iterations |
 | Embedded ICC profile | 4 MiB |
 | Worker process | 512 MiB memory, 60 cumulative CPU seconds |
@@ -392,6 +397,42 @@ filesystem/network font lookup, JavaScript and link activation are absent.
 Password prompts and PDF editing are not implemented. Hayro is experimental;
 unsupported rendering warnings reject the page and full PDF fidelity is not
 claimed. See the plugin README and bundled license notices for exact limits.
+
+### Failure reasons
+
+API 0.3.0 adds `FailureReason` (tag 10): 1–160 bytes of printable ASCII
+(0x20–0x7E) without `/` or `\`, so it carries no control or direction characters,
+paths or URLs. A worker may send it only directly after `Failure`, as its last
+message. SDK 0.4.0 writes `Failure`, then the reason, when Open, a document's
+metadata or a render fails, and ends the session. The reason is the provider's error text
+reduced by `FailureReason::sanitize`: whitespace and controls become spaces, other
+non-ASCII characters `?`, words containing `/` or `\` become `...`, and longer text
+is cut to 160 bytes ending in `...`. Text without a letter or digit sends no reason.
+
+Compatibility needs no negotiation in either direction:
+
+- Hosts before API 0.3.0 stop reading at `Failure` and stop the worker, so they
+  never read a newer worker's reason.
+- A newer host reads on after `Failure` until the reason or the end of the stream,
+  under the session's cancellation and for at most one second, then stops the
+  worker. Workers end after `Failure`, so this normally takes milliseconds. A worker
+  built with SDK 0.3.0 or earlier sends no reason, and the host keeps the plain
+  sentence. Stopping the worker first could lose the reason: Rust's line-buffered
+  stdout splits the write at the tag byte (0x0A).
+- A malformed, oversized or unexpected trailer is ignored, never a protocol error;
+  its declared length is checked before the body is read.
+
+The host shows the reason as the second part of the error, with a capitalized first
+word lowercased: "This image is damaged or incomplete: the file is empty", "This
+document is damaged or incomplete: …", "This image could not be drawn: …" or "This
+page could not be drawn: …". Without a reason the texts are unchanged ("This image
+is damaged or incomplete, or its format is not supported."). The reason comes from
+untrusted content and is shown as plain text only. The shared image decoder reports
+an empty source ("The file is empty") and non-image content ("The content is not a
+recognized image format") before trying SVG; a PNG cut short reports "unexpected end
+of file". The PDF viewer reports, for example, "The PDF structure is invalid or
+incomplete", "The document needs a password or uses unsupported encryption" and "The
+page contains content this viewer cannot draw".
 
 ## Independent build and verification
 

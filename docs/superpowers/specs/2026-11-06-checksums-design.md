@@ -50,7 +50,7 @@ weaken that copy contract.
 ## Observed Salamander behavior
 
 The reference was read from
-`D:/experiments/salamander-main/src/plugins/checksum/`. These are observations of
+`<salamander-source>/src/plugins/checksum/`. These are observations of
 that checkout, not a requirement to copy its source, UI assets or implementation.
 
 | Reference source | Observed behavior | Decision for Midnight Explorer |

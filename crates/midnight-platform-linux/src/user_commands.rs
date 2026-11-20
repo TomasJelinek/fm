@@ -73,7 +73,7 @@ fn prepare(
         },
     }
     .check(cancel)?;
-    crate::editor::validate_program(executable)?;
+    validate_program(executable)?;
     if !fs::metadata(directory)
         .map_err(|cause| error(directory, cause))?
         .is_dir()
@@ -87,6 +87,7 @@ fn prepare(
         ));
     }
     let mut command = Command::new(executable);
+    crate::open_files::with_original_open_file_limit(&mut command);
     command
         .args(arguments)
         .current_dir(directory)
@@ -154,6 +155,30 @@ pub(crate) fn validate_os_arguments(command: &Command) -> io::Result<()> {
 }
 fn error(path: &Path, cause: io::Error) -> FsError {
     FsError::from_io("Custom Command", path, cause)
+}
+
+/// The editor's program rule, reported as this Custom Command's program.
+fn validate_program(executable: &Path) -> Result<(), FsError> {
+    use crate::editor::ProgramIssue;
+    crate::editor::check_program(executable).map_err(|issue| {
+        error(
+            executable,
+            match issue {
+                ProgramIssue::NotAbsolute => io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "The program must be an absolute path without NUL.",
+                ),
+                ProgramIssue::NotExecutable => io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "The program is not an executable file.",
+                ),
+                ProgramIssue::Unavailable(cause) if cause.kind() == io::ErrorKind::NotFound => {
+                    io::Error::new(io::ErrorKind::NotFound, "The program was not found.")
+                }
+                ProgramIssue::Unavailable(cause) => cause,
+            },
+        )
+    })
 }
 
 #[allow(

@@ -2,7 +2,7 @@
 
 User request: Alt+Up/Down moves to the previous/next selected panel item, matching Salamander, while comparator Alt+Up/Down retains difference navigation.
 
-Reference: `D:/experiments/salamander-main/src/fileswn0.cpp`, `SelectFindNext` (lines 122–157) and Alt+Up/Down dispatch (1736–1789). Files and directories participate; skip the current row, scan displayed linear order in every layout, and never wrap. Quick-search owns its input.
+Reference: `<salamander-source>/src/fileswn0.cpp`, `SelectFindNext` (lines 122–157) and Alt+Up/Down dispatch (1736–1789). Files and directories participate; skip the current row, scan displayed linear order in every layout, and never wrap. Quick-search owns its input.
 
 Implementation:
 - Stable `panel.previous-selected` / `panel.next-selected` actions in FilesIdle; preserve saved explicit bindings and existing parent/history/comparator bindings.

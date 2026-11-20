@@ -89,7 +89,7 @@ regression exercises both error signs and the same meaningful fractions without
 depending on a nested table viewport.
 
 The local user report was read without modification:
-`D:\temp\ovclash\results\2026-09-07-mfg\post-merge-backend-timings.md`.
+`<external-project>\results\<run>\<timings-report>.md`.
 `table_probe` renders its first table with the production renderer. Final inspected
 images are `markdown-github/rendered/table-light.png`, `table-narrow.png` and
 `table-dark.png`. The narrow image exposes the complete overflowing table for

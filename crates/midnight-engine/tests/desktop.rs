@@ -965,6 +965,7 @@ impl RejectedWork {
                 selection: Arc::default(),
                 view: Arc::default(),
                 fallback: Some("captured/file".into()),
+                cancel: Cancellation::default(),
             },
         }
     }

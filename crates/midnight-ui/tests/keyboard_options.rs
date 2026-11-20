@@ -6,6 +6,7 @@ mod owned_windows;
 use crate::support::ui;
 
 use i_slint_core::{
+    accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
     items::AccessibleRole,
     window::{WindowInner, WindowKind},
@@ -1348,6 +1349,63 @@ fn in_session_reassignment_updates_the_bottom_caption_and_rendered_help() {
         .join("\n");
     assert!(text.contains("Rename focused item — Ctrl+Alt+R"));
     assert!(!text.contains("Rename focused item — F2"));
+}
+
+#[test]
+fn clear_and_restore_command_are_enabled_only_when_they_change_something() {
+    // Copy's saved shortcut is its default one; Rename's is not.
+    let mut h = Harness::new(&[
+        ("files.copy", &["Ctrl+C"]),
+        ("files.rename", &["Ctrl+Alt+R"]),
+    ]);
+    h.open_keyboard();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<KeyboardEditorView>();
+    let aliases = || {
+        view.get_aliases()
+            .iter()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>()
+    };
+    let enabled = |label: &str| {
+        ui::popup_item(&window, label, AccessibleRole::Button)
+            .accessible_string_property(AccessibleStringProperty::Enabled)
+            .is_some_and(|value| value == "true")
+    };
+    h.select_action("files.copy");
+    assert_eq!(aliases(), ["Ctrl+C"]);
+    assert!(!enabled("Clear"), "nothing is captured");
+    assert!(
+        !enabled("Restore command"),
+        "Copy already has its default shortcut"
+    );
+    h.edit("Ctrl+Alt+Y");
+    assert!(enabled("Clear"), "a captured shortcut can be cleared");
+    assert!(
+        enabled("Restore command"),
+        "Restore command discards a captured shortcut too"
+    );
+    ui::click_popup(&window, "Clear", AccessibleRole::Button);
+    h.draw();
+    assert!(view.get_candidate().is_empty());
+    assert!(!enabled("Clear"));
+    assert!(!enabled("Restore command"));
+    // A changed command can be restored once.
+    h.select_action("files.rename");
+    assert_eq!(aliases(), ["Ctrl+Alt+R"]);
+    assert!(enabled("Restore command"));
+    ui::click_popup(&window, "Restore command", AccessibleRole::Button);
+    h.draw();
+    assert_eq!(aliases(), ["F2"], "Restore command brings back F2");
+    assert!(
+        !enabled("Restore command"),
+        "Rename has its default shortcut again"
+    );
+    // Removing a default shortcut changes the command as well.
+    ui::click_popup(&window, "Remove", AccessibleRole::Button);
+    h.draw();
+    assert!(aliases().is_empty());
+    assert!(enabled("Restore command"));
 }
 
 #[test]

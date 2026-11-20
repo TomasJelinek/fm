@@ -82,6 +82,14 @@ fn compared(request: Arc<CompareRequest>) -> Event {
             ],
             unknown: 0,
             ambiguous: 0,
+            differing_folders: 0,
+            content_differences: 0,
+            content_files: 0,
+            content_bytes: 0,
+            skipped: 0,
+            errors: 0,
+            limited: false,
+            diagnostics: Vec::new(),
         })),
     }
 }
@@ -146,7 +154,13 @@ fn changed_tree_or_selection_discards_comparison_before_either_side_is_updated()
         p.apply(compared(request));
         assert!(p.panes[0].tree.preview.is_empty());
         assert!(p.panes[1].selected.is_empty());
-        assert!(!p.comparison.error.is_empty());
+        // The dialog closed on Compare, so the discarded result is a notice.
+        assert!(
+            p.desktop
+                .notice
+                .as_ref()
+                .is_some_and(|(title, _)| title == "Directory comparison cancelled")
+        );
     }
 }
 
@@ -166,7 +180,16 @@ fn rejected_tree_comparison_selection_reports_failure_without_success_claim() {
         &|_| true,
     );
     assert!(!p.comparison.busy);
-    assert!(p.comparison.error.contains("Compare again"));
+    assert!(
+        p.desktop
+            .notice
+            .as_ref()
+            .is_some_and(|(_, body)| body.contains("Compare again"))
+    );
+    assert!(
+        p.comparison_status().is_none(),
+        "no status line claims the selection that was not applied"
+    );
     let commands = RefCell::new(Vec::new());
     p.submit_comparison(CompareOptions::default(), &|command| {
         commands.borrow_mut().push(command);
@@ -332,7 +355,12 @@ fn new_tree_publication_cancels_an_inflight_comparison_without_unrelated_events(
         },
     );
     assert!(!p.comparison.busy);
-    assert!(p.comparison.error.contains("cancelled"));
+    assert!(
+        p.desktop
+            .notice
+            .as_ref()
+            .is_some_and(|(_, body)| body.contains("cancelled"))
+    );
     assert!(
         sent.borrow()
             .iter()

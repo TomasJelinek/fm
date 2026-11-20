@@ -70,6 +70,16 @@ def ffmpeg_sys_override(package, repository):
     return directory
 
 
+def plugin_terms(notices, name):
+    """A crate package that omits its license text is covered by its folder in the
+    plugin's own reviewed notices, when that folder holds a license file itself."""
+    folder = notices / name
+    return folder.is_dir() and not _release.is_link(folder.lstat()) and any(
+        entry.is_file() and not _release.is_link(entry.lstat())
+        and entry.name.lower().startswith(("license", "licence", "copying", "copyright"))
+        for entry in folder.iterdir())
+
+
 def notice_plan(plugin, metadata, repository):
     packages = metadata.get("packages", [])
     roots = [package for package in packages if package["name"] == plugin]
@@ -81,6 +91,12 @@ def notice_plan(plugin, metadata, repository):
         # Native dav1d, bundled fonts and MPL parser source are not all described
         # by Cargo. Preserve the checked-in distribution notice superset too.
         add_tree(plan, shared, Path("licenses"))
+    # The plugin's own reviewed notices, as licenses/<crate>-<version>/: asset notices
+    # below a crate's root (the PDF renderer's fonts and CMaps), upstream notices and
+    # license texts that a published crate package omits.
+    own = repository / "plugins" / plugin / "notices"
+    if own.is_dir():
+        add_tree(plan, own, Path("licenses"))
     add_file(plan, shared / "rust/COPYRIGHT-library.html", Path("licenses/rust/COPYRIGHT-library.html"),
              root=shared)
     features = {node["id"]: sorted(node.get("features", []))
@@ -97,7 +113,7 @@ def notice_plan(plugin, metadata, repository):
         if not owned and (not license_name or license_name.upper() in ("UNKNOWN", "UNLICENSED")):
             raise ValueError(f"Unknown dependency license: {name}")
         source, files = _release.license_files(package)
-        if not files and not owned:
+        if not files and not owned and not plugin_terms(own, name):
             override = ffmpeg_sys_override(package, repository)
             if override is None:
                 raise ValueError(f"Missing dependency license files: {name}")
@@ -123,6 +139,7 @@ def notice_plan(plugin, metadata, repository):
         "Original license and copyright notices are retained under licenses/.\n"
         "The inventory conservatively includes build, development and other-target dependencies.\n"
         "Image notices also retain the shared decoder's native, font and source notices.\n"
+        "A plugin's own notices add asset and upstream notices that crate packages omit.\n"
         "The separate FFmpeg runtime package must supply its corresponding source and build options.\n"
         "This inventory records declarations; it does not replace the dependency license review.\n"
         "These notices do not assign a license to project-owned code.\n"

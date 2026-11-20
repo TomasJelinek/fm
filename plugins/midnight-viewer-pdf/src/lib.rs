@@ -4,7 +4,7 @@
 use hayro::{
     RenderCache, RenderSettings,
     hayro_interpret::{InterpreterSettings, util::TransformExt},
-    hayro_syntax::Pdf,
+    hayro_syntax::{LoadPdfError, Pdf},
     kurbo::{Affine, Rect},
     vello_cpu::{
         Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit,
@@ -31,40 +31,67 @@ pub struct PdfDocument {
 
 /// Read the captured opaque source once and reject unsupported geometry before rendering.
 /// PDFs needing a password fail; no filesystem/font/network lookup callbacks are installed.
+/// Error texts are short and path-free: the host shows them as the failure's reason.
 pub fn decode(stream: &mut dyn ReadSeek) -> io::Result<PdfDocument> {
     let length = stream.seek(SeekFrom::End(0))?;
-    if length == 0 || length > MAX_SOURCE_BYTES {
+    if length == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "PDF source exceeds budget or is empty",
+            "The file is empty",
+        ));
+    }
+    if length > MAX_SOURCE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "The document is larger than the 128 MiB this viewer reads",
         ));
     }
     stream.seek(SeekFrom::Start(0))?;
     let mut bytes = vec![0; length as usize];
     stream.read_exact(&mut bytes)?;
-    let pdf = Pdf::new(bytes).map_err(|_| {
-        io::Error::new(
+    let pdf = Pdf::new(bytes).map_err(|error| match error {
+        LoadPdfError::Decryption(_) => io::Error::new(
             io::ErrorKind::Unsupported,
-            "Invalid PDF or password required",
-        )
+            "The document needs a password or uses unsupported encryption",
+        ),
+        LoadPdfError::Invalid => io::Error::new(
+            io::ErrorKind::InvalidData,
+            "The PDF structure is invalid or incomplete",
+        ),
     })?;
-    if pdf.pages().is_empty() || pdf.pages().len() > api::MAX_DOCUMENT_PAGES {
-        return Err(io::Error::other(
-            "PDF page count exceeds budget or is empty",
+    if pdf.pages().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "The document has no pages",
+        ));
+    }
+    if pdf.pages().len() > api::MAX_DOCUMENT_PAGES {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "The document has more than 4096 pages",
         ));
     }
     let mut pages = Vec::with_capacity(pdf.pages().len());
     for page in pdf.pages().iter() {
         let (width, height) = page.render_dimensions();
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-            return Err(io::Error::other("Invalid PDF page dimensions"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "A page has invalid dimensions",
+            ));
         }
         pages.push(
             api::Metadata {
                 width: width.ceil() as u32,
                 height: height.ceil() as u32,
             }
-            .validate()?,
+            .validate()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "A page is larger than this viewer supports",
+                )
+            })?,
         );
     }
     let metadata = api::DocumentMetadata { pages };
@@ -109,7 +136,7 @@ impl Document for PdfDocument {
         if warning.load(Ordering::Relaxed) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "PDF page contains unsupported content",
+                "The page contains content this viewer cannot draw",
             ));
         }
         context.flush();

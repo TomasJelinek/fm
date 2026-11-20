@@ -430,7 +430,8 @@ impl<'a> Styles<'a> {
     }
 }
 
-fn intersection(span: &Range<usize>, range: &Range<usize>) -> Option<Range<usize>> {
+/// The non-empty part of `span` inside `range`, relative to `range.start`.
+pub(crate) fn intersection(span: &Range<usize>, range: &Range<usize>) -> Option<Range<usize>> {
     let start = span.start.max(range.start);
     let end = span.end.min(range.end);
     (start < end).then(|| start - range.start..end - range.start)

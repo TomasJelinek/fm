@@ -1,0 +1,48 @@
+// How one panel's input waits for a file job's change (`left-mutation-hold`,
+// `right-mutation-hold` of MainWindow): 0 not at all; 1 while a confirmed Rename
+// or creation in its folder runs, however long (the panel describes the job after
+// half a second); 2 while the completed job's re-read is in flight, at most 3 s,
+// after which input is released and the panel says it is still updating until the
+// change appears. Escape ends a wait. Only that panel waits: this area over it
+// takes its pointer and wheel input, with a wait cursor (the other panel, the
+// command line and the toolbars stay usable), and its keys are replayed in order
+// once the wait ends (`hold-key`).
+export component PanelHold inherits TouchArea {
+    in property <int> hold;
+    // The running job, as the held panel describes it.
+    in property <string> job;
+    in property <bool> dialog-blocked;
+    // Escape ended the current wait.
+    in-out property <bool> released;
+    out property <bool> held: !root.released
+        && (root.hold == 1 || (root.hold == 2 && !root.settle-expired));
+    out property <string> status: root.hold == 1 && root.job-slow ? root.job
+        : root.hold == 2 && root.settle-expired ? "Updating the file list…" : "";
+    // The wait ended: the panel's waiting keys are replayed.
+    callback ended();
+    private property <bool> settle-expired;
+    private property <bool> job-slow;
+    enabled: root.held && !root.dialog-blocked;
+    mouse-cursor: MouseCursor.wait;
+    scroll-event(event) => { accept }
+    changed hold => {
+        settle-limit.stop();
+        job-delay.stop();
+        root.settle-expired = false;
+        root.job-slow = false;
+        if root.hold != 2 { root.released = false; }
+        if root.hold == 1 { job-delay.start(); job-delay.restart(); }
+        if root.hold == 2 { settle-limit.start(); settle-limit.restart(); }
+    }
+    changed held => { if !root.held { root.ended(); } }
+    settle-limit := Timer {
+        interval: 3s;
+        running: false;
+        triggered => { self.stop(); root.settle-expired = true; }
+    }
+    job-delay := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => { self.stop(); root.job-slow = true; }
+    }
+}

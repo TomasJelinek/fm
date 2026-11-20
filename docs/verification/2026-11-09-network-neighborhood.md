@@ -89,7 +89,7 @@ tests both exit 0. Screenshot inspection found no startup error dialog; the
 preferences hash was unchanged. Exact hashes and shortcut target are recorded
 in `network-neighborhood/runtime-results.json`.
 The real-window startup smoke also passes when launched directly through
-`D:\experiments\dev\FM\_build\debug\me.exe`, using the matching protected
+`_build\debug\me.exe`, using the matching protected
 plugin registration; `build-startup-results.json` records exit 0 and unchanged
 preferences for that path as well.
 

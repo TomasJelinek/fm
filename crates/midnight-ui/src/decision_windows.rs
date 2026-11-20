@@ -37,6 +37,9 @@ impl Key {
             if let Some((id, version)) = p.active_rename_decision() {
                 return self.token == format!("rename:{}:{}", id.0, version);
             }
+            if let Some((id, version)) = p.active_delete_decision() {
+                return self.token == format!("delete-error:{}:{}", id.0, version);
+            }
             let active = p.active_copy_decision();
             p.copies.conflicts.iter().any(|c| {
                 active == Some((c.id, c.version))
@@ -282,6 +285,17 @@ fn open(
         window.set_can_skip(main.get_copy_can_skip());
         window.set_source_details(main.get_copy_source_details());
         window.set_target_details(main.get_copy_target_details());
+        // A Delete failure: its own heading, and Skip all covers every later failure.
+        if key.token.starts_with("delete-error:") {
+            window.set_native_icon(main.get_action_icons().delete);
+            window.set_failure_title("Delete needs attention".into());
+            window.set_skip_all_text("Skip all errors".into());
+            window.set_skip_all_hint(
+                "Skip this and every later failure of this Delete without asking. Folders that \
+                 keep skipped items are not deleted."
+                    .into(),
+            );
+        }
     }
     let weak = Rc::downgrade(ctx);
     window.on_decide(move |choice, name| {

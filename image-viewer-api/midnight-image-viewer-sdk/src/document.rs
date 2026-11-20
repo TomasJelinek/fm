@@ -1,5 +1,5 @@
 //! Paginated retained-document service over the same opaque broker and native sandbox.
-use crate::{Broker, ReadSeek, api};
+use crate::{Broker, ReadSeek, api, fail};
 use std::io::{self, Read, Write};
 
 /// Provider-owned parsed document. Rendering cannot access the original source or external assets.
@@ -31,11 +31,14 @@ fn session<R: Read, W: Write, D: Document>(
     };
     let document = match decode(&mut Broker::new(input, output, source_length)) {
         Ok(document) => document,
-        Err(_) => return api::write_message(output, &api::Message::Failure),
+        Err(error) => return fail(output, &error.to_string()),
     };
     let metadata = document.metadata();
     if metadata.validate().is_err() {
-        return api::write_message(output, &api::Message::Failure);
+        return fail(
+            output,
+            "The page count or a page size exceeds the viewer's limits",
+        );
     }
     let count = metadata.pages.len();
     api::write_message(output, &api::Message::DocumentMetadata(metadata))?;
@@ -47,13 +50,14 @@ fn session<R: Read, W: Write, D: Document>(
             ));
         };
         if page as usize >= count {
-            return api::write_message(output, &api::Message::Failure);
+            return fail(output, "The page is outside the document");
         }
         let message = match document.render(page, viewport) {
             Ok(frame) if frame.width == viewport.width && frame.height == viewport.height => {
                 api::Message::Rgba { id, frame }
             }
-            _ => return api::write_message(output, &api::Message::Failure),
+            Ok(_) => return fail(output, "The page was drawn at the wrong size"),
+            Err(error) => return fail(output, &error.to_string()),
         };
         api::write_message(output, &message)?;
     }

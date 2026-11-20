@@ -236,9 +236,9 @@ each control:
 
 Host/probe provenance does not identify the HTML provider. Build confirmed
 that the single-backend and combined-default controls executed the **baseline**
-runtime `C:/Users/tjelinek/MEHtmlProbe-96673981`, whose 803,328-byte provider has
+runtime `%USERPROFILE%/MEHtmlProbe-96673981`, whose 803,328-byte provider has
 SHA-256 `9159cf312869754f9054e97a83889edefeaf1dc77a77d00f810730731879d669`.
-The candidate `C:/Users/tjelinek/MEHtmlProbe-e1593972`, with an 851,968-byte
+The candidate `%USERPROFILE%/MEHtmlProbe-e1593972`, with an 851,968-byte
 provider identified as `4a1bdd…3787`, was guarded but not executed in those
 controls. The
 [executed-provider provenance receipt](../../../../_build/qa/html-native-probe-win-v1/executed-provider-provenance-20261119.json)
@@ -517,7 +517,7 @@ or settings were changed and owned fixtures retired. This prerequisite does
 
 `current-app-build.jsonl` records the earlier successful frame-fence `me.exe` compile.
 Root confirmed wrapper exit 0 and the 115,517,440-byte artifact at
-`D:/experiments/dev/FM/_build/merge-main-20261118/_build/merge-explorer-check-v1/target/debug/me.exe`,
+`_build/merge-main-20261118/_build/merge-explorer-check-v1/target/debug/me.exe`,
 SHA-256 `1fa0c8d8d78635dc08cc9650d9a8fedacd8346ba9c4eb8461f50647ff962b109`.
 It includes the frame fence and Runtime fixture repair. This does not qualify,
 deploy or launch that executable; private end-to-end, packaged/installed F3 and
@@ -662,7 +662,7 @@ code-use guard prevents cleanup; later read-only observations show no users or
 processes. Unchanged Verify and Cleanup then both pass. The
 [cleanup receipt](../../_build/qa/media-playback-r3/r4-rebased/runs/run-ca366eee/cleanup.json)
 confirms removal of exactly the 36 new leaves and empty directories/root;
-`C:\Users\tjelinek\MEF3-20261119-27dd0c65` is absent. Known preferences,
+`%USERPROFILE%\MEF3-20261119-27dd0c65` is absent. Known preferences,
 Home SDDL, old-root absences and integrity guards pass; no existing-runtime ACL
 was changed. Nine between-guard ChangeTime deltas are audited separately:
 **this is not an all-timestamps-unchanged claim**. Prior app build, inventory,

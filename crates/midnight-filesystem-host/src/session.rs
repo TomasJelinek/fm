@@ -1,5 +1,8 @@
 use crate::Package;
-use midnight_core::{ArchiveMount, ArchiveNode, Cancellation, EntryKind, FsError, VirtualEntryId};
+use midnight_core::{
+    ArchiveContent, ArchiveMount, ArchiveNode, ArchiveParent, Cancellation, EntryKind, FsError,
+    MAX_ARCHIVE_DEPTH, VirtualEntryId,
+};
 use midnight_filesystem_api::{self as api, Format, Message, Protocol};
 use midnight_plugin_host::CapturedFile;
 use std::{
@@ -14,14 +17,31 @@ use std::{
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+/// Active mounts of archives opened from native files for panels, tabs and viewers.
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+const MAX_ACTIVE: usize = 2;
+/// Active mounts of archives inside archives (`nested::MAX_NESTED_ACTIVE`).
+static NESTED_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// Active private sessions of searches inside archives (`MAX_SEARCH_ACTIVE`).
+static SEARCH_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// Sessions of searches inside archives that may be active at once, beside the archives
+/// of panels, tabs and viewers: Find runs at most two searches at once, and each search
+/// opens one archive at a time and releases it before the next.
+const MAX_SEARCH_ACTIVE: usize = 2;
 const DEADLINE: Duration = Duration::from_secs(20);
 /// A hard request token has no wake signal; the supervisor observes it this often
 /// while such an exchange is active. Idle mounts and token-free exchanges never poll.
 const CANCEL_POLL: Duration = Duration::from_millis(10);
-/// Host limits on one directory listing: members, and their raw plus display name bytes.
-const MAX_LISTED_NODES: usize = 100_000;
-const MAX_LISTED_NAME_BYTES: usize = 8 * 1024 * 1024;
+/// Process memory of a protocol-2/3 archive worker, the most the worker SDK grants.
+/// Nothing limits how many members an archive has or a folder lists: the worker holds
+/// the whole index of its archive, at peak about 105 bytes per TAR member, 420 per 7z
+/// member and 690 per ZIP member (a million members, measured by the archive plugin's
+/// `measure_index_memory`), so a worker opens about nine million TAR, two million 7z
+/// or one and a half million ZIP members. Reading a 7z block adds its decoder (up to
+/// 384 MiB, which the plugin budgets within this memory).
+const WORKER_MEMORY: u64 = 1024 * 1024 * 1024;
+/// Process memory of a legacy protocol-1 worker, which keeps its original limits.
+const LEGACY_WORKER_MEMORY: u64 = 512 * 1024 * 1024;
 
 #[path = "session_close.rs"]
 mod close;
@@ -184,12 +204,22 @@ struct Channel {
     output: File,
     request: u64,
 }
+/// Hooks of a member exchange that stages content for an archive inside this archive.
+/// They run under the session's locks and must not block.
+struct Observer<'a> {
+    /// Member bytes staged so far.
+    progress: &'a dyn Fn(u64),
+    /// The member's verified lease, once the exchange has it.
+    kept: &'a mut Option<crate::staging::Lease>,
+}
 pub struct Mount {
     id: u64,
     provider: String,
     provider_version: String,
     stable_entry_ids: bool,
     format: Format,
+    /// The native file this mount's bytes come from; for an archive inside an archive,
+    /// the file of the outermost archive.
     container: PathBuf,
     source: Option<CapturedFile>,
     channel: Mutex<Channel>,
@@ -197,6 +227,8 @@ pub struct Mount {
     protocol: Protocol,
     staging: Arc<Mutex<Option<crate::staging::Staging>>>,
     close: Arc<close::CloseReceipt>,
+    /// The enclosing archive of an archive opened from a member of another archive.
+    nested: Option<Arc<crate::nested::Link>>,
 }
 impl std::fmt::Debug for Mount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -232,7 +264,126 @@ impl Mount {
         source: CapturedFile,
         cancel: &Cancellation,
     ) -> Result<Arc<Self>, FsError> {
-        let fail = |error: io::Error| FsError::from_io("open archive", locator, error);
+        Self::open_source(
+            package,
+            format,
+            locator,
+            source,
+            cancel,
+            close::Allowance::Native,
+            None,
+        )
+    }
+
+    /// `open_captured` for the private session of a search inside archives (Find). It
+    /// counts in the searches' own allowance (`MAX_SEARCH_ACTIVE`) instead of the two
+    /// archives that panels, tabs and viewers share, so neither waits for the other.
+    pub fn open_for_search(
+        package: &Package,
+        format: Format,
+        locator: &Path,
+        source: CapturedFile,
+        cancel: &Cancellation,
+    ) -> Result<Arc<Self>, FsError> {
+        Self::open_source(
+            package,
+            format,
+            locator,
+            source,
+            cancel,
+            close::Allowance::Search,
+            None,
+        )
+    }
+
+    /// Open an archive that is a member of another archive. `content` is that member as
+    /// the enclosing mount staged and verified it (`ArchiveMount::stage_member`). The new
+    /// mount reads it as its captured source, revalidates the enclosing chain on every
+    /// use, reports `parent` as its enclosing archive and gives it up on release. Its
+    /// errors name the member's path inside the enclosing archives.
+    pub fn open_nested(
+        package: &Package,
+        format: Format,
+        parent: ArchiveParent,
+        content: Arc<dyn ArchiveContent>,
+        cancel: &Cancellation,
+    ) -> Result<Arc<Self>, FsError> {
+        let label = crate::nested::label(&parent);
+        let fail = |error: io::Error| FsError::from_io("open archive", &label, error);
+        let Some(enclosing) = parent.location.mount.clone() else {
+            return Err(fail(io::Error::other(
+                "The archive that contains this archive is closed",
+            )));
+        };
+        if parent.location.depth() >= MAX_ARCHIVE_DEPTH {
+            return Err(fail(io::Error::new(
+                io::ErrorKind::Unsupported,
+                midnight_core::archive_depth_message(),
+            )));
+        }
+        let member = parent.member;
+        if member.entry < 2 || member.mount != enclosing.id() {
+            return Err(fail(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Archive member belongs to another archive session",
+            )));
+        }
+        // The enclosing provider grants persistent identities only for stable member
+        // IDs of its validated revision; the nested revision inherits that authority.
+        let parent_version = parent.location.address.source_version.clone();
+        let stable = enclosing
+            .persistent_member_identity(member.entry, &parent_version)?
+            .is_some();
+        drop(enclosing);
+        let (version, persistent) = crate::nested::revision(&parent_version, member.entry, stable);
+        let locator = parent.location.address.container.clone();
+        let name = parent.name.clone();
+        let link = Arc::new(crate::nested::Link::new(parent, persistent));
+        let source = Arc::new(crate::nested::NestedSource::new(
+            link.clone(),
+            content,
+            version,
+            name,
+        ));
+        let captured = match CapturedFile::from_source(source.clone()) {
+            Ok(captured) => captured,
+            Err(error) => {
+                let error = fail(io::Error::other(error.0));
+                return match midnight_plugin_host::ContentSource::release_on_worker(source) {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(fail(io::Error::other(format!(
+                        "{}; archive source teardown unconfirmed: {}",
+                        error.message, cleanup.0
+                    )))),
+                };
+            }
+        };
+        drop(source);
+        Self::open_source(
+            package,
+            format,
+            &locator,
+            captured,
+            cancel,
+            close::Allowance::Nested,
+            Some(link),
+        )
+    }
+
+    /// `allowance` is `Nested` exactly for a mount with an enclosing archive (`nested`).
+    fn open_source(
+        package: &Package,
+        format: Format,
+        locator: &Path,
+        source: CapturedFile,
+        cancel: &Cancellation,
+        allowance: close::Allowance,
+        nested: Option<Arc<crate::nested::Link>>,
+    ) -> Result<Arc<Self>, FsError> {
+        let label = nested
+            .as_ref()
+            .map_or_else(|| locator.to_owned(), |link| link.label.clone());
+        let fail = |error: io::Error| FsError::from_io("open archive", &label, error);
         let mut source = close::CapturedInput::new(source);
         let prepared = (|| {
             if cancel.is_cancelled() {
@@ -259,9 +410,25 @@ impl Mount {
             if cancel.is_cancelled() {
                 return Err(fail(io::ErrorKind::Interrupted.into()));
             }
-            Self::start(package, format, locator, &mut source, cancel)
+            Self::start(
+                package,
+                format,
+                locator,
+                &mut source,
+                cancel,
+                allowance,
+                nested,
+            )
         })();
         prepared.map_err(|error| source.finish_error(error))
+    }
+
+    /// The path that errors name: the native file, or for an archive inside an archive
+    /// the member's path inside the enclosing archives. Presentation only.
+    fn error_path(&self) -> &Path {
+        self.nested
+            .as_ref()
+            .map_or(&self.container, |link| &link.label)
     }
 
     pub fn address(&self) -> midnight_core::ArchiveAddress {
@@ -291,8 +458,14 @@ impl Mount {
         path: &Path,
         source: &mut close::CapturedInput,
         cancel: &Cancellation,
+        allowance: close::Allowance,
+        nested: Option<Arc<crate::nested::Link>>,
     ) -> Result<Arc<Self>, FsError> {
-        let fail = |error: io::Error| FsError::from_io("open archive", path, error);
+        debug_assert_eq!(nested.is_some(), allowance == close::Allowance::Nested);
+        let label = nested
+            .as_ref()
+            .map_or_else(|| path.to_owned(), |link| link.label.clone());
+        let fail = |error: io::Error| FsError::from_io("open archive", &label, error);
         let receipt = Arc::new(close::CloseReceipt::new());
         receipt.observe_cleanup(source.cleanup_unconfirmed());
         // Discovery validated the package at startup; its files may change before a
@@ -305,12 +478,12 @@ impl Mount {
         } else {
             None
         }));
-        let accounting = close::Accounting::reserve().map_err(fail)?;
+        let accounting = close::Accounting::reserve(allowance).map_err(fail)?;
         let spawned = if package.protocol.supports_staging() {
             midnight_worker_platform::spawn_with_policy(
                 &package.executable,
                 midnight_worker_platform::ResourcePolicy {
-                    memory_bytes: 512 * 1024 * 1024,
+                    memory_bytes: WORKER_MEMORY,
                     cpu: midnight_worker_platform::CpuBudget::NoAdditionalLimit,
                 },
             )
@@ -318,7 +491,7 @@ impl Mount {
             midnight_worker_platform::spawn(
                 &package.executable,
                 midnight_worker_platform::Limits {
-                    memory_bytes: 512 * 1024 * 1024,
+                    memory_bytes: LEGACY_WORKER_MEMORY,
                     cpu_seconds: 15,
                 },
             )
@@ -389,6 +562,7 @@ impl Mount {
             protocol: package.protocol,
             staging,
             close: receipt,
+            nested,
         });
         let opened = (|| {
             {
@@ -437,7 +611,18 @@ impl Mount {
         cancelled: Option<&dyn Fn() -> bool>,
         message: impl FnOnce(u64) -> Message,
     ) -> Result<Message, FsError> {
-        let fail = |error: io::Error| FsError::from_io("archive", &self.container, error);
+        self.exchange_observed(cancel, cancelled, None, message)
+    }
+    /// `exchange_read` that also reports a staged member's progress and keeps its
+    /// lease (`Observer`).
+    fn exchange_observed(
+        &self,
+        cancel: Option<&Cancellation>,
+        cancelled: Option<&dyn Fn() -> bool>,
+        mut observer: Option<Observer<'_>>,
+        message: impl FnOnce(u64) -> Message,
+    ) -> Result<Message, FsError> {
+        let fail = |error: io::Error| FsError::from_io("archive", self.error_path(), error);
         let interrupted = || fail(io::ErrorKind::Interrupted.into());
         let hard_cancelled = || cancel.is_some_and(Cancellation::is_cancelled);
         let is_cancelled = || cancelled.is_some_and(|check| check());
@@ -477,6 +662,9 @@ impl Mount {
                     .as_mut()
                     .and_then(|staging| staging.cached(entry));
                 if let Some(lease) = cached {
+                    if let Some(observer) = observer.as_mut() {
+                        *observer.kept = Some(lease.clone());
+                    }
                     let bytes = lease.read(offset, length).map_err(fail)?;
                     self.validate()?;
                     self.ensure_active(cancel, cancelled).map_err(fail)?;
@@ -496,7 +684,7 @@ impl Mount {
             let mut broker_bytes = 0u64;
             loop {
                 let reply = api::read_message_with_protocol(&mut channel.output, self.protocol)
-                    .map_err(fail)?;
+                    .map_err(|error| fail(self.ended_by_itself(error)))?;
                 if reply.request() != request {
                     return Err(fail(io::ErrorKind::InvalidData.into()));
                 }
@@ -583,6 +771,11 @@ impl Mount {
                                 self.staging.lock().unwrap_or_else(|e| e.into_inner());
                             let staging = staging.as_mut().ok_or_else(ended)?;
                             if let Some(reply) = staging.nested(&operation, &other).map_err(fail)? {
+                                if let (Some(observer), Message::StageAck { next_offset, .. }) =
+                                    (observer.as_ref(), &reply)
+                                {
+                                    (observer.progress)(*next_offset);
+                                }
                                 if matches!(
                                     &reply,
                                     Message::StageAck { .. } | Message::StageProgressAck { .. }
@@ -613,6 +806,9 @@ impl Mount {
                                     staging.abandon_member(request).map_err(fail)?;
                                     canceled_safely = true;
                                     return Err(interrupted());
+                                }
+                                if let Some(observer) = observer.as_mut() {
+                                    *observer.kept = Some(lease.clone());
                                 }
                                 if cancelled.is_some() && let Message::Read { entry, .. } = operation {
                                     staging.cache_member(entry, lease);
@@ -696,6 +892,27 @@ impl Mount {
         // Only completed byte I/O or monotonic decoded work renews the idle watchdog.
         self.supervision.progress_at(Instant::now(), cancel);
     }
+    /// A reply cut off because the worker's pipe closed: the worker ended by itself (a
+    /// request whose worker the supervisor stopped reports that stop's cause instead).
+    /// An archive whose index outgrows the worker's memory ends it this way.
+    fn ended_by_itself(&self, error: io::Error) -> io::Error {
+        if error.kind() != io::ErrorKind::UnexpectedEof {
+            return error;
+        }
+        let memory = if self.protocol.supports_staging() {
+            WORKER_MEMORY
+        } else {
+            LEGACY_WORKER_MEMORY
+        };
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "The archive worker ended unexpectedly, for example because the archive \
+                 needs more than the {} MiB of memory that the worker may use",
+                memory / (1024 * 1024)
+            ),
+        )
+    }
     /// Protocol-3 member read with cooperative cancellation; earlier protocols drain an
     /// admitted read under no hard token and then discard its cancelled result.
     fn read_preserving_mount(
@@ -709,7 +926,7 @@ impl Mount {
         let interrupted = || {
             FsError::from_io(
                 operation,
-                &self.container,
+                self.error_path(),
                 io::ErrorKind::Interrupted.into(),
             )
         };
@@ -736,11 +953,58 @@ impl Mount {
     fn wrong_reply(&self, operation: &'static str) -> FsError {
         let error = FsError::from_io(
             operation,
-            &self.container,
+            self.error_path(),
             io::ErrorKind::InvalidData.into(),
         );
         self.supervision.request_stop(Stop::failed(&error.message));
         error
+    }
+    /// `ArchiveMount::stage_member`: one ordinary member read, cancelled cooperatively
+    /// like any other, that keeps the member's verified lease. A member the cache already
+    /// holds is not decoded again. The lease belongs to the caller from then on: the
+    /// cache may evict its own reference, and the lease outlives this mount's worker.
+    fn stage(
+        &self,
+        entry: u64,
+        cancelled: &dyn Fn() -> bool,
+        progress: &dyn Fn(u64),
+    ) -> Result<Arc<dyn ArchiveContent>, FsError> {
+        let fail = |error: io::Error| FsError::from_io("open archive", self.error_path(), error);
+        if !self.protocol.supports_staging() {
+            return Err(fail(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Opening an archive inside this archive needs a newer archive plugin",
+            )));
+        }
+        if entry < 2 {
+            return Err(fail(io::ErrorKind::InvalidInput.into()));
+        }
+        if cancelled() {
+            return Err(fail(io::ErrorKind::Interrupted.into()));
+        }
+        let mut kept = None;
+        let observer = Observer {
+            progress,
+            kept: &mut kept,
+        };
+        // Any one byte: the exchange stages the whole member before it answers.
+        let reply = self.exchange_observed(None, Some(cancelled), Some(observer), |request| {
+            Message::Read {
+                request,
+                entry,
+                offset: 0,
+                length: 1,
+            }
+        })?;
+        match (reply, kept) {
+            (Message::Content { .. }, _) if cancelled() => {
+                Err(fail(io::ErrorKind::Interrupted.into()))
+            }
+            (Message::Content { .. }, Some(lease)) => {
+                Ok(Arc::new(crate::nested::StagedMember::new(lease)))
+            }
+            _ => Err(self.wrong_reply("archive stage")),
+        }
     }
 }
 /// Whether a terminal reply keeps the wire rules of its own request. The wire
@@ -789,6 +1053,17 @@ impl ArchiveMount for Mount {
     fn native_container_locator(&self) -> Option<&Path> {
         Some(&self.container)
     }
+    fn parent(&self) -> Option<ArchiveParent> {
+        self.nested.as_ref()?.parent()
+    }
+    fn stage_member(
+        &self,
+        entry: u64,
+        cancelled: &dyn Fn() -> bool,
+        progress: &dyn Fn(u64),
+    ) -> Result<Arc<dyn ArchiveContent>, FsError> {
+        self.stage(entry, cancelled, progress)
+    }
     fn persistent_member_identity(
         &self,
         entry: u64,
@@ -797,7 +1072,7 @@ impl ArchiveMount for Mount {
         let invalid = || {
             FsError::from_io(
                 "archive cache identity",
-                &self.container,
+                self.error_path(),
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "Archive member or source revision changed",
@@ -808,7 +1083,8 @@ impl ArchiveMount for Mount {
             return Err(invalid());
         }
         self.validate()?;
-        if !self.stable_entry_ids {
+        // An archive inside an archive inherits the enclosing chain's authority.
+        if !self.stable_entry_ids || self.nested.as_ref().is_some_and(|link| !link.persistent) {
             return Ok(None);
         }
         let mut identity = b"MidnightArchiveMember\0v1\0".to_vec();
@@ -836,27 +1112,27 @@ impl ArchiveMount for Mount {
         result.map_err(|e| {
             FsError::from_io(
                 "archive source changed",
-                &self.container,
+                self.error_path(),
                 io::Error::other(e),
             )
         })
     }
-    /// Each page is one bounded exchange. Cancellation ends the listing between pages
-    /// and discards a conforming in-flight page, rather than terminating a worker that
-    /// other tabs, viewers and jobs share. The idle-progress watchdog still ends a stuck
-    /// worker, and a page that breaks a wire rule fails its exchange, which ends the
-    /// worker too.
+    /// Each page is one bounded exchange, and the listing pages on for as long as the
+    /// worker says more members follow: a folder of any size lists completely.
+    /// Cancellation ends the listing between pages and discards a conforming in-flight
+    /// page, rather than terminating a worker that other tabs, viewers and jobs share.
+    /// The idle-progress watchdog still ends a stuck worker, and a page that breaks a
+    /// wire rule fails its exchange, which ends the worker too.
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         let interrupted = || {
             FsError::from_io(
                 "archive list",
-                &self.container,
+                self.error_path(),
                 io::ErrorKind::Interrupted.into(),
             )
         };
         let mut result = Vec::new();
         let mut after = 0;
-        let mut names = 0usize;
         loop {
             if cancel.is_cancelled() {
                 return Err(interrupted());
@@ -875,19 +1151,6 @@ impl ArchiveMount for Mount {
             // exchange_read rejects an empty page that announces more, so every page
             // that continues the listing advances the cursor.
             for node in entries {
-                names = names
-                    .saturating_add(node.name.len())
-                    .saturating_add(node.display.len());
-                // Host limits, not wire rules: a legitimate large directory reaches them,
-                // so they fail only this listing and the worker keeps serving the other
-                // owners of the mount.
-                if result.len() >= MAX_LISTED_NODES || names > MAX_LISTED_NAME_BYTES {
-                    return Err(FsError::from_io(
-                        "archive list",
-                        &self.container,
-                        io::ErrorKind::InvalidData.into(),
-                    ));
-                }
                 after = node.id;
                 result.push(ArchiveNode {
                     modified: node.modified.map(|timestamp| match timestamp {
@@ -983,3 +1246,7 @@ mod member_identity_tests;
 #[cfg(test)]
 #[path = "cooperative_tests.rs"]
 mod cooperative_tests;
+
+#[cfg(test)]
+#[path = "nested_session_tests.rs"]
+mod nested_session_tests;

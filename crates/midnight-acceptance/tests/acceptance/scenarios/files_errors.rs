@@ -1,0 +1,975 @@
+//! Copy/Move errors and decisions through the real windows: Retry after fixing a
+//! read-only destination or an unreadable source, Skip all this error type, Cancel job,
+//! Skip of an unreadable folder with the rest copied, a write-protected folder moved as
+//! it is, Retry of a Move out of a write-protected folder, Decide later and Resolve,
+//! Merge all folders, a job whose outcome has errors and notes, and a Copy and a Move to
+//! another filesystem when one is available ($XDG_RUNTIME_DIR).
+use crate::{
+    Context,
+    app::{self, App, Config},
+    files_support::{self as support, Choice, Pending, TransferSpec, facts, io_error, tree_facts},
+    fixtures, input, inspect, panel,
+    tools_support::{self as tools, Tool},
+};
+use i_slint_core::items::AccessibleRole;
+use midnight_core::{CopyOperationState, CopyProgress, PaneId};
+use slint::platform::{Key, WindowAdapter};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+
+const LEFT: PaneId = PaneId::Left;
+const SIZE: (u32, u32) = (760, 560);
+/// Announced error handling that may not be implemented yet.
+const CONTINUE_AFTER_SKIP: &str = "Copy/Move continues with the rest of a folder after Skip";
+const SKIP_ROOT: &str = "skippable Copy/Move failures while a transfer is prepared";
+const MOVE_PROMPT: &str =
+    "a Move out of a write-protected folder asks, as Delete does outside the deleted tree";
+
+#[cfg(unix)]
+fn chmod(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|error| io_error(path, error))
+}
+
+#[cfg(not(unix))]
+fn chmod(_: &Path, _: u32) -> Result<(), String> {
+    Ok(())
+}
+
+/// The permission bits of `path` (links not followed).
+#[cfg(unix)]
+fn mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions().mode() & 0o7777)
+}
+
+fn write(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
+    }
+    fs::write(path, text).map_err(|error| io_error(path, error))
+}
+
+fn folder(path: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(path).map_err(|error| io_error(path, error))?;
+    Ok(path.to_path_buf())
+}
+
+/// Clear the marks and mark `names` in the left panel (one name: just the cursor).
+fn choose(app: &mut App, names: &[&str]) -> Result<(), String> {
+    panel::focus_list(app, LEFT)?;
+    input::chord(app.slint(), &[Key::Control], "d");
+    app.settle();
+    if let [name] = names {
+        return panel::select_row(app, LEFT, name);
+    }
+    for name in names {
+        panel::select_row(app, LEFT, name)?;
+        input::key(app.slint(), Key::Insert);
+    }
+    Ok(())
+}
+
+/// Answer each decision of the job starting at `start` with the next of `answers`
+/// (Cancel job, recorded as unexpected, when they run out) until it ends. Returns its
+/// last report and the decision windows' texts.
+fn settle(
+    app: &mut App,
+    start: usize,
+    answers: &[Choice],
+) -> Result<(Arc<CopyProgress>, Vec<String>), String> {
+    let mut decisions = Vec::new();
+    let mut answers = answers.iter();
+    loop {
+        app.until("the job to end or ask", move |app| {
+            support::job(app, start).is_some_and(|job| job.state.is_terminal())
+                || support::decision_window(app).is_some()
+        });
+        if let Some(job) = support::job(app, start).filter(|job| job.state.is_terminal()) {
+            app.settle();
+            return Ok((job, decisions));
+        }
+        let window = support::wait_decision(app, "the decision window");
+        decisions.push(support::describe_window(&window));
+        let choice = answers.next().cloned().unwrap_or(Choice::CancelJob);
+        let token = app.window.get_copy_token();
+        support::answer(app, &window, &choice)?;
+        let answered = window.clone();
+        app.until("the decision to be taken", move |app| {
+            !answered.window().is_visible() || app.window.get_copy_token() != token
+        });
+    }
+}
+
+fn buttons(window: &Tool) -> Vec<String> {
+    inspect::labels(window.window(), AccessibleRole::Button)
+}
+
+/// The newest open Copy or Move window, sized for reading.
+fn job_window(app: &App) -> Option<Tool> {
+    let window = app
+        .tool_windows()
+        .into_iter()
+        .filter(|window| matches!(tools::title(window).as_str(), "Copy" | "Move"))
+        .last()?;
+    app::layout_tool(&window, SIZE.0, SIZE.1);
+    Some(window)
+}
+
+/// Close every finished Copy or Move window with its Close button.
+fn close_job_windows(app: &mut App) {
+    for _ in 0..8 {
+        let Some(window) = job_window(app) else {
+            return;
+        };
+        if tools::click_last(window.window(), "Close").is_err() {
+            input::key(window.window(), Key::Escape);
+        }
+        app.settle();
+        if window.window().is_visible() {
+            return;
+        }
+    }
+}
+
+/// The progress window titled `title` that is still open, if any.
+fn progress_window(app: &mut App, title: &str) -> Option<Tool> {
+    let window = tools::tool_titled(app, title)?;
+    app::layout_tool(&window, SIZE.0, SIZE.1);
+    app.settle();
+    Some(window)
+}
+
+/// The pending checks of a job that ended with errors: its own window shows the error
+/// details, no dialog follows it, and Details shows more.
+fn check_error_window(
+    app: &mut App,
+    context: &mut Context,
+    failures: &mut Vec<String>,
+    what: &str,
+    detail: Option<&str>,
+    shot: &str,
+) {
+    app.idle(Duration::from_millis(400));
+    let notice = support::shown_notice(app);
+    let window = progress_window(app, "Copy").or_else(|| progress_window(app, "Move"));
+    let shown = window
+        .as_ref()
+        .map(|window| inspect::visible_texts(window.window()))
+        .unwrap_or_default();
+    if let Some(window) = &window {
+        app.screenshot_window(context, window, shot, &format!("{what}: its job window"));
+    }
+    // The job's own window shows how it ended, the error included; no dialog follows.
+    if window.is_none() || notice.is_some() {
+        failures.push(format!(
+            "{what}: the job window is {}; notice {notice:?}",
+            if window.is_some() { "open" } else { "gone" }
+        ));
+    }
+    if let Some(detail) = detail
+        && !shown.iter().any(|text| text.contains(detail))
+    {
+        failures.push(format!(
+            "{what}: the job window does not show {detail:?}: {:?}",
+            shown.iter().take(12).collect::<Vec<_>>()
+        ));
+    }
+    if let Some(window) = &window {
+        let before = inspect::visible_texts(window.window()).len();
+        let clicked = tools::click_last(window.window(), "Details");
+        app.settle();
+        let after = inspect::visible_texts(window.window()).len();
+        match clicked {
+            Err(error) => failures.push(format!("{what}: {error}")),
+            Ok(()) if after > before => {}
+            Ok(()) => failures.push(format!(
+                "{what}: Details showed {before} texts, then {after}"
+            )),
+        }
+    }
+    support::dismiss_all(app);
+    for title in ["Copy", "Move"] {
+        while let Some(window) = tools::tool_titled(app, title) {
+            if tools::click_last(window.window(), "Close").is_err() {
+                input::key(window.window(), Key::Escape);
+            }
+            app.settle();
+            if window.window().is_visible() {
+                break;
+            }
+        }
+    }
+}
+
+pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
+    let source = support::scratch(context, "errors")?;
+    let target = support::scratch(context, "target")?;
+    for name in [
+        "one.txt",
+        "a.txt",
+        "b.txt",
+        "c.txt",
+        "secret.txt",
+        "dup.txt",
+        "x.txt",
+        "y.txt",
+    ] {
+        write(&source.join(name), &format!("{name}\n"))?;
+    }
+    write(&source.join("tree/a.txt"), "a\n")?;
+    write(&source.join("tree/b/c.txt"), "c\n")?;
+    write(&source.join("tree/zz/hidden.txt"), "hidden\n")?;
+    write(&source.join("locked/inside.txt"), "inside\n")?;
+    write(&source.join("ro-src/held.txt"), "held\n")?;
+    write(&source.join("m1/new1.txt"), "new1\n")?;
+    write(&source.join("m2/new2.txt"), "new2\n")?;
+    write(&source.join("links-ok/ok.txt"), "ok\n")?;
+    write(&source.join("zz-alone/hidden.txt"), "hidden\n")?;
+    write(&source.join("links-ok/zz-inner/hidden.txt"), "hidden\n")?;
+    write(&source.join("err.txt"), "err\n")?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("missing-target", source.join("links-ok/dangling"))
+        .map_err(|error| io_error(&source, error))?;
+    let ro = [
+        folder(&target.join("ro-dest"))?,
+        folder(&target.join("ro-dest2"))?,
+        folder(&target.join("ro-dest3"))?,
+    ];
+    let plain = folder(&target.join("plain-dest"))?;
+    let tree_dest = folder(&target.join("tree-dest"))?;
+    let move_dest = folder(&target.join("move-dest"))?;
+    let conflict = folder(&target.join("conflict-dest"))?;
+    write(&conflict.join("dup.txt"), "already here\n")?;
+    let merge = folder(&target.join("merge-dest"))?;
+    write(&merge.join("m1/old1.txt"), "old1\n")?;
+    write(&merge.join("m2/old2.txt"), "old2\n")?;
+    let mixed_dest = folder(&target.join("mixed-dest"))?;
+    let skip_root_dest = folder(&target.join("skip-root-dest"))?;
+    let ro_move = folder(&target.join("ro-move"))?;
+    for path in &ro {
+        chmod(path, 0o555)?;
+    }
+    chmod(&source.join("secret.txt"), 0o000)?;
+    chmod(&source.join("tree/zz"), 0o000)?;
+    chmod(&source.join("zz-alone"), 0o000)?;
+    chmod(&source.join("links-ok/zz-inner"), 0o000)?;
+    chmod(&ro_move, 0o555)?;
+    chmod(&source.join("locked"), 0o555)?;
+    chmod(&source.join("ro-src"), 0o555)?;
+    let mut app = App::start(Config::new(&source, &target));
+    let mut failures = Vec::new();
+    let mut pending = Pending::default();
+
+    // A read-only destination: the error offers Retry, Skip, Skip all this error type
+    // and Cancel job; after the folder is made writable, Retry copies the file.
+    choose(&mut app, &["one.txt"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(ro[0].as_path()),
+            ..TransferSpec::copy()
+        },
+    )?;
+    let window = support::wait_decision(&mut app, "the read-only destination's error");
+    let offered = buttons(&window);
+    for wanted in ["Retry", "Skip", "Skip all this error type", "Cancel job"] {
+        if !offered.iter().any(|label| label == wanted) {
+            failures.push(format!(
+                "the read-only destination's error offers no {wanted:?}: {offered:?}"
+            ));
+        }
+    }
+    let corner = support::header_close_buttons(&window);
+    pending.check(
+        "the framed decision window has no × of its own",
+        "the decision window's internal × is being removed",
+        if corner.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("its header has {corner:?}"))
+        },
+    );
+    app.screenshot_window(
+        context,
+        &window,
+        "error-decision",
+        "Copy into a read-only folder",
+    );
+    chmod(&ro[0], 0o755)?;
+    let token = app.window.get_copy_token();
+    support::answer(&mut app, &window, &Choice::Retry)?;
+    let answered = window.clone();
+    app.until("Retry to be taken", move |app| {
+        !answered.window().is_visible() || app.window.get_copy_token() != token
+    });
+    let (done, decisions) = settle(&mut app, start, &[])?;
+    if done.state != CopyOperationState::Completed || done.failed != 0 || !decisions.is_empty() {
+        failures.push(format!(
+            "Retry into the now writable folder ended {:?} (failed {}, further questions {decisions:?})",
+            done.state, done.failed
+        ));
+    }
+    if facts(&ro[0].join("one.txt"))
+        .map(|found| found.content)
+        .ok()
+        != facts(&source.join("one.txt"))
+            .map(|found| found.content)
+            .ok()
+    {
+        failures.push("Retry did not copy one.txt into the destination".into());
+    }
+    support::dismiss_all(&mut app);
+
+    // Skip all this error type: one question for three files, nothing written.
+    choose(&mut app, &["a.txt", "b.txt", "c.txt"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(ro[1].as_path()),
+            ..TransferSpec::copy()
+        },
+    )?;
+    let (done, decisions) = settle(&mut app, start, &[Choice::SkipAllErrors])?;
+    if decisions.len() != 1 || done.skipped != 3 || !support::names_on_disk(&ro[1]).is_empty() {
+        failures.push(format!(
+            "Skip all this error type: {} question(s), {:?}, skipped {}, failed {}, destination {:?}",
+            decisions.len(),
+            done.state,
+            done.skipped,
+            done.failed,
+            support::names_on_disk(&ro[1])
+        ));
+    }
+    check_error_window(
+        &mut app,
+        context,
+        &mut failures,
+        "Skip all this error type",
+        Some("Permission denied"),
+        "skip-all-errors",
+    );
+
+    // Cancel job at the error: the job ends Cancelled and writes nothing.
+    choose(&mut app, &["a.txt"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(ro[2].as_path()),
+            ..TransferSpec::copy()
+        },
+    )?;
+    let (done, _) = settle(&mut app, start, &[Choice::CancelJob])?;
+    if done.state != CopyOperationState::Cancelled || !support::names_on_disk(&ro[2]).is_empty() {
+        failures.push(format!(
+            "Cancel job at the error ended {:?}, destination {:?}",
+            done.state,
+            support::names_on_disk(&ro[2])
+        ));
+    }
+    app.idle(Duration::from_millis(400));
+    let notice = support::shown_notice(&app);
+    if let Some(notice) = notice {
+        failures.push(format!("a notice follows Cancel job: {notice:?}"));
+    }
+    support::dismiss_all(&mut app);
+
+    // An unreadable source file: the preparation error offers Retry, which succeeds once
+    // the file is readable.
+    choose(&mut app, &["secret.txt"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(plain.as_path()),
+            ..TransferSpec::copy()
+        },
+    )?;
+    let window = support::wait_decision(&mut app, "the unreadable file's error");
+    let offered = buttons(&window);
+    if !offered.iter().any(|label| label == "Retry") {
+        failures.push(format!(
+            "the unreadable file's error offers no Retry: {offered:?}"
+        ));
+    }
+    chmod(&source.join("secret.txt"), 0o644)?;
+    let token = app.window.get_copy_token();
+    support::answer(&mut app, &window, &Choice::Retry)?;
+    let answered = window.clone();
+    app.until("Retry to be taken", move |app| {
+        !answered.window().is_visible() || app.window.get_copy_token() != token
+    });
+    let (done, decisions) = settle(&mut app, start, &[])?;
+    if done.state != CopyOperationState::Completed
+        || !decisions.is_empty()
+        || facts(&plain.join("secret.txt"))
+            .map(|found| found.content)
+            .ok()
+            != facts(&source.join("secret.txt"))
+                .map(|found| found.content)
+                .ok()
+    {
+        failures.push(format!(
+            "Retry of the now readable file ended {:?} (questions {decisions:?})",
+            done.state
+        ));
+    }
+    support::dismiss_all(&mut app);
+
+    // An unreadable folder inside a copied tree: Skip leaves it out and the rest is
+    // copied.
+    choose(&mut app, &["tree"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(tree_dest.as_path()),
+            ..TransferSpec::copy()
+        },
+    )?;
+    let (done, decisions) = settle(&mut app, start, &[Choice::Skip])?;
+    context.note(format!("unreadable folder in a tree: {decisions:?}"));
+    let copied = tree_facts(&tree_dest.join("tree")).unwrap_or_default();
+    let missing: Vec<&str> = ["a.txt", "b", "b/c.txt"]
+        .into_iter()
+        .filter(|wanted| !copied.contains_key(*wanted))
+        .collect();
+    pending.check(
+        "after Skip of an unreadable folder the rest of the tree is copied",
+        CONTINUE_AFTER_SKIP,
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "not copied: {missing:?}; the copy holds {:?}",
+                copied.keys().collect::<Vec<_>>()
+            ))
+        },
+    );
+    if decisions.len() != 1 || done.skipped == 0 || copied.contains_key("zz/hidden.txt") {
+        failures.push(format!(
+            "the unreadable folder: {} question(s), {:?}, skipped {}",
+            decisions.len(),
+            done.state,
+            done.skipped
+        ));
+    }
+    check_error_window(
+        &mut app,
+        context,
+        &mut failures,
+        "Skip of an unreadable folder",
+        Some("zz"),
+        "skip-unreadable",
+    );
+
+    // An owned write-protected folder (mode 0555, with contents) moves as it is: no
+    // question, and the moved folder keeps its mode.
+    choose(&mut app, &["locked"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(move_dest.as_path()),
+            ..TransferSpec::moving()
+        },
+    )?;
+    let (done, decisions) = settle(&mut app, start, &[])?;
+    let moved = !source.join("locked").exists() && move_dest.join("locked/inside.txt").is_file();
+    #[cfg(unix)]
+    let kept_mode = mode(&move_dest.join("locked")) == Some(0o555);
+    #[cfg(not(unix))]
+    let kept_mode = true;
+    if !decisions.is_empty() || done.state != CopyOperationState::Completed || !moved || !kept_mode
+    {
+        failures.push(format!(
+            "Move of a write-protected folder ended {:?} (questions {decisions:?}, moved {moved}, \
+             mode kept {kept_mode})",
+            done.state
+        ));
+    }
+    support::dismiss_all(&mut app);
+    close_job_windows(&mut app);
+
+    // A file in a write-protected folder (outside the moved item) still asks: Retry,
+    // Skip, Skip all this error type, Cancel job. Retry once the folder is writable
+    // moves it.
+    panel::enter(&mut app, LEFT, "ro-src")?;
+    choose(&mut app, &["held.txt"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(move_dest.as_path()),
+            ..TransferSpec::moving()
+        },
+    )?;
+    app.until(
+        "the write-protected source folder's Move error",
+        move |app| {
+            support::decision_window(app).is_some()
+                || support::job(app, start).is_some_and(|job| job.state.is_terminal())
+        },
+    );
+    let mut refused_retry = None;
+    let prompt = if support::decision_window(&app).is_some() {
+        let window = support::wait_decision(&mut app, "the Move error");
+        let question = support::describe_window(&window);
+        let offered = buttons(&window);
+        let missing: Vec<&str> = ["Retry", "Skip", "Skip all this error type", "Cancel job"]
+            .into_iter()
+            .filter(|wanted| !offered.iter().any(|label| label == wanted))
+            .collect();
+        app.screenshot_window(
+            context,
+            &window,
+            "move-protected-source",
+            "Move out of a write-protected folder",
+        );
+        chmod(&source.join("ro-src"), 0o755)?;
+        let token = app.window.get_copy_token();
+        support::answer(&mut app, &window, &Choice::Retry)?;
+        let answered = window.clone();
+        app.until("Retry to be taken", move |app| {
+            !answered.window().is_visible() || app.window.get_copy_token() != token
+        });
+        let (done, decisions) = settle(&mut app, start, &[])?;
+        let moved =
+            !source.join("ro-src/held.txt").exists() && move_dest.join("held.txt").is_file();
+        if !moved || done.state != CopyOperationState::Completed || !decisions.is_empty() {
+            refused_retry = Some(format!(
+                "finding ACC-ERR-01: Retry after making the source folder writable did not \
+                 move the file ({:?}, further questions {decisions:?}; first question \
+                 {question})",
+                done.state
+            ));
+        }
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("the question offers no {missing:?}: {offered:?}"))
+        }
+    } else {
+        let done = support::job(&app, start);
+        Err(format!(
+            "no question; the Move ended {:?} with {:?} (held.txt moved: {})",
+            done.as_ref().map(|job| job.state),
+            done.as_ref().and_then(|job| job.errors.first()),
+            move_dest.join("held.txt").is_file()
+        ))
+    };
+    pending.check(
+        "a Move out of a write-protected folder asks Retry, Skip, Skip all this error type \
+         and Cancel job",
+        MOVE_PROMPT,
+        prompt,
+    );
+    support::dismiss_all(&mut app);
+    close_job_windows(&mut app);
+    panel::leave(&mut app, LEFT)?;
+
+    // Decide later leaves the job waiting; Resolve brings the question back.
+    choose(&mut app, &["dup.txt"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(conflict.as_path()),
+            ..TransferSpec::copy()
+        },
+    )?;
+    let window = support::wait_decision(&mut app, "the name conflict");
+    support::answer(&mut app, &window, &Choice::DecideLater)?;
+    let deferred = window.clone();
+    app.until("Decide later to close the question", move |_| {
+        !deferred.window().is_visible()
+    });
+    app.idle(Duration::from_millis(400));
+    let waiting = support::job(&app, start).map(|job| job.state);
+    if waiting != Some(CopyOperationState::WaitingForDecision) {
+        failures.push(format!("after Decide later the job is {waiting:?}"));
+    }
+    match tools::tool_titled(&app, "Copy") {
+        None => failures.push("no Copy window shows the deferred question".into()),
+        Some(window) => {
+            app::layout_tool(&window, SIZE.0, SIZE.1);
+            app.settle();
+            app.screenshot_window(context, &window, "decide-later", "A deferred question");
+            match tools::click_last(window.window(), "Resolve") {
+                Err(error) => failures.push(format!("the deferred job offers no Resolve: {error}")),
+                Ok(()) => {
+                    app.until("Resolve to bring the question back", |app| {
+                        support::decision_window(app).is_some()
+                    });
+                    let (done, _) = settle(&mut app, start, &[Choice::Skip])?;
+                    if done.skipped != 1
+                        || fs::read_to_string(conflict.join("dup.txt")).ok().as_deref()
+                            != Some("already here\n")
+                    {
+                        failures.push(format!(
+                            "Skip after Resolve ended {:?} (skipped {})",
+                            done.state, done.skipped
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    support::dismiss_all(&mut app);
+
+    close_job_windows(&mut app);
+
+    // Merge all folders: one question for two folder conflicts.
+    choose(&mut app, &["m1", "m2"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(merge.as_path()),
+            ..TransferSpec::copy()
+        },
+    )?;
+    let (done, decisions) = settle(&mut app, start, &[Choice::MergeAll])?;
+    let merged = ["m1/new1.txt", "m1/old1.txt", "m2/new2.txt", "m2/old2.txt"]
+        .iter()
+        .all(|path| merge.join(path).is_file());
+    if decisions.len() != 1 || done.state != CopyOperationState::Completed || !merged {
+        failures.push(format!(
+            "Merge all folders: {} question(s), {:?}, merged {merged}",
+            decisions.len(),
+            done.state
+        ));
+    }
+    support::dismiss_all(&mut app);
+
+    // A selected folder that cannot be read fails while the transfer is prepared: Skip
+    // leaves it out and the other selected file is copied.
+    close_job_windows(&mut app);
+    choose(&mut app, &["one.txt", "zz-alone"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(skip_root_dest.as_path()),
+            ..TransferSpec::copy()
+        },
+    )?;
+    app.until("the unreadable folder's question", move |app| {
+        support::decision_window(app).is_some()
+            || support::job(app, start).is_some_and(|job| job.state.is_terminal())
+    });
+    let offered = support::decision_window(&app)
+        .map(|window| inspect::labels(window.window(), AccessibleRole::Button));
+    let skippable = offered
+        .as_ref()
+        .is_some_and(|labels| labels.iter().any(|label| label == "Skip"));
+    // Without Skip, the question is answered with Cancel job.
+    let answers = if skippable {
+        vec![Choice::Skip]
+    } else {
+        Vec::new()
+    };
+    let (done, _) = settle(&mut app, start, &answers)?;
+    let copied = skip_root_dest.join("one.txt").is_file();
+    pending.check(
+        "Skip of a selected folder that cannot be read copies the rest of the selection",
+        SKIP_ROOT,
+        match &offered {
+            None => Err(format!("no question; the job ended {:?}", done.state)),
+            Some(labels) if !skippable => Err(format!(
+                "the question offers {labels:?}; Cancel job ended it {:?}",
+                done.state
+            )),
+            Some(_) if !copied => Err(format!(
+                "after Skip the job ended {:?} without one.txt",
+                done.state
+            )),
+            Some(_) => Ok(()),
+        },
+    );
+    support::dismiss_all(&mut app);
+    close_job_windows(&mut app);
+
+    // An outcome with a skipped folder and a link copied as a link: both are counts, the
+    // window lists no item for them, and Details shows and hides the full list.
+    choose(&mut app, &["links-ok"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(mixed_dest.as_path()),
+            follow_links: Some(true),
+            ..TransferSpec::copy()
+        },
+    )?;
+    let (done, decisions) = settle(&mut app, start, &[Choice::Skip])?;
+    app.idle(Duration::from_millis(400));
+    let window = job_window(&app);
+    let outcome = window
+        .as_ref()
+        .map(|window| inspect::visible_texts(window.window()))
+        .unwrap_or_default();
+    context.note(format!(
+        "outcome of a skipped folder and a link ({:?}, skipped {}, questions {}): {:?}",
+        done.state,
+        done.skipped,
+        decisions.len(),
+        outcome.iter().take(16).collect::<Vec<_>>()
+    ));
+    if decisions.len() != 1 || !mixed_dest.join("links-ok/ok.txt").is_file() {
+        failures.push(format!(
+            "the readable files were not copied beside the skipped folder ({} question(s))",
+            decisions.len()
+        ));
+    }
+    let has = |wanted: &str| outcome.iter().any(|text| text.contains(wanted));
+    for wanted in [
+        "Files copied: ",
+        "1 skipped item was not copied.",
+        "1 link was copied as a link; Details says why.",
+    ] {
+        if !has(wanted) {
+            failures.push(format!(
+                "the outcome does not say {wanted:?}: {:?}",
+                outcome.iter().take(12).collect::<Vec<_>>()
+            ));
+        }
+    }
+    if !has("1 error") || !has("zz-inner") {
+        failures.push(format!(
+            "the outcome does not list the skipped folder's error: {:?}",
+            outcome.iter().take(12).collect::<Vec<_>>()
+        ));
+    }
+    if has("because its target does not exist") {
+        failures.push(format!(
+            "the outcome lists informational items one by one: {:?}",
+            outcome.iter().take(12).collect::<Vec<_>>()
+        ));
+    }
+    if let Some(window) = &window {
+        app.screenshot_window(
+            context,
+            window,
+            "outcome-counts",
+            "Counts of a skipped folder and a link",
+        );
+        let before = inspect::visible_texts(window.window()).len();
+        let shown = tools::click_last(window.window(), "Details").map(|()| {
+            app.settle();
+            inspect::visible_texts(window.window())
+        });
+        match shown {
+            Err(error) => failures.push(format!("the outcome's Details: {error}")),
+            Ok(details) => {
+                if details.len() <= before
+                    || !details
+                        .iter()
+                        .any(|text| text.contains("because its target does not exist"))
+                {
+                    failures.push(format!(
+                        "Details does not show the link's reason: {:?}",
+                        details.iter().take(16).collect::<Vec<_>>()
+                    ));
+                }
+                let hidden = tools::click_last(window.window(), "Fewer details")
+                    .or_else(|_| tools::click_last(window.window(), "Details"));
+                app.settle();
+                let after = inspect::visible_texts(window.window()).len();
+                if hidden.is_err() || after >= details.len() {
+                    failures.push(format!(
+                        "Details did not hide again ({before} texts, {} with Details, {after} after)",
+                        details.len()
+                    ));
+                }
+            }
+        }
+    } else {
+        failures.push("no window shows the outcome of the skipped folder".into());
+    }
+    if let Some(notice) = support::shown_notice(&app) {
+        failures.push(format!(
+            "a notice follows a job whose window shows it: {notice:?}"
+        ));
+    }
+    close_job_windows(&mut app);
+
+    // An error the job records: its count and row open the path, message and operation
+    // in place, by click and by Space.
+    choose(&mut app, &["err.txt"])?;
+    let start = support::start_transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(ro_move.as_path()),
+            ..TransferSpec::moving()
+        },
+    )?;
+    let (done, decisions) = settle(&mut app, start, &[Choice::Skip])?;
+    app.idle(Duration::from_millis(400));
+    context.note(format!(
+        "F6 into a read-only folder: {:?}, failed {}, skipped {}, questions {decisions:?}",
+        done.state, done.failed, done.skipped
+    ));
+    if !source.join("err.txt").is_file() || ro_move.join("err.txt").exists() {
+        failures.push("a refused Move of err.txt changed source or destination".into());
+    }
+    match job_window(&app) {
+        None => failures.push("no window shows the refused Move".into()),
+        Some(window) if done.failed > 0 => {
+            app.screenshot_window(
+                context,
+                &window,
+                "error-row",
+                "A Move that ended with an error",
+            );
+            let count = inspect::controls(window.window(), AccessibleRole::Button)
+                .into_iter()
+                .find(|(label, _)| label.ends_with(" error") || label.ends_with(" errors"));
+            match count {
+                None => failures.push(format!(
+                    "the window has no error count button: {:?}",
+                    inspect::visible_texts(window.window())
+                )),
+                Some((label, item)) => {
+                    let collapsed = inspect::visible_texts(window.window());
+                    input::click_at(window.window(), inspect::center(&item));
+                    app.settle();
+                    let opened = inspect::visible_texts(window.window());
+                    let detail = |texts: &[String]| {
+                        texts.iter().any(|text| text.contains("Permission denied"))
+                            && texts.iter().any(|text| text.contains("Operation:"))
+                            && texts.iter().any(|text| text.contains("err.txt"))
+                    };
+                    if !detail(&opened) || detail(&collapsed) {
+                        failures.push(format!(
+                            "clicking {label:?} did not open the error's path, message and operation: {:?}",
+                            opened.iter().take(16).collect::<Vec<_>>()
+                        ));
+                    }
+                    // Again to close it, then Space on the focused count opens it again.
+                    input::click_at(window.window(), inspect::center(&item));
+                    app.settle();
+                    input::key(window.window(), " ");
+                    app.settle();
+                    if !detail(&inspect::visible_texts(window.window())) {
+                        failures.push(format!("Space on {label:?} did not open the error"));
+                    }
+                }
+            }
+        }
+        Some(_) => context.note(format!(
+            "the refused Move recorded no error ({:?}); its rows were not checked",
+            done.state
+        )),
+    }
+    close_job_windows(&mut app);
+
+    // Another filesystem: Copy works; Move either moves or is refused cleanly.
+    cross_volume(&mut app, context, &source, &mut failures)?;
+
+    app.shutdown()?;
+    if let Some(finding) = refused_retry {
+        failures.push(finding);
+    }
+    support::report_with(context, &failures, &pending)
+}
+
+/// Copy and Move to a private folder on another filesystem ($XDG_RUNTIME_DIR, usually
+/// tmpfs), when there is one; removed afterwards.
+fn cross_volume(
+    app: &mut App,
+    context: &mut Context,
+    source: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_dir());
+        let device = |path: &Path| fs::metadata(path).map(|metadata| metadata.dev()).ok();
+        let Some(runtime) = runtime.filter(|runtime| device(runtime) != device(source)) else {
+            context.note(
+                "cross-volume Copy and Move not run: no second filesystem ($XDG_RUNTIME_DIR)",
+            );
+            return Ok(());
+        };
+        let run = context
+            .run_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let volume = fixtures::create_fresh(&runtime, &format!("midnight-acceptance-{run}"))?;
+        chmod(&volume, 0o700)?;
+        let result = (|| -> Result<(), String> {
+            choose(app, &["x.txt"])?;
+            let start = support::start_transfer(
+                app,
+                context,
+                TransferSpec {
+                    destination: Some(volume.as_path()),
+                    ..TransferSpec::copy()
+                },
+            )?;
+            let (done, decisions) = settle(app, start, &[])?;
+            if done.state != CopyOperationState::Completed
+                || fs::read(volume.join("x.txt")).ok() != fs::read(source.join("x.txt")).ok()
+            {
+                failures.push(format!(
+                    "Copy to another filesystem ended {:?} (questions {decisions:?})",
+                    done.state
+                ));
+            }
+            support::dismiss_all(app);
+            let before = facts(&source.join("y.txt"))?;
+            choose(app, &["y.txt"])?;
+            let start = support::start_transfer(
+                app,
+                context,
+                TransferSpec {
+                    destination: Some(volume.as_path()),
+                    ..TransferSpec::moving()
+                },
+            )?;
+            let (done, decisions) = settle(app, start, &[Choice::Skip])?;
+            let moved = !source.join("y.txt").exists()
+                && fs::read(volume.join("y.txt")).ok().as_deref() == Some(b"y.txt\n".as_slice());
+            let kept = facts(&source.join("y.txt")).ok().as_ref() == Some(&before)
+                && !volume.join("y.txt").exists();
+            context.note(format!(
+                "Move to another filesystem ({}): {:?}, moved {moved}, source kept {kept}, \
+                 questions {decisions:?}",
+                volume.display(),
+                done.state
+            ));
+            if !moved && !kept {
+                failures.push(format!(
+                    "Move to another filesystem left both sides inconsistent: {:?}",
+                    done.state
+                ));
+            }
+            support::dismiss_all(app);
+            Ok(())
+        })();
+        let _ = fixtures::remove_tree(&volume);
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, source, failures);
+        context.note("cross-volume Copy and Move not run on this platform");
+        Ok(())
+    }
+}

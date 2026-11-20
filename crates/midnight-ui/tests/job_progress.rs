@@ -175,7 +175,7 @@ fn speed_chart_resizes_with_jobs_and_keeps_actions_visible_in_all_themes() {
     copy.current_path = "D:\\Source\\資料\\example.zip".into();
     copy.transfer_directory = "D:\\Source\\資料".into();
     copy.transfer_name = "example.zip".into();
-    copy.transfer_totals = "Files: 6 / 18 · Bytes: 900 / 1800".into();
+    copy.transfer_totals = "Files: 6 of 18 · Bytes: 900 B of 1.8 KiB".into();
     copy.eta = "About 3 min".into();
     copy.remaining = "Items remaining: 12 (620 MiB)".into();
     copy.transfer_speed_chart = SpeedChartData {
@@ -196,7 +196,7 @@ fn speed_chart_resizes_with_jobs_and_keeps_actions_visible_in_all_themes() {
     for label in [
         "D:\\Source\\資料",
         "example.zip",
-        "Files: 6 / 18 · Bytes: 900 / 1800",
+        "Files: 6 of 18 · Bytes: 900 B of 1.8 KiB",
         "Time remaining: About 3 min",
     ] {
         ui::popup_item(&test.window, label, AccessibleRole::Text);
@@ -356,5 +356,122 @@ fn cancel_question_keeps_both_actions_visible_and_continue_focused_at_compact_si
         confirmed.get(),
         1,
         "explicit pointer confirmation is reachable"
+    );
+}
+
+fn native_rect(item: &ItemRc) -> (f32, f32, f32, f32) {
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    (origin.x, origin.y, rect.size.width, rect.size.height)
+}
+
+#[test]
+fn a_slow_file_shows_its_own_bar_beside_its_name_and_quick_files_none() {
+    let mut test = ui::TestUi::new();
+    let mut copy = job("copy-job:31", "Copy");
+    copy.state = "Copying".into();
+    copy.active = true;
+    copy.pausable = true;
+    copy.determinate = true;
+    copy.progress = 0.25;
+    copy.progress_label = "25% complete".into();
+    copy.transfer_directory = "/source/資料".into();
+    copy.transfer_name = "large.bin".into();
+    copy.transfer_totals = "Files: 3 of 12 · Bytes: 1.0 GiB of 4.0 GiB".into();
+    copy.eta = "About 3 min".into();
+    copy.file_determinate = true;
+    copy.file_progress = 0.45;
+    copy.file_progress_title = "Current file written".into();
+    copy.file_progress_label = "Current file written: 450 / 1000 bytes".into();
+    test.window.set_job(copy.clone());
+    test.draw();
+    let bar = |test: &ui::TestUi| {
+        ui::find_popup_item(
+            &test.window,
+            "Current file progress",
+            AccessibleRole::ProgressIndicator,
+        )
+    };
+    assert!(bar(&test).is_none(), "a quick file shows no bar");
+    ui::popup_item(
+        &test.window,
+        "Files: 3 of 12 · Bytes: 1.0 GiB of 4.0 GiB",
+        AccessibleRole::Text,
+    );
+    copy.file_percent = "45%".into();
+    test.window.set_job(copy.clone());
+    for (width, height) in [(1000, 700), (480, 360), (320, 200)] {
+        test.resize(width, height);
+        let meter = bar(&test).expect("a slow file's bar");
+        assert_eq!(
+            meter
+                .accessible_string_property(AccessibleStringProperty::Value)
+                .unwrap(),
+            "45%"
+        );
+        let fill = meter.first_child().expect("the bar has a fill");
+        assert!((fill.geometry().width() - meter.geometry().width() * 0.45).abs() <= 1.0);
+        let name = ui::popup_item(&test.window, "large.bin", AccessibleRole::Text);
+        let percent = ui::popup_item(&test.window, "45%", AccessibleRole::Text);
+        let (name_x, name_y, name_width, name_height) = native_rect(&name);
+        let (bar_x, bar_y, bar_width, bar_height) = native_rect(&meter);
+        let (percent_x, _, percent_width, _) = native_rect(&percent);
+        assert!(bar_x >= name_x + name_width, "beside the name, after it");
+        assert!(
+            bar_y >= name_y && bar_y + bar_height <= name_y + name_height + 1.0,
+            "on the name's line"
+        );
+        assert!(percent_x >= bar_x + bar_width);
+        assert!(
+            percent_x + percent_width <= width as f32 + 1.0,
+            "inside the window"
+        );
+        test.snapshot(&format!("slow-file-{width}x{height}"));
+    }
+    // A pause keeps the estimate, marked as paused.
+    copy.paused = true;
+    copy.pause_requested = true;
+    copy.eta = "About 3 min (paused)".into();
+    test.window.set_job(copy);
+    test.draw();
+    ui::popup_item(
+        &test.window,
+        "Time remaining: About 3 min (paused)",
+        AccessibleRole::Text,
+    );
+}
+
+#[test]
+fn delete_shows_its_item_totals_and_a_held_estimate_while_paused() {
+    let mut test = ui::TestUi::new();
+    let mut delete = job("41", "Delete");
+    delete.kind = 1;
+    delete.active = true;
+    delete.pausable = true;
+    delete.determinate = true;
+    delete.progress = 0.4;
+    delete.progress_label = "40% complete".into();
+    delete.transfer_totals = "Items deleted: 400 of 1000".into();
+    delete.remaining = "Items remaining: 600".into();
+    delete.eta = "About 30 s".into();
+    test.window.set_job(delete.clone());
+    test.draw();
+    for label in [
+        "Items deleted: 400 of 1000",
+        "Items remaining: 600",
+        "Time remaining: About 30 s",
+    ] {
+        ui::popup_item(&test.window, label, AccessibleRole::Text);
+    }
+    delete.paused = true;
+    delete.pause_requested = true;
+    delete.activity_label = "Paused".into();
+    delete.eta = "About 30 s (paused)".into();
+    test.window.set_job(delete);
+    test.draw();
+    ui::popup_item(
+        &test.window,
+        "Time remaining: About 30 s (paused)",
+        AccessibleRole::Text,
     );
 }

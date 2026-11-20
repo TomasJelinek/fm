@@ -98,7 +98,10 @@ impl Presenter {
     }
 
     pub(crate) fn paste_files(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
-        if !self.native_action_allowed(pane) {
+        if self.feed_refuses(pane, "Paste")
+            || self.comparison_refuses("Paste")
+            || !self.native_action_allowed(pane)
+        {
             return;
         }
         self.read_file_clipboard(self.panes[pane.index()].display_path().to_owned(), send);
@@ -384,6 +387,7 @@ impl Presenter {
             MenuAction::Copy | MenuAction::Cut | MenuAction::Properties => {
                 let request = self.desktop.request();
                 let files = menu.files.clone();
+                let properties = Cancellation::default();
                 let command = match action {
                     MenuAction::Copy => Command::CopyFiles { request, files },
                     MenuAction::Cut => Command::CutFiles { request, files },
@@ -392,10 +396,14 @@ impl Presenter {
                         selection: files.selection,
                         view: files.view,
                         fallback: files.fallback,
+                        cancel: properties.clone(),
                     },
                 };
                 if send(command) {
                     self.desktop.requests.insert(request);
+                    if action == MenuAction::Properties {
+                        self.properties_requested(request, properties);
+                    }
                 } else {
                     self.desktop
                         .report("Desktop queue busy", "Try the action again.".into());

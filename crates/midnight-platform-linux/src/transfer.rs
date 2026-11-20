@@ -15,6 +15,8 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+#[path = "transfer_descriptor_budget.rs"]
+mod descriptor_budget;
 #[path = "transfer_destination.rs"]
 mod destination;
 #[cfg(test)]
@@ -125,24 +127,9 @@ impl TransferService for crate::LinuxFileSystem {
         revisions: TransferRevisionPolicy,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
-        let mode = match links {
-            CopyLinkPolicy::Reject => return prepare_copy_source(path, None, revisions, cancel),
-            CopyLinkPolicy::Preserve => {
-                return Err(FsError::from_io(
-                    "transfer capability",
-                    path,
-                    io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "link-preserving source preparation is unsupported",
-                    ),
-                ));
-            }
-            CopyLinkPolicy::FollowDirectoryContents => directory_links::DirectoryLinkMode::Follow,
-            CopyLinkPolicy::EmptyDirectories => directory_links::DirectoryLinkMode::Empty,
-        };
         prepare_copy_source(
             path,
-            Some(directory_links::Traversal::new(mode)),
+            directory_links::Traversal::for_policy(links),
             revisions,
             cancel,
         )
@@ -287,6 +274,10 @@ fn checked(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
 }
 fn error(path: &Path, error: io::Error) -> FsError {
     FsError::from_io("copy file", path, error)
+}
+/// A failure of a Move-only step on the source: its staging checks and renames.
+fn move_error(path: &Path, error: io::Error) -> FsError {
+    FsError::from_io("move", path, error)
 }
 fn invalid(path: &Path, message: &str) -> FsError {
     error(path, io::Error::new(io::ErrorKind::InvalidInput, message))

@@ -96,6 +96,26 @@ fn report(name: &str, renderer: &mut TextRenderer, page: &TextPage, origin: [f32
             renderer.rasterize(page, retained(origin), None).unwrap();
         }));
     }
+    // Every visible glyph selected: selection geometry plus selected glyph colors.
+    let mut selected = Duration::MAX;
+    for _ in 0..5 {
+        selected = selected.min(time(|| {
+            let all = Some(0..page.text().len());
+            renderer.rasterize(page, retained(origin), all).unwrap();
+        }));
+    }
+    // A selection that starts inside a run: that run decides per glyph cluster.
+    let text = page.text();
+    let partial = text.floor_char_boundary(text.len() / 3)..text.len();
+    let mut partly = Duration::MAX;
+    for _ in 0..5 {
+        partly = partly.min(time(|| {
+            let selection = Some(partial.clone());
+            renderer
+                .rasterize(page, retained(origin), selection)
+                .unwrap();
+        }));
+    }
     let scroll = time(|| {
         for step in 1..=10 {
             let origin = [origin[0], origin[1] + step as f32 * 37.3];
@@ -103,9 +123,12 @@ fn report(name: &str, renderer: &mut TextRenderer, page: &TextPage, origin: [f32
         }
     });
     println!(
-        "raster_timing case={name} cold_ms={:.2} repaint_ms={:.2} scroll10_ms={:.2}",
+        "raster_timing case={name} cold_ms={:.2} repaint_ms={:.2} selected_repaint_ms={:.2} \
+         partly_selected_repaint_ms={:.2} scroll10_ms={:.2}",
         cold.as_secs_f64() * 1000.0,
         repaint.as_secs_f64() * 1000.0,
+        selected.as_secs_f64() * 1000.0,
+        partly.as_secs_f64() * 1000.0,
         scroll.as_secs_f64() * 1000.0,
     );
 }

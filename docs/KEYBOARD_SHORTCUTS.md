@@ -1,4 +1,4 @@
-# Keyboard shortcuts — Midnight Explorer 0.2
+# Keyboard shortcuts — Midnight Explorer 0.3
 
 File dragging follows Explorer-style internal defaults: same-volume Move,
 otherwise Copy, with uncertain or mixed volume evidence falling back to Copy.
@@ -45,8 +45,11 @@ defaults** asks before resetting the complete map. Tab or Escape records that ke
 and leaves the capture field without running an application command.
 Changes preview immediately; **OK** saves them with the other preferences and
 closes Options. **Cancel**, X or Escape outside capture discard the entire Options
-session, restoring previous mappings and previewed appearance. The action catalog
-also supplies the application's displayed shortcut hints and Help.
+session, restoring previous mappings and previewed appearance. An open inline
+editor takes Escape first: the custom archive extension field and a new argument
+row cancel only their own edit, an open color picker closes, and the next Escape
+closes Options. The action catalog also supplies the application's displayed
+shortcut hints and Help.
 
 Native widget editing and IME shortcuts remain native; operating-system-reserved
 keys may not reach the application. Ctrl+Space stays available to the IME, and broad
@@ -70,8 +73,10 @@ drive dialog service, including on Linux. The remaining buttons use the availabl
 space. This follows the effective action after remapping; supported Ctrl+F11 Zoom
 and Ctrl+F12 Filter actions remain visible.
 
-At normal widths the action text takes priority over its icon. Very narrow cells
-show the function key; the tooltip and accessibility label retain the complete
+At normal widths the action text takes priority over its icon: a caption first
+gives up its icon, then shrinks to a readable minimum. A cell that still cannot
+show the whole caption, and every very narrow cell, shows the function key alone,
+never a shortened caption; the tooltip and accessibility label retain the complete
 chord and action. A mouse press captures the action and pane, so releasing or
 changing modifiers before releasing the mouse cannot trigger a different action.
 While a panel is enlarged, switching panels transfers the enlargement; centering
@@ -111,7 +116,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | ↑ / ↓, PageUp / PageDown, Home / End | Move the focused row |
 | ← / → in Brief | Move to the previous / next file column |
 | ← / → and ↑ / ↓ in Thumbnails | Move between cells and grid rows |
-| Plain typing in files | Start Unicode case-insensitive filename-prefix search |
+| Plain typing in files | Start Unicode case-insensitive filename-prefix search; the number row's + − * are typed too (Ctrl+= / Ctrl+− and the numeric keypad's + − * select by mask) |
 | ↑ / ↓ during search | Visit previous / next matching name without wrapping |
 | Escape during search | Leave search and restore the complete listing |
 | Backspace during search | Remove one extended grapheme; an empty query exits |
@@ -122,7 +127,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Backspace / Ctrl+PageUp | Parent folder |
 | Alt+← / Alt+→ | Back / forward history |
 | Alt+↑ / Alt+↓ in files | Previous / next selected file or folder in displayed order, including expanded tree rows. Skip the current row, preserve all marks, and stop at the boundary without wrapping; inactive during filename search. Configurable as `panel.previous-selected` / `panel.next-selected`. |
-| Ctrl+Backspace / Shift+Backspace / Ctrl+Backslash | Native filesystem root |
+| Shift+Backspace / Ctrl+Backspace / Ctrl+Backslash | Root of the focused panel's location: the filesystem root (`/` on Linux, the drive's root on Windows), the archive's root inside an archive, the share's root in a network panel |
 | Ctrl+PageDown | Enter a known folder; never launch a regular file |
 | Ctrl+G | Focus the path editor |
 | Alt+F1 / Alt+F2 | Open left / right volume choices |
@@ -140,17 +145,20 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+D | Clear all selection, including folders and expanded descendants, in the focused pane |
 | Ctrl+I | Invert file selection in the focused pane; preserve selected and unselected folders, including directory links |
 | Ctrl+Shift+I | Invert top-level files and folders; preserve nested tree marks |
+| Ctrl+= or Num + / Ctrl+− or Num − in files | Select / Deselect files by mask (Ctrl+= and Ctrl+− need no numeric keypad): a small dialog with the mask (the last one, `*` at first) and Include folders. Configurable as `selection.mask-select` / `selection.mask-deselect`; see [selection by mask](#hidden-files-and-selection-by-mask) |
+| Num * in files | Invert files only, or top-level files and folders when Select by mask last had Include folders checked; without a keypad, Ctrl+I and Ctrl+Shift+I invert the same two ways. Configurable as `selection.mask-invert` |
+| Ctrl+H | Show or hide hidden files in both panels (`panel.hidden-files`); also in F10, each panel's View menu and Options → General |
 | Ctrl+C / Ctrl+V in files | Publish selected/focused files to the native clipboard / paste into the captured active folder; a Cut clipboard opens Move confirmation |
-| Ctrl+X in files | Publish a Cut clipboard for captured native files. Paste requires confirmation and supports at most 64 regular files; directory/link/archive moves are unavailable |
+| Ctrl+X in files | Publish a Cut clipboard for captured native files and folders. Paste opens the same Move confirmation as F6 (at most 64 selected items; on Linux a link moves as a link); archive Move is unavailable |
 | F5 | Copy the captured selection or focused item, including selected nested native/archive folders in expanded trees; edit the destination folder, initially the other panel. Enter queues the copy; Escape cancels the dialog |
-| F6 | Move captured native files or folders, including selected nested directories in expanded native trees, to an editable destination initially set to the other panel. Same-volume native rename reads no content; copied files are verified before source removal. Archive Move is unavailable |
-| Ctrl+F / Alt+F7 | Open a separate Find window for the active native folder: masks, multiple roots, subfolders and optional UTF-8 content text. Up/Down selects results; Enter or Go to file validates the result and locates it in its originating panel; F1 shows or hides syntax help for the chosen match mode; Escape closes that Find window. In a viewer, Ctrl+F searches the opened file instead. |
+| F6 | Move captured native files or folders, including selected nested directories in expanded native trees, to an editable destination initially set to the other panel. Same-volume native rename reads no content; copied files are verified before source removal. On Linux a link moves as a link. Archive Move is unavailable |
+| Ctrl+F / Alt+F7 | Open a separate Find window for the active native folder: masks, multiple roots, subfolders and optional UTF-8 content text or per-line regular expression, optionally inside archives (every archive and member, however large, until the search ends or Stop). Feed to panel shows the results as a list in the panel: the panel keys (F3, F4, F5, F6, F8, Shift+F8, Insert, Space, Enter) act on the results, Backspace returns to the folder. Up/Down selects results; Enter or Go to file validates the result and locates it in its originating panel; F1 shows or hides syntax help for the chosen match mode and moves the keyboard into it (Up/Down and Page Up/Page Down scroll it); Escape first closes the help or the Add folder entry, and otherwise closes that Find window. In a viewer, Ctrl+F searches the opened file instead. |
 | Ctrl+R / Ctrl+F9 | Refresh |
 | Ctrl+F3 / Ctrl+F4 / Ctrl+F5 / Ctrl+F6 | Sort the active panel by name / extension / modified time / size; repeat to reverse the order. Each detailed panel also has a clickable Ext header next to Name, with the current sort arrow; repeat-click reverses the order. The drive-bar sort dropdown offers Extension in every view mode. |
 | Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
 | Ctrl+F8 | Open modeless Checksums: Calculate (SHA-256 default; optional SHA-512/MD5/SHA-1/CRC32 and recursion in the algorithm dropdown), Stop, copy, Save manifest… (confirms replacing an existing file) and Verify file (`.sfv`, `.md5`, `.sha1`, `.sha256`, `.sha512`) |
-| Ctrl+F10 | Compare the two displayed native directories by size and/or modified time; select differences; also available as Compare directories in the shared toolbar |
-| Ctrl+Shift+C | Compare two selected files in the active panel; otherwise use its single selected/focused file and the opposite explicit selection, or its unique visible same-name file when nothing is selected there. If the pair cannot be determined, choose File A and File B using paths or Browse; Enter compares, Escape cancels. Exact native names are matched. Image pairs support Side-by-Side, Swipe and Onion Skin. Compare files in the shared toolbar also works without a panel target. |
+| Ctrl+F10 | Compare the two displayed native directories by size and/or modified time, optionally by contents and with subfolders; select differences; also available as Compare directories in the shared toolbar. While a comparison runs, Ctrl+F10 shows its progress with Cancel |
+| Ctrl+Shift+C | Compare two selected files in the active panel; otherwise use its single selected/focused file and the opposite explicit selection, or its unique visible same-name file when nothing is selected there. If the pair cannot be determined, choose File A and File B using paths or Browse; Enter compares, Escape cancels. Exact native names are matched. Image pairs support Side-by-Side, Swipe and Onion Skin. Binary files, text over the text limits (32 MiB, 1,000,000 lines or a line over 16 KiB) and other pairs are compared as bytes in a hex view; the Hex button shows the bytes of a text pair. Compare files in the shared toolbar also works without a panel target. |
 | Ctrl+F11 | Fill the entire panels area with the active panel, hiding the other panel and splitter; press again to restore the previous split |
 | Ctrl+F12 | Configure the active panel's saved Masks, Regex or typed metadata Expression filter; also available on each drive bar immediately left of View. OK applies the filter, Cancel discards the draft; Show all or the panel indicator × disables it without discarding its expression |
 | Ctrl+Shift+S / Ctrl+Shift+F10 | Start or cancel folder size calculation in the active pane: selected folders when selection exists, otherwise all displayed folders including descendants in expanded branches. Native/archive listings and inline branches are supported. |
@@ -174,13 +182,13 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Alt+↑ / Alt+↓ in command editor | Rotate to older / newer stored commands, wrapping; terminal type stays unchanged |
 | Escape / Ctrl+Tab in command editor | Return to the active file list |
 | F1 | Help |
-| F2 | Rename the focused native file/folder, including an expanded folder occurrence; Enter confirms, Escape cancels. Marked selection does not change the target; collisions require overwrite consent |
-| Shift+F4 in files | New empty file in the captured panel folder; Enter confirms the name, Escape cancels; existing entries are never overwritten |
+| F2 | Rename the focused native file/folder, including an expanded folder occurrence; Enter confirms, Escape cancels. Marked selection does not change the target; collisions require overwrite consent. While the rename runs and until the new name is listed (at most 3 s after it completes) the panel holds input and then replays the keys typed meanwhile; Escape releases it at once |
+| Shift+F4 in files | New empty file in the captured panel folder; Enter confirms the name, Escape cancels. A listed file's name is asked about first; only the Replace file button (not another Enter) replaces it, keeping the original in a recovery folder |
 | F7 | Create an absolute or relative folder path, including `..` and missing intermediate folders |
 | Delete / F8 | Confirm moving the selection (or focused entry) to the system Trash |
 | Shift+Delete / Shift+F8 | Explicitly confirm permanent deletion |
 | F11 / F12 | Connect / disconnect network drive through Windows system dialogs; unavailable on Linux, where these footer buttons are hidden |
-| F9 | User menu; no custom command execution is configured in this milestone |
+| F9 | User menu: Command line, Bookmarks and Hot Paths, Properties, folder sizes and Checksums, then each configured Custom Command, which runs on the active panel as from its toolbar button (a disabled one is listed but cannot run). Without Custom Commands the menu says so, and Set up opens Options → Custom Commands |
 | F10 | All important actions grouped into Files, Selection, Panels and navigation, Tools, Application; includes Options and Jobs |
 | Alt+F4 | Exit |
 
@@ -226,13 +234,21 @@ marked descendants; without marks it measures every eligible displayed directory
 including rows in expanded branches outside the scroll viewport. A
 files-only selection starts no directory traversal. Accepted scans continue while
 selection, sorting or filtering changes; progress never automatically resorts rows.
-Wheel scrolling animates in pixels and settles on a full row when idle; native
-touch/trackpad gestures retain their own inertia.
+Wheel scrolling animates in pixels and settles on a full row when idle. A
+touchpad flick keeps scrolling with momentum that slows down naturally and stops
+at the list's end; any click, key or new wheel/touchpad movement stops it at once.
+On Windows and macOS the system's own touchpad momentum is used instead.
 
 Drag a file/folder with the left mouse button after a short movement
 threshold. A selected item supplies the selected group; an unselected item supplies
 only itself. Touch scrolling does not start a file drag. Escape cancels the drag;
 releasing before asynchronous preparation finishes cannot start a delayed drag.
+A release less than 0.4 s after the mouse button was pressed is taken for an
+accident and cancels the drag wherever it ends: nothing is copied or moved and no
+dialog opens, the outline and drag label go away, selection and cursor stay, and
+for a few seconds the source panel's status line starts with "Drag cancelled:
+released within 0.4 s". The time counts from the press, so holding the button
+before moving counts too.
 Drop on an outlined folder to target that folder. In flat panels, empty list
 content and ordinary file rows/image tiles target the panel's current folder;
 the panel outline and drag label show that destination. The default Copy/Move choice follows volume evidence
@@ -242,6 +258,9 @@ and the hidden panel do not receive file drops.
 Windows outgoing dragging offers Shell Copy and Move: same-volume default Move,
 cross-volume default Copy, Ctrl-Copy and Shift-Move. X11/XWayland outgoing dragging
 remains Copy-only. Native Wayland currently supports internal dragging only.
+A drag reaches other applications only once its button has been held for 0.4 s:
+until then the window keeps the pointer, so a quicker release outside it is
+cancelled as above. Drops from other applications are not timed.
 Incoming native transfers are Copy-only; use Ctrl/Copy in an external source application if it
 otherwise offers only Move. Legacy X11 sources without XDND proxy support cannot
 drop into the application. Incoming drops share the verified copy queue and its
@@ -352,6 +371,11 @@ remain explicit in the transfer contract.
 Options is the gear at the right end of the top toolbar. The application moon
 icon immediately to its right opens About, including the application version;
 Escape or Close dismisses it. Both controls remain fixed when panel tools scroll.
+In About, Left and Right switch between its tabs. In the library list, Up, Down,
+Page Up, Page Down, Home and End move the selection, and Enter or a double-click
+opens the selected library; Down moves from the filter field into the list.
+Escape returns from a library's details to the list, and the next Escape closes
+About.
 The bottom bar contains F1–F12 and Jobs, omitting unavailable buttons for network
 drive dialogs. Jobs shows queued/running operations and allows cancellation.
 In active Copy/Move/Delete progress, Escape or X asks whether
@@ -400,16 +424,16 @@ Viewer windows have their own configurable shortcut context:
 | Ctrl+A in content | Select the visible rows of the loaded page (bounded copy) |
 | Ctrl+C in content | Copy selected displayed text |
 | Arrows / PageUp / PageDown | Scroll content |
-| Ctrl+Home / Ctrl+End | First / last page |
+| Ctrl+Home / Ctrl+End | First / last page; an image larger than the window goes to its top / bottom (left / right edge when it is only wider) |
 | Ctrl+W | Toggle word wrap in Text or Source mode |
 | Ctrl+Plus / Ctrl+Equal | Zoom image in |
 | Ctrl+Minus | Zoom image out |
 | Ctrl+0 | Fit image without upscaling |
 | Ctrl+1 | Actual image pixels (1:1) |
 | Ctrl+PageUp / Ctrl+PageDown | Previous / next PDF document page; also available as page buttons |
-| F7, Alt+Down, Alt+Right or N in file comparison | Next text difference; configurable as `compare.next-difference` |
-| Shift+F7, Alt+Up, Alt+Left or P in file comparison | Previous text difference; configurable as `compare.previous-difference` |
-| Alt+Home / Alt+End in file comparison | First / last text difference; configurable as `compare.first-difference` / `compare.last-difference`. Difference navigation stops at either end and aligns the changed rows in both panes. Editing controls retain their own keys. |
+| F7, Alt+Down, Alt+Right or N in file comparison | Next difference: changed lines, or the next region of differing bytes in the hex view; configurable as `compare.next-difference` |
+| Shift+F7, Alt+Up, Alt+Left or P in file comparison | Previous difference (lines or byte regions); configurable as `compare.previous-difference` |
+| Alt+Home / Alt+End in file comparison | First / last difference (lines or byte regions); configurable as `compare.first-difference` / `compare.last-difference`. Difference navigation stops at either end and aligns the changed rows in both panes. Editing controls retain their own keys. |
 
 In image mode, Ctrl+wheel zooms around the pointer and dragging pans the image.
 Text search/wrap controls are hidden for images. The same Close and previous/next
@@ -477,6 +501,83 @@ Panel warning/error icons are independent detail controls. With an icon focused,
 Enter or Space opens its diagnostic report; Escape closes the report viewer.
 This does not change file selection or retry/expand a folder. A failed tree
 branch has separate Retry/Collapse controls. No new global shortcut is reserved.
+
+## Hidden files and selection by mask
+
+**Show hidden files** (`panel.hidden-files`, default **Ctrl+H**, in the file list and
+during filename search) is one choice for both panels. Hidden entries are names
+starting with a dot on Linux and macOS and entries with the hidden attribute on
+Windows (dot-names are ordinary there). Dot-named archive members are hidden on
+Linux and macOS too; on Windows they carry no attribute and stay listed. Network
+locations never hide anything. Hidden entries are shown by default. F10 → Panels
+and navigation and each panel's View menu offer **Hide hidden files** or **Show
+hidden files** for the current state, and Options → General has a **Show hidden
+files** check box. The command saves the choice at once; the check box previews it
+until OK. The saved choice (settings schema 35) applies after a restart.
+
+The backend leaves hidden entries out of listings, archive listings and inline-tree
+projections (a hidden folder's loaded contents included). A change re-reads both
+panels in place: the cursor on a hidden row moves to the nearest shown row (the
+next one, or the previous one at the end), marks on hidden entries are dropped and
+stay dropped when they are shown again, and the status line under the list shows
+"N hidden" (the listing's hidden entries, and in an inline tree also those of
+expanded folders).
+Ctrl+A, the invert and mask selections, Make File List, folder sizes without a
+selection, F3's previous/next file and **Compare directories** see only shown
+entries. A selected
+or focused folder is still copied, moved, deleted, measured or checksummed with all
+of its contents, hidden ones included. **Find** is independent of the choice and
+searches hidden entries as well; use its masks to leave them out. At startup the
+first listings are asked for before the settings are read; when the saved choice
+hides hidden entries they are listed again (a listing still in progress restarts).
+
+**Select by mask** (`selection.mask-select`, default **Ctrl+=** and **Num +**) and
+**Deselect by mask** (`selection.mask-deselect`, **Ctrl+−** and **Num −**) open a
+small dialog: the mask field starts with the last mask (`*` at first) and Enter or
+OK applies it, Escape or Cancel closes it. Masks use the panel filter's Masks syntax: `*` any text, `?` one
+character, `;` between masks, one `|` before excluded masks and `;;` for a literal
+semicolon; letter case is ignored. Files whose names match are marked or unmarked;
+folders and directory links take part only with **Include folders**, which is
+remembered with the mask. Only rows the panel shows change (a panel filter or
+filename search filter limits them too), marks on other rows stay, and `..` is
+never marked. In inline trees every shown row takes part, so with Include folders
+the subfolders of expanded branches (which list folders only) do too; context-only
+ancestors kept for a filter never change. **Num \*** (the `selection.mask-invert`
+action) inverts files only, like Ctrl+I, or top-level files and folders, like
+Ctrl+Shift+I, when Include folders is checked; without a keypad, press the one of
+those two that matches. OK and Enter do not accept an invalid mask (two `|`, nothing
+after `|`, more than 64 masks or 4096 bytes): the dialog stays open and says why,
+as the panel filter's does, and neither the marks nor the remembered mask change.
+
+The keypad keys are physical keys: the number row's + − * stay typed text (they
+start or extend a filename search), and during filename search the keypad keys type
+too. Ctrl+= and Ctrl+− work without a numeric keypad. They follow the typed
+character: on a Czech layout Ctrl+= is the = key next to ´ and Ctrl+− the − key,
+and Ctrl++ selects too where + needs no Shift (Nordic layouts). The number row and
+the bracket keys keep their meanings by position: where = needs Shift on a number
+key and + sits on a bracket key (German), Ctrl+= is Hot Path 10's assignment and
+Ctrl++ inserts the right panel's path, and where − is on a number key (French
+AZERTY), Ctrl+− opens Hot Path 6. There, use the keypad, F10 → Selection or a key
+of your own in Options → Keyboard. Ctrl+Shift+= still bookmarks the folder. Menus show Ctrl+= and Ctrl+−, and their tooltips list every
+key. Options → Keyboard records the keypad keys as `NumpadAdd`, `NumpadSubtract`
+and `NumpadMultiply` and can move the three actions to other keys. A saved
+assignment of Ctrl+H, a keypad key, Ctrl+= or Ctrl+− to another action keeps
+working; only that default then stays unassigned. All three are also in F10 →
+Selection.
+
+## Attributes, times and case editor
+
+On the Times page of the Ctrl+F2 editor, the Date, Time and UTC offset fields
+accept typing. **Up/Down** change the part under the cursor (year, month or day;
+hour, minute or second; offset hours or quarter hours), and **Alt+Down** opens
+the field's calendar or time picker. In the calendar, **Left/Right** move one
+day, **Up/Down** one week and **Page Up/Page Down** one month; **Enter** or
+**Space** chooses the date and **Escape** closes only the calendar. In the time
+picker, **Left/Right** choose hours, minutes or seconds, **Up/Down** change them
+by one and **Page Up/Page Down** by ten; **Enter**, **Space** or **Escape**
+close it. **Space** or **Enter** on a row's **Now** button fills its fields with the
+current local date, time and offset and ticks the row; Apply sets exactly that
+moment. Outside a picker, **Escape** closes the editor without applying.
 
 ## Find result actions
 

@@ -18,6 +18,16 @@ fn styled(text: &str, spans: &[Span], token: &str, role: u16) {
     );
 }
 
+/// No span touches the first `token`: all of it keeps the text colour.
+fn unstyled(text: &str, spans: &[Span], token: &str) {
+    let start = text.find(token).expect("fixture token") as u32;
+    let end = start + token.len() as u32;
+    assert!(
+        spans.iter().all(|s| s.end <= start || s.start >= end),
+        "{token:?} needs the plain role: {spans:?}"
+    );
+}
+
 fn lex(name: &str, text: &str, state: &mut State) -> Vec<Span> {
     let language = syntax::detect(name, "").expect("recognized language");
     syntax::highlight(text, language, state, || false)
@@ -71,6 +81,303 @@ fn lua_has_real_tokens_and_routing_in_the_public_plugin() {
         syntax::detect("script", "#!/usr/bin/env lua5.4\n"),
         syntax::detect("a.lua", "")
     );
+}
+
+/// Open `text` as `name` in source mode through the public plugin and return its first page.
+fn source_page(name: &str, text: &str) -> TextPage {
+    let mut host = Host::new(text.as_bytes(), entry);
+    host.submit(
+        abi::REQUEST_OPEN,
+        &Open {
+            reader: 1,
+            revision: 7,
+            length: Some(text.len() as u64),
+            mode: MODE_SOURCE,
+            display_name: name.into(),
+        },
+    );
+    assert!(host.finish().iter().any(|e| e.kind == abi::EVENT_OPENED));
+    let id = host.submit(
+        abi::REQUEST_VIEWPORT,
+        &Viewport {
+            source_anchor: 0,
+            backwards: false,
+            max_bytes: 8192,
+            max_lines: 512,
+        },
+    );
+    let events = host.finish();
+    codec::decode(
+        &events
+            .iter()
+            .find(|e| e.id == id && e.kind == abi::EVENT_TEXT_PAGE)
+            .expect("source page")
+            .payload,
+    )
+    .unwrap()
+}
+
+#[test]
+fn css_selectors_properties_values_and_at_rules_are_coloured_in_the_public_plugin() {
+    let text = "@media (min-width: 600px) {\n  body.dark > #main:hover {\n    color: #e0e0e0;\n    margin: 0 auto -1.5em;\n    background: url(img/bg.png), rgb(1 2 3) !important; /* note */\n    font-family: \"Noto Sans\";\n  }\n}\n";
+    let page = source_page("style.css", text);
+    assert_eq!(page.text, text);
+    for (token, role) in [
+        ("@media", STYLE_KEYWORD),
+        ("min-width", STYLE_TYPE),
+        ("600px", STYLE_NUMBER),
+        ("body.dark", STYLE_FUNCTION),
+        ("#main:hover", STYLE_FUNCTION),
+        ("color", STYLE_TYPE),
+        ("#e0e0e0", STYLE_NUMBER),
+        ("margin", STYLE_TYPE),
+        ("-1.5em", STYLE_NUMBER),
+        ("url", STYLE_FUNCTION),
+        ("img/bg.png", STYLE_STRING),
+        ("rgb", STYLE_FUNCTION),
+        ("!important", STYLE_KEYWORD),
+        ("/* note */", STYLE_COMMENT),
+        ("\"Noto Sans\"", STYLE_STRING),
+    ] {
+        styled(&page.text, &page.spans, token, role);
+    }
+    page.validate().unwrap();
+}
+
+#[test]
+fn makefile_targets_variables_recipes_and_directives_are_coloured_in_the_public_plugin() {
+    let text = "# Build\nCC ?= cc\nOBJ := $(patsubst %.c,%.o,$(wildcard *.c))\n.PHONY: all\nall: app\n\napp: $(OBJ)\n\t@$(CC) -o $@ $^\nifdef DEBUG\nexport CFLAGS += -g\nendif\n";
+    for name in [
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "rules.mk",
+        "rules.MAK",
+    ] {
+        let page = source_page(name, text);
+        assert_eq!(page.text, text, "{name}");
+        for (token, role) in [
+            ("# Build", STYLE_COMMENT),
+            ("CC", STYLE_TYPE),
+            // An assignment operator and its value.
+            (" ?= cc", STYLE_PLAIN),
+            ("OBJ", STYLE_TYPE),
+            ("patsubst", STYLE_FUNCTION),
+            // A function's arguments inside its reference.
+            (" %.c,%.o,", STYLE_PLAIN),
+            ("wildcard", STYLE_FUNCTION),
+            ("$(OBJ)", STYLE_TYPE),
+            (".PHONY", STYLE_KEYWORD),
+            // Rule separators and prerequisites (the targets are checked below).
+            (": all", STYLE_PLAIN),
+            (": app", STYLE_PLAIN),
+            ("-o ", STYLE_STRING),
+            ("$@", STYLE_TYPE),
+            ("ifdef", STYLE_KEYWORD),
+            ("DEBUG", STYLE_TYPE),
+            ("export", STYLE_KEYWORD),
+            ("CFLAGS", STYLE_TYPE),
+            (" += -g", STYLE_PLAIN),
+            ("endif", STYLE_KEYWORD),
+        ] {
+            if role == STYLE_PLAIN {
+                unstyled(&page.text, &page.spans, token);
+            } else {
+                styled(&page.text, &page.spans, token, role);
+            }
+        }
+        for target in ["all:", "app:"] {
+            let start = page.text.find(&format!("\n{target}")).unwrap() as u32 + 1;
+            assert!(
+                page.spans.iter().any(|span| span.role == STYLE_FUNCTION
+                    && span.start == start
+                    && span.end == start + 3),
+                "{name}: target {target}: {:?}",
+                page.spans
+            );
+        }
+        page.validate().unwrap();
+    }
+}
+
+#[test]
+fn css_and_makefile_names_and_extensions_route_to_their_profiles() {
+    let css = syntax::detect("style.css", "").expect("CSS profile");
+    let make = syntax::detect("Makefile", "").expect("Makefile profile");
+    assert_ne!(css, make);
+    assert_eq!(syntax::detect("THEME.CSS", ""), Some(css));
+    for name in [
+        "makefile",
+        "GNUmakefile",
+        "GNUMAKEFILE",
+        "x.mk",
+        "x.MAK",
+        "dir.makefile",
+    ] {
+        assert_eq!(syntax::detect(name, ""), Some(make), "{name}");
+    }
+    for name in [
+        "notmakefile",
+        "Makefile.am",
+        "Makefile.in",
+        "x.scss",
+        "x.mkd",
+    ] {
+        assert_eq!(syntax::detect(name, ""), None, "{name}");
+    }
+    let extensions = include_str!("../plugin.toml")
+        .lines()
+        .find(|line| line.starts_with("extensions ="))
+        .unwrap();
+    for extension in ["css", "mk", "mak", "makefile", "gnumakefile"] {
+        assert_eq!(
+            extensions.matches(&format!("\"{extension}\"")).count(),
+            1,
+            "{extension} needs default routing"
+        );
+    }
+}
+
+/// The next page from `anchor` of a session that `host` already opened.
+fn page_at(host: &mut Host, anchor: u64) -> TextPage {
+    let id = host.submit(
+        abi::REQUEST_VIEWPORT,
+        &Viewport {
+            source_anchor: anchor,
+            backwards: false,
+            max_bytes: 8192,
+            max_lines: 512,
+        },
+    );
+    let events = host.finish();
+    codec::decode(
+        &events
+            .iter()
+            .find(|e| e.id == id && e.kind == abi::EVENT_TEXT_PAGE)
+            .expect("source page")
+            .payload,
+    )
+    .unwrap()
+}
+
+#[test]
+fn csv_and_tsv_fields_take_the_colour_of_their_column_in_the_public_plugin() {
+    // The first lines of the project's own docs/third-party-inventory.csv.
+    let text = r#""Package","Version","Direct","License","WindowsFeatures","LinuxFeatures","WindowsGraph","LinuxGraph","PackagedRootNotices","Repository","PinnedSource"
+"ab_glyph","0.2.32","False","Apache-2.0","","default,gvar-alloc,std,variable-fonts","False","True","LICENSE","https://github.com/alexheretic/ab-glyph","https://docs.rs/crate/ab_glyph/0.2.32/source/"
+"#;
+    let page = source_page("third-party-inventory.csv", text);
+    assert_eq!(page.text, text);
+    for (token, role) in [
+        ("Version", STYLE_STRING),
+        ("Direct", STYLE_NUMBER),
+        ("License", STYLE_FUNCTION),
+        ("WindowsFeatures", STYLE_TYPE),
+        ("WindowsGraph", STYLE_STRING),
+        ("0.2.32", STYLE_STRING),
+        ("False", STYLE_NUMBER),
+        ("Apache-2.0", STYLE_FUNCTION),
+        // After the commas inside the sixth field: the eighth column.
+        ("True", STYLE_NUMBER),
+        ("LICENSE", STYLE_FUNCTION),
+        ("https://github.com/alexheretic/ab-glyph", STYLE_TYPE),
+    ] {
+        styled(&page.text, &page.spans, token, role);
+    }
+    // Quotes stay plain, and so do delimiters between them; the first column keeps the
+    // text colour.
+    assert!(
+        page.spans
+            .iter()
+            .all(|span| !page.text[span.start as usize..span.end as usize].contains('"'))
+    );
+    for first in ["Package", "ab_glyph"] {
+        let start = page.text.find(first).unwrap() as u32;
+        let end = start + first.len() as u32;
+        assert!(
+            page.spans
+                .iter()
+                .all(|span| span.end <= start || span.start >= end),
+            "{first}"
+        );
+    }
+    page.validate().unwrap();
+
+    // TSV: commas and quotes are ordinary text, and each line is one record.
+    let text = "name\tversion\tnote\tnext\r\nab_glyph\t0.2.32\t\"tab\there, and comma\"\r\n";
+    let page = source_page("inventory.TSV", text);
+    // The decoder shows CRLF as one line break.
+    assert_eq!(page.text, text.replace("\r\n", "\n"));
+    for (token, role) in [
+        ("version", STYLE_STRING),
+        ("note", STYLE_NUMBER),
+        ("next", STYLE_FUNCTION),
+        ("0.2.32", STYLE_STRING),
+        ("\"tab", STYLE_NUMBER),
+        ("here, and comma\"", STYLE_FUNCTION),
+    ] {
+        styled(&page.text, &page.spans, token, role);
+    }
+    assert!(page.spans.iter().all(|span| {
+        !page.text[span.start as usize..span.end as usize].contains(['\t', '\r', '\n'])
+    }));
+    page.validate().unwrap();
+}
+
+#[test]
+fn a_page_that_starts_inside_a_quoted_csv_field_keeps_its_column() {
+    let text = "id,note,n\n1,\"first line\nsecond, line\nthird\",2\n3,x,4\n";
+    let mut host = Host::new(text.as_bytes(), entry);
+    host.submit(
+        abi::REQUEST_OPEN,
+        &Open {
+            reader: 1,
+            revision: 7,
+            length: Some(text.len() as u64),
+            mode: MODE_SOURCE,
+            display_name: "notes.csv".into(),
+        },
+    );
+    assert!(host.finish().iter().any(|e| e.kind == abi::EVENT_OPENED));
+    // The first page records the lexical state at each complete line.
+    let first = page_at(&mut host, 0);
+    styled(
+        &first.text,
+        &first.spans,
+        "first line\nsecond, line\nthird",
+        STYLE_STRING,
+    );
+    let anchor = text.find("second").unwrap();
+    let page = page_at(&mut host, anchor as u64);
+    assert_eq!(page.text, &text[anchor..]);
+    styled(&page.text, &page.spans, "second, line\nthird", STYLE_STRING);
+    styled(&page.text, &page.spans, "2", STYLE_NUMBER);
+    styled(&page.text, &page.spans, "x", STYLE_STRING);
+    styled(&page.text, &page.spans, "4", STYLE_NUMBER);
+    page.validate().unwrap();
+}
+
+#[test]
+fn csv_and_tsv_extensions_route_to_their_profiles() {
+    let csv = syntax::detect("data.csv", "").expect("CSV profile");
+    let tsv = syntax::detect("data.tsv", "").expect("TSV profile");
+    assert_ne!(csv, tsv);
+    assert_eq!(syntax::detect("DATA.CSV", ""), Some(csv));
+    assert_eq!(syntax::detect("data.Tsv", ""), Some(tsv));
+    for name in ["data.csv.gz", "data.psv", "data.tab", "data.xlsx"] {
+        assert_eq!(syntax::detect(name, ""), None, "{name}");
+    }
+    let extensions = include_str!("../plugin.toml")
+        .lines()
+        .find(|line| line.starts_with("extensions ="))
+        .unwrap();
+    for extension in ["csv", "tsv"] {
+        assert_eq!(
+            extensions.matches(&format!("\"{extension}\"")).count(),
+            1,
+            "{extension} needs default routing"
+        );
+    }
 }
 
 #[test]

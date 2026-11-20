@@ -74,6 +74,7 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         images: Arc::new(Mutex::new(Some(providers.into()))),
         windows: Arc::new(AtomicUsize::new(0)),
         fonts: Default::default(),
+        video: Default::default(),
         catalog_preparation: Default::default(),
         image_startup: crate::image_startup::Startup::new(executor.handle().clone(), resident),
         image_policy: Default::default(),

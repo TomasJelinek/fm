@@ -52,6 +52,8 @@ fn sources(left: &SearchRequest, right: &SearchRequest) -> Snapshots {
             committed: Some(snapshot(left)),
             visible: Some(snapshot(left)),
             pending: None,
+            hide_hidden: false,
+            committed_hidden: 0,
         },
         SnapshotState {
             tree_root: None,
@@ -64,6 +66,8 @@ fn sources(left: &SearchRequest, right: &SearchRequest) -> Snapshots {
             committed: Some(snapshot(right)),
             visible: Some(snapshot(right)),
             pending: None,
+            hide_hidden: false,
+            committed_hidden: 0,
         },
     ])
 }
@@ -215,6 +219,8 @@ async fn refresh_replaces_the_source_without_publishing_older_matches() {
         committed: Some(snapshot(&current)),
         visible: None,
         pending: None,
+        hide_hidden: false,
+        committed_hidden: 0,
     };
     controller.query(current.clone());
     assert!(matches!(

@@ -3,7 +3,7 @@ use crate::{
     BeginOwned, MainWindow, Presenter,
     drag_lifecycle::{GestureSnapshot, Phase},
     pane,
-    presenter::drag_drop::invalidate,
+    presenter::drag_drop::{MIN_DRAG_DURATION, invalidate},
 };
 use i_slint_core::window::{WindowInner, WindowKind};
 use midnight_core::*;
@@ -31,6 +31,10 @@ const ACTIVE_POLL: Duration = Duration::from_millis(16);
 /// it, and a region that should be withdrawn (a popup opened by a timer, such as a
 /// long-press context menu) can still accept one.
 const IDLE_POLL: Duration = Duration::from_millis(250);
+/// How long the source panel's status line keeps the note that a drag was released
+/// too soon (`MIN_DRAG_DURATION`); the next drag removes it at once. It goes on the
+/// next poll after this time, up to `IDLE_POLL` later.
+const QUICK_NOTE: Duration = Duration::from_secs(4);
 
 thread_local! {
     /// This UI thread's bridges, each found through its own window.
@@ -73,6 +77,12 @@ struct Bridge {
     turn_scheduled: Cell<bool>,
     /// The last publication could not run or a drag command was refused.
     retry: Cell<bool>,
+    /// When the primary button went down in this window, while it is held (`observe`).
+    press: Cell<Option<Duration>>,
+    /// When the press that started the current gesture went down: drags are timed from it.
+    gesture_press: Cell<Option<Duration>>,
+    /// When a source panel began to note a drag released too soon, until it retires.
+    quick_note: Cell<Option<Duration>>,
 }
 
 impl Drop for Bridge {
@@ -85,6 +95,14 @@ impl Drop for Bridge {
             });
         }
     }
+}
+
+/// The platform's monotonic clock; tests inject theirs through the Slint platform.
+fn now(window: &MainWindow) -> Duration {
+    WindowInner::from_pub(window.window())
+        .context()
+        .platform()
+        .duration_since_start()
 }
 
 fn host(window: &MainWindow) -> Option<NativeDragWindow> {
@@ -125,8 +143,12 @@ fn rectangles(window: &MainWindow) -> [Option<DropRect>; 2] {
     ];
     let scale = window.window().scale_factor();
     let size = window.window().size();
+    // Search results fed to a panel cover its list: nothing is dropped into the
+    // folder under them (the presenter refuses such a target as well).
+    let feeds = window.global::<crate::FeedPresentation>();
+    let fed = [feeds.get_left().open, feeds.get_right().open];
     std::array::from_fn(|pane| {
-        if window.get_panel_zoomed() && window.get_active_pane() != pane as i32 {
+        if fed[pane] || (window.get_panel_zoomed() && window.get_active_pane() != pane as i32) {
             return None;
         }
         let (x, y, width, height) = bounds[pane];
@@ -166,6 +188,44 @@ impl Bridge {
             self.retry.set(true);
         }
         sent
+    }
+
+    /// How long ago the press that started the current gesture went down.
+    fn held(&self, window: &MainWindow) -> Duration {
+        // `row_drag` records the press of every gesture it starts.
+        self.gesture_press
+            .get()
+            .map_or(Duration::MAX, |press| now(window).saturating_sub(press))
+    }
+
+    /// Publish `pane`'s status line after its quick-drag note came or went.
+    fn show_details(&self, window: &MainWindow, pane: PaneId) {
+        let Ok(p) = self.presenter.try_borrow() else {
+            return;
+        };
+        let details = crate::panel_models::details_rows(&p, pane);
+        drop(p);
+        crate::panel_models::refresh_details(window, details, pane);
+    }
+
+    /// Retire the quick-drag note once it has been shown for `QUICK_NOTE`.
+    fn expire_quick_note(&self, window: &MainWindow) {
+        if self
+            .quick_note
+            .get()
+            .is_none_or(|shown| now(window).saturating_sub(shown) < QUICK_NOTE)
+        {
+            return;
+        }
+        let Ok(mut p) = self.presenter.try_borrow_mut() else {
+            return;
+        };
+        self.quick_note.set(None);
+        let pane = p.clear_quick_drag_note();
+        drop(p);
+        if let Some(pane) = pane {
+            self.show_details(window, pane);
+        }
     }
 
     fn flush_cancel(&self) -> bool {
@@ -330,6 +390,7 @@ impl Bridge {
     /// One poll, then the cadence its outcome needs.
     fn turn(&self, window: &MainWindow) {
         self.poll(window);
+        self.expire_quick_note(window);
         self.cadence();
     }
 
@@ -448,21 +509,32 @@ impl Bridge {
         if !self.flush_cancel() {
             return;
         }
-        if crate::with_owned_commands(&self.presenter, &self.begin_owned, |p, send| {
-            let target = self.target(window, p).filter(|_| {
-                !matches!(
-                    p.drag_preview_status(),
-                    crate::presenter::drag_drop::preview::Status::Rejected
+        let held = self.held(window);
+        let Some(noted) =
+            crate::with_owned_commands(&self.presenter, &self.begin_owned, |p, send| {
+                let target = self.target(window, p).filter(|_| {
+                    !matches!(
+                        p.drag_preview_status(),
+                        crate::presenter::drag_drop::preview::Status::Rejected
+                    )
+                });
+                p.release_file_drag_held(
+                    held,
+                    target.map(|target| target.destination),
+                    self.intent(),
+                    send,
                 )
-            });
-            p.release_file_drag(target.map(|target| target.destination), self.intent(), send);
-        })
-        .is_none()
-        {
+            })
+        else {
             self.cancel(window, false);
             return;
-        }
+        };
         self.update(window);
+        // Released too soon: the presenter cancelled the drag and its panel says so.
+        if let Some(pane) = noted {
+            self.quick_note.set(Some(now(window)));
+            self.show_details(window, pane);
+        }
     }
 
     fn cancel(&self, window: &MainWindow, force: bool) -> bool {
@@ -504,7 +576,15 @@ impl Bridge {
                 .window()
                 .size()
                 .to_logical(window.window().scale_factor());
-            (cursor.x < 0.0 || cursor.y < 0.0 || cursor.x >= size.width || cursor.y >= size.height)
+            let outside = cursor.x < 0.0
+                || cursor.y < 0.0
+                || cursor.x >= size.width
+                || cursor.y >= size.height;
+            // Other applications get only a drag that has lasted MIN_DRAG_DURATION.
+            // Until then this window keeps the pointer and sees its release, which
+            // cancels the drag as `released` does inside it; once the operating
+            // system runs the drag, no drop can come sooner.
+            (outside && self.held(window) >= MIN_DRAG_DURATION)
                 .then(|| presenter.drag_native_ready())
                 .flatten()
         };
@@ -570,6 +650,9 @@ pub(crate) fn install(
         timer: slint::Timer::default(),
         turn_scheduled: Cell::new(false),
         retry: Cell::new(false),
+        press: Cell::new(None),
+        gesture_press: Cell::new(None),
+        quick_note: Cell::new(None),
     });
     BRIDGES.with(|bridges| {
         let mut bridges = bridges.borrow_mut();
@@ -594,6 +677,8 @@ pub(crate) fn install(
         if !state.flush_cancel() {
             return false;
         }
+        // The row crossed its movement threshold after the press that holds it.
+        let pressed = state.press.get().unwrap_or_else(|| now(&window));
         let drag_host = host(&window).unwrap_or(NativeDragWindow::Unsupported);
         let Some(started) =
             crate::with_owned_commands(&state.presenter, &state.begin_owned, |p, send| {
@@ -607,6 +692,9 @@ pub(crate) fn install(
         else {
             return false;
         };
+        if started {
+            state.gesture_press.set(Some(pressed));
+        }
         crate::refresh(&window, &state.presenter.borrow());
         state.publish(&window);
         state.update(&window);
@@ -685,6 +773,13 @@ fn bridge(window: &MainWindow) -> Option<Rc<Bridge>> {
         .flatten()
 }
 
+/// Remember when the primary button went down in `window`, or forget it once released.
+fn pressed(window: &MainWindow, down: bool) {
+    if let Some(bridge) = bridge(window) {
+        bridge.press.set(down.then(|| now(window)));
+    }
+}
+
 /// Republish targets and present drag feedback on the next loop turn.
 fn schedule(window: &MainWindow) {
     if let Some(bridge) = bridge(window) {
@@ -707,13 +802,23 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
 /// Repeated row/global notifications are harmless because release consumes a token.
 pub(crate) fn observe(window: &MainWindow, event: &WindowEvent) {
     match event {
+        // The window's own press, not a list's possibly delayed one, times a drag.
+        WindowEvent::PointerPressed {
+            button: PointerEventButton::Left,
+            ..
+        } => pressed(window, true),
         WindowEvent::PointerMoved { position } if window.get_drag_active() => {
             window.invoke_drag_moved(position.x, position.y)
         }
         WindowEvent::PointerReleased {
             position,
             button: PointerEventButton::Left,
-        } if window.get_drag_active() => window.invoke_drag_released(position.x, position.y),
+        } => {
+            if window.get_drag_active() {
+                window.invoke_drag_released(position.x, position.y);
+            }
+            pressed(window, false);
+        }
         WindowEvent::PointerExited if window.get_drag_active() => {
             window.invoke_drag_moved(-1.0, -1.0)
         }

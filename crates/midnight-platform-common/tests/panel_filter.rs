@@ -1,4 +1,4 @@
-use midnight_core::{FilterMode, PanelFilter};
+use midnight_core::{FilterMode, MaskSelection, MaskSelectionPreferences, PanelFilter};
 use midnight_platform_common::filter::CompiledFilter;
 use std::ffi::OsStr;
 
@@ -73,4 +73,52 @@ fn invalid_and_excessive_expressions_are_rejected_without_truncation() {
     assert!(CompiledFilter::new(&regex).is_err());
     regex.expression = "(?:a{1000000}){1000000}".into();
     assert!(CompiledFilter::new(&regex).is_err());
+}
+
+#[test]
+fn the_select_by_mask_dialog_and_the_mask_compiler_agree_up_to_the_largest_masks() {
+    // The dialog checks a mask's grammar before the selection worker compiles it,
+    // so an accepted mask must compile, also at the size bound, where wildcards
+    // and case variants make the largest matchers.
+    let longest = |unit: &str| unit.repeat(midnight_core::MAX_FILTER_BYTES / unit.len());
+    let mut patterns: Vec<String> = [
+        "*",
+        "*.*",
+        "*.txt;*.MD|draft*",
+        "|*.tmp",
+        "semi;;colon",
+        ";",
+        "文档*.TXT;é?",
+        "a|b|c",
+        "*.txt|",
+        "*.txt| ;",
+        "||",
+        "|",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    patterns.extend(["*", "?", "*?", "k", "θ", "ǅ"].map(longest));
+    patterns.push(vec!["?".repeat(63); 64].join(";"));
+    patterns.push(vec!["?"; 65].join(";"));
+    for pattern in patterns {
+        let accepted = MaskSelectionPreferences {
+            pattern: pattern.clone(),
+            folders: false,
+        }
+        .validate_mask();
+        let mask = MaskSelection {
+            pattern,
+            select: true,
+            folders: false,
+        };
+        let compiled = CompiledFilter::new(&mask.filter());
+        assert_eq!(
+            accepted.is_ok(),
+            compiled.is_ok(),
+            "{:?}: dialog {accepted:?}, compiler {:?}",
+            mask.pattern,
+            compiled.err()
+        );
+    }
 }

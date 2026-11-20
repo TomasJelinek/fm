@@ -36,10 +36,15 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
         }
     };
     window.set_copy_draft_policy(policy.into());
-    window.set_copy_draft_body(shown_text(&format!(
-        "{}\nFrom: {}",
-        draft.summary, draft.source
-    )));
+    // The first line is the item's name (or a count) on its own.
+    window.set_copy_draft_body(
+        format!(
+            "{}\nFrom: {}",
+            crate::isolated_name(&shown_text(&draft.summary)),
+            shown_text(&draft.source)
+        )
+        .into(),
+    );
     // The destination field edits the raw path that the dialog confirms.
     window.set_copy_draft_destination(destination.as_ref().into());
     window.set_copy_draft_selection_end(destination.len().min(i32::MAX as usize) as i32);
@@ -65,6 +70,18 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         }
         return;
     }
+    if let Some(failure) = presenter.active_delete_failure() {
+        if presenter.operations.preview.is_none()
+            && presenter
+                .copies
+                .draft
+                .as_ref()
+                .is_none_or(|draft| draft.retire_requested)
+        {
+            refresh_delete_failure(window, failure);
+        }
+        return;
+    }
     let Some((id, version)) = presenter.active_copy_decision() else {
         if !window.get_copy_token().is_empty() {
             window.set_copy_token("".into());
@@ -87,7 +104,14 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         .iter()
         .find(|failure| failure.id == id && failure.version == version)
     {
-        refresh_failure(window, failure);
+        // The job's own word for what it does to the item: copied or moved.
+        let intent = presenter
+            .copies
+            .progress
+            .iter()
+            .find(|progress| progress.id == failure.id)
+            .map(|progress| progress.intent);
+        refresh_failure(window, failure, intent);
         return;
     }
     let Some(conflict) = presenter
@@ -144,7 +168,7 @@ fn refresh_conflict(
     window.invoke_show_copy_conflict();
 }
 
-fn refresh_failure(window: &MainWindow, failure: &CopyFailure) {
+fn refresh_failure(window: &MainWindow, failure: &CopyFailure, intent: Option<TransferIntent>) {
     let token: SharedString = format!("copy-error:{}:{}", failure.id.0, failure.version).into();
     if window.get_copy_token() == token {
         return;
@@ -156,20 +180,57 @@ fn refresh_failure(window: &MainWindow, failure: &CopyFailure) {
     window.set_copy_can_merge(false);
     window.set_copy_source_details("".into());
     window.set_copy_target_details("".into());
-    window.set_copy_body(shown_text(&format_failure(failure, append_split_path)));
+    window.set_copy_body(shown_text(&format_failure(
+        failure,
+        intent,
+        append_split_path,
+    )));
     window.set_copy_name("".into());
     window.set_copy_token(token);
     window.invoke_show_copy_conflict();
 }
 
+/// A Delete failure in the shared failure prompt (`delete-error:{job}:{version}`).
+fn refresh_delete_failure(window: &MainWindow, failure: &DeleteFailure) {
+    let token: SharedString = format!("delete-error:{}:{}", failure.id.0, failure.version).into();
+    if window.get_copy_token() == token {
+        return;
+    }
+    window.set_copy_is_failure(true);
+    window.set_copy_can_retry(failure.can_retry);
+    window.set_copy_can_skip(failure.can_skip);
+    window.set_copy_can_replace(false);
+    window.set_copy_can_merge(false);
+    window.set_copy_source_details("".into());
+    window.set_copy_target_details("".into());
+    window.set_copy_body(shown_text(&delete_failure_details(failure)));
+    window.set_copy_name("".into());
+    window.set_copy_token(token);
+    window.invoke_show_copy_conflict();
+}
+
+/// What the Delete was doing, why it stopped, and the item (or the folder that keeps
+/// its items) split into folder and name.
+pub(crate) fn delete_failure_details(failure: &DeleteFailure) -> String {
+    let action = match failure.mode {
+        DeleteMode::Trash => "Moving to Trash",
+        DeleteMode::Permanent => "Deleting permanently",
+    };
+    let mut detail = format!("{action}\n\n{}", failure.error.message);
+    append_split_path(&mut detail, "Item", &failure.error.path);
+    detail
+}
+
 pub(crate) fn failure_details(failure: &CopyFailure) -> String {
-    format_failure(failure, |detail, heading, path| {
+    format_failure(failure, None, |detail, heading, path| {
         detail.push_str(&format!("\n\n{heading}\n{}", path.display()));
     })
 }
 
+/// `intent` names what the job does to the item; without it the wording is neutral.
 fn format_failure(
     failure: &CopyFailure,
+    intent: Option<TransferIntent>,
     append_path: impl Fn(&mut String, &str, &std::path::Path),
 ) -> String {
     let stage = match failure.stage {
@@ -178,9 +239,14 @@ fn format_failure(
         CopyErrorStage::Writing => "Writing the destination",
         CopyErrorStage::Syncing => "Saving the destination",
         CopyErrorStage::Verifying => "Verifying the destination",
-        CopyErrorStage::Publishing => "Publishing the verified file",
+        CopyErrorStage::Publishing => match intent {
+            Some(TransferIntent::Copy) => "Putting the copied item in place",
+            Some(TransferIntent::Move) => "Putting the moved item in place",
+            None => "Putting the verified item in place",
+        },
         CopyErrorStage::Enumerating => "Reading folder contents",
         CopyErrorStage::CreatingDirectory => "Creating a destination folder",
+        CopyErrorStage::MovingSource => "Moving the source",
         CopyErrorStage::RemovingSource => "Removing the verified source",
         CopyErrorStage::Cleanup => "Cleaning up temporary files",
     };
@@ -289,7 +355,7 @@ mod tests {
         assert!(detail.contains(&format!("\n\nDestination\n{destination}")));
         assert!(detail.contains("\n\nReported path\nprivate/staging"));
         assert!(detail.contains("\n\nAccess denied\n\n"));
-        let display = format_failure(&failure, append_split_path);
+        let display = format_failure(&failure, None, append_split_path);
         let source_directory = std::path::Path::new(&source).parent().unwrap();
         let target_directory = std::path::Path::new(&destination).parent().unwrap();
         assert!(display.contains(&format!(
@@ -300,6 +366,66 @@ mod tests {
             "Destination\n{}\n資料.txt",
             target_directory.display()
         )));
+    }
+    #[test]
+    fn a_refused_move_names_the_move_phase_and_operation() {
+        let failure = CopyFailure {
+            id: OperationId(1),
+            version: 1,
+            error: FsError::from_io(
+                "move",
+                std::path::Path::new("data/locked"),
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Permission denied: the folder is read-only.",
+                ),
+            ),
+            source: Some("data/locked".into()),
+            destination: "target".into(),
+            stage: CopyErrorStage::MovingSource,
+            can_retry: true,
+            can_skip: true,
+        };
+        let display = format_failure(&failure, Some(TransferIntent::Move), append_split_path);
+        assert!(
+            display.starts_with("Moving the source\n\nPermission denied: the folder is read-only."),
+            "{display}"
+        );
+        assert!(display.ends_with("\n\nOperation: move"), "{display}");
+    }
+    #[test]
+    fn a_failure_putting_the_item_in_place_says_copied_or_moved_never_published() {
+        let failure = CopyFailure {
+            id: OperationId(1),
+            version: 1,
+            error: FsError::from_io(
+                "rename",
+                std::path::Path::new("target/report.txt"),
+                std::io::Error::other("The name exists."),
+            ),
+            source: Some("data/report.txt".into()),
+            destination: "target/report.txt".into(),
+            stage: CopyErrorStage::Publishing,
+            can_retry: true,
+            can_skip: true,
+        };
+        for (intent, stage) in [
+            (
+                Some(TransferIntent::Copy),
+                "Putting the copied item in place",
+            ),
+            (
+                Some(TransferIntent::Move),
+                "Putting the moved item in place",
+            ),
+            // Jobs details, which do not pass the job's kind.
+            (None, "Putting the verified item in place"),
+        ] {
+            let display = format_failure(&failure, intent, append_split_path);
+            assert!(display.starts_with(&format!("{stage}\n\n")), "{display}");
+            assert!(!display.to_lowercase().contains("publish"), "{display}");
+        }
+        assert!(!failure_details(&failure).to_lowercase().contains("publish"));
     }
     #[test]
     fn conflict_details_distinguish_types_unknowns_and_explicit_precise_utc() {

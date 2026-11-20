@@ -11,6 +11,8 @@ struct State {
     changed: AtomicBool,
     short: AtomicBool,
     opens: AtomicUsize,
+    closed_sources: AtomicUsize,
+    closed_directories: AtomicUsize,
 }
 
 struct Directory {
@@ -53,6 +55,20 @@ impl Source {
                 },
             },
         })
+    }
+}
+
+impl Drop for Source {
+    fn drop(&mut self) {
+        self.state.closed_sources.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for Directory {
+    fn drop(&mut self) {
+        self.state
+            .closed_directories
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -238,4 +254,30 @@ fn resource_reads_reject_changed_scope_main_document_and_short_stream() {
     state.changed.store(false, Ordering::Release);
     std::fs::write(path, b"changed main document").unwrap();
     assert!(file.read_at(0, 6).is_err());
+}
+
+/// The HTML host releases each served resource and finally the main document, which
+/// carries the scope. Every release must be confirmed (an unconfirmed one failed the
+/// whole HTML session), and the last reference must close the pinned handles.
+#[test]
+fn released_assets_and_scope_confirm_teardown_and_close_their_handles() {
+    let (_directory, _path, main, state, root) = fixture(true);
+    let scope = captured_directory_resources(root, main.clone()).unwrap();
+    let document = main.with_resources(scope.clone());
+    let nested = scope
+        .capture(&["styles".into(), "main.css".into()])
+        .unwrap();
+    let flat = scope.capture(&["文档.css".into()]).unwrap();
+    assert_eq!(nested.read_at(0, 6).unwrap(), b"body{}");
+    let closed = |counter: &AtomicUsize| counter.load(Ordering::Relaxed);
+    // The nested asset retains its "styles" ancestor and its file.
+    nested.release_on_worker().unwrap();
+    assert_eq!(closed(&state.closed_sources), 2);
+    flat.release_on_worker().unwrap();
+    assert_eq!(closed(&state.closed_sources), 3);
+    // Shared scope references only give up their count.
+    scope.release_on_worker().unwrap();
+    assert_eq!(closed(&state.closed_directories), 0);
+    document.release_on_worker().unwrap();
+    assert_eq!(closed(&state.closed_directories), 1);
 }

@@ -169,9 +169,17 @@ fn register(target: Target) -> Result<(), PlatformError> {
                         button: PointerEventButton::Left,
                         ..
                     }
-                    | WindowEvent::PointerExited
-                    | WindowEvent::WindowActiveChanged(false) => {
+                    | WindowEvent::PointerExited => {
                         window.invoke_release_function_press();
+                    }
+                    WindowEvent::WindowActiveChanged(false) => {
+                        window.invoke_release_function_press();
+                        crate::shortcut_bridge::window_deactivated(window);
+                    }
+                    // A tool window closed or the user came back: the keyboard
+                    // belongs in the file list again (`dialog_focus`).
+                    WindowEvent::WindowActiveChanged(true) => {
+                        crate::dialog_focus::window_activated(window);
                     }
                     _ => {}
                 }

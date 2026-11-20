@@ -381,3 +381,61 @@ fn red_folder_error_icon_uses_modal_details_instead_of_a_viewer() {
         Some(Command::CopyGeneratedText { .. })
     ));
 }
+
+/// A watch hint's re-read of the shown rows, committed in place with `listed`.
+fn reread_in_place(p: &mut Presenter, listed: Vec<Entry>) {
+    let committed = p.panes[0].successful_generation.unwrap();
+    let sent = RefCell::new(None);
+    assert!(p.refresh_if_changed(PaneId::Left, committed, &|command| {
+        if let Command::Refresh { navigation, .. } = command {
+            *sent.borrow_mut() = Some(navigation);
+        }
+        true
+    }));
+    let navigation = sent.into_inner().expect("a background Refresh");
+    p.apply(Event::ListingChanges {
+        pane: PaneId::Left,
+        navigation,
+        base: p.panes[0].entries.clone(),
+        edits: Arc::from([]),
+    });
+    finish(p, PaneId::Left, navigation, listed);
+    assert!(p.panes[0].row_edits().is_some(), "committed in place");
+}
+
+#[test]
+fn an_in_place_reread_keeps_only_hints_it_can_vouch_for() {
+    let mut p = ready();
+    let first = request(&mut p);
+    let denied = TreeDiagnostic::new("Access denied while checking subfolders");
+    p.apply(Event::FolderPresence(Box::new(FolderPresenceSnapshot {
+        root: first.root.clone(),
+        revision: first.revision,
+        values: vec![
+            (EntryId(1), FolderPresence::Empty),
+            (EntryId(2), FolderPresence::Unavailable(denied)),
+            (EntryId(3), FolderPresence::Empty),
+        ]
+        .into(),
+    })));
+    let disclosure =
+        |p: &Presenter, row: usize| p.panes[0].root_presence_disclosure(&p.panes[0].entries[row]);
+    assert_eq!(
+        [disclosure(&p, 0), disclosure(&p, 1), disclosure(&p, 2)],
+        [5, 6, 5]
+    );
+    // Listed the same: a plain folder keeps its hint. An unreadable folder may
+    // have been made readable (permissions or ownership elsewhere) and a link's
+    // metadata describes the link, not its target: both are probed again.
+    let listed = p.panes[0].entries.to_vec();
+    reread_in_place(&mut p, listed.clone());
+    assert_eq!(
+        [disclosure(&p, 0), disclosure(&p, 1), disclosure(&p, 2)],
+        [5, 1, 1]
+    );
+    // A chmod changes no modification time; the folder is probed again.
+    let mut changed = listed;
+    changed[0].metadata.unix_mode = Some(0o700);
+    reread_in_place(&mut p, changed);
+    assert_eq!(disclosure(&p, 0), 1);
+}

@@ -72,6 +72,8 @@ mod tests {
                 visible: Some(original.clone()),
                 committed: Some(original.clone()),
                 pending: None,
+                hide_hidden: false,
+                committed_hidden: 0,
             },
             SnapshotState::default(),
         ]);
@@ -115,6 +117,8 @@ mod tests {
                 visible: Some(original.clone()),
                 committed: Some(unrelated),
                 pending: None,
+                hide_hidden: false,
+                committed_hidden: 0,
             },
             SnapshotState::default(),
         ]);

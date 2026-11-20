@@ -44,6 +44,8 @@ impl Work {
                 let _ = self.service.fonts.set(names);
             }
             let (runtime, images, web) = self.service.catalogs()?;
+            // Video support is discovered only for an opening that may route to it.
+            let service = self.service.clone();
             crate::worker::run(
                 crate::worker::Services {
                     runtime,
@@ -56,6 +58,7 @@ impl Work {
                     raster_budget: self.service.raster_budget.clone(),
                     negotiate_layout: self.negotiate_layout,
                     palette: self.palette_lifetime.state(),
+                    video: Box::new(move || service.video_installation()),
                 },
                 self.launch,
                 self.appearance,

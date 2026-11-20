@@ -108,6 +108,16 @@ impl Presenter {
         // An unsaved editor draft can be the configuration's last owner. Keep
         // final destruction off the UI even if validation or transport refuses it.
         self.retired.push(Box::new(configuration.clone()));
+        // The folder, focus and selection a command captures are hidden under
+        // search results fed to the panel (toolbar, popup and F9 menu alike).
+        if self.feed(pane).is_some() {
+            self.report_user_command_error(
+                settings_preview.as_ref(),
+                find::feed::REFUSED,
+                find::feed::refusal("A custom command"),
+            );
+            return false;
+        }
         if self.operations.closing || !self.preferences.loaded {
             return false;
         }
@@ -417,13 +427,22 @@ impl Presenter {
                 };
                 job.error = summary.error.clone();
                 if let Some(error) = &summary.error {
-                    failure = Some((
-                        "Custom Command needs attention",
+                    // A command that failed before planning a process (its program is
+                    // missing, say) has no counts worth reading.
+                    let progress = if summary.planned == 0 && summary.started == 0 {
+                        format!("{} could not start.", job.name)
+                    } else {
                         format!(
-                            "{}\n\n{} processes started · {} not started\n\n{}",
+                            "{}\n\n{} processes started · {} not started",
                             job.name,
                             self.number_locale.format_u64(summary.started),
                             self.number_locale.format_u64(summary.not_started),
+                        )
+                    };
+                    failure = Some((
+                        "Custom Command needs attention",
+                        format!(
+                            "{progress}\n\n{}",
                             crate::error_presentation::describe(error)
                         ),
                     ));

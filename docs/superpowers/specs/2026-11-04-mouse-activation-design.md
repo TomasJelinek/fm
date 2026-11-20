@@ -38,7 +38,7 @@ verify navigation remains responsive and helper failures reach the UI.
 Implementation ownership: root core/engine/docs/app wiring; UI worker midnight-ui;
 native worker per-platform OpenService files. Reference Salamander behavior is
 audited before implementation and recorded in the accompanying plan/evidence.
-Salamander references: `D:\experiments\salamander-main\src\fileswn9.cpp:877–900`
+Salamander references: `<salamander-source>\src\fileswn9.cpp:877–900`
 focuses the pane/cursor and calls Execute; `src/fileswn2.cpp:53` separates disk
 files and directories. This implementation requires unmodified double click,
 keeps Ctrl+click for selection, and uses dynamic native paths instead of ANSI

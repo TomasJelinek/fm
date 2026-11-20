@@ -24,6 +24,7 @@ fn preview(revision: u64, patch: MetadataPatch) -> Event {
         revision,
         patch,
         localized_times: Default::default(),
+        patch_calendars: Default::default(),
         time_input_format: None,
         time_defaults: Default::default(),
         capabilities: MetadataCapabilities {
@@ -74,7 +75,7 @@ fn dirty_draft_and_stale_preview_cannot_authorize_an_edit() {
         case: Some(CaseChange::default()),
         ..Default::default()
     };
-    p.preview_metadata("1", Ok(edit.clone()), &|_| true);
+    p.preview_metadata("1", Ok(edit.clone()), [None; 3], &|_| true);
     let old_revision = p.metadata.revision;
     p.dirty_metadata("1");
     p.apply(preview(old_revision, edit.clone()));
@@ -82,7 +83,7 @@ fn dirty_draft_and_stale_preview_cannot_authorize_an_edit() {
     p.confirm_metadata("1", &old_revision.to_string(), 0, &|_| {
         panic!("stale apply")
     });
-    p.preview_metadata("1", Ok(edit.clone()), &|_| true);
+    p.preview_metadata("1", Ok(edit.clone()), [None; 3], &|_| true);
     let revision = p.metadata.revision;
     p.apply(preview(revision, edit));
     assert!(p.metadata.can_apply());
@@ -111,7 +112,7 @@ fn refresh_can_inspect_an_unchanged_draft_without_authorizing_apply() {
     p.open_metadata(PaneId::Left, false, &|_| true);
     p.apply(preview(0, MetadataPatch::default()));
     let commands = RefCell::new(Vec::new());
-    p.preview_metadata("1", Ok(MetadataPatch::default()), &|command| {
+    p.preview_metadata("1", Ok(MetadataPatch::default()), [None; 3], &|command| {
         commands.borrow_mut().push(command);
         true
     });
@@ -155,9 +156,12 @@ fn invalid_input_and_cancel_preserve_other_prepared_jobs() {
     let mut p = ready();
     p.open_metadata(PaneId::Left, false, &|_| true);
     p.apply(preview(0, MetadataPatch::default()));
-    p.preview_metadata("1", Err("Enter an explicit timezone".into()), &|_| {
-        panic!("invalid input")
-    });
+    p.preview_metadata(
+        "1",
+        Err("Enter an explicit timezone".into()),
+        [None; 3],
+        &|_| panic!("invalid input"),
+    );
     assert!(p.metadata.error.contains("timezone"));
     assert!(!p.metadata.can_apply());
     p.cancel_metadata("999", &|_| panic!("wrong cancel"));
@@ -349,7 +353,7 @@ fn applied_times_close_without_a_summary_unless_something_needs_attention() {
             modified: TimeEdit::Set(std::time::UNIX_EPOCH),
             ..Default::default()
         };
-        p.preview_metadata("1", Ok(edit.clone()), &|_| true);
+        p.preview_metadata("1", Ok(edit.clone()), [None; 3], &|_| true);
         p.apply(preview(p.metadata.revision, edit));
         let confirmed = std::cell::Cell::new(false);
         p.confirm_metadata("1", &p.metadata.revision.to_string(), 0, &|command| {

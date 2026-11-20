@@ -860,3 +860,48 @@ async fn a_running_worker_retries_maintenance_without_reserving_transfer_shares(
         .unwrap()
         .unwrap();
 }
+
+/// A pass whose last listing changed a branch publishes that view only after
+/// the UI acknowledged the previous one. Its Refreshed reply must not overtake
+/// the parked view: the UI ends a file job's input hold on the reply and moves
+/// the cursor to a renamed entry only once a view shows it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refreshed_never_overtakes_a_publication_of_its_pass_parked_behind_a_commit() {
+    let mut fixture = fixture();
+    fixture.receiver.try_recv().unwrap(); // Output filler.
+    fixture.gate.release();
+    let completion = next_completion(&fixture.lane).await;
+    let Some(TreeEvent::Published(publication)) = fixture.worker.complete(completion) else {
+        panic!("the changed root listing publishes");
+    };
+    let renamed = publication.view.clone();
+    // The UI has not acknowledged the view emitted before this pass's last
+    // listing, so that listing's view waits behind it.
+    fixture.worker.awaiting_commit = Some(fixture.view.clone());
+    fixture.worker.emit(TreeEvent::Published(publication));
+    assert!(fixture.worker.pending_publication.is_some(), "parked");
+    // The pass is complete; a notice emitted with a full outbox can reach this
+    // point of `pump` while the view is still parked.
+    fixture.worker.finish_refresh_pass();
+    assert!(
+        matches!(
+            fixture.receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ),
+        "the reply waits for the parked view"
+    );
+    // Acknowledging the earlier view sends the parked one; the next pump replies.
+    fixture
+        .worker
+        .command(TreeCommand::Commit(fixture.view.clone()));
+    assert!(
+        matches!(tree_event(&mut fixture.receiver), TreeEvent::Published(published)
+            if Arc::ptr_eq(&published.view, &renamed)),
+        "the parked view is sent first"
+    );
+    fixture.worker.pump();
+    assert!(matches!(
+        tree_event(&mut fixture.receiver),
+        TreeEvent::Refreshed { result: Ok(()), .. }
+    ));
+}

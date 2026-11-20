@@ -30,6 +30,10 @@ pub(super) struct Source {
     children: namespace::ChildBindings,
     traversal: Option<directory_links::Traversal>,
     projected_link: Option<Arc<directory_links::Binding>>,
+    /// A link transferred as a link (Preserve, or a link FollowLinks cannot follow).
+    leaf: Option<directory_links::Leaf>,
+    /// A folder the transfer entered holds descriptors: one of the process's levels.
+    _level: Option<descriptor_budget::Level>,
 }
 impl Source {
     pub(super) fn enable_move(&mut self) {
@@ -49,6 +53,10 @@ impl Source {
         self.projected_link
             .as_ref()
             .map(|binding| binding.original_link())
+    }
+    /// The link itself, when this source transfers a link as a link.
+    pub(super) fn link_leaf(&self) -> Option<Arc<directory_links::OriginalLink>> {
+        self.leaf.as_ref().map(|leaf| leaf.original.clone())
     }
     pub(super) fn namespace_bindings(&self) -> Arc<namespace::Bindings> {
         self.namespace.clone()
@@ -140,7 +148,15 @@ impl Source {
         self.children.get(&self.file, &self.entry.item.path)
     }
     fn child_source(&self, name: &OsStr, cancel: &Cancellation) -> Result<Self, FsError> {
-        let namespace = self.child_namespace()?;
+        self.child_source_in(self.child_namespace()?, name, cancel)
+    }
+    /// `namespace` is this directory's `child_namespace`.
+    fn child_source_in(
+        &self,
+        namespace: Arc<namespace::Bindings>,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
         let mut source = Self::open_below(
             self.file.clone(),
             self.entry.item.path.clone(),
@@ -150,6 +166,10 @@ impl Source {
             cancel,
         )?
         .with_revisions(self.revisions);
+        // A folder the transfer enters holds its descriptors until it is done there.
+        if source.entry.item.kind == EntryKind::Directory && source.leaf.is_none() {
+            source._level = Some(descriptor_budget::levels().enter(&source.entry.item.path)?);
+        }
         source.make_readable(cancel)?;
         Ok(source)
     }
@@ -166,6 +186,7 @@ impl Source {
             entry: snapshot,
             file,
             projected_link,
+            leaf,
         } = directory_links::probe(
             &parent,
             &parent_path,
@@ -175,7 +196,7 @@ impl Source {
             cancel,
         )?;
         let path = &snapshot.item.path;
-        if !matches!(snapshot.item.kind, EntryKind::File | EntryKind::Directory) {
+        if leaf.is_none() && !matches!(snapshot.item.kind, EntryKind::File | EntryKind::Directory) {
             return Err(unsupported(
                 path,
                 "copying links and special entries is not supported",
@@ -205,6 +226,8 @@ impl Source {
             children: namespace::ChildBindings::default(),
             traversal,
             projected_link,
+            leaf,
+            _level: None,
         })
     }
     fn empty_link(&self) -> bool {
@@ -221,7 +244,8 @@ impl Source {
     }
     fn make_readable(&mut self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.entry.item.path)?;
-        if !self.readable && !self.empty_link() {
+        // A link leaf has no content: its target is never opened.
+        if !self.readable && !self.empty_link() && self.leaf.is_none() {
             self.file = Arc::new(open_retained(&self.file, &self.entry.item.path)?);
             self.readable = true;
         }
@@ -432,6 +456,13 @@ impl TransferSource for Source {
             traversal.revalidate(cancel)?;
         }
         if self.projected_link.is_some() {
+            // The binding chain checked the link and its target; a followed file's
+            // content must also be the revision that was captured.
+            if self.entry.item.kind == EntryKind::File
+                && revision_of(&self.file.metadata().map_err(|e| error(path, e))?) != self.stamp
+            {
+                return Err(invalid(path, "source content changed"));
+            }
             return Ok(());
         }
         let linked_parent = self
@@ -473,7 +504,32 @@ impl TransferSource for Source {
         {
             return Err(invalid(path, "source content changed"));
         }
+        if self.leaf.is_some() && revision_of(&metadata) != self.stamp {
+            return Err(invalid(path, "the link changed"));
+        }
         Ok(())
+    }
+    fn link_representation(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferLinkRepresentation, FsError> {
+        let path = &self.entry.item.path;
+        let leaf = self
+            .leaf
+            .as_ref()
+            .ok_or_else(|| unsupported(path, "this source is not a link kept as a link"))?;
+        self.revalidate(cancel)?;
+        // An independent no-follow read of the visible name: the same link object,
+        // revision and exact text as captured. The target is never opened.
+        leaf.original.verify_original(cancel)?;
+        midnight_core::TransferLinkRepresentation::linux_symbolic_link(leaf.original.payload())
+            .map_err(|mut failure| {
+                failure.path = path.clone();
+                failure
+            })
+    }
+    fn link_not_followed(&self) -> Option<String> {
+        self.leaf.as_ref().and_then(|leaf| leaf.unfollowed.clone())
     }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         self.make_readable(cancel)?;
@@ -522,8 +578,42 @@ impl TransferSource for Source {
             })
             .transpose()
     }
+    fn next_child_or_failure(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::TransferChild>, FsError> {
+        if self.entries.is_none() {
+            self.check_children_open()?;
+        }
+        let Some(name) = self.next_name(cancel)? else {
+            return Ok(None);
+        };
+        // The folder's own bindings failing ends its enumeration; only opening the
+        // child is the child's failure.
+        let namespace = self.child_namespace()?;
+        Ok(Some(
+            self.child_source_in(namespace, &name, cancel)
+                .map(|source| Box::new(source) as Box<dyn TransferSource>)
+                .map_err(|error| midnight_core::TransferChildFailure { name, error }),
+        ))
+    }
 }
 impl Source {
+    /// A folder that lists its names but does not let them be opened (read without
+    /// search permission) would fail for every child alike: that is the folder's
+    /// own failure, reported once.
+    fn check_children_open(&self) -> Result<(), FsError> {
+        if self.entry.item.kind != EntryKind::Directory || self.empty_link() {
+            return Ok(());
+        }
+        rustix::fs::accessat(
+            &*self.file,
+            ".",
+            rustix::fs::Access::EXEC_OK,
+            rustix::fs::AtFlags::EACCESS,
+        )
+        .map_err(|e| error(&self.entry.item.path, e.into()))
+    }
     fn next_name(&mut self, cancel: &Cancellation) -> Result<Option<OsString>, FsError> {
         self.revalidate(cancel)?;
         if self.entry.item.kind != EntryKind::Directory {
@@ -553,3 +643,7 @@ impl Source {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "transfer_source_child_tests.rs"]
+mod child_tests;

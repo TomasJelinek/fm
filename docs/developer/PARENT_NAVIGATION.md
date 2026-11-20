@@ -12,6 +12,13 @@ ancestor breadcrumb chooses the immediate child of that ancestor, rather than a
 deeper descendant. Archive navigation uses the mounted provider's node identity
 from the location trail; equal display names cannot redirect the cursor.
 
+A folder with nothing else to show still lists `..`, and the panel says why below
+it: "This folder is empty", "All 3 items here are hidden" (entries the Show hidden
+files setting leaves out), "None of the 3 items here match the filter" (the panel
+filter), or "No matching names" ("Searching…" until the result arrives) for a quick
+search whose filter shows only matches. The text takes no focus, keys or clicks:
+Enter on `..` and Backspace still go up.
+
 A rejected navigation does not change the cursor. Failed listings restore the
 previous view; stale generations cannot apply a focus hint. Deliberate cursor
 movement during loading, including back onto `..`, overrides automatic return

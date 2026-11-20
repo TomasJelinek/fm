@@ -17,8 +17,18 @@ export component DialogFooter inherits Rectangle {
     in property <bool> compact-height;
     in property <bool> compact-controls;
     in property <bool> fill-actions;
+    // The width the actions have beside (or above) the dismiss button, and the width of
+    // `measure-text` in the action font: a dialog may leave out an optional action that
+    // would not fit, so that no button sits half outside the scroller.
+    out property <length> action-room: action-scroll.width;
+    in property <string> measure-text;
+    out property <length> measured-width: measure.preferred-width;
     callback dismiss <=> dismiss-button.clicked;
     public function focus-dismiss() { dismiss-button.focus(); }
+    measure := Text {
+        visible: false; text: root.measure-text;
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
     private property <bool> stacked: root.width < 440px && !root.compact-height;
     private property <length> control-height: max(Theme.control-height,
         dismiss-button.preferred-height, actions.preferred-height);

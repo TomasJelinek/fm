@@ -1,5 +1,5 @@
 //! One coalescing two-pane comparison; stale work cannot publish selections.
-use crate::{Outbox, Snapshots};
+use crate::{Outbox, Snapshots, task_lifetime::TaskLifetime};
 use midnight_core::*;
 use std::{io, sync::Arc};
 use tokio::{sync::watch, task::JoinSet};
@@ -16,10 +16,36 @@ pub(crate) struct Controller {
     input: watch::Sender<Intent>,
 }
 
+/// Native access for Compare contents and Include subfolders.
+#[derive(Clone, Default)]
+pub(crate) struct Services {
+    pub(crate) find: Option<Arc<dyn FindService>>,
+    /// Anchors the services while a blocking comparison still uses them.
+    pub(crate) scope: Option<TaskLifetime>,
+}
+
+/// Stops native reads when the comparison task ends for any reason.
+struct CancelOnDrop(Cancellation);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 impl Controller {
+    #[cfg(test)]
     pub(crate) fn new(snapshots: Snapshots, outbox: Outbox, tasks: &mut JoinSet<()>) -> Self {
+        Self::with_services(snapshots, outbox, Services::default(), tasks)
+    }
+
+    pub(crate) fn with_services(
+        snapshots: Snapshots,
+        outbox: Outbox,
+        services: Services,
+        tasks: &mut JoinSet<()>,
+    ) -> Self {
         let (input, receiver) = watch::channel(Intent::default());
-        tasks.spawn(run(snapshots, outbox, receiver));
+        tasks.spawn(run(snapshots, outbox, services, receiver));
         Self { input }
     }
 
@@ -80,7 +106,12 @@ fn source_matches(snapshots: &Snapshots, request: &CompareRequest) -> bool {
     })
 }
 
-async fn run(snapshots: Snapshots, outbox: Outbox, mut input: watch::Receiver<Intent>) {
+async fn run(
+    snapshots: Snapshots,
+    outbox: Outbox,
+    services: Services,
+    mut input: watch::Receiver<Intent>,
+) {
     let mut pending = false;
     loop {
         if !pending && input.changed().await.is_err() {
@@ -93,13 +124,64 @@ async fn run(snapshots: Snapshots, outbox: Outbox, mut input: watch::Receiver<In
         };
         let valid = source_matches(&snapshots, &request);
         let result = if valid {
+            let token = Cancellation::default();
+            let _stop = CancelOnDrop(token.clone());
             let work = request.clone();
             let observer = input.clone();
-            tokio::task::spawn_blocking(move || {
-                compute(work, &|| observer.has_changed().unwrap_or(true))
-            })
-            .await
-            .unwrap_or_else(|error| Err(failure(&request, error.to_string())))
+            let find = services.find.clone();
+            let progress = outbox.clone();
+            let worker_token = token.clone();
+            let job = move || {
+                let id = work.id;
+                let mut report = |sample: &CompareProgress| {
+                    if worker_token.is_cancelled() {
+                        return;
+                    }
+                    // Samples are disposable: a full queue skips one.
+                    if progress
+                        .sender
+                        .try_send(Event::ComparisonProgress {
+                            id,
+                            progress: sample.clone(),
+                        })
+                        .is_ok()
+                    {
+                        (progress.wakeup)();
+                    }
+                };
+                let deep = find.as_deref().map(|find| compute::Deep {
+                    find,
+                    cancel: &worker_token,
+                    report: &mut report,
+                });
+                let cancelled =
+                    || worker_token.is_cancelled() || observer.has_changed().unwrap_or(true);
+                compute::compare(work, &cancelled, deep)
+            };
+            let mut worker = match &services.scope {
+                Some(scope) => tokio::task::spawn_blocking(scope.blocking(job)),
+                None => tokio::task::spawn_blocking(job),
+            };
+            let mut watching = true;
+            let mut closed = false;
+            let joined = loop {
+                tokio::select! {
+                    joined = &mut worker => break joined,
+                    changed = input.changed(), if watching => {
+                        // A newer request, Cancel or a panel change: stop native reads now.
+                        token.cancel();
+                        watching = false;
+                        match changed {
+                            Ok(()) => pending = true,
+                            Err(_) => closed = true,
+                        }
+                    }
+                }
+            };
+            if closed {
+                return;
+            }
+            joined.unwrap_or_else(|error| Err(failure(&request, error.to_string())))
         } else {
             Err(failure(
                 &request,
@@ -144,11 +226,12 @@ fn failure(request: &CompareRequest, message: impl Into<String>) -> FsError {
     )
 }
 
+#[cfg(test)]
 fn compute(
     request: Arc<CompareRequest>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<CompareResult, FsError> {
-    compute::compare(request, cancelled)
+    compute::compare(request, cancelled, None)
 }
 
 #[cfg(test)]
@@ -156,3 +239,6 @@ mod tests;
 
 #[cfg(test)]
 mod tree_tests;
+
+#[cfg(test)]
+mod deep_tests;

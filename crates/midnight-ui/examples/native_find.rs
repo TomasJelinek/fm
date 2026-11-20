@@ -153,6 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 id: FindResultId(index as u64 + 1),
                                 duplicate_group: None,
                                 duplicate_group_size: 0,
+                                archive: None,
                                 entry: FindEntry {
                                     path: root.join(name),
                                     kind: EntryKind::File,

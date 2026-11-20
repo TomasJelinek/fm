@@ -101,6 +101,11 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         desktop_font_size: 18,
         touch_font_size: 23,
         quick_search_filter: true,
+        show_hidden_files: true,
+        mask_selection: MaskSelectionPreferences {
+            pattern: "*.log;文档*".into(),
+            folders: true,
+        },
         size_display: SizeDisplay::Bytes,
         remember_command_history: true,
         command_history: vec![CommandHistoryEntry {

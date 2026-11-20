@@ -71,7 +71,11 @@ pub struct OperationProgress {
     pub completed: u64,
     pub discovery: crate::OperationDiscovery,
     /// Top-level targets with an issue: targets that did not complete, plus completed
-    /// targets that reported one (see `completed`).
+    /// targets that reported one (see `completed`). A Delete counts its errors instead:
+    /// each failure that was skipped (one entry left, with the folders that contain
+    /// it) or that ended its target, and each completed target's issue. A target kept
+    /// only because it still contains skipped items is said so once in `message`, not
+    /// counted again.
     pub failed: u64,
     /// Removed nodes for deletion; the final entry for rename/create (not intermediate dirs).
     pub processed_entries: u64,
@@ -86,6 +90,19 @@ pub struct OperationProgress {
     pub renamed_to: Option<PathBuf>,
 }
 
+/// A Delete paused on an entry it could not remove, until the user decides with
+/// `Command::DecideDelete` (Retry, Skip, SkipAllErrors or Cancel, for this version).
+#[derive(Clone, Debug)]
+pub struct DeleteFailure {
+    pub id: OperationId,
+    pub version: u64,
+    pub mode: crate::DeleteMode,
+    /// Why, naming the entry, or the folder whose entries cannot be removed.
+    pub error: FsError,
+    pub can_retry: bool,
+    pub can_skip: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum OperationEvent {
     Preview(Arc<OperationPreview>),
@@ -94,4 +111,5 @@ pub enum OperationEvent {
     MetadataResult(Arc<crate::MetadataResult>),
     MetadataConflict(Arc<crate::MetadataConflict>),
     RenameConflict(Arc<crate::CopyConflict>),
+    DeleteFailure(Arc<DeleteFailure>),
 }

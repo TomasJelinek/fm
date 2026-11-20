@@ -16,8 +16,17 @@ in for CPU timing, and a successful startup does not prove every font/glyph case
 
 - Unphased mouse-wheel line deltas receive a short, interruptible ease-out.
   Only undelivered displacement accumulates; reversal discards the old tail.
-- Precise pixel deltas and phased touchpad/touch gestures retain native handling.
-  Do not add a second inertia animation to an operating-system gesture.
+- Precise pixel deltas and phased touchpad/touch gestures follow the finger
+  without easing. Linux X11 and Wayland report no momentum after the lift, so the
+  app synthesises it once, in the shared kinetic scroller below. Slint's own
+  Flickable fling on a phased (Wayland) lift would be a second, different one:
+  on Linux the shared observer therefore delivers a gesture that began with
+  `Started` itself, and X11 finger lines (which Slint would ease like notches), as
+  a phase-less wheel, so Slint neither eases nor flings them. Other precise pixels
+  keep Slint's own route; Slint captures no such gesture and has no fling to add
+  (Winit on Wayland begins a gesture with `Moved` right after a wheel notch). Do
+  not add a second inertia animation to an operating-system gesture: Windows
+  precision touchpads and macOS deliver their own momentum and get none from us.
 - Dragging a scrollbar sets its position directly. It cancels outstanding wheel
   motion; keyboard navigation, content changes and focus loss must also prevent
   movement from an obsolete gesture.
@@ -32,6 +41,179 @@ Nearest-row alignment is an idle finishing animation only. It must not run
 while a finger, mouse drag or wheel coast is active. One thumbnail-wheel notch
 must travel at least one thumbnail band so settling cannot undo the gesture.
 Other lists and document viewers do not acquire panel row snapping.
+
+Details and Brief views draw whole rows only. The Thumbnails view draws every row
+the viewport intersects, so a row cut by the panel edge shows its tiles, and it
+requests thumbnails for one extra row beyond each edge while that range fits the
+panel's share of the thumbnail request budget (`panel-list.slint` `partial-bands`,
+`file-pane.slint`).
+
+## Touchpad momentum (kinetic scrolling)
+
+`KineticScroll` (`midnight-ui-input/src/kinetic.rs`) is the only momentum model.
+It is pure policy (no Winit or Slint types) and is owned per window by
+`NativeScroll`, which the main window, viewer, comparator and every dialog already
+install. Feeding it is `kinetic_native.rs`:
+
+- Wayland touchpads send phased pixel deltas (`Started`/`Moved`) and `Ended` when
+  the fingers lift. X11 (XInput2 smooth scrolling) sends unphased fractional line
+  deltas and no lift; a gap of three report intervals (30–60 ms) ends that stream.
+  The observer delivers a pixel gesture that began with `Started` and X11 finger
+  lines itself. Precise pixels outside such a gesture keep Slint's route; their
+  lift still starts the shared momentum.
+- Wheel notches keep the eased wheel glide and stop any momentum: whole lines, and
+  on X11 the 1/120-line steps of high-resolution wheels (libinput's v120 units, for
+  example 8 × 0.125 line per detent). A fractional line that is not a whole number
+  of such steps is finger motion, and so is a whole line inside a recent finger
+  stream.
+- Velocity is the finger's displacement over its newest 50 ms (at least three
+  reports spanning at least 16 ms), so a stroke that slows down before the lift
+  reports its final speed. Reports dispatched together after a UI stall share one
+  timestamp: their speed is unknown and never flings. A finger that rested more
+  than 40 ms before lifting has stopped. Speed is capped at 6000 px/s.
+- A Wayland lift flings from 250 px/s. On X11 a rest looks exactly like a lift, so
+  an unphased stream coasts only after a clear flick: at least 700 px/s, and its
+  newest two reports at least three quarters of the stroke's average (not slowing
+  to a stop). A deliberate stop at a steady high speed can still coast there.
+- Momentum decays exponentially with a 0.8 s time constant, longer than iOS's
+  default deceleration (0.5 s) after hands-on feedback: total travel is velocity ×
+  0.8 s, so a 2000 px/s flick glides about 1600 px, 71% of it within the first
+  second, and then eases out over about four seconds. It ends below 12 px/s, 0.2 px
+  per 60 Hz frame, so the dropped 9.6 px crawl is invisible. Panels, viewers and the comparator share these values, so the
+  same flick glides as far everywhere.
+- Each frame integrates the decay exactly over its real time, so neither travel
+  nor speed depends on the refresh rate: a late redraw (a missed vsync, a slow
+  debug frame) advances up to 50 ms, and only a longer stall resumes without
+  catching up. An X11 stream's first momentum frame covers one 16 ms frame, not
+  the gap that ended the stream.
+- Any mouse button press or release, touch, key press, new wheel notch, pinch,
+  focus loss, pointer exit, a pointer move of more than 16 px, or any modifier
+  change stops it at once; new finger motion takes over. While a modifier is held,
+  finger motion still reaches the content once per report (Ctrl zooms images) but
+  never gets momentum.
+- Target: momentum starts only over content that scrolls along it, resolved once
+  per fling — the host's `KineticSurface` (viewer content, comparison content) or
+  the innermost Flickable under the origin that scrolls along the fling's axis, as
+  Slint routes a wheel; an axis that Flickable cannot scroll stops. Anywhere else,
+  such as a toolbar spin box that acts once per wheel event, there is none.
+- Frames are delivered on the native redraw at the gesture's origin as an
+  ordinary wheel: `PointerScrolled` (applied without Slint's own wheel easing) or,
+  for the browser surface, a synthetic native wheel through the host's sink, in
+  the finger stream's units (pixels, or lines for X11, which the HTML viewer
+  converts with the text viewer's 60 px line, as it does the finger's lines).
+  Backend-driven viewers therefore see one scroll request per frame.
+- Content edges: an axis whose content position (Flickable content offset or the
+  surface's reported position) has not moved for 120 ms while momentum pushes it
+  stops; content never passes its bounds because the owners clamp. There is no
+  bounce. Chromium reports no scroll position, so the HTML surface reports the
+  newest page frame presented: momentum stops 120 ms after the page stops painting
+  (see [HTML pages](#html-pages)). A surface without a known position (comparator
+  image panning) runs out with the decay (4.1 s from 2000 px/s, at most 5 s).
+
+The file panels report momentum as scroll interaction, so nearest-row alignment
+waits until it ends. X11 touchpad lines over a panel are delivered directly
+(Slint's 60 px per line) instead of being eased like a notch. The comparator
+content also glides wheel notches through `NativeScroll::glide_content`, since it
+takes pixel deltas without easing of its own; a notch with Ctrl, Alt or Super held
+is not glided, because image comparisons zoom once per such wheel event.
+
+`NativeScroll::synthesize_momentum` overrides the platform default; tests use it
+so the Linux policy is exercised on every OS.
+
+Tests: `midnight-ui-input` `kinetic::tests` (newest-motion velocity, rest and
+unknown spans, reversal, exponential decay with its travel, travel and speed
+independent of the frame rate, slow release, delayed frames, cancellation, X11 gap
+release without a catch-up jump and clear-flick rule, per-axis edge stall) and
+`kinetic_native::tests` (Wayland phases, precise pixels outside a phased gesture,
+X11 finger lines versus whole and high-resolution wheel steps, interruptions
+including a button release and modifiers, platform default);
+`midnight-ui`
+`scroll_input::pane_tests::kinetic_tests` (real panels with Slint receiving
+unconsumed reports with their phases: single fling without Slint's own, X11 line
+stream, high-resolution detent, click, top edge, no momentum outside lists);
+`midnight-viewer-ui` `kinetic_tests` (text viewer through the native hook to
+backend scroll requests, X11 lines, toolbar) and `web_wheel_tests` (HTML page:
+momentum stops where the page stops painting); `midnight-compare-ui` `scroll_tests`
+(notch glide, Ctrl+wheel, flick, document end, click, momentum in lines for a
+sink, toolbar).
+
+Not verifiable without hardware: the X11 gap and clear-flick rules against real
+touchpad and TrackPoint report timing (TrackPoint on-button scrolling cannot be
+told apart from a touchpad on X11), how a real flick feels, and momentum from a
+real touchpad inside the live HTML viewer (the provider's response to the same
+per-frame deltas was measured; see [HTML pages](#html-pages)).
+
+## HTML pages
+
+Chromium scrolls the page and reports no scroll position, so the viewer's web input
+(`midnight-viewer-ui/src/web_input.rs`) runs the text viewer's motion and hands it to
+the page one frame at a time:
+
+- A wheel notch over the page glides through the shared `WheelMotion` exactly as in
+  the text viewer: 60 logical px per line over 200 ms, only undelivered distance
+  adding up, a reversal dropping the old remainder. Each native redraw (8 ms wakes)
+  sends that frame's share as one physical-pixel `Wheel` command, so the page travels
+  as far, at the same scale, over the same time. A command the backend queue refuses
+  goes out again on the next frame before the glide's clock moves on.
+- The provider starts Chromium with `disable-smooth-scrolling`. CEF's windowless
+  wheel events are not precise deltas, and Chromium eases each of them over about
+  170 ms (one 120 px event painted as 2, 7, 16, … 120 px over 12 frames); every
+  per-frame delta would be eased again. Keyboard scrolling now jumps at once too, like
+  the text viewer's.
+- Touchpad pixels and X11 finger lines (at 60 px per line, as in the text viewer)
+  reach the page at once, one command per report; Linux momentum arrives through the
+  shared kinetic scroller's sink, one command per frame.
+- A wheel with Ctrl, Alt or Super acts once: unglided, with the previous 40 px line,
+  so Chromium's own Ctrl+wheel zoom (120 units per step) keeps its rate. Shift+wheel
+  glides and Chromium scrolls it horizontally.
+- Edges: the page paints a frame only when it moves. Once it has painted since a
+  glide or touchpad stream began, 120 ms without a newer presented frame ends the
+  glide and stops momentum, instead of sending the rest of the deltas into the edge.
+  Before that first frame the position is unknown for up to a second: the first
+  scroll of a freshly loaded page took Chromium 350–650 ms to paint (4 of 96 measured
+  gestures), and a glide or momentum is not cut short meanwhile. A page that has not
+  painted a second after the scroll began is taken to be at its edge already. A
+  press, key, touch, pinch, focus loss, touchpad motion, an acting wheel, a wheel
+  outside the page or an open popup stops the glide at once, as do a new document,
+  mode or layout.
+
+Measured on Linux X11 (CEF 156 debug provider with `diagnostic-timing`, driven over
+MWV1 without the host, 640 × 400 CSS px of a 30,000 px page, notches 24 ms apart,
+medians of four fresh pages; the text viewer's distances come from the real viewer
+UI under a test clock, and the new HTML commands were checked equal to them frame by
+frame):
+
+| Scale, notches | Text viewer | HTML before: travel, done | HTML after: travel, done | Page behind text viewer (median) |
+| --- | --- | --- | --- | --- |
+| 1x, 1 | 60 px, 200 ms | 40 px, 172 ms | 60 px, 214 ms | 51 → 9 ms |
+| 1x, 3 | 180 px, 248 ms | 120 px, 254 ms | 180 px, 259 ms | 71 → 9 ms |
+| 1x, 10 | 600 px, 416 ms | 400 px, 397 ms | 600 px, 433 ms | 83 → 9 ms |
+| 2x, 1 | 120 px, 200 ms | 80 px, 194 ms | 120 px, 212 ms | 59 → 16 ms |
+| 2x, 3 | 360 px, 248 ms | 240 px, 236 ms | 360 px, 275 ms | 68 → 17 ms |
+| 2x, 10 | 1200 px, 416 ms | 800 px, 378 ms | 1200 px, 437 ms | 61 → 15 ms |
+
+Before, the host sent 40 px per notch at once and Chromium eased it; the same per-frame
+deltas with Chromium's easing still on lag 90–161 ms. A touchpad stream of 12 px
+reports every 10 ms lagged the finger by 130 ms (1x) and 119 ms (2x) before and by 7
+and 13 ms after. Chromium keeps up with one delta per frame: at the measurement's
+8 ms cadence about two deltas share each painted frame, and the provider's wheel
+trace (`wheel_paint_elapsed_us`, wheel dispatch to the next view paint) stays at a
+median of 2.3–4.4 ms and at most 17 ms, also on a long text page (3.3 ms median, 8.6 ms
+at most); the host therefore sends one delta per redraw without further coalescing.
+Ctrl+wheel still zooms to 110% after three notches, a horizontal or Shift wheel moves
+120 px sideways, and sixty 1 px events move 60 px. Windows was not measured: cefclient
+passes raw `WHEEL_DELTA` units there, so if CEF scales windowless wheel deltas by the
+system's scroll lines on Windows, the provider's Windows adapter needs a conversion.
+
+Tests: `midnight-viewer-ui` `web_wheel_tests` (one, three and ten notches, a reversal
+and a horizontal notch sent frame by frame exactly as the text viewer scrolls, at 1x
+and 2x; the glide and momentum stop once the page stops painting, are not cut short
+before its first frame, and stop a second after a scroll that never paints began; X11
+lines; Ctrl+wheel unchanged); the provider's `wheel_steps` tests
+(sub-DIP accumulation, a glide's last DIP despite float rounding) and the opt-in
+`native_runtime` `chromium_applies_each_wheel_event_at_once` (one event scrolls its
+whole distance in the next frame and stops at the top; it fails against the old
+provider with frames at 2, 7, 16, … 120 px).
 
 ## Rendering and bounded work
 
@@ -104,9 +286,9 @@ and change together ([record](../verification/2026-11-19-slint-build-speed.md)).
 Slint Fluent 1.18.1 update immediately: wheel input on scrollbar overlays and the
 application's vertical-to-horizontal command-directory strip. Ordinary `ScrollView`
 and `ListView` content keeps the SDK's existing wheel and touch physics. The observer
-replaces only unphased `LineDelta` input with fractional events on native redraw;
-precise pixel input, phased gestures and scrollbar dragging retain their own
-handling. Closed combo boxes do not receive synthetic selection events.
+replaces unphased `LineDelta` notches with fractional events on native redraw and,
+on Linux, delivers touchpad finger motion itself (see Touchpad momentum); other
+precise pixel input and scrollbar dragging retain their own handling. Closed combo boxes do not receive synthetic selection events.
 
 Scrollbar detection checks a concrete, visible, enabled `TouchArea` aligned with
 its `Flickable`, using Fluent's pinned 14-logical-pixel overlay geometry. Overflow

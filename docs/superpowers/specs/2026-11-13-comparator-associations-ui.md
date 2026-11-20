@@ -158,7 +158,7 @@ geometry must be qualified later, not inferred from the existing Cancel-only tes
 
 **Proposed file ownership for the later UI task — no reservation or edits yet**
 
-| Ownership | Paths relative to D:/experiments/dev/FM |
+| Ownership | Paths relative to the repository root |
 | --- | --- |
 | New, exclusive UI | `crates/midnight-ui/ui/comparator-options.slint`; `crates/midnight-ui/src/comparator_options_presentation.rs`; `crates/midnight-ui/src/presenter/comparator_draft.rs`; `crates/midnight-ui/src/presenter/comparator_draft_tests.rs`; `crates/midnight-ui/tests/comparator_options.rs` |
 | Coordinated shared Slint hunks | `crates/midnight-ui/ui/options-dialog.slint`; `options-navigation.slint`; `argument-editor.slint`; `main.slint` |

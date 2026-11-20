@@ -1,4 +1,5 @@
-//! Physical number-row and modified bracket chords use the shared shortcut catalog.
+//! Physical number-row, keypad +/−/* and modified bracket chords use the shared
+//! shortcut catalog.
 use midnight_core::ShortcutChord;
 use slint::winit_030::winit::{
     event::{ElementState, WindowEvent},
@@ -190,12 +191,15 @@ impl ShortcutState {
         if input.repeat || input.synthetic || self.right_alt {
             return decision;
         }
-        let key = match (digit, input.physical) {
-            (Some(digit), _) => format!("Digit{digit}"),
+        let key = match (digit, keypad(input.physical), input.physical) {
+            (Some(digit), _, _) => format!("Digit{digit}"),
+            // Only the keypad reports these; the number row's + − * stay typed text.
+            // Unbound keypad keys fall through to text input as well.
+            (None, Some(name), _) => name.into(),
             // These are the configured bracket key positions even when Shift or
             // a different keyboard layout changes their text. Plain/AltGr input
             // stays with the editor; no action is hardcoded into this adapter.
-            (None, PhysicalKey::Code(code))
+            (None, None, PhysicalKey::Code(code))
                 if self.modifiers.intersects(
                     ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SUPER,
                 ) =>
@@ -231,6 +235,15 @@ fn modifier(key: PhysicalKey) -> Option<ModifiersState> {
         PhysicalKey::Code(KeyCode::AltLeft | KeyCode::AltRight) => Some(ModifiersState::ALT),
         PhysicalKey::Code(KeyCode::ShiftLeft | KeyCode::ShiftRight) => Some(ModifiersState::SHIFT),
         PhysicalKey::Code(KeyCode::SuperLeft | KeyCode::SuperRight) => Some(ModifiersState::SUPER),
+        _ => None,
+    }
+}
+
+fn keypad(key: PhysicalKey) -> Option<&'static str> {
+    match key {
+        PhysicalKey::Code(KeyCode::NumpadAdd) => Some("NumpadAdd"),
+        PhysicalKey::Code(KeyCode::NumpadSubtract) => Some("NumpadSubtract"),
+        PhysicalKey::Code(KeyCode::NumpadMultiply) => Some("NumpadMultiply"),
         _ => None,
     }
 }
@@ -469,6 +482,92 @@ mod tests {
                     map.resolve(&chord, context).is_some()
                 });
                 assert_eq!(decision.consumed, consumed);
+            }
+        }
+    }
+
+    #[test]
+    fn keypad_plus_minus_and_star_select_by_mask_only_from_the_idle_file_list() {
+        let map = ShortcutMap::new(&[]).unwrap();
+        for (code, text, action) in [
+            (KeyCode::NumpadAdd, "+", "selection.mask-select"),
+            (KeyCode::NumpadSubtract, "-", "selection.mask-deselect"),
+            (KeyCode::NumpadMultiply, "*", "selection.mask-invert"),
+        ] {
+            for (context, expected) in [
+                (ShortcutContext::Files, Some(action)),
+                (ShortcutContext::Search, None),
+                (ShortcutContext::Command, None),
+                (ShortcutContext::Other, None),
+            ] {
+                let mut state = ShortcutState::default();
+                let mut dispatched = None;
+                let decision = state.key(input(code, text), |chord| {
+                    let resolved = map.resolve(&chord, context).map(|action| action.id.clone());
+                    dispatched = resolved.clone();
+                    resolved.is_some()
+                });
+                assert_eq!(dispatched.as_deref(), expected, "{text} in {context:?}");
+                assert_eq!(decision.consumed, expected.is_some());
+                assert!(!decision.physical_digit);
+                // The release of a consumed key never reaches the text field either.
+                let mut release = input(code, text);
+                release.state = ElementState::Released;
+                assert_eq!(state.key(release, |_| false).consumed, expected.is_some());
+            }
+        }
+        // The number row's characters never select: they stay typed search text.
+        for (code, text) in [
+            (KeyCode::Equal, "+"),
+            (KeyCode::Minus, "-"),
+            (KeyCode::Digit8, "*"),
+        ] {
+            let mut state = ShortcutState::default();
+            let decision = state.key(input(code, text), |chord| {
+                !chord.key.starts_with("Digit")
+                    && map.resolve(&chord, ShortcutContext::Files).is_some()
+            });
+            assert!(!decision.consumed, "{text}");
+        }
+    }
+
+    #[test]
+    fn control_equal_plus_and_minus_select_by_mask_without_a_keypad() {
+        let map = ShortcutMap::new(&[]).unwrap();
+        for (code, text, action) in [
+            // US: = and − left of Backspace.
+            (KeyCode::Equal, "=", "selection.mask-select"),
+            (KeyCode::Minus, "-", "selection.mask-deselect"),
+            // Czech: = where US has −, and − where US has /.
+            (KeyCode::Minus, "=", "selection.mask-select"),
+            (KeyCode::Slash, "-", "selection.mask-deselect"),
+            // Nordic: + without Shift where US has −.
+            (KeyCode::Minus, "+", "selection.mask-select"),
+        ] {
+            let mut state = ShortcutState {
+                modifiers: ModifiersState::CONTROL,
+                ..Default::default()
+            };
+            // Not a physical shortcut: the logical key decides, whatever the layout.
+            let decision = state.key(input(code, text), |_| {
+                panic!("only the logical chord dispatches")
+            });
+            assert_eq!(decision, Decision::default(), "{code:?} {text}");
+            let mut event = i_slint_core::input::KeyEvent::default();
+            event.text = text.into();
+            event.modifiers.control = true;
+            let chord = state.logical_chord(&event).expect("a logical chord");
+            assert_eq!(
+                map.resolve(&chord, ShortcutContext::Files)
+                    .map(|action| action.id.as_str()),
+                Some(action),
+                "{code:?} {text}"
+            );
+            for context in [ShortcutContext::Search, ShortcutContext::Command] {
+                assert!(
+                    map.resolve(&chord, context).is_none(),
+                    "{text} in {context:?}"
+                );
             }
         }
     }

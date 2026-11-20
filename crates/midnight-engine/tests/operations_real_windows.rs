@@ -128,8 +128,9 @@ async fn real_overwrite_skip_rename_cancel_and_recoverable_replace_preserve_orig
         if case == "cancel" {
             assert_eq!(progress.state, CopyOperationState::Cancelled);
         } else if case == "skip" {
-            assert_eq!(progress.state, CopyOperationState::CompletedWithErrors);
-            assert_eq!(progress.skipped, 1);
+            // A skipped conflict is the user's choice, not an error.
+            assert_eq!(progress.state, CopyOperationState::Completed);
+            assert_eq!((progress.skipped, progress.failed), (1, 0));
         } else {
             assert_eq!(
                 progress.state,
@@ -339,8 +340,8 @@ async fn real_fifo_queue_cancels_queued_job_behind_a_conflict_gate() {
             .await;
     }
     let skipped = harness.terminal(1).await;
-    assert_eq!(skipped.state, CopyOperationState::CompletedWithErrors);
-    assert_eq!(skipped.skipped, 1);
+    assert_eq!(skipped.state, CopyOperationState::Completed);
+    assert_eq!((skipped.skipped, skipped.failed), (1, 0));
     for id in 2..=9 {
         if id == 5 {
             assert_eq!(cancelled.state, CopyOperationState::Cancelled);

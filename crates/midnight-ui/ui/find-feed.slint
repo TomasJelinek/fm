@@ -1,0 +1,182 @@
+import { ListView } from "scroll-view.slint";
+import { Theme } from "theme.slint";
+import { PathText } from "path-text.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+// One search result shown in a panel (Feed to panel).
+export struct FeedRow {
+    name: string, folder: string, size: string, modified: string,
+    directory: bool, selected: bool,
+    // The folder's last component with its separator, kept when the path is shortened.
+    folder-tail: string,
+}
+
+// The search results a panel shows instead of its folder.
+export struct FeedView {
+    open: bool, title: string, status: string, cursor: int,
+}
+
+// Feed to panel: the search results each panel shows over its folder, and what
+// the lists ask (each callback's first argument is the panel).
+export global FeedPresentation {
+    in property <FeedView> left;
+    in property <FeedView> right;
+    in property <[FeedRow]> left-rows;
+    in property <[FeedRow]> right-rows;
+    callback click(int, int, bool, bool);
+    callback open-row(int, int);
+    callback leave(int);
+    // The rows a list shows, for its Page Up/Down.
+    callback page-rows(int, int);
+    // A panel action routed to the search results it shows; or refused there.
+    callback action(int, int);
+    callback refuse(int, string);
+}
+
+// A Find's results as a temporary list over a panel. Keys go through the panel's
+// shortcut routing, so the configured View, Edit, Copy, Move and Delete keys and
+// the function bar act on the selected results.
+export component FindFeedPanel inherits Rectangle {
+    in property <int> pane;
+    in property <bool> active;
+    // The panel itself is shown (both panels, or this one alone).
+    in property <bool> shown;
+    private property <FeedView> view: root.pane == 0 ? FeedPresentation.left : FeedPresentation.right;
+    private property <[FeedRow]> rows: root.pane == 0 ? FeedPresentation.left-rows : FeedPresentation.right-rows;
+    // Returns whether the key was handled.
+    callback key(KeyEvent) -> bool;
+    callback activate();
+    public function focus-list() { focus.focus(); }
+    // The list has the keyboard: its panel's file shortcuts apply to it.
+    out property <bool> list-focused: focus.has-focus;
+    visible: root.view.open && root.shown;
+    background: Theme.pane-background;
+    border-width: 1px;
+    border-color: root.active ? Theme.active-frame : Theme.frame;
+    clip: true;
+    accessible-role: AccessibleRole.list;
+    accessible-label: root.view.title;
+    private property <length> row-height: Theme.row-height;
+    private property <int> cursor: root.view.cursor;
+    private property <int> shown-rows: max(1, floor(list.visible-height / root.row-height));
+    changed shown-rows => { FeedPresentation.page-rows(root.pane, root.shown-rows); }
+    changed cursor => { root.reveal-cursor(); }
+    function reveal-cursor() {
+        if root.cursor < 0 || root.cursor >= root.rows.length { return; }
+        if root.cursor * root.row-height < -list.content-y {
+            list.content-y = -root.cursor * root.row-height;
+        } else if (root.cursor + 1) * root.row-height > -list.content-y + list.visible-height {
+            list.content-y = min(0px, list.visible-height - (root.cursor + 1) * root.row-height);
+        }
+    }
+    // A pointer anywhere on the list makes its panel active.
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down { root.activate(); focus.focus(); }
+        }
+    }
+    VerticalLayout {
+        padding: 1px;
+        Rectangle {
+            background: root.active ? Theme.active-header : Theme.header;
+            height: max(Theme.control-height, title.preferred-height) + 8px;
+            HorizontalLayout {
+                padding-left: 8px; padding-right: 4px; spacing: 6px;
+                alignment: stretch;
+                title := Text {
+                    text: root.view.title; color: Theme.strong-text; font-size: Theme.font-size;
+                    font-weight: 600; vertical-alignment: center; overflow: elide;
+                    horizontal-stretch: 1; min-width: 0px;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    HintedActionButton {
+                        text: "Back to folder"; fallback-icon: FallbackIcons.close;
+                        hint: "Leave the search results (Backspace). The panel shows its folder again.";
+                        clicked => { FeedPresentation.leave(root.pane); }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            height: Theme.column-height; background: Theme.header;
+            HorizontalLayout {
+                padding-left: 8px; padding-right: 8px; spacing: 10px;
+                Text { text: "Name"; color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
+                    vertical-alignment: center; width: parent.width * 0.32; overflow: elide; }
+                Text { text: "Folder"; color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
+                    vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                Text { text: "Size"; color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
+                    vertical-alignment: center; horizontal-alignment: right; width: Theme.small-font * 7; }
+                Text { text: "Modified"; color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
+                    vertical-alignment: center; width: Theme.small-font * 12; overflow: elide; }
+            }
+        }
+        focus := FocusScope {
+            vertical-stretch: 1;
+            key-pressed(event) => {
+                if !root.view.open { return reject; }
+                if root.key(event) { return accept; }
+                reject
+            }
+            list := ListView {
+                accessible-role: AccessibleRole.list; accessible-label: "Search results";
+                accessible-item-count: root.rows.length;
+                for row[index] in root.rows: Rectangle {
+                    height: root.row-height;
+                    background: root.cursor == index && root.active ? Theme.cursor-background
+                        : root.cursor == index ? Theme.inactive-cursor
+                        : row.selected ? Theme.selected-background
+                        : Math.mod(index, 2) == 1 ? Theme.alternate-row : transparent;
+                    border-width: root.cursor == index ? 1px : 0px; border-color: Theme.cursor-edge;
+                    accessible-role: list-item;
+                    accessible-label: row.name + " · " + row.folder + " · " + row.size + " · " + row.modified;
+                    accessible-item-selectable: true; accessible-item-selected: row.selected;
+                    accessible-item-index: index;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 10px;
+                        Text {
+                            text: row.name; width: parent.width * 0.32; overflow: elide; vertical-alignment: center;
+                            font-size: Theme.font-size; font-weight: row.directory ? 600 : 400;
+                            color: row.selected ? Theme.selected-text : row.directory ? Theme.directory-text : Theme.text;
+                        }
+                        PathText {
+                            text: row.folder; tail: row.folder-tail;
+                            foreground: row.selected ? Theme.selected-text : Theme.secondary-text;
+                            font-size: Theme.font-size; horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: row.size; width: Theme.small-font * 7; horizontal-alignment: right;
+                            vertical-alignment: center; overflow: elide; font-size: Theme.font-size;
+                            color: row.selected ? Theme.selected-text : Theme.secondary-text;
+                        }
+                        Text {
+                            text: row.modified; width: Theme.small-font * 12; vertical-alignment: center;
+                            overflow: elide; font-size: Theme.font-size;
+                            color: row.selected ? Theme.selected-text : Theme.secondary-text;
+                        }
+                    }
+                    TouchArea {
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                root.activate();
+                                focus.focus();
+                                FeedPresentation.click(root.pane, index, event.modifiers.control, event.modifiers.shift);
+                            }
+                        }
+                        double-clicked => { FeedPresentation.open-row(root.pane, index); }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            height: Theme.status-height; background: Theme.header;
+            Text {
+                x: 8px; width: parent.width - 16px; height: parent.height;
+                text: root.view.status; color: Theme.secondary-text; font-size: Theme.small-font;
+                vertical-alignment: center; overflow: elide;
+            }
+        }
+    }
+}

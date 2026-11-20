@@ -37,13 +37,14 @@ separately; this document is not a claim that every item is already released.
   forms to satisfy the superseded all-native-window requirement.
 - Ordinary confirmations and settings are modal popups embedded in the main
   window: Options, Rename/Create/Delete, Copy/Move drafts, notices, Make File
-  List, Panel Filter, Hot Paths and Attributes / Times / Case. They add no
-  taskbar buttons. No native host is owner-modal. Native modeless hosts (Help,
-  About, Jobs, job progress and operation decisions) set ownership before first
-  show and retain normal title bars and resizing. Independent working windows
-  (Find, Checksums, viewers and comparators) keep taskbar and Alt+Tab access, with
-  the same application identity for system grouping. Help/About remain ordinary
-  dialogs even when modeless.
+  List, Panel Filter, Hot Paths, Compare directories, About and Attributes /
+  Times / Case. They add no taskbar buttons or system frames. No native host is
+  owner-modal. Native
+  modeless hosts (Help, Jobs, job progress and operation decisions) set ownership
+  before first show and retain normal title bars and resizing. Independent working
+  windows (Find, Checksums, viewers and comparators) keep taskbar and Alt+Tab
+  access, with the same application identity for system grouping. Help remains an
+  ordinary dialog even when modeless.
 - Options follows OK/Cancel: OK validates and saves the complete current form,
   then closes only after successful persistence. Cancel discards the draft and
   restores live previews, including the theme. Validation remains cancellable;
@@ -122,7 +123,17 @@ operations and copy actions (Copy details,
   locale's AM/PM markers in any letter case. Arrow steps and picker choices keep the
   form a value was typed in; on a 12-hour clock Up/Down on the marker and the time
   picker's AM/PM column switch AM and PM. Hints and errors show both forms with an
-  example. A clean Apply closes without a result notice.
+  example. A ticked row still showing its starting value keeps that exact instant
+  (sub-seconds and seconds of the offset included). The worker also captures the
+  local calendar of each set time (`MetadataPreview::patch_calendars`), and the
+  review notes a typed offset that is not the local one there. Clicks inside a
+  picker keep it open; choosing a day, Enter, Escape or an outside click close it.
+  The row's checkbox follows the draft, so typing into an unticked row ticks it.
+  Now fills its row with the current moment at the worker's latest local offset
+  (UTC without one), computed without a timezone lookup, and ticks the row; the
+  presenter keeps that exact instant, so an unedited row applies it, sub-seconds
+  included, and nothing is re-read at review or Apply. A clean Apply closes
+  without a result notice.
 
 ## Command-line insertion
 
@@ -163,10 +174,17 @@ of the curve, avoiding an invisible fast-forward. Idle snapping remains a
 separate 100 ms transition after 80 ms without motion, and real gestures or
 explicit cursor navigation cancel it.
 
-Long panel paths preserve their beginning and ending with a middle ellipsis.
-The pinned leading components and the trailing breadcrumb share the same token
-component and backend path identities; shortening never changes a copied or
-opened path. Clicking the ellipsis edits the complete path.
+Long panel paths preserve their beginning and ending: whole middle components
+collapse into one ellipsis marker. Up to two leading components stay (while they
+take at most about a third of the bar), then the marker, then the longest suffix of
+whole components that fits; nothing overlaps and no component is cut, except the
+last one, which is shortened at its end only when it alone is wider than the bar.
+At least 32 logical pixels after the path stay free; clicking there or on the
+marker edits the complete path, and the marker's tooltip shows it. Every shown
+component keeps its backend path identity; shortening never changes a copied or
+opened path. Component captions, like file names in rows, tabs and the details
+bar, keep a left-to-right base direction, so a right-to-left name keeps its
+extension at the end.
 
 ## Native settings file choosers
 

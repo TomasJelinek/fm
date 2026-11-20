@@ -49,7 +49,7 @@ impl TransferService for Service {
             CopyLinkPolicy::Reject
             | CopyLinkPolicy::FollowDirectoryContents
             | CopyLinkPolicy::EmptyDirectories => self.prepare_transfer_source(path, cancel),
-            CopyLinkPolicy::Preserve => Err(error(
+            CopyLinkPolicy::Preserve | CopyLinkPolicy::FollowLinks => Err(error(
                 path,
                 io::ErrorKind::Unsupported,
                 "This fixture does not preserve links.",
@@ -362,7 +362,7 @@ fn endpoint_planning_opens_only_read_only_destination_and_uses_exact_children() 
 }
 
 #[test]
-fn potentially_followed_descendants_make_the_source_endpoint_opaque() {
+fn followed_directories_keep_their_source_endpoint_pin() {
     let temp = tempfile::tempdir().unwrap();
     require_qualified_volume(temp.path());
     let source = temp.path().join("tree");
@@ -372,7 +372,7 @@ fn potentially_followed_descendants_make_the_source_endpoint_opaque() {
     std::fs::create_dir(&destination).unwrap();
     let cancel = Cancellation::default();
     for (links, opaque) in [
-        (CopyLinkPolicy::FollowDirectoryContents, true),
+        (CopyLinkPolicy::FollowDirectoryContents, false),
         (CopyLinkPolicy::EmptyDirectories, false),
     ] {
         let counts = Arc::new(Counts::default());

@@ -45,7 +45,7 @@ Zvažované přístupy:
 
 ## 2. Co bylo ověřeno ve zdrojích Salamanderu
 
-Reference jsou v `D:\experiments\salamander-main`. Kód a prostředky s GPL licencí
+Reference jsou v `<salamander-source>`. Kód a prostředky s GPL licencí
 se nekopírují. Převádí se záměr rozhraní, ne ABI, ANSI řetězce či pevné buffery.
 
 | Zdroj a řádek | Ověřené chování | Dopad na tento návrh |

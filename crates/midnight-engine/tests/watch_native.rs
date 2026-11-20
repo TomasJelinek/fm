@@ -872,7 +872,7 @@ async fn a_failed_preparation_is_registered_again_when_the_folder_is_shown() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_registration_reports_polling_only_until_a_refresh_registers() {
+async fn a_failed_registration_is_checked_often_and_retried_without_a_status() {
     let RealEngine {
         _temporary,
         left,
@@ -884,31 +884,17 @@ async fn a_failed_registration_reports_polling_only_until_a_refresh_registers() 
     commands.send(navigate(1, &left)).await.unwrap();
     commit(&commands, &mut events, NavigationId(1), &left).await;
     // Every registration of the folder fails (its preparation, then the one
-    // when it is shown); the status is reported once.
-    let status = tokio::time::timeout(Duration::from_secs(8), async {
-        loop {
-            if let Event::WatchStatus { view, status } = events.recv().await.expect("engine output")
-            {
-                break (view, status);
-            }
-        }
-    })
-    .await
-    .expect("the polling-only status must be reported");
-    assert_eq!(
-        status.0,
-        WatchedView::Flat {
-            pane: PaneId::Left,
-            navigation: NavigationId(1),
-        }
-    );
-    assert!(
-        matches!(&status.1, WatchStatus::PollingOnly(error) if error.path == left),
-        "{status:?}"
-    );
-    // A refresh of the folder registers it again, as a new view that starts
-    // natively watched: no status is sent for it.
+    // when it is shown). It is checked about every second meanwhile, and
+    // nothing is reported: the registration is retried.
+    watch.calls(2).await;
+    std::fs::write(left.join("checked-📄.txt"), b"found by a check").unwrap();
+    hinted_without_status(&mut events, NavigationId(1)).await;
+    // Once the system allows it, a retry in the background registers the
+    // folder, again without a status.
     watch.failing.store(false, Ordering::SeqCst);
+    watch.registrations(1).await;
+    // The UI shows the folder's current rows for the hint; later changes are
+    // hinted from notifications (its next regular check is 15 s away).
     commands
         .send(Command::Refresh {
             pane: PaneId::Left,
@@ -919,10 +905,43 @@ async fn a_failed_registration_reports_polling_only_until_a_refresh_registers() 
         })
         .await
         .unwrap();
-    commit(&commands, &mut events, NavigationId(2), &left).await;
-    watch.registrations(1).await;
+    let rows = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            match events.recv().await.expect("engine output") {
+                Event::ListingFinished {
+                    pane: PaneId::Left,
+                    navigation: NavigationId(2),
+                    entries,
+                    ..
+                } => break entries,
+                Event::WatchStatus { view, status } => {
+                    panic!("unexpected watch status for {view:?}: {status:?}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the refresh must finish");
+    accept(&commands, NavigationId(2), &left, rows).await;
     std::fs::write(left.join("新-👩🏽‍💻.txt"), b"new data").unwrap();
-    hinted_without_status(&mut events, NavigationId(2)).await;
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            match events.recv().await.expect("engine output") {
+                Event::DirectoryChanged {
+                    pane: PaneId::Left,
+                    navigation: NavigationId(2),
+                } => break,
+                Event::WatchStatus { view, status } => {
+                    panic!("unexpected watch status for {view:?}: {status:?}")
+                }
+                // A check's hint for the rows of the first navigation.
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the notification must be hinted");
     shut_down(commands, events, engine).await;
 }
 
@@ -945,5 +964,119 @@ async fn a_panicking_watch_registration_restarts_the_pane_watcher() {
     std::fs::write(left.join("新-👩🏽‍💻.txt"), b"new data").unwrap();
     hinted_without_status(&mut events, NavigationId(1)).await;
     assert!(watch.calls.load(Ordering::SeqCst) >= 2);
+    shut_down(commands, events, engine).await;
+}
+
+/// No hint for `navigation` and no watch status for `window`. Other events,
+/// such as a late hint for replaced rows, are skipped.
+#[cfg(unix)]
+async fn assert_quiet(
+    events: &mut mpsc::Receiver<Event>,
+    navigation: NavigationId,
+    window: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + window;
+    while let Ok(event) = tokio::time::timeout_at(deadline, events.recv()).await {
+        match event.expect("engine output") {
+            Event::DirectoryChanged {
+                navigation: hinted, ..
+            } => assert_ne!(hinted, navigation, "an unchanged view was hinted"),
+            Event::WatchStatus { view, status } => {
+                panic!("unexpected watch status for {view:?}: {status:?}")
+            }
+            _ => {}
+        }
+    }
+}
+
+/// An engine with Show hidden files off whose left pane shows `left`, which
+/// also holds a dotfile, as navigation 1. Every registration fails, so the
+/// folder is checked about every second.
+#[cfg(unix)]
+async fn hiding_engine() -> (RealEngine, PathBuf) {
+    let mut engine = real_engine(|watch| watch.failing = AtomicBool::new(true));
+    let dotfile = engine.left.join(".設定-rc");
+    std::fs::write(&dotfile, b"hidden").unwrap();
+    engine
+        .commands
+        .send(Command::ShowHiddenEntries(false))
+        .await
+        .unwrap();
+    engine
+        .commands
+        .send(navigate(1, &engine.left))
+        .await
+        .unwrap();
+    let rows = commit(
+        &engine.commands,
+        &mut engine.events,
+        NavigationId(1),
+        &engine.left,
+    )
+    .await;
+    assert!(!rows.iter().any(|entry| entry.path == dotfile), "{rows:?}");
+    (engine, dotfile)
+}
+
+/// A home folder with dotfiles, shown without them, stays quiet: its checks
+/// leave out what its listing left out, and a change of a hidden entry alone
+/// changes nothing it shows.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hidden_entries_left_out_of_a_listing_are_left_out_of_its_checks() {
+    let (
+        RealEngine {
+            _temporary,
+            left,
+            commands,
+            mut events,
+            engine,
+            ..
+        },
+        dotfile,
+    ) = hiding_engine().await;
+    assert_quiet(&mut events, NavigationId(1), Duration::from_millis(2_500)).await;
+    std::fs::write(&dotfile, b"hidden, changed").unwrap();
+    assert_quiet(&mut events, NavigationId(1), Duration::from_millis(1_500)).await;
+    std::fs::write(left.join("checked-📄.txt"), b"found by a check").unwrap();
+    hinted_without_status(&mut events, NavigationId(1)).await;
+    shut_down(commands, events, engine).await;
+}
+
+/// Showing hidden files lists the pane again, and the rows of that listing are
+/// checked with the dotfile they now show.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rows_listed_after_showing_hidden_entries_are_checked_with_them() {
+    let (
+        RealEngine {
+            _temporary,
+            left,
+            commands,
+            mut events,
+            engine,
+            ..
+        },
+        dotfile,
+    ) = hiding_engine().await;
+    commands
+        .send(Command::ShowHiddenEntries(true))
+        .await
+        .unwrap();
+    commands
+        .send(Command::Refresh {
+            pane: PaneId::Left,
+            navigation: NavigationId(2),
+            path: left.clone(),
+            sort: SortSpec::default(),
+            scan: None,
+        })
+        .await
+        .unwrap();
+    let rows = commit(&commands, &mut events, NavigationId(2), &left).await;
+    assert!(rows.iter().any(|entry| entry.path == dotfile), "{rows:?}");
+    assert_quiet(&mut events, NavigationId(2), Duration::from_millis(2_500)).await;
+    std::fs::write(&dotfile, b"shown, changed").unwrap();
+    hinted_without_status(&mut events, NavigationId(2)).await;
     shut_down(commands, events, engine).await;
 }

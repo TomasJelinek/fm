@@ -146,6 +146,7 @@ impl Fixture {
         fixture.names()?;
         fixture.links()?;
         fixture.checksums(&mut random)?;
+        fixture.viewer_extras()?;
         // Last: read-only entries would refuse the writes above.
         fixture.read_only()?;
         Ok(fixture)
@@ -328,13 +329,16 @@ impl Fixture {
             "table, quote, link",
             guide.as_bytes(),
         )?;
+        // The HTML viewer serves assets below the page's folder only: the second image
+        // climbs above it (`../`) and is denied by design (docs/developer/WEB_VIEWER_API.md).
         self.write(
             "docs/page.html",
             "html",
-            "local stylesheet and image",
+            "local stylesheet and image; a parent-relative image the viewer denies",
             b"<!doctype html><html><head><meta charset=\"utf-8\"><title>Fixture page</title>\
 <link rel=\"stylesheet\" href=\"page_files/style.css\"></head><body><h1>Fixture page</h1>\
-<p>Offline <b>HTML</b> with a local image:</p><img src=\"../images/photo.png\" alt=\"photo\">\
+<p>Offline <b>HTML</b> with a local image:</p><img src=\"page_files/photo.png\" alt=\"photo\">\
+<img src=\"../images/photo.png\" alt=\"outside\">\
 <script>document.title = 'script ran';</script></body></html>\n",
         )?;
         self.write(
@@ -342,6 +346,19 @@ impl Fixture {
             "code",
             "stylesheet of page.html",
             b"h1 { color: #3a7bd5; }\n",
+        )?;
+        let photo = encode::png(160, 120, |x, y| {
+            [
+                (x * 255 / 159) as u8,
+                (y * 255 / 119) as u8,
+                ((x + y) % 256) as u8,
+            ]
+        });
+        self.write(
+            "docs/page_files/photo.png",
+            "image",
+            "image of page.html (160x120 RGB gradient)",
+            &photo,
         )?;
         self.write("docs/plain.htm", "html", "minimal HTML", b"<p>plain</p>\n")?;
         self.write(
@@ -730,6 +747,118 @@ fn sentence(random: &mut Random, words: usize) -> String {
         .join(" ")
 }
 
+/// Create a new folder `base` in `parent` (`base-2`, `base-3`, … when the name is
+/// taken) and return it. Never returns a folder that existed before: the suite deletes
+/// only what it created itself.
+pub fn create_fresh(parent: &Path, base: &str) -> Result<PathBuf, String> {
+    for attempt in 1..=99 {
+        let path = if attempt == 1 {
+            parent.join(base)
+        } else {
+            parent.join(format!("{base}-{attempt}"))
+        };
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("cannot create {}: {error}", path.display())),
+        }
+    }
+    Err(format!(
+        "cannot create a new {base} folder in {}: 99 names are taken",
+        parent.display()
+    ))
+}
+
+/// Give the owner back what fixtures and scenarios took away below `path`, without
+/// following links: every folder gets owner read, write and search permission, every
+/// file owner write permission. A kept run folder (or a scenario's work folder) can
+/// then always be deleted, in a file manager too. Returns the paths it could not change.
+pub fn restore_owner_write(path: &Path) -> Vec<PathBuf> {
+    let mut stuck = Vec::new();
+    restore_into(path, &mut stuck);
+    stuck
+}
+
+#[cfg(unix)]
+fn restore_into(path: &Path, stuck: &mut Vec<PathBuf>) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    let wanted = if metadata.is_dir() {
+        0o700
+    } else if metadata.is_file() {
+        0o200
+    } else {
+        // Links are never followed; other kinds carry no fixture permissions.
+        return;
+    };
+    let mode = metadata.permissions().mode();
+    if mode & wanted != wanted
+        && fs::set_permissions(path, fs::Permissions::from_mode(mode | wanted)).is_err()
+    {
+        stuck.push(path.to_path_buf());
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+            restore_into(&entry.path(), stuck);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_into(path: &Path, stuck: &mut Vec<PathBuf>) {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+    let mut permissions = metadata.permissions();
+    if permissions.readonly() {
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        if fs::set_permissions(path, permissions).is_err() {
+            stuck.push(path.to_path_buf());
+        }
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+            restore_into(&entry.path(), stuck);
+        }
+    }
+}
+
+/// Entries below `path` (links not followed) that still block deleting it: folders
+/// without owner read, write and search permission, files without owner write.
+pub fn owner_locked(path: &Path) -> Vec<PathBuf> {
+    let mut locked = Vec::new();
+    locked_into(path, &mut locked);
+    locked
+}
+
+fn locked_into(path: &Path, locked: &mut Vec<PathBuf>) {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    #[cfg(unix)]
+    let blocked = {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode();
+        (metadata.is_dir() && mode & 0o700 != 0o700) || (metadata.is_file() && mode & 0o200 == 0)
+    };
+    #[cfg(not(unix))]
+    let blocked = !metadata.file_type().is_symlink() && metadata.permissions().readonly();
+    if blocked {
+        locked.push(path.to_path_buf());
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+            locked_into(&entry.path(), locked);
+        }
+    }
+}
+
 /// Remove a tree that may contain read-only entries.
 pub fn remove_tree(path: &Path) -> std::io::Result<()> {
     if !path.exists() {
@@ -763,5 +892,175 @@ fn make_writable(path: &Path) {
         for entry in fs::read_dir(path).into_iter().flatten().flatten() {
             make_writable(&entry.path());
         }
+    }
+}
+
+/// Seed of the viewer scenarios' extra fixtures: their own sequence, so every file
+/// generated before them stays byte-identical.
+const VIEWER_SEED: u64 = SEED ^ 0x5649_4557;
+
+impl Fixture {
+    /// File pairs for the comparator and a grid of images for the thumbnail view.
+    fn viewer_extras(&mut self) -> Result<(), String> {
+        let mut random = Random::new(VIEWER_SEED);
+        self.directory("compare", "file pairs for the comparator")?;
+        let mut base = String::new();
+        for line in 0..120 {
+            base.push_str(&format!("{line:03} {}\n", sentence(&mut random, 6)));
+        }
+        self.write(
+            "compare/same-a.txt",
+            "text",
+            "identical to same-b.txt",
+            base.as_bytes(),
+        )?;
+        self.write(
+            "compare/same-b.txt",
+            "text",
+            "identical to same-a.txt",
+            base.as_bytes(),
+        )?;
+        // Three differences: line 10 changed, line 100 removed, a line inserted after 60.
+        let mut lines: Vec<String> = base.lines().map(str::to_owned).collect();
+        lines[10] = "010 this line differs in right.txt".to_owned();
+        lines.remove(100);
+        lines.insert(61, "inserted line only in right.txt".to_owned());
+        let right = lines.join("\n") + "\n";
+        self.write(
+            "compare/left.txt",
+            "text",
+            "three differences from right.txt",
+            base.as_bytes(),
+        )?;
+        self.write(
+            "compare/right.txt",
+            "text",
+            "three differences from left.txt",
+            right.as_bytes(),
+        )?;
+        // Large, but below the text comparator's 4 MiB per-file limit at every scale.
+        let target = 3_584 << 10;
+        let mut large = String::with_capacity(target + 128);
+        let mut line = 0_u64;
+        while large.len() < target {
+            large.push_str(&format!("{line:08} {}\n", sentence(&mut random, 10)));
+            line += 1;
+        }
+        let last = format!("\n{:08} ", line - 2);
+        let changed = large
+            .replacen("\n00000002 ", "\n00000002 CHANGED ", 1)
+            .replacen(&last, &format!("{last}CHANGED "), 1);
+        self.write(
+            "compare/large-a.log",
+            "text",
+            "3.5 MiB log",
+            large.as_bytes(),
+        )?;
+        self.write(
+            "compare/large-b.log",
+            "text",
+            "large-a.log with lines 2 and N-2 changed",
+            changed.as_bytes(),
+        )?;
+        // Over the comparator's limit: large-a.log with another 768 KiB appended.
+        let mut over = large;
+        while over.len() < (4_352 << 10) {
+            over.push_str(&format!("{line:08} {}\n", sentence(&mut random, 10)));
+            line += 1;
+        }
+        self.write(
+            "compare/over-limit.log",
+            "text",
+            "4.25 MiB: over the 4 MiB text comparison limit",
+            over.as_bytes(),
+        )?;
+        let mut utf16 = vec![0xFF, 0xFE];
+        for unit in UNICODE_SAMPLE.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        self.write(
+            "compare/text-utf8.txt",
+            "text",
+            "multilingual sample as UTF-8",
+            UNICODE_SAMPLE.as_bytes(),
+        )?;
+        self.write(
+            "compare/text-utf16.txt",
+            "text",
+            "the same text as UTF-16 LE with BOM",
+            &utf16,
+        )?;
+        let gradient = |x: u32, y: u32| [(x * 4) as u8, (y * 4) as u8, 128];
+        self.write(
+            "compare/image-a.png",
+            "image",
+            "64x64 gradient",
+            &encode::png(64, 64, gradient),
+        )?;
+        self.write(
+            "compare/image-b.png",
+            "image",
+            "image-a.png with a red 16x16 square",
+            &encode::png(64, 64, |x, y| {
+                if (16..32).contains(&x) && (16..32).contains(&y) {
+                    [255, 0, 0]
+                } else {
+                    gradient(x, y)
+                }
+            }),
+        )?;
+        let binary = random.bytes(8192);
+        let mut altered = binary.clone();
+        for offset in [100, 4000, 8000] {
+            altered[offset] ^= 0xFF;
+        }
+        self.write(
+            "compare/binary-a.bin",
+            "binary",
+            "8192 random bytes",
+            &binary,
+        )?;
+        self.write(
+            "compare/binary-b.bin",
+            "binary",
+            "binary-a.bin with three bytes inverted",
+            &altered,
+        )?;
+
+        self.directory("thumbs", "images for the thumbnail view")?;
+        for index in 0..60_u32 {
+            let colour = [
+                (index * 37 % 256) as u8,
+                (index * 91 % 256) as u8,
+                ((index * 53 + 80) % 256) as u8,
+            ];
+            let path = self.root.join(format!("thumbs/tile-{index:02}.png"));
+            let image = encode::png(96, 72, |x, y| {
+                if x.abs_diff(y) < 4 {
+                    [255, 255, 255]
+                } else {
+                    colour
+                }
+            });
+            fs::write(&path, image).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        self.record(
+            "thumbs/tile-NN.png",
+            "image",
+            "60 PNGs of 96x72, one colour each with a white diagonal",
+        );
+        self.write(
+            "thumbs/document.pdf",
+            "pdf",
+            "one page for a PDF preview",
+            &encode::pdf(&["Thumbnail PDF fixture"]),
+        )?;
+        self.write(
+            "thumbs/photo.jpg",
+            "image",
+            "128x64 greyscale JPEG",
+            &encode::jpeg(16, 8, |bx, by| ((bx * 15 + by * 8) % 256) as u8),
+        )?;
+        Ok(())
     }
 }

@@ -266,7 +266,7 @@ These are submission observations, not monitor scanout measurements.
 Explicit Vulkan and high-performance DX12 adapter experiments did not produce a
 consistent improvement. Vulkan reduced some idle delays but roughly doubled warm
 frame intervals to 31 ms. The high-performance preference selected the available
-a discrete laptop GPU, yet still showed moving-frame stalls up to 1.07 s.
+discrete laptop GPU, yet still showed moving-frame stalls up to 1.07 s.
 Neither experiment changes the shipped adapter/backend policy. Full metadata,
 limitations and artifact names are in [native verification](../NATIVE_SCROLL_VERIFICATION.md).
 

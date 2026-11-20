@@ -1,7 +1,7 @@
 # Compact Custom Commands settings verification
 
 The user requested the Salamander User Menu arrangement. Reference inspection:
-`D:/experiments/salamander-main/src/dialogs4.cpp`, `CCfgPageUserMenu` near
+`<salamander-source>/src/dialogs4.cpp`, `CCfgPageUserMenu` near
 lines 2080–2290 (`EnableButtons`, `LoadControls`, `StoreControls`, list header
 creation). The implemented settings page keeps the ordered list, header actions
 and selected details structure while retaining this application's structured argv

@@ -2,8 +2,12 @@
 
 The source implementation exposes Masks, Regex and typed Expression matching,
 reusing the panel compilers, metadata semantics and budgets. Results use one
-compact aligned row per entry. This is name/metadata matching only; the separate
-content query remains literal. See the current
+compact aligned row per entry. The mode applies to names and metadata; the
+separate content query is literal text or, with **Regular expression**, a bounded
+regular expression matched within each line (see
+[Content regular expressions](#content-regular-expressions)). **Search inside
+archives** also matches archive members, and **Feed to panel** shows the results as
+a list in a panel (see the sections at the end). See the current
 [panel/viewer follow-up requirements](../superpowers/specs/2026-11-07-panel-viewer-followups.md).
 
 `midnight-core::FindService` is an internal Rust backend capability, not a stable
@@ -37,8 +41,12 @@ Add, on the Search folders line before Remove, opens a one-line entry for a type
 absolute path (Enter or OK) with Browse…, which sends `PickPath` for a native
 directory bound to that Find session; a late or foreign chooser answer is only
 retired, and closing the window cancels an open chooser first. Adding a listed
-path ticks it instead of duplicating it. Remove removes the folder chosen by
-clicking its name in the dropdown. Unchanged paths never round-trip through a
+path ticks it instead of duplicating it. Either way the host reports the row
+(`root-added`), and the window chooses that folder, closes the entry and moves
+the focus to Search folders; a refused path keeps the entry open with its
+error. A narrow window puts Browse… and OK under the typed path. The dropdown
+fits the room below or above the picker and scrolls the highlighted folder into
+view. Remove removes the folder chosen by clicking its name in the dropdown. Unchanged paths never round-trip through a
 lossy text editor, so names that cannot be typed keep their original native path. Masks and Regex use their existing filename compiler; Expression
 uses captured native name/kind/size/time/attribute facts and preserves unknown
 metadata semantics. A nonmatching directory is still traversed. Patterns are
@@ -148,9 +156,14 @@ from the scrolling actions. Stop retains results for subsequent read-only use.
 Every result column (Name, Extension, Path, Size, Modified and, for identical
 files, the group column) resizes by dragging the separator after its header; the
 widths are kept by that Find window for its session, and a separator drag never
-sorts. Help beside the mode chooser (or F1) covers the results with syntax help
-for the chosen Masks, Regex or Expression mode; clicking an example puts it in
-the query without searching, and Find closes the help.
+sorts. Path also takes the list's spare width, and a drag of its separator
+starts from that shown width. Only header cells carry separators; result rows
+just keep the 10 px gap. Help beside the mode chooser (or F1) covers the results
+with syntax help for the chosen Masks, Regex or Expression mode and takes the
+keyboard focus, so result keys never act on hidden rows; Escape, F1 or Close
+help returns the focus to the results. Clicking an example puts it in the query
+without searching, and Find closes the help. Escape first closes the help or the
+Add entry, and only then the window.
 
 Go to file sends retained session/generation/result IDs, not authority reconstructed
 from displayed paths. The backend reopens and validates identity/revision. The UI
@@ -203,14 +216,16 @@ removed or renamed inside it meanwhile do not abort its enumeration, because a
 directory's revision carries no content state. Each result is still revalidated
 before publication.
 
-Current scope is native Windows/Linux. Archives and other providers, legacy
-content encodings, BOM-less UTF-16, hex/regex content queries and automatic file
-execution are not enabled. System file activation requires the explicit Open action. Unsupported content, access errors and reached budgets produce
+Current scope is native Windows/Linux roots; archive members are searched only with
+Search inside archives (below). Other providers, legacy content encodings, BOM-less
+UTF-16, hex content queries and automatic file execution are not enabled. System file activation requires the explicit Open action. Unsupported content, access errors and reached budgets produce
 an explicit incomplete result, counts and details; no silent complete claim. An
 error appears as red text with an error icon, and the status line under the
 results summarizes progress; clicking either (tooltip "Click for more details")
 shows the full error, counts and diagnostics with Copy and Back. There is no
-separate Details button.
+separate Details button. A window shorter than 360 px with text larger than
+20 px shows the status in the query area instead, except while a search runs:
+the query area is then hidden, so the status stays under the results.
 
 The refactor has causal blocked-I/O, sorting, Stop-to-Sort and header-geometry
 RED/GREEN coverage. Windows and Linux software-window pointer/key/geometry checks
@@ -237,3 +252,152 @@ and read 40,960 bytes: 2,000 singleton sizes required no content I/O, while four
 identical 4 KiB files required hashing and exact comparison. This is one local
 debug-build observation, not a hardware-independent latency guarantee; see
 `_build/qa/operations-find/duplicates-performance.log`.
+
+## Content regular expressions
+
+**Regular expression**, beside Match case and Whole words under Containing text,
+turns the content query into a regular expression (`FindContentQuery::regex`). It
+uses the workspace's `regex` crate through
+`midnight-platform-common::content_pattern::LinePattern`, with the panel filter's
+bounds: a 2 MiB compiled-program and lazy-DFA ceiling, nesting depth 64 and the
+4096-byte query limit; matching is linear in the searched text. The pattern is
+compiled once per search on the worker. An invalid pattern ends the search as
+Failed with "Invalid content regular expression: …" and the library's explanation
+(with a caret under the offending part) on the details page that the red status
+line opens.
+
+The decoded text (UTF-8, BOM-marked UTF-16) is split into lines like grep: each line
+is matched on its own, a trailing carriage return is not part of the line, the empty
+remainder after a final newline is no line, and a match never spans lines. Only one
+line is retained; a line longer than 1 MiB is matched in 1 MiB windows that overlap
+by 4 KiB, so a match longer than the overlap that crosses a window edge can be
+missed. Match case switches case-insensitive matching (Unicode simple case folding)
+off; Whole words requires a word boundary on both sides of the match (the pattern is
+validated alone first, then wrapped as `\b(?:pattern)\b`). The per-file and total
+content budgets, revalidation and encoding rules are those of literal content
+search.
+
+## Search inside archives
+
+**Search inside archives** (More options) also matches the members of archives that
+the walk meets: files with a built-in archive suffix (ZIP, 7z, TAR and its
+compressed forms, GZIP, XZ, BZIP2, Zstandard) for which an installed archive plugin
+is available. Each archive gets its own provider session on the search worker,
+opened from the native capture (`find_installed_archives.rs`; the plugin catalogue is
+discovered once, on first use), searched, and released on the same worker; panels
+and viewers never share these sessions. The plugin host counts them in an allowance of
+their own (`Mount::open_for_search`): at most two at once, since at most two searches
+traverse at once and each opens one archive at a time, beside the two archives that
+panels, tabs and viewers may have open and the three archives inside archives. So Find
+searches inside archives while both panels show archives, and a running search never
+makes a panel refuse one. The archive file itself is revalidated after opening, so a
+replaced file is not searched. Members are matched like native
+entries: name masks or regex, metadata expressions (kind, size, the archive's time
+when it carries a time zone), Modified within, and content streamed through the
+provider in the content reader's chunks. Identical files searches native files only;
+the option is disabled with it. Subfolders limits recursion into ordinary folders only:
+an archive found in a searched folder is searched completely, its member folders
+included, whatever Subfolders says, while with Subfolders off an archive in an ordinary
+subfolder is not reached.
+
+Find sets no limit of its own on archives: every archive the walk meets is opened,
+however large, and every member is examined, until the search ends or Stop. The
+search's budgets (`FindLimits`) apply to members as to native entries: members count
+as visited entries, folder levels inside an archive count against the depth limit,
+folders waiting to be listed count against retained memory like native directory
+frames, and the result, memory and content budgets are shared with the native walk.
+Neither the bundled archive plugin, the plugin host nor the engine (Find, panels,
+copy-out and folder sizes alike) limits how many members an archive has or a folder
+lists, or how long their names are: the host pages through every folder, and only
+the worker's 1 GiB of memory, the most the worker SDK grants, bounds an archive's
+index (about nine million TAR, two million 7z or one and a half million ZIP members;
+see the [archive worker](../../plugins/midnight-fs-archive/README.md)). A version 1 plugin
+keeps its legacy limits, including sources of up to 64 MiB. An archive or folder
+that cannot be opened or listed, for example one that needs more memory than its
+worker has, is reported in the details, and the search goes on.
+
+Stop reaches the provider's work through the search's cancellation, so it stays
+prompt inside a huge archive: it ends the opening of an archive (when the worker
+indexes the whole archive, reading all of a TAR or compressed stream) by ending its
+worker, a listing between pages, and the staging of a member for its content at the
+worker's next staging checkpoint (protocol 3; older plugins finish that member
+first). The walk checks Stop before each folder and member. A stalled provider is
+stopped by the plugin host's own watchdog. Nested archives (an archive inside an
+archive) are not opened. Without an archive provider (no plugin, or a host without
+archive capture) the first archive met adds "Search inside archives is unavailable"
+to the details once, and the search is Incomplete rather than silently complete.
+
+A member result (`FindResult::archive`) shows the archive's path joined with the
+member's names in the Path column; that joined path is presentation only and is
+never used as a native target. Its `FindArchiveMember` holds the provider address of
+the member's folder, the member's raw name and the archive file's captured identity.
+Go to file revalidates the archive file (identity and revision) on a backend worker,
+then opens the folder in the panel that started the Find through the ordinary
+archive navigation (`ArchiveAction::List` of that address, which reopens the archive
+at the searched revision) and puts the cursor on the member once the listing
+arrives. Leaving the archive returns to the folder the panel showed before. View,
+Edit and Open are disabled for members, and a capture request for one is refused
+with "An archive member opens from its archive"; view or copy members from the
+archive panel. Archive search has unit and integration coverage with a fake provider
+session (`crates/midnight-engine/tests/find_archives.rs`), including 1,001 archives
+and an archive with over 100,000 members searched completely, waiting folders charged
+to retained memory, and Stop while a slow provider opens, lists or stages a member;
+the acceptance harness has no archive plugin, so it verifies only the explained
+"unavailable" outcome. The plugin host's tests list a folder of 100,001 members across
+pages, the plugin's tests open ZIP, TAR and 7z archives of 100,001 members, and an
+ignored host test (`real_sandboxed_worker_lists_archives_of_millions_of_members`)
+lists generated archives of millions of members through the sandboxed worker.
+
+## Feed to panel
+
+**Feed to panel** (on the More options line, right above the results; the footer
+keeps its six query actions so none is cut in narrow windows; enabled when a
+finished or stopped search has
+results) shows the results as a list over the panel that opened the Find, like Total
+Commander's feed to listbox, and closes the Find window. The list is a virtual
+"search results" location: the panel's own folder stays loaded underneath, and
+leaving the list (Backspace, Back to folder, Alt+Left or the parent and root
+commands) shows it again unchanged. Any navigation of that panel to another location
+(a path, a drive, a bookmark, a tab, history) also leaves the list. The rows are the
+native results in the Find window's sort order; archive members are left out and
+counted in the status line. The list is a snapshot of the results: it is not updated
+by later file changes.
+
+Keys keep their configured meaning: Up/Down, Page Up/Down, Home/End move; Insert
+marks and moves, Space marks in place, the bulk selection keys mark with a panel's
+rules (`SelectionOperation`): select files only (Ctrl+A) replaces the marks with the
+files, invert files only (Ctrl+I) keeps folder marks, and Ctrl+Shift+A, Ctrl+D and
+Ctrl+Shift+I select, clear and invert files and folders; Ctrl+click and Shift+click
+mark with the pointer. Enter (or a double click) goes to the focused result: a
+folder is opened, a file is shown in its folder with the cursor on it, and the list
+is left. The actions act on the real files through the ordinary backend flows:
+
+- View (F3) and plain view (Alt+F3) open the focused file in the viewer, whose Space
+  and Backspace walk the results; Edit (F4) opens the configured editor.
+- Copy (F5) and Move (F6) open the ordinary Copy/Move dialog with the marked results
+  (or the focused one) as captured native paths, to the other panel's folder.
+- Delete (F8, to the Trash) and permanent delete (Shift+F8) enter the ordinary
+  captured-Delete confirmation and progress (`CapturedPathsDelete` in
+  `midnight-core`). A result inside another marked folder is covered by that folder.
+  The mutation service pins each target on a backend worker and refuses one that is
+  no longer the kind (or, for a file, the size) the search found. When the delete
+  completes without failures, its rows leave the list.
+- Copy and Cut to the clipboard and Properties use the marked results' paths.
+
+Not available in the list, and explained with a notice instead of acting on the
+folder hidden underneath: create folder or file, rename, paste, sorting (sort in the
+Find window before feeding), attributes, folder sizes, checksums, Make file list,
+Compare files, Compare directories, Select and Deselect by mask, Show hidden files,
+the panel filter, custom commands (from the toolbar, its popup and the F9 menu) and
+Ctrl+Enter (the focused name into the command line); Ctrl+Shift+P inserts the focused
+result's full path. The toolbar and menus refuse these the same way the keys do.
+Keypad * inverts the files like Ctrl+I, keeping folder marks. The hidden rows start
+no drag, and nothing is dropped onto a panel that shows results. After Move
+the list still shows the old locations (their actions report that the file changed
+or is gone); feed the search again to refresh it. At most 4096 items are deleted at
+once.
+
+The list lives in `presenter/find_feed.rs` (state and actions) and `find_feed.rs`
+with `ui/find-feed.slint` (models, routing and the overlay). The panel's ordinary key
+routing (`file_key_bridge::dispatch`) hands a shown list its actions first, so the
+function bar and remapped shortcuts reach the results as well.

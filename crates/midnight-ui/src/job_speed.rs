@@ -8,6 +8,16 @@ use std::{
     sync::Arc,
 };
 
+/// The last minute of samples sets the sustained level, or the last
+/// `RECENT_SAMPLES` once long histories combine samples into longer intervals.
+const RECENT_MILLIS: u64 = 60_000;
+const RECENT_SAMPLES: usize = 12;
+/// Nearest-rank percentile of those samples that the scale follows.
+const SUSTAINED_PERCENTILE: f64 = 0.9;
+/// A higher sample still raises the scale, with a weight that halves this often.
+const PEAK_HALF_LIFE_MILLIS: f64 = 1000.0;
+const HEADROOM: f64 = 1.1;
+
 #[derive(Default)]
 pub(crate) struct Charts(RefCell<HashMap<(bool, OperationId), Cached>>);
 
@@ -151,19 +161,20 @@ fn build(source: &OperationThroughput, view: View, locale: &NumberLocale) -> Spe
             sample.transfer_per_second
         })
     };
-    let peak = samples.iter().fold(0.0_f64, |peak, sample| {
-        peak.max(primary(sample))
-            .max(if items || verification_only {
-                0.0
+    let levels: Vec<_> = samples
+        .iter()
+        .map(|sample| {
+            let level = if items || verification_only {
+                primary(sample)
             } else {
-                finite(sample.verification_per_second)
-            })
-    });
-    let scale = if peak <= f64::MAX / 1.1 {
-        (peak * 1.1).max(1.0)
-    } else {
-        peak
-    };
+                primary(sample).max(finite(sample.verification_per_second))
+            };
+            (sample.elapsed_millis, level)
+        })
+        .collect();
+    let scale = sustained_scale(&levels);
+    // Above the scale a curve runs along the top edge: a clipped peak.
+    let height = |rate: f64| (100.0 - rate / scale * 100.0).clamp(0.0, 100.0);
     let mut line = String::new();
     let mut verification = String::new();
     let mut area = String::new();
@@ -172,11 +183,11 @@ fn build(source: &OperationThroughput, view: View, locale: &NumberLocale) -> Spe
     let mut last_verification_y = 100.0;
     for (index, sample) in samples.iter().enumerate() {
         let x = (sample.elapsed_millis as f64 / span * 1000.0).clamp(last_x, 1000.0);
-        let y = 100.0 - primary(sample) / scale * 100.0;
+        let y = height(primary(sample));
         let verify_y = if deletion || verification_only {
             100.0
         } else {
-            100.0 - finite(sample.verification_per_second) / scale * 100.0
+            height(finite(sample.verification_per_second))
         };
         if index == 0 {
             let initial_x = (sample.start_millis as f64 / span * 1000.0).clamp(0.0, x);
@@ -239,6 +250,45 @@ fn build(source: &OperationThroughput, view: View, locale: &NumberLocale) -> Spe
         point_x: last_x as f32,
         point_y: last_y as f32,
         verification_y: last_verification_y as f32,
+    }
+}
+
+/// The vertical scale follows sustained rates, not the history's peak: the 90th
+/// percentile of the last minute's active samples, raised by any higher sample with
+/// a weight that halves every second after it. A spike therefore lifts the scale
+/// briefly, which then comes back down within seconds and draws the spike as a
+/// clipped peak. Pauses, waits and stalls are recorded as idle (zero) intervals:
+/// they neither pull the scale down nor age a peak, so it holds still through them.
+/// `levels` are (end time, highest drawn rate) in time order.
+fn sustained_scale(levels: &[(u64, f64)]) -> f64 {
+    let active: Vec<_> = levels
+        .iter()
+        .copied()
+        .filter(|(_, level)| *level > 0.0)
+        .collect();
+    let Some(&(now, _)) = active.last() else {
+        return 1.0;
+    };
+    let older = active
+        .iter()
+        .rposition(|(at, _)| now.saturating_sub(*at) > RECENT_MILLIS)
+        .map_or(0, |index| index + 1);
+    let mut recent: Vec<f64> = active[older.min(active.len().saturating_sub(RECENT_SAMPLES))..]
+        .iter()
+        .map(|(_, level)| *level)
+        .collect();
+    let rank = (recent.len() as f64 * SUSTAINED_PERCENTILE).ceil() as usize;
+    let index = rank.clamp(1, recent.len()) - 1;
+    let sustained = *recent.select_nth_unstable_by(index, f64::total_cmp).1;
+    let peak = active.iter().fold(0.0_f64, |peak, (at, level)| {
+        let age = now.saturating_sub(*at) as f64;
+        peak.max(level * 0.5_f64.powf(age / PEAK_HALF_LIFE_MILLIS))
+    });
+    let level = sustained.max(peak);
+    if level <= f64::MAX / HEADROOM {
+        (level * HEADROOM).max(1.0)
+    } else {
+        level
     }
 }
 

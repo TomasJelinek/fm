@@ -178,6 +178,9 @@ impl Presenter {
     }
 
     pub(crate) fn request_make_file_list(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.feed_refuses(pane, "Make file list") {
+            return;
+        }
         if self.operations.closing || self.file_list.session.is_some() {
             return;
         }
@@ -501,6 +504,15 @@ impl Presenter {
     }
 
     pub(crate) fn apply_file_list(&mut self, event: FileListEvent) {
+        // "1 item", "2 items": the list's item count as its summary shows it.
+        let locale = &self.number_locale;
+        let item_count = |items: u64| {
+            format!(
+                "{} {}",
+                locale.format_u64(items),
+                if items == 1 { "item" } else { "items" }
+            )
+        };
         let Some(s) = self
             .file_list
             .session
@@ -524,8 +536,8 @@ impl Presenter {
             }) => {
                 s.preview = text;
                 s.summary = format!(
-                    "{} items{}",
-                    self.number_locale.format_u64(items),
+                    "{}{}",
+                    item_count(items),
                     if truncated {
                         " · preview shortened"
                     } else {
@@ -534,7 +546,7 @@ impl Presenter {
                 );
             }
             Ok(FileListUpdate::Generated { content, items }) => {
-                s.summary = format!("{} items", self.number_locale.format_u64(items));
+                s.summary = item_count(items);
                 if s.destination == 0 {
                     s.clipboard_content = Some(content);
                 } else if s.destination == 1 {

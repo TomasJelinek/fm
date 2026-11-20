@@ -21,6 +21,7 @@ mod raster;
 mod raster_timing;
 mod scroll_anchors;
 mod selection;
+mod selection_contrast;
 mod source_continuity;
 mod wrapping;
 

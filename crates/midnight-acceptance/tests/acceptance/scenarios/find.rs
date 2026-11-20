@@ -25,20 +25,22 @@ fn disk_matches(path: &Path, suffix: &str, found: &mut BTreeSet<String>) {
     }
 }
 
-/// The status line (the last one when an error line precedes it).
 fn status(window: &MinimalSoftwareWindow) -> Option<String> {
-    const STATES: [&str; 7] = [
-        "Ready",
-        "Searching",
-        "Completed",
-        "Incomplete",
-        "Cancelled",
-        "Failed",
-        "Error",
-    ];
     inspect::labels(window.window(), AccessibleRole::Button)
         .into_iter()
-        .rfind(|label| STATES.iter().any(|prefix| label.starts_with(prefix)))
+        .rfind(|label| {
+            [
+                "Ready",
+                "Searching",
+                "Completed",
+                "Incomplete",
+                "Cancelled",
+                "Failed",
+                "Error",
+            ]
+            .iter()
+            .any(|prefix| label.starts_with(prefix))
+        })
 }
 
 /// Result names: the first field of each row of the "Find results" list.

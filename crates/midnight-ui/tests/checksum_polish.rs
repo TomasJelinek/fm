@@ -208,3 +208,148 @@ fn calculate_sends_the_chosen_checksums_and_needs_at_least_one() {
     assert_eq!(&*sent.borrow(), &[(true, true, true)]);
     window.hide().unwrap();
 }
+
+fn key(
+    native: &slint::platform::software_renderer::MinimalSoftwareWindow,
+    text: impl Into<slint::SharedString>,
+) {
+    use slint::platform::{WindowAdapter, WindowEvent};
+    let text = text.into();
+    native
+        .window()
+        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    native
+        .window()
+        .dispatch_event(WindowEvent::KeyReleased { text });
+}
+
+#[test]
+fn the_algorithm_menu_works_from_the_keyboard() {
+    use slint::platform::Key;
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    let window = window(&windows);
+    window.set_draft(ChecksumDraft {
+        sha256: true,
+        ..Default::default()
+    });
+    window.set_output_available(
+        Rc::new(slint::VecModel::from(vec![true, true, false, false, false])).into(),
+    );
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    draw(&native, 860, 620, "algorithm-menu-keyboard");
+    // A click focuses the menu as well as opening it; Escape closes it again.
+    click(&native, "Checksum algorithms");
+    key(&native, Key::Escape);
+    assert!(window.window().is_visible(), "Escape closed only the menu");
+    // Keyboard alone from here: Down opens the menu on the shown algorithm.
+    key(&native, Key::DownArrow);
+    key(&native, Key::DownArrow);
+    key(&native, Key::DownArrow);
+    key(&native, " "); // MD5: included in the next calculation.
+    key(&native, Key::End);
+    key(&native, Key::Return); // Include subfolders.
+    key(&native, Key::Home);
+    key(&native, Key::DownArrow);
+    key(&native, Key::Return); // Show SHA-512 and close.
+    let draft = window.get_draft();
+    assert!(draft.sha256 && draft.md5 && draft.recursive, "{draft:?}");
+    assert_eq!(window.get_output_algorithm(), 1);
+    window.hide().unwrap();
+}
+
+/// Counts the window's close requests: Escape asks the owner to close the session.
+fn close_requests(window: &ChecksumWindow) -> Rc<std::cell::Cell<usize>> {
+    let closed = Rc::new(std::cell::Cell::new(0));
+    window.on_close_session({
+        let closed = closed.clone();
+        move || closed.set(closed.get() + 1)
+    });
+    closed
+}
+
+#[test]
+fn escape_closes_a_window_opened_on_the_verify_page() {
+    use slint::platform::Key;
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    let window = window(&windows);
+    let closed = close_requests(&window);
+    // As for Ctrl+F8 with a checksum file selected: the Verify page from the start.
+    window.set_manifest_path("checksums.sha256".into());
+    window.set_page(1);
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    window.invoke_begin();
+    draw(&native, 860, 620, "verify-page-escape");
+    key(&native, Key::Escape);
+    assert_eq!(
+        closed.get(),
+        1,
+        "Escape must close a window opened on Verify"
+    );
+    window.hide().unwrap();
+}
+
+#[test]
+fn escape_closes_the_window_after_the_save_prompt_is_answered() {
+    use slint::platform::Key;
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    let window = window(&windows);
+    let closed = close_requests(&window);
+    window.set_has_output(true);
+    window.set_output_available(Rc::new(slint::VecModel::from(vec![true; 5])).into());
+    // As the presenter does, an answer removes the prompt with its buttons.
+    window.on_confirm_save({
+        let weak = window.as_weak();
+        move || weak.unwrap().set_save_prompt("".into())
+    });
+    window.on_cancel_save_prompt({
+        let weak = window.as_weak();
+        move || weak.unwrap().set_save_prompt("".into())
+    });
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    window.invoke_begin();
+    for (answered, answer) in ["Replace", "Cancel"].into_iter().enumerate() {
+        window.set_save_prompt("checksums.sha256 already exists. Replace it?".into());
+        window.set_save_prompt_action("Replace".into());
+        draw(&native, 860, 620, &format!("save-prompt-{answer}"));
+        // A click focuses the button before its row goes away.
+        click(&native, answer);
+        draw(&native, 860, 620, &format!("save-prompt-{answer}-answered"));
+        assert!(accessible_item(&native, AccessibleRole::Button, answer).is_none());
+        key(&native, Key::Escape);
+        assert_eq!(closed.get(), answered + 1, "Escape after {answer}");
+    }
+    window.hide().unwrap();
+}
+
+#[test]
+fn escape_closes_the_window_after_details_back_and_dismiss_remove_their_buttons() {
+    use slint::platform::Key;
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    let window = window(&windows);
+    let closed = close_requests(&window);
+    window.set_attention(true);
+    window.set_issue("Checksum manifest mixes different algorithms.".into());
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    window.invoke_begin();
+    for (used, control) in ["Details", "Back", "Dismiss checksum warning"]
+        .into_iter()
+        .enumerate()
+    {
+        draw(&native, 860, 620, &format!("checksum-attention-{used}"));
+        click(&native, control);
+        draw(
+            &native,
+            860,
+            620,
+            &format!("checksum-attention-{used}-used"),
+        );
+        assert!(accessible_item(&native, AccessibleRole::Button, control).is_none());
+        key(&native, Key::Escape);
+        assert_eq!(closed.get(), used + 1, "Escape after {control}");
+    }
+    window.hide().unwrap();
+}

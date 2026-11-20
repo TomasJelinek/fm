@@ -18,6 +18,7 @@ impl Desktop {
     ) {
         // EngineRun retains intake ownership while this bounded reservation waits.
         let lease = self.editor_intake.lock().await.reserve().await;
+        let counting_cancel = cancel.clone();
         let work = lease.own(Work { source, cancel });
         let Ok(permit) = self.property_budget.clone().try_acquire_owned() else {
             let retired = work.retire().await;
@@ -28,6 +29,8 @@ impl Desktop {
         let services = self.services.clone();
         let locale = self.locale.clone();
         let outbox = self.outbox.clone();
+        let scope = self.scope.clone();
+        let counting = self.contents_budget.clone();
         let permit = Arc::new(permit);
         let worker_permit = permit.clone();
         let worker = tokio::task::spawn_blocking(self.scope.blocking(move || {
@@ -46,17 +49,35 @@ impl Desktop {
             })();
             drop(work);
             drop(lease);
-            result
+            // The provider outlives this worker only for a folder counted next.
+            result.map(|(result, folder)| (result, folder.map(|folder| (folder, filesystem))))
         }));
         tasks.spawn(self.scope.future(async move {
-            let _permit = permit;
-            let result = match worker.await {
-                Ok(result) => result,
-                Err(cause) => Err(worker_error("captured properties", Path::new(""), cause)),
+            let permit = permit;
+            let (result, folder) = match worker.await {
+                Ok(Ok((result, folder))) => (Ok(result), folder),
+                Ok(Err(error)) => (Err(error), None),
+                Err(cause) => (
+                    Err(worker_error("captured properties", Path::new(""), cause)),
+                    None,
+                ),
             };
             outbox
                 .send(Event::DesktopActionFinished { request, result })
                 .await;
+            drop(permit);
+            if let Some((folder, filesystem)) = folder {
+                count_contents(
+                    scope,
+                    counting,
+                    filesystem,
+                    folder,
+                    request,
+                    counting_cancel,
+                    outbox,
+                )
+                .await;
+            }
         }));
     }
 

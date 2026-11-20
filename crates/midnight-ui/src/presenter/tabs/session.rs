@@ -13,10 +13,10 @@ impl Presenter {
         for (edited, explicit) in self.tabs.edited.iter_mut().zip(overrides) {
             *edited |= explicit;
         }
-        let mut values = self.preferences.values.clone();
-        values.tabs = self.current_tab_sessions();
-        // Initial loading gates the save, including the application's exit drain.
-        self.update_preferences(values, &|_| false);
+        // The panels' first tabs are the session until the saved one is read, but no
+        // change of the user's: a start that changes nothing saves nothing, also not
+        // at exit. The first read keeps explicit paths and the next save stores them.
+        self.preferences.values.tabs = self.current_tab_sessions();
     }
 
     fn current_tab_sessions(&self) -> [PaneTabPreferences; 2] {
@@ -55,7 +55,7 @@ impl Presenter {
                     } else {
                         tab.parked.as_ref().and_then(|p| p.archive.as_ref())
                     }?;
-                    Some((index, archive.location.address.clone()))
+                    Some((index, archive.saved_address()))
                 })
                 .collect(),
             active: tabs.active,

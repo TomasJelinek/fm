@@ -30,6 +30,13 @@ repeat such a name into one entry with the last record's data. The worker walks 
 records the same way, so that ambiguous entry is listed once but unreadable; an
 archive whose records it cannot reconcile with the reader's index is refused.
 GZIP's untrusted FNAME never controls its synthetic member name, which is `content`.
+A source that the decoder rejects as corrupt while opening fails with the first line
+`This file is not a valid <format>.` (for example `ZIP archive` or `gzip file`), then
+the decoder's own reason, since an archive member opened as an archive may be any file.
+A failed read of the source itself (a dropped share, a removed drive, or the host's
+failure reply to a source read) is never taken for a corrupt archive: opening or
+reading a member then fails with that read's own reason and code (`Io`, or the code
+the host replied with), whatever error a decoder made of it.
 
 The package advertises `stable_entry_ids = true`: reopening identical source bytes
 with the same format and implementation version assigns the same member IDs.
@@ -74,18 +81,40 @@ fall below max(1 GiB, 2% of its capacity), so a highly compressed member cannot 
 it. The host queries the volume on each stage's first append and at least every
 64 MiB appended; writes by other programs between two queries are not counted.
 Disk-full, short writes, flush failures and the reserve discard staging and fail
-the request. Metadata remains bounded to 100,000 entries and 8 MiB of names; a
-TAR long-name, long-link or PAX record, which tar-rs buffers completely, is bounded
-to 16 MiB and otherwise fails as corrupt; 7z's raw next-header allocation is bounded
-to 64 MiB. The pinned 7z decoder has no public decoded-header allocation hook, so
-compressed-header allocation remains subject to process memory containment. The
-pinned ZIP reader parses the whole central directory, names included, before the
-entry and name limits apply, and the duplicate-record walk keeps one more copy of
-the distinct names; both are bounded only by the 512 MiB worker memory limit.
+the request.
+
+Nothing limits how many members an archive has or how many bytes their names take:
+the worker indexes every member, and only its process memory, which the host sets
+to the worker SDK's largest policy of 1 GiB, bounds the index. Each member costs one
+compact record and its name bytes (its label only when that differs from the raw
+name), and readable members a sorted locator entry. Indexing a million members in
+folders of 1,000 (`measure_index_memory`, below) peaks at about 105 bytes per TAR or
+compressed TAR member, 420 per 7z member (one-byte members, solid blocks of 1,000)
+and 690 per ZIP member, about 500 of which the pinned ZIP reader's own index takes
+(it parses the whole central directory, names included, and the duplicate-record
+walk briefly keeps one more copy of the distinct names). A 1 GiB worker therefore
+opens about nine million TAR, two million 7z or one and a half million ZIP members.
+An index that outgrows the worker's memory fails the archive with a reason that
+names how many members were indexed; an allocation inside a decoder or the ZIP
+reader ends the worker instead, and the host then says that the worker ended
+unexpectedly, for example for lack of memory.
+
+Bounds that remain protect against crafted data, not against large archives. The
+protocol limits each name to 64 KiB. A TAR long-name, long-link or PAX record,
+which tar-rs buffers completely, is bounded to 16 MiB and otherwise fails as
+corrupt. 7z's raw next header, which the parser reads whole, must lie inside the
+source and fit an eighth of the worker's memory (128 MiB): reading and indexing one
+peaks at about five times its size, and 128 MiB holds the uncompressed header of
+about two and a half million members with 25-character paths; a larger one fails
+with a reason that names its size. A compressed 7z header (7-Zip's default) is small
+whatever the archive holds, but the pinned 7z decoder has no public decoded-header
+allocation hook, so decoding it remains subject to process memory containment.
 Decoded member lengths and all available checksums must match before
 sealing/publication; a member that decodes past its indexed length is reported as
-corrupt. There is no archive writing, password support, RAR codec or nested
-mounting in this release.
+corrupt. There is no archive writing, password support or RAR codec in this
+release. Archives inside archives need nothing from the worker: the host stages the
+member through an ordinary read and starts another worker whose brokered source is
+that staged copy, so each worker still sees one archive through bounded source reads.
 XZ dictionaries and Zstandard windows are bounded to 64 MiB. 7z LZMA/LZMA2
 dictionaries are checked against 256 MiB from the public coder properties before a
 block is decoded; members of a block that needs more are unreadable. BZIP2 uses its
@@ -141,6 +170,17 @@ first/last read timings for TAR, independent 7z blocks and solid 7z. Fixture cre
 and source cloning are excluded; reads compare exact contents. Set
 `MIDNIGHT_ARCHIVE_PERF_DIR` to a directory beneath `_build/` to retain the archives
 for host/sandbox measurements. Ordinary tests use no wall-clock thresholds.
+
+The index memory figures above come from the ignored, Linux-only
+`measure_index_memory` test in the same file:
+`MIDNIGHT_ARCHIVE_PERF_DIR=<directory beneath _build/> cargo test --release --test performance measure_index_memory -- --ignored --nocapture`.
+It writes archives of empty members, 1,000 to a folder (a million by default; set
+`MIDNIGHT_ARCHIVE_MEMORY_ENTRIES` and `MIDNIGHT_ARCHIVE_MEMORY_FORMATS`), opens and
+completely lists each in a fresh child process, and reports the peak and retained
+resident memory per member; `MIDNIGHT_ARCHIVE_MEMORY_KEEP` retains the archives for
+the host's sandboxed-worker check. Ordinary tests (`tests/many_members.rs`) open and
+page through ZIP, TAR and 7z archives, including a 7z with an uncompressed header,
+of 100,001 members and of 100 members whose names take over 11 MiB.
 
 Host browsing uses opaque member IDs. Saved tabs store the provider ID, native
 container path, captured source revision and raw member components separately.

@@ -36,11 +36,14 @@ pub(crate) fn select<'a>(
 }
 
 pub(crate) enum BuiltInPlan {
+    /// Text, or bytes when text comparison refuses the content.
     Text,
     Images {
         providers: Arc<[Provider]>,
         selected: [usize; 2],
     },
+    /// A pair without a text or image comparison, compared as bytes for this reason.
+    Bytes(String),
 }
 
 /// The one discovery closure keeps the existing installed provider implementation.
@@ -76,10 +79,9 @@ pub(crate) fn plan(
         .flatten()
         .any(|index| providers[*index].is_document())
     {
-        return Err(
-            "Document comparison is not supported. Open PDFs in the document viewer instead."
-                .into(),
-        );
+        return Ok(BuiltInPlan::Bytes(
+            "Documents have no built-in comparison (open PDFs in the document viewer)".into(),
+        ));
     }
     match selected {
         [Some(left), Some(right)] => Ok(BuiltInPlan::Images {
@@ -91,7 +93,12 @@ pub(crate) fn plan(
             "Image comparison requires two files supported by enabled installed image decoders."
                 .into(),
         ),
-        _ => Err("Select two supported images or two text files.".into()),
+        [Some(_), None] => Ok(BuiltInPlan::Bytes(
+            "File A is an image and File B is not".into(),
+        )),
+        _ => Ok(BuiltInPlan::Bytes(
+            "File B is an image and File A is not".into(),
+        )),
     }
 }
 

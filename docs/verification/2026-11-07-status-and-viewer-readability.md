@@ -29,7 +29,7 @@
   fixture roots initially failed and were corrected without weakening production
   trust checks or modifying checkout/drive permissions.
 - NUL-delimited synthetic source regression: binary before, text after, exact
-  bytes preserved. Read-only verification of the user's `D:\tmp\flags.nul` also
+  bytes preserved. Read-only verification of the user's own `.nul` file also
   chose Text. The fixture tests do not copy the user's file contents.
 - Linux viewer engine: 31 passed, two installed-plugin tests ignored. Strict
   all-target Clippy passed for the viewer engine, renderer and plugin host.

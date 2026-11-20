@@ -3,16 +3,61 @@ import { ListView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
 export struct LicenseRow { name: string, version: string, license: string }
 
-// A tab is a label with an accent underline; the whole dialog stays keyboard-free
-// of extra focus stops, since the text filter and Close already take focus.
+// The About dialog's state, driven by about_licenses.rs. It outlives the popup, so
+// the filter text, the list it filtered and the keyboard row stay together across
+// Back, tab switches and reopening About.
+export global AboutView {
+    in property <[LicenseRow]> rows;
+    in property <string> summary;
+    in-out property <string> query;
+    // The selected row; -1 until one is picked and again after the filter changes.
+    in-out property <int> current: -1;
+    in-out property <bool> detail-open;
+    // The backend has not answered the open detail yet.
+    in-out property <bool> detail-loading;
+    in property <string> detail-title;
+    in property <string> detail-license;
+    in property <string> detail-used-by;
+    // "Authors", or a note that the license files name none; empty while loading.
+    in property <string> detail-authors-heading;
+    // One author or copyright statement per line.
+    in property <[string]> detail-authors;
+    in property <string> detail-text;
+    callback filter(string);
+    callback open(string, string);
+    // Retires a shown hint before its control is destroyed: Slint 1.18.1 panics
+    // when a popup's `if` drops a control whose tooltip is showing.
+    callback retire-hints();
+}
+
+// A tab is a label with an accent underline. It takes keyboard focus: Enter or
+// Space selects it and Left or Right moves to the other tab.
 component AboutTab inherits Rectangle {
     in property <string> text;
     in property <bool> active;
     callback clicked();
+    callback step();
     height: Theme.control-height + 4px;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.active;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return { root.clicked(); return accept; }
+            if event.text == Key.LeftArrow || event.text == Key.RightArrow { root.step(); return accept; }
+            reject
+        }
+    }
+    Rectangle {
+        border-radius: 4px; border-width: keys.has-focus ? 1px : 0px; border-color: Theme.accent;
+    }
     Text {
         text: root.text; font-size: Theme.font-size; font-weight: root.active ? 700 : 400;
         color: root.active ? Theme.strong-text : area.has-hover ? Theme.text : Theme.secondary-text;
@@ -24,7 +69,137 @@ component AboutTab inherits Rectangle {
         background: Theme.accent;
         animate x, width { duration: 140ms; easing: ease-out; }
     }
-    area := TouchArea { clicked => { root.clicked(); } }
+    // Focus first: a focused filter on the other tab must not die with its view.
+    area := TouchArea { clicked => { keys.focus(); root.clicked(); } }
+}
+
+// The filter, the count and the libraries. A click selects a row and the
+// pointer turns into a hand over it; the hovered and the selected row show an
+// open mark that shows the license with one click, as View license, Enter and a
+// double-click do. Up, Down, Page Up, Page Down, Home and End move the selection.
+component LicenseList inherits VerticalLayout {
+    private property <length> row-height: Theme.column-height;
+    private property <int> count: AboutView.rows.length;
+    private property <bool> selected: AboutView.current >= 0 && AboutView.current < root.count;
+    private property <int> page: max(1, Math.floor(licenses.visible-height / root.row-height) - 1);
+    // The list's overlay scrollbar takes the clicks on the last pixels of every row,
+    // so the open mark and its click area end before it.
+    private property <length> bar-inset: licenses.viewport-height > licenses.visible-height ? FluentScrollMetrics.overlay-size : 0px;
+    spacing: 6px;
+    function show(index: int) {
+        AboutView.current = max(0, min(root.count - 1, index));
+        let top = AboutView.current * root.row-height;
+        if top < -licenses.viewport-y {
+            licenses.viewport-y = -top;
+        } else if top + root.row-height > licenses.visible-height - licenses.viewport-y {
+            // The scroll position that ends the view with this row.
+            let scrolled = top + root.row-height - licenses.visible-height;
+            // After a jump of more than a view (End), the ListView lays its rows out
+            // again from the row at the top, moving the view up to that row's start and
+            // cutting off this one: scroll by whole rows then, so it stays in view (in a
+            // view of at least one row).
+            licenses.viewport-y = scrolled + licenses.viewport-y > licenses.visible-height
+                    && licenses.visible-height >= root.row-height
+                ? -Math.ceil(scrolled / root.row-height) * root.row-height : -scrolled;
+        }
+    }
+    function open-current() {
+        if root.selected {
+            AboutView.open(AboutView.rows[AboutView.current].name, AboutView.rows[AboutView.current].version);
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        HintedLineEdit {
+            horizontal-stretch: 1;
+            text <=> AboutView.query;
+            accessible-label: "Filter libraries";
+            placeholder-text: "Filter by library, license or component";
+            hint: "Show only libraries whose name, license or component contains this text. Down moves to the list; Enter shows the license and authors of the selected library, or of the first one.";
+            edited(text) => { AboutView.filter(text); licenses.viewport-y = 0px; }
+            accepted => {
+                if !root.selected && root.count > 0 { root.show(0); }
+                root.open-current();
+            }
+            key-pressed(event) => {
+                if event.text == Key.DownArrow { root.show(max(0, AboutView.current)); list-keys.focus(); return accept; }
+                reject
+            }
+        }
+        HintedActionButton {
+            text: "View license"; fallback-icon: FallbackIcons.view; enabled: root.selected;
+            hint: "Show the license text and authors of the selected library (Enter or a double-click on its row).";
+            clicked => { root.open-current(); }
+        }
+    }
+    Text { text: AboutView.summary; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+    Rectangle {
+        vertical-stretch: 1; min-height: 0px;
+        border-width: 1px; border-color: list-keys.has-focus ? Theme.accent : Theme.frame; border-radius: 4px; clip: true;
+        list-keys := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.UpArrow { root.show(AboutView.current - 1); return accept; }
+                if event.text == Key.DownArrow { root.show(AboutView.current + 1); return accept; }
+                if event.text == Key.PageUp { root.show(AboutView.current - root.page); return accept; }
+                if event.text == Key.PageDown { root.show(AboutView.current + root.page); return accept; }
+                if event.text == Key.Home { root.show(0); return accept; }
+                if event.text == Key.End { root.show(root.count - 1); return accept; }
+                if event.text == Key.Return || event.text == " " { root.open-current(); return accept; }
+                reject
+            }
+        }
+        licenses := ListView {
+            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+            accessible-label: "Libraries";
+            for row[index] in AboutView.rows : Rectangle {
+                private property <bool> selected: index == AboutView.current;
+                private property <bool> hovered: row-area.has-hover || open-area.has-hover;
+                width: licenses.visible-width; height: root.row-height;
+                background: self.selected ? (list-keys.has-focus ? Theme.cursor-background : Theme.inactive-cursor)
+                    : self.hovered ? Theme.hover
+                    : Math.mod(index, 2) == 1 ? Theme.alternate-row : transparent;
+                accessible-role: button; accessible-label: row.version == "" ? row.name : row.name + " " + row.version;
+                accessible-description: row.license + ". Shows its license and authors.";
+                accessible-item-selectable: true;
+                accessible-item-selected: self.selected;
+                accessible-action-default => { AboutView.current = index; root.open-current(); }
+                // The selected row also carries an accent bar on its leading edge.
+                Rectangle { x: 0px; width: 3px; background: Theme.accent; visible: parent.selected; }
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 2px + root.bar-inset; spacing: 8px;
+                    Text { text: row.name; color: Theme.text; font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                    // The version and license narrow only in a row too narrow for them,
+                    // so the open mark always stays in the row.
+                    Text { text: row.version; color: Theme.secondary-text; font-size: Theme.small-font; preferred-width: max(64px, Theme.small-font * 5); min-width: 0px; horizontal-stretch: 0; overflow: elide; vertical-alignment: center; }
+                    Text { text: row.license; color: Theme.secondary-text; font-size: Theme.small-font; preferred-width: min(max(150px, Theme.small-font * 12), licenses.visible-width * 0.4); min-width: 0px; horizontal-stretch: 0; overflow: elide; vertical-alignment: center; }
+                    Rectangle {
+                        width: max(22px, Theme.icon-size + 8px);
+                        border-radius: 3px; background: open-area.has-hover ? Theme.hover : transparent;
+                        Image {
+                            width: Theme.icon-size; height: Theme.icon-size; image-fit: contain;
+                            source: FallbackIcons.forward;
+                            colorize: open-area.has-hover ? Theme.accent : Theme.secondary-text;
+                            visible: row-area.has-hover || open-area.has-hover || index == AboutView.current;
+                        }
+                    }
+                }
+                row-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { AboutView.current = index; list-keys.focus(); }
+                    double-clicked => { AboutView.current = index; root.open-current(); }
+                }
+                open-area := TouchArea {
+                    x: parent.width - root.bar-inset - self.width; width: max(26px, Theme.icon-size + 12px);
+                    mouse-cursor: pointer;
+                    clicked => { AboutView.current = index; root.open-current(); }
+                }
+            }
+        }
+    }
+    Text {
+        text: "Select a library, then double-click it or press Enter to see its license and authors.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+    }
 }
 
 component InfoRow inherits HorizontalLayout {
@@ -38,7 +213,11 @@ component InfoRow inherits HorizontalLayout {
 // The hero is the same midnight sky in every theme. One looping phase (three
 // cycles per loop, so every sine below repeats seamlessly) drives the aurora,
 // twinkling and glinting stars, three shooting stars, drifting clouds and the
-// fireflies over the hills.
+// fireflies over the hills. A roomy dialog also shows Cassiopeia drawing itself,
+// a satellite crossing once per loop and an owl that blinks on the far hill.
+// Every frame repaints the sky, so it stays cheap: the stars that do not twinkle
+// are one cached layer, and opacity is set on single items, never on a group,
+// which the renderer would draw through an offscreen layer of its own.
 component Sky inherits Rectangle {
     in property <float> phase;
     in property <image> logo;
@@ -46,6 +225,9 @@ component Sky inherits Rectangle {
     callback dragged(length, length);
     // 0..1 over the whole 24 s loop: slow drift that wraps without a jump.
     private property <float> drift: root.phase / 18.8496;
+    private property <bool> compact: root.height < 170px;
+    // Wide enough for the extra scenes to keep clear of the shooting stars.
+    private property <bool> roomy: !root.compact && root.width >= 464px;
     background: @linear-gradient(180deg, #050820 0%, #101645 50%, #3b2a72 100%);
     clip: true;
     // Aurora ribbons swaying behind everything.
@@ -73,18 +255,37 @@ component Sky inherits Rectangle {
         x: parent.width - 118px; y: 12px; width: 52px; height: 52px; viewbox-width: 60; viewbox-height: 60;
         commands: "M 34 3 A 28 28 0 1 0 57 42 A 22 22 0 1 1 34 3 Z";
         fill: @linear-gradient(135deg, #fff4cf 0%, #f2c768 100%);
+        accessible-role: image; accessible-label: "Crescent moon";
     }
-    for i in 70 : Rectangle {
-        private property <float> twinkle: Math.abs(Math.sin((root.phase * (1 + Math.mod(i, 4)) + i * 1.7) * 1rad));
-        x: Math.mod(i * 53 + i * i * 11, 97) / 97 * parent.width;
-        y: Math.mod(i * 29 + i * i * 7, 61) / 61 * (parent.height - 46px);
-        width: (1 + Math.mod(i, 3) * 0.7) * 1px; height: self.width; border-radius: self.width / 2;
-        background: Math.mod(i, 5) == 0 ? #ffd9a8 : Math.mod(i, 7) == 0 ? #a8c8ff : #dfe6ff;
+    // Seventy stars. Two in three hold still, drawn once into a cached layer...
+    Rectangle {
+        cache-rendering-hint: true;
+        for n in 46 : Rectangle {
+            // Every star number that is not a multiple of three.
+            private property <int> i: n + Math.floor(n / 2) + 1;
+            x: Math.mod(self.i * 53 + self.i * self.i * 11, 97) / 97 * parent.width;
+            y: Math.mod(self.i * 29 + self.i * self.i * 7, 61) / 61 * (parent.height - 46px);
+            width: (1 + Math.mod(self.i, 3) * 0.7) * 1px; height: self.width; border-radius: self.width / 2;
+            background: Math.mod(self.i, 5) == 0 ? #ffd9a8 : Math.mod(self.i, 7) == 0 ? #a8c8ff : #dfe6ff;
+            opacity: 0.3 + 0.5 * Math.abs(Math.sin(self.i * 1.7 * 1rad));
+        }
+    }
+    // ...and every third one twinkles.
+    for n in 24 : Rectangle {
+        private property <int> i: n * 3;
+        private property <float> twinkle: Math.abs(Math.sin((root.phase * (1 + Math.mod(self.i, 4)) + self.i * 1.7) * 1rad));
+        x: Math.mod(self.i * 53 + self.i * self.i * 11, 97) / 97 * parent.width;
+        y: Math.mod(self.i * 29 + self.i * self.i * 7, 61) / 61 * (parent.height - 46px);
+        width: (1 + Math.mod(self.i, 3) * 0.7) * 1px; height: self.width; border-radius: self.width / 2;
+        background: Math.mod(self.i, 5) == 0 ? #ffd9a8 : Math.mod(self.i, 7) == 0 ? #a8c8ff : #dfe6ff;
         opacity: 0.2 + 0.8 * self.twinkle;
     }
-    // Brighter stars with a four-point glint.
+    // Brighter stars with a four-point glint; one that would sit in Cassiopeia
+    // gives way to it.
     for i in 8 : Rectangle {
         private property <float> glint: Math.pow(Math.abs(Math.sin((root.phase * (1 + Math.mod(i, 3)) + i * 2.3) * 1rad)), 3);
+        visible: !cassiopeia.visible || self.y > cassiopeia.y + cassiopeia.height + 8px
+            || self.x < cassiopeia.x - 8px || self.x > cassiopeia.x + cassiopeia.width + 8px;
         x: (0.06 + 0.115 * i) * parent.width; y: 10px + Math.mod(i * 37, 56) * 1px;
         width: 1px; height: 1px;
         Rectangle { x: -6px * (0.4 + parent.glint); y: 0px; width: 12px * (0.4 + parent.glint); height: 1px; background: #ffffff; opacity: 0.3 + 0.7 * parent.glint; }
@@ -97,14 +298,88 @@ component Sky inherits Rectangle {
         width: 130px + i * 30px; height: 14px; border-radius: 7px;
         background: @linear-gradient(90deg, #ffffff00 0%, #ffffff1c 50%, #ffffff00 100%);
     }
-    // Three shooting stars at staggered moments of the loop.
+    // Cassiopeia's W in the upper left draws itself in, holds and fades once per
+    // loop, above the paths of the two left shooting stars at every roomy width.
+    cassiopeia := Rectangle {
+        // 0..1 while the lines draw in, from 5 % to 30 % of the loop, and 1..0
+        // while they fade, from 58 % to 72 %.
+        private property <float> drawn: Math.clamp((root.drift - 0.05) / 0.25, 0, 1);
+        private property <float> shown: Math.clamp((0.72 - root.drift) / 0.14, 0, 1);
+        visible: root.roomy;
+        x: min(parent.width / 2 - 224px, parent.width / 4 - 64px); y: 16px; width: 96px; height: 34px;
+        accessible-role: image; accessible-label: "Cassiopeia";
+        Rectangle {
+            x: 0px; width: parent.width * cassiopeia.drawn; clip: true;
+            Path {
+                x: 0px; width: cassiopeia.width; height: cassiopeia.height; viewbox-width: 96; viewbox-height: 34;
+                commands: "M 2 7 L 22 29 L 46 13 L 69 31 L 94 3";
+                stroke: #9db4ff; stroke-width: 1px;
+                opacity: 0.55 * cassiopeia.shown;
+            }
+        }
+        for star[n] in [{ x: 2, y: 7 }, { x: 22, y: 29 }, { x: 46, y: 13 }, { x: 69, y: 31 }, { x: 94, y: 3 }] : Rectangle {
+            x: (star.x - 1.25) * 1px; y: (star.y - 1.25) * 1px; width: 2.5px; height: 2.5px; border-radius: 1.25px;
+            background: #f2f5ff;
+            opacity: 0.7 + 0.3 * Math.sin((root.phase * 2 + n * 1.3) * 1rad);
+        }
+    }
+    // A satellite crosses once per loop, high above Cassiopeia and the halo, its
+    // light blinking, and fades into the Earth's shadow before the crescent.
+    satellite := Rectangle {
+        // 0..1 while it crosses, from 40 % to 85 % of the loop: 10.8 s.
+        private property <float> s: Math.clamp((root.drift - 0.4) / 0.45, 0, 1);
+        private property <float> shown: Math.min(1, Math.min(self.s, 1 - self.s) * 8);
+        visible: root.roomy;
+        x: 0px; y: 0px; width: parent.width * 0.68; height: 14px;
+        accessible-role: image; accessible-label: "Satellite";
+        // Its body between two solar panels, and a light above that blinks.
+        Rectangle {
+            x: satellite.s * satellite.width - 9px; y: 8px - satellite.s * 6px; width: 11px; height: 4px;
+            Rectangle { x: 0px; y: 1.25px; width: 3.5px; height: 1.5px; background: #8fb0ff; opacity: satellite.shown; }
+            Rectangle { x: 3.5px; y: 0px; width: 4px; height: 4px; border-radius: 1px; background: #e9edff; opacity: satellite.shown; }
+            Rectangle { x: 7.5px; y: 1.25px; width: 3.5px; height: 1.5px; background: #8fb0ff; opacity: satellite.shown; }
+            Rectangle {
+                x: 4.75px; y: -2.5px; width: 1.5px; height: 1.5px; border-radius: 0.75px; background: #ff6464;
+                opacity: satellite.shown * Math.pow(Math.max(0, Math.sin(root.phase * 20 / 3 * 1rad)), 6);
+            }
+        }
+    }
+    // Three shooting stars at staggered moments of the loop. Each flies head first
+    // along its own streak, the tail fading behind it, and burns out quickly.
     for k in 3 : Path {
-        private property <float> t: Math.clamp(Math.mod(root.phase / 6.2832 + k / 3, 1) * 5 - 0.5, 0, 1);
-        x: parent.width * (0.9 - 0.2 * k) - self.t * parent.width * 0.5; y: 6px + k * 14px + self.t * 64px;
+        // 0..1 during a 1.2 s flight, from 10 % to 25 % of each 8 s cycle.
+        private property <float> t: Math.clamp((Math.mod(root.phase / 6.2832 + k / 3, 1) - 0.1) / 0.15, 0, 1);
+        // The head (the left end) travels down and left along the streak's own slope,
+        // 30 down for every 64 across, in clear sky: left of the crescent and to either
+        // side of the icon, never across them.
+        x: (k == 0 ? parent.width - 180px : k == 1 ? parent.width / 2 - 130px : parent.width * 0.25)
+            - self.t * parent.width * 0.18;
+        y: 6px + k * 14px + self.t * parent.width * 0.18 * 30 / 64;
         width: 64px; height: 30px; viewbox-width: 64; viewbox-height: 30;
-        commands: "M 0 0 L 64 30";
-        stroke: @linear-gradient(90deg, #ffffff00 0%, #ffffff 100%); stroke-width: 1.5px;
+        commands: "M 0 30 L 64 0";
+        stroke: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); stroke-width: 1.5px;
         opacity: Math.sin(self.t * 3.1416 * 1rad);
+    }
+    // An owl sits on the left top of the far hill, which hides its feet, against
+    // the sky; it blinks twice in quick succession every twelve seconds.
+    owl := Rectangle {
+        private property <float> blink: max(
+            Math.pow(Math.abs(Math.sin((root.phase / 3 + 0.6) * 1rad)), 480),
+            Math.pow(Math.abs(Math.sin((root.phase / 3 + 0.48) * 1rad)), 480));
+        visible: root.roomy;
+        x: parent.width * 76 / 480 - 7px; y: parent.height - parent.width * 29.5 / 480 - 15px;
+        width: 14px; height: 18px;
+        accessible-role: image; accessible-label: "Owl";
+        Path {
+            width: 14px; height: 18px; viewbox-width: 14; viewbox-height: 18;
+            commands: "M 2 18 C 0.5 13 1 8 2.5 5.5 L 2.2 1 L 5 3.4 C 6.2 3 7.8 3 9 3.4 L 11.8 1 L 11.5 5.5 C 13 8 13.5 13 12 18 Z";
+            fill: #080b22;
+        }
+        for eye in 2 : Rectangle {
+            x: (eye == 0 ? 3.7px : 7.7px); y: 7px - self.height / 2;
+            width: 2.6px; height: max(0.3px, 2.6px * (1 - owl.blink)); border-radius: min(self.width, self.height) / 2;
+            background: #ffcf5a;
+        }
     }
     // Hills in front of the sky.
     Path {
@@ -112,34 +387,44 @@ component Sky inherits Rectangle {
         commands: "M 0 44 L 0 26 Q 70 4 150 24 T 300 20 T 480 26 L 480 44 Z";
         fill: #080b22;
     }
-    // Fireflies wander over the hills.
+    // Fireflies wander over the hills. Glow and dot fade on their own: opacity on
+    // the pair would need an offscreen layer.
     for i in 8 : Rectangle {
+        private property <float> glow: 0.25 + 0.75 * Math.abs(Math.sin((root.phase * 3 + i * 0.9) * 1rad));
         x: parent.width * (0.06 + 0.12 * i) + 16px * Math.sin((root.phase * (1 + Math.mod(i, 3)) + i) * 1rad);
         y: parent.height - 34px - 12px * Math.abs(Math.sin((root.phase * 2 + i * 1.3) * 1rad)) - Math.mod(i, 2) * 8px;
-        width: 3px; height: 3px; border-radius: 1.5px; background: #ffe9a0;
-        opacity: 0.25 + 0.75 * Math.abs(Math.sin((root.phase * 3 + i * 0.9) * 1rad));
-        Rectangle { x: -4px; y: -4px; width: 11px; height: 11px; border-radius: 5.5px; background: @radial-gradient(circle, #ffe9a066 0%, #ffe9a000 70%); }
+        width: 3px; height: 3px;
+        Rectangle {
+            x: -4px; y: -4px; width: 11px; height: 11px; border-radius: 5.5px;
+            background: @radial-gradient(circle, #ffe9a066 0%, #ffe9a000 70%); opacity: parent.glow;
+        }
+        Rectangle { border-radius: 1.5px; background: #ffe9a0; opacity: parent.glow; }
     }
     Path {
         y: parent.height - self.height; width: parent.width; height: self.width * 30 / 480; viewbox-width: 480; viewbox-height: 30;
         commands: "M 0 30 L 0 20 Q 90 2 200 18 T 480 14 L 480 30 Z";
         fill: Theme.surface;
     }
-    // Pulsing halo and the application icon.
+    // Pulsing halo and the application icon; a short dialog keeps only the title.
     Rectangle {
         x: (parent.width - self.width) / 2; y: 14px; width: 112px; height: 112px; border-radius: 56px;
         background: @radial-gradient(circle, #8fa2ff77 0%, #8fa2ff00 70%);
         opacity: 0.65 + 0.35 * Math.sin(root.phase * 3rad);
+        visible: !root.compact;
     }
     Image {
-        source: root.logo; image-fit: contain;
+        source: root.logo; image-fit: contain; visible: !root.compact;
         x: (parent.width - self.width) / 2; y: 28px + 2px * Math.sin(root.phase * 3rad); width: 72px; height: 72px;
+        accessible-role: image; accessible-label: "Midnight Explorer icon";
     }
+    // As wide as its text, so the scenes beside it can be checked against its ink.
     Text {
-        y: 108px; width: parent.width; text: "Midnight Explorer";
-        color: #ffffff; font-size: 26px; font-weight: 700; horizontal-alignment: center;
+        x: (parent.width - self.width) / 2; y: root.compact ? (parent.height - self.height) / 2 - 4px : 108px;
+        text: "Midnight Explorer";
+        color: #ffffff; font-size: root.compact ? 20px : 26px; font-weight: 700; horizontal-alignment: center;
     }
     Rectangle {
+        visible: !root.compact;
         x: (parent.width - self.width) / 2; y: 144px;
         width: pill.preferred-width + 20px; height: 20px; border-radius: 10px;
         background: #ffffff26; border-width: 1px; border-color: #ffffff3a;
@@ -169,130 +454,126 @@ component Sky inherits Rectangle {
 export component AboutDialog inherits Rectangle {
     in property <string> application-version;
     in property <image> application-icon;
-    in property <[LicenseRow]> licenses;
-    in property <string> license-summary;
-    in-out property <bool> detail-open;
-    in property <string> detail-title;
-    in property <string> detail-license;
-    in property <string> detail-authors;
-    in property <string> detail-text;
-    callback license-open(string, string);
     callback close();
     callback move-dialog(length, length);
-    callback license-filter(string);
     in-out property <int> tab: 0;
     private property <float> phase: 0;
+    // Showing or leaving a library destroys the focused control (the filter, the
+    // list or Back), and Slint keeps focus on the dead item. Focus the dialog
+    // instead, so Escape still reaches it.
+    private property <bool> detail: AboutView.detail-open;
+    changed detail => { keys.focus(); }
+    function select-tab(tab: int) {
+        if root.tab != tab { AboutView.retire-hints(); root.tab = tab; }
+    }
+    function show-list() {
+        AboutView.retire-hints(); AboutView.detail-open = false;
+    }
     // Hosted by the main window's embedded dialog frame; the sky moves it.
     background: Theme.surface;
     clip: true;
     init => { self.phase = 6.2832 * 3; close-button.focus(); }
     animate phase { duration: 24s; iteration-count: -1; easing: linear; }
-    FocusScope {
+    keys := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
-                if root.detail-open { root.detail-open = false; } else { root.close(); }
+                if AboutView.detail-open { root.show-list(); } else { root.close(); }
                 return accept;
             }
             reject
         }
         VerticalLayout {
             spacing: 0px;
+            // A short dialog keeps the title strip, so Close stays in view.
             Sky {
-                height: 176px;
+                height: clamp(root.height - 250px, 56px, 176px);
                 phase: root.phase; logo: root.application-icon; version: root.application-version;
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             VerticalLayout {
                 padding: 12px; padding-top: 4px; spacing: 8px; vertical-stretch: 1;
-                if !root.detail-open : HorizontalLayout {
+                if !AboutView.detail-open : HorizontalLayout {
                     spacing: 4px; alignment: center;
-                    AboutTab { text: "About"; active: root.tab == 0; min-width: 96px; clicked => { root.tab = 0; } }
-                    AboutTab { text: "Licenses"; active: root.tab == 1; min-width: 96px; clicked => { root.tab = 1; } }
+                    about-tab := AboutTab {
+                        text: "About"; active: root.tab == 0; min-width: 96px;
+                        clicked => { root.select-tab(0); }
+                        step => { root.select-tab(1); licenses-tab.focus(); }
+                    }
+                    licenses-tab := AboutTab {
+                        text: "Licenses"; active: root.tab == 1; min-width: 96px;
+                        clicked => { root.select-tab(1); }
+                        step => { root.select-tab(0); about-tab.focus(); }
+                    }
                 }
                 Rectangle { height: 1px; background: Theme.frame; }
-                if !root.detail-open && root.tab == 0 : VScrollView {
-                    min-height: 0px; vertical-stretch: 1;
-                    VerticalLayout {
-                        spacing: 10px; alignment: start; padding-right: 6px;
-                        Text {
-                            text: "A focused, two-pane file manager."; color: Theme.text;
-                            font-size: Theme.font-size * 1.1; wrap: word-wrap;
+                Rectangle {
+                    vertical-stretch: 1; min-height: 0px; clip: true;
+                    if !AboutView.detail-open && root.tab == 0 : VScrollView {
+                        width: parent.width; height: parent.height;
+                        VerticalLayout {
+                            spacing: 10px; alignment: start; padding-right: 6px;
+                            Text {
+                                text: "A focused, two-pane file manager."; color: Theme.text;
+                                font-size: Theme.font-size * 1.1; wrap: word-wrap;
+                            }
+                            Text {
+                                text: "Built for keyboard and mouse alike: fast panels, tabs, previews, archives as folders and a command line within reach.";
+                                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                            }
+                            Rectangle { height: 1px; background: Theme.frame; }
+                            InfoRow { label: "Version"; value: root.application-version; }
+                            InfoRow { label: "Built with"; value: "Rust, Slint and FemtoVG"; }
+                            InfoRow { label: "Libraries"; value: "Every open-source library and bundled component this package ships is listed with its license on the Licenses tab."; }
+                            Rectangle { height: 1px; background: Theme.frame; }
+                            // Slint's royalty-free license requires this attribution to stay
+                            // visible. The covering TouchArea keeps a click from opening its
+                            // link: Slint would start the browser with std::process::Command on
+                            // the UI thread, outside the process-creation lock (WORKER_SDK.md).
+                            Rectangle {
+                                min-height: attribution.min-height;
+                                preferred-height: attribution.preferred-height;
+                                attribution := HorizontalLayout { alignment: center; VerticalLayout { width: 240px; AboutSlint {} } }
+                                TouchArea {}
+                            }
                         }
-                        Text {
-                            text: "Built for keyboard and mouse alike: fast panels, tabs, previews, archives as folders and a command line within reach.";
-                            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                    }
+                    if !AboutView.detail-open && root.tab == 1 : LicenseList {
+                        width: parent.width; height: parent.height;
+                    }
+                    // Slint's Text has no line height, so lines that must stay apart
+                    // are separate Texts: the license and its users, and every author.
+                    if AboutView.detail-open : VerticalLayout {
+                        width: parent.width; height: parent.height; spacing: 10px;
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: AboutView.detail-title; color: Theme.strong-text; font-size: Theme.font-size * 1.2; font-weight: 700; overflow: elide; }
+                            InfoRow { label: "License"; value: AboutView.detail-license; }
+                            InfoRow { label: "Used by"; value: AboutView.detail-used-by; }
                         }
-                        Rectangle { height: 1px; background: Theme.frame; }
-                        InfoRow { label: "Version"; value: root.application-version; }
-                        InfoRow { label: "Built with"; value: "Rust, Slint and FemtoVG"; }
-                        InfoRow { label: "Libraries"; value: "Open-source libraries are listed with their licenses on the Licenses tab."; }
-                        Rectangle { height: 1px; background: Theme.frame; }
-                        // Slint's royalty-free license requires this attribution to stay
-                        // visible. The covering TouchArea keeps a click from opening its
-                        // link: Slint would start the browser with std::process::Command on
-                        // the UI thread, outside the process-creation lock (WORKER_SDK.md).
                         Rectangle {
-                            min-height: attribution.min-height;
-                            preferred-height: attribution.preferred-height;
-                            attribution := HorizontalLayout { alignment: center; VerticalLayout { width: 240px; AboutSlint {} } }
-                            TouchArea {}
-                        }
-                    }
-                }
-                if !root.detail-open && root.tab == 1 : VerticalLayout {
-                    spacing: 6px; vertical-stretch: 1; min-height: 0px;
-                    HintedLineEdit {
-                        placeholder-text: "Filter by library or license";
-                        hint: "Show only libraries whose name or license contains this text. Double-click a library to read its license and authors.";
-                        edited(text) => { root.license-filter(text); }
-                    }
-                    Text { text: root.license-summary; color: Theme.secondary-text; font-size: Theme.small-font; }
-                    Rectangle {
-                        vertical-stretch: 1; min-height: 80px;
-                        border-width: 1px; border-color: Theme.frame; border-radius: 4px; clip: true;
-                        licenses := ListView {
-                            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                            for row[index] in root.licenses : Rectangle {
-                                width: licenses.visible-width; height: 24px;
-                                background: row-area.has-hover ? Theme.hover : Math.mod(index, 2) == 1 ? Theme.alternate-row : transparent;
-                                accessible-role: button; accessible-label: row.name + " " + row.version;
-                                accessible-action-default => { root.license-open(row.name, row.version); }
-                                HorizontalLayout {
-                                    padding-left: 8px; padding-right: 8px; spacing: 8px;
-                                    Text { text: row.name; color: Theme.text; font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
-                                    Text { text: row.version; color: Theme.secondary-text; font-size: Theme.small-font; width: 64px; overflow: elide; vertical-alignment: center; }
-                                    Text { text: row.license; color: Theme.secondary-text; font-size: Theme.small-font; width: 150px; overflow: elide; vertical-alignment: center; }
-                                }
-                                row-area := TouchArea {
-                                    double-clicked => { root.license-open(row.name, row.version); }
+                            vertical-stretch: 1; min-height: 0px;
+                            border-width: 1px; border-color: Theme.frame; border-radius: 4px; clip: true;
+                            VScrollView {
+                                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                                VerticalLayout {
+                                    padding: 10px; spacing: 14px; alignment: start;
+                                    if AboutView.detail-authors-heading != "" : VerticalLayout {
+                                        spacing: 4px;
+                                        Text { text: AboutView.detail-authors-heading; color: Theme.strong-text; font-size: Theme.small-font; font-weight: 700; wrap: word-wrap; }
+                                        for author in AboutView.detail-authors : Text {
+                                            text: author; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+                                        }
+                                    }
+                                    Text { text: AboutView.detail-text; color: Theme.text; font-size: Theme.small-font; font-family: "monospace"; wrap: word-wrap; }
                                 }
                             }
                         }
                     }
                 }
-                if root.detail-open : VerticalLayout {
-                    spacing: 6px; vertical-stretch: 1; min-height: 0px;
-                    Text { text: root.detail-title; color: Theme.strong-text; font-size: Theme.font-size * 1.2; font-weight: 700; overflow: elide; }
-                    Text { text: root.detail-license; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-                    if root.detail-authors != "" : Text {
-                        text: root.detail-authors; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
-                    }
-                    Rectangle {
-                        vertical-stretch: 1; min-height: 80px;
-                        border-width: 1px; border-color: Theme.frame; border-radius: 4px; clip: true;
-                        VScrollView {
-                            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                            VerticalLayout {
-                                padding: 8px; alignment: start;
-                                Text { text: root.detail-text; color: Theme.text; font-size: Theme.small-font; font-family: "monospace"; wrap: word-wrap; }
-                            }
-                        }
-                    }
-                }
-                if root.detail-open : HintedActionButton {
+                if AboutView.detail-open : HintedActionButton {
                     text: "Back"; fallback-icon: FallbackIcons.back; min-height: Theme.control-height;
                     hint: "Return to the list of libraries (Escape).";
-                    clicked => { root.detail-open = false; }
+                    clicked => { root.show-list(); }
                 }
                 close-button := HintedActionButton {
                     text: "Close"; min-height: Theme.control-height;

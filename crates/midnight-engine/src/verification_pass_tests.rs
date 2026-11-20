@@ -167,3 +167,51 @@ fn pass_ids_are_nonzero_monotonic_and_exhaustion_never_reuses_an_id() {
     assert!(ids.next().is_err());
     assert_eq!(ids.last, u64::MAX);
 }
+
+#[test]
+fn the_current_attempt_counts_only_its_running_time() {
+    let mut sampler = PassSampler::default();
+    let mut progress = progress();
+    progress.phase = CopyOperationPhase::Copying;
+    let at = |sampler: &mut PassSampler, progress: &mut CopyProgress, millis| {
+        observe(sampler, progress, millis);
+        progress.current_file_active_millis
+    };
+    assert_eq!(at(&mut sampler, &mut progress, 0), 0);
+    assert_eq!(at(&mut sampler, &mut progress, 1500), 1500);
+    progress.paused = true;
+    assert_eq!(at(&mut sampler, &mut progress, 1600), 1600);
+    assert_eq!(
+        at(&mut sampler, &mut progress, 10_000),
+        1600,
+        "a pause holds it"
+    );
+    progress.paused = false;
+    assert_eq!(at(&mut sampler, &mut progress, 10_000), 1600);
+    assert_eq!(at(&mut sampler, &mut progress, 10_500), 2100);
+    progress.wait_reason = Some(midnight_core::TransferWaitReason::DiskCapacity);
+    assert_eq!(at(&mut sampler, &mut progress, 10_600), 2200);
+    assert_eq!(
+        at(&mut sampler, &mut progress, 20_000),
+        2200,
+        "so does a wait"
+    );
+    progress.wait_reason = None;
+    progress.state = CopyOperationState::WaitingForDecision;
+    assert_eq!(at(&mut sampler, &mut progress, 20_000), 2200);
+    assert_eq!(
+        at(&mut sampler, &mut progress, 30_000),
+        2200,
+        "and a decision"
+    );
+    progress.state = CopyOperationState::Running;
+    assert_eq!(at(&mut sampler, &mut progress, 30_000), 2200);
+    assert_eq!(at(&mut sampler, &mut progress, 30_100), 2300);
+    // The next file starts from zero; without one there is none.
+    progress.verification_pass_id = 2;
+    assert_eq!(at(&mut sampler, &mut progress, 30_200), 0);
+    assert_eq!(at(&mut sampler, &mut progress, 30_400), 200);
+    progress.current_file_size = None;
+    assert_eq!(at(&mut sampler, &mut progress, 30_500), 0);
+    assert_eq!(at(&mut sampler, &mut progress, 40_000), 0);
+}

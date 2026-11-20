@@ -1,6 +1,7 @@
 """Regression checks for the release dependency inventory."""
 import importlib.util
 import hashlib
+import json
 import os
 import tarfile
 import tempfile
@@ -98,6 +99,27 @@ class ArchivePermissionsTests(unittest.TestCase):
             self.assertEqual((stage / "THEME_PROVENANCE.md").read_bytes(),
                              (root / "docs/THEME_PROVENANCE.md").read_bytes())
 
+    def test_inventory_records_package_authors_for_the_about_dialog(self):
+        temporary = Path(__file__).resolve().parents[2] / "_build" / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as directory:
+            stage = Path(directory) / "release"
+            stage.mkdir()
+            rust_docs = Path(directory) / "rust"
+            rust_docs.mkdir()
+            (rust_docs / "COPYRIGHT-library.html").write_text("Rust fixture", encoding="utf-8")
+            crate = Path(directory) / "demo"
+            crate.mkdir()
+            (crate / "LICENSE-MIT").write_text("Copyright (c) 2020 Ada", encoding="utf-8")
+            demo = dict(package("demo"), manifest_path=str(crate / "Cargo.toml"),
+                        license="MIT", authors=["Ada <ada@example.org>", "Grace"])
+            packaging.add_notices(stage, {"packages": [package("midnight-explorer", None), demo]},
+                                  "midnight-explorer v0.1.0\ndemo v0.1.0\n", rust_docs, None)
+            inventory = json.loads((stage / "THIRD-PARTY.json").read_text(encoding="utf-8"))
+            self.assertEqual([(entry["name"], entry["authors"]) for entry in inventory],
+                             [("demo", ["Ada <ada@example.org>", "Grace"])])
+            self.assertTrue((stage / "licenses/demo-0.1.0/LICENSE-MIT").is_file())
+
     def test_archive_modes_do_not_inherit_world_writable_staging_permissions(self):
         temporary = Path(__file__).resolve().parents[2] / "_build" / "tmp"
         temporary.mkdir(parents=True, exist_ok=True)
@@ -123,6 +145,26 @@ class ArchivePermissionsTests(unittest.TestCase):
                         with zipfile.ZipFile(archive) as bundle:
                             self.assertEqual(bundle.getinfo("release/me").external_attr >> 16 & 0o777, 0o755)
                             self.assertEqual(bundle.getinfo("release/README.txt").external_attr >> 16 & 0o777, 0o644)
+
+    def test_linux_packages_carry_the_html_sandbox_installer_as_an_executable(self):
+        root = Path(__file__).resolve().parents[2]
+        temporary = root / "_build" / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as directory:
+            folder = Path(directory)
+            stage = folder / "release"
+            stage.mkdir()
+            (stage / "me").write_text("fixture", encoding="utf-8")
+            self.assertIsNone(packaging.copy_html_sandbox_installer(stage, root, "x86_64-pc-windows-msvc"))
+            self.assertFalse((stage / packaging.HTML_SANDBOX_INSTALLER).exists())
+            installer = packaging.copy_html_sandbox_installer(stage, root, "x86_64-unknown-linux-gnu")
+            self.assertEqual(installer, "install-html-viewer-apparmor.sh")
+            self.assertEqual((stage / installer).read_bytes(),
+                             (root / "scripts" / installer).read_bytes())
+            archive = folder / "release.tar.gz"
+            packaging.write_archive(stage, archive, "me", "tar.gz", [installer])
+            with tarfile.open(archive) as bundle:
+                self.assertEqual(bundle.getmember(f"release/{installer}").mode, 0o755)
 
 
 class ViewerPackageTests(unittest.TestCase):

@@ -153,6 +153,9 @@ impl OwnedCommandScope for FixtureScope {
             Command::QueryVolumeInformation(request) => {
                 self.retire(Box::new(request.cancel.clone()));
             }
+            Command::CheckTransferDestination(request) => {
+                self.retire(Box::new(request.cancel.clone()));
+            }
             Command::ShowSelectionProperties {
                 selection, view, ..
             } => self.retire(Box::new((selection.clone(), view.clone()))),
@@ -210,6 +213,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::EnqueueMove(_)
             | Command::DecideCopy(_)
             | Command::DecideRename(_)
+            | Command::DecideDelete(_)
             | Command::CancelCopy(_)
             | Command::CopyCancelConfirmation { .. }
             | Command::SetCopyPaused { .. }
@@ -220,11 +224,13 @@ impl OwnedCommandScope for FixtureScope {
             | Command::AcceptDrop { .. }
             | Command::RejectDrop(_)
             | Command::CancelSearch { .. }
+            | Command::ShowHiddenEntries(_)
             | Command::ListVolumes
             | Command::ListDesktopContext
             | Command::OpenSystemLocation { .. }
             | Command::LoadPreferences
             | Command::ListFontFamilies
+            | Command::ReadLicenseNotice(_)
             | Command::ResolveDefaultEditor
             | Command::EditFile { .. }
             | Command::LaunchTerminal { .. }

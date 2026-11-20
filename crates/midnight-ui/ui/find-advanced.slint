@@ -12,6 +12,7 @@ export component FindAdvanced inherits Rectangle {
     in-out property <int> modified-unit: 1;
     in-out property <bool> duplicates;
     in-out property <bool> whole-words;
+    in-out property <bool> archives;
     private property <int> seconds-per-unit: root.modified-unit == 0 ? 60 : root.modified-unit == 1 ? 3600 : 86400;
     out property <bool> valid: !root.modified-enabled || (root.modified-text.is-float()
         && root.modified-text.to-float() > 0
@@ -22,7 +23,8 @@ export component FindAdvanced inherits Rectangle {
     out property <string> summary: (root.modified-enabled
         ? (root.valid ? "Modified: last " + root.modified-text + " " + ["minutes", "hours", "days"][root.modified-unit]
             : "Modified interval needs a positive whole number") : "")
-        + (root.duplicates ? (root.modified-enabled ? " · " : "") + "Identical files" : "");
+        + (root.duplicates ? (root.modified-enabled ? " · " : "") + "Identical files" : "")
+        + (root.archives && !root.duplicates ? (root.modified-enabled ? " · " : "") + "Inside archives" : "");
     callback submit();
     min-width: 0px;
     preferred-height: fields.preferred-height;
@@ -60,6 +62,11 @@ export component FindAdvanced inherits Rectangle {
         if root.duplicates: Text {
             text: "Files only · identical contents · grouped results";
             color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        }
+        WrappingCheckBox {
+            text: "Search inside archives"; checked <=> root.archives;
+            enabled: root.enabled && !root.duplicates;
+            hint: "Also match the members of ZIP, 7z, TAR and compressed archives found on the way, by name and, with Containing text, by content. Every archive and member is searched, however large, until the search ends or you press Stop; nested archives are not opened. Go to file opens the archive at the member.";
         }
     }
 }

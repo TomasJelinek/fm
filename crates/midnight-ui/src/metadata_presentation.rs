@@ -66,6 +66,7 @@ pub(super) fn bind(
 ) {
     install_permissions(window);
     install_time_codec(window);
+    install_now(window, state);
     let weak = window.as_weak();
     window.on_dismiss_metadata_hints(move || {
         if let Some(window) = weak.upgrade() {
@@ -100,9 +101,17 @@ pub(super) fn bind(
         p.dirty_metadata(token.as_str());
     });
     callback!(on_preview_metadata, |p, s, token, draft| {
+        // The values the fields started from, as set_time_defaults showed them.
+        let starting = p
+            .metadata
+            .preview
+            .as_ref()
+            .map(|preview| preview.time_defaults)
+            .unwrap_or_default();
         let forms = system_forms(p.metadata.preview.as_deref());
-        let patch = metadata_input::patch(&draft, &forms);
-        p.preview_metadata(token.as_str(), patch, s);
+        let patch = metadata_input::patch(&draft, &starting, &p.metadata.now_values, &forms);
+        let offsets = metadata_input::typed_offsets(&draft);
+        p.preview_metadata(token.as_str(), patch, offsets, s);
     });
     callback!(on_confirm_metadata, |p, s, token, revision, policy| {
         p.confirm_metadata(token.as_str(), revision.as_str(), policy, s);
@@ -202,9 +211,9 @@ fn selection_summary(preview: &MetadataPreview) -> String {
         }
     };
     let mut lines = vec![match preview.sample.as_slice() {
-        [row] if preview.total == 1 => path_text(std::path::Path::new(
+        [row] if preview.total == 1 => crate::isolated_name(&path_text(std::path::Path::new(
             row.path.file_name().unwrap_or(row.path.as_os_str()),
-        )),
+        ))),
         _ => format!("{} items selected", preview.total),
     }];
     if preview.conflicts > 0 {
@@ -308,7 +317,7 @@ fn install_time_codec(window: &MainWindow) {
                 return MetadataTimeStep::default();
             };
             let part = usize::try_from(part).unwrap_or_default();
-            step_result(metadata_time::step(
+            step_result(metadata_time::step_picker(
                 &text,
                 field,
                 part,
@@ -366,6 +375,42 @@ fn install_time_codec(window: &MainWindow) {
     });
 }
 
+/// Now fills a row with the current moment at the worker's latest local offset (UTC
+/// when there is none) and remembers that exact instant for the row: Apply sets it,
+/// sub-seconds included, unless the row's fields were edited since.
+fn install_now(window: &MainWindow, state: &Rc<RefCell<Presenter>>) {
+    let state = Rc::downgrade(state);
+    window.global::<MetadataTimeCodec>().on_now(move |row| {
+        let Some(state) = state.upgrade() else {
+            return MetadataTimeValue::default();
+        };
+        let Ok(mut presenter) = state.try_borrow_mut() else {
+            return MetadataTimeValue::default();
+        };
+        let offset = presenter
+            .metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.time_defaults.now)
+            .map_or(0, |now| now.offset_seconds);
+        let Some(now) = metadata_time::calendar_at(std::time::SystemTime::now(), offset) else {
+            return MetadataTimeValue::default();
+        };
+        if let Some(slot) = usize::try_from(row)
+            .ok()
+            .and_then(|row| presenter.metadata.now_values.get_mut(row))
+        {
+            *slot = Some(now);
+        }
+        let texts = metadata_time::texts(&now);
+        MetadataTimeValue {
+            date: texts.date.into(),
+            time: texts.time.into(),
+            offset: texts.offset.into(),
+        }
+    });
+}
+
 fn step_result(step: Option<(String, std::ops::Range<usize>)>) -> MetadataTimeStep {
     step.map(|(text, range)| MetadataTimeStep {
         text: text.into(),
@@ -398,7 +443,33 @@ fn time(time: std::time::SystemTime, preview: &MetadataPreview) -> String {
         .unwrap_or_else(|| "outside the display calendar".into())
 }
 
-fn requested(preview: &MetadataPreview) -> String {
+/// A set time whose typed UTC offset is not the local one at that instant shows another
+/// local hour than the one typed, typically after moving a date into or out of
+/// daylight-saving time. Offsets compare in the whole minutes the fields show.
+fn offset_note(
+    name: &str,
+    typed: Option<i32>,
+    local: Option<&LocalCalendarTime>,
+) -> Option<String> {
+    let (typed, local) = (typed? / 60, local?);
+    let local_offset = local.offset_seconds / 60;
+    (typed != local_offset).then(|| {
+        format!(
+            "{name} uses UTC offset {}, but local time on {:04}-{:02}-{:02} is UTC{}: \
+             the file will show {:02}:{:02}:{:02} local time.",
+            metadata_time::offset_text(typed),
+            local.year,
+            local.month,
+            local.day,
+            metadata_time::offset_text(local_offset),
+            local.hour,
+            local.minute,
+            local.second
+        )
+    })
+}
+
+fn requested(preview: &MetadataPreview, typed_offsets: &[Option<i32>; 3]) -> String {
     let patch = &preview.patch;
     let mut changes = Vec::new();
     for (flag, name) in [
@@ -427,13 +498,21 @@ fn requested(preview: &MetadataPreview) -> String {
     if let Some(compressed) = patch.compressed {
         changes.push(if compressed { "Compress" } else { "Uncompress" }.into());
     }
-    for (name, value) in [
+    for ((name, value), typed) in [
         ("Created", patch.created),
         ("Modified", patch.modified),
         ("Accessed", patch.accessed),
-    ] {
+    ]
+    .into_iter()
+    .zip(typed_offsets)
+    {
         if let TimeEdit::Set(value) = value {
             changes.push(format!("{name}: {}", time(value, preview)));
+            changes.extend(offset_note(
+                name,
+                *typed,
+                preview.patch_calendars.get(&value),
+            ));
         }
     }
     if let Some(case) = patch.case {
@@ -470,11 +549,11 @@ fn case_scope_label(scope: CaseScope) -> &'static str {
     }
 }
 
-fn preview_text(preview: &MetadataPreview) -> String {
+fn preview_text(preview: &MetadataPreview, typed_offsets: &[Option<i32>; 3]) -> String {
     if preview.revision == 0 {
         "Draft not previewed. Review changes to inspect the current draft.".into()
     } else {
-        requested(preview)
+        requested(preview, typed_offsets)
     }
 }
 
@@ -486,7 +565,7 @@ fn preview_status(presenter: &Presenter) -> String {
         state
             .preview
             .as_ref()
-            .map(|preview| preview_text(preview))
+            .map(|preview| preview_text(preview, &state.typed_offsets))
             .unwrap_or_default()
     } else if state
         .preview
@@ -553,6 +632,7 @@ mod tests {
             revision,
             patch: MetadataPatch::default(),
             localized_times: Default::default(),
+            patch_calendars: Default::default(),
             time_input_format: None,
             time_defaults: Default::default(),
             capabilities: MetadataCapabilities::default(),
@@ -573,7 +653,7 @@ mod tests {
             scope: CaseScope::Basename,
         });
         assert_eq!(
-            preview_text(&preview),
+            preview_text(&preview, &[None; 3]),
             "Filename case: Mixed name.lower extension, Base name"
         );
         let forged = std::path::PathBuf::from("x\n/home/u/.ssh/id_rsa: permissions");
@@ -606,7 +686,11 @@ mod tests {
             proposed: MetadataSnapshot::default(),
             issue: None,
         });
-        assert_eq!(selection_summary(&preview), "Žluťoučký report.txt");
+        // A name on its own line keeps a left-to-right base direction.
+        assert_eq!(
+            selection_summary(&preview),
+            "\u{2066}Žluťoučký report.txt\u{2069}"
+        );
         preview.total = 3;
         assert_eq!(selection_summary(&preview), "3 items selected");
         preview.conflicts = 1;
@@ -634,7 +718,7 @@ mod tests {
     #[test]
     fn initial_inspection_does_not_claim_the_live_draft_has_no_changes() {
         let preview = empty_preview(0);
-        let text = preview_text(&preview);
+        let text = preview_text(&preview, &[None; 3]);
         assert!(text.contains("Draft not previewed"), "{text}");
         assert!(!text.contains("No changes requested"), "{text}");
     }
@@ -664,9 +748,67 @@ mod tests {
                 time: "1:00:00".into(),
             },
         );
-        assert_eq!(preview_text(&preview), "Modified: 1. 1. 1970 1:00:00");
+        assert_eq!(
+            preview_text(&preview, &[None; 3]),
+            "Modified: 1. 1. 1970 1:00:00"
+        );
         // Times without a worker-localized value use the UTC fallback.
         preview.patch.modified = TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(3600));
-        assert_eq!(preview_text(&preview), "Modified: 1970-01-01 01:00:00 UTC");
+        assert_eq!(
+            preview_text(&preview, &[None; 3]),
+            "Modified: 1970-01-01 01:00:00 UTC"
+        );
+    }
+
+    #[test]
+    fn review_says_when_a_kept_offset_is_not_local_time_on_the_new_date() {
+        // Modified was 2026-07-15 10:00 at +02:00; only its date moved to December.
+        let set = UNIX_EPOCH + Duration::from_secs(1_797_321_600);
+        let mut preview = empty_preview(1);
+        preview.patch.modified = TimeEdit::Set(set);
+        preview.localized_times.insert(
+            set,
+            LocalizedDateTime {
+                date: "15. 12. 2026".into(),
+                time: "9:00:00".into(),
+            },
+        );
+        let winter = LocalCalendarTime {
+            year: 2026,
+            month: 12,
+            day: 15,
+            hour: 9,
+            offset_seconds: 3600,
+            ..Default::default()
+        };
+        preview.patch_calendars.insert(set, winter);
+        assert_eq!(
+            preview_text(&preview, &[None, Some(7200), None]),
+            "Modified: 15. 12. 2026 9:00:00\n\
+             Modified uses UTC offset +02:00, but local time on 2026-12-15 is UTC+01:00: \
+             the file will show 09:00:00 local time."
+        );
+        assert_eq!(
+            preview_text(&preview, &[None, Some(3600), None]),
+            "Modified: 15. 12. 2026 9:00:00",
+            "a matching offset needs no note"
+        );
+        assert_eq!(
+            preview_text(&preview, &[Some(7200), None, None]),
+            "Modified: 15. 12. 2026 9:00:00",
+            "each offset belongs to its own field"
+        );
+        // A seconds-precision local offset is compared as the fields show it.
+        preview.patch_calendars.insert(
+            set,
+            LocalCalendarTime {
+                offset_seconds: 3464,
+                ..winter
+            },
+        );
+        assert_eq!(
+            preview_text(&preview, &[None, Some(57 * 60), None]),
+            "Modified: 15. 12. 2026 9:00:00"
+        );
     }
 }

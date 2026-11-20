@@ -322,6 +322,7 @@ impl Fixture {
             protocol: Protocol::V2,
             staging: staging.clone(),
             close: receipt.clone(),
+            nested: None,
         });
         Self {
             mount: Some(mount),
@@ -906,4 +907,82 @@ fn opaque_status_getter_panic_retains_the_incoming_shared_mount_and_latches_fail
     assert!(!fixture.supervision.stop.load(Ordering::Acquire));
     assert_eq!(fixture.observed.waits.load(Ordering::SeqCst), 0);
     drop(other_tab);
+}
+
+/// Tests that take the process-wide allowances run one at a time. No other test of this
+/// crate takes them (its mounts fail before a worker starts or count `for_test`), except
+/// the ignored tests with real workers, which run apart.
+static ALLOWANCES: Mutex<()> = Mutex::new(());
+
+fn allowances() -> std::sync::MutexGuard<'static, ()> {
+    ALLOWANCES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `count` mounts' worth of `allowance`, which must all be granted.
+fn reserved(allowance: Allowance, count: usize) -> Vec<Accounting> {
+    (0..count)
+        .map(|_| match Accounting::reserve(allowance) {
+            Ok(accounting) => accounting,
+            Err(error) => panic!("{allowance:?} refused: {error}"),
+        })
+        .collect()
+}
+
+/// Why one more mount of `allowance` is refused.
+fn refusal(allowance: Allowance) -> String {
+    match Accounting::reserve(allowance) {
+        Ok(_) => panic!("{allowance:?} granted beyond its limit"),
+        Err(error) => error.to_string(),
+    }
+}
+
+const PANELS_FULL: &str = "Two archive mounts are already active; close one first";
+const SEARCHES_FULL: &str = "2 archives are already open for searches; stop a search first";
+
+#[test]
+fn searches_open_archives_while_the_panels_hold_both_of_theirs() {
+    let _serial = allowances();
+    let panels = reserved(Allowance::Native, MAX_ACTIVE);
+    assert_eq!(refusal(Allowance::Native), PANELS_FULL);
+    // Find walks one archive at a time in each of its two searches.
+    let searches = reserved(Allowance::Search, MAX_SEARCH_ACTIVE);
+    assert_eq!(refusal(Allowance::Search), SEARCHES_FULL);
+    // Ending the searches' sessions returns their allowance, not the panels'.
+    drop(searches);
+    assert_eq!(refusal(Allowance::Native), PANELS_FULL);
+    drop(reserved(Allowance::Search, MAX_SEARCH_ACTIVE));
+    drop(panels);
+    drop(reserved(Allowance::Native, MAX_ACTIVE));
+}
+
+#[test]
+fn panels_open_archives_while_the_searches_hold_all_of_theirs() {
+    let _serial = allowances();
+    let searches = reserved(Allowance::Search, MAX_SEARCH_ACTIVE);
+    assert_eq!(refusal(Allowance::Search), SEARCHES_FULL);
+    let panels = reserved(Allowance::Native, MAX_ACTIVE);
+    let nested = reserved(Allowance::Nested, crate::nested::MAX_NESTED_ACTIVE);
+    // Closing the panels' archives returns theirs, not the searches'.
+    drop((panels, nested));
+    assert_eq!(refusal(Allowance::Search), SEARCHES_FULL);
+    drop(reserved(Allowance::Native, MAX_ACTIVE));
+    drop(searches);
+    drop(reserved(Allowance::Search, MAX_SEARCH_ACTIVE));
+}
+
+#[test]
+fn archives_inside_archives_have_their_own_bounded_allowance() {
+    let _serial = allowances();
+    let nested = reserved(Allowance::Nested, crate::nested::MAX_NESTED_ACTIVE);
+    assert_eq!(
+        refusal(Allowance::Nested),
+        "3 archives inside archives are already open; leave one of them first"
+    );
+    drop(reserved(Allowance::Native, MAX_ACTIVE));
+    drop(reserved(Allowance::Search, MAX_SEARCH_ACTIVE));
+    drop(nested);
+    drop(reserved(
+        Allowance::Nested,
+        crate::nested::MAX_NESTED_ACTIVE,
+    ));
 }

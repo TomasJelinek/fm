@@ -7,16 +7,22 @@ use std::{
     ops::Range,
 };
 
-const MAX_NEXT_HEADER: u64 = 64 * 1024 * 1024;
-/// Largest LZMA/LZMA2 dictionary memory one block may use in the 512 MiB worker.
+/// Largest LZMA/LZMA2 dictionary memory one block may use in the worker.
 /// Members of a block that declares more are listed but unreadable.
 const MAX_DICTIONARY: u64 = 256 * 1024 * 1024;
 /// Verified solid-block siblings kept in worker memory, so the members read after
 /// one block decode within this window need no further decode of that block.
 const RETAINED_SIBLINGS: u64 = 128 * 1024 * 1024;
 // A decodable block's dictionary and the siblings retained beside it stay within
-// 384 MiB of the 512 MiB worker limit.
-const _: () = assert!(MAX_DICTIONARY + RETAINED_SIBLINGS <= 384 * 1024 * 1024);
+// three eighths of the worker's memory; the rest holds the index and the decoders.
+const _: () = assert!(MAX_DICTIONARY + RETAINED_SIBLINGS <= WORKER_MEMORY / 8 * 3);
+/// Largest raw next header, which the parser reads whole into memory. Reading and
+/// indexing one peaks at about five times its size (an uncompressed header of a
+/// million members with 25-character paths: 50 MiB, peak 245 MiB, measured by
+/// `measure_index_memory`), so an eighth of the worker's memory: 128 MiB holds the
+/// uncompressed header of about two and a half million such members. A compressed
+/// header (7-Zip's default) is a small raw next header whatever the archive holds.
+const MAX_RAW_HEADER: u64 = WORKER_MEMORY / 8;
 /// Allocation and map overhead charged per retained sibling.
 const RETAINED_ENTRY_COST: u64 = 64;
 
@@ -27,12 +33,14 @@ mod tests;
 pub(crate) struct Content {
     source: Reader,
     metadata: sevenz_rust2::Archive,
-    members: HashMap<u64, usize>,
+    /// The compact stream index of each readable member, in increasing ID order.
+    members: Vec<(u64, usize)>,
     /// Readable member node of each compact stream index.
     nodes: Vec<Option<u64>>,
     /// Compact stream indices of each block.
     block_files: Vec<Range<usize>>,
-    empty: HashSet<u64>,
+    /// Readable members without a stream, in increasing ID order.
+    empty: Vec<u64>,
     retained: Retained,
 }
 
@@ -68,11 +76,8 @@ impl Archive {
     fn index_sevenzip(
         &mut self,
         source: Reader,
-        metadata: sevenz_rust2::Archive,
+        mut metadata: sevenz_rust2::Archive,
     ) -> Result<(), Error> {
-        if metadata.files.len() > self.limits.max_entries {
-            return Err(Error::limit());
-        }
         if metadata.stream_map.file_block_index.len() != metadata.files.len() {
             return Err(corrupt_block());
         }
@@ -109,15 +114,16 @@ impl Archive {
             }
         }
         let mut file_nodes = Vec::with_capacity(metadata.files.len());
-        for (index, entry) in metadata.files.iter().enumerate() {
+        for (index, entry) in metadata.files.iter_mut().enumerate() {
             let kind = kind(entry);
             let decodable = metadata.stream_map.file_block_index[index]
                 .is_none_or(|block| !undecodable.contains(&block));
-            let readable =
-                kind == Kind::File && decodable && tree::safe_name(entry.name.as_bytes());
-            let id = self.add(entry.name.as_bytes(), &entry.name, kind, None, readable)?;
-            if let Some(node) = self.node_mut(id) {
-                node.modified = entry
+            // The index keeps its own copy; block decoding never reads entry names.
+            let name = std::mem::take(&mut entry.name);
+            let readable = kind == Kind::File && decodable && tree::safe_name(name.as_bytes());
+            let id = self.add(name.as_bytes(), &name, kind, None, readable)?;
+            if let Some(member) = self.member_mut(id) {
+                member.modified = entry
                     .has_last_modified_date
                     .then(|| timestamps::filetime(u64::from(entry.last_modified_date)));
             }
@@ -191,12 +197,6 @@ fn preflight_header(source: &mut Reader, source_length: u64) -> Result<(), Error
     length.copy_from_slice(&header[20..28]);
     let offset = u64::from_le_bytes(offset);
     let length = u64::from_le_bytes(length);
-    if length > MAX_NEXT_HEADER {
-        return Err(Error::new(
-            ErrorCode::Limit,
-            "7z metadata next header exceeds 64 MiB memory budget",
-        ));
-    }
     if 32u64
         .checked_add(offset)
         .and_then(|start| start.checked_add(length))
@@ -205,6 +205,18 @@ fn preflight_header(source: &mut Reader, source_length: u64) -> Result<(), Error
         return Err(Error::new(
             ErrorCode::Corrupt,
             "7z next header range exceeds the captured source",
+        ));
+    }
+    if length > MAX_RAW_HEADER {
+        const MIB: u64 = 1024 * 1024;
+        return Err(Error::new(
+            ErrorCode::Limit,
+            format!(
+                "This 7z archive's uncompressed header of {} MiB needs more memory than \
+                 the archive worker has: it reads headers of up to {} MiB",
+                length.div_ceil(MIB),
+                MAX_RAW_HEADER / MIB
+            ),
         ));
     }
     // The pinned parser verifies header CRCs. Its optional recovery scan is bounded
@@ -228,9 +240,10 @@ impl Content {
         let original_blocks = std::mem::take(&mut metadata.stream_map.file_block_index);
         let mut first = vec![0; metadata.blocks.len()];
         let mut counts = vec![0usize; metadata.blocks.len()];
-        let mut empty = HashSet::new();
-        let mut members = HashMap::new();
+        let mut empty = Vec::new();
+        let mut members = Vec::new();
         let mut nodes = Vec::new();
+        // Readable member IDs increase in file order, so both lists stay sorted.
         for ((file, block), node) in original_files
             .into_iter()
             .zip(original_blocks)
@@ -238,7 +251,7 @@ impl Content {
         {
             if !file.has_stream {
                 if let Some(node) = node {
-                    empty.insert(node);
+                    empty.push(node);
                 }
                 continue;
             }
@@ -253,12 +266,17 @@ impl Content {
             }
             counts[block] += 1;
             if let Some(id) = node {
-                members.insert(id, index);
+                members.push((id, index));
             }
             nodes.push(node);
             metadata.files.push(file);
             metadata.stream_map.file_block_index.push(Some(block));
         }
+        members.shrink_to_fit();
+        empty.shrink_to_fit();
+        nodes.shrink_to_fit();
+        metadata.files.shrink_to_fit();
+        metadata.stream_map.file_block_index.shrink_to_fit();
         let block_files = first
             .iter()
             .zip(&counts)
@@ -289,10 +307,10 @@ impl Content {
         entry: u64,
         storage: Rc<dyn Storage>,
     ) -> Result<storage::Content, Error> {
-        if self.empty.contains(&entry) {
+        if self.empty.binary_search(&entry).is_ok() {
             return Stage::new(storage, StagePurpose::Member { entry }, Some(0), 0)?.finish();
         }
-        let index = *self.members.get(&entry).ok_or_else(corrupt_block)?;
+        let index = *tree::find(&self.members, entry).ok_or_else(corrupt_block)?;
         let length = self.metadata.files[index].size;
         if let Some(bytes) = self.retained.members.get(&entry) {
             // Verified together with its whole block by an earlier read.
@@ -443,6 +461,11 @@ fn corrupt_block() -> Error {
 
 fn seven_error(error: sevenz_rust2::Error) -> Error {
     use sevenz_rust2::Error as E;
+    if let E::Io(io, _) = &error
+        && let Some(failure) = Failure::of(io)
+    {
+        return failure.clone().into();
+    }
     let code = match error {
         E::PasswordRequired
         | E::UnsupportedCompressionMethod(_)

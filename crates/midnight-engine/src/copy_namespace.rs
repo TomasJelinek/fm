@@ -1,4 +1,13 @@
 //! Complete native namespace claims; provider callbacks never run under registry locks.
+//!
+//! Admission is an atomic check-and-claim of a job's own footprint: only its own pins are
+//! probed, and granted peers are compared by their committed facts, which every change
+//! announces before it mutates anything. So a grant never waits for a peer's turn or
+//! depends on how much a peer has published. A selected root that a granted job already
+//! claims or reserves is deferred, not refused: the job starts, and that item is claimed
+//! by its first change that no earlier job refuses (changes wait for earlier jobs only,
+//! so waits cannot form a cycle). A job still waits as a whole when a footprint is
+//! unknown, when it would read what another job changes, or behind an older waiting job.
 #[cfg(test)]
 use midnight_core::TransferNamespaceParent;
 use midnight_core::{
@@ -53,6 +62,8 @@ struct State {
     structure: u64,
     records: BTreeMap<u64, Record>,
     turn: Option<u64>,
+    /// Grants so far; each granted record keeps its position (`Record::granted_at`).
+    grants: u64,
 }
 /// Registry state observed when a grant or a namespace change was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,14 +79,12 @@ impl State {
         }
     }
 }
-/// A grant attempt's outcome. `Busy`: admission is momentarily closed (a turn, closing
-/// claim or concurrent change); retry after the next change. `Conflict`: an intersecting
-/// or opaque claim (or a peer whose pins cannot be re-probed now) blocks the grant until a
-/// claim is granted, removed or quarantined.
+/// A grant attempt's outcome, decided at once. `Conflict`: the job cannot start beside the
+/// granted jobs (an unknown footprint, a source that another job changes, or an older
+/// waiting job that uses the same items) until a claim is granted, removed or quarantined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Grant {
     Granted,
-    Busy(Seen),
     Conflict(Seen),
 }
 /// Why a granted job's namespace change was refused (see `take_peer_refusal`).
@@ -193,6 +202,21 @@ struct Record {
     state: FactsState,
     planned: bool,
     granted: bool,
+    /// Grant order: a change waits for reservations of jobs granted before it only.
+    granted_at: u64,
+    /// Per planned root: whether the job reads it (a source) rather than only changing it
+    /// through announced changes (a destination).
+    reads: Vec<bool>,
+    /// Selected roots that a granted job claimed or reserved at this grant. They are not
+    /// claims yet: each becomes one with its first change that no earlier job refuses.
+    deferred: Vec<usize>,
+    reserved_pins: Vec<PinFact>,
+    /// Facts of the deferred roots, which later jobs respect as if claimed.
+    reserved: Option<Arc<Facts>>,
+    /// Roots the job only reads whose geometry is unknown (a followed link, a provider
+    /// without native geometry). They are never written, so they are left unclaimed
+    /// instead of making the whole job exclusive; reads through them are unprotected.
+    unprotected: Vec<usize>,
     opaque_latched: bool,
     facts: Arc<Facts>,
     native: Weak<PinStore>,
@@ -527,6 +551,14 @@ impl Facts {
         overlay.opaque |= facts.index.domains_conflict(&overlay.index);
         Ok(facts)
     }
+    /// Facts of part of a planned footprint. Unlike a whole plan, an empty part (every
+    /// root deferred) claims nothing instead of an unknown footprint.
+    fn subset(pins: Vec<PinFact>) -> Result<Self, FsError> {
+        let empty = pins.is_empty();
+        let mut facts = Self::build(pins)?;
+        facts.opaque &= !empty;
+        Ok(facts)
+    }
     fn revalidated(prior: &Self, pins: Vec<PinFact>) -> Result<Self, FsError> {
         if !prior.initialized {
             return Self::build(pins);
@@ -697,6 +729,12 @@ impl Registry {
                 state: FactsState::Stable,
                 planned: false,
                 granted: false,
+                granted_at: 0,
+                reads: Vec::new(),
+                deferred: Vec::new(),
+                reserved_pins: Vec::new(),
+                reserved: None,
+                unprotected: Vec::new(),
                 opaque_latched: false,
                 facts: Arc::default(),
                 native: Arc::downgrade(&store),
@@ -894,6 +932,80 @@ impl Inner {
     }
 }
 
+/// One selected root of a grant candidate: its facts, and the same geometry as a read,
+/// which shows whether another job changes what this job would read there.
+struct CandidateRoot {
+    index: usize,
+    facts: Facts,
+    reads: Facts,
+}
+impl CandidateRoot {
+    fn new(index: usize, pin: &PinFact) -> Result<Self, FsError> {
+        let read = PinFact {
+            access: TransferNamespaceAccess::Read,
+            ..pin.clone()
+        };
+        Ok(Self {
+            index,
+            facts: Facts::build(vec![pin.clone()])?,
+            reads: Facts::build(vec![read])?,
+        })
+    }
+}
+
+/// Whether a candidate starts beside the granted jobs, and which of its selected roots it
+/// defers because a granted job claims or reserves an overlapping item. None: it waits as
+/// a whole, for an unknown footprint (its own or a granted job's), for a granted job that
+/// changes what it would read, or behind an older waiting job that shares an item with it.
+/// Pure metadata under the registry lock; each comparison walks the candidate's side.
+fn verdict(
+    state: &State,
+    sequence: u64,
+    opaque: bool,
+    facts: &Facts,
+    roots: &[CandidateRoot],
+    reads: &[bool],
+) -> Option<Vec<usize>> {
+    for (other, peer) in &state.records {
+        if *other == sequence {
+            continue;
+        }
+        let peer_opaque = peer.opaque_latched || peer.facts.is_opaque();
+        if peer.granted {
+            if opaque || peer_opaque {
+                return None;
+            }
+        } else if peer.planned
+            && *other < sequence
+            && (opaque || peer_opaque || facts.conflicts(&peer.facts))
+        {
+            return None;
+        }
+    }
+    let mut deferred = Vec::new();
+    for root in roots {
+        let source = reads.get(root.index).copied().unwrap_or(true);
+        let mut held = false;
+        let granted = state
+            .records
+            .iter()
+            .filter(|(other, peer)| **other != sequence && peer.granted);
+        for (_, peer) in granted {
+            for claim in std::iter::once(&peer.facts).chain(&peer.reserved) {
+                // Reading what another job changes is never interleaved item by item.
+                if source && root.reads.conflicts(claim) {
+                    return None;
+                }
+                held |= root.facts.conflicts(claim);
+            }
+        }
+        if held {
+            deferred.push(root.index);
+        }
+    }
+    Some(deferred)
+}
+
 impl Claim {
     pub(crate) fn changes(&self) -> Arc<dyn TransferNamespaceChanges> {
         self.context.clone()
@@ -916,12 +1028,43 @@ impl Claim {
                 .unwrap_or_else(|error| error.into_inner()),
         )
     }
+    /// Plan roots that the job may read as well as change, as every source is. Only
+    /// tests plan this way now: production plans endpoints with `plan_transfer`.
+    #[cfg(test)]
     pub(crate) fn plan_union(
         &self,
         pins: Vec<(
             TransferNamespaceAccess,
             Option<Arc<dyn TransferNamespacePin>>,
         )>,
+        io: Arc<Permit>,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        let reads = vec![true; pins.len()];
+        self.plan(pins, reads, io, cancel)
+    }
+    /// Plan a transfer's endpoints, given as a (source, destination) pair per selected
+    /// root. A source is read by the job; a destination is only changed through the job's
+    /// announced changes (and looked up by name), so it can wait per item for a peer.
+    pub(crate) fn plan_transfer(
+        &self,
+        pins: Vec<(
+            TransferNamespaceAccess,
+            Option<Arc<dyn TransferNamespacePin>>,
+        )>,
+        io: Arc<Permit>,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        let reads = (0..pins.len()).map(|index| index % 2 == 0).collect();
+        self.plan(pins, reads, io, cancel)
+    }
+    fn plan(
+        &self,
+        pins: Vec<(
+            TransferNamespaceAccess,
+            Option<Arc<dyn TransferNamespacePin>>,
+        )>,
+        reads: Vec<bool>,
         io: Arc<Permit>,
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
@@ -980,6 +1123,7 @@ impl Claim {
                 .ok_or_else(unconfirmed)?;
             record.io = Arc::downgrade(&io);
             record.planned = true;
+            record.reads = reads;
             Inner::bump(&mut state, self.context.sequence)?;
         }
         drop(store);
@@ -1021,71 +1165,74 @@ impl Claim {
     pub(crate) fn watch(&self) -> Watch {
         Watch(self.context.registry.clone())
     }
+    /// Atomic check-and-claim of this job's footprint (see the module documentation). Only
+    /// this job's own pins are probed, outside the lock. The decision and the claim follow
+    /// under the registry lock from committed facts, in time bounded by this job's own
+    /// selection, whatever granted peers are doing: there is no retry against a peer.
     pub(crate) fn admit(&self, cancel: &Cancellation) -> Result<Grant, FsError> {
         cancelled(cancel)?;
         let io = self.context.io_witness()?;
-        let batch = match ProbeBatch::admission(&self.context.registry, self.context.sequence)? {
-            Ok(batch) => batch,
-            Err(seen) => return Ok(Grant::Busy(seen)),
-        };
-        let seen = batch.seen;
-        let epoch = seen.revision;
-        let records: Vec<_> = batch
-            .snapshots
-            .iter()
-            .map(|snapshot| (snapshot.sequence, snapshot.granted, snapshot.opaque_latched))
-            .collect();
+        let registry = &self.context.registry;
         let sequence = self.context.sequence;
-        let Some(refreshed) = admitted(&self.context.registry, &io, || {
-            batch.refresh_admission(cancel, sequence)
-        })??
-        else {
-            return Ok(Grant::Conflict(seen));
-        };
-        let candidate = refreshed
-            .iter()
-            .find(|(id, _)| *id == sequence)
-            .ok_or_else(unconfirmed)?;
-        let candidate_record = records
-            .iter()
-            .find(|(id, _, _)| *id == sequence)
-            .ok_or_else(unconfirmed)?;
-        let conflicts = |left: &(u64, Arc<Facts>), right: &(u64, Arc<Facts>)| {
-            let left_opaque = records
-                .iter()
-                .find(|(id, _, _)| *id == left.0)
-                .is_some_and(|(_, _, opaque)| *opaque);
-            let right_opaque = records
-                .iter()
-                .find(|(id, _, _)| *id == right.0)
-                .is_some_and(|(_, _, opaque)| *opaque);
-            left_opaque || right_opaque || left.1.conflicts(&right.1)
-        };
-        let granted = |id| {
-            records
-                .iter()
-                .find(|(sequence, _, _)| *sequence == id)
-                .is_some_and(|(_, granted, _)| *granted)
-        };
-        // Geometry and oldest-conflict comparisons run entirely outside the mutex.
-        let mut allow = candidate_record.1
-            || !refreshed
-                .iter()
-                .any(|peer| peer.0 != sequence && granted(peer.0) && conflicts(candidate, peer));
-        if allow && !candidate_record.1 {
-            for earlier in refreshed
-                .iter()
-                .filter(|record| record.0 < sequence && !granted(record.0))
+        let batch = {
+            let mut state = registry
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !state
+                .records
+                .get(&sequence)
+                .is_some_and(|record| record.planned)
             {
-                if conflicts(candidate, earlier) {
-                    allow = false;
-                    break;
-                }
+                return Err(failure(
+                    io::ErrorKind::InvalidInput,
+                    "Complete namespace roots must be planned before grant.",
+                ));
             }
-        }
-        let mut state = self
-            .context
-            .registry
+            if state
+                .records
+                .values()
+                .any(|record| record.state == FactsState::Quarantined)
+            {
+                return Err(blocked_by_quarantine());
+            }
+            let mut batch = ProbeBatch::reserve(registry, &mut state, vec![sequence])?;
+            // Admission probes every own pin, unclaimed ones too, so their errors surface.
+            batch.snapshots[0].excluded.clear();
+            batch
+        };
+        let refreshed = admitted(registry, &io, || {
+            let snapshot = &batch.snapshots[0];
+            // A root this job only reads whose geometry is unknown is never written by it,
+            // so it cannot take part in a write-write overlap: it stays unclaimed instead
+            // of making the whole job exclusive. An unknown root it changes still does.
+            let (unprotected, pins): (Vec<_>, Vec<_>) =
+                batch.refresh_one(snapshot)?.into_iter().partition(|pin| {
+                    pin.root.is_some()
+                        && pin.access == TransferNamespaceAccess::Read
+                        && matches!(pin.probe, TransferNamespaceProbe::Unknown)
+                });
+            let facts = if unprotected.is_empty() {
+                Facts::revalidated(&snapshot.prior, pins.clone())?
+            } else {
+                Facts::subset(pins.clone())?
+            };
+            let roots = pins
+                .iter()
+                .filter_map(|pin| pin.root.map(|root| CandidateRoot::new(root, pin)))
+                .collect::<Result<Vec<_>, FsError>>()?;
+            let unprotected: Vec<_> = unprotected.iter().filter_map(|pin| pin.root).collect();
+            Ok::<_, FsError>((pins, facts, roots, unprotected))
+        })?;
+        drop(batch);
+        let (pins, facts, roots, unprotected) = match refreshed {
+            Ok(refreshed) => refreshed,
+            Err(error) => {
+                registry.opaque(sequence, error.clone());
+                return Err(error);
+            }
+        };
+        let mut state = registry
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -1096,50 +1243,74 @@ impl Claim {
         {
             return Err(blocked_by_quarantine());
         }
-        if state.revision != epoch
-            || state.turn.is_some()
-            || state
-                .records
-                .values()
-                .any(|record| matches!(record.state, FactsState::InFlight | FactsState::Closing))
-        {
-            return Ok(Grant::Busy(state.seen()));
+        let record = state.records.get(&sequence).ok_or_else(unconfirmed)?;
+        if !record.planned || record.state == FactsState::Closing {
+            return Err(unconfirmed());
         }
-        let mut retired = Vec::with_capacity(refreshed.len());
-        for (sequence, facts) in refreshed {
-            let record = state.records.get_mut(&sequence).ok_or_else(unconfirmed)?;
-            record.state = if facts.is_opaque() || record.opaque_latched {
-                FactsState::Opaque
-            } else {
-                FactsState::Stable
-            };
-            retired.push(std::mem::replace(&mut record.facts, facts));
-            Inner::bump(&mut state, sequence)?;
+        if record.granted {
+            return Ok(Grant::Granted);
         }
-        if allow {
-            state
+        let opaque = record.opaque_latched || facts.is_opaque();
+        let reads = record.reads.clone();
+        let state_after = if opaque {
+            FactsState::Opaque
+        } else {
+            FactsState::Stable
+        };
+        let Some(deferred) = verdict(&state, sequence, opaque, &facts, &roots, &reads) else {
+            // While it waits, younger candidates compare with this fresh footprint.
+            let record = state
                 .records
                 .get_mut(&sequence)
-                .expect("candidate remains registered")
-                .granted = true;
+                .expect("candidate remains registered");
+            record.state = state_after;
+            let retired = std::mem::replace(&mut record.facts, Arc::new(facts));
             Inner::bump(&mut state, sequence)?;
-            Inner::restructure(&mut state);
-        }
-        let grant = if allow {
-            Grant::Granted
-        } else {
-            Grant::Conflict(state.seen())
+            let seen = state.seen();
+            registry.signal();
+            drop(state);
+            drop(retired);
+            return Ok(Grant::Conflict(seen));
         };
-        self.context.registry.signal();
+        let (reserved_pins, claimed): (Vec<_>, Vec<_>) = pins
+            .into_iter()
+            .partition(|pin| pin.root.is_some_and(|root| deferred.contains(&root)));
+        let claims = if deferred.is_empty() {
+            facts
+        } else {
+            Facts::subset(claimed)?
+        };
+        let reserved = if reserved_pins.is_empty() {
+            None
+        } else {
+            Some(Arc::new(Facts::subset(reserved_pins.clone())?))
+        };
+        let granted_at = state.grants.checked_add(1).ok_or_else(unconfirmed)?;
+        state.grants = granted_at;
+        let record = state
+            .records
+            .get_mut(&sequence)
+            .expect("candidate remains registered");
+        record.state = state_after;
+        let retired = std::mem::replace(&mut record.facts, Arc::new(claims));
+        record.granted = true;
+        record.granted_at = granted_at;
+        record.deferred = deferred;
+        record.reserved_pins = reserved_pins;
+        record.reserved = reserved;
+        record.unprotected = unprotected;
+        Inner::bump(&mut state, sequence)?;
+        Inner::restructure(&mut state);
+        registry.signal();
         drop(state);
         drop(retired);
-        Ok(grant)
+        Ok(Grant::Granted)
     }
     /// The final full revalidation of a granted job's own pins, after its last native work
-    /// and before its owners close. Turns without a granted peer refresh only what they
-    /// announced, so an external change to an untouched pinned binding (a renamed source
-    /// or destination parent) surfaces here: it is latched and reported as a job
-    /// diagnostic, as it would have been by a full turn refresh. Never fails the teardown.
+    /// and before its owners close. Opted-in turns refresh only what they announced, so an
+    /// external change to an untouched pinned binding (a renamed source or destination
+    /// parent) surfaces here: it is latched and reported as a job diagnostic, as it would
+    /// have been by a full turn refresh. Never fails the teardown.
     pub(crate) fn revalidate_before_close(&self) {
         let registry = &self.context.registry;
         let sequence = self.context.sequence;
@@ -1374,15 +1545,15 @@ struct Snapshot {
     sequence: u64,
     native: Weak<PinStore>,
     io: Weak<Permit>,
-    granted: bool,
-    opaque_latched: bool,
     roots: Option<Vec<usize>>,
     aliases: Option<Vec<u64>>,
+    /// Roots that are not part of this job's facts: deferred at grant and not claimed
+    /// yet, or unprotected reads of unknown geometry.
+    excluded: Vec<usize>,
     prior: Arc<Facts>,
 }
 struct ProbeBatch {
     registry: Arc<Inner>,
-    seen: Seen,
     snapshots: Vec<Snapshot>,
 }
 /// Fresh facts per record sequence, in snapshot order.
@@ -1401,16 +1572,19 @@ impl ProbeBatch {
                 sequence,
                 native: record.native.clone(),
                 io: record.io.clone(),
-                granted: record.granted,
-                opaque_latched: record.opaque_latched,
                 roots: None,
                 aliases: None,
+                excluded: record
+                    .deferred
+                    .iter()
+                    .chain(&record.unprotected)
+                    .copied()
+                    .collect(),
                 prior: record.facts.clone(),
             });
         }
         Ok(Self {
             registry: registry.clone(),
-            seen: state.seen(),
             snapshots,
         })
     }
@@ -1436,45 +1610,6 @@ impl ProbeBatch {
         cancelled(cancel)?;
         self.refresh_one(&self.snapshots[0])
     }
-    /// Err(seen): admission is momentarily closed (a turn, an in-flight or closing claim).
-    fn admission(registry: &Arc<Inner>, sequence: u64) -> Result<Result<Self, Seen>, FsError> {
-        let mut state = registry
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if !state
-            .records
-            .get(&sequence)
-            .is_some_and(|record| record.planned)
-        {
-            return Err(failure(
-                io::ErrorKind::InvalidInput,
-                "Complete namespace roots must be planned before grant.",
-            ));
-        }
-        if state
-            .records
-            .values()
-            .any(|record| record.state == FactsState::Quarantined)
-        {
-            return Err(blocked_by_quarantine());
-        }
-        if state.turn.is_some()
-            || state
-                .records
-                .values()
-                .any(|record| matches!(record.state, FactsState::InFlight | FactsState::Closing))
-        {
-            return Ok(Err(state.seen()));
-        }
-        let sequences = state
-            .records
-            .iter()
-            .filter(|(_, record)| record.planned)
-            .map(|(sequence, _)| *sequence)
-            .collect();
-        Self::reserve(registry, &mut state, sequences).map(Ok)
-    }
     fn refresh(self, cancel: &Cancellation, latch: bool) -> Result<Refreshed, FsError> {
         let mut facts = Vec::with_capacity(self.snapshots.len());
         for snapshot in &self.snapshots {
@@ -1494,32 +1629,6 @@ impl ProbeBatch {
         }
         Ok(facts)
     }
-    /// Admission refresh of every planned record. Only the candidate's own failure is
-    /// latched and fails it. A peer whose pins cannot be re-probed right now is not this
-    /// candidate's error and is never latched from here (its own turns report it); the
-    /// candidate simply stays ungranted (None) and retries later.
-    fn refresh_admission(
-        self,
-        cancel: &Cancellation,
-        candidate: u64,
-    ) -> Result<Option<Refreshed>, FsError> {
-        let mut facts = Vec::with_capacity(self.snapshots.len());
-        for snapshot in &self.snapshots {
-            cancelled(cancel)?;
-            let result = self
-                .refresh_one(snapshot)
-                .and_then(|pins| Facts::revalidated(&snapshot.prior, pins));
-            match result {
-                Ok(value) => facts.push((snapshot.sequence, Arc::new(value))),
-                Err(error) if snapshot.sequence == candidate => {
-                    self.registry.opaque(snapshot.sequence, error.clone());
-                    return Err(error);
-                }
-                Err(_) => return Ok(None),
-            }
-        }
-        Ok(Some(facts))
-    }
     fn refresh_one(&self, snapshot: &Snapshot) -> Result<Vec<PinFact>, FsError> {
         // Closing retains both resources until this counted probe has dropped
         // its native anchors and the actual configured I/O witness.
@@ -1530,9 +1639,11 @@ impl ProbeBatch {
         let store = snapshot.native.upgrade().ok_or_else(unconfirmed)?;
         let pins: Vec<_> = {
             let data = store.data.lock().unwrap_or_else(|error| error.into_inner());
+            let excluded = |root: &usize| snapshot.excluded.contains(root);
             let mut pins = match &snapshot.roots {
                 Some(roots) => roots
                     .iter()
+                    .filter(|root| !excluded(root))
                     .map(|root| {
                         data.roots
                             .get(*root)
@@ -1546,6 +1657,7 @@ impl ProbeBatch {
                     .iter()
                     .cloned()
                     .enumerate()
+                    .filter(|(root, _)| !excluded(root))
                     .map(|(root, pin)| (Some(root), None, pin))
                     .collect(),
             };
@@ -1811,12 +1923,16 @@ impl TransferNamespaceChange for Transaction {
             let identity = pin
                 .as_ref()
                 .map(|pin| Arc::as_ptr(pin) as *const () as usize);
-            let (registered, private_alias, candidate_access) = {
+            let (registered, private_alias, candidate_access, root_access) = {
                 let data = store.data.lock().unwrap_or_else(|error| error.into_inner());
-                let roots = identity
+                let roots: Vec<usize> = identity
                     .and_then(|identity| data.root_identity.get(&identity))
                     .cloned()
                     .unwrap_or_default();
+                let root_access: Vec<_> = roots
+                    .iter()
+                    .map(|root| (*root, data.roots[*root].access))
+                    .collect();
                 let private_alias =
                     identity.and_then(|identity| data.alias_identity.get(&identity).copied());
                 if let Some(alias) = private_alias
@@ -1839,7 +1955,7 @@ impl TransferNamespaceChange for Transaction {
                 } else {
                     TransferNamespaceAccess::Read
                 };
-                (roots, private_alias, access)
+                (roots, private_alias, access, root_access)
             };
             let probe = match &pin {
                 None => TransferNamespaceProbe::Unknown,
@@ -1884,6 +2000,7 @@ impl TransferNamespaceChange for Transaction {
                     {
                         return Err(unconfirmed());
                     }
+                    let own = record.granted_at;
                     let peers: Vec<_> = state
                         .records
                         .iter()
@@ -1898,6 +2015,8 @@ impl TransferNamespaceChange for Transaction {
                                     latched: record.opaque_latched,
                                 },
                                 record.facts.clone(),
+                                // Items a job deferred bind only the jobs granted after it.
+                                record.reserved.clone().filter(|_| record.granted_at < own),
                                 record.state,
                             )
                         })
@@ -1916,12 +2035,15 @@ impl TransferNamespaceChange for Transaction {
                 // names while this transaction holds the mutation turn.
                 let blockers: Vec<_> = peers
                     .iter()
-                    .filter(|(blocker, facts, state)| {
+                    .filter(|(blocker, facts, reserved, state)| {
                         blocker.latched
                             || *state == FactsState::Quarantined
                             || candidate.conflicts(facts)
+                            || reserved
+                                .as_ref()
+                                .is_some_and(|reserved| candidate.conflicts(reserved))
                     })
-                    .map(|(blocker, _, state)| (*blocker, *state))
+                    .map(|(blocker, _, _, state)| (*blocker, *state))
                     .collect();
                 let conflicts = !blockers.is_empty();
                 let mapping = if unsupported || conflicts {
@@ -1973,14 +2095,47 @@ impl TransferNamespaceChange for Transaction {
                 }
                 break (prior, mapping, state);
             };
+            // A root deferred at grant becomes this job's claim with this first change of
+            // it that no earlier job refused, before the change mutates anything.
+            let record = state
+                .records
+                .get_mut(&self.context.sequence)
+                .ok_or_else(unconfirmed)?;
+            let claimed: Vec<_> = root_access
+                .iter()
+                .filter(|(root, _)| record.deferred.contains(root))
+                .copied()
+                .collect();
+            if !claimed.is_empty() {
+                let claimed_root = |root: &usize| claimed.iter().any(|(claim, _)| claim == root);
+                record.deferred.retain(|root| !claimed_root(root));
+                record
+                    .reserved_pins
+                    .retain(|pin| !pin.root.as_ref().is_some_and(claimed_root));
+                record.reserved = if record.reserved_pins.is_empty() {
+                    None
+                } else {
+                    Some(Arc::new(Facts::subset(record.reserved_pins.clone())?))
+                };
+                prior.update(
+                    claimed
+                        .iter()
+                        .map(|(root, access)| PinFact {
+                            root: Some(*root),
+                            alias: None,
+                            access: *access,
+                            probe: fact.probe.clone(),
+                        })
+                        .collect(),
+                )?;
+            }
             // Only the exact original registered capability opts in. Existing
-            // helpers which announce fresh temporary children remain full-refresh
-            // whenever a granted peer can observe this job's facts (see `finish`).
-            // An opted-in helper must announce EVERY affected original/private
-            // binding before mutation, including displaced/recovery bindings. Intersection
-            // locates affected roots; it is never a substitute for full coverage: a job
-            // without a granted peer refreshes only touched pins per turn, and its
-            // untouched pins are revalidated by the next grant and before it closes.
+            // helpers which announce fresh temporary children refresh every pin of the
+            // job when they finish (see `finish`). An opted-in helper must announce
+            // EVERY affected original/private binding before mutation, including
+            // displaced/recovery bindings. Intersection locates affected roots; it is
+            // never a substitute for full coverage. Grants compare these committed facts
+            // without probing this job again; untouched pins are revalidated before close.
             if !registered.is_empty() && !candidate.is_opaque() {
                 self.incremental = true;
             }
@@ -2056,22 +2211,13 @@ impl TransferNamespaceChange for Transaction {
         let result = (|| {
             let io = self.context.io_witness()?;
             admitted(&self.context.registry, &io, || {
-                // Committed facts are compared only by other granted claims, and every
-                // grant first re-probes all planned records. Without a granted peer
-                // (none can be granted while this turn is held), refresh only what this
-                // turn announced instead of every pin the job has accumulated; an
-                // external change to an untouched pin is then reported by the job's
-                // final revalidation (`Claim::revalidate_before_close`).
-                let observed = self
-                    .context
-                    .registry
-                    .state
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .records
-                    .iter()
-                    .any(|(sequence, record)| *sequence != self.context.sequence && record.granted);
-                let incremental = !observed || (self.incremental && !self.full_refresh);
+                // Grants and other jobs' changes compare these committed facts without
+                // probing this job, so they must cover everything this turn changed. A
+                // turn that announced every affected binding (opted in) refreshes only
+                // those, not every pin the job has accumulated; any other turn refreshes
+                // all of them. An external change to an untouched pin is reported by the
+                // job's final revalidation (`Claim::revalidate_before_close`).
+                let incremental = self.incremental && !self.full_refresh;
                 let batch = if incremental {
                     ProbeBatch::touched(
                         &self.context.registry,

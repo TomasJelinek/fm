@@ -60,6 +60,7 @@ pub(crate) enum FileKey {
     Compare,
     Filter,
     Zoom,
+    /// Shift+letter: the drive with that letter, otherwise the typed letter.
     TryDrive(char),
     Mutation(i32),
     Clipboard(i32),
@@ -111,11 +112,28 @@ pub(crate) fn route_with(
     if active || composing {
         return FileKey::Native;
     }
-    if modifiers.control || modifiers.alt || modifiers.meta || modifiers.shift {
+    // A character typed with Shift alone ("_", "+", "?") is text: it starts a filename
+    // search like any other. Other unbound chords type nothing.
+    if modifiers.control
+        || modifiers.alt
+        || modifiers.meta
+        || (modifiers.shift && !typed_character(&event.text))
+    {
         FileKey::Consumed
     } else {
         FileKey::Native
     }
+}
+
+/// One printable character. Slint sends a named key (Escape, an arrow, a function key)
+/// as a control character or one from the private use area.
+fn typed_character(text: &str) -> bool {
+    let mut characters = text.chars();
+    characters.next().is_some_and(|character| {
+        !character.is_control()
+            && !character.is_whitespace()
+            && !('\u{E000}'..='\u{F8FF}').contains(&character)
+    }) && characters.next().is_none()
 }
 
 /// Map semantic actions to existing callbacks; no keyboard chord appears here.
@@ -148,6 +166,7 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "panel.parent" => FileKey::Action(2),
         "panel.refresh" => FileKey::Action(3),
         "panel.root" => FileKey::Action(4),
+        "panel.hidden-files" => FileKey::Action(5),
         "panel.path" => FileKey::FocusPath,
         "files.find" => FileKey::Find,
         "files.checksums" => FileKey::Checksums,
@@ -169,6 +188,9 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "selection.clear-files" => FileKey::Bulk(5),
         "selection.invert" => FileKey::Bulk(2),
         "selection.invert-all" => FileKey::Bulk(4),
+        "selection.mask-select" => FileKey::Bulk(6),
+        "selection.mask-deselect" => FileKey::Bulk(7),
+        "selection.mask-invert" => FileKey::Bulk(8),
         "sort.name" => FileKey::Sort(0),
         "sort.extension" => FileKey::Sort(3),
         "sort.modified" => FileKey::Sort(2),
@@ -435,6 +457,38 @@ mod tests {
             route(&event(Key::Tab, false, true, false), false, false),
             FileKey::Panel(0)
         );
+    }
+
+    #[test]
+    fn characters_typed_with_shift_alone_are_text_outside_a_search() {
+        for text in ["_", "+", "*", "?", "Ä"] {
+            assert_eq!(
+                route(&event(text, false, true, false), false, false),
+                FileKey::Native,
+                "Shift {text}"
+            );
+        }
+        // Shift+letter tries a drive with that letter first (`file_key_bridge`).
+        assert_eq!(
+            route(&event("R", false, true, false), false, false),
+            FileKey::TryDrive('R')
+        );
+        // Another modifier, or Shift with a named key, makes a chord that types nothing.
+        for chord in [
+            event("_", true, true, false),
+            event("_", false, true, true),
+            event(Key::Space, false, true, false),
+            event(Key::Escape, false, true, false),
+            event(Key::Home, false, true, false),
+            event(Key::F13, false, true, false),
+        ] {
+            assert_eq!(
+                route(&chord, false, false),
+                FileKey::Consumed,
+                "{:?}",
+                chord.text
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,8 @@
-//! Bounded, read-only text and image comparison. Every expensive operation runs on a worker.
+//! Bounded, read-only text, image and byte comparison. Every expensive operation runs on a
+//! worker.
 #![forbid(unsafe_code)]
 
+mod binary;
 mod discovery;
 mod external_compare;
 mod file_choice;
@@ -11,6 +13,7 @@ mod policy;
 mod revalidation;
 mod routing;
 mod text;
+mod typeface;
 mod worker;
 
 #[cfg(test)]
@@ -144,6 +147,9 @@ pub enum Input {
         revision: u64,
     },
     FontFamily(String),
+    /// Show the byte comparison (hex view) of a text pair, or its text again. Pairs
+    /// that are not text are always shown as bytes and ignore it.
+    Bytes(bool),
     Mode(ImageMode),
     Zoom(f64),
     ActualPixels,
@@ -172,6 +178,12 @@ pub struct Frame {
     pub accessible_text: String,
     pub status: String,
     pub image: bool,
+    /// The frame shows the byte comparison (hex view).
+    pub bytes: bool,
+    /// The pair can only be compared as bytes (not text, or not two images).
+    pub bytes_only: bool,
+    /// A byte comparison's scan still runs; taking this frame lets the worker go on.
+    pub scanning: bool,
     pub position: f64,
 }
 
@@ -489,10 +501,11 @@ impl Mailbox {
             state.output.take()
         };
         if let Some(Output::Frame { frame, .. }) = &output
-            && frame.identity == IdentityVerdict::Pending
+            && (frame.identity == IdentityVerdict::Pending || frame.scanning)
             && let Some(inbox) = &self.inbox
         {
-            // Whole-input verification runs only after the consumer takes the frame.
+            // Whole-input verification and the byte scan run only after the consumer
+            // takes the frame.
             inbox.wake();
         }
         output

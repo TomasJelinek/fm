@@ -113,7 +113,7 @@ Owner: UI agent. Files: `midnight-ui/ui` and UI integration tests.
 - [x] Update main design, hotkeys, README and verification report with actual results.
 - [x] Prepare intended source/docs only for delivery; exclude build products and QA captures.
 
-Delivery: commit and push to `main` with account TomasJelinek as authorized.
+Delivery: commit and push to `main` with the maintainer's account as authorized.
 The Git history and remote ref record delivery; verification details are in the
 [final report](../../verification/panel-navigation-and-smooth-scrolling.md).
 

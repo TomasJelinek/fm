@@ -129,14 +129,70 @@ impl Parent {
     }
 }
 
+/// ext2, ext3 and ext4 (one magic).
+const EXT4_MAGIC: u64 = 0xef53;
+const TMPFS_MAGIC: u64 = 0x0102_1994;
+const BTRFS_MAGIC: u64 = 0x9123_683e;
+const XFS_MAGIC: u64 = 0x5846_5342;
+/// Directory flags (FS_IOC_GETFLAGS) under which names are not compared byte for byte:
+/// case folding (FS_CASEFOLD_FL, which rustix keeps although IFlags has no named bit)
+/// and encryption (FS_ENCRYPT_FL: without the key, names are encoded).
+const NON_BYTE_LOOKUP_FLAGS: u32 = 0x4000_0000 | 0x0000_0800;
+
+/// Whether names in a directory of `filesystem` with `flags` compare byte for byte, as
+/// the namespace geometry that lets transfers run side by side requires; anything else
+/// (or an unknown answer) is Unknown, which makes transfers exclude each other.
+/// - ext4 and tmpfs fold case or encrypt per directory (`NON_BYTE_LOOKUP_FLAGS`).
+/// - Btrfs never folds case; it reports encryption the same way.
+/// - XFS is decided by `qualified_xfs_lookup`, since a whole volume can fold ASCII case.
+/// - Overlayfs stays Unknown: an object's identity changes when a lower file is copied up,
+///   and its names merge several layers, whose own lookups differ.
+/// - NFS, SMB and other network filesystems, and FUSE, stay Unknown: their server or
+///   daemon decides how names compare, and others change the names unseen.
+///
+/// Missing ioctl support is Unknown too, even on kernels predating these modes.
 fn qualified_lookup(filesystem: u64, flags: Option<u32>) -> bool {
     match filesystem {
-        // FS_CASEFOLD_FL is retained by rustix even though IFlags has no named bit.
-        // tmpfs can also inherit per-directory casefold. Missing ioctl support
-        // is unqualified, even on kernels predating that optional mode.
-        0xef53 | 0x0102_1994 => flags.is_some_and(|flags| flags & (0x4000_0000 | 0x0000_0800) == 0),
+        EXT4_MAGIC | TMPFS_MAGIC | BTRFS_MAGIC => {
+            flags.is_some_and(|flags| flags & NON_BYTE_LOOKUP_FLAGS == 0)
+        }
         _ => false,
     }
+}
+
+/// `qualified_lookup` for XFS, which compares names byte for byte unless the volume was
+/// made with the ASCII-CI feature (`ascii_ci`, from its geometry): then ASCII letters
+/// compare case-insensitively. A volume whose feature is unknown is Unknown.
+fn qualified_xfs_lookup(flags: Option<u32>, ascii_ci: Option<bool>) -> bool {
+    ascii_ci == Some(false) && flags.is_some_and(|flags| flags & NON_BYTE_LOOKUP_FLAGS == 0)
+}
+
+/// Whether the XFS volume of the directory `file` was made with the ASCII-CI feature
+/// (XFS_IOC_FSGEOMETRY); `None` when its geometry cannot be read (kernels before 5.1, or
+/// another filesystem).
+#[allow(unsafe_code)]
+fn xfs_ascii_ci(file: &File) -> Option<bool> {
+    use std::os::fd::AsRawFd;
+    /// `struct xfs_fsop_geom` (version 5) and the offset of its `flags`.
+    const GEOMETRY_SIZE: usize = 256;
+    const FLAGS_OFFSET: usize = 92;
+    /// `_IOR('X', 126, struct xfs_fsop_geom)`.
+    const XFS_IOC_FSGEOMETRY: libc::Ioctl = 0x8100_587e;
+    /// ASCII-only case-insensitive names.
+    const XFS_FSOP_GEOM_FLAGS_DIRV2CI: u32 = 1 << 12;
+    let mut geometry = [0u8; GEOMETRY_SIZE];
+    // SAFETY: XFS_IOC_FSGEOMETRY writes one `struct xfs_fsop_geom`, GEOMETRY_SIZE bytes
+    // (as its request number encodes), to the pointer, which points to a buffer of that
+    // size that outlives the call; the descriptor belongs to a live `File`. Another
+    // filesystem rejects the request without writing.
+    let result =
+        unsafe { libc::ioctl(file.as_raw_fd(), XFS_IOC_FSGEOMETRY, geometry.as_mut_ptr()) };
+    if result != 0 {
+        return None;
+    }
+    let flags = geometry.get(FLAGS_OFFSET..FLAGS_OFFSET + 4)?;
+    let flags = u32::from_ne_bytes(flags.try_into().ok()?);
+    Some(flags & XFS_FSOP_GEOM_FLAGS_DIRV2CI != 0)
 }
 
 fn parent_key(
@@ -148,14 +204,22 @@ fn parent_key(
     let filesystem = rustix::fs::fstatfs(file)
         .map_err(|e| error(path, e.into()))?
         .f_type as u64;
-    let flags = if matches!(filesystem, 0xef53 | 0x0102_1994) {
+    let flags = if matches!(
+        filesystem,
+        EXT4_MAGIC | TMPFS_MAGIC | BTRFS_MAGIC | XFS_MAGIC
+    ) {
         rustix::fs::ioctl_getflags(file)
             .ok()
             .map(|flags| flags.bits())
     } else {
         None
     };
-    if !qualified_lookup(filesystem, flags) {
+    let qualified = if filesystem == XFS_MAGIC {
+        qualified_xfs_lookup(flags, xfs_ascii_ci(file))
+    } else {
+        qualified_lookup(filesystem, flags)
+    };
+    if !qualified {
         return Ok(None);
     }
     let mut chain = Vec::new();
@@ -474,16 +538,10 @@ impl Pin {
         if source && witness.is_none() {
             return Err(invalid(parent_path, "planned source disappeared"));
         }
-        if private && kind != EntryKind::File && witness.is_some() {
-            return Err(error(
-                &parent_path.join(name),
-                io::ErrorKind::AlreadyExists.into(),
-            ));
-        }
-        if private
-            && kind == EntryKind::File
-            && witness.is_some_and(|witness| witness.kind != EntryKind::File)
-        {
+        // A private binding is for a new name, or for the regular file or link (`kind`) that
+        // a consented replacement displaces there: any other existing entry is a collision.
+        let replaceable = matches!(kind, EntryKind::File | EntryKind::Symlink);
+        if private && witness.is_some_and(|witness| !replaceable || witness.kind != kind) {
             return Err(error(
                 &parent_path.join(name),
                 io::ErrorKind::AlreadyExists.into(),
@@ -838,14 +896,17 @@ impl Bindings {
         )
     }
 
-    /// Observe a publication binding independently of covering original roots.
-    /// Existing regular targets retain their original object across replacement;
-    /// this Entry pin never becomes an empty publication/close certificate.
-    pub(super) fn private_file_pin(
+    /// Observe a publication binding independently of covering original roots. Its name
+    /// may hold the existing entry of `kind` that the publication replaces: a regular
+    /// file, or a link (a recreated link replacing a consented link). Existing targets
+    /// retain their original object across replacement; this Entry pin never becomes an
+    /// empty publication/close certificate.
+    pub(super) fn private_entry_pin(
         self: &Arc<Self>,
         parent: &Arc<File>,
         path: &Path,
         name: &OsStr,
+        kind: EntryKind,
         cancel: &Cancellation,
     ) -> Result<Arc<Pin>, FsError> {
         self.pin_with_kind(
@@ -853,7 +914,7 @@ impl Bindings {
             path,
             name,
             PinOptions {
-                kind: EntryKind::File,
+                kind,
                 source: false,
                 private: true,
                 link_mount: None,

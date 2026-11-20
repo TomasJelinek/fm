@@ -1,6 +1,7 @@
 //! Installed Hot Paths preserve their captured location without creating a window.
 use super::*;
 use i_slint_core::window::WindowInner;
+use slint::Model;
 use slint::platform::{
     Platform, WindowAdapter,
     software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -11,6 +12,23 @@ impl Platform for Boundary {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
         self.0.set(self.0.get() + 1);
         Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+    }
+}
+
+#[test]
+fn a_path_tail_is_the_last_component_with_the_separator_before_it() {
+    for (path, tail) in [
+        ("/home/user/report", "/report"),
+        ("C:\\Users\\文档", "\\文档"),
+        ("/home/user/", "/user/"),
+        ("/report", "/report"),
+        ("sftp://host", "/host"),
+        ("/", ""),
+        ("C:\\", ""),
+        ("report", ""),
+        ("", ""),
+    ] {
+        assert_eq!(crate::path_tail(path), tail, "{path}");
     }
 }
 
@@ -43,6 +61,8 @@ fn installed_hot_paths_keep_opening_location_and_ignore_retired_callbacks() {
         let presentation = main.global::<HotPathsPresentation>();
         let old = presentation.get_token();
         assert!(!old.is_empty());
+        let separator = std::path::MAIN_SEPARATOR;
+        assert_eq!(presentation.get_path_tail(), format!("{separator}first"));
         slint::platform::update_timers_and_animations();
         assert_eq!(
             WindowInner::from_pub(main.window()).active_popups().len(),
@@ -70,6 +90,16 @@ fn installed_hot_paths_keep_opening_location_and_ignore_retired_callbacks() {
             state.borrow().bookmarks().len(),
             2,
             "Close keeps saved changes"
+        );
+        // Each row keeps its last folder in view when its label is shortened.
+        let tails = main
+            .get_bookmarks()
+            .iter()
+            .map(|row| row.path_tail.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tails,
+            [format!("{separator}first"), format!("{separator}second")]
         );
         main.invoke_close_hot_paths_window();
         main.invoke_open_hot_paths_window(0);

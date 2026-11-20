@@ -13,6 +13,8 @@ mod finalization;
 mod lease;
 #[path = "transfer_directory_link_move.rs"]
 mod link_capture;
+#[path = "transfer_link_move.rs"]
+mod link_move;
 #[path = "transfer_native_move.rs"]
 mod native;
 
@@ -47,22 +49,19 @@ pub(super) fn prepare_with_links(
     revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMoveEntry, FsError> {
-    let mode = match links {
-        CopyLinkPolicy::Reject => {
-            return prepare(path, revisions, cancel).map(PreparedTransferMoveEntry::Ordinary);
-        }
-        CopyLinkPolicy::Preserve => {
-            return Err(FsError::from_io(
-                "transfer capability",
-                path,
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Move with directory links is unsupported",
-                ),
-            ));
-        }
-        CopyLinkPolicy::FollowDirectoryContents => directory_links::DirectoryLinkMode::Follow,
-        CopyLinkPolicy::EmptyDirectories => directory_links::DirectoryLinkMode::Empty,
+    if links == CopyLinkPolicy::FollowLinks {
+        // Move never copies what a link points to and then removes the link.
+        return Err(FsError::from_io(
+            "transfer capability",
+            path,
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Move does not follow links; it moves each link itself",
+            ),
+        ));
+    }
+    let Some(traversal) = directory_links::Traversal::for_policy(links) else {
+        return prepare(path, revisions, cancel).map(PreparedTransferMoveEntry::Ordinary);
     };
     let (parent_file, parent_path, name) = move_parent(path, cancel)?;
     prepare_child_with_links(
@@ -70,7 +69,7 @@ pub(super) fn prepare_with_links(
         parent_path,
         &name,
         None,
-        directory_links::Traversal::new(mode),
+        traversal,
         revisions,
         cancel,
     )
@@ -160,6 +159,14 @@ pub(super) fn prepare_child_with_links(
             capture,
         });
     }
+    if let Some(original) = source.link_leaf() {
+        // A preserved link is moved itself: its own rename or recreation.
+        let capture = Arc::new(link_move::Capture::prepare(original, parent, cancel)?);
+        return Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+            source: Box::new(source),
+            capture,
+        }));
+    }
     let (source, capture) = prepare_ordinary(source, parent, name, revisions, cancel)?;
     Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
         source: Box::new(source),
@@ -210,8 +217,8 @@ fn prepare_candidate(
         parent.check_recovery_parent(cancel)?;
         rustix::fs::accessat(parent.native_file(), ".",
         rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK, rustix::fs::AtFlags::EACCESS)
-            .map_err(|failure| unsupported(&path,
-                &format!("The source parent cannot create temporary staging: {failure}. Choose Copy to retain the source; no fallback is performed.")))
+            .map_err(|failure| move_error(&path, io::Error::new(io::ErrorKind::Unsupported,
+                format!("The source parent cannot create temporary staging: {failure}. Choose Copy to retain the source; no fallback is performed."))))
     };
     let projects_links = traversal.is_some();
     if !projects_links {
@@ -262,9 +269,10 @@ fn prepare_ordinary(
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
     let path = &source.entry().item.path;
-    // The source's own binding pin; its revision policy is the Move's.
-    let expected = parent
-        .prepare_target_with(name, revisions, cancel)?
+    // The source's own binding pin: identity, length and mtime must hold. Under the
+    // transfer policy its permissions (mode and ctime) may change before a Retry; Exact
+    // (Rename's capture) keeps them too.
+    let expected = destination::recovery::SourcePin::prepare(&parent, name, revisions, cancel)?
         .ok_or_else(|| invalid(path, "Move source disappeared while preparing"))?;
     if expected.entry().identity != source.entry().identity {
         return Err(invalid(path, "Move source changed while preparing"));
@@ -297,7 +305,7 @@ struct State {
 struct Capture {
     namespace: Arc<namespace::Bindings>,
     entry: TransferEntry,
-    expected: Arc<dyn TransferTarget>,
+    expected: destination::recovery::SourcePin,
     _file: Arc<File>,
     name: OsString,
     parent: destination::Directory,
@@ -462,6 +470,10 @@ mod finalization_tests;
 #[cfg(test)]
 #[path = "transfer_native_move_tests.rs"]
 mod native_tests;
+
+#[cfg(test)]
+#[path = "transfer_move_permission_tests.rs"]
+mod permission_tests;
 
 impl Capture {
     fn remove_empty_directory_in(

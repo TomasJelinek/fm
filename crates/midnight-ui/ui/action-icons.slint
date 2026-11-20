@@ -89,17 +89,34 @@ export global FallbackIcons {
     out property <image> exit: @image-url("icons/exit.svg");
     out property <image> sort-ascending: @image-url("icons/sort-ascending.svg");
     out property <image> sort-descending: @image-url("icons/sort-descending.svg");
+    out property <image> pause: @image-url("icons/pause.svg");
     // Every labelled button carries an icon, so a call site that names none gets the
-    // one its label implies. Labels with no common meaning stay icon-free.
+    // one its label implies. Symbol captions (+, −, ‹, ›, 1:1) are their own icon;
+    // viewer and comparator view toggles have no common glyph and stay without one,
+    // as does Panel filter's Show all, whose smallest footer has no room for it.
     pure public function for-label(label: string) -> image {
-        return label == "OK" || label == "Apply" || label == "Apply shortcut" || label == "Use color" || label == "Save" ? FallbackIcons.done
-            : label == "Cancel" || label == "Close" || label == "Remove" || label == "Cancel job" || label == "Cancel operation" ? FallbackIcons.close
-            : label == "Browse…" || label == "Browse image…" ? FallbackIcons.open-path
-            : label == "Open" ? FallbackIcons.run
+        return label == "OK" || label == "Apply" || label == "Apply shortcut" || label == "Use color" || label == "Save"
+                || label == "Apply colors" || label == "Assign" || label == "Replace"
+                || label == "Keep shortcuts" || label == "Keep custom shortcuts" ? FallbackIcons.done
+            : label == "Cancel" || label == "Close" || label == "Remove" || label == "Cancel job" || label == "Cancel operation"
+                || label == "Clear" ? FallbackIcons.close
+            : label == "Browse…" || label == "Browse image…" || label == "Change icon…" || label == "Insert file" ? FallbackIcons.open-path
+            : label == "Open" || label == "Resume" || label == "Play" ? FallbackIcons.run
+            : label == "Pause" ? FallbackIcons.pause
             : label == "Copy details" || label == "Copy as" ? FallbackIcons.copy
-            : label == "Add" || label == "Add current" ? FallbackIcons.tab-add
-            : label == "Reset" || label == "Retry" || label == "Retry with authorization" ? FallbackIcons.refresh
+            : label == "Add" || label == "Add current" || label == "Insert value" ? FallbackIcons.tab-add
+            : label == "Reset" || label == "Retry" || label == "Retry with authorization" || label == "Refresh"
+                || label == "Discard changes" || label == "Restore command" || label == "Restore defaults"
+                || label == "Restore all defaults" || label == "Reset shortcuts" || label == "Reset all shortcuts"
+                || label == "Leave permissions unchanged" ? FallbackIcons.refresh
             : label == "Skip" || label == "Skip all" || label == "Skip all this error type" ? FallbackIcons.forward
+            : label == "Decide later" ? FallbackIcons.back
+            : label == "Details" || label == "Fewer details" || label == "Resolve"
+                || label == "Show built-in checkbox" ? FallbackIcons.view
+            : label == "Associations…" || label == "Archive associations…" ? FallbackIcons.options
+            : label == "Jobs" ? FallbackIcons.menu
+            : label == "Replace · keep original" || label == "Replace all · keep originals" ? FallbackIcons.save-again
+            : label == "Merge folders" || label == "Merge all folders" ? FallbackIcons.new-folder
             : label == "Delete" ? FallbackIcons.delete : @image-url("");
     }
     pure public function is-colored(icon: image) -> bool {
@@ -110,16 +127,31 @@ export global FallbackIcons {
     }
 }
 
+// The one style of action glyphs (labelled buttons, toolbar and function keys) in every
+// window and on every platform: a monochrome glyph in the theme's dimmed foreground.
+export global ActionGlyph {
+    pure public function tint(enabled: bool) -> color {
+        return enabled ? Theme.secondary-text : Theme.muted-text;
+    }
+}
+
 export component NativeActionImage inherits Image {
     in property <image> native-icon;
     in property <image> fallback-icon;
     in property <bool> action-enabled: true;
+    // An action glyph: the bundled glyph, tinted like every other action glyph. Host
+    // artwork, which differs per platform and icon theme, shows only where no glyph
+    // exists (the application logo) and then keeps its own colors.
+    in property <bool> glyph;
     private property <bool> native-available: native-icon.width > 0 && native-icon.height > 0;
-    source: root.native-available ? root.native-icon : root.fallback-icon;
+    private property <bool> fallback-available: fallback-icon.width > 0 && fallback-icon.height > 0;
+    private property <bool> tinted-glyph: root.glyph && root.fallback-available;
+    source: root.tinted-glyph || !root.native-available ? root.fallback-icon : root.native-icon;
     // Transparent is Slint's uncolored-image default; host RGB and alpha survive.
-    colorize: root.native-available || (root.action-enabled && FallbackIcons.is-colored(root.fallback-icon))
+    colorize: root.tinted-glyph ? ActionGlyph.tint(root.action-enabled)
+        : root.native-available || (root.action-enabled && FallbackIcons.is-colored(root.fallback-icon))
         ? transparent : root.action-enabled ? Theme.text : Theme.muted-text;
-    opacity: root.native-available && !root.action-enabled ? 0.45 : 1;
+    opacity: !root.tinted-glyph && root.native-available && !root.action-enabled ? 0.45 : 1;
     image-fit: contain;
 }
 
@@ -137,10 +169,11 @@ component ActionButtonContent inherits HorizontalLayout {
     in property <bool> enabled;
     // Close dismisses; it is never the red window-close cross, so it ignores native artwork.
     private property <bool> closing: root.text == "Close";
-    private property <bool> native-available: !root.closing && root.native-icon.width > 0 && root.native-icon.height > 0;
-    private property <image> fallback: root.closing ? FallbackIcons.exit : root.fallback-icon.width > 0 ? root.fallback-icon : FallbackIcons.for-label(root.text);
-    private property <bool> colored: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback));
-    private property <image> artwork: root.native-available ? root.native-icon : root.fallback;
+    private property <image> glyph: root.closing ? FallbackIcons.exit : root.fallback-icon.width > 0 ? root.fallback-icon : FallbackIcons.for-label(root.text);
+    // The same glyph style on every platform and in every window: the bundled glyph,
+    // tinted with the theme's dimmed foreground. Host artwork (often colored, and
+    // different per platform) stands in only where no glyph exists, tinted the same way.
+    private property <image> artwork: root.closing || root.glyph.width > 0 ? root.glyph : root.native-icon;
     private property <bool> has-icon: root.artwork.width > 0 && root.artwork.height > 0;
     private property <color> foreground: !root.enabled ? Theme.muted-text
         : root.destructive ? Theme.error-text : Theme.text;
@@ -151,10 +184,9 @@ component ActionButtonContent inherits HorizontalLayout {
     if root.has-icon: Image {
         source: root.artwork; image-fit: contain;
         width: Theme.icon-size; height: Theme.icon-size;
-        colorize: root.colored ? transparent : root.removal-icon && root.enabled ? Theme.error-text : root.foreground;
-        // Colored artwork (native or bundled) is saturated; every button softens it the
-        // same way so it sits in the theme's palette.
-        opacity: root.native-available && !root.enabled ? 0.45 : root.colored ? (Theme.light ? 0.75 : 0.6) : 1;
+        // Removal and destructive actions keep the error color of their caption.
+        colorize: root.enabled && (root.removal-icon || root.destructive) ? Theme.error-text
+            : ActionGlyph.tint(root.enabled);
         accessible-role: none;
     }
     if root.text != "": Text {

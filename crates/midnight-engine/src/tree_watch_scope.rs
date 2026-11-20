@@ -78,6 +78,24 @@ impl Session {
         result
     }
 
+    /// Whether the root's accepted rows leave hidden entries out, so that its
+    /// checks must too: until the tree lists the root again they are the flat
+    /// listing the tree was adopted from, which left them out when hidden files
+    /// were not shown. That listing counted what it left out; when it had
+    /// nothing to leave out, the current choice decides, unless its rows hold a
+    /// hidden entry (they were listed while hidden files were shown).
+    fn root_rows_leave_hidden_out(&self) -> bool {
+        let projection = &self.projection;
+        projection.root.same_snapshot(&projection.root_actions)
+            && (projection.root.index.hidden > 0
+                || (self.options.hide_hidden
+                    && !projection
+                        .root_actions
+                        .entries
+                        .iter()
+                        .any(crate::hidden_entries::is_hidden)))
+    }
+
     fn build_watch_scope(
         &mut self,
         eligible: HashSet<BranchId>,
@@ -102,9 +120,11 @@ impl Session {
                 .watch_listing(branch)
                 .ok_or(ProviderError::StaleReference)?;
             let directory_identity = self.tree.loaded_native_identity(branch)?;
+            let hide = branch == self.tree.root() && self.root_rows_leave_hidden_out();
             let target = if let Some((cached_version, cached)) = self.watch_cache.get(&branch)
                 && *cached_version == version
                 && cached.directory_identity == directory_identity
+                && cached.hide == hide
             {
                 cached.clone()
             } else {
@@ -173,11 +193,13 @@ impl Session {
                     branch,
                     path,
                     display,
-                    // The root shows every entry, so its accepted display signature
-                    // is its full observation. A folder-only branch keeps the one
-                    // its provider observed while listing, if any.
+                    // The root shows every entry its rows hold, so its accepted
+                    // display signature is its full observation. A folder-only
+                    // branch keeps the one its provider observed while listing,
+                    // if any.
                     full: if root { Some(display) } else { observation },
                     folders_only: !root,
+                    hide,
                     directory_identity,
                     path_bytes,
                     _mounted: mounted,

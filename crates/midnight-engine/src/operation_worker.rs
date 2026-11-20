@@ -1,6 +1,10 @@
 use super::*;
+#[path = "operation_delete.rs"]
+pub(super) mod delete;
 #[path = "operation_discovery.rs"]
 mod discovery;
+#[path = "operation_replace.rs"]
+mod replace;
 use std::{
     ffi::OsString,
     io,
@@ -14,6 +18,8 @@ pub(super) struct Job {
     directory: Option<Arc<dyn PreparedDirectory>>,
     pub(super) name: Option<OsString>,
     pub(super) rename_conflicts: Arc<super::rename::ConflictState>,
+    /// Routes a Delete job's failure decisions; the actor indexes it by job.
+    pub(super) delete_decisions: Arc<delete::DecisionState>,
     /// Formats the two entries a Rename conflict prompt displays. Only a Rename job
     /// retains it, inside its lease; it drops before the mutation permit.
     pub(super) rename_locale: Option<Arc<dyn LocaleService>>,
@@ -223,6 +229,7 @@ fn new_job(
         directory: None,
         name: None,
         rename_conflicts: Arc::default(),
+        delete_decisions: Arc::default(),
         rename_locale: None,
         metadata: None,
         metadata_budget,
@@ -408,11 +415,16 @@ impl Job {
         if self.progress().kind == MutationKind::Rename {
             return super::rename::execute(self, outbox);
         }
+        if matches!(self.progress().kind, MutationKind::Delete(_)) {
+            return delete::execute(self, outbox);
+        }
         let mut progress = self.progress();
-        self.discover_deletion(&mut progress);
         let count = progress.total as usize;
-        // Completed targets that reported a residue; each is also one `failed` issue.
+        // Completed targets that reported an issue (a residue, an unconfirmed step);
+        // each is also one `failed` issue.
         let mut residues = 0;
+        // Where a replaced file is kept, for the completion message.
+        let mut recovery = String::new();
         for index in 0..count {
             if !self.cancel.wait_if_paused() {
                 break;
@@ -425,21 +437,26 @@ impl Job {
             progress.current_path = Some(path);
             self.store_progress(&mut progress);
             let result = match progress.kind {
-                MutationKind::CreateFile => match &self.replace_existing {
-                    Some(transfer) => crate::checksum::replace_with_empty_file(
-                        transfer.as_ref(),
-                        &progress
-                            .source_directory
-                            .join(self.name.as_deref().expect("validated name")),
-                        &self.cancel,
-                    ),
-                    None => self
-                        .directory
-                        .as_ref()
-                        .expect("prepared base")
-                        .create_file(self.name.as_deref().expect("validated name"), &self.cancel),
+                MutationKind::CreateFile => {
+                    let base = self.directory.as_ref().expect("prepared base");
+                    let name = self.name.as_deref().expect("validated name");
+                    match &self.replace_existing {
+                        Some(transfer) => replace::replace_with_empty_file(
+                            transfer.as_ref(),
+                            base.as_ref(),
+                            &progress.source_directory,
+                            name,
+                            &self.cancel,
+                        )
+                        .map(|replaced| {
+                            recovery = replaced.note;
+                            (Some(replaced.path), replaced.issue)
+                        }),
+                        None => base
+                            .create_file(name, &self.cancel)
+                            .map(|path| (Some(path), None)),
+                    }
                 }
-                .map(|path| (Some(path), None)),
                 MutationKind::Rename => unreachable!("rename jobs use their typed worker"),
                 MutationKind::CreateDirectory => self
                     .directory
@@ -450,42 +467,22 @@ impl Job {
                         &self.cancel,
                     )
                     .map(|path| (Some(path), None)),
-                MutationKind::Delete(mode) => self.targets[index]
-                    .delete(mode, &self.cancel, &mut |path| {
-                        progress.processed_entries += 1;
-                        if progress.discovery.state == DiscoveryState::Complete
-                            && progress.discovery.entries().is_some_and(|total| progress.processed_entries > total) {
-                            progress.discovery.unavailable("The source changed after discovery; total progress is unavailable.");
-                        }
-                        progress.current_path = Some(path.to_owned());
-                        // Publish counters to the timer even if the next native call stalls.
-                        // Only the timer builds and sends bounded display snapshots.
-                        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
-                        status.processed_entries = progress.processed_entries;
-                        status.discovery = progress.discovery.clone();
-                        status.current_path = progress.current_path.clone();
-                    })
-                    .map(|done| (None, done.residue)),
+                MutationKind::Delete(_) => unreachable!("delete jobs use their typed worker"),
                 MutationKind::EditMetadata => unreachable!("metadata jobs use their typed worker"),
             };
             match result {
-                Ok((destination, residue)) => {
+                Ok((destination, issue)) => {
                     progress.completed += 1;
                     if destination.is_some() {
                         progress.processed_entries += 1;
                         progress.renamed_to = destination;
                     }
-                    if let Some(residue) = residue {
+                    // The change completed; its issue is counted without undoing it.
+                    if let Some(issue) = issue {
                         residues += 1;
                         progress.failed += 1;
                         if progress.errors.len() < 16 {
-                            let target = self.targets[index].item().path.display();
-                            let done = if progress.kind == MutationKind::Delete(DeleteMode::Trash) {
-                                format!("Moved {target} to Trash")
-                            } else {
-                                format!("Deleted {target}")
-                            };
-                            progress.errors.push(residue_issue(&done, &residue));
+                            progress.errors.push(issue);
                         }
                     }
                 }
@@ -538,6 +535,13 @@ impl Job {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
+        // A replaced file stays recoverable: say where, so it can be found and removed.
+        if !recovery.is_empty() {
+            if !progress.message.is_empty() {
+                progress.message.push('\n');
+            }
+            progress.message.push_str(&recovery);
+        }
         // A residue undoes nothing; an incomplete target can leave partial work.
         if progress.processed_entries > 0
             && (progress.state == OperationState::Cancelled || progress.failed > residues)

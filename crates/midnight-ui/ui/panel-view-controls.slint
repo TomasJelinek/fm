@@ -3,6 +3,7 @@ import { CompactPicker } from "controls.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { NavigationButton } from "navigation-controls.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
+import { PanelChoices } from "select-mask-dialog.slint";
 
 // View choices belong to their panel even while the other panel is active.
 export component PanelViewControls inherits Rectangle {
@@ -22,6 +23,8 @@ export component PanelViewControls inherits Rectangle {
     callback filter();
     callback view-selected(int);
     callback sort-selected(int);
+    // Show hidden files is one choice for both panels, offered in each View menu.
+    callback hidden-files-toggled();
     callback dismissed();
     private property <length> picker-width: root.compact ? 36px : 104px;
     width: 2 * root.picker-width + Theme.tool-width + 8px;
@@ -44,12 +47,20 @@ export component PanelViewControls inherits Rectangle {
             context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
             popup-width: 190px; popup-align-right: true; fit-popup-to-content: true;
             icon-only: root.compact; icon: FallbackIcons.view; native-icon: root.action-icons.view;
-            model: ["Detailed", "Brief", "Thumbnails"]; current-index: root.view-mode;
-            shortcuts: [ShortcutHints.keys("view.detailed"), ShortcutHints.keys("view.brief"), ShortcutHints.keys("view.thumbnails")];
+            model: ["Detailed", "Brief", "Thumbnails",
+                PanelChoices.show-hidden-files ? "Hide hidden files" : "Show hidden files"];
+            current-index: root.view-mode;
+            shortcuts: [ShortcutHints.keys("view.detailed"), ShortcutHints.keys("view.brief"),
+                ShortcutHints.keys("view.thumbnails"), ShortcutHints.keys("panel.hidden-files")];
+            separator-before-index: 3;
             label: self.model[root.view-mode]; accessible-name: root.view-label;
-            hint: "View: " + self.model[root.view-mode];
+            hint: "View: " + self.model[root.view-mode]
+                + (PanelChoices.show-hidden-files ? "" : " · hidden files are not shown");
             opening => { root.activate(); }
-            selected(index) => { root.activate(); root.view-selected(index); }
+            selected(index) => {
+                root.activate();
+                if index == 3 { root.hidden-files-toggled(); } else { root.view-selected(index); }
+            }
             dismissed => { root.dismissed(); }
         }
         CompactPicker {

@@ -4,7 +4,7 @@ Text comparison now supports configurable next/previous and first/last differenc
 actions. Existing F7/Shift+F7 remain defaults; Alt+Down/Up, Alt+Right/Left, N/P and
 Alt+Home/End follow Salamander's comparator accelerators. The reference was the
 local `src/plugins/filecomp/filecomp.rc` accelerator table and
-`help/hh/filecomp/shortcuts_keyboard.htm` in `D:/experiments/salamander-main`.
+`help/hh/filecomp/shortcuts_keyboard.htm` in `<salamander-source>`.
 Alt+J/K can be assigned through Options; the existing four-alias limit remains.
 Navigation stops at boundaries, aligns both panes on the target row, and preserves
 rapid repeated jumps. Shortcut replacements disable the default aliases; editor

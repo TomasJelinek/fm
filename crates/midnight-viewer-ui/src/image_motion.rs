@@ -78,6 +78,17 @@ pub(super) fn seek(open: &OpenWindow, axis: usize, position: f64) {
     }
 }
 
+/// Home and End: the image's start or end along the direction it scrolls in, as a
+/// document's go to its first and last page. The retained camera owns the view, so
+/// this moves it like the scrollbar; the backend's Seek would not move it.
+pub(super) fn seek_end(open: &OpenWindow, position: f64) -> bool {
+    let Some(axis) = open.image_camera.borrow().scroll_axis() else {
+        return false;
+    };
+    seek(open, axis, position);
+    true
+}
+
 pub(super) fn present(open: &OpenWindow) {
     refresh_scale(open);
     let Some(info) = open.image_info.borrow().clone() else {
@@ -186,10 +197,12 @@ pub(super) fn bookkeeping(open: &OpenWindow, event: &WindowEvent) {
 #[cfg(test)]
 pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
     bookkeeping(open, event);
-    route(open, event)
+    route(open, event, false)
 }
 
-pub(super) fn route(open: &OpenWindow, event: &WindowEvent) -> bool {
+/// `touchpad`: the shared tracker classified this line delta as finger motion;
+/// it then takes the native pixel path instead of the eased wheel glide.
+pub(super) fn route(open: &OpenWindow, event: &WindowEvent, touchpad: bool) -> bool {
     if matches!(event, WindowEvent::RedrawRequested) {
         step(open);
         raster_motion::step(open);
@@ -217,7 +230,7 @@ pub(super) fn route(open: &OpenWindow, event: &WindowEvent) -> bool {
     else {
         return false;
     };
-    if open.image_native.borrow().presses.active() {
+    if touchpad || open.image_native.borrow().presses.active() {
         return false;
     }
     if open.window.get_tiled() {

@@ -46,7 +46,7 @@ impl Presenter {
     }
 
     pub(crate) fn defer_copy_decision(&mut self, token: &str) {
-        if self.defer_rename_decision(token) {
+        if self.defer_rename_decision(token) || self.defer_delete_decision(token) {
             return;
         }
         let key = self
@@ -69,7 +69,7 @@ impl Presenter {
     }
 
     pub(crate) fn resolve_copy_decision(&mut self, token: &str) {
-        if self.resolve_rename_decision(token) {
+        if self.resolve_rename_decision(token) || self.resolve_delete_decision(token) {
             return;
         }
         self.operations.rename_selected = None;

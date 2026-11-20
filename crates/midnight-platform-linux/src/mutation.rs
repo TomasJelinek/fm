@@ -34,12 +34,13 @@
 //! preparation. Traversal additionally uses descriptors proportional to depth.
 
 use midnight_core::{
-    Cancellation, DeleteCompletion, DeleteMode, EntryKind, EntryMetadata, FsError, MutationItem,
-    MutationResidue, MutationService, PreparedDirectory, PreparedMutation, RenameCompletion,
+    Cancellation, DeleteCompletion, DeleteEntryFailure, DeleteFailureChoice, DeleteMode, EntryKind,
+    EntryMetadata, FsError, MutationItem, MutationResidue, MutationService, PreparedDirectory,
+    PreparedMutation, RenameCompletion,
 };
 use rustix::fs::{
-    AtFlags, CWD, FileType, Mode, OFlags, RenameFlags, ResolveFlags, Stat, fstat, mkdirat, openat,
-    openat2, renameat_with, statat, unlinkat,
+    Access, AtFlags, CWD, FileType, Mode, OFlags, RenameFlags, ResolveFlags, Stat, accessat, fstat,
+    mkdirat, openat, openat2, renameat_with, statat, unlinkat,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -104,6 +105,17 @@ impl Identity {
         Ok(Self::from_stat(
             &fstat(file).map_err(|error| native_error(path, error))?,
         ))
+    }
+
+    /// The same object as transfers identify it: device, and the inode in the first
+    /// eight bytes.
+    fn transfer(self) -> midnight_core::TransferIdentity {
+        let mut object = [0; 16];
+        object[..8].copy_from_slice(&self.inode.to_le_bytes());
+        midnight_core::TransferIdentity {
+            device: self.device,
+            object,
+        }
     }
 
     fn verify(self, parent: &File, name: &OsStr, path: &Path) -> Result<(), FsError> {
@@ -264,7 +276,7 @@ impl PreparedMutation for Prepared {
         new_name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<midnight_core::PreparedRenameReplacement, FsError> {
-        use midnight_core::{TransferIdentity, TransferService};
+        use midnight_core::TransferService;
         self.revalidate(cancel)?;
         validate_name(new_name, &self.item.path)?;
         if self.item.kind != EntryKind::File {
@@ -274,17 +286,9 @@ impl PreparedMutation for Prepared {
                 "Rename replacement requires two ordinary files",
             ));
         }
-        let identity = |value: Identity| {
-            let mut object = [0; 16];
-            object[..8].copy_from_slice(&value.inode.to_le_bytes());
-            TransferIdentity {
-                device: value.device,
-                object,
-            }
-        };
         let service = crate::LinuxFileSystem::new(None);
         let directory = service.prepare_move_destination(&self.parent_path, cancel)?;
-        if directory.identity() != identity(self.parent_identity) {
+        if directory.identity() != self.parent_identity.transfer() {
             return Err(error(
                 &self.parent_path,
                 ErrorKind::InvalidInput,
@@ -292,7 +296,7 @@ impl PreparedMutation for Prepared {
             ));
         }
         let movement = service.prepare_move_source(&self.item.path, cancel)?;
-        if movement.capture.entry().identity != identity(self.identity) {
+        if movement.capture.entry().identity != self.identity.transfer() {
             return Err(error(
                 &self.item.path,
                 ErrorKind::InvalidInput,
@@ -399,24 +403,160 @@ impl PreparedMutation for Prepared {
         cancel: &Cancellation,
         progress: &mut dyn FnMut(&Path),
     ) -> Result<DeleteCompletion, FsError> {
-        self.revalidate(cancel)?;
-        if mode == DeleteMode::Trash {
-            return trash::move_entry(self, cancel, progress);
+        // Without a caller to decide, the first failure ends the deletion.
+        self.delete_decided(mode, cancel, progress, false, &mut |failure| {
+            Err(failure.error)
+        })
+    }
+
+    fn delete_with_decisions(
+        &self,
+        mode: DeleteMode,
+        cancel: &Cancellation,
+        progress: &mut dyn FnMut(&Path),
+        failed: &mut dyn FnMut(DeleteEntryFailure) -> DeleteFailureChoice,
+    ) -> Result<DeleteCompletion, FsError> {
+        self.delete_decided(mode, cancel, progress, true, &mut |failure| {
+            Ok(failed(failure))
+        })
+    }
+}
+
+impl Prepared {
+    /// A refusal by the folder that contains the item names that folder and says why.
+    /// Deleting never changes that folder, not even its permissions.
+    fn explain_refusal(&self, failure: FsError) -> FsError {
+        if failure.kind != ErrorKind::PermissionDenied
+            || accessat(
+                &*self.parent,
+                ".",
+                Access::WRITE_OK | Access::EXEC_OK,
+                AtFlags::EACCESS,
+            )
+            .is_ok()
+        {
+            return failure;
         }
-        let staged = Staged::create(self)?;
-        staged.capture(self, cancel)?;
-        match tree::delete(
+        let owner = rustix::process::geteuid().as_raw();
+        let message = if fstat(&*self.parent).is_ok_and(|stat| stat.st_uid == owner) {
+            "The folder that contains this item is write-protected, so nothing can be \
+             deleted from it"
+        } else {
+            "The folder that contains this item is owned by another user, who does not allow \
+             deleting anything in it"
+        };
+        error(&self.parent_path, ErrorKind::PermissionDenied, message)
+    }
+
+    /// A Trash move (one step, so a failure ends it), or a permanent deletion through
+    /// staging. While a failure waits for `decide`, what is left of the item is back
+    /// under its own name, where its cause can be fixed; it is captured again, with the
+    /// same identity checks, before the deletion goes on. Skipped items return to the
+    /// item's name with what contains them.
+    fn delete_decided(
+        &self,
+        mode: DeleteMode,
+        cancel: &Cancellation,
+        progress: &mut dyn FnMut(&Path),
+        decisions: bool,
+        decide: &mut tree::Decide<'_>,
+    ) -> Result<DeleteCompletion, FsError> {
+        self.revalidate(cancel)?;
+        // Moving a folder to another folder changes its `..` entry, which needs write
+        // permission on the moved folder itself.
+        let unprotected = self.unprotect_selected_folder();
+        let restore = || {
+            if let Some((directory, mode)) = &unprotected {
+                let _ = rustix::fs::fchmod(directory, Mode::from_raw_mode(*mode));
+            }
+        };
+        if mode == DeleteMode::Trash {
+            // The folder keeps its own mode in the Trash.
+            let result = trash::move_entry(self, cancel, progress);
+            restore();
+            return result.map_err(|failure| self.explain_refusal(failure));
+        }
+        let staged = match Staged::create(self) {
+            Ok(staged) => staged,
+            Err(failure) => {
+                restore();
+                return Err(self.explain_refusal(failure));
+            }
+        };
+        if let Err(failure) = staged.capture(self, cancel) {
+            restore();
+            return Err(self.explain_refusal(failure));
+        }
+        // The rest of the item is back under its name; staging was given up after it
+        // could not be captured again.
+        let mut released = false;
+        let mut abandoned = false;
+        let result = tree::delete(
             &staged.directory,
             self.identity,
             &self.item.path,
             cancel,
             progress,
-        ) {
-            Ok(()) => Ok(DeleteCompletion {
-                residue: staged.cleanup().err(),
-            }),
-            Err(failure) => Err(staged.restore(self, failure)),
+            &mut |failure| {
+                released = decisions && staged.release(self);
+                let choice = decide(failure)?;
+                if released && choice != DeleteFailureChoice::Cancel {
+                    if let Err(changed) = staged.capture(self, cancel) {
+                        abandoned = true;
+                        return Err(changed);
+                    }
+                    released = false;
+                }
+                Ok(choice)
+            },
+        );
+        // A selected folder that stays gets its own mode back.
+        if !matches!(result, Ok(0)) {
+            restore();
         }
+        match result {
+            Err(failure) if abandoned => Err(failure),
+            Err(failure) if released => Err(staged.abandon(self, failure, false)),
+            Err(failure) => Err(staged.restore(self, failure)),
+            Ok(0) => Ok(DeleteCompletion {
+                residue: staged.cleanup().err(),
+                skipped: 0,
+            }),
+            Ok(skipped) => Ok(DeleteCompletion {
+                residue: staged.put_back(self)?,
+                skipped,
+            }),
+        }
+    }
+
+    /// The selected folder, when the current user owns it and it lacks owner write or
+    /// search permission, gets both through a descriptor opened beneath its parent
+    /// without following links and checked against the selected identity; returns that
+    /// descriptor and the original mode. Anything else is left unchanged.
+    fn unprotect_selected_folder(&self) -> Option<(File, rustix::fs::RawMode)> {
+        if self.identity.kind != FileType::Directory {
+            return None;
+        }
+        let directory = File::from(
+            openat2(
+                &*self.parent,
+                &self.name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::BENEATH | ResolveFlags::NO_XDEV | ResolveFlags::NO_SYMLINKS,
+            )
+            .ok()?,
+        );
+        let stat = fstat(&directory).ok()?;
+        let mode = stat.st_mode & 0o7777;
+        if Identity::from_stat(&stat) != self.identity
+            || stat.st_uid != rustix::process::geteuid().as_raw()
+            || mode & 0o300 == 0o300
+        {
+            return None;
+        }
+        rustix::fs::fchmod(&directory, Mode::from_raw_mode(mode | 0o300)).ok()?;
+        Some((directory, mode))
     }
 }
 
@@ -588,6 +728,45 @@ impl Staged {
             _ => failure.message.push_str(&format!("; {residue}")),
         }
         failure
+    }
+
+    /// Moves the staged item back under its own name while a decision waits; false
+    /// when it stays staged (another entry took the name, say).
+    fn release(&self, prepared: &Prepared) -> bool {
+        renameat_with(
+            &*self.directory,
+            STAGED_NAME,
+            &*prepared.parent,
+            &prepared.name,
+            RenameFlags::NOREPLACE,
+        )
+        .is_ok()
+    }
+
+    /// Puts what is left of an item that was not completely deleted (skipped items
+    /// and the folders that contain them) back under its name and removes the stage,
+    /// whose failure to leave is a residue.
+    fn put_back(&self, prepared: &Prepared) -> Result<Option<MutationResidue>, FsError> {
+        renameat_with(
+            &*self.directory,
+            STAGED_NAME,
+            &*prepared.parent,
+            &prepared.name,
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(|restore| {
+            // The rest stays in staging: never a name conflict or a cancellation.
+            error(
+                &prepared.item.path,
+                ErrorKind::Other,
+                &format!(
+                    "skipped items were kept, but they could not return to the item's name \
+                     and remain at {} ({restore})",
+                    self.path.join(STAGED_NAME).display()
+                ),
+            )
+        })?;
+        Ok(self.cleanup().err())
     }
 
     fn restore(&self, prepared: &Prepared, mut failure: FsError) -> FsError {
@@ -782,6 +961,8 @@ fn error(path: &Path, kind: ErrorKind, message: &str) -> FsError {
 
 #[cfg(test)]
 mod create_tests;
+#[cfg(test)]
+mod protected_tests;
 #[cfg(test)]
 mod residue_tests;
 #[cfg(test)]

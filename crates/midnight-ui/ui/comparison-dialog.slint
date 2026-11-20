@@ -12,11 +12,15 @@ export struct ComparisonView {
     left-path: string, right-path: string,
     by-size: bool, by-modified: bool, case-sensitive: bool,
     tolerance-seconds: string, unmatched-directories: bool,
+    by-content: bool, recursive: bool,
+    // The running comparison's progress line; empty when none runs.
+    progress: string,
 }
 
 export component CompareDirectoriesDialog inherits Rectangle {
     in property <ComparisonView> model;
-    callback submit(bool, bool, bool, string, bool);
+    // size, time, exact case, tolerance, unmatched folders, contents, subfolders
+    callback submit(bool, bool, bool, string, bool, bool, bool);
     callback cancel();
     callback move-dialog(length, length);
     // Shrinking can clip the focused field and clear Slint's focus entirely.
@@ -30,6 +34,8 @@ export component CompareDirectoriesDialog inherits Rectangle {
         names.checked = root.model.case-sensitive;
         tolerance.text = root.model.tolerance-seconds;
         directories.checked = root.model.unmatched-directories;
+        contents.checked = root.model.by-content;
+        subfolders.checked = root.model.recursive;
         if root.compact {
             footer.focus-dismiss();
         } else {
@@ -59,10 +65,14 @@ export component CompareDirectoriesDialog inherits Rectangle {
                         Text { text: "Second: " + root.model.right-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
                     }
                     Rectangle { height: 1px; background: Theme.frame; }
-                    Text { text: "Metadata only · displayed files · no recursion"; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+                    Text {
+                        text: (contents.checked ? "Metadata and contents" : "Metadata only")
+                            + (subfolders.checked ? " · displayed files and folders, with their subfolders" : " · displayed files · no recursion");
+                        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                    }
                     sizes := WrappingCheckBox {
                         text: "Compare file size"; enabled: !root.model.busy; min-height: Theme.control-height;
-                        hint: "Select the larger file. Missing requested metadata selects both files as unknown. File contents are not read.";
+                        hint: "Select the larger file. Missing requested metadata selects both files as unknown. File contents are read only with Compare contents.";
                     }
                     times := WrappingCheckBox {
                         text: "Compare modification time"; enabled: !root.model.busy; min-height: Theme.control-height;
@@ -73,15 +83,27 @@ export component CompareDirectoriesDialog inherits Rectangle {
                         enabled: !root.model.busy; accessible-label: "Time tolerance in seconds"; min-height: Theme.control-height;
                         hint: "A whole number from 0 to 86400. A difference exactly equal to the tolerance counts as equal.";
                     }
+                    contents := WrappingCheckBox {
+                        text: "Compare contents"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Read same-named files of equal size byte by byte when the other criteria find no difference; different bytes select both files. Sizes are checked first, so files of different size are never read. Runs in the background: the status line shows progress, and Compare directories again shows Cancel.";
+                    }
                     names := WrappingCheckBox {
                         text: "Match names with exact case"; enabled: !root.model.busy; min-height: Theme.control-height;
                         hint: "Turn off to use Unicode case folding. Ambiguous folded names are all selected; native filenames are never changed.";
                     }
-                    directories := WrappingCheckBox {
-                        text: "Select unmatched directories"; enabled: !root.model.busy; min-height: Theme.control-height;
-                        hint: "Also select directories without a name match. Their contents and metadata are not compared. Persistent panel filters still apply to files.";
+                    subfolders := WrappingCheckBox {
+                        text: "Include subfolders"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Compare same-named folders and everything inside them. A folder that contains a difference is selected on the side that differs (both sides for unknown or different contents); an expanded tree also selects the differing subfolders it shows. Folders and links on one side only count as differences; links are never followed.";
                     }
-                    if root.model.busy: Text { text: "Comparing…"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    directories := WrappingCheckBox {
+                        text: "Select unmatched directories"; enabled: !root.model.busy && !subfolders.checked; min-height: Theme.control-height;
+                        hint: subfolders.checked ? "With Include subfolders, folders on one side only are always selected."
+                            : "Also select directories without a name match. Their contents and metadata are not compared. Persistent panel filters still apply to files.";
+                    }
+                    if root.model.busy: Text {
+                        text: root.model.progress != "" ? root.model.progress : "Comparing…";
+                        color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                    }
                     if root.model.error != "": ErrorNotice { text: root.model.error; }
                     if root.model.summary != "": Text { text: root.model.summary; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
                 }
@@ -92,8 +114,8 @@ export component CompareDirectoriesDialog inherits Rectangle {
                 dismiss => { root.cancel(); }
                 HintedActionButton { text: "Compare"; primary: true; enabled: !root.model.busy; min-height: Theme.control-height;
                     fallback-icon: FallbackIcons.compare-directories;
-                    hint: "Replace both selections with differences: files present on only one side, plus the larger or newer file for enabled criteria. No files are changed.";
-                    clicked => { root.submit(sizes.checked, times.checked, names.checked, tolerance.text, directories.checked); } }
+                    hint: "Replace both selections with differences: files present on only one side, plus the larger or newer file for enabled criteria, files with different contents and folders that contain differences when those options are on. No files are changed.";
+                    clicked => { root.submit(sizes.checked, times.checked, names.checked, tolerance.text, directories.checked, contents.checked, subfolders.checked); } }
             }
         }
     }

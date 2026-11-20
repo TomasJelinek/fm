@@ -123,14 +123,23 @@ fn same_row(before: &Entry, after: &Entry) -> bool {
 
 /// Edits that turn the sorted rows `before` into the sorted rows `after`,
 /// matching rows by identity and path; `None` beyond `MAX_EDITED_ROWS`. A row that
-/// moved is removed and added again.
+/// moved is removed and added again, so a move costs two edits in either
+/// direction.
 pub(crate) fn row_edits(before: &[Entry], after: &[Entry]) -> Option<Vec<RowEdit>> {
     type Key<'a> = (EntryId, &'a Path);
     fn key(entry: &Entry) -> Key<'_> {
         (entry.id, entry.path.as_path())
     }
-    let before_keys: HashSet<Key> = before.iter().map(key).collect();
-    let after_keys: HashSet<Key> = after.iter().map(key).collect();
+    fn rows(entries: &[Entry]) -> HashMap<Key<'_>, usize> {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(row, entry)| (key(entry), row))
+            .collect()
+    }
+    let (before_rows, after_rows) = (rows(before), rows(after));
+    // Rows that moved and were already edited on one side: removed where they
+    // were shown and still to be added where they are listed, or the reverse.
     let mut moved: HashSet<Key> = HashSet::new();
     let mut edits = Edits::default();
     let (mut old, mut new) = (0, 0);
@@ -152,22 +161,39 @@ pub(crate) fn row_edits(before: &[Entry], after: &[Entry]) -> Option<Vec<RowEdit
                 edits.add(new);
                 new += 1;
             }
-            (Some(shown), Some(_)) if !after_keys.contains(&key(shown)) => {
+            // Gone, or a mover already added where it is listed.
+            (Some(shown), Some(_))
+                if !after_rows.contains_key(&key(shown)) || moved.contains(&key(shown)) =>
+            {
                 edits.remove(new);
                 old += 1;
             }
+            // New, or a mover already removed where it was shown.
             (Some(_), Some(listed))
-                if !before_keys.contains(&key(listed)) || moved.contains(&key(listed)) =>
+                if !before_rows.contains_key(&key(listed)) || moved.contains(&key(listed)) =>
             {
                 edits.add(new);
                 new += 1;
             }
-            // Both rows are on either side: the shown one moved further down
-            // and is added again where it is listed.
-            (Some(shown), Some(_)) => {
-                moved.insert(key(shown));
-                edits.remove(new);
-                old += 1;
+            // Both rows are on either side, ahead of both cursors: the one that
+            // moved further is the mover, so a row that jumps far up costs as
+            // little as one that falls far down. A tie keeps the shown row.
+            (Some(shown), Some(listed)) => {
+                let down = after_rows
+                    .get(&key(shown))
+                    .map_or(0, |row| row.saturating_sub(new));
+                let up = before_rows
+                    .get(&key(listed))
+                    .map_or(0, |row| row.saturating_sub(old));
+                if down >= up {
+                    moved.insert(key(shown));
+                    edits.remove(new);
+                    old += 1;
+                } else {
+                    moved.insert(key(listed));
+                    edits.add(new);
+                    new += 1;
+                }
             }
         }
         if edits.rows > MAX_EDITED_ROWS {

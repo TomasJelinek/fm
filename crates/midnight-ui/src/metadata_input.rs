@@ -3,15 +3,35 @@ use crate::{MetadataDraft, MetadataTimeDraft, metadata_time};
 use midnight_core::*;
 
 /// The reviewed patch of a draft. Dates and times may be typed in the system's forms.
+/// `starting` holds the worker values the time fields started from (see
+/// `metadata_presentation::set_time_defaults`): a field's own, else now. `now` holds
+/// the moments that each row's Now button filled in (created, modified, accessed).
 pub(crate) fn patch(
     draft: &MetadataDraft,
+    starting: &MetadataTimeDefaults,
+    now: &[Option<LocalCalendarTime>; 3],
     forms: &metadata_time::SystemForms,
 ) -> Result<MetadataPatch, String> {
     let mut edit = MetadataPatch {
         compressed: state(draft.compressed)?,
-        created: timestamp("Created", &draft.created, forms)?,
-        modified: timestamp("Modified", &draft.modified, forms)?,
-        accessed: timestamp("Accessed", &draft.accessed, forms)?,
+        created: timestamp(
+            "Created",
+            &draft.created,
+            [starting.created.or(starting.now), now[0]],
+            forms,
+        )?,
+        modified: timestamp(
+            "Modified",
+            &draft.modified,
+            [starting.modified.or(starting.now), now[1]],
+            forms,
+        )?,
+        accessed: timestamp(
+            "Accessed",
+            &draft.accessed,
+            [starting.accessed.or(starting.now), now[2]],
+            forms,
+        )?,
         recursive: draft.recursive,
         ..Default::default()
     };
@@ -64,24 +84,59 @@ fn state(value: i32) -> Result<Option<bool>, String> {
     }
 }
 
+/// A ticked row that still shows a value it was filled with (its starting value, or
+/// the moment its Now button captured) keeps that exact instant: the fields show
+/// whole seconds and a whole-minute offset, the captured value can be more precise.
+/// Other dates and times may be typed in the system's `forms`.
 fn timestamp(
     label: &str,
     time: &MetadataTimeDraft,
+    filled: [Option<LocalCalendarTime>; 2],
     forms: &metadata_time::SystemForms,
 ) -> Result<TimeEdit, String> {
     match time.mode {
         0 => Ok(TimeEdit::Keep),
         2 => Ok(TimeEdit::Now),
-        1 => metadata_time::instant(label, &time.date, &time.time, &time.offset, forms)
-            .map(TimeEdit::Set),
+        1 => {
+            let unchanged = filled.into_iter().flatten().rev().find(|value| {
+                let shown = metadata_time::texts(value);
+                shown.date == time.date.as_str()
+                    && shown.time == time.time.as_str()
+                    && shown.offset == time.offset.as_str()
+            });
+            match unchanged.as_ref().and_then(metadata_time::exact) {
+                Some(exact) => Ok(TimeEdit::Set(exact)),
+                None => metadata_time::instant(label, &time.date, &time.time, &time.offset, forms)
+                    .map(TimeEdit::Set),
+            }
+        }
         _ => Err("Choose a timestamp action.".into()),
     }
+}
+
+/// The UTC offsets typed for set times (created, modified, accessed), in seconds east
+/// of UTC. The review compares them with the local offset at each resulting instant.
+pub(crate) fn typed_offsets(draft: &MetadataDraft) -> [Option<i32>; 3] {
+    [&draft.created, &draft.modified, &draft.accessed].map(|time| {
+        if time.mode != 1 {
+            return None;
+        }
+        metadata_time::parse_offset(&time.offset).map(|offset| offset.local_minus_utc())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
+
+    /// A draft without worker starting values or Now captures.
+    fn patch(
+        draft: &MetadataDraft,
+        forms: &metadata_time::SystemForms,
+    ) -> Result<MetadataPatch, String> {
+        super::patch(draft, &MetadataTimeDefaults::default(), &[None; 3], forms)
+    }
 
     #[test]
     fn opening_attributes_has_no_edits_and_case_has_explicit_opt_in() {
@@ -199,6 +254,120 @@ mod tests {
             patch(&draft, &plain()).unwrap_err().contains("UTC offset"),
             "there is no guessed local offset"
         );
+    }
+
+    #[test]
+    fn a_ticked_row_left_at_its_starting_value_keeps_the_exact_instant() {
+        // 2026-07-15 10:00:00.789 at +02:00, as the worker captured it.
+        let original = UNIX_EPOCH + Duration::from_millis(1_784_102_400_789);
+        let starting = MetadataTimeDefaults {
+            modified: Some(LocalCalendarTime {
+                year: 2026,
+                month: 7,
+                day: 15,
+                hour: 10,
+                minute: 0,
+                second: 0,
+                nanosecond: 789_000_000,
+                offset_seconds: 7200,
+            }),
+            ..Default::default()
+        };
+        let mut draft = MetadataDraft {
+            modified: time(1, "2026-07-15", "10:00:00", "+02:00"),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::patch(&draft, &starting, &[None; 3], &plain())
+                .unwrap()
+                .modified,
+            TimeEdit::Set(original),
+            "ticking without editing must not drop the sub-seconds"
+        );
+        draft.modified.date = "2026-07-16".into();
+        assert_eq!(
+            super::patch(&draft, &starting, &[None; 3], &plain())
+                .unwrap()
+                .modified,
+            TimeEdit::Set(original + Duration::from_secs(86_400) - Duration::from_millis(789)),
+            "an edited row is exactly what its fields say"
+        );
+        // A seconds-precision historical offset is shown truncated but kept exactly.
+        let lmt = LocalCalendarTime {
+            year: 1850,
+            month: 1,
+            day: 1,
+            hour: 12,
+            minute: 0,
+            second: 0,
+            nanosecond: 0,
+            offset_seconds: 3464,
+        };
+        let starting = MetadataTimeDefaults {
+            now: Some(lmt),
+            ..Default::default()
+        };
+        draft.modified = time(1, "1850-01-01", "12:00:00", "+00:57");
+        assert_eq!(
+            super::patch(&draft, &starting, &[None; 3], &plain())
+                .unwrap()
+                .modified,
+            TimeEdit::Set(metadata_time::exact(&lmt).unwrap()),
+            "a field without its own value starts from now"
+        );
+        assert_ne!(
+            patch(&draft, &plain()).unwrap().modified,
+            TimeEdit::Set(metadata_time::exact(&lmt).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_row_filled_by_now_applies_the_captured_instant_until_it_is_edited() {
+        let moment = UNIX_EPOCH + Duration::from_nanos(1_795_000_000_123_456_789);
+        let captured = metadata_time::calendar_at(moment, 3600).unwrap();
+        let shown = metadata_time::texts(&captured);
+        let mut draft = MetadataDraft {
+            accessed: time(1, &shown.date, &shown.time, &shown.offset),
+            ..Default::default()
+        };
+        let now = [None, None, Some(captured)];
+        assert_eq!(
+            super::patch(&draft, &MetadataTimeDefaults::default(), &now, &plain())
+                .unwrap()
+                .accessed,
+            TimeEdit::Set(moment),
+            "the moment Now captured, sub-seconds included"
+        );
+        // Another row's capture does not apply, and an edit applies what it shows.
+        assert_ne!(
+            super::patch(
+                &draft,
+                &MetadataTimeDefaults::default(),
+                &[Some(captured), None, None],
+                &plain()
+            )
+            .unwrap()
+            .accessed,
+            TimeEdit::Set(moment)
+        );
+        draft.accessed.time = "00:00:00".into();
+        assert_ne!(
+            super::patch(&draft, &MetadataTimeDefaults::default(), &now, &plain())
+                .unwrap()
+                .accessed,
+            TimeEdit::Set(moment)
+        );
+    }
+
+    #[test]
+    fn only_typed_rows_report_their_offset_for_the_review() {
+        let draft = MetadataDraft {
+            created: time(1, "2026-12-15", "10:00", "UTC+2"),
+            modified: time(2, "", "", "+02:00"),
+            accessed: time(0, "2026-12-15", "10:00", "-05:30"),
+            ..Default::default()
+        };
+        assert_eq!(typed_offsets(&draft), [Some(7200), None, None]);
     }
 
     #[test]

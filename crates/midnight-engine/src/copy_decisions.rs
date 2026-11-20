@@ -105,10 +105,11 @@ impl NamespacePlan {
         cancel: &Cancellation,
     ) -> Result<Grant, FsError> {
         if !self.installed {
-            // plan_union takes the immutable pins before refresh can fail.
-            // Retry revalidates those same owners; it must not install again.
+            // Planning takes the immutable pins before refresh can fail. Retry
+            // revalidates those same owners; it must not install again. The endpoints
+            // are (source, destination) pairs (`Preparation::pin_endpoints`).
             self.installed = true;
-            claim.plan_union(endpoints, io, cancel)?;
+            claim.plan_transfer(endpoints, io, cancel)?;
         } else {
             // Any revalidation clones close under the caller's sealed context.
             drop(endpoints);
@@ -150,6 +151,10 @@ pub(super) async fn prepare_job(
     };
     let mut plan = NamespacePlan::default();
     let mut version = 0u64;
+    // Selected items left out by Skip, each recorded as skipped and as one error.
+    let mut skipped_roots = 0u64;
+    let mut skipped_root: Option<std::path::PathBuf> = None;
+    let mut skip_all = std::collections::HashSet::new();
     loop {
         set_state(waiter.status, CopyOperationState::Preparing);
         publish(waiter.outbox, snapshot(waiter.status)).await;
@@ -174,8 +179,12 @@ pub(super) async fn prepare_job(
             let cancel = waiter.cancel.clone();
             let status = waiter.status.clone();
             let tracker = waiter.throughput.clone();
+            let skipped = skipped_root.take();
             let attempt = tokio::task::spawn_blocking(move || {
                 let result = ownership::run(&mut preparation, |scope| {
+                    if let Some(root) = &skipped {
+                        scope.skip_root(root);
+                    }
                     let endpoints = if revalidate || !plan.installed {
                         scope.pin_endpoints(&cancel, &status)?
                     } else {
@@ -228,14 +237,11 @@ pub(super) async fn prepare_job(
                     preparation = returned;
                     plan = retained_plan;
                     revalidate = false;
-                    let changed =
-                        snapshot(waiter.status).wait_reason != Some(TransferWaitReason::Resources);
-                    if changed {
-                        set_resource_wait(
-                            waiter.status,
-                            Some(waiter.throughput),
-                            Some(TransferWaitReason::Resources),
-                        );
+                    // Refused as a whole: it would read what another job changes, a
+                    // footprint is unknown, or an older waiting job shares an item.
+                    let reason = Some(TransferWaitReason::SameFolders);
+                    if snapshot(waiter.status).wait_reason != reason {
+                        set_resource_wait(waiter.status, Some(waiter.throughput), reason);
                         publish(waiter.outbox, snapshot(waiter.status)).await;
                     }
                     // The grant wait keeps the namespace share and planned record, never
@@ -245,21 +251,13 @@ pub(super) async fn prepare_job(
                         .resources_mut()
                         .namespace()
                         .map(crate::copy_namespace::Claim::watch);
-                    let (since, structural) = match refused {
-                        Grant::Busy(seen) => (Some(seen), false),
-                        Grant::Conflict(seen) => (Some(seen), true),
-                        Grant::Granted => (None, false),
+                    let since = match refused {
+                        Grant::Conflict(seen) => Some(seen),
+                        Grant::Granted => None,
                     };
                     match (watch, since) {
                         (Some(watch), Some(since)) => {
-                            wait_for_namespace(
-                                &watch,
-                                since,
-                                structural,
-                                waiter.cancel,
-                                waiter.outbox,
-                            )
-                            .await;
+                            wait_for_namespace(&watch, since, waiter.cancel, waiter.outbox).await;
                         }
                         _ => tokio::time::sleep(NAMESPACE_RETRY_SPACING).await,
                     }
@@ -279,11 +277,17 @@ pub(super) async fn prepare_job(
                 }
             }
         };
-        // Recorded preparation failures include owned-stage residuals. Retry
-        // cannot erase those or accumulate further abandoned cleanup stages.
+        // Recorded preparation failures other than skipped items are owned-stage
+        // residuals. Retry cannot erase those or accumulate further abandoned
+        // cleanup stages, and Skip would leave them behind.
+        let residuals = snapshot(waiter.status).failed != skipped_roots;
+        let can_retry = retryable_error(&error);
+        // One of several selected items that failed alone can be left out; the
+        // others are still copied.
+        let can_skip = !residuals && preparation.skippable_root(&error.path);
         if waiter.cancel.is_cancelled()
-            || snapshot(waiter.status).failed != 0
-            || !retryable_error(&error)
+            || residuals
+            || !(can_retry || can_skip)
             || version == u64::MAX
         {
             let progress = failed(waiter.status, error, waiter.cancel);
@@ -291,42 +295,62 @@ pub(super) async fn prepare_job(
                 retire_input(preparation, progress, waiter.status).await,
             ));
         }
-        version += 1;
-        let progress = snapshot(waiter.status);
-        let failure = CopyFailure {
-            id: progress.id,
-            version,
-            source: (error.path != progress.destination_directory).then(|| error.path.clone()),
-            destination: progress.destination_directory,
-            error: error.clone(),
-            stage: CopyErrorStage::Preparing,
-            can_retry: true,
-            can_skip: false,
+        let scope = (CopyErrorStage::Preparing, error.kind, error.operation);
+        let choice = if can_skip && skip_all.contains(&scope) {
+            CopyChoice::Skip
+        } else {
+            version += 1;
+            let progress = snapshot(waiter.status);
+            let failure = CopyFailure {
+                id: progress.id,
+                version,
+                source: (error.path != progress.destination_directory).then(|| error.path.clone()),
+                destination: progress.destination_directory,
+                error: error.clone(),
+                stage: CopyErrorStage::Preparing,
+                can_retry,
+                can_skip,
+            };
+            let mut choice = CopyChoice::Cancel;
+            let cancel = waiter.cancel.clone();
+            waiter
+                .wait(
+                    CopyEvent::Failure(Arc::new(failure)),
+                    |decision| match decision.choice {
+                        CopyChoice::Retry if can_retry => {
+                            choice = decision.choice;
+                            true
+                        }
+                        CopyChoice::Skip | CopyChoice::SkipAllErrors if can_skip => {
+                            choice = decision.choice;
+                            true
+                        }
+                        CopyChoice::Cancel => {
+                            cancel.cancel();
+                            true
+                        }
+                        _ => false,
+                    },
+                )
+                .await;
+            choice
         };
-        let mut retry = false;
-        let cancel = waiter.cancel.clone();
-        waiter
-            .wait(
-                CopyEvent::Failure(Arc::new(failure)),
-                |decision| match decision.choice {
-                    CopyChoice::Retry => {
-                        retry = true;
-                        true
-                    }
-                    CopyChoice::Cancel => {
-                        cancel.cancel();
-                        true
-                    }
-                    _ => false,
-                },
-            )
-            .await;
-        if !retry || waiter.cancel.is_cancelled() {
+        if waiter.cancel.is_cancelled() || matches!(choice, CopyChoice::Cancel) {
             let mut progress = cancelled(waiter.status);
             progress.errors.push(error);
             return Err(Box::new(
                 retire_input(preparation, progress, waiter.status).await,
             ));
+        }
+        if matches!(choice, CopyChoice::Skip | CopyChoice::SkipAllErrors) {
+            if matches!(choice, CopyChoice::SkipAllErrors) {
+                skip_all.insert(scope);
+            }
+            skipped_root = Some(error.path.clone());
+            skipped_roots += 1;
+            let mut status = waiter.status.lock().unwrap_or_else(|e| e.into_inner());
+            status.skipped += 1;
+            retain_error(&mut status, error, false);
         }
     }
 }

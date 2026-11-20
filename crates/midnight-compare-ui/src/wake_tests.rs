@@ -379,6 +379,11 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
         before + 2,
         "a DPI change alone re-renders, once"
     );
+    assert_eq!(
+        slint::ComponentHandle::global::<generated::TooltipPlacement>(&window).get_scale(),
+        2.0,
+        "tooltips snap their frames to device pixels of the new scale"
+    );
     event_loop.wait_for(&window, "present the frame at the new scale", true, || {
         window.get_frame_revision() == window.get_geometry_revision()
     });

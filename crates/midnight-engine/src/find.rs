@@ -2,8 +2,11 @@
 use crate::{Outbox, find_worker, task_lifetime::TaskLifetime};
 #[path = "find_capture.rs"]
 mod capture;
+#[path = "find_installed_archives.rs"]
+mod installed_archives;
 #[path = "find_order_task.rs"]
 mod sorting;
+pub(crate) use installed_archives::InstalledArchives;
 use midnight_core::*;
 use std::{
     io,
@@ -66,6 +69,8 @@ struct Validation {
 #[derive(Clone)]
 struct Services {
     native: Option<Arc<dyn FindService>>,
+    /// Search inside archives; absent without the archive provider's capture.
+    archives: Option<Arc<dyn find_worker::ArchiveSearch>>,
     /// Formats published and validated results' modification times on the workers.
     locale: Option<Arc<dyn LocaleService>>,
     captures: crate::retirement::RetirementDomain,
@@ -76,16 +81,18 @@ struct Services {
 }
 
 impl Controller {
-    pub(crate) fn new(
+    pub(crate) fn with_archives(
         scope: TaskLifetime,
         retirement: Retirement,
         service: Option<Arc<dyn FindService>>,
+        archives: Option<Arc<dyn find_worker::ArchiveSearch>>,
         locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         let services = Services {
             native: service.clone(),
+            archives,
             locale: locale.clone(),
             captures: retirement.domain,
             capture_slots: Arc::new(Semaphore::new(RETIREMENT_CAPACITY)),
@@ -392,6 +399,7 @@ async fn run_slot(
             continue;
         };
         let locale = services.locale.clone();
+        let archives = services.archives.clone();
         let worker_request = request.clone();
         let accepted_at = intent.accepted_at.unwrap_or_else(SystemTime::now);
         let worker_state = state.clone();
@@ -417,8 +425,9 @@ async fn run_slot(
             let worker_lifetime = lifetime.clone();
             let mut worker = tokio::task::spawn_blocking(services.scope.blocking(move || {
                 let _permit = permit;
-                find_worker::search_with_location(
+                find_worker::search_with_archives(
                     service.as_ref(),
+                    archives.as_deref(),
                     locale.as_deref(),
                     &worker_request,
                     &cancel,
@@ -620,11 +629,31 @@ async fn run_validations(
                     Ok(permit) => {
                         // Revalidate after output backpressure, then check the
                         // current generation again before returning the target.
-                        let result = find_worker::validate_result(
-                            service.as_ref(),
-                            &validation.result.entry,
-                            &cancel,
-                        );
+                        // An archive member is reached through its archive: the
+                        // native archive file is what must be unchanged.
+                        let result = match &validation.result.archive {
+                            None => find_worker::validate_result(
+                                service.as_ref(),
+                                &validation.result.entry,
+                                &cancel,
+                            ),
+                            Some(member) => find_worker::validate_result(
+                                service.as_ref(),
+                                &member.container,
+                                &cancel,
+                            )
+                            .map(|_| validation.result.entry.clone()),
+                        };
+                        let result = if validation.capture && validation.result.archive.is_some()
+                        {
+                            Err(find_error(
+                                &validation.result.entry.path,
+                                io::ErrorKind::Unsupported,
+                                "An archive member opens from its archive: use Go to file, then view or copy it there.",
+                            ))
+                        } else {
+                            result
+                        };
                         let event = if validation.capture {
                             let result = result.and_then(|_| {
                                 capture::capture(&capture_services, &validation, &capture_lifetime)

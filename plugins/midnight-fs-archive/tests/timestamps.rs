@@ -201,17 +201,81 @@ fn sevenzip_header(offset: u64, size: u64) -> Vec<u8> {
     bytes
 }
 
+/// A source of `length` bytes: `prefix`, then zeros that are never stored.
+struct Sparse {
+    prefix: Vec<u8>,
+    length: u64,
+    position: u64,
+}
+impl std::io::Read for Sparse {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = usize::try_from(self.length - self.position).unwrap_or(usize::MAX);
+        let count = remaining.min(output.len());
+        let output = &mut output[..count];
+        output.fill(0);
+        let start = usize::try_from(self.position)
+            .unwrap_or(usize::MAX)
+            .min(self.prefix.len());
+        let copied = (self.prefix.len() - start).min(output.len());
+        output[..copied].copy_from_slice(&self.prefix[start..start + copied]);
+        self.position += output.len() as u64;
+        Ok(output.len())
+    }
+}
+impl std::io::Seek for Sparse {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.position = match from {
+            std::io::SeekFrom::Start(position) => Some(position),
+            std::io::SeekFrom::Current(delta) => self.position.checked_add_signed(delta),
+            std::io::SeekFrom::End(delta) => self.length.checked_add_signed(delta),
+        }
+        .ok_or(std::io::ErrorKind::InvalidInput)?;
+        Ok(self.position)
+    }
+}
+
 #[test]
-fn sevenzip_next_header_budget_is_checked_before_parser_allocation() {
-    let error = Archive::open(
-        Format::SevenZip,
-        sevenzip_header(0, 64 * 1024 * 1024 + 1),
-        Limits::default(),
-    )
-    .err()
-    .unwrap();
-    assert_eq!(error.code, midnight_filesystem_api::ErrorCode::Limit);
-    assert!(error.message.contains("metadata"), "{error}");
+fn sevenzip_next_header_is_bounded_by_the_source_and_the_worker_memory() {
+    use midnight_filesystem_api::ErrorCode;
+    const MIB: u64 = 1024 * 1024;
+    let open = |size: u64, length: u64| {
+        let source = Sparse {
+            prefix: sevenzip_header(0, size),
+            length,
+            position: 0,
+        };
+        Archive::open_stream(
+            Format::SevenZip,
+            Box::new(source),
+            length,
+            std::rc::Rc::new(midnight_fs_archive::storage::MemoryStorage::default()),
+            Limits::default(),
+        )
+        .err()
+        .unwrap()
+    };
+    // Beyond the former 64 MiB budget, as the uncompressed header of a million
+    // members is: the parser reads it whole and checks its CRC (this one's is wrong).
+    let read = open(64 * MIB + 1, 32 + 64 * MIB + 1);
+    assert_eq!(read.code, ErrorCode::Corrupt);
+    assert!(read.message.contains("NextHeaderCrcMismatch"), "{read}");
+    // Beyond the source, it is refused unread.
+    let outside = open(64 * MIB + 1, 32 + 64 * MIB);
+    assert_eq!(outside.code, ErrorCode::Corrupt);
+    assert!(outside.message.contains("range"), "{outside}");
+    // Beyond an eighth of the worker's 1 GiB, a crafted header never reaches the
+    // parser's allocation: the reason names both sizes.
+    let crafted = open(4096 * MIB, 32 + 4096 * MIB);
+    assert_eq!(crafted.code, ErrorCode::Limit);
+    assert_eq!(
+        crafted.message,
+        "This 7z archive's uncompressed header of 4096 MiB needs more memory than the \
+         archive worker has: it reads headers of up to 128 MiB"
+    );
+    assert_eq!(
+        open(128 * MIB + 1, 32 + 128 * MIB + 1).code,
+        ErrorCode::Limit
+    );
 }
 
 #[test]

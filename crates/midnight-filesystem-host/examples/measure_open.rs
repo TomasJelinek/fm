@@ -1,8 +1,16 @@
 //! Opt-in end-to-end archive timing; accepts a trusted installation and owned fixture paths.
+//! Like the application, it checks the archive spool root in the background after
+//! discovery. `MEASURE_OPEN_DELAY_MS` waits that long before the first mount, as a user
+//! takes time to open an archive after startup; without it the first mount starts at once.
 use midnight_core::{ArchiveMount, Cancellation, DirectoryIndex, Entry, SortSpec, sort_entries};
 use midnight_filesystem_host::{Catalog, Mount};
 use midnight_plugin_host::CapturedFile;
-use std::{path::PathBuf, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
@@ -11,12 +19,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("expected trusted installation directory")?,
     );
     let start = Instant::now();
-    let catalog = Catalog::discover(&install)?;
+    let catalog = Arc::new(Catalog::discover(&install)?);
     eprintln!(
         "discovery={:?}, diagnostics={:?}",
         start.elapsed(),
         catalog.diagnostics
     );
+    let check = thread::spawn({
+        let catalog = catalog.clone();
+        move || {
+            let start = Instant::now();
+            let result = catalog.prepare_staging();
+            eprintln!("spool_check={:?} result={result:?}", start.elapsed());
+        }
+    });
+    if let Some(delay) = std::env::var("MEASURE_OPEN_DELAY_MS")
+        .ok()
+        .and_then(|delay| delay.parse().ok())
+    {
+        thread::sleep(Duration::from_millis(delay));
+    }
     for path in args.map(PathBuf::from) {
         let (package, format) = catalog.choose(&path).ok_or("missing archive worker")?;
         for iteration in 0..3 {
@@ -78,5 +100,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mount.release_on_worker()?;
         }
     }
+    check.join().map_err(|_| "the spool root check panicked")?;
     Ok(())
 }

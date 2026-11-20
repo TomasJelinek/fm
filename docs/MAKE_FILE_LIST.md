@@ -50,8 +50,10 @@ loading the entire list into RAM. File publication uses verified staging; failed
 or cancelled generation does not partly append to the original file. Destination
 identity is retained through confirmation and checked again before publication.
 Unsupported metadata preservation produces an error instead of silently weakening
-the existing file's permissions. Recovery paths or durability warnings are shown
-when the underlying filesystem cannot complete publication cleanly.
+the existing file's permissions. A confirmed Replace or Append keeps the original
+file in a recovery copy (a `.midnight-recovery-…` folder beside it), and a notice
+names that copy, as Shift+F4's Replace file does. Durability warnings are shown when
+the underlying filesystem cannot complete publication cleanly.
 
 On success, the captured selection is cleared only if the same panel view and
 selection revision are still current. Failed output keeps the dialog and selection.

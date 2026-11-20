@@ -1,4 +1,4 @@
-use super::{Observation, scan::MAX_NODES};
+use super::Observation;
 use crate::tree_roots::ReadyRoot;
 use midnight_core::{
     ArchiveMount, ArchiveNode, EntryId, EntryKind, FolderSize, SelectedFolderSizes, VirtualEntryId,
@@ -59,9 +59,9 @@ pub(super) fn targets(
         .as_ref()
         .ok_or("Archive source is unavailable.")?;
     let snapshot = ready.snapshot();
+    // A listing of any size: its identities are checked one by one below.
     if mount.id() == 0
         || location.directory == 0
-        || snapshot.entries.len() > MAX_NODES
         || snapshot.index.by_id.len() != snapshot.entries.len()
     {
         return Err("Archive listing has invalid size-scan identities.");

@@ -99,6 +99,24 @@ fn apply_action(
         bits.copy_from_slice(selection.bits());
         return Ok(());
     }
+    if let TreeSelectionAction::Mask(mask) = action {
+        let matcher = crate::mask_selection::compile(mask).map_err(ProviderError::Failed)?;
+        // Every selectable displayed row takes part, expanded descendants included.
+        for (index, row) in view.rows.iter().enumerate() {
+            let directory = matches!(
+                row.entry.kind,
+                midnight_core::EntryKind::Directory | midnight_core::EntryKind::DirectoryLink
+            );
+            if row.selectable
+                && !row.context_only
+                && mask.includes(directory)
+                && matcher.matches(&row.entry.name)
+            {
+                set(bits, index, mask.select);
+            }
+        }
+        return Ok(());
+    }
     if let TreeSelectionAction::Remove(rows) = action {
         if rows.len() > 64
             || rows.len() != rows.iter().collect::<std::collections::HashSet<_>>().len()
@@ -152,7 +170,8 @@ fn apply_action(
             TreeSelectionAction::Replace(_)
             | TreeSelectionAction::Rebase
             | TreeSelectionAction::Toggle(_)
-            | TreeSelectionAction::Remove(_) => selected,
+            | TreeSelectionAction::Remove(_)
+            | TreeSelectionAction::Mask(_) => selected,
         };
         set(bits, index, next);
     }

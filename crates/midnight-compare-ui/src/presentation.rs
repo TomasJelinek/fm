@@ -36,9 +36,11 @@ impl OpenWindow {
                 // Until the first frame the UI cannot know whether a comparison is text.
                 // Find typed while an image decoder was starting must not fence out every
                 // image frame, whose Find state remains the default revision zero.
+                // A byte comparison has no Find; the text keeps its own Find state for when
+                // the person returns to it.
                 if frame.image {
                     self.reset_find();
-                } else if frame.find.revision < self.find_revision.get() {
+                } else if !frame.bytes && frame.find.revision < self.find_revision.get() {
                     return;
                 }
                 // Session admission must also fence unread and later old publications, including
@@ -67,6 +69,8 @@ impl OpenWindow {
                 });
                 show_names(window, names);
                 window.set_image_mode(frame.image);
+                window.set_bytes_mode(frame.bytes);
+                window.set_bytes_only(frame.bytes_only);
                 window.set_position(frame.position as f32);
                 window.set_status(midnight_core::visible_name(&frame.status).as_ref().into());
                 window.set_search_summary(frame.find.message.as_str().into());

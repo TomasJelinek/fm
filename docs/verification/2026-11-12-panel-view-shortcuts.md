@@ -8,7 +8,7 @@ filename search and do not intercept the command editor or viewer windows.
 
 ## Reference and compatibility
 
-The supplied Salamander checkout at `D:/experiments/salamander-main` establishes
+The supplied Salamander reference checkout establishes
 these mappings in three places:
 
 - `src/fileswn0.cpp:1191`: Alt without Ctrl/Shift dispatches the physical digit

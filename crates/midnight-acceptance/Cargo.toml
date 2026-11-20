@@ -26,6 +26,13 @@ acceptance = [
     "dep:slint",
     "dep:i-slint-core",
     "dep:tokio",
+    "dep:midnight-compare-engine",
+    "dep:midnight-compare-ui",
+    "dep:midnight-native-filesystem-host",
+    "dep:midnight-thumbnail-host",
+    "dep:midnight-viewer-engine",
+    "dep:midnight-viewer-ui",
+    "dep:midnight-work-budget",
 ]
 
 [dependencies]
@@ -34,6 +41,16 @@ midnight-engine = { workspace = true, optional = true }
 midnight-platform = { workspace = true, optional = true }
 midnight-ui = { workspace = true, optional = true }
 slint = { workspace = true, optional = true }
+# Viewers, comparators, thumbnails and archive browsing through the installed plugin
+# packages (tests/acceptance/viewers_support.rs), with the features midnight-explorer
+# already uses, so the shared crates' feature sets do not change.
+midnight-compare-engine = { path = "../midnight-compare-engine", optional = true }
+midnight-compare-ui = { path = "../midnight-compare-ui", optional = true }
+midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host", optional = true }
+midnight-thumbnail-host = { path = "../midnight-thumbnail-host", optional = true }
+midnight-viewer-engine = { path = "../midnight-viewer-engine", optional = true }
+midnight-viewer-ui = { path = "../midnight-viewer-ui", optional = true }
+midnight-work-budget = { path = "../midnight-work-budget", features = ["resident-workers"], optional = true }
 # The exact version and features midnight-ui already uses, for item-tree inspection.
 i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"], optional = true }
 tokio = { workspace = true, optional = true }

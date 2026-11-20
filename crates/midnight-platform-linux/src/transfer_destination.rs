@@ -10,6 +10,14 @@ use std::{
     os::fd::AsRawFd,
 };
 
+#[path = "transfer_link_stage.rs"]
+mod link_stage;
+#[cfg(test)]
+#[path = "transfer_link_stage_tests.rs"]
+mod link_stage_tests;
+#[cfg(test)]
+#[path = "transfer_permissions_tests.rs"]
+mod permissions_tests;
 #[path = "transfer_preservation.rs"]
 mod preservation;
 #[path = "transfer_recovery.rs"]
@@ -17,6 +25,30 @@ pub(super) mod recovery;
 
 const RECOVERY_PARENT: &str = "Private recovery requires a parent that other users cannot change: owned by you or root, and sticky or writable only by you and your private group. Choose Copy to retain the source; no Move fallback is performed.";
 const COPY_PARENT: &str = "Copy creates folders only inside a parent that other users cannot change: owned by you or root, and sticky or writable only by you and your private group.";
+
+/// The mode a copy publishes, as `cp` without `-p` gives it: the source's read, write
+/// and execute bits for user, group and other, masked by the process umask. Setuid,
+/// setgid and sticky are never copied.
+fn published_mode(source: u32) -> u32 {
+    source & 0o777 & !process_umask()
+}
+
+/// The process umask, read once without changing it: setting it to learn it would race
+/// with other threads creating files. When it cannot be read, the most private mask.
+fn process_umask() -> u32 {
+    static UMASK: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *UMASK.get_or_init(|| {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Umask:"))
+                    .and_then(|value| u32::from_str_radix(value.trim(), 8).ok())
+            })
+            .unwrap_or(0o077)
+    })
+}
 
 /// The use of a directory created by this provider.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -38,6 +70,9 @@ pub(super) struct Directory {
     identity: TransferIdentity,
     namespace: Arc<namespace::Bindings>,
     link_mount: Option<Arc<directory_links::MountAnchor>>,
+    /// Created by this provider as a copied folder: only such a folder later takes
+    /// the source folder's permissions.
+    copied: bool,
 }
 impl Directory {
     pub(in crate::transfer) fn namespace_reserve_file(
@@ -46,10 +81,22 @@ impl Directory {
         change: &mut namespace::Change<'_>,
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
+        self.namespace_reserve_entry(name, EntryKind::File, change, cancel)
+    }
+
+    /// `namespace_reserve_file` for a name that may hold the consented regular file or
+    /// link (`kind`) that the publication replaces.
+    pub(in crate::transfer) fn namespace_reserve_entry(
+        &self,
+        name: &OsStr,
+        kind: EntryKind,
+        change: &mut namespace::Change<'_>,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
         if let Some(transaction) = change.as_mut() {
             let pin = self
                 .namespace
-                .private_file_pin(&self.file, &self.path, name, cancel)?;
+                .private_entry_pin(&self.file, &self.path, name, kind, cancel)?;
             if !transaction.reserve_private_child(Some(pin), cancel)? {
                 return Err(error(
                     &self.path.join(name),
@@ -121,6 +168,7 @@ impl Directory {
             path,
             namespace,
             link_mount: None,
+            copied: false,
         })
     }
 }
@@ -152,11 +200,28 @@ impl TransferDirectory for Directory {
         self.identity
     }
     fn capabilities(&self) -> TransferCapabilities {
+        let recoverable = recovery::supported(self);
         TransferCapabilities {
             directory_merge: true,
             conditional_overwrite: false,
-            recoverable_replacement: recovery::supported(self),
+            recoverable_replacement: recoverable,
+            link_replacement: recoverable,
         }
+    }
+    fn admit_link(
+        &self,
+        representation: &midnight_core::TransferLinkRepresentation,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        self.admit_link_representation(representation, cancel)
+    }
+    fn stage_link(
+        &self,
+        representation: &midnight_core::TransferLinkRepresentation,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::StagedTransferLink>, midnight_core::TransferLinkStageError>
+    {
+        self.create_link_stage(representation, cancel)
     }
     fn supports_native_move_replacement(&self, source: TransferIdentity) -> bool {
         super::move_source::supports_native_replacement(self, source)
@@ -281,6 +346,30 @@ impl TransferDirectory for Directory {
             self.create_directory_in(name, cancel, &mut change)
         })
     }
+    fn set_published_permissions(
+        &self,
+        unix_mode: u32,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        checked(cancel, &self.path)?;
+        // Only a folder this copy created; a merged existing folder keeps its mode.
+        if !self.copied {
+            return Ok(());
+        }
+        // A set-group-ID bit the new folder inherited from its parent stays, as with
+        // `mkdir`: it comes from the destination, not from the source.
+        let inherited = self
+            .file
+            .metadata()
+            .map_err(|e| error(&self.path, e))?
+            .mode()
+            & 0o2000;
+        rustix::fs::fchmod(
+            &*self.file,
+            Mode::from_raw_mode(published_mode(unix_mode) | inherited),
+        )
+        .map_err(|e| error(&self.path, e.into()))
+    }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
         self.make_stage(false, cancel)
     }
@@ -378,6 +467,20 @@ impl Seek for Stage {
     }
 }
 impl StagedTransferFile for Stage {
+    fn set_published_permissions(
+        &mut self,
+        unix_mode: u32,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        checked(cancel, &self.directory.path)?;
+        // A replacement that preserves the replaced output keeps that output's mode.
+        if self.published || self.preserved.is_some() {
+            return Ok(());
+        }
+        let file = self.file().map_err(|e| error(&self.directory.path, e))?;
+        rustix::fs::fchmod(file, Mode::from_raw_mode(published_mode(unix_mode)))
+            .map_err(|e| error(&self.directory.path, e.into()))
+    }
     fn set_modified_time(
         &mut self,
         expected: std::time::SystemTime,
@@ -386,7 +489,7 @@ impl StagedTransferFile for Stage {
         if self.published || !self.metadata {
             return Err(unsupported(
                 &self.directory.path,
-                "modified time can only be set on an owned unpublished metadata stage",
+                "modified time can only be set on an owned metadata stage before it gets its final name",
             ));
         }
         super::metadata::set(
@@ -423,19 +526,21 @@ impl StagedTransferFile for Stage {
         let name = self
             .published_name
             .as_ref()
-            .ok_or_else(|| invalid(&self.directory.path, "stage has no successful publication"))?;
+            .ok_or_else(|| invalid(&self.directory.path, "the copy has not been put in place"))?;
         let own = identity(
             self.file().map_err(|e| error(&self.directory.path, e))?,
             &self.directory.path,
         )?;
-        let visible = self
-            .directory
-            .inspect(name, cancel)?
-            .ok_or_else(|| invalid(&self.directory.path, "published target disappeared"))?;
+        let visible = self.directory.inspect(name, cancel)?.ok_or_else(|| {
+            invalid(
+                &self.directory.path,
+                "the copied file disappeared from the destination",
+            )
+        })?;
         if visible.item.kind != EntryKind::File || visible.identity != own {
             return Err(invalid(
                 &self.directory.path,
-                "published target name changed",
+                "the copied file's name at the destination changed",
             ));
         }
         Ok(own)
@@ -556,6 +661,7 @@ impl Directory {
             if purpose == NewDirectory::Private {
                 directory.link_mount = self.link_mount.clone();
             }
+            directory.copied = purpose == NewDirectory::Copy;
             Ok(directory)
         })();
         adopted.map_err(|mut failure| {
@@ -597,7 +703,10 @@ impl Stage {
         change: &mut namespace::Change<'_>,
     ) -> Result<TransferPublication, FsError> {
         if self.published {
-            return Err(invalid(&self.directory.path, "stage was already published"));
+            return Err(invalid(
+                &self.directory.path,
+                "the stage already has its final name",
+            ));
         }
         self.directory.revalidate(cancel)?;
         validate_name(name, &self.directory.path)?;

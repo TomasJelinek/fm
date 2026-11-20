@@ -115,6 +115,13 @@ impl Directory {
 }
 
 impl PreparedDirectory for Directory {
+    fn transfer_identity(
+        &self,
+        _: &Cancellation,
+    ) -> Result<midnight_core::TransferIdentity, FsError> {
+        Ok(self.identity.transfer())
+    }
+
     fn create_file(&self, name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
         validate_name(name, &self.path)?;
         self.revalidate(cancel)?;

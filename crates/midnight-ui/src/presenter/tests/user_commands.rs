@@ -176,6 +176,40 @@ fn preview_and_cancel_are_explicit_and_duplicate_rejection_does_not_finish_accep
 }
 
 #[test]
+fn a_command_whose_program_is_missing_is_named_and_reported_plainly() {
+    let (mut p, root) = loaded(true);
+    p.request_user_command(PaneId::Left, "test-command", false, &|_| true);
+    let id = p.command_launches.jobs[0].id;
+    let command = p.command_launches.jobs[0].command.clone();
+    let program = root.join("fixture-tool");
+    // The backend reports a failed preparation before it planned any process.
+    p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+        request: id,
+        command,
+        update: UserCommandUpdate::Finished(UserCommandSummary {
+            planned: 0,
+            started: 0,
+            not_started: 0,
+            cancelled: false,
+            error: Some(FsError::from_io(
+                "Custom Command",
+                &program,
+                io::Error::new(io::ErrorKind::NotFound, "The program was not found."),
+            )),
+        }),
+    })));
+    let (title, body) = p.desktop.notice.as_ref().expect("a failure notice");
+    assert_eq!(title, "Custom Command needs attention");
+    assert!(
+        body.starts_with("Test command could not start.\n\nThe program was not found."),
+        "{body}"
+    );
+    assert!(body.contains(&program.display().to_string()), "{body}");
+    assert!(!body.contains("processes started"), "{body}");
+    assert!(!body.contains("external editor"), "{body}");
+}
+
+#[test]
 fn out_of_order_panel_selection_replies_still_submit_increasing_backend_ids() {
     let (mut p, root) = loaded(true);
     let other = root.join("other");

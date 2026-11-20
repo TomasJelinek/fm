@@ -23,5 +23,15 @@ ruzstd = { version = "=0.9.1", default-features = false, features = ["std", "has
 lzma-rust2 = { version = "=0.21.0", default-features = false, features = ["std", "xz", "encoder"] }
 sevenz-rust2 = { version = "=0.23.0", default-features = false, features = ["compress"] }
 
+# The development application loads the development archive worker. Unoptimized
+# decompressors inflated a 91 MB .tar.gz six times slower (1.2 s instead of 0.2 s).
+# Optimize all dependencies; this crate stays checked and debuggable.
+# Measurements: docs/verification/2026-11-20-viewer-speed.md.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [lints.rust]
 unsafe_code = "forbid"

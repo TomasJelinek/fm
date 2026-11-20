@@ -19,23 +19,26 @@ use std::{
 };
 use storage::{Content, Reader, Stage, Storage};
 
-/// Metadata budgets. Production deliberately keeps the decoded byte budgets
-/// unlimited: content length is bounded by the host's spool volume, not by an
-/// artificial ceiling. The byte fields let embedders and tests bound output.
+/// Process memory the host grants this worker: its memory policy for archive workers,
+/// the largest the public worker SDK accepts. The worker cannot query its own limit
+/// inside the sandbox, so the fixed memory budgets of the formats derive from this.
+pub(crate) const WORKER_MEMORY: u64 = 1024 * 1024 * 1024;
+
+/// Declared-size budgets. Production deliberately keeps them unlimited: content
+/// length is bounded by the host's spool volume, not by an artificial ceiling. The
+/// fields let embedders and tests bound output. Neither the number of members nor
+/// the bytes of their names are budgeted: the index of an archive with millions of
+/// members is bounded only by the worker's process memory, which the host sizes.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub max_entry: u64,
     pub max_total: u64,
-    pub max_entries: usize,
-    pub max_names: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
             max_entry: u64::MAX,
             max_total: u64::MAX,
-            max_entries: 100_000,
-            max_names: 8 * 1024 * 1024,
         }
     }
 }
@@ -73,27 +76,90 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+/// Decoders report what they read as I/O errors; one that carries no `Failure` is
+/// about the archive's bytes (a truncated or malformed structure).
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
-        Self::new(ErrorCode::Corrupt, error.to_string())
+        match Failure::of(&error) {
+            Some(failure) => failure.clone().into(),
+            None => Self::new(ErrorCode::Corrupt, error.to_string()),
+        }
     }
+}
+
+/// A failure that says nothing about the archive's bytes: the host's failure reply to
+/// a worker request, or a failed read of the captured source (a dropped share, a
+/// removed drive). It travels inside `io::Error`s through the decoders and is reported
+/// with its own code, never as a corrupt archive.
+#[derive(Clone, Debug)]
+pub(crate) struct Failure {
+    pub(crate) code: ErrorCode,
+    pub(crate) message: String,
+}
+impl Failure {
+    /// The failure that `error` carries, if any.
+    pub(crate) fn of(error: &io::Error) -> Option<&Self> {
+        error.get_ref()?.downcast_ref()
+    }
+}
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(f)
+    }
+}
+impl std::error::Error for Failure {}
+impl From<Failure> for Error {
+    fn from(failure: Failure) -> Self {
+        Self::new(failure.code, failure.message)
+    }
+}
+
+/// A corrupt-source failure of opening `format`, led by a plain sentence.
+fn not_valid(format: Format, error: Error) -> Error {
+    const LEAD: &str = "This file is not a valid ";
+    if error.code != ErrorCode::Corrupt || error.message.starts_with(LEAD) {
+        return error;
+    }
+    let kind = match format {
+        Format::Zip => "ZIP archive",
+        Format::Tar => "TAR archive",
+        Format::SevenZip => "7z archive",
+        Format::Gzip => "gzip file",
+        Format::TarGzip => "gzip-compressed TAR archive",
+        Format::Xz => "XZ file",
+        Format::TarXz => "XZ-compressed TAR archive",
+        Format::Bzip2 => "bzip2 file",
+        Format::TarBzip2 => "bzip2-compressed TAR archive",
+        Format::Zstd => "Zstandard file",
+        Format::TarZstd => "Zstandard-compressed TAR archive",
+    };
+    Error::new(
+        ErrorCode::Corrupt,
+        format!("{LEAD}{kind}.\n{}", error.message),
+    )
 }
 
 /// One bounded, immutable mount. ZIP members and 7z blocks are verified on first read.
 /// Decoded bytes are staged through host capabilities; no native path is opened here.
 pub struct Archive {
-    nodes: Vec<Node>,
+    members: Vec<tree::Member>,
+    /// Raw member names, each followed by its label when that differs.
+    names: Vec<u8>,
     contents: HashMap<u64, Content>,
     storage: Rc<dyn Storage>,
+    /// Folders by parent and raw name, while members are indexed.
     directories: HashMap<(u64, Vec<u8>), u64>,
+    /// Member positions of each folder, in increasing ID order.
     children: HashMap<u64, Vec<usize>>,
     zip: Option<zip::ZipArchive<formats::Shared>>,
-    zip_members: HashMap<u64, usize>,
+    /// The ZIP entry index of each readable member, in increasing ID order.
+    zip_members: Vec<(u64, usize)>,
     tar_content: Option<tar::Content>,
     sevenzip_content: Option<sevenzip::Content>,
     limits: Limits,
-    names: usize,
     total: u64,
+    /// The first failed read of the source during the current open or member read.
+    failure: window::Failures,
 }
 impl Archive {
     /// Owned in-memory fixtures. The executable uses `open_stream` with the host broker.
@@ -108,24 +174,29 @@ impl Archive {
         )
     }
 
-    fn empty(storage: Rc<dyn Storage>, limits: Limits) -> Self {
+    fn empty(storage: Rc<dyn Storage>, limits: Limits, failure: window::Failures) -> Self {
         Self {
-            nodes: vec![],
+            failure,
+            members: Vec::new(),
+            names: Vec::new(),
             contents: HashMap::new(),
             storage,
             directories: HashMap::new(),
             children: HashMap::new(),
             zip: None,
-            zip_members: HashMap::new(),
+            zip_members: Vec::new(),
             tar_content: None,
             sevenzip_content: None,
             limits,
-            names: 0,
             total: 0,
         }
     }
 
     /// Production entry point: source and decoded storage are host-brokered streams.
+    /// A source its decoder rejects as corrupt says first that it is no valid archive
+    /// of `format` (an archive member named `.zip` may be any file); the decoder's own
+    /// reason follows on the next line. A failed read of the source is reported as
+    /// itself, whatever a decoder made of it.
     pub fn open_stream(
         format: Format,
         source: Box<dyn storage::ReadSeek>,
@@ -134,7 +205,25 @@ impl Archive {
         limits: Limits,
     ) -> Result<Self, Error> {
         let source = Reader::new(source, source_length);
-        let mut result = Self::empty(storage, limits);
+        let mut result = Self::empty(storage, limits, source.failures());
+        if let Err(error) = result.open_format(format, source, source_length, limits) {
+            return Err(match result.failure.take() {
+                Some(failure) => failure.into(),
+                None => not_valid(format, error),
+            });
+        }
+        result.finish_index();
+        Ok(result)
+    }
+
+    fn open_format(
+        &mut self,
+        format: Format,
+        source: Reader,
+        source_length: u64,
+        limits: Limits,
+    ) -> Result<(), Error> {
+        let result = self;
         match format {
             Format::Zip => result.zip(source)?,
             Format::Tar => result.tar(source, source_length, None)?,
@@ -155,25 +244,19 @@ impl Archive {
                     None,
                     limits.max_total,
                 )?;
-                streams::decode(format, source, &mut stage)?;
-                let content = stage.finish()?;
                 if matches!(
                     format,
                     Format::TarGzip | Format::TarXz | Format::TarBzip2 | Format::TarZstd
                 ) {
-                    let reader =
-                        Box::new(storage::StoredReader::new(result.storage.clone(), content));
-                    result.tar(
-                        Reader::new(reader, content.length),
-                        content.length,
-                        Some(content),
-                    )?;
+                    result.tar_stream(streams::reader(format, source)?, stage)?;
                 } else {
+                    streams::decode(format, source, &mut stage)?;
+                    let content = stage.finish()?;
                     result.add(b"content", "content", Kind::File, Some(content), true)?;
                 }
             }
         }
-        Ok(result)
+        Ok(())
     }
 
     pub fn list(&self, directory: u64, after: u64) -> Result<Vec<Node>, Error> {
@@ -181,23 +264,22 @@ impl Archive {
             .children_after(directory, after)?
             .iter()
             .take(MAX_BATCH)
-            .map(|index| self.nodes[*index].clone())
+            .map(|position| self.node(*position))
             .collect())
     }
 
     /// One listing reply: at most `MAX_BATCH` children after `after` that fit the
-    /// frame budget, and whether more children follow. Nodes are cloned once.
+    /// frame budget, and whether more children follow. Nodes are built once.
     pub fn page(&self, directory: u64, after: u64) -> Result<(Vec<Node>, bool), Error> {
         let children = self.children_after(directory, after)?;
         let mut bytes = 32usize;
         let mut page = Vec::new();
-        for index in children.iter().take(MAX_BATCH) {
-            let node = &self.nodes[*index];
-            bytes = bytes.saturating_add(node.name.len() + node.display.len() + 64);
+        for &position in children.iter().take(MAX_BATCH) {
+            bytes = bytes.saturating_add(self.name_bytes(position) + 64);
             if bytes > MAX_FRAME {
                 break;
             }
-            page.push(node.clone());
+            page.push(self.node(position));
         }
         // A node's two bounded names always fit one frame, so a page is never empty
         // while children remain.
@@ -209,8 +291,8 @@ impl Archive {
     fn children_after(&self, directory: u64, after: u64) -> Result<&[usize], Error> {
         if directory != 1
             && self
-                .node(directory)
-                .is_none_or(|n| n.kind != Kind::Directory)
+                .member(directory)
+                .is_none_or(|member| member.kind != Kind::Directory)
         {
             return Err(Error::new(ErrorCode::NotFound, "Unknown archive directory"));
         }
@@ -218,7 +300,7 @@ impl Archive {
         let Some(children) = self.children.get(&directory) else {
             return Ok(&[]);
         };
-        let start = children.partition_point(|index| self.nodes[*index].id <= after);
+        let start = children.partition_point(|position| *position as u64 + 2 <= after);
         Ok(&children[start..])
     }
 
@@ -245,18 +327,28 @@ impl Archive {
         Ok((bytes, offset + u64::from(length) == content.length))
     }
 
-    /// Complete format integrity checks before publishing a sealed content range.
+    /// Complete format integrity checks before publishing a sealed content range. A
+    /// failed read of the source is reported as itself, whatever a decoder made of it.
     pub fn prepare(&mut self, entry: u64) -> Result<Content, Error> {
-        let node = self
-            .node(entry)
+        self.failure.take();
+        let result = self.prepare_member(entry);
+        match (result, self.failure.take()) {
+            (Err(_), Some(failure)) => Err(failure.into()),
+            (result, _) => result,
+        }
+    }
+
+    fn prepare_member(&mut self, entry: u64) -> Result<Content, Error> {
+        let member = self
+            .member(entry)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "Unknown archive member"))?;
-        if !node.readable {
+        if !member.readable {
             return Err(Error::new(
                 ErrorCode::Unsupported,
                 "Unsafe, encrypted, linked or unsupported archive member",
             ));
         }
-        let declared_size = node.size;
+        let declared_size = member.size();
         if let Some(content) = self.contents.get(&entry) {
             return Ok(*content);
         }
@@ -266,7 +358,7 @@ impl Archive {
         if let Some(sevenzip) = &mut self.sevenzip_content {
             return sevenzip.decode(entry, self.storage.clone());
         }
-        if let Some(index) = self.zip_members.get(&entry).copied() {
+        if let Some(index) = tree::find(&self.zip_members, entry).copied() {
             let zip = self
                 .zip
                 .as_mut()
@@ -284,15 +376,5 @@ impl Archive {
             ErrorCode::Unsupported,
             "Directory has no byte content",
         ))
-    }
-
-    fn node(&self, id: u64) -> Option<&Node> {
-        self.nodes.get(usize::try_from(id.checked_sub(2)?).ok()?)
-    }
-
-    /// The root (ID 1) has no node; member IDs start at 2.
-    fn node_mut(&mut self, id: u64) -> Option<&mut Node> {
-        self.nodes
-            .get_mut(usize::try_from(id.checked_sub(2)?).ok()?)
     }
 }

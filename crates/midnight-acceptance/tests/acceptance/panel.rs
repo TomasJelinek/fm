@@ -67,6 +67,95 @@ fn row_item(app: &App, pane: PaneId, name: &str) -> Option<LogicalPosition> {
         .map(|(x, y, w, h)| LogicalPosition::new(x + w / 2.0, y + h / 2.0))
 }
 
+/// The middle of the row `name` in `pane`, when it is shown.
+pub fn row_center(app: &App, pane: PaneId, name: &str) -> Option<LogicalPosition> {
+    row_item(app, pane, name)
+}
+
+/// A point in `pane`'s list below its last row (the panel's own folder as a drop
+/// target), or its middle when rows fill it.
+pub fn list_spot(app: &App, pane: PaneId) -> LogicalPosition {
+    let window = &app.window;
+    let (left, top, width, height) = match pane {
+        PaneId::Left => (
+            window.get_left_list_left(),
+            window.get_left_list_top(),
+            window.get_left_list_width(),
+            window.get_left_list_height(),
+        ),
+        PaneId::Right => (
+            window.get_right_list_left(),
+            window.get_right_list_top(),
+            window.get_right_list_width(),
+            window.get_right_list_height(),
+        ),
+    };
+    LogicalPosition::new(left + width / 2.0, top + height - 12.0)
+}
+
+/// Drag the row `name` of `pane` with the mouse to `to` while holding `modifiers`, as a
+/// user drags a row to the other panel: press, wait out the list's press delay, move in
+/// small mostly horizontal steps while the application runs (a list turns a fast
+/// vertical move into scrolling), wait until the drop target's feedback settles, then
+/// release. Returns the feedback state seen at the release (3 Copy, 4 Move,
+/// 5 not allowed) and its label.
+pub fn drag_row(
+    app: &mut App,
+    pane: PaneId,
+    name: &str,
+    to: LogicalPosition,
+    modifiers: &[Key],
+) -> Result<(i32, String), String> {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    wait_input(app);
+    let from = row_item(app, pane, name)
+        .ok_or_else(|| format!("no {name:?} row is shown in the {pane:?} panel to drag"))?;
+    let button = PointerEventButton::Left;
+    input::move_to(app.slint(), from);
+    app.slint().dispatch_event(WindowEvent::PointerPressed {
+        position: from,
+        button,
+    });
+    app.idle(Duration::from_millis(150));
+    for modifier in modifiers {
+        input::press(app.slint(), *modifier);
+    }
+    const STEPS: u32 = 24;
+    for step in 1..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        let position =
+            LogicalPosition::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+        input::move_to(app.slint(), position);
+        app.idle(Duration::from_millis(16));
+    }
+    // The engine prepares the drag and checks the destination asynchronously.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !matches!(app.window.get_drag_feedback_state(), 3..=5)
+        && std::time::Instant::now() < deadline
+    {
+        input::move_to(app.slint(), to);
+        app.idle(Duration::from_millis(30));
+    }
+    let state = app.window.get_drag_feedback_state();
+    let label = app.window.get_drag_label().to_string();
+    app.slint().dispatch_event(WindowEvent::PointerReleased {
+        position: to,
+        button,
+    });
+    for modifier in modifiers.iter().rev() {
+        input::release(app.slint(), *modifier);
+    }
+    app.settle();
+    if !matches!(state, 3..=5) {
+        return Err(format!(
+            "the drag of {name:?} never offered a drop (feedback state {state}, label {label:?}, \
+             drag active {})",
+            app.window.get_drag_active()
+        ));
+    }
+    Ok((state, label))
+}
+
 /// Window position of the middle of `index`'s name cell in a detailed panel list.
 pub fn row_position(app: &App, pane: PaneId, index: usize) -> LogicalPosition {
     let window = &app.window;

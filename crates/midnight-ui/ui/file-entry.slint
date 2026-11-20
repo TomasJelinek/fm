@@ -2,6 +2,7 @@ import { Theme } from "theme.slint";
 import { TipBody } from "controls.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
 import { PrefixName } from "panel-search.slint";
+import { NameText } from "path-text.slint";
 import { FileRow, TreePress } from "file-models.slint";
 import { TreeDisclosure } from "tree-disclosure.slint";
 import { PanelWarning } from "panel-warning.slint";
@@ -58,8 +59,12 @@ export component FileEntry inherits Rectangle {
         : (mod(root.source-index, 2) == 0 ? Theme.pane-background : Theme.alternate-row);
     // Reserve one shared gutter even for links/files without a disclosure button.
     private property <length> tree-slot: Theme.touch ? 26px : 20px;
-    private property <length> name-width: max(0px, root.width - 24px
-        - (root.view-mode == 0 ? root.size-column-width + root.date-column-width + root.time-column-width + 24px : 0px));
+    // A narrow panel hides metadata columns (width 0) with the spacing before each.
+    private property <length> metadata-width: root.view-mode != 0 ? 0px
+        : (root.size-column-width > 0px ? root.size-column-width + 8px : 0px)
+            + (root.date-column-width > 0px ? root.date-column-width + 8px : 0px)
+            + (root.time-column-width > 0px ? root.time-column-width + 8px : 0px);
+    private property <length> name-width: max(0px, root.width - 24px - root.metadata-width);
     // Lend unused leading size space to a directory name while preserving
     // the measured size value, warning and shared metadata column positions.
     private property <length> directory-name-space: root.view-mode == 0 && item.directory
@@ -237,7 +242,8 @@ export component FileEntry inherits Rectangle {
                     }
                     if item.prefix-end <= 0 : Text {
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
-                        text: item.name; color: root.text-color;
+                        text: NameText.ltr(item.name); accessible-label: item.name;
+                        color: root.text-color;
                         font-size: Theme.font-size; font-weight: item.selected ? 600 : 400;
                         // No-wrap still permits mandatory breaks in native names.
                         // Limit the paragraph before centering it in a single row.
@@ -247,7 +253,7 @@ export component FileEntry inherits Rectangle {
                 }
             }
         }
-        if root.view-mode == 0 : HorizontalLayout {
+        if root.view-mode == 0 && root.size-column-width > 0px : HorizontalLayout {
             width: root.size-column-width; spacing: 4px; cross-axis-alignment: center;
             // Stretch before the warning/value pair, never between its two parts.
             Rectangle { horizontal-stretch: 1; min-width: 0px; }
@@ -267,9 +273,9 @@ export component FileEntry inherits Rectangle {
         }
         // One conditional for both columns: every `if` is a component instance
         // per row. The size column stays apart, since its warning bounds the
-        // height of whatever shares a layout with it.
-        if root.view-mode == 0 : HorizontalLayout {
-            spacing: 8px;
+        // height of whatever shares a layout with it. The time hides first.
+        if root.view-mode == 0 && root.date-column-width > 0px : HorizontalLayout {
+            spacing: root.time-column-width > 0px ? 8px : 0px;
             Text {
                 text: item.modified-date; color: Theme.secondary-text; font-size: Theme.small-font;
                 wrap: no-wrap; max-lines: 1;
@@ -318,7 +324,8 @@ export component FileEntry inherits Rectangle {
             }
             if item.prefix-end <= 0 : Text {
                 x: 0px; y: 0px; width: parent.width; height: parent.height;
-                text: item.name; color: root.text-color; font-size: Theme.font-size;
+                text: NameText.ltr(item.name); accessible-label: item.name;
+                color: root.text-color; font-size: Theme.font-size;
                 font-weight: item.selected ? 600 : 400; wrap: char-wrap; overflow: elide;
                 horizontal-alignment: center; vertical-alignment: top;
             }

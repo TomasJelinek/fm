@@ -1,7 +1,7 @@
 # JSON/source scrolling, 10 November 2026
 
 The exact reported file is
-`D:\temp\ovclash\results\2026-09-07-mfg\manifest.json` (2659 bytes), SHA256
+`<external-project>\results\<run>\manifest.json` (2659 bytes), SHA256
 `CA5E4B26FEBA253568C17A62869471A2AEB2646D194593F18D2F9611263D21E7`.
 All investigations used read-only access or its identical `_build/qa/json-scroll/`
 copy. JSON uses the independent Source viewer's JSON lexical profile.

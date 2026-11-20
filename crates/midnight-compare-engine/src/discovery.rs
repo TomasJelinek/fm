@@ -204,7 +204,7 @@ impl FixedPitchFonts {
     /// most these two families runs on the calling worker.
     pub(crate) fn resolve(&self, preferred: &str, cancel: &AtomicBool) -> String {
         if let Some(families) = self.state().families.clone() {
-            return crate::text::resolve_family(&families, preferred);
+            return crate::typeface::resolve_family(&families, preferred);
         }
         if preferred == "monospace" {
             return preferred.into();

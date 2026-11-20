@@ -361,7 +361,8 @@ export component ComparatorOptions inherits VerticalLayout {
     if ComparatorOptionsView.error != "" : Text {
         accessible-label: "Comparator validation error";
         text: ComparatorOptionsView.error;
-        color: Theme.error-text; font-size: Theme.font-size; wrap: char-wrap; min-width: 0px;
+        // Whole words; a token wider than the page, such as a path, still breaks.
+        color: Theme.error-text; font-size: Theme.font-size; wrap: word-wrap; min-width: 0px;
     }
     Rectangle {
         min-width: 0px; height: root.rule-selected ? fields.preferred-height : 0px;

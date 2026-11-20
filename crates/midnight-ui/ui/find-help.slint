@@ -64,7 +64,8 @@ export component FindSyntaxHelp inherits Rectangle {
             { query: "kind = file and size >= 10MiB", meaning: "Regular files of at least 10 MiB (10,485,760 bytes)." },
             { query: "name like \"*.log\" and modified < \"2026-01-01T00:00:00Z\"", meaning: "Log files last modified before 2026 (UTC)." },
             { query: "kind = directory and name =~ \"^(build|dist)$\"", meaning: "Folders named exactly build or dist (regex)." },
-            { query: "attributes has hidden or attributes has system", meaning: "Items with the hidden or system attribute." },
+            { query: "attributes has hidden or attributes has system", meaning: "Items with the hidden or system attribute. Windows only: Linux reports no attributes." },
+            { query: "name like \".*\"", meaning: "Names starting with a dot, which Linux treats as hidden." },
             { query: "not (name like \"*.tmp\") and size > 0", meaning: "Non-empty items that are not .tmp files." },
             { query: "missing(modified)", meaning: "Items whose modification time is unknown." },
         ],
@@ -78,12 +79,31 @@ export component FindSyntaxHelp inherits Rectangle {
     private property <[string]> references: [
         "Masks never test folder paths, only names. Up to 64 masks. Use Expression mode to combine names with size, date or kind.",
         "Uses the Rust regex syntax: classes such as \\d, \\w and \\s, alternatives (a|b), repetition *, +, ?, {n,m}. Look-around and back-references are not supported, and very large patterns are rejected. (?i) at the start ignores letter case.",
-        "FIELDS AND OPERATORS\nname: = and != (exact), like (* and ? wildcards), =~ (regex)\nsize, modified: =, !=, <, <=, >, >=\nkind: = or != file, directory, directory-link, symlink, other\nattributes has: readonly, hidden, system, archive, temporary, sparse, compressed, offline, encrypted\npresent(field), missing(field): whether that metadata is known\n\nVALUES\nSizes are whole bytes with an optional B, kB, MB, GB, TB (powers of 1000) or KiB, MiB, GiB, TiB (powers of 1024). Times are quoted ISO timestamps with a time zone: \"2026-11-19T08:30:00Z\" or \"2026-11-19T09:30:00+01:00\".\n\nRULES\nnot binds tighter than and, and tighter than or: use parentheses for clarity. Unknown metadata never matches a comparison; a missing size is not zero. Up to 4096 bytes, 256 nodes, 32 nested levels and 16 name patterns.",
+        "FIELDS AND OPERATORS\nname: = and != (exact), like (* and ? wildcards), =~ (regex)\nsize, modified: =, !=, <, <=, >, >=\nkind: = or != file, directory, directory-link, symlink, other\nattributes has: readonly, hidden, system, archive, temporary, sparse, compressed, offline, encrypted (Windows only: Linux reports no attributes, so missing(attributes) is true there and a dot-name is not hidden; use name like \".*\" for dot-files)\npresent(field), missing(field): whether that metadata is known\n\nVALUES\nSizes are whole bytes with an optional B, kB, MB, GB, TB (powers of 1000) or KiB, MiB, GiB, TiB (powers of 1024). Times are quoted ISO timestamps with a time zone: \"2026-11-19T08:30:00Z\" or \"2026-11-19T09:30:00+01:00\".\n\nRULES\nnot binds tighter than and, and tighter than or: use parentheses for clarity. Unknown metadata never matches a comparison; a missing size is not zero. Up to 4096 bytes, 256 nodes, 32 nested levels and 16 name patterns.",
     ];
     private property <int> page: max(0, min(2, root.mode));
     background: Theme.pane-background;
+    // Opening the help focuses it, so keys never act on the hidden results.
+    forward-focus: keys;
+    function scroll-by(delta: length) {
+        scroll.content-y = max(min(0px, scroll.visible-height - scroll.content-height),
+            min(0px, scroll.content-y - delta));
+    }
     // Input over the help never reaches the results underneath.
     TouchArea {}
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape || event.text == Key.F1 { root.close(); return accept; }
+            if event.text == Key.DownArrow { root.scroll-by(Theme.font-size * 2); return accept; }
+            if event.text == Key.UpArrow { root.scroll-by(-Theme.font-size * 2); return accept; }
+            if event.text == Key.PageDown { root.scroll-by(scroll.visible-height * 0.9); return accept; }
+            if event.text == Key.PageUp { root.scroll-by(-scroll.visible-height * 0.9); return accept; }
+            if event.text == Key.Home { scroll.content-y = 0px; return accept; }
+            if event.text == Key.End { root.scroll-by(scroll.content-height); return accept; }
+            reject
+        }
+    }
     VerticalLayout {
         padding: 8px; spacing: 6px;
         HorizontalLayout {
@@ -97,7 +117,7 @@ export component FindSyntaxHelp inherits Rectangle {
                 clicked => { root.close(); }
             }
         }
-        VScrollView {
+        scroll := VScrollView {
             vertical-stretch: 1;
             VerticalLayout {
                 padding-right: 12px; spacing: 6px; alignment: start;

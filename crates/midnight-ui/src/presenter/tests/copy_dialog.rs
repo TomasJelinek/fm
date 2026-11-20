@@ -84,22 +84,184 @@ pub(in crate::presenter) fn assert_ambiguous_destination_is_refused(name: std::f
         assert_eq!(p.panes[0].display_path(), source);
         assert_eq!(p.panes[0].cursor, focus);
         let unambiguous = root.join("explicit Unicode 日本語");
-        p.confirm_copy_dialog(&token, unambiguous.to_str().unwrap(), &|command| {
-            match command {
-                Command::EnqueueSelectedCopy(request) => {
-                    assert!(!moving);
-                    assert_eq!(request.destination, unambiguous);
-                }
-                Command::EnqueueSelectedMove(request) => {
-                    assert!(moving);
-                    assert_eq!(request.destination, unambiguous);
-                }
-                _ => panic!("Unexpected command"),
-            }
+        let commands = RefCell::new(Vec::new());
+        let record = |command| {
+            commands.borrow_mut().push(command);
             true
-        });
+        };
+        p.confirm_copy_dialog(&token, unambiguous.to_str().unwrap(), &record);
+        // The typed folder is checked first; it exists.
+        let check = destination_check(&commands.borrow());
+        assert_eq!(check.path, unambiguous);
+        answer_destination_check(&mut p, &check, Ok(true), &record);
+        match commands.borrow().last() {
+            Some(Command::EnqueueSelectedCopy(request)) => {
+                assert!(!moving);
+                assert_eq!(request.destination, unambiguous);
+            }
+            Some(Command::EnqueueSelectedMove(request)) => {
+                assert!(moving);
+                assert_eq!(request.destination, unambiguous);
+            }
+            _ => panic!("Unexpected command"),
+        }
         assert!(p.copies.draft.is_none());
     }
+}
+
+/// The destination check a confirmation asked for, the latest first.
+fn destination_check(commands: &[Command]) -> DestinationCheckRequest {
+    commands
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::CheckTransferDestination(request) => Some(request.clone()),
+            _ => None,
+        })
+        .expect("a typed destination is checked before the transfer starts")
+}
+
+/// Answer `check` as the backend does; the answer may start the transfer.
+fn answer_destination_check(
+    p: &mut Presenter,
+    check: &DestinationCheckRequest,
+    result: Result<bool, FsError>,
+    send: &dyn Fn(Command) -> bool,
+) {
+    p.apply_with_sender(
+        Event::TransferDestinationChecked(Box::new(DestinationCheckResult {
+            request: check.request,
+            path: check.path.clone(),
+            result,
+        })),
+        send,
+    );
+}
+
+/// A typed destination that is not an existing folder keeps the Copy or Move dialog
+/// open with its own text and starts nothing. Once the folder exists, OK proceeds.
+#[test]
+fn a_typed_destination_that_is_not_an_existing_folder_is_refused_in_the_dialog() {
+    for moving in [false, true] {
+        for result in [
+            Err(io::ErrorKind::NotFound),
+            Err(io::ErrorKind::NotADirectory),
+            Ok(false),
+        ] {
+            let what = format!("moving {moving}, {result:?}");
+            let (mut p, root) = loaded();
+            if moving {
+                p.request_move_dialog(PaneId::Left, &|_| true);
+            } else {
+                p.request_copy_dialog(PaneId::Left, &|_| true);
+            }
+            let token = p.copies.draft.as_ref().unwrap().token.clone();
+            let missing = root.join("missing");
+            let commands = RefCell::new(Vec::new());
+            let record = |command| {
+                commands.borrow_mut().push(command);
+                true
+            };
+            p.confirm_copy_dialog(&token, &missing.to_string_lossy(), &record);
+            let check = destination_check(&commands.borrow());
+            assert_eq!(check.path, missing);
+            assert_eq!(commands.borrow().len(), 1, "only the check, no transfer");
+            assert!(p.copies.draft.as_ref().unwrap().error.is_empty());
+            // OK again while the folder is checked asks nothing more.
+            p.confirm_copy_dialog(&token, &missing.to_string_lossy(), &record);
+            assert_eq!(commands.borrow().len(), 1);
+            answer_destination_check(
+                &mut p,
+                &check,
+                result.map_err(|kind| FsError::from_io("check", &missing, kind.into())),
+                &record,
+            );
+            assert_eq!(commands.borrow().len(), 1, "{what}: no transfer");
+            assert!(!p.has_live_operations(), "{what}");
+            assert_eq!(
+                p.copies
+                    .draft
+                    .as_ref()
+                    .expect("the dialog stays open")
+                    .error,
+                crate::presenter::copy_dialog::DESTINATION_FOLDER_REQUIRED,
+                "{what}"
+            );
+            // The folder exists now: the next OK checks again and starts the transfer.
+            p.confirm_copy_dialog(&token, &missing.to_string_lossy(), &record);
+            let again = destination_check(&commands.borrow());
+            assert_ne!(again.request, check.request);
+            answer_destination_check(&mut p, &again, Ok(true), &record);
+            match commands.borrow().last() {
+                Some(Command::EnqueueSelectedCopy(request)) if !moving => {
+                    assert_eq!(request.destination, missing);
+                }
+                Some(Command::EnqueueSelectedMove(request)) if moving => {
+                    assert_eq!(request.destination, missing);
+                }
+                _ => panic!("OK starts the transfer"),
+            }
+            assert!(p.copies.draft.is_none());
+            assert!(p.has_live_operations());
+        }
+    }
+}
+
+/// Only the answer for the folder being checked counts: a newer OK cancels the older
+/// check, whose late answer starts nothing, and closing the dialog cancels its
+/// check. When the backend cannot tell, the transfer starts and reports the problem.
+#[test]
+fn only_the_current_destination_check_counts() {
+    let (mut p, root) = loaded();
+    p.request_copy_dialog(PaneId::Left, &|_| true);
+    let token = p.copies.draft.as_ref().unwrap().token.clone();
+    let commands = RefCell::new(Vec::new());
+    let record = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    p.confirm_copy_dialog(&token, &root.join("first").to_string_lossy(), &record);
+    let older = destination_check(&commands.borrow());
+    let second = root.join("second");
+    p.confirm_copy_dialog(&token, &second.to_string_lossy(), &record);
+    let newer = destination_check(&commands.borrow());
+    assert_eq!(newer.path, second);
+    assert!(
+        older.cancel.is_cancelled(),
+        "a newer OK cancels the older check"
+    );
+    answer_destination_check(&mut p, &older, Ok(true), &record);
+    assert!(p.copies.draft.is_some());
+    assert!(
+        !p.has_live_operations(),
+        "a superseded answer starts nothing"
+    );
+    let denied = FsError::from_io("check", &second, io::ErrorKind::PermissionDenied.into());
+    answer_destination_check(&mut p, &newer, Err(denied), &record);
+    assert!(matches!(
+        commands.borrow().last(),
+        Some(Command::EnqueueSelectedCopy(request)) if request.destination == second
+    ));
+    assert!(p.copies.draft.is_none());
+
+    let (mut p, root) = loaded();
+    p.request_copy_dialog(PaneId::Left, &|_| true);
+    let token = p.copies.draft.as_ref().unwrap().token.clone();
+    let commands = RefCell::new(Vec::new());
+    let record = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    p.confirm_copy_dialog(&token, &root.join("late").to_string_lossy(), &record);
+    let check = destination_check(&commands.borrow());
+    p.cancel_copy_dialog(&token);
+    assert!(
+        check.cancel.is_cancelled(),
+        "closing the dialog cancels its check"
+    );
+    answer_destination_check(&mut p, &check, Ok(true), &record);
+    assert_eq!(commands.borrow().len(), 1, "a late answer starts nothing");
+    assert!(!p.has_live_operations());
 }
 
 #[test]
@@ -184,13 +346,30 @@ fn copy_dialog_rejected_admission_keeps_the_draft_for_retry() {
     p.request_copy_dialog(PaneId::Left, &|_| true);
     let token = p.copies.draft.as_ref().unwrap().token.clone();
     let target = root.join("edited destination");
+    // A refused check keeps the draft for another OK, as a refused transfer does.
     p.confirm_copy_dialog(&token, &target.to_string_lossy(), &|_| false);
     assert!(p.copies.draft.is_some());
     assert!(!p.has_live_operations());
-    p.confirm_copy_dialog(&token, &target.to_string_lossy(), &|command| {
-        assert!(matches!(command, Command::EnqueueSelectedCopy(request) if request.destination == target));
+    let commands = RefCell::new(Vec::new());
+    let record = |command| {
+        commands.borrow_mut().push(command);
         true
-    });
+    };
+    p.confirm_copy_dialog(&token, &target.to_string_lossy(), &record);
+    let check = destination_check(&commands.borrow());
+    answer_destination_check(&mut p, &check, Ok(true), &|_| false);
+    assert!(
+        p.copies.draft.is_some(),
+        "a refused transfer keeps the draft"
+    );
+    assert!(!p.has_live_operations());
+    p.confirm_copy_dialog(&token, &target.to_string_lossy(), &record);
+    let check = destination_check(&commands.borrow());
+    answer_destination_check(&mut p, &check, Ok(true), &record);
+    assert!(matches!(
+        commands.borrow().last(),
+        Some(Command::EnqueueSelectedCopy(request)) if request.destination == target
+    ));
     assert!(p.copies.draft.is_none());
 }
 

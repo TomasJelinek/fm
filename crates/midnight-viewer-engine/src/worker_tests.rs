@@ -23,6 +23,10 @@ mod raster;
 #[path = "worker_source_continuity_tests.rs"]
 mod source_continuity;
 
+#[path = "worker_nearest_edge_tests.rs"]
+mod nearest_edge;
+#[path = "worker_seam_tests.rs"]
+mod seam;
 #[path = "worker_syntax_tests.rs"]
 mod syntax;
 
@@ -149,6 +153,8 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         web: None,
         closing_web: None,
         web_retirement_error: None,
+        // Nothing offers an installation unless a test supplies its own offer.
+        sandbox: super::sandbox::Sandbox::new(Arc::new(|_: &std::path::Path| None)),
         image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
@@ -203,6 +209,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         wrap: false,
         land_at_bottom: false,
         continuation: None,
+        seam: None,
         motion: RelativeMotion::default(),
         caption: String::new(),
         status: String::new(),

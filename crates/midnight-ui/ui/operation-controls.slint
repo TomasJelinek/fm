@@ -14,6 +14,9 @@ export component OperationDialog inherits Rectangle {
     in-out property <bool> wait-checked;
     in property <bool> follow-directory-links-visible;
     in-out property <bool> follow-directory-links-checked: true;
+    // The link option's words differ by platform; the presenter sets them.
+    in property <string> follow-links-label: "Follow directory links";
+    in property <string> follow-links-hint;
     in property <string> initial-name;
     in property <string> input-label;
     in property <int> selection-end;
@@ -33,6 +36,16 @@ export component OperationDialog inherits Rectangle {
     callback confirm(string);
     callback cancel();
     callback move-dialog(length, length);
+    // A destructive question about a name (a new empty file over an existing one) is
+    // never answered from the name field: Enter there armed it, so a second or held
+    // Enter must not replace the file. Only the confirm button itself does. Editing
+    // the name lets Enter submit the new name again.
+    private property <string> armed-name;
+    private property <bool> replace-armed: root.dangerous && root.has-name
+        && name.text == root.armed-name;
+    changed dangerous => { root.armed-name = root.dangerous && root.has-name ? name.text : ""; }
+    // The question names the file, so a new warning means a newly armed name.
+    changed warning => { root.armed-name = root.dangerous && root.has-name ? name.text : ""; }
     private property <bool> compact: root.height < 280px;
     private property <length> regular-row-spacing: root.wait-visible ? 6px : 12px;
     private property <length> row-spacing: root.compact ? 4px : root.regular-row-spacing;
@@ -130,14 +143,21 @@ export component OperationDialog inherits Rectangle {
     scope := FocusScope {
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.cancel(); return accept; }
+            // A held key confirms nothing: only a new press answers a question.
+            if event.repeat && ((event.text == Key.Return && !cancel-button.has-focus)
+                    || (event.text == Key.Space && primary-focus.has-focus)) {
+                return accept;
+            }
             // Enter confirms from the input, option or primary action. Keep
             // focused Cancel and the header close button's own key handlers.
-            if (event.text == Key.Return && (primary-focus.has-focus || name.has-focus || option.has-focus
-                    || follow-links.has-focus || wait-option.has-focus || confirm-button.has-focus))
+            if (event.text == Key.Return && (primary-focus.has-focus || (name.has-focus && !root.replace-armed)
+                    || option.has-focus || follow-links.has-focus || wait-option.has-focus || confirm-button.has-focus))
                 || (event.text == Key.Space && primary-focus.has-focus) {
                 if confirm-button.enabled { root.confirm(name.text); }
                 return accept;
             }
+            // Enter in the name field of an armed replacement waits for the button.
+            if event.text == Key.Return && name.has-focus { return accept; }
             if event.text == Key.Tab || event.text == Key.Backtab {
                 if event.modifiers.shift || event.text == Key.Backtab {
                     if name.has-focus { if confirm-button.enabled { root.focus-primary(); } else { cancel-button.focus(); } }
@@ -263,8 +283,8 @@ export component OperationDialog inherits Rectangle {
                         horizontal-scrollbar-policy: as-needed;
                         HorizontalLayout {
                             follow-links := HintedCheckBox {
-                                text: "Follow directory links";
-                                hint: "Follow qualified directory links and junctions when copying contents. Clear to create empty directories. Eligible native moves preserve the link itself.";
+                                text: root.follow-links-label;
+                                hint: root.follow-links-hint;
                                 enabled: root.follow-directory-links-visible;
                                 checked <=> root.follow-directory-links-checked;
                                 font-size: Theme.font-size;
@@ -307,9 +327,14 @@ export component OperationDialog inherits Rectangle {
                         HorizontalLayout { alignment: end;
                             confirm-button := HintedActionButton {
                                 primary: true; destructive: root.dangerous;
+                                // The operation's own glyph, as in the dialog header; a
+                                // compact form trims the padding that the glyph needs.
+                                fallback-icon: root.fallback-icon; compact: root.compact;
                                 text: root.confirm-text; enabled: root.confirm-enabled && (!root.has-name || name.text != "");
                                 accessible-role: none;
-                                hint: root.dangerous ? "Permanently delete the confirmed targets. This cannot be undone." : root.confirm-text;
+                                hint: !root.dangerous ? root.confirm-text
+                                    : root.has-name ? "Replace the existing file with an empty file. The original file is kept in a recovery folder."
+                                    : "Permanently delete the confirmed targets. This cannot be undone.";
                                 clicked => { primary-focus.focus(); root.confirm(name.text); }
                             }
                         }

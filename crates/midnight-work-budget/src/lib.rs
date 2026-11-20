@@ -4,10 +4,10 @@
 //! for one bounded call. A retained owner, such as a transfer job, keeps one permit
 //! identity for its lifetime but holds capacity only while it executes native steps: it
 //! releases the permit before waiting for a user decision, a pause or another job, yields
-//! it at its next step boundary while a call-scoped request is queued, and readmits it
-//! through the same FIFO queue before its next step. Queued exclusive requests and later
-//! shared requests therefore wait for at most one step of each retained owner, never for
-//! a whole transfer.
+//! it at its next step boundary while any request is queued (a call-scoped one or another
+//! transfer), and readmits it through the same FIFO queue before its next step. Queued
+//! requests therefore wait for at most one step of each retained owner, never for a whole
+//! transfer, and transfers sharing the limit interleave step by step.
 
 #[cfg(feature = "resident-workers")]
 pub mod resident;
@@ -65,8 +65,6 @@ struct State {
 struct Waiter {
     ticket: u64,
     admission: Admission,
-    /// Retained owners wait for whole jobs; they never ask other retained owners to yield.
-    retained: bool,
     waker: Option<Waker>,
 }
 impl State {
@@ -89,13 +87,12 @@ impl State {
             Admission::Exclusive => self.exclusive = false,
         }
     }
-    fn enqueue(&mut self, admission: Admission, retained: bool) -> u64 {
+    fn enqueue(&mut self, admission: Admission) -> u64 {
         let ticket = self.next;
         self.next = self.next.wrapping_add(1);
         self.queue.push_back(Waiter {
             ticket,
             admission,
-            retained,
             waker: None,
         });
         ticket
@@ -174,11 +171,11 @@ impl Gate {
     }
     /// Try immediate call-scoped admission without queuing or overtaking an existing waiter.
     pub fn try_acquire(self: &Arc<Self>, admission: Admission) -> Option<Permit> {
-        self.try_admit(admission, false)
+        self.try_admit(admission)
     }
     /// Try immediate admission of a retained permit (see the crate documentation).
     pub fn try_acquire_retained(self: &Arc<Self>, admission: Admission) -> Option<Permit> {
-        self.try_admit(admission, true)
+        self.try_admit(admission)
     }
     /// Blocking call-scoped FIFO admission: an exclusive HDD request is never starved by a
     /// stream of SSD requests. `cancelled` runs without the gate lock; cancellation
@@ -192,10 +189,10 @@ impl Gate {
         if cancelled() {
             return None;
         }
-        let permit = Permit::new(self.clone(), admission, false, false);
+        let permit = Permit::new(self.clone(), admission, false);
         let mut queued = Queued {
             gate: self,
-            ticket: self.lock().enqueue(admission, false),
+            ticket: self.lock().enqueue(admission),
             admitted: false,
         };
         loop {
@@ -223,17 +220,17 @@ impl Gate {
     /// their own cancellation while awaiting it.
     pub fn acquire_retained(self: &Arc<Self>, admission: Admission) -> Acquire {
         Acquire {
-            permit: Some(Permit::new(self.clone(), admission, true, false)),
+            permit: Some(Permit::new(self.clone(), admission, false)),
             ticket: None,
         }
     }
-    fn try_admit(self: &Arc<Self>, admission: Admission, retained: bool) -> Option<Permit> {
+    fn try_admit(self: &Arc<Self>, admission: Admission) -> Option<Permit> {
         let mut state = self.lock();
         if !state.queue.is_empty() || !state.eligible(admission) {
             return None;
         }
         state.charge(admission);
-        Some(Permit::new(self.clone(), admission, retained, true))
+        Some(Permit::new(self.clone(), admission, true))
     }
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
@@ -331,16 +328,14 @@ impl Drop for Reacquire<'_> {
 pub struct Permit {
     gate: Arc<Gate>,
     admission: Admission,
-    retained: bool,
     /// Changed only under the gate lock, so it always matches the gate's counters.
     held: AtomicBool,
 }
 impl Permit {
-    fn new(gate: Arc<Gate>, admission: Admission, retained: bool, held: bool) -> Self {
+    fn new(gate: Arc<Gate>, admission: Admission, held: bool) -> Self {
         Self {
             gate,
             admission,
-            retained,
             held: AtomicBool::new(held),
         }
     }
@@ -355,11 +350,11 @@ impl Permit {
     pub fn is_held(&self) -> bool {
         self.held.load(Ordering::Acquire)
     }
-    /// Whether a call-scoped request is queued. A retained owner then releases this permit
-    /// at its next step boundary and readmits it, so that request waits for at most one
-    /// step instead of the owner's whole job. Queued retained owners never count.
+    /// Whether any request is queued: a call-scoped one or another retained owner. A
+    /// retained owner then releases this permit at its next step boundary and readmits it,
+    /// so that request waits for at most one step instead of the owner's whole job.
     pub fn is_contended(&self) -> bool {
-        self.gate.lock().queue.iter().any(|waiter| !waiter.retained)
+        !self.gate.lock().queue.is_empty()
     }
     /// Return the capacity now, e.g. before waiting for a user decision. Idempotent;
     /// returns whether capacity was returned by this call. Clones of an `Arc<Permit>`
@@ -427,7 +422,7 @@ impl Permit {
         }
         let queued = match *ticket {
             Some(queued) if state.queue.iter().any(|waiter| waiter.ticket == queued) => queued,
-            _ => *ticket.insert(state.enqueue(self.admission, self.retained)),
+            _ => *ticket.insert(state.enqueue(self.admission)),
         };
         if state.admit(queued) {
             *ticket = None;

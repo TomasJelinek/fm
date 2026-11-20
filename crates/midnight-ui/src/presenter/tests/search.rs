@@ -519,3 +519,83 @@ fn rows_show_bidi_controls_as_escapes_and_keep_the_highlight_on_the_matched_pref
         "the listing keeps the raw name"
     );
 }
+
+fn grouped() -> NumberLocale {
+    NumberLocale {
+        group_separator: ",".into(),
+        grouping: vec![3],
+        repeat_last_group: true,
+        ..NumberLocale::default()
+    }
+}
+
+/// A listing whose entries the backend all left out as hidden.
+fn only_hidden(p: &mut Presenter, hidden: usize) {
+    let navigation = begin(p, PaneId::Left, test_root().to_str().unwrap());
+    p.apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation,
+        entries: Vec::new().into(),
+        index: Arc::new(DirectoryIndex {
+            hidden,
+            ..DirectoryIndex::from_entries(&[])
+        }),
+    });
+}
+
+#[test]
+fn a_panel_without_shown_entries_says_whether_it_is_empty_hidden_or_filtered() {
+    let locale = grouped();
+    let mut p = Presenter::new(test_root(), test_root());
+    snapshot(&mut p, &[]);
+    assert_eq!(p.panes[0].empty_message(&locale), "This folder is empty");
+    snapshot(&mut p, &["alpha.txt"]);
+    assert_eq!(p.panes[0].empty_message(&locale), "", "entries are shown");
+    // Hidden entries are counted, and an empty folder is never claimed.
+    only_hidden(&mut p, 1);
+    assert_eq!(
+        p.panes[0].empty_message(&locale),
+        "The only item here is hidden"
+    );
+    only_hidden(&mut p, 1_250);
+    assert_eq!(
+        p.panes[0].empty_message(&locale),
+        "All 1,250 items here are hidden"
+    );
+    // The panel filter leaving every listed entry out names the filter.
+    let source = snapshot(&mut p, &["alpha.txt", "beta.txt", "gamma.txt"]);
+    p.panes[0].search.panel_filter.enabled = true;
+    p.panes[0].search.result = Some(Arc::new(SearchResult {
+        source: source.clone(),
+        filtered: Arc::from([]),
+        filtered_index: Arc::new(DirectoryIndex::default()),
+        matches: Arc::from([]),
+        index: Arc::new(DirectoryIndex::default()),
+    }));
+    assert_eq!(p.panes[0].display_len(), 0);
+    assert_eq!(
+        p.panes[0].empty_message(&locale),
+        "None of the 3 items here match the filter"
+    );
+    // While the filter's projection is pending, nothing is claimed yet.
+    p.panes[0].search.pending = true;
+    assert_eq!(p.panes[0].empty_message(&locale), "");
+}
+
+#[test]
+fn a_quick_filter_without_matches_says_so_and_searching_until_it_knows() {
+    let locale = grouped();
+    let mut p = Presenter::new(test_root(), test_root());
+    snapshot(&mut p, &["alpha.txt", "beta.txt"]);
+    p.preferences.values.quick_search_filter = true;
+    p.search_filter_changed();
+    let request = query(&mut p, "zq");
+    assert_eq!(p.panes[0].empty_message(&locale), "Searching…");
+    accept(&mut p, &request, result(&request, &[], 0));
+    assert_eq!(p.panes[0].display_len(), 0);
+    assert_eq!(p.panes[0].empty_message(&locale), "No matching names");
+    // Without the filter a search only moves the cursor: the entries stay shown.
+    p.preferences.values.quick_search_filter = false;
+    p.search_filter_changed();
+    assert_eq!(p.panes[0].empty_message(&locale), "");
+}

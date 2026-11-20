@@ -11,6 +11,8 @@ startup-diagnostics = []
 
 [dependencies]
 midnight-worker-sdk = { path = "../../worker-api/midnight-worker-sdk" }
+# Spool reads verify each appended chunk instead of synchronously flushing it.
+crc32fast = { version = "=1.5.4", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_SystemServices", "Win32_System_SystemInformation"] }
