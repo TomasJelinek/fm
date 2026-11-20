@@ -8,6 +8,7 @@ mod identity;
 mod image_cache;
 mod images;
 mod policy;
+mod revalidation;
 mod routing;
 mod text;
 mod worker;

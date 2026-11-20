@@ -979,8 +979,11 @@ fields and conservative physical-device classifications.
   link execution are disabled. A malformed page cannot select executable code.
 - File comparison captures native regular-file identities. Both text inputs
   have byte/line/deadline limits; image inputs use the restricted image broker.
-  Rendered comparison surfaces and retained frames are bounded. Commands and
-  labels derived from content never execute.
+  A text source whose revision moved only in its change time is accepted after a
+  complete fresh read reproduces the retained text byte for byte; image sources
+  and every other revision change report a change. Rendered comparison surfaces
+  and retained frames are bounded. Commands and labels derived from content never
+  execute.
 
 ## Dependencies
 

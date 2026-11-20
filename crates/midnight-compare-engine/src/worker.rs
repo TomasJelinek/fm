@@ -6,6 +6,7 @@ use crate::{
     external_compare::{self, Attempt},
     identity::{IdentityTurn, WholeInput},
     images::Images,
+    revalidation,
     routing::{self, BuiltInPlan, BuiltInTarget, Target},
     text::TextComparison,
 };
@@ -38,6 +39,14 @@ impl Content {
                 .identity_turn()
                 .map(|equal| WholeInput::new(sources, Some(equal), confirmed_ssd)),
             Self::Images(_) => Some(WholeInput::new(sources, None, confirmed_ssd)),
+        }
+    }
+
+    /// The retained text; images retain decoded pixels, not their source bytes.
+    fn text(&self) -> Option<&TextComparison> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Images(_) => None,
         }
     }
 
@@ -357,7 +366,7 @@ fn compare(
             paths[1].display()
         )
     })?;
-    let sources = [left, right];
+    let mut sources = [left, right];
     let ssd = paths.each_ref().map(|path| capture.confirmed_ssd(path));
     check_cancel(cancel)?;
     let mut awaiting_fonts = None;
@@ -387,8 +396,12 @@ fn compare(
                 generation,
                 Output::Status("Reading and comparing text…".into()),
             );
-            let left = crate::text::read(&sources[0], ssd[0], cancel)?;
-            let right = crate::text::read(&sources[1], ssd[1], cancel)?;
+            let mut read = |side: usize| {
+                let recapture = || capture.open(&paths[side]);
+                revalidation::read_text(&mut sources[side], recapture, ssd[side], cancel)
+            };
+            let left = read(0)?;
+            let right = read(1)?;
             let mut text = TextComparison::new(&left.text, &right.text, cancel)?;
             text.encodings = Some([left.encoding, right.encoding]);
             match catalog {
@@ -428,11 +441,14 @@ fn compare(
         let requested = output.appearance();
         dirty |= requested.revision != painted_appearance;
         if dirty && output.is_current(generation) {
-            for source in &sources {
-                source
-                    .revalidate()
-                    .map_err(|error| format!("Compared file changed: {error}"))?;
-            }
+            revalidate(
+                &mut sources,
+                &content,
+                &mut whole_input,
+                paths,
+                capture,
+                ssd,
+            )?;
             let mut frame = match &mut content {
                 Content::Text(text) => {
                     text.paint(viewport.geometry, appearance, requested.palette, cancel)?
@@ -444,11 +460,14 @@ fn compare(
             frame.identity = identity;
             content.describe_identity(identity, &mut frame.status);
             check_cancel(cancel)?;
-            for source in &sources {
-                source
-                    .revalidate()
-                    .map_err(|error| format!("Compared file changed: {error}"))?;
-            }
+            revalidate(
+                &mut sources,
+                &content,
+                &mut whole_input,
+                paths,
+                capture,
+                ssd,
+            )?;
             check_cancel(cancel)?;
             let published = output.put(
                 generation,
@@ -516,8 +535,28 @@ fn compare(
             if whole_input.is_none() {
                 whole_input = content.identity_turn(&sources, ssd[0] && ssd[1]);
             }
-            last_identity_turn = if let Some(whole_input) = whole_input.as_mut() {
-                whole_input.step(&sources, cancel, || output.is_current(generation))?
+            last_identity_turn = if let Some(verifier) = whole_input.as_mut() {
+                match verifier.step(&sources, cancel, || output.is_current(generation)) {
+                    Ok(turn) => turn,
+                    // Replacing a source whose change time alone moved, with unchanged
+                    // content, restarts verification on the new pair. Other failures stand.
+                    Err(error) => {
+                        let replaced = output.is_current(generation)
+                            && revalidate(
+                                &mut sources,
+                                &content,
+                                &mut whole_input,
+                                paths,
+                                capture,
+                                ssd,
+                            )
+                            .unwrap_or(false);
+                        if !replaced {
+                            return Err(error);
+                        }
+                        IdentityTurn::Advanced
+                    }
+                }
             } else {
                 // An incomplete decoded-text turn always advanced its bounded
                 // cursors; unlike unavailable I/O admission, it needs no wait.
@@ -530,6 +569,26 @@ fn compare(
         }
     }
     Ok(None)
+}
+
+/// Revalidate both sources (`revalidation::revalidate`). A replaced source discards
+/// whole-input work keyed to the previous pair, which restarts from its first byte.
+/// Returns whether a source was replaced.
+fn revalidate(
+    sources: &mut [CapturedFile; 2],
+    content: &Content,
+    whole_input: &mut Option<WholeInput>,
+    paths: &[std::path::PathBuf; 2],
+    capture: &Capture<'_>,
+    ssd: [bool; 2],
+) -> Result<bool, String> {
+    let recapture = |side: usize| capture.open(&paths[side]);
+    let replaced =
+        revalidation::revalidate(sources, content.text(), recapture, ssd, capture.cancel)?;
+    if replaced {
+        *whole_input = None;
+    }
+    Ok(replaced)
 }
 
 fn apply(

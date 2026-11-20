@@ -55,6 +55,12 @@ paths remain raw `PathBuf` values and are never reconstructed from display names
 
 This is a LiveValidated read, not an immutable filesystem snapshot. Metadata
 checks have the same concurrent-writer limits as the captured-content service.
+A text source whose revision moved only in its change time (NTFS ChangeTime or
+Linux ctime; same volume or device, file ID or inode, length and write time) is
+replaced by a fresh capture of its path when that capture's complete content,
+read under the initial read's limits, equals the retained text; whole-input work
+then restarts on the new pair. Image sources and every other revision change
+still fail as changed.
 
 Implementation and test execution are separate gates. The API is published here
 for UI integration; no build or test pass is claimed by this contract document.

@@ -218,6 +218,17 @@ impl TextComparison {
         self.decoded_identity.step(&self.lines)
     }
 
+    /// Whether `input` is exactly the text and encoding retained for `side`. Decoding is
+    /// strict, so equal text and encoding mean equal file bytes.
+    pub fn retains(&self, side: usize, input: &TextInput) -> bool {
+        self.encodings
+            .is_some_and(|encodings| encodings[side] == input.encoding)
+            && self.lines[side]
+                .iter()
+                .map(String::as_str)
+                .eq(input.text.split_inclusive('\n'))
+    }
+
     pub fn find_pending(&self) -> bool {
         self.find.pending()
     }

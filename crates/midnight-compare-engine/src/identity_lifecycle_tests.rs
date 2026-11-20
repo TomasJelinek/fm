@@ -264,3 +264,152 @@ fn rejected_retry_on_full_input_queue_preserves_the_active_comparison_generation
     assert_eq!(result.identity, IdentityVerdict::IdenticalFiles);
     assert_eq!(result.geometry_revision, 32);
 }
+
+/// A text file whose native Windows revision moves only in its ChangeTime, as when endpoint
+/// protection adds an alternate data stream to a freshly written file: during read `during`
+/// (counted from zero), or when a test calls `drift`.
+#[derive(Debug)]
+struct Drifting {
+    reads: AtomicUsize,
+    during: Option<usize>,
+    /// Content and ChangeTime.
+    state: Mutex<(&'static [u8], i64)>,
+}
+
+impl Drifting {
+    fn new(content: &'static [u8], during: Option<usize>) -> Arc<Self> {
+        Arc::new(Self {
+            reads: AtomicUsize::new(0),
+            during,
+            state: Mutex::new((content, 0)),
+        })
+    }
+
+    /// Move the ChangeTime, with `content` of the same length.
+    fn drift(&self, content: &'static [u8]) {
+        let mut state = self.state.lock().unwrap();
+        *state = (content, state.1 + 1);
+    }
+}
+
+impl ContentSource for Drifting {
+    fn length(&self) -> u64 {
+        self.state.lock().unwrap().0.len() as u64
+    }
+    fn display_name(&self) -> String {
+        "drifting.txt".into()
+    }
+    fn version(&self) -> Vec<u8> {
+        let (content, change) = *self.state.lock().unwrap();
+        // Volume and file ID, length, LastWriteTime and ChangeTime.
+        [
+            b"native.windows.read.v1".as_slice(),
+            &[7; 24],
+            &(content.len() as u64).to_le_bytes(),
+            &100_i64.to_le_bytes(),
+            &change.to_le_bytes(),
+        ]
+        .concat()
+    }
+    fn validate(&self) -> Result<(), Error> {
+        Ok(())
+    }
+    fn read_at(&self, offset: u64, amount: u32) -> Result<Vec<u8>, Error> {
+        let content = self.state.lock().unwrap().0;
+        if Some(self.reads.fetch_add(1, Ordering::AcqRel)) == self.during {
+            self.drift(content);
+        }
+        let start = (offset as usize).min(content.len());
+        let end = start.saturating_add(amount as usize).min(content.len());
+        Ok(content[start..end].to_vec())
+    }
+}
+
+/// Compares `left` with an unchanging copy of its text. The held font scan keeps catalog
+/// repaints out of the frames the tests expect.
+fn drifting_session(
+    runtime: &tokio::runtime::Runtime,
+    paths: &[PathBuf; 2],
+    left: &Arc<Drifting>,
+) -> (
+    Session,
+    midnight_work_budget::resident::Owner,
+    mpsc::Sender<Arc<[String]>>,
+) {
+    let expected = paths[0].clone();
+    let captured = left.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if path == expected {
+            CapturedFile::from_source(captured.clone()).map_err(|error| error.to_string())
+        } else {
+            memory(b"same\n", &reads)
+        }
+    });
+    let (owner, spawner) = crate::resident_test_support::workers();
+    let (service, catalog) = held_scan(
+        Service::with_native_capture(runtime.handle().clone(), spawner, capture),
+        &Arc::default(),
+    );
+    (open(&service, launch(paths)).unwrap(), owner, catalog)
+}
+
+#[test]
+fn change_time_drift_during_whole_input_io_with_unchanged_text_restarts_verification() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    // Read 0 is the initial text read; read 1 is the first whole-input read.
+    let left = Drifting::new(b"same\n", Some(1));
+    let (session, _owner, _catalog) = drifting_session(&runtime, &paths, &left);
+    assert_eq!(frame(&session).identity, IdentityVerdict::Pending);
+    assert_eq!(settled(&session).identity, IdentityVerdict::IdenticalFiles);
+    // The initial read, the interrupted read, one complete read of the fresh capture and
+    // the read of the verification restarted on it.
+    assert_eq!(left.reads.load(Ordering::Acquire), 4);
+    session.close();
+}
+
+#[test]
+fn change_time_drift_during_the_initial_text_read_reads_the_fresh_capture() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let left = Drifting::new(b"same\n", Some(0));
+    let (session, _owner, _catalog) = drifting_session(&runtime, &paths, &left);
+    assert!(frame(&session).accessible_text.contains("same"));
+    assert_eq!(settled(&session).identity, IdentityVerdict::IdenticalFiles);
+    session.close();
+}
+
+#[test]
+fn a_repaint_after_change_time_drift_keeps_unchanged_text_and_reports_changed_text() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let left = Drifting::new(b"same\n", None);
+    let (session, _owner, _catalog) = drifting_session(&runtime, &paths, &left);
+    assert_eq!(frame(&session).identity, IdentityVerdict::Pending);
+    assert_eq!(settled(&session).identity, IdentityVerdict::IdenticalFiles);
+    let geometry = ViewerGeometry {
+        width: 400,
+        height: 80,
+        scale: 1.0,
+    };
+    left.drift(b"same\n");
+    assert!(session.send(Input::Resize(geometry, 7)).is_ok());
+    let resized = frame(&session);
+    assert_eq!(resized.geometry_revision, 7);
+    assert_eq!(resized.identity, IdentityVerdict::IdenticalFiles);
+    // Same length and LastWriteTime: only the content shows that this file changed.
+    left.drift(b"SAME\n");
+    assert!(session.send(Input::Resize(geometry, 8)).is_ok());
+    let error = choice(&session);
+    assert!(error.is_error);
+    assert!(
+        error.message.starts_with("Compared file changed: "),
+        "{}",
+        error.message
+    );
+    session.close();
+}
