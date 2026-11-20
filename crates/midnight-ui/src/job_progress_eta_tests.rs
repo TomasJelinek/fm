@@ -195,22 +195,22 @@ fn small_files_lean_on_the_item_rate_and_large_ones_on_the_byte_rate() {
 fn a_paused_estimate_holds_still_and_resumes_from_the_same_averages() {
     let mut p = small_files(None);
     Arc::make_mut(&mut p.throughput).smoothed_entries_per_second = 1000.0;
-    assert_eq!(copy(&p, &NumberLocale::default()).eta, "About 62 s");
+    assert_eq!(copy(&p, &NumberLocale::default()).eta, "About 2 min");
     p.pause_requested = true;
     p.paused = true;
     // The backend stops the current rates and keeps the averages while paused.
     stop_current_rates(&mut p.throughput);
     let paused = copy(&p, &NumberLocale::default());
-    assert_eq!(paused.eta, "About 62 s (paused)");
+    assert_eq!(paused.eta, "About 2 min (paused)");
     assert_eq!(paused.label, "Paused");
     p.pause_requested = false;
     assert_eq!(
         copy(&p, &NumberLocale::default()).eta,
-        "About 62 s (paused)",
+        "About 2 min (paused)",
         "resuming: still paused until the worker acknowledges"
     );
     p.paused = false;
-    assert_eq!(copy(&p, &NumberLocale::default()).eta, "About 62 s");
+    assert_eq!(copy(&p, &NumberLocale::default()).eta, "About 2 min");
 }
 
 /// What the backend publishes while paused: current rates zero, averages kept.

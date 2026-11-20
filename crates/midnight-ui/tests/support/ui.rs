@@ -255,9 +255,14 @@ pub fn try_root_position(
 }
 
 pub fn root_item(window: &MainWindow, label: &str, role: AccessibleRole) -> ItemRc {
+    try_root_item(window, label, role)
+        .unwrap_or_else(|| panic!("no accessible main control: {label}"))
+}
+
+/// The main window's control with this label and role, if the layout shows one.
+pub fn try_root_item(window: &MainWindow, label: &str, role: AccessibleRole) -> Option<ItemRc> {
     let root = WindowInner::from_pub(window.window()).component();
     find(ItemRc::new_root(root), label, role)
-        .unwrap_or_else(|| panic!("no accessible main control: {label}"))
 }
 
 /// Inspect actual text items: a control's accessible value may differ from its caption.

@@ -119,6 +119,10 @@ fn sorted_size_heading_keeps_text_clear_of_its_direction_icon() {
     let mut test = ui::TestUi::new();
     localized_rows(&mut test);
     test.window.set_left_sort(1);
+    // A narrow panel hides Size before it squeezes the name (time, date, then Size go),
+    // so only the combinations that still show the Size heading are measured; the widest
+    // window with the smaller font must be one of them.
+    let mut measured = 0;
     for width in [640, 760] {
         test.resize(width, 820);
         for font in [24, 32] {
@@ -126,8 +130,17 @@ fn sorted_size_heading_keeps_text_clear_of_its_direction_icon() {
             for descending in [false, true] {
                 test.window.set_left_descending(descending);
                 test.draw();
-                let header = ui::root_item(&test.window, "Sort by Size", AccessibleRole::Button);
-                let icon = visible_image(header).expect("size sort direction icon");
+                let icon = ui::try_root_item(&test.window, "Sort by Size", AccessibleRole::Button)
+                    .filter(|header| header.is_visible())
+                    .and_then(visible_image);
+                let Some(icon) = icon else {
+                    assert!(
+                        !(width == 760 && font == 24),
+                        "the Size heading and its arrow must show at width 760 with font 24"
+                    );
+                    continue;
+                };
+                measured += 1;
                 let icon_bounds = icon.geometry();
                 let icon_end =
                     icon.map_to_native_window(icon_bounds.origin).x + icon_bounds.width();
@@ -154,6 +167,10 @@ fn sorted_size_heading_keeps_text_clear_of_its_direction_icon() {
             }
         }
     }
+    assert!(
+        measured >= 2,
+        "the Size heading was measured in {measured} combinations"
+    );
 }
 
 #[test]

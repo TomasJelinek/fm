@@ -197,12 +197,27 @@ fn mask_regex(mask: &str) -> String {
         return ".*".into();
     }
     let mut regex = String::new();
+    // A run of wildcards with k `?` and any `*` matches exactly the texts of at least k
+    // characters, so it compiles as k single characters and at most one `.*`: equal
+    // matching, and a long run of `*` stays one repetition within the size limit.
+    let (mut singles, mut any) = (0usize, false);
+    let flush = |regex: &mut String, singles: &mut usize, any: &mut bool| {
+        regex.extend(std::iter::repeat_n('.', *singles));
+        if *any {
+            regex.push_str(".*");
+        }
+        (*singles, *any) = (0, false);
+    };
     for ch in mask.chars() {
         match ch {
-            '*' => regex.push_str(".*"),
-            '?' => regex.push('.'),
-            _ => regex.push_str(&regex::escape(&ch.to_string())),
+            '*' => any = true,
+            '?' => singles += 1,
+            _ => {
+                flush(&mut regex, &mut singles, &mut any);
+                regex.push_str(&regex::escape(&ch.to_string()));
+            }
         }
     }
+    flush(&mut regex, &mut singles, &mut any);
     regex
 }
