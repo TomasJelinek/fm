@@ -205,6 +205,7 @@ fn checksum_rows_support_accessible_selection_and_algorithm_context_copy() {
             calculated: true,
             verified: false,
             error: false,
+            current: false,
         }]))
         .into(),
     );
@@ -366,7 +367,7 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
     let retention = ChecksumRetention::new(());
     let rows: Arc<[Arc<ChecksumRow>]> = vec![Arc::new(ChecksumRow {
         id: ChecksumRowId(1),
-        path,
+        path: path.clone(),
         identity: None,
         kind: Some(EntryKind::File),
         state: ChecksumRowState::Calculated,
@@ -385,6 +386,56 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
         retention: retention.clone(),
     })]
     .into();
+    // The run lists its files first: the file being read shows its share, the
+    // others wait, and the progress line counts files and bytes.
+    let other = root.join("další 文档.txt");
+    for update in [
+        ChecksumUpdate::Planned(
+            vec![
+                ChecksumPlannedFile {
+                    path: path.clone(),
+                    size: Some(3),
+                },
+                ChecksumPlannedFile {
+                    path: other.clone(),
+                    size: Some(5),
+                },
+            ]
+            .into(),
+        ),
+        ChecksumUpdate::Progress(ChecksumProgress {
+            planned: 2,
+            planned_bytes: 8,
+            bytes_read: 1,
+            current: Some(path.clone()),
+            current_read: 1,
+            current_size: Some(3),
+            ..Default::default()
+        }),
+    ] {
+        state
+            .borrow_mut()
+            .apply(Event::Checksum(Box::new(ChecksumEvent {
+                job: request.job,
+                generation: request.generation,
+                update,
+            })));
+    }
+    midnight_ui::refresh(&main, &state.borrow());
+    let native = windows.borrow()[1].clone();
+    draw(&native, 860, 620, "checksum-listed");
+    let labels = row_labels(&native);
+    assert_eq!(labels.len(), 2, "{labels:?}");
+    assert!(labels[0].contains("Reading · 33 %"), "{labels:?}");
+    assert!(labels[1].contains("Waiting"), "{labels:?}");
+    assert!(
+        modeless::accessible_item(
+            &native,
+            i_slint_core::items::AccessibleRole::Text,
+            "Calculating… · 0 of 2 files · 1 of 8 B read"
+        )
+        .is_some()
+    );
     state
         .borrow_mut()
         .apply(Event::Checksum(Box::new(ChecksumEvent {
@@ -393,8 +444,11 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
             update: ChecksumUpdate::Batch(rows.clone()),
         })));
     midnight_ui::refresh(&main, &state.borrow());
-    let native = windows.borrow()[1].clone();
     draw(&native, 860, 620, "checksum-running");
+    // The finished file's row takes its place; the other file still waits.
+    let labels = row_labels(&native);
+    assert!(labels[0].contains("Calculated"), "{labels:?}");
+    assert!(labels[1].contains("Waiting"), "{labels:?}");
     click(&native, "Stop");
     assert!(
         commands
@@ -685,4 +739,31 @@ fn result_columns_resize_by_dragging_their_header_separators() {
         widths.name,
         "other widths stay"
     );
+}
+
+/// Accessible labels of the shown result rows, top to bottom.
+fn row_labels(native: &slint::platform::software_renderer::MinimalSoftwareWindow) -> Vec<String> {
+    use i_slint_core::{
+        accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+        window::WindowInner,
+    };
+    fn collect(item: ItemRc, found: &mut Vec<(f32, String)>) {
+        if item.accessible_role() == AccessibleRole::ListItem
+            && let Some(label) = item.accessible_string_property(AccessibleStringProperty::Label)
+            && label.contains(" · ")
+        {
+            let y = item.map_to_native_window(item.geometry().origin).y;
+            found.push((y, label.to_string()));
+        }
+        let mut child = item.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            collect(next, found);
+        }
+    }
+    let mut found = Vec::new();
+    let root = WindowInner::from_pub(native.window()).component();
+    collect(ItemRc::new_root(root), &mut found);
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    found.into_iter().map(|(_, label)| label).collect()
 }

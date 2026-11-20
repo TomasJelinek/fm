@@ -61,6 +61,8 @@ struct Provider {
     fail: bool,
     declared: Option<u64>,
     barrier: Option<Arc<ReadBarrier>>,
+    /// Time each file takes before its first chunk.
+    delay: Option<std::time::Duration>,
 }
 impl Provider {
     fn new(data: &[u8]) -> Self {
@@ -73,6 +75,7 @@ impl Provider {
             fail: false,
             declared: None,
             barrier: None,
+            delay: None,
         }
     }
 }
@@ -85,6 +88,7 @@ impl TransferService for Provider {
         Ok(Box::new(Source {
             provider: self.clone(),
             offset: 0,
+            reading: false,
             entry: TransferEntry {
                 item: MutationItem {
                     path: path.to_owned(),
@@ -117,6 +121,9 @@ struct Source {
     provider: Provider,
     offset: usize,
     entry: TransferEntry,
+    /// A read began: only that handle's drop counts for the read barrier (the
+    /// listing pass opens and drops a handle without reading).
+    reading: bool,
 }
 impl TransferSource for Source {
     fn entry(&self) -> &TransferEntry {
@@ -144,12 +151,16 @@ impl TransferSource for Source {
         Ok(())
     }
     fn read_chunk(&mut self, buffer: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+        self.reading = true;
         if let Some(barrier) = &self.provider.barrier {
             barrier.entered.notify_one();
             let mut released = barrier.released.lock().unwrap();
             while !*released {
                 released = barrier.wake.wait(released).unwrap();
             }
+        }
+        if let Some(delay) = self.provider.delay.filter(|_| self.offset == 0) {
+            std::thread::sleep(delay);
         }
         self.provider.reads.calls.fetch_add(1, Ordering::SeqCst);
         if holds_exclusive_io() {
@@ -209,7 +220,7 @@ impl TransferSource for Source {
 }
 impl Drop for Source {
     fn drop(&mut self) {
-        if let Some(barrier) = &self.provider.barrier {
+        if let Some(barrier) = self.provider.barrier.as_ref().filter(|_| self.reading) {
             barrier.dropped.store(true, Ordering::SeqCst);
         }
     }
@@ -702,4 +713,109 @@ fn a_recursive_directory_root_is_read_as_its_own_volume_allows() {
             "root ssd: {root_ssd}"
         );
     }
+}
+
+#[test]
+fn a_calculation_lists_its_files_first_and_reports_each_one_as_it_finishes() {
+    let mut provider = Provider::new(b"abcdefgh");
+    provider.delay = Some(UPDATE_INTERVAL + Duration::from_millis(50));
+    let mut request = request();
+    for name in ["second", "third"] {
+        let mut target = request.targets[0].clone();
+        target.path.set_file_name(name);
+        request.targets.push(target);
+    }
+    let paths: Vec<_> = request
+        .targets
+        .iter()
+        .map(|target| target.path.clone())
+        .collect();
+    let mut updates = Vec::new();
+    let result = calculate(
+        request,
+        &provider,
+        &UNCLASSIFIED,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        |update| {
+            updates.push(update);
+            true
+        },
+    );
+    assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+    // Every file is listed, with its length, before any is read.
+    assert!(matches!(&updates[0], ChecksumUpdate::Progress(progress) if progress.listing));
+    let first_row = updates
+        .iter()
+        .position(|update| matches!(update, ChecksumUpdate::Batch(_)))
+        .unwrap();
+    let listed: Vec<_> = updates[..first_row]
+        .iter()
+        .filter_map(|update| match update {
+            ChecksumUpdate::Planned(files) => Some(files.iter().cloned()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    assert!(listed.iter().all(|file| file.size == Some(8)));
+    assert_eq!(
+        provider.reads.bytes.load(Ordering::SeqCst),
+        24,
+        "listing reads nothing; each file is read once"
+    );
+    // Reading reports the listed totals and the file being read.
+    let reading = updates
+        .iter()
+        .find_map(|update| match update {
+            ChecksumUpdate::Progress(progress) if !progress.listing => Some(progress),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!((reading.planned, reading.planned_bytes), (3, 24));
+    assert!(updates.iter().any(|update| matches!(
+        update,
+        ChecksumUpdate::Progress(progress)
+            if progress.current.is_some() && progress.current_size == Some(8)
+    )));
+    assert_eq!(result.summary.progress.planned, 3);
+    // Files that take longer than the update interval arrive one by one, not as
+    // one batch at the end.
+    let batches: Vec<_> = updates
+        .iter()
+        .filter_map(|update| match update {
+            ChecksumUpdate::Batch(rows) => Some(rows.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(batches, [1, 1, 1]);
+}
+
+#[test]
+fn verification_reads_without_listing() {
+    let provider = Provider::new(b"abc");
+    let mut updates = Vec::new();
+    calculate_for_verification(
+        request(),
+        &provider,
+        &UNCLASSIFIED,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        |update| {
+            updates.push(update);
+            true
+        },
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, ChecksumUpdate::Planned(_))
+                || matches!(update, ChecksumUpdate::Progress(progress) if progress.listing))
+    );
 }

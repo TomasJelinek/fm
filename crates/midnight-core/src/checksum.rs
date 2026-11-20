@@ -327,6 +327,23 @@ pub struct ChecksumProgress {
     pub errors: u64,
     pub bytes_read: u64,
     pub current: Option<PathBuf>,
+    /// A calculation lists its files before reading them: how many it listed and
+    /// their total length (zero while unknown, and for verification).
+    pub planned: u64,
+    pub planned_bytes: u64,
+    /// The calculation is still listing its files; nothing has been read yet.
+    pub listing: bool,
+    /// Bytes read of `current` so far, and its length.
+    pub current_read: u64,
+    pub current_size: Option<u64>,
+}
+
+/// A file a calculation will read, listed before reading starts, in reading order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChecksumPlannedFile {
+    pub path: PathBuf,
+    /// Its length when listed; reading checks it again.
+    pub size: Option<u64>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChecksumCompletion {
@@ -366,6 +383,9 @@ pub enum ChecksumUpdate {
     Started,
     /// Emitted only after the complete manifest has been read and validated.
     Verifying(ChecksumAlgorithm),
+    /// Files a calculation will read, in batches before reading starts. Rows follow
+    /// for each, in the same order, plus rows for entries that cannot be read.
+    Planned(Arc<[ChecksumPlannedFile]>),
     Batch(Arc<[Arc<ChecksumRow>]>),
     Progress(ChecksumProgress),
     Finished(Arc<ChecksumRun>),

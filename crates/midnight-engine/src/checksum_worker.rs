@@ -102,11 +102,19 @@ struct Settings {
     /// Calculated rows can be saved as a manifest; keep them within its verifier budget.
     exportable: bool,
     revalidation: Duration,
+    /// List every file before reading any, so the window shows them all with the
+    /// run's total. Verification already knows its files from the manifest.
+    listing: bool,
 }
 const CALCULATION: Settings = Settings {
     exportable: true,
     revalidation: REVALIDATION_INTERVAL,
+    listing: true,
 };
+/// Progress, listed files and finished rows reach the window this often.
+const UPDATE_INTERVAL: Duration = Duration::from_millis(100);
+/// Listed files go to the window in batches of at most this many.
+const PLANNED_BATCH: usize = 512;
 
 pub(super) fn calculate_captured(
     request: ChecksumRequest,
@@ -200,6 +208,7 @@ pub(super) fn calculate_for_verification(
 ) -> Arc<ChecksumRun> {
     let settings = Settings {
         exportable: false,
+        listing: false,
         ..CALCULATION
     };
     run(request, service, storage, cancel, retention, settings, emit)
@@ -219,75 +228,46 @@ fn run(
         .iter()
         .map(|target| target.path.clone())
         .collect();
-    let mut state = State {
-        request: &request,
+    // First list every file the reading pass will read, in its order and within the
+    // same limits, so the window shows them all and the run's total. Entries that
+    // cannot be read are reported by the reading pass, which walks the same way.
+    let mut planned = (0, 0);
+    let mut admissions = std::collections::HashMap::new();
+    if settings.listing {
+        let mut listing = State::new(
+            &request,
+            settings,
+            cancel,
+            storage,
+            retention.clone(),
+            &mut emit,
+            true,
+        );
+        listing.announce();
+        listing.visit(service);
+        listing.flush_planned();
+        planned = (listing.progress.planned, listing.progress.planned_bytes);
+        admissions = std::mem::take(&mut listing.admissions);
+    }
+    let mut state = State::new(
+        &request,
         settings,
         cancel,
         storage,
-        admission: Admission::Exclusive,
-        classified: None,
-        retention: retention.clone(),
-        rows: Vec::new(),
-        batch: Vec::new(),
-        progress: ChecksumProgress::default(),
-        budgets: Vec::new(),
-        diagnostics: Vec::new(),
-        seen: HashSet::new(),
-        directories: HashSet::new(),
-        retained: 0,
-        incomplete: false,
-        last_progress: Instant::now(),
-        buffer: vec![0; CHECKSUM_BUFFER_BYTES],
-        emit: &mut emit,
-    };
-    for target in &request.targets {
-        if state.stopped() {
-            break;
-        }
-        if !state.charge(&target.path) {
-            if state.stopped() {
-                break;
-            }
-            continue;
-        }
-        // An entry lives on its directory's volume.
-        state.classify_parent(target.path.parent().unwrap_or(&target.path));
-        let opened = with_io(state.admission, cancel, &target.path, || {
-            service.prepare_transfer_source(&target.path, cancel)
-        });
-        match opened {
-            Ok(source) => {
-                // A walk never crosses a native volume boundary, but a selected
-                // directory can itself be a mount point of another volume.
-                if request.recursive && source.entry().item.kind == EntryKind::Directory {
-                    state.admission = state.admission_of(&target.path);
-                }
-                if !matches_capture(source.entry(), target) {
-                    if request.recursive
-                        && (target.kind == Some(EntryKind::Directory)
-                            || source.entry().item.kind == EntryKind::Directory)
-                    {
-                        state.incomplete = true;
-                    }
-                    state.failed(
-                        &target.path,
-                        Some(source.entry()),
-                        ChecksumRowState::SourceChanged,
-                        failure(
-                            &target.path,
-                            io::ErrorKind::InvalidData,
-                            "Captured source metadata or identity changed.",
-                        ),
-                    );
-                } else {
-                    state.walk(source);
-                }
-            }
-            Err(error) => state.open_failed(error, target.kind),
-        }
+        retention.clone(),
+        &mut emit,
+        false,
+    );
+    (state.progress.planned, state.progress.planned_bytes) = planned;
+    state.admissions = admissions;
+    if settings.listing {
+        state.announce();
     }
+    state.visit(service);
     state.flush_batch();
     state.progress.current = None;
+    state.progress.current_read = 0;
+    state.progress.current_size = None;
     let completion = if cancel.is_cancelled() {
         ChecksumCompletion::Cancelled
     } else if state.incomplete {
@@ -334,8 +314,9 @@ struct State<'a, F> {
     storage: &'a dyn Storage,
     /// Disk admission for the current root's volume.
     admission: Admission,
-    /// The last classified directory; selected entries usually share one.
-    classified: Option<(PathBuf, Admission)>,
+    /// Classified directories, queried once per run: the reading pass reuses what
+    /// the listing pass learned.
+    admissions: std::collections::HashMap<PathBuf, Admission>,
     retention: Arc<ChecksumRetention>,
     rows: Vec<Arc<ChecksumRow>>,
     batch: Vec<Arc<ChecksumRow>>,
@@ -347,27 +328,126 @@ struct State<'a, F> {
     retained: usize,
     incomplete: bool,
     last_progress: Instant,
+    /// When listed files or rows last went to the window.
+    last_flush: Instant,
     buffer: Vec<u8>,
     emit: &'a mut F,
+    /// The listing pass: files are listed, not read, and failures wait for the
+    /// reading pass.
+    listing: bool,
+    planned: Vec<ChecksumPlannedFile>,
+}
+impl<'a, F: FnMut(ChecksumUpdate) -> bool> State<'a, F> {
+    fn new(
+        request: &'a ChecksumRequest,
+        settings: Settings,
+        cancel: &'a Cancellation,
+        storage: &'a dyn Storage,
+        retention: Arc<ChecksumRetention>,
+        emit: &'a mut F,
+        listing: bool,
+    ) -> Self {
+        Self {
+            request,
+            settings,
+            cancel,
+            storage,
+            admission: Admission::Exclusive,
+            admissions: std::collections::HashMap::new(),
+            retention,
+            rows: Vec::new(),
+            batch: Vec::new(),
+            progress: ChecksumProgress {
+                listing,
+                ..ChecksumProgress::default()
+            },
+            budgets: Vec::new(),
+            diagnostics: Vec::new(),
+            seen: HashSet::new(),
+            directories: HashSet::new(),
+            retained: 0,
+            incomplete: false,
+            last_progress: Instant::now(),
+            last_flush: Instant::now(),
+            // Listing reads no contents.
+            buffer: if listing {
+                Vec::new()
+            } else {
+                vec![0; CHECKSUM_BUFFER_BYTES]
+            },
+            emit,
+            listing,
+            planned: Vec::new(),
+        }
+    }
 }
 impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
+    /// Walk the request's targets: list their files, or read them.
+    fn visit(&mut self, service: &dyn TransferService) {
+        let request = self.request;
+        let cancel = self.cancel;
+        for target in &request.targets {
+            if self.stopped() {
+                break;
+            }
+            if !self.charge(&target.path) {
+                if self.stopped() {
+                    break;
+                }
+                continue;
+            }
+            // An entry lives on its directory's volume.
+            self.classify_parent(target.path.parent().unwrap_or(&target.path));
+            let opened = with_io(self.admission, cancel, &target.path, || {
+                service.prepare_transfer_source(&target.path, cancel)
+            });
+            match opened {
+                Ok(source) => {
+                    // A walk never crosses a native volume boundary, but a selected
+                    // directory can itself be a mount point of another volume.
+                    if request.recursive && source.entry().item.kind == EntryKind::Directory {
+                        self.admission = self.admission_of(&target.path);
+                    }
+                    if !matches_capture(source.entry(), target) {
+                        if request.recursive
+                            && (target.kind == Some(EntryKind::Directory)
+                                || source.entry().item.kind == EntryKind::Directory)
+                        {
+                            self.incomplete = true;
+                        }
+                        self.failed(
+                            &target.path,
+                            Some(source.entry()),
+                            ChecksumRowState::SourceChanged,
+                            failure(
+                                &target.path,
+                                io::ErrorKind::InvalidData,
+                                "Captured source metadata or identity changed.",
+                            ),
+                        );
+                    } else {
+                        self.walk(source);
+                    }
+                }
+                Err(error) => self.open_failed(error, target.kind),
+            }
+        }
+    }
     fn stopped(&self) -> bool {
         self.cancel.is_cancelled() || !self.budgets.is_empty()
     }
-    fn admission_of(&self, path: &Path) -> Admission {
-        midnight_work_budget::storage_admission(self.storage.confirmed_local_ssd(path))
+    fn admission_of(&mut self, path: &Path) -> Admission {
+        if let Some(admission) = self.admissions.get(path) {
+            return *admission;
+        }
+        let admission =
+            midnight_work_budget::storage_admission(self.storage.confirmed_local_ssd(path));
+        self.admissions.insert(path.to_owned(), admission);
+        admission
     }
-    /// Admission for an entry of `directory`, queried once per distinct consecutive
-    /// directory (selected entries usually share one).
+    /// Admission for an entry of `directory` (selected entries usually share one).
     fn classify_parent(&mut self, directory: &Path) {
-        self.admission = match &self.classified {
-            Some((path, admission)) if path == directory => *admission,
-            _ => {
-                let admission = self.admission_of(directory);
-                self.classified = Some((directory.to_owned(), admission));
-                admission
-            }
-        };
+        self.admission = self.admission_of(directory);
     }
     fn budget(&mut self, budget: ChecksumBudget) {
         self.incomplete = true;
@@ -490,7 +570,16 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
     }
     fn file(&mut self, mut source: Box<dyn TransferSource>) {
         let entry = source.entry().clone();
+        if self.listing {
+            self.plan(ChecksumPlannedFile {
+                path: entry.item.path,
+                size: entry.item.metadata.size,
+            });
+            return;
+        }
         self.progress.current = Some(entry.item.path.clone());
+        self.progress.current_read = 0;
+        self.progress.current_size = entry.item.metadata.size;
         let mut hashers = Hashers::new(self.request.algorithms);
         let mut read = 0u64;
         let result = (|| {
@@ -558,6 +647,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                         source.revalidate(self.cancel)
                     })?;
                 }
+                self.progress.current_read = read;
                 self.progress();
             }
             with_io(self.admission, self.cancel, &entry.item.path, || {
@@ -610,6 +700,9 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         });
     }
     fn open_failed(&mut self, error: FsError, known_kind: Option<EntryKind>) {
+        if self.listing {
+            return;
+        }
         let path = error.path.clone();
         let state = if error.kind == io::ErrorKind::Unsupported {
             ChecksumRowState::Skipped
@@ -635,6 +728,9 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         state: ChecksumRowState,
         error: FsError,
     ) {
+        if self.listing {
+            return;
+        }
         self.diagnostic(&error);
         if state == ChecksumRowState::Skipped {
             self.progress.skipped += 1;
@@ -662,12 +758,15 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         let row = Arc::new(row);
         self.rows.push(row.clone());
         self.batch.push(row);
-        if self.batch.len() >= CHECKSUM_BATCH_SIZE {
+        // A finished file reaches the window at once, unless many finish quickly:
+        // those wait at most UPDATE_INTERVAL (see `progress`).
+        if self.batch.len() >= CHECKSUM_BATCH_SIZE || self.last_flush.elapsed() >= UPDATE_INTERVAL {
             self.flush_batch();
         }
         self.progress();
     }
     fn flush_batch(&mut self) {
+        self.last_flush = Instant::now();
         if !self.batch.is_empty()
             && !(self.emit)(ChecksumUpdate::Batch(
                 std::mem::take(&mut self.batch).into(),
@@ -676,12 +775,45 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             self.cancel.cancel();
         }
     }
+    fn plan(&mut self, file: ChecksumPlannedFile) {
+        self.progress.planned += 1;
+        self.progress.planned_bytes = self
+            .progress
+            .planned_bytes
+            .saturating_add(file.size.unwrap_or(0));
+        self.planned.push(file);
+        if self.planned.len() >= PLANNED_BATCH || self.last_flush.elapsed() >= UPDATE_INTERVAL {
+            self.flush_planned();
+        }
+        self.progress();
+    }
+    fn flush_planned(&mut self) {
+        self.last_flush = Instant::now();
+        if !self.planned.is_empty()
+            && !(self.emit)(ChecksumUpdate::Planned(
+                std::mem::take(&mut self.planned).into(),
+            ))
+        {
+            self.cancel.cancel();
+        }
+    }
     fn progress(&mut self) {
-        if self.last_progress.elapsed() >= Duration::from_millis(250) {
-            self.last_progress = Instant::now();
-            if !(self.emit)(ChecksumUpdate::Progress(self.progress.clone())) {
-                self.cancel.cancel();
+        if self.last_progress.elapsed() >= UPDATE_INTERVAL {
+            // Rows or listed files held back by quick successions go first.
+            if !self.batch.is_empty() {
+                self.flush_batch();
             }
+            if !self.planned.is_empty() {
+                self.flush_planned();
+            }
+            self.announce();
+        }
+    }
+    /// Report progress now, for example as the reading pass starts.
+    fn announce(&mut self) {
+        self.last_progress = Instant::now();
+        if !(self.emit)(ChecksumUpdate::Progress(self.progress.clone())) {
+            self.cancel.cancel();
         }
     }
 }

@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "std-widgets.slint";
 import { VScrollView } from "scroll-view.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { ErrorNotice, ErrorGlyph } from "error-notice.slint";
@@ -37,6 +38,10 @@ export component ChecksumWindow inherits ToolWindow {
     in property <bool> has-output;
     in property <bool> attention;
     in property <string> progress;
+    // The running calculation's share done (negative: no bar), and whether it is
+    // still listing its files.
+    in property <float> progress-fraction: -1;
+    in property <bool> progress-listing;
     in property <string> error;
     // The attention line: the error, a backend diagnostic or the limits reached.
     in property <string> issue;
@@ -141,7 +146,7 @@ export component ChecksumWindow inherits ToolWindow {
                 copy-result(token, algorithm, whole) => { root.copy-result(token, algorithm, whole); }
             }
             if root.page == 0 && root.rows.length == 0 && !root.show-details: Text {
-                text: root.running ? (root.verifying ? "Verifying files…" : "Calculating checksums…")
+                text: root.running ? (root.verifying ? "Verifying files…" : root.progress-listing ? "Listing files…" : "Calculating checksums…")
                     : "Choose the checksums in the list above, then press Calculate.";
                 color: Theme.muted-text; wrap: word-wrap;
                 x: 12px; width: parent.width - 24px;
@@ -207,6 +212,10 @@ export component ChecksumWindow inherits ToolWindow {
                 hint: "Dismiss this notice.";
                 width: Theme.control-height;
                 clicked => { root.save-status-dismissed = true; root.focus-page(); } }
+        }
+        if root.page == 0 && root.running && (root.progress-listing || root.progress-fraction >= 0): ProgressIndicator {
+            progress: max(0, root.progress-fraction); indeterminate: root.progress-listing;
+            height: 4px; accessible-label: "Checksum progress";
         }
         if !root.compact || root.page != 0 || !root.attention || root.attention-dismissed: Text {
             text: root.progress; color: root.attention ? Theme.error-text : Theme.secondary-text;

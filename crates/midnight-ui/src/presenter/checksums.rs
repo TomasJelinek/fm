@@ -63,6 +63,67 @@ pub(crate) struct ChecksumSession {
     /// A question the user must answer before a save goes ahead.
     pub save_prompt: Option<SavePrompt>,
     streamed: Vec<Arc<ChecksumRow>>,
+    /// The running calculation's listed files, in reading order; those without a
+    /// row yet show as waiting. Cleared when the run finishes.
+    planned: Planned,
+}
+
+/// Listed files and which of them already have a row. Rows normally arrive in
+/// listing order, so the waiting files are the tail after `first`.
+#[derive(Default)]
+pub(crate) struct Planned {
+    files: Vec<ChecksumPlannedFile>,
+    done: Vec<bool>,
+    by_path: std::collections::HashMap<PathBuf, usize>,
+    finished: usize,
+    /// No listed file before this one waits.
+    first: usize,
+    /// Files at or after `first` that already have a row.
+    later_done: usize,
+}
+
+impl Planned {
+    fn add(&mut self, files: &[ChecksumPlannedFile]) {
+        use std::collections::hash_map::Entry;
+        let room = ChecksumLimits::default()
+            .max_rows
+            .saturating_sub(self.files.len());
+        for file in files.iter().take(room) {
+            if let Entry::Vacant(entry) = self.by_path.entry(file.path.clone()) {
+                entry.insert(self.files.len());
+                self.files.push(file.clone());
+                self.done.push(false);
+            }
+        }
+    }
+    fn finished(&mut self, path: &Path) {
+        let Some(&index) = self.by_path.get(path) else {
+            return;
+        };
+        if std::mem::replace(&mut self.done[index], true) {
+            return;
+        }
+        self.finished += 1;
+        if index >= self.first {
+            self.later_done += 1;
+        }
+        while self.done.get(self.first).copied().unwrap_or(false) {
+            self.first += 1;
+            self.later_done -= 1;
+        }
+    }
+    /// The `k`th waiting file, without a scan when rows came in listing order.
+    fn waiting(&self, k: usize) -> Option<&ChecksumPlannedFile> {
+        if self.later_done == 0 {
+            return self.files.get(self.first + k);
+        }
+        self.files[self.first..]
+            .iter()
+            .zip(&self.done[self.first..])
+            .filter(|(_, done)| !**done)
+            .map(|(file, _)| file)
+            .nth(k)
+    }
 }
 
 /// Asked in the window instead of failing: partial results, or an existing file to replace.
@@ -89,6 +150,48 @@ pub(crate) struct ChecksumSave {
 impl ChecksumSession {
     pub fn rows(&self) -> &[Arc<ChecksumRow>] {
         self.run.as_ref().map_or(&self.streamed, |run| &run.rows)
+    }
+
+    /// Listed files of the running calculation that have no row yet, in reading order.
+    pub fn pending(&self) -> impl Iterator<Item = &ChecksumPlannedFile> {
+        let planned = &self.planned;
+        planned
+            .files
+            .iter()
+            .zip(&planned.done)
+            .filter(|(_, done)| !**done)
+            .map(|(file, _)| file)
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.planned.files.len() - self.planned.finished
+    }
+
+    /// The `k`th listed file still to come; see [`Self::pending`].
+    pub fn pending_at(&self, k: usize) -> Option<&ChecksumPlannedFile> {
+        self.planned.waiting(k)
+    }
+
+    /// Accept listed files and rows of the running calculation.
+    pub(super) fn plan(&mut self, files: &[ChecksumPlannedFile]) {
+        if self.run.is_none() {
+            self.planned.add(files);
+        }
+    }
+
+    pub(super) fn stream(&mut self, rows: &[Arc<ChecksumRow>]) {
+        let remaining = ChecksumLimits::default()
+            .max_rows
+            .saturating_sub(self.streamed.len());
+        for row in rows.iter().take(remaining) {
+            self.planned.finished(&row.path);
+            self.streamed.push(row.clone());
+        }
+    }
+
+    /// The run ended or a new one starts: the old rows and listed files go.
+    pub(super) fn take_streamed(&mut self) -> (Vec<Arc<ChecksumRow>>, Planned) {
+        (mem::take(&mut self.streamed), mem::take(&mut self.planned))
     }
 
     pub fn row(&self, token: &str) -> Option<&ChecksumRow> {
@@ -348,6 +451,7 @@ impl Presenter {
                 save_message: String::new(),
                 saved: None,
                 streamed: Vec::new(),
+                planned: Planned::default(),
             },
         );
         // Nothing is calculated until the user presses Calculate.
@@ -410,7 +514,7 @@ impl Presenter {
         s.error.clear();
         s.forget_saves();
         s.progress = ChecksumProgress::default();
-        self.retired.push(Box::new(mem::take(&mut s.streamed)));
+        self.retired.push(Box::new(s.take_streamed()));
         self.retired.push(Box::new(s.run.take()));
         true
     }

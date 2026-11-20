@@ -16,11 +16,12 @@ impl Presenter {
                     s.algorithms = algorithms;
                 }
             }
+            ChecksumUpdate::Planned(files) => {
+                s.plan(&files);
+                self.retired.push(Box::new(files));
+            }
             ChecksumUpdate::Batch(batch) => {
-                let remaining = ChecksumLimits::default()
-                    .max_rows
-                    .saturating_sub(s.streamed.len());
-                s.streamed.extend(batch.iter().take(remaining).cloned());
+                s.stream(&batch);
                 self.retired.push(Box::new(batch));
             }
             ChecksumUpdate::Progress(progress) => s.progress = progress,
@@ -28,7 +29,7 @@ impl Presenter {
                 s.running = false;
                 s.stopping = false;
                 s.progress = run.summary.progress.clone();
-                self.retired.push(Box::new(mem::take(&mut s.streamed)));
+                self.retired.push(Box::new(s.take_streamed()));
                 self.retired.push(Box::new(s.run.replace(run)));
             }
         }

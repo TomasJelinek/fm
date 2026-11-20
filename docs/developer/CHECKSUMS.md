@@ -65,10 +65,23 @@ in between at most every 250 ms, because each check reopens the parent and name
 (and every manifest ancestor). The intermediate checks only shorten how long a
 replaced or rewritten source keeps streaming; the final check decides the row.
 
-`ChecksumEvent` carries Queued, Started, Verifying, bounded Batch, Progress or Finished.
-Rows are immutable shared objects with stable IDs; Finished retains the complete
-bounded `ChecksumRun`. The UI keeps streamed row references until Finished, then
-uses the run's shared rows directly and retires the temporary vector on the backend.
+`ChecksumEvent` carries Queued, Started, Verifying, Planned, bounded Batch, Progress or
+Finished. A calculation first lists the files it will read (a walk that opens entries
+and lists folders, within the same depth, volume, link and size limits, but reads no
+contents) and sends them in Planned batches, then reads them in the same order.
+Unreadable entries are reported only by the reading walk. Progress carries the listed
+count and total length, whether listing is still going on, and the file being read
+with its bytes read so far. A finished file's row is sent at once unless many finish
+quickly, and then within 100 ms; progress also goes out every 100 ms. Each directory's
+storage class is queried once per run. Verification lists nothing: its manifest
+names its files. Rows are immutable shared objects with stable IDs; Finished retains
+the complete bounded `ChecksumRun`. While a run goes on, the window shows the rows so
+far followed by the listed files still to come: the one being read with its share
+read, then those waiting. A determinate bar shows bytes read of the listed total (an
+indeterminate one while listing), and the status line shows "N of M files · X of Y B
+read". The UI keeps streamed row references until Finished, then uses the run's
+shared rows directly and retires the temporary vector and the listed files on the
+backend.
 Only visible rows are formatted. Display text is never reconstructed into file
 authority. Row callbacks contain generation plus ID, validated before copying.
 

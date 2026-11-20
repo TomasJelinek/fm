@@ -779,3 +779,70 @@ fn a_selected_checksum_file_opens_verification_from_the_selection_itself() {
     assert!(s.verify_initial);
     assert_eq!(s.manifest_suggested, root.join("photos.sha256"));
 }
+
+#[test]
+fn listed_files_wait_for_their_rows_in_reading_order_and_leave_with_the_run() {
+    let (mut p, id) = setup(&|_| true);
+    let generation = p.checksums.sessions[&id].generation;
+    let root = std::env::temp_dir();
+    let event = |update| {
+        Event::Checksum(Box::new(ChecksumEvent {
+            job: id,
+            generation,
+            update,
+        }))
+    };
+    let listed: Arc<[ChecksumPlannedFile]> = ["a", "b 文档", "c"]
+        .iter()
+        .map(|name| ChecksumPlannedFile {
+            path: root.join(name),
+            size: Some(3),
+        })
+        .collect();
+    p.apply(event(ChecksumUpdate::Planned(listed.clone())));
+    let pending = |p: &Presenter| -> Vec<PathBuf> {
+        p.checksums.sessions[&id]
+            .pending()
+            .map(|file| file.path.clone())
+            .collect()
+    };
+    assert_eq!(
+        pending(&p),
+        [root.join("a"), root.join("b 文档"), root.join("c")]
+    );
+    // A listed file's row takes its place; the others keep waiting in order. A row
+    // for an entry that was not listed (an unreadable folder) waits for nothing.
+    let row = |path: PathBuf, id: u64| {
+        Arc::new(ChecksumRow {
+            id: ChecksumRowId(id),
+            path,
+            identity: None,
+            kind: Some(EntryKind::File),
+            state: ChecksumRowState::Calculated,
+            bytes_read: 3,
+            digests: Vec::new(),
+            error: None,
+            retention: ChecksumRetention::new(()),
+        })
+    };
+    let rows: Arc<[_]> = vec![row(root.join("b 文档"), 1), row(root.join("other"), 2)].into();
+    p.apply(event(ChecksumUpdate::Batch(rows)));
+    assert_eq!(p.checksums.sessions[&id].rows().len(), 2);
+    assert_eq!(pending(&p), [root.join("a"), root.join("c")]);
+    assert_eq!(p.checksums.sessions[&id].pending_count(), 2);
+    let at = |p: &Presenter, k| {
+        p.checksums.sessions[&id]
+            .pending_at(k)
+            .map(|file| file.path.clone())
+    };
+    assert_eq!(at(&p, 1), Some(root.join("c")), "past a file read early");
+    // Back in listing order: a's row makes c the next file to read.
+    p.apply(event(ChecksumUpdate::Batch(
+        vec![row(root.join("a"), 3)].into(),
+    )));
+    assert_eq!(at(&p, 0), Some(root.join("c")));
+    assert_eq!(at(&p, 1), None);
+    // Only results remain once the run finishes.
+    finish(&mut p, id, ChecksumCompletion::Cancelled);
+    assert_eq!(p.checksums.sessions[&id].pending_count(), 0);
+}

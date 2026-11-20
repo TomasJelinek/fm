@@ -11,11 +11,14 @@ use std::{
     rc::{Rc, Weak},
 };
 
+/// Finished rows first, then the running calculation's listed files that have no
+/// row yet: the file being read, then the waiting ones.
 struct Rows {
     state: Weak<RefCell<Presenter>>,
     job: ChecksumJobId,
     notify: ModelNotify,
-    structure: Cell<(u64, usize)>,
+    /// Generation, finished rows and listed files without a row, as last published.
+    structure: Cell<(u64, usize, usize)>,
 }
 impl Model for Rows {
     type Data = ChecksumDisplayRow;
@@ -26,14 +29,17 @@ impl Model for Rows {
                 .checksums
                 .sessions
                 .get(&self.job)
-                .map_or(0, |s| s.rows().len())
+                .map_or(0, |s| s.rows().len() + s.pending_count())
         })
     }
     fn row_data(&self, index: usize) -> Option<Self::Data> {
         let state = self.state.upgrade()?;
         let p = state.borrow();
         let s = p.checksums.sessions.get(&self.job)?;
-        let row = s.rows().get(index)?;
+        let Some(row) = s.rows().get(index) else {
+            let file = s.pending_at(index - s.rows().len())?;
+            return Some(pending_row(s, file, index, &p.number_locale));
+        };
         Some(ChecksumDisplayRow {
             token: format!("{}:{}", s.generation.0, row.id.0).into(),
             name: crate::shown_text(
@@ -74,6 +80,7 @@ impl Model for Rows {
                     | ChecksumRowState::Mismatch
                     | ChecksumRowState::Missing
             ),
+            current: false,
         })
     }
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -81,13 +88,69 @@ impl Model for Rows {
     }
 }
 impl Rows {
-    fn update(&self, generation: u64, count: usize) {
-        let old = self.structure.replace((generation, count));
-        if old.0 != generation || old.1 > count {
+    fn update(&self, generation: u64, finished: usize, pending: usize) {
+        let (old_generation, old_finished, old_pending) =
+            self.structure.replace((generation, finished, pending));
+        let (old_total, total) = (old_finished + old_pending, finished + pending);
+        if old_generation != generation || finished < old_finished {
             self.notify.reset();
-        } else if old.1 < count {
-            self.notify.row_added(old.1, count - old.1);
+        } else if old_pending == 0 && pending == 0 {
+            // Rows only append: verification, or nothing was listed.
+            if total > old_total {
+                self.notify.row_added(old_total, total - old_total);
+            }
+        } else if total == old_total {
+            // Listed files became rows in place, and the file being read changed.
+            for row in old_finished..(finished + 1).min(total) {
+                self.notify.row_changed(row);
+            }
+        } else if finished == old_finished && total > old_total {
+            // More files were listed.
+            self.notify.row_added(old_total, total - old_total);
+        } else {
+            // A row for an entry that was not listed moved the waiting files.
+            self.notify.reset();
         }
+    }
+}
+
+/// A listed file without a row yet: waiting, or being read.
+fn pending_row(
+    s: &ChecksumSession,
+    file: &ChecksumPlannedFile,
+    index: usize,
+    locale: &NumberLocale,
+) -> ChecksumDisplayRow {
+    let current = s.progress.current.as_deref() == Some(file.path.as_path());
+    let status = if !current {
+        "Waiting".to_owned()
+    } else if let Some(size) = file.size.filter(|size| *size > 0) {
+        format!(
+            "Reading · {} %",
+            s.progress.current_read.min(size) * 100 / size
+        )
+    } else {
+        "Reading".to_owned()
+    };
+    ChecksumDisplayRow {
+        // Not a row identity: copy actions ignore it.
+        token: format!("{}:listed:{index}", s.generation.0).into(),
+        name: crate::shown_text(
+            &file
+                .path
+                .file_name()
+                .unwrap_or(file.path.as_os_str())
+                .to_string_lossy(),
+        ),
+        path: crate::shown_text(&file.path.parent().unwrap_or(&file.path).to_string_lossy()),
+        status: status.into(),
+        bytes: if current {
+            format!("{} B", locale.format_u64(s.progress.current_read)).into()
+        } else {
+            Default::default()
+        },
+        current,
+        ..Default::default()
     }
 }
 struct Record {
@@ -279,6 +342,9 @@ fn refresh(
                     .is_some_and(|r| r.summary.completion != ChecksumCompletion::Completed),
         );
         w.set_progress(progress(s, &p.number_locale).into());
+        let (fraction, listing) = fraction(s);
+        w.set_progress_fraction(fraction);
+        w.set_progress_listing(listing);
         w.set_save_prompt(
             s.save_prompt
                 .as_ref()
@@ -308,7 +374,9 @@ fn refresh(
             .unwrap_or(ChecksumAlgorithm::Sha256);
         let counts = s.export_counts(first);
         w.set_has_output(counts.is_some_and(|counts| counts.included > 0) && !s.running);
-        record.rows.update(s.generation.0, s.rows().len());
+        record
+            .rows
+            .update(s.generation.0, s.rows().len(), s.pending_count());
         let shown = if record.shown {
             Ok(())
         } else {
@@ -345,7 +413,7 @@ fn create(
         state: Rc::downgrade(state),
         job: id,
         notify: ModelNotify::default(),
-        structure: Cell::new((0, 0)),
+        structure: Cell::new((0, 0, 0)),
     });
     window.set_rows(rows.clone().into());
     if let Some(s) = state.borrow().checksums.sessions.get(&id) {
@@ -578,11 +646,51 @@ fn progress(s: &ChecksumSession, locale: &NumberLocale) -> String {
             locale.format_u64(s.progress.bytes_read)
         );
     }
+    if s.running && s.error.is_empty() && !s.stopping {
+        if s.progress.listing {
+            return format!(
+                "Listing files… · {} found",
+                locale.format_u64(s.progress.planned)
+            );
+        }
+        if s.progress.planned > 0 {
+            return format!(
+                "{status} · {} of {} files · {} of {} B read",
+                locale.format_u64(s.progress.calculated),
+                locale.format_u64(s.progress.planned),
+                locale.format_u64(s.progress.bytes_read),
+                locale.format_u64(s.progress.planned_bytes)
+            );
+        }
+    }
     format!(
         "{status} · {} calculated · {} B read",
         locale.format_u64(s.progress.calculated),
         locale.format_u64(s.progress.bytes_read)
     )
+}
+/// The running calculation's share done, by bytes (by files when the listed files
+/// are all empty), and whether it is still listing. A negative share hides the bar.
+fn fraction(s: &ChecksumSession) -> (f32, bool) {
+    let progress = &s.progress;
+    if !s.running || s.verification.is_some() {
+        return (-1.0, false);
+    }
+    if progress.listing {
+        return (0.0, true);
+    }
+    let (done, total) = if progress.planned_bytes > 0 {
+        (progress.bytes_read, progress.planned_bytes)
+    } else {
+        (
+            progress.calculated + progress.errors + progress.skipped,
+            progress.planned,
+        )
+    };
+    if total == 0 {
+        return (-1.0, false);
+    }
+    ((done as f64 / total as f64).min(1.0) as f32, false)
 }
 #[cfg(test)]
 mod tests {
