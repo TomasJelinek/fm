@@ -153,6 +153,7 @@ impl ChecksumSession {
     }
 
     /// Listed files of the running calculation that have no row yet, in reading order.
+    #[cfg(test)]
     pub fn pending(&self) -> impl Iterator<Item = &ChecksumPlannedFile> {
         let planned = &self.planned;
         planned

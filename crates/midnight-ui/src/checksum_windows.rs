@@ -513,6 +513,14 @@ fn create(
             p.copy_checksum(id, &token, algorithm, whole, send);
         }
     });
+    callback!(on_copy_checksum_file, |p, send, index| {
+        if let Some(&algorithm) = usize::try_from(index)
+            .ok()
+            .and_then(|i| OUTPUT_ALGORITHMS.get(i))
+        {
+            p.copy_checksum_file(id, algorithm, send);
+        }
+    });
     callback!(on_confirm_save, |p, send| {
         p.confirm_checksum_save(id, send);
     });

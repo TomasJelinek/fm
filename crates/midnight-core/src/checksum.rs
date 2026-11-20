@@ -338,6 +338,67 @@ pub struct ChecksumProgress {
     pub current_size: Option<u64>,
 }
 
+/// One line of a checksum file for `path` below `directory`, exactly as a saved file
+/// has it: GNU binary style `<hex> *<name>`, with a leading backslash when the name
+/// escapes `\`, CR or LF, or SFV `<name>  <hex>` for CRC32. The name is relative to
+/// `directory`, with `/` separators. The error says why the path cannot be written.
+pub fn checksum_file_line(
+    algorithm: ChecksumAlgorithm,
+    hex: &str,
+    path: &std::path::Path,
+    directory: &std::path::Path,
+) -> Result<String, (std::io::ErrorKind, &'static str)> {
+    use std::{io::ErrorKind, path::Component};
+    let relative = path.strip_prefix(directory).map_err(|_| {
+        (
+            ErrorKind::InvalidInput,
+            "Manifest sources must be below its containing directory on the same native volume.",
+        )
+    })?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err((
+                ErrorKind::InvalidInput,
+                "Manifest names cannot contain traversal, roots or volume prefixes.",
+            ));
+        };
+        parts.push(component.to_str().ok_or((
+            ErrorKind::InvalidData,
+            "Native filename cannot round-trip through the UTF-8 GNU manifest format.",
+        ))?);
+    }
+    if parts.is_empty() {
+        return Err((ErrorKind::InvalidInput, "Empty relative manifest filename."));
+    }
+    let name = parts.join("/");
+    let is_sfv = algorithm == ChecksumAlgorithm::Crc32;
+    if is_sfv
+        && (name.contains(['\\', '\r', '\n', '\0'])
+            || name.trim_start().starts_with([';', '#'])
+            || name.starts_with(char::is_whitespace)
+            || name.ends_with([' ', '\t']))
+    {
+        return Err((
+            ErrorKind::InvalidInput,
+            "This filename cannot be represented unambiguously in SFV format.",
+        ));
+    }
+    let escaped = name.contains(['\\', '\r', '\n']);
+    let encoded = if escaped {
+        name.replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+    } else {
+        name
+    };
+    Ok(if is_sfv {
+        format!("{encoded}  {hex}\n")
+    } else {
+        format!("{}{hex} *{encoded}\n", if escaped { "\\" } else { "" })
+    })
+}
+
 /// A file a calculation will read, listed before reading starts, in reading order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChecksumPlannedFile {

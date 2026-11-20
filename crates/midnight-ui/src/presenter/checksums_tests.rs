@@ -846,3 +846,44 @@ fn listed_files_wait_for_their_rows_in_reading_order_and_leave_with_the_run() {
     finish(&mut p, id, ChecksumCompletion::Cancelled);
     assert_eq!(p.checksums.sessions[&id].pending_count(), 0);
 }
+
+#[test]
+fn copy_writes_the_lines_a_saved_checksum_file_has() {
+    let commands = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    let (mut p, id) = setup(&send);
+    finish(&mut p, id, ChecksumCompletion::Completed);
+    commands.borrow_mut().clear();
+    p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
+    let copied = |commands: &[Command]| {
+        commands.iter().find_map(|command| match command {
+            Command::CopyText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+    };
+    // As Save writes it to the suggested folder: "<hash> *<name relative to it>".
+    assert_eq!(
+        copied(&commands.borrow()),
+        Some(format!("{} *Žluťoučký 日本語.txt\n", "42".repeat(32)))
+    );
+    assert!(p.checksums.sessions[&id].error.is_empty());
+    // A file that is not below the checksum file's folder is left out, and said so.
+    commands.borrow_mut().clear();
+    let s = p.checksums.sessions.get_mut(&id).unwrap();
+    s.suggested = s.directory.join("jinde").join("checksums.sha256");
+    p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
+    assert_eq!(copied(&commands.borrow()), None);
+    assert!(
+        p.checksums.sessions[&id]
+            .error
+            .starts_with("1 file is not below"),
+        "{}",
+        p.checksums.sessions[&id].error
+    );
+    // An algorithm that was not calculated copies nothing.
+    p.copy_checksum_file(id, ChecksumAlgorithm::Md5, &send);
+    assert_eq!(copied(&commands.borrow()), None);
+}

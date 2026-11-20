@@ -48,6 +48,47 @@ impl Presenter {
         self.copy_viewer_text(text, send);
     }
 
+    /// Copy the calculated checksums as the checksum file Save would write to the
+    /// suggested folder: the same lines, names relative to that folder. A file it
+    /// cannot name there is left out and the window says how many were.
+    pub(crate) fn copy_checksum_file(
+        &mut self,
+        id: ChecksumJobId,
+        algorithm: ChecksumAlgorithm,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let Some(s) = self.checksums.sessions.get_mut(&id) else {
+            return;
+        };
+        if s.running {
+            return;
+        }
+        let directory = s.suggested.parent().unwrap_or(&s.directory).to_owned();
+        let mut text = String::new();
+        let mut left_out = 0usize;
+        for row in s.rows() {
+            let Some(digest) = (row.state == ChecksumRowState::Calculated)
+                .then(|| row.digest(algorithm))
+                .flatten()
+            else {
+                continue;
+            };
+            match checksum_file_line(algorithm, &digest.hex(), &row.path, &directory) {
+                Ok(line) => text.push_str(&line),
+                Err(_) => left_out += 1,
+            }
+        }
+        s.error = match left_out {
+            0 => String::new(),
+            1 => "1 file is not below the checksum file's folder and was not copied.".into(),
+            n => format!("{n} files are not below the checksum file's folder and were not copied."),
+        };
+        s.revision = s.revision.wrapping_add(1);
+        if !text.is_empty() {
+            self.copy_viewer_text(text, send);
+        }
+    }
+
     /// Send one save of the session's current run. The raw destination path is kept
     /// as chosen; a partial run needs the exact counts the user accepted.
     fn submit_checksum_save(

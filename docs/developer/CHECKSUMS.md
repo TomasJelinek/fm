@@ -253,10 +253,14 @@ Space or an arrow opens it; Up/Down/Home/End move, Space ticks the row, Enter sh
 the row's column (or ticks Include subfolders), and Escape or Tab closes it. The
 shown algorithm controls the hash column, Copy and the format Save manifest… offers.
 File/bytes/status stay before the hash. The complete digest uses measured monospace
-width with horizontal scrolling when needed. Other algorithms and full-row copy
-remain in the row context menu. Ctrl+C copies the chosen digest; Ctrl+Shift+C copies
-the full row in this window, while that chord continues to compare files in a main
-panel.
+width with horizontal scrolling when needed. The footer's Copy button copies the
+calculated checksums of the shown algorithm as a checksum file: exactly the lines Save
+manifest… writes to the suggested folder (`midnight_core::checksum_file_line`, shared
+with the manifest writer), named relative to that folder. A file it cannot name there
+is left out and the attention line says how many were. Other algorithms and full-row
+copy remain in the row context menu. Ctrl+C copies the chosen digest of the selected
+row; Ctrl+Shift+C copies the full row in this window, while that chord continues to
+compare files in a main panel.
 
 An issue line above the results names the window's error, else the first backend
 diagnostic of the finished run (for example a refused manifest: absolute path,

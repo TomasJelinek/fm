@@ -221,64 +221,9 @@ pub(super) fn encode(
                 "Malformed completed digest length.",
             ));
         }
-        let relative = row.path.strip_prefix(parent).map_err(|_| failure(&row.path, io::ErrorKind::InvalidInput,
-            "Manifest sources must be below its containing directory on the same native volume."))?;
-        let mut parts = Vec::new();
-        for component in relative.components() {
-            let Component::Normal(component) = component else {
-                return Err(failure(
-                    &row.path,
-                    io::ErrorKind::InvalidInput,
-                    "Manifest names cannot contain traversal, roots or volume prefixes.",
-                ));
-            };
-            parts.push(component.to_str().ok_or_else(|| {
-                failure(
-                    &row.path,
-                    io::ErrorKind::InvalidData,
-                    "Native filename cannot round-trip through the UTF-8 GNU manifest format.",
-                )
-            })?);
-        }
-        if parts.is_empty() {
-            return Err(failure(
-                &row.path,
-                io::ErrorKind::InvalidInput,
-                "Empty relative manifest filename.",
-            ));
-        }
-        let name = parts.join("/");
-        let is_sfv = request.algorithm == ChecksumAlgorithm::Crc32;
-        if is_sfv
-            && (name.contains(['\\', '\r', '\n', '\0'])
-                || name.trim_start().starts_with([';', '#'])
-                || name.starts_with(char::is_whitespace)
-                || name.ends_with([' ', '\t']))
-        {
-            return Err(failure(
-                &row.path,
-                io::ErrorKind::InvalidInput,
-                "This filename cannot be represented unambiguously in SFV format.",
-            ));
-        }
-        let escaped = name.contains(['\\', '\r', '\n']);
-        let encoded = if escaped {
-            name.replace('\\', "\\\\")
-                .replace('\n', "\\n")
-                .replace('\r', "\\r")
-        } else {
-            name
-        };
-        let line = if is_sfv {
-            format!("{encoded}  {}\n", digest.hex())
-        } else {
-            format!(
-                "{}{} *{}\n",
-                if escaped { "\\" } else { "" },
-                digest.hex(),
-                encoded
-            )
-        };
+        // The same lines the window copies to the clipboard.
+        let line = checksum_file_line(request.algorithm, &digest.hex(), &row.path, parent)
+            .map_err(|(kind, message)| failure(&row.path, kind, message))?;
         let length = bytes
             .len()
             .checked_add(line.len())

@@ -81,6 +81,8 @@ export component ChecksumWindow inherits ToolWindow {
     callback calculate(ChecksumDraft);
     callback stop();
     callback copy-result(string, int, bool);
+    // Copy the calculated checksums in checksum-file format (an output algorithm index).
+    callback copy-checksum-file(int);
     callback browse-manifest(bool, int);
     callback verify-manifest(string);
     callback stop-save();
@@ -245,9 +247,9 @@ export component ChecksumWindow inherits ToolWindow {
             if root.page == 0 && !root.show-details: HintedActionButton {
                 text: root.width < 460px ? "Copy" : "Copy " + ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm];
                 fallback-icon: FallbackIcons.copy;
-                enabled: root.row-calculated && root.output-available[root.output-algorithm];
-                hint: "Copy the selected hash (Ctrl+C). Ctrl+Shift+C copies the full row; right-click a result for more choices.";
-                clicked => { root.copy-current(); }
+                enabled: root.has-output && !root.running && root.output-available[root.output-algorithm];
+                hint: "Copy the calculated checksums as a checksum file: the lines Save manifest… writes, one per file, named relative to the folder. Ctrl+C copies the selected hash and Ctrl+Shift+C its full row.";
+                clicked => { root.copy-checksum-file(root.output-algorithm); }
             }
             if root.page == 0 && !root.running && !root.show-details: HintedActionButton {
                 text: root.saving ? (root.save-stopping ? "Stopping…" : "Stop save") : root.width < 460px ? "Save…" : "Save manifest…";

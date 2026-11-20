@@ -85,3 +85,35 @@ fn digest_hex_is_two_lowercase_digits_per_byte_in_order() {
     };
     assert_eq!(empty.hex(), "");
 }
+
+#[test]
+fn checksum_file_lines_name_files_below_the_folder_as_a_saved_file_does() {
+    let folder = std::env::current_dir().unwrap().join("výsledky");
+    let hex = "ab".repeat(32);
+    let line =
+        |algorithm, name: &str| checksum_file_line(algorithm, &hex, &folder.join(name), &folder);
+    assert_eq!(
+        line(ChecksumAlgorithm::Sha256, "a b 文档.txt").unwrap(),
+        format!("{hex} *a b 文档.txt\n")
+    );
+    let nested = folder.join("sub").join("x.bin");
+    assert_eq!(
+        checksum_file_line(ChecksumAlgorithm::Sha256, &hex, &nested, &folder).unwrap(),
+        format!("{hex} *sub/x.bin\n"),
+        "names use / below the folder"
+    );
+    // A name with a line break is escaped, with the GNU marker before the hash.
+    assert_eq!(
+        line(ChecksumAlgorithm::Sha256, "two\nlines").unwrap(),
+        format!("\\{hex} *two\\nlines\n")
+    );
+    assert_eq!(
+        line(ChecksumAlgorithm::Crc32, "a.txt").unwrap(),
+        format!("a.txt  {hex}\n"),
+        "CRC32 lines are SFV"
+    );
+    assert!(line(ChecksumAlgorithm::Crc32, ";comment").is_err());
+    let outside = std::env::current_dir().unwrap().join("jinde.txt");
+    assert!(checksum_file_line(ChecksumAlgorithm::Sha256, &hex, &outside, &folder).is_err());
+    assert!(checksum_file_line(ChecksumAlgorithm::Sha256, &hex, &folder, &folder).is_err());
+}
