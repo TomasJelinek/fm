@@ -21,6 +21,61 @@ code or a green subset into complete qualification.
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
 
+### Integration follow-up — 20 November 2026
+
+The integration batch below (`d9cafd45`) and the text page join (`edba714a`)
+entered `main` without a full test run. Their CI runs failed in tests that the
+batch added or whose behavior it changed, and each failed step hid the steps after
+it. The
+commits below fix those failures step by step and merge Export/Import
+configuration. Unless an item says otherwise, a fix changes only tests.
+
+- Linux elevation (`bb40612d`): the sandbox profile test expected every
+  group-writable folder to be refused, but the installer and the application accept
+  one whose group is its owner's private group (umask 002), as documented. 18 sandbox
+  profile tests pass in a WSL clone whose user has a private group.
+- Windows time precision (`806e6b55`): a localization test read back 789 ns, which
+  Windows SystemTime (100 ns ticks) cannot hold; it now uses 789,100 ns.
+- Copy and Move, a product fix (`c47132a2`): the batch's preparation Skip also
+  applied to a job requiring the exact modified time, so Skip copied the file its
+  preflight had refused. Such a job now offers Retry and Cancel only.
+- Windows Delete, a product fix (`b2bbb329`): a replaced Delete target was reported
+  as NotFound, which the batch's Delete decisions retry; it is now final
+  (InvalidInput, as on Linux). The operation tests' waits end after 60 s and name
+  any unanswered decision instead of hanging.
+- Windows engine tests (`3346d2a7`) and Windows UI tests (`4bc4f671`, `23f92546`,
+  `b7a99059`, `aea14ce0`) follow the batch's Skip, link and Delete retry behavior,
+  and check text layout by the dialogs' and panels' own rules instead of Linux font
+  metrics. Windows engine library tests: 1,809 passed.
+- CI-only tests (`f26f7c72`): `Spool::finish` no longer flushes, and a Source
+  position that the loaded window cannot show settles at its nearest edge; the
+  Windows spool test and the installed Source position test still expected the old
+  behavior.
+- CI's archive worker step (`e862517b`) skips
+  `real_sandboxed_worker_lists_archives_of_millions_of_members`, a manual
+  measurement that the batch added and that needs generated archives
+  ([installed archive worker qualification](developer/TEST_EXECUTION.md#installed-archive-worker-qualification)).
+- Export/Import configuration (`9e4e2040`, from session branch
+  `claude/happy-chatelet-19acfa`), with the Options footer fix `440f9537`: the new
+  footer buttons pushed OK under Cancel at 320×200 with a 32 px font, so a click on
+  OK hit Cancel and Escape reached no handler. Where the footer has no room, the
+  buttons now show icons only or move to the end of the General page
+  ([user guide](SETTINGS_FILES.md)).
+
+Before the pushes, CI's Windows test step (all ten workspace gates, run locally
+without stopping at a failure) passed at `9e4e2040` except the two footer tests that
+`440f9537` fixes. At `440f9537`, midnight-ui's integration and library tests passed
+on Windows (902 and 1,415, Clippy and rustfmt clean) and on Linux in WSL (897 and
+1,418).
+
+Not established:
+
+- the Linux settings-file picker filter (`*.json`), which is compiled but exercised
+  by no test;
+- the batch's nested-archive worker test
+  (`real_workers_open_archives_inside_archives_and_give_every_level_up`), which no
+  CI step runs although CI has the archive worker it needs.
+
 ### Integration batch — 20 November 2026
 
 This batch enters `main` as one commit. The table names the source of each change
@@ -38,7 +93,8 @@ work up to its spool-staging fix) recorded 50 passed, 3 warned and 0 failed of t
 53 scenarios ([viewer speed record](verification/2026-11-20-viewer-speed.md#html-file-that-did-not-open));
 which scenarios warned is not recorded, and it is the only recorded run after those
 fixes. No full test suite, Windows build or CI run of the integrated tree is
-recorded here.
+recorded here; the fixes it needed and the CI runs after it are in
+[Integration follow-up](#integration-follow-up--20-november-2026).
 
 | Work | Implemented in source | Evidence, and what is not established |
 | --- | --- | --- |
