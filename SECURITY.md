@@ -99,7 +99,7 @@ parent traversal, aliases, malformed hashes and duplicate entries fail validatio
 Windows/Linux readers reject link ancestry and cross-device descendants and check
 file identity/revision around reads; changed or unreadable sources never become
 Verified. Calculation and verification remain cancellable, bounded background jobs.
-A native Open choice only fills the Verify file field; choosing a Save destination
+A native Open choice only fills the Verify page's file field; choosing a Save destination
 requests that save. Saving uses exclusive staging and independent SHA-256 readback.
 It never silently replaces an existing manifest: only an explicit Replace answer
 does, through recoverable replacement that keeps the old file beside it and reports

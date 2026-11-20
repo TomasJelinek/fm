@@ -13,13 +13,13 @@ shown folder), described in the [checksum API](developer/CHECKSUMS.md). Nothing 
 calculated until you press **Calculate**; the algorithm dropdown has a checkbox per
 algorithm, with only SHA-256 checked in a new window, and an *Include subfolders*
 checkbox. If the selection contains a checksum
-file, the window opens on **Verify file** with that file chosen. Ctrl+F7 continues to open
+file, the window opens on **Verify** with that file chosen. Ctrl+F7 continues to open
 filename case conversion. Default registration preserves user-customized bindings.
 These controls describe current source; packaged releases may precede it.
 The same window saves and verifies SFV/CRC32, MD5, SHA-1, SHA-256 and SHA-512
 files. **Save manifest…** asks for a file and saves at once; partial results and an
 existing file are confirmed in the window first (**Save** / **Replace**).
-**Verify file → Browse → Verify** reads a manifest on background workers. Empty
+On the **Verify** page, **Browse** and then **Verify** read a manifest on background workers. Empty
 panels can also open it.
 Inside the checksum results list, **Ctrl+C** copies the chosen hash and
 **Ctrl+Shift+C** copies the full row. **Shift+F10** opens the per-algorithm copy
@@ -158,7 +158,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+R / Ctrl+F9 | Refresh |
 | Ctrl+F3 / Ctrl+F4 / Ctrl+F5 / Ctrl+F6 | Sort the active panel by name / extension / modified time / size; repeat to reverse the order. Each detailed panel also has a clickable Ext header next to Name, with the current sort arrow; repeat-click reverses the order. The drive-bar sort dropdown offers Extension in every view mode. |
 | Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
-| Ctrl+F8 | Open modeless Checksums: Calculate (SHA-256 default; optional SHA-512/MD5/SHA-1/CRC32 and recursion in the algorithm dropdown), Stop, copy, Save manifest… (confirms replacing an existing file) and Verify file (`.sfv`, `.md5`, `.sha1`, `.sha256`, `.sha512`) |
+| Ctrl+F8 | Open modeless Checksums: Calculate (SHA-256 default; optional SHA-512/MD5/SHA-1/CRC32 and recursion in the algorithm dropdown), Stop, copy, Save manifest… (confirms replacing an existing file) and Verify (`.sfv`, `.md5`, `.sha1`, `.sha256`, `.sha512`) |
 | Ctrl+F10 | Compare the two displayed native directories by size and/or modified time, optionally by contents and with subfolders; select differences; also available as Compare directories in the shared toolbar. While a comparison runs, Ctrl+F10 shows its progress with Cancel |
 | Ctrl+Shift+C | Compare two selected files in the active panel; otherwise use its single selected/focused file and the opposite explicit selection, or its unique visible same-name file when nothing is selected there. If the pair cannot be determined, choose File A and File B using paths or Browse; Enter compares, Escape cancels. Exact native names are matched. Image pairs support Side-by-Side, Swipe and Onion Skin. Binary files, text over the text limits (32 MiB, 1,000,000 lines or a line over 16 KiB) and other pairs are compared as bytes in a hex view; the Hex button shows the bytes of a text pair. Compare files in the shared toolbar also works without a panel target. |
 | Ctrl+F11 | Fill the entire panels area with the active panel, hiding the other panel and splitter; press again to restore the previous split |

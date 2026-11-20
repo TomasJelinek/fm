@@ -19,7 +19,7 @@ Opening the window calculates nothing; Calculate starts a run. With nothing sele
 the target is the focused file or folder; on the parent row or in an empty folder it
 is the shown folder itself, so Calculate covers its files (and its subfolders with
 Include subfolders). Ctrl+F8 therefore always opens on Calculate with a target. A
-checksum file the user points at opens the Verify file page instead, with that file
+checksum file the user points at opens the Verify page instead, with that file
 chosen: the focused file when it is a checksum file and is selected (or nothing is),
 else, in a flat panel, the first selected checksum file in display order. The UI
 finds it from the selection bitset and the displayed rows, looking at no more
@@ -229,7 +229,7 @@ component limit and is refused before publication with that budget named. These
 resource budgets do not truncate filenames or impose MAX_PATH. Native Open/Save pickers run
 on their existing dedicated backend worker. Their replies are checked against the
 session/generation; closure cancels the picker, and a late reply cannot start work
-or overwrite another draft. On Verify file, Browse only fills the field and Verify
+or overwrite another draft. On the Verify page, Browse only fills the field and Verify
 is explicit; Save manifest… is itself the explicit request, so the file chosen
 there is saved at once (partial results and an existing file are asked first).
 
@@ -237,13 +237,13 @@ there is saved at once (partial results and an existing file are asked first).
 
 `files.checksums` defaults to Ctrl+F8; Ctrl+F7 stays case conversion. Saved explicit
 overlapping bindings take precedence over the new default. The Ctrl footer and
-User menu dispatch the same captured-selection action. Calculate and Verify file are
+User menu dispatch the same captured-selection action. Calculate and Verify are
 the two pages of one movable native tool window, with Escape routed through the
 shared tool-window focus scope. The window opens with the keyboard focus on the
-shown page: the result list, or the window itself on Verify file. A control that
+shown page: the result list, or the window itself on Verify. A control that
 removes itself when used (an answer to the save question, Details, Back, a dismiss
 button) first moves the focus back to the page, so Escape keeps closing the window.
-Details replaces the page on request and Back returns to it. The result list, the Verify file page and Details scroll at the
+Details replaces the page on request and Back returns to it. The result list, the Verify page and Details scroll at the
 320x200 minimum. Native editing/IME is not replaced by a global key interceptor.
 
 Results receive most of the initial window. The algorithm dropdown next to the page

@@ -64,7 +64,7 @@ export component ChecksumWindow inherits ToolWindow {
     in-out property <int> selected-row: -1;
     // Result column widths for this window's session.
     in-out property <ChecksumColumnWidths> column-widths <=> results.widths;
-    // Calculate, Verify file. The draft survives page switches.
+    // Calculate, Verify. The draft survives page switches.
     in-out property <int> page;
     changed page => {
         root.show-details = false;
@@ -105,11 +105,11 @@ export component ChecksumWindow inherits ToolWindow {
         HorizontalLayout {
             spacing: 8px; height: Theme.control-height + 4px;
             if root.width >= max(420px, Theme.font-size * 24): DialogTabs {
-                labels: ["Calculate", "Verify file"]; current-index <=> root.page;
+                labels: ["Calculate", "Verify"]; current-index <=> root.page;
                 horizontal-stretch: 1;
             }
             if root.width < max(420px, Theme.font-size * 24): HintedComboBox {
-                model: ["Calculate", "Verify file"]; current-index <=> root.page;
+                model: ["Calculate", "Verify"]; current-index <=> root.page;
                 min-width: 0px; horizontal-stretch: 1;
                 accessible-label: "Checksum page"; hint: "Calculate checksums or verify a checksum file.";
             }

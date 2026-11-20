@@ -223,8 +223,9 @@ pub fn calculate_save_verify(context: &mut Context) -> Result<(), String> {
             == 1
     });
 
-    // Verify file → Verify: the field already names the saved manifest.
-    click_last(&window, "Verify file")?;
+    // The Verify page, then its Verify button: the field already names the saved
+    // manifest. On the Calculate page the page tab is the only "Verify".
+    click_last(&window, "Verify")?;
     app.settle();
     click_last(&window, "Verify")?;
     wait_text(&mut app, &window, "the verification", |text| {

@@ -584,7 +584,7 @@ fn checksums_ready(app: &App) -> Result<(), String> {
     }
     // The footer's Calculate (after the page tab, if any) exists only on that page.
     let Some(button) = calculate.last() else {
-        return Err("Checksums opened on Verify file instead of Calculate".into());
+        return Err("Checksums opened on Verify instead of Calculate".into());
     };
     if !tools::enabled(button) {
         return Err("Checksums opened with nothing to calculate: Calculate is disabled".into());

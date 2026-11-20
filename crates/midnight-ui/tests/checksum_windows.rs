@@ -20,7 +20,7 @@ fn checksum_window_offers_file_verification_and_browse() {
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
     draw(&native, 1000, 620, "checksum-verify-page");
-    click(&native, "Verify file");
+    click(&native, "Verify");
     draw(&native, 1000, 620, "checksum-verify-input");
     assert_eq!(window.get_page(), 1);
     assert!(
@@ -58,9 +58,9 @@ fn empty_panel_can_choose_manifest_then_explicitly_start_verification() {
     main.invoke_calculate_checksums(0);
     assert_eq!(windows.borrow().len(), 2);
     let native = windows.borrow()[1].clone();
-    // The shown folder is the Calculate target; Verify file is the other page.
+    // The shown folder is the Calculate target; Verify is the other page.
     draw(&native, 1000, 620, "checksum-calculate-empty-panel");
-    click(&native, "Verify file");
+    click(&native, "Verify");
     draw(&native, 1000, 620, "checksum-verify-empty-panel");
     click(&native, "Browse checksum file");
     let request = commands
@@ -86,7 +86,16 @@ fn empty_panel_can_choose_manifest_then_explicitly_start_verification() {
     });
     midnight_ui::refresh(&main, &state.borrow());
     draw(&native, 1000, 620, "checksum-verify-picked");
-    click(&native, "Verify");
+    // The page tab and the page's own button are both "Verify"; the button comes last.
+    let start = modeless::accessible_items(
+        &native,
+        i_slint_core::items::AccessibleRole::Button,
+        "Verify",
+    )
+    .into_iter()
+    .last()
+    .expect("the Verify button");
+    modeless::click_item(&native, &start, "Verify");
     let verify = commands
         .borrow()
         .iter()

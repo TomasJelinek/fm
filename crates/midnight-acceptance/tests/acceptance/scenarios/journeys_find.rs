@@ -10,7 +10,7 @@
 //!    across the panels (identical, also from a subfolder) and two different copies
 //!    (different).
 //! 6. Ctrl+F8 on the copies: each SHA-256 equals the original's (an independent
-//!    digest); Save manifest… and Verify file confirm all three.
+//!    digest); Save manifest… and Verify confirm all three.
 use super::{
     find_support::{self as find, Query},
     journeys_support::{self as journey, Journey, wait},
@@ -398,12 +398,12 @@ fn steps(
             other => Err(format!("{other:?}")),
         },
     );
-    tools::click_last(window.window(), "Verify file")?;
+    tools::click_last(window.window(), "Verify")?;
     app.settle();
     tools::click_last(window.window(), "Verify")?;
     let watched = window.clone();
     journey.check(
-        "Verify file confirms the three copies",
+        "Verify confirms the three copies",
         wait(app, "the verification", STEP, move |_| {
             inspect::labels(watched.window(), AccessibleRole::Text)
                 .iter()

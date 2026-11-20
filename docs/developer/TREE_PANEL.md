@@ -416,7 +416,7 @@ actor. Recalculation retains those roots across later panel changes. Native read
 provider revalidation and final disposal run on workers, with ownership retained
 through in-flight calls even after cancellation. A nonrecursive first calculation
 reports selected directories as skipped; Options can explicitly enable recursion.
-Focused sidecars still prefill Verify file without starting it. The existing
+Focused sidecars still prefill the Verify page without starting it. The existing
 algorithm choices, result formatting, native manifest pickers and verified export
 contract remain in [CHECKSUMS.md](CHECKSUMS.md).
 
