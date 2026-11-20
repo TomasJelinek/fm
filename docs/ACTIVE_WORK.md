@@ -31,7 +31,7 @@ first two items, passed every job on Windows and Linux. CI run 44715333960 at
 release builds included; the Windows check failed only in
 `icons::tests::unassociated_document_art_is_identified_for_semantic_fallbacks`,
 which ran its native stock-icon lookup outside the guard that serializes the
-module's native icon tests; `22818fc1` adds the guard.
+module's native icon tests; `064df204` adds the guard.
 
 - CI follow-ups: rustfmt on the panel selection bridge (`2e562958`) and a named
   closure type for Clippy in an operation test (`c2ea6035`). CI run 44706184619 at
