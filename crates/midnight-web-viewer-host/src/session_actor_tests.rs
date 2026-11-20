@@ -716,6 +716,7 @@ fn a_burst_of_writes_wakes_the_watchdog_about_once_per_limit() {
     let harness = open(Script::Ready, None, limits);
     harness.shown();
     let (_, before) = harness.quiescent();
+    let burst = Instant::now();
     for _ in 0..20 {
         assert!(harness.session.send(api::CommandKind::Copy));
     }
@@ -730,9 +731,16 @@ fn a_burst_of_writes_wakes_the_watchdog_about_once_per_limit() {
         .unwrap()
         .turns
         .watchdog_wakes;
+    let elapsed = burst.elapsed();
     // The first write wakes the watchdog, which then times it; the writes that follow
-    // within the limit need no notification. One spurious wakeup is tolerated.
-    assert!(after - before <= 2, "watchdog wakeups: {before} -> {after}");
+    // within the limit need no notification. Its own timer wakes it once per limit the
+    // burst spans, which a stalled runner stretches (CI once saw 3 wakes). One spurious
+    // wakeup is tolerated; a notification per write would be about 20.
+    let spanned = u64::try_from(elapsed.as_nanos() / limits.busy.as_nanos()).unwrap_or(u64::MAX);
+    assert!(
+        after - before <= 2 + spanned,
+        "watchdog wakeups: {before} -> {after} in {elapsed:?}"
+    );
 }
 
 #[test]
