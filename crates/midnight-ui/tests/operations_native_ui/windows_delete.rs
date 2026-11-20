@@ -1,5 +1,6 @@
-//! A real Windows sharing refusal must reach the failed Delete's own progress window,
-//! with no notice repeating it.
+//! A real Windows sharing refusal pauses the permanent Delete in its decision prompt,
+//! with no notice repeating it. Windows offers the whole item: Retry while the file is
+//! still open asks again, and Retry once it is closed deletes the folder.
 use super::*;
 use midnight_ui::NoticePresentation;
 use slint::Model;
@@ -19,76 +20,83 @@ fn locked_directory_delete_reports_an_error_and_succeeds_after_release() {
             && h.rows(PaneId::Left).iter().any(|row| row.name == ".claude")
     });
     h.focus(PaneId::Left, ".claude", false);
+    // Without delete sharing, Windows refuses to delete the open file.
     let locked = fs::OpenOptions::new()
         .read(true)
         .share_mode(SHARE_READ_WRITE)
         .open(&file)
         .unwrap();
 
-    let first = confirm_permanent_delete(&mut h);
-    h.until(|h| {
-        h.operations
-            .iter()
-            .any(|p| p.id == first && p.state.is_terminal())
-    });
-    h.settle();
-    let failure = h
-        .operations
-        .iter()
-        .find(|p| p.id == first && p.state.is_terminal())
-        .unwrap();
-    assert_eq!(failure.state, OperationState::Failed, "{failure:?}");
-    assert_eq!(failure.kind, MutationKind::Delete(DeleteMode::Permanent));
+    let id = confirm_permanent_delete(&mut h);
+    let first = prompt(&mut h, id, "");
+    assert!(h.ui.window.get_copy_is_failure());
+    assert!(h.ui.window.get_copy_can_retry() && h.ui.window.get_copy_can_skip());
+    let body = h.ui.window.get_copy_body();
+    for part in [
+        "Deleting permanently",
+        "(os error 32)",
+        ".claude",
+        "fixture.txt",
+    ] {
+        assert!(body.contains(part), "the prompt names {part:?}: {body}");
+    }
+    // The Delete waits: nothing is deleted or counted as an error yet. Its progress
+    // says why once the next snapshot arrives.
+    h.until(|h| !latest(h, id).message.is_empty());
+    let waiting = latest(&h, id);
+    assert_eq!(waiting.state, OperationState::Running, "{waiting:?}");
+    assert_eq!(waiting.kind, MutationKind::Delete(DeleteMode::Permanent));
     assert_eq!(
-        (failure.completed, failure.failed, failure.processed_entries),
-        (0, 1, 0)
+        (waiting.completed, waiting.failed, waiting.processed_entries),
+        (0, 0, 0)
     );
-    assert_eq!(failure.errors.len(), 1, "{failure:?}");
-    assert!(failure.errors[0].path.starts_with(&target), "{failure:?}");
+    assert!(waiting.errors.is_empty(), "{waiting:?}");
+    assert!(waiting.message.contains("(os error 32)"), "{waiting:?}");
     assert!(target.is_dir());
     assert_eq!(fs::read(&file).unwrap(), b"locked owned fixture");
-
-    // The Delete's own progress window lists the error with its path and message.
+    // The Delete's own window says why it waits; no notice repeats it.
+    let row =
+        h.ui.window
+            .get_operations()
+            .iter()
+            .find(|row| row.identity == id.0.to_string())
+            .expect("the waiting Delete is listed");
+    assert!(row.active);
+    assert!(
+        row.detail.contains(waiting.message.as_str()),
+        "{}",
+        row.detail
+    );
     assert!(
         h.ui.window
             .global::<NoticePresentation>()
             .get_token()
             .is_empty(),
-        "no notice repeats what the progress window shows"
-    );
-    let row =
-        h.ui.window
-            .get_operations()
-            .iter()
-            .find(|row| row.identity == first.0.to_string())
-            .expect("the failed Delete is listed");
-    assert_eq!(row.issue_summary, "1 error");
-    let issue = row.issues.row_data(0).expect("its error is listed");
-    assert!(issue.path.contains(".claude"), "{}", issue.path);
-    assert!(
-        issue.detail.contains(failure.errors[0].message.trim()),
-        "{}",
-        issue.detail
+        "no notice repeats what the prompt shows"
     );
 
+    // Retry repeats the whole item, which is still open: the Delete asks again.
+    h.click_decision("Retry");
+    prompt(&mut h, id, &first);
+    assert!(target.is_dir());
+    assert_eq!(latest(&h, id).state, OperationState::Running);
+
     drop(locked);
-    h.until(|h| !h.ui.window.get_left_loading());
-    // Close the failed Delete's progress window.
-    h.click_decision("Close");
-    h.focus(PaneId::Left, ".claude", false);
-    let second = confirm_permanent_delete(&mut h);
-    h.until(|h| {
-        h.operations
-            .iter()
-            .any(|p| p.id == second && p.state.is_terminal())
-    });
-    let success = h
-        .operations
-        .iter()
-        .find(|p| p.id == second && p.state.is_terminal())
-        .unwrap();
+    h.click_decision("Retry");
+    h.until(|h| latest(h, id).state.is_terminal());
+    let success = latest(&h, id);
     assert_eq!(success.state, OperationState::Completed, "{success:?}");
+    // A retried failure is not an error of the job.
+    assert_eq!((success.completed, success.failed), (1, 0), "{success:?}");
+    assert!(success.errors.is_empty(), "{success:?}");
     assert!(!target.exists());
+    h.until(|h| !h.rows(PaneId::Left).iter().any(|row| row.name == ".claude"));
+    assert!(
+        h.ui.window
+            .global::<NoticePresentation>()
+            .get_token()
+            .is_empty()
+    );
     h.assert_sentinel();
 }
 
@@ -100,4 +108,25 @@ fn confirm_permanent_delete(h: &mut native::Harness) -> OperationId {
     let id = OperationId(h.ui.window.get_operation_token().parse().unwrap());
     input::key(&h.dialog(), Key::Return);
     id
+}
+
+/// Waits for the shared prompt to ask about a failure of the Delete `id` other than the
+/// one `shown` names; returns its token.
+fn prompt(h: &mut native::Harness, id: OperationId, shown: &str) -> String {
+    let prefix = format!("delete-error:{}:", id.0);
+    h.until(|h| {
+        let token = h.ui.window.get_copy_token();
+        token.starts_with(&prefix) && token != shown
+    });
+    h.ui.window.get_copy_token().into()
+}
+
+/// The newest progress of the job `id`.
+fn latest(h: &native::Harness, id: OperationId) -> std::sync::Arc<OperationProgress> {
+    h.operations
+        .iter()
+        .rev()
+        .find(|p| p.id == id)
+        .expect("the Delete reported progress")
+        .clone()
 }
