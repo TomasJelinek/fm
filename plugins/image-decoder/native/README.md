@@ -31,17 +31,31 @@ and `tool-provenance.json` records the selected archives and licenses. These are
 build tools, not shipped application payloads. All permit the intended use
 without mandatory payments; retain their notices if redistributing the tools.
 
-Every build/tool root must be an explicit absolute ordinary path below a directory
-named `_build`. Downloads, extraction, NASM objects, executables and temporary
-files stay there. Downloads are checksum-verified and bounded; archive paths,
-links, case collisions and expansion limits are checked before publication. On
-Windows, the rename that publishes an extracted tool directory is retried for up
-to 12.7 s while another process, such as antivirus software scanning a new file,
-holds a file below it (WinError 5, 32 or 33); other errors fail at once. On
-reuse, immutable tool contents are compared with the verified archive, including
-rejection of unexpected files. Verified source timestamps are retained, and NASM
-build recipes are regenerated from the pinned source before object reuse.
-Existing linked output directories are refused.
+Every build/tool root must be an explicit absolute path strictly below a `_build`
+directory: in the repository that holds this package in `plugins/`, the repository's
+own `_build` or a plugin's (`plugins/NAME/_build`, as a viewer or thumbnailer built
+on its own passes it); outside the repository, the first `_build` of a custom target
+directory. The repository is recognised however a path spells it, so it and the
+folders above it may be links, a `subst` drive or hidden folders such as `AppData`.
+That `_build` and every folder below it must not be a link, junction or other
+reparse point, and no path may contain `..`. Downloads, extraction, NASM objects,
+executables and temporary files stay there. Downloads are checksum-verified and
+bounded; archive paths, links, case collisions and expansion limits are checked
+before publication. The verified files are used by path, so they stay stricter
+than other output: nothing in a cached tool tree or the download folder, nothing
+directly below a dav1d root and nothing in the extracted dav1d source may be a link.
+Tool archives are verified in memory, and the dav1d archive is verified and extracted
+from the same bytes, so no verified archive is opened again by path.
+
+On Windows, the renames of fresh downloads, the tool receipt and the dav1d build
+fixes are retried for about 2 s while endpoint protection holds a file just written
+(WinError 5, 32 or 33), and then fail with the first error. The rename that
+publishes an extracted tool directory waits up to 12.7 s instead, because it holds
+new executables, which Defender's first-sight cloud check keeps for up to 10 s by
+default. Other errors, other platforms and deletions are never retried. On reuse,
+immutable tool contents are compared with the verified archive, including rejection
+of unexpected files. Verified source timestamps are retained, and NASM build recipes
+are regenerated from the pinned source before object reuse.
 
 ## Same-shell build commands
 

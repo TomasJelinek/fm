@@ -2,8 +2,12 @@
 """Verify and extract the pinned dav1d source beneath a caller-owned _build tree."""
 import argparse
 import hashlib
+import importlib.util
+import io
 import json
+import os
 from pathlib import Path, PurePosixPath
+import sys
 import tarfile
 import urllib.request
 import uuid
@@ -11,6 +15,20 @@ import uuid
 VERSION = '1.5.4'
 SHA256 = '686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5'
 URL = f'https://download.videolan.org/pub/videolan/dav1d/{VERSION}/dav1d-{VERSION}.tar.xz'
+MAX_ARCHIVE_BYTES = 4 * 1024 * 1024
+
+
+def load_bootstrap():
+    """The link rule and fresh-rename retry that the native helpers share."""
+    name = 'dav1d_native_bootstrap'
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name('bootstrap-tools.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+BOOTSTRAP = load_bootstrap()
 
 
 # The release archive remains byte-for-byte pinned.
@@ -54,7 +72,8 @@ BUILD_FIXES = (
 def apply_build_fixes(source):
     for relative, original, patched, old, new in BUILD_FIXES:
         path = source / relative
-        if path.resolve() != path:
+        # The tree was checked for links; the file itself must be a plain one.
+        if not BOOTSTRAP.regular(path):
             raise ValueError(f'Unexpected path for the dav1d build fix: {relative}')
         contents = path.read_bytes()
         actual = hashlib.sha256(contents).hexdigest()
@@ -69,23 +88,47 @@ def apply_build_fixes(source):
         try:
             with temporary.open('xb') as stream:
                 stream.write(updated)
-            temporary.replace(path)
+            # Retried: endpoint protection may still hold the files just extracted.
+            BOOTSTRAP.replace_fresh(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
 
 
 def build_directory(value):
-    path = Path(value).absolute()
-    if path != path.resolve() or '_build' not in path.parts:
-        raise ValueError('Native build output must be under an ordinary _build directory')
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return BOOTSTRAP.build_directory(Path(value).absolute(), 'Native build output')
+
+
+def check_unlinked(root):
+    """Refuse a link directly below the build root or anywhere in the extracted source.
+
+    Meson reuses the source, build and install folders by path, so none of them may lead
+    out of the checked _build; the source is reused across builds, so all of it is
+    inspected, while Meson regenerates its build and install folders below their roots.
+    """
+    def inspect(entries):
+        for item in entries:
+            if BOOTSTRAP.is_link(item.lstat()):
+                raise ValueError(f'Native build output must not contain a link: {item}')
+    inspect(root.iterdir())
+    for base, dirs, files in os.walk(root / f'dav1d-{VERSION}', followlinks=False):
+        inspect(Path(base) / name for name in dirs + files)
+
+
+def archive_bytes(archive):
+    """The cached archive, read once: it is verified and extracted from the same bytes."""
+    if not BOOTSTRAP.regular(archive) or archive.stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ValueError('Cached dav1d source checksum mismatch')
+    data = archive.read_bytes()
+    if hashlib.sha256(data).hexdigest() != SHA256:
+        raise ValueError('Cached dav1d source checksum mismatch')
+    return data
 
 
 def prepare(value, offline=False):
     root = build_directory(value)
+    check_unlinked(root)
     archive = root / f'dav1d-{VERSION}.tar.xz'
-    if not archive.exists():
+    if not os.path.lexists(archive):
         if offline:
             raise ValueError(f'Offline source archive is missing: {archive}')
         temporary = root / (uuid.uuid4().hex + '.download')
@@ -94,26 +137,26 @@ def prepare(value, offline=False):
                 size = 0
                 while block := response.read(256 * 1024):
                     size += len(block)
-                    if size > 4 * 1024 * 1024:
+                    if size > MAX_ARCHIVE_BYTES:
                         raise ValueError('dav1d source download is unexpectedly large')
                     out.write(block)
             if hashlib.sha256(temporary.read_bytes()).hexdigest() != SHA256:
                 raise ValueError('dav1d source checksum mismatch')
-            temporary.replace(archive)
+            # Retried: endpoint protection may still hold the download just written.
+            BOOTSTRAP.replace_fresh(temporary, archive)
         finally:
             temporary.unlink(missing_ok=True)
-    if archive.is_symlink() or hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
-        raise ValueError('Cached dav1d source checksum mismatch')
+    data = archive_bytes(archive)
     source = root / f'dav1d-{VERSION}'
     receipt = root / 'source.json'
-    if source.exists():
-        if source.is_symlink() or not receipt.is_file():
+    if os.path.lexists(source):
+        if not source.is_dir() or not receipt.is_file():
             raise ValueError('Unrecognized existing native source directory')
         if json.loads(receipt.read_text(encoding='utf-8')) != {'url': URL, 'sha256': SHA256}:
             raise ValueError('Existing native source belongs to another release')
         apply_build_fixes(source)
         return source
-    with tarfile.open(archive) as bundle:
+    with tarfile.open(fileobj=io.BytesIO(data), mode='r:xz') as bundle:
         members = bundle.getmembers()
         if sum(item.size for item in members) > 32 * 1024 * 1024:
             raise ValueError('dav1d source expansion exceeds expected bounds')

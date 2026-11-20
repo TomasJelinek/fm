@@ -78,22 +78,35 @@ must also run under the release profile. Builds take longer and may use more RAM
 because of whole-program optimization. Development builds remain available for
 fast iteration and debugging.
 
-The helpers in `scripts/`, the viewer plugins' Windows build scripts and the test
-runners share one link rule (the viewer plugins' Linux `build.sh` scripts and the image
-decoder's native helpers in `plugins/image-decoder/native` do not apply it yet).
-Generated output lies strictly below the checkout's own `_build`, recognised however
-a path spells the checkout, or, outside the checkout, below the first `_build` of a
-custom target directory; that `_build` and every folder below it must not be a link,
-junction or other reparse point. The checkout and the folders above it may be links,
-a `subst` drive or hidden folders such as `AppData`. An input folder that the caller
-names (a prebuilt FFmpeg prefix, `LIBCLANG_PATH`, a Linux `CEF_PATH`) may itself be a
-link and may lie below links; nothing below it may be a link or `..`, except the
-versioned runtime library names of an FFmpeg prefix, which must resolve inside it
-(packaging inputs are described below). The CEF and FFmpeg download caches stay
-stricter: they must be plain folders inside the checkout, with no link from the
-checkout down, because a verified archive is opened again by path after its checksums
-are compared. `scripts/run-targeted-tests.py` and `scripts/ci-workspace-tests.py`
-accept Cargo's paths however they spell the checkout, under the same rule.
+The helpers in `scripts/`, the Basic, Markdown, Source, image and PDF viewers' build
+scripts, the image, PDF and thumbnail plugins' Linux CI scripts, the archive worker's
+Linux build script, the image decoder's native helpers in `plugins/image-decoder/native`
+and the test runners share one link rule. Generated output lies strictly below the
+checkout's own `_build`, recognised however a path spells the checkout, or, outside
+the checkout, below the first `_build` of a custom target directory; that `_build` and
+every folder below it must not be a link, junction or other reparse point. For a
+plugin's scripts, the plugin and the repository holding it in `plugins/` are
+checkouts, so a plugin built on its own writes below its own `_build`; the native
+helpers, which the image, PDF and thumbnail plugins share, accept the repository's
+`_build` and any `plugins/NAME/_build`. The Basic, Markdown and Source viewers may
+install anywhere and use the rule only to decide whether notices without their marker
+may be replaced. The image, PDF and thumbnail plugins' Windows CI scripts and the
+archive worker's Windows build script still check only for a `_build` component (the
+image and PDF CI scripts apply the rule only when their build script runs, after the
+tests). The
+checkout and the folders above it may be links, a `subst` drive or hidden folders such
+as `AppData`. An input folder that the caller names (a prebuilt FFmpeg prefix,
+`LIBCLANG_PATH`, a Linux `CEF_PATH`) may itself be a link and may lie below links;
+nothing below it may be a link or `..`, except the versioned runtime library names of
+an FFmpeg prefix, which must resolve inside it (packaging inputs are described below).
+The CEF and FFmpeg download caches stay stricter: they must be plain folders inside the
+checkout, with no link from the checkout down, because a verified archive is opened
+again by path after its checksums are compared. The native helpers keep their caches in
+the build roots they are given, as before: nothing in a cached tool tree, the download
+folder or the extracted dav1d source may be a link, tool archives are verified in
+memory and the dav1d archive is verified and extracted from the same bytes.
+`scripts/run-targeted-tests.py` and `scripts/ci-workspace-tests.py` accept Cargo's
+paths however they spell the checkout, under the same rule.
 
 On Windows, endpoint protection briefly holds files that were just written. While it
 does, renaming them or a folder above them fails with access denied (5) or a sharing
@@ -101,10 +114,13 @@ does, renaming them or a folder above them fails with access denied (5) or a sha
 records, can report that it could not remove the replaced record (1175), leaving both
 files unchanged. The build, packaging and registration scripts therefore retry the
 renames of their own fresh output (CEF and FFmpeg downloads and stages, the FFmpeg
-receipt, the thumbnail and HTML package swaps, the filesystem package files and the
-runtime registration records) for about 2 s with a short backoff, and then fail with
-the first error. Other errors, including File.Replace's partial outcomes (1176, 1177),
-other platforms and deletions are never retried.
+receipt, the image decoder's native tool and dav1d downloads, its tool receipt and
+dav1d build fixes, the thumbnail and HTML package swaps, the filesystem package files
+and the runtime registration records) for about 2 s with a short backoff, and then
+fail with the first error. Publishing an extracted native tool directory waits up to
+12.7 s instead, because it holds new executables, which Defender's first-sight cloud
+check keeps for up to 10 s by default. Other errors, including File.Replace's partial
+outcomes (1176, 1177), other platforms and deletions are never retried.
 The thumbnail and HTML package swaps use one directory rename, which leaves nothing
 behind when it is refused.
 

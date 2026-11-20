@@ -56,3 +56,7 @@ forbids native downloads) run the checks of the `thumbnail-image` CI job: the pi
 native dav1d build, formatting, tests, strict Clippy and an optimized build. Cargo runs
 offline there, so fetch the dependencies first, as the job does:
 `cargo --config <config> fetch --manifest-path Cargo.toml --locked`.
+On Linux the build root must lie below this project's own `_build`, that of the
+repository holding it in `plugins/`, or otherwise the first `_build` of the path; that
+`_build` and every folder below it must not be a symlink, while the folders above it
+may be links. The native helpers apply the same rule on both platforms.

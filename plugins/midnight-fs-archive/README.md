@@ -153,8 +153,12 @@ decoder interval can still delay it.
 Build and test using `scripts/build.ps1` or `scripts/build.sh`, with Cargo/Rust and
 Python 3 on PATH, providing an offline
 public SDK config, a build output directory and an optional package destination.
-Source directories are not output destinations. Exporting this directory does not
-require the host checkout. See THIRD-PARTY.md for pinned dependency decisions.
+Source directories are not output destinations: both must lie below a `_build`
+directory. On Linux that is this project's own `_build`, that of the repository
+holding it in `plugins/`, or otherwise the first `_build` of the path, and that
+`_build` and every folder below it must not be a symlink, while the folders above it
+may be links. Exporting this directory does not require the host checkout. See
+THIRD-PARTY.md for pinned dependency decisions.
 
 Ordinary tests count the bytes a brokered source is asked for (`tests/streaming.rs`):
 indexing 1,000-member ZIP/TAR archives fetches less than twice their size, and

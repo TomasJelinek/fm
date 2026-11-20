@@ -33,7 +33,7 @@ class SourcePreparationTests(unittest.TestCase):
     def test_output_outside_build_is_rejected_before_creation(self):
         outside = SCRIPT.parent / 'unexpected-native-output'
         self.assertFalse(outside.exists())
-        with self.assertRaisesRegex(ValueError, 'under an ordinary _build'):
+        with self.assertRaisesRegex(ValueError, 'under an explicit _build'):
             source.build_directory(outside)
         self.assertFalse(outside.exists())
 

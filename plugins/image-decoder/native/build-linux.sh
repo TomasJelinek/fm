@@ -10,6 +10,9 @@ if ((native_jobs < 1 || native_jobs > 32)); then echo 'Jobs must be 1..32' >&2; 
 native_offline=()
 case "${3:-}" in --offline) native_offline+=(--offline) ;; '') ;; *) echo 'Expected --offline' >&2; return 2 ;; esac
 native_source=$(python3 -I -S -B "$native_script_dir/prepare-source.py" "$native_root" "${native_offline[@]}") || return $?
+# prepare-source.py refused links from _build down, so this resolves only the links above
+# _build (a linked checkout): Meson sees one spelling of the source and build folders.
+native_source=$(realpath -- "$native_source") || return $?
 native_root=$(realpath -- "$native_root") || return $?
 native_build="$native_root/linux-$(uname -m)"
 native_prefix="$native_root/prefix-linux-$(uname -m)"

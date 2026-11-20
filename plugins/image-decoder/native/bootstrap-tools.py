@@ -20,12 +20,18 @@ import zipfile
 MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
 MAX_EXTRACT_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 8192
-# Windows refuses to rename a directory while a file below it is open, and antivirus
-# software briefly holds just-written executables. Waits total 12.7 s.
+# Windows errors while endpoint protection holds a file that was just written: access
+# denied (5) renaming a folder above it, and sharing (32) or lock (33) violations. Other
+# errors, such as a write-protected volume's PermissionError, fail at once.
+FRESH_FILE_HOLDS = (5, 32, 33) if os.name == 'nt' else ()
+# Publishing an extracted tool directory waits longer than the 2 s of other fresh renames,
+# 12.7 s in all: it holds new executables, which Defender's first-sight cloud check keeps
+# for up to 10 s by default (an offline bootstrap failed once on the NASM directory).
 PUBLISH_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4) if os.name == 'nt' else ()
-# A scanner's open handle fails the rename with ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION
-# or ERROR_LOCK_VIOLATION; other PermissionErrors (a write-protected volume) fail at once.
-PUBLISH_RETRY_WINERRORS = (5, 32, 33)
+# The image, PDF and thumbnail plugins share this package, which imports nothing from
+# the host scripts: prepare-source.py and private-meson.py load the path rule from here.
+PACKAGE = Path(__file__).resolve().parents[1]
+REPOSITORY = PACKAGE.parents[1] if os.path.normcase(PACKAGE.parent.name) == 'plugins' else None
 
 @dataclass(frozen=True)
 class Artifact:
@@ -53,24 +59,117 @@ NASM_LINUX = Artifact('nasm-2.16.03-linux', 'nasm-2.16.03.tar.xz',
     '1412a1c760bbd05db026b6c0d1657affd6631cd0a63cddb6f73cc6d4aa616148', 'tar.xz', 'BSD-2-Clause')
 
 
-def ordinary_root(value):
+# Link rule of the build scripts (BUILD-02). Folders above a checkout or above a _build
+# outside it may be links, a subst drive or hidden folders: Fedora Silverblue's /home ->
+# /var/home, a linked parent folder or AppData. From that _build down nothing may be a
+# link, a junction or another reparse point, and no path may contain '..'.
+
+def is_link(metadata):
+    """A symbolic link or any Windows reparse point, such as a junction."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def named_path(value):
     path = Path(value)
-    if not path.is_absolute() or path != path.resolve() or '_build' not in path.parts:
-        raise ValueError('Tool output requires an absolute ordinary _build directory')
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('Expected an absolute path without parent traversal: ' + str(path))
+    return path
+
+
+def build_anchor(path):
+    """Index in (path, *path.parents) of the _build that holds generated output, or None.
+
+    In the repository that holds this package in plugins/, the repository's own _build
+    or a plugin's (plugins/NAME/_build); in this package reached otherwise, its own
+    _build; outside them, the path's first _build (a custom target directory). A
+    checkout is recognised however the path spells it, at its shallowest place, so that
+    a link below a checkout leading back to it is inspected, not trusted.
+    """
+    ancestors = (path, *path.parents)
+    named = [os.path.normcase(item.name) for item in ancestors]
+    checkouts = [os.stat(item) for item in (REPOSITORY, PACKAGE) if item is not None]
+    for top in reversed(range(len(ancestors))):
+        try:
+            identity = ancestors[top].stat()
+        except OSError:
+            continue
+        if not any(os.path.samestat(identity, checkout) for checkout in checkouts):
+            continue
+        if top >= 2 and named[top - 1] == '_build':
+            return top - 1
+        if (top >= 4 and REPOSITORY is not None and os.path.samestat(identity, checkouts[0])
+                and named[top - 1] == 'plugins' and named[top - 3] == '_build'
+                and ancestors[top - 2].is_dir()):
+            return top - 3
+        return None
+    builds = [index for index in range(1, len(ancestors)) if named[index] == '_build']
+    return builds[-1] if builds else None
+
+
+def build_directory(value, label):
+    """Generated output strictly below _build (see build_anchor), with no link from it down."""
+    path = named_path(value)
+    anchor = build_anchor(path)
+    if anchor is None:
+        raise ValueError(label + ' must be under an explicit _build directory: ' + str(path))
+    for part in (path, *path.parents)[anchor::-1]:
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            break
+        if is_link(info) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError(label + ' must not traverse a link, reparse point or file: ' + str(part))
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def directory(root, name):
+def ordinary_root(value):
+    return build_directory(value, 'Tool output')
+
+
+def generated_child(root, name):
+    """An entry directly below a checked root; it must not be a link."""
     path = root / name
-    if path.resolve() != path:
-        raise ValueError('Linked generated directory is not allowed')
+    if os.path.lexists(path) and is_link(path.lstat()):
+        raise ValueError('Linked generated path is not allowed: ' + str(path))
+    return path
+
+
+def directory(root, name):
+    path = generated_child(root, name)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def regular(path):
-    return path.resolve() == path and stat.S_ISREG(path.lstat().st_mode)
+    """A regular file that is not a link; the caller has checked the folders above it."""
+    info = path.lstat()
+    return not is_link(info) and stat.S_ISREG(info.st_mode)
+
+
+def replace_fresh(source, target, timeout=2.0):
+    """Rename `source` over `target`, waiting out a brief hold of freshly written files.
+
+    Only the Windows errors in FRESH_FILE_HOLDS are retried, with a short backoff for
+    about `timeout` seconds; then the first error is raised. Other errors, and every
+    error on other platforms, are raised at once. The scripts always use the default.
+    """
+    first_error, deadline, delay = None, 0.0, 0.02
+    while True:
+        try:
+            return Path(source).replace(target)
+        except OSError as error:
+            if getattr(error, 'winerror', None) not in FRESH_FILE_HOLDS:
+                raise
+            now = time.monotonic()
+            if first_error is None:
+                first_error, deadline = error, now + timeout
+            if now >= deadline:
+                break
+        time.sleep(min(delay, deadline - now))
+        delay = min(2 * delay, 0.2)
+    raise first_error
 
 
 def checked_bytes(path, artifact):
@@ -85,7 +184,7 @@ def checked_bytes(path, artifact):
 def fetch(root, artifact, offline=False, opener=urllib.request.urlopen):
     downloads = directory(root, 'downloads')
     path = downloads / artifact.filename
-    if path.exists() or path.is_symlink():
+    if os.path.lexists(path):
         return checked_bytes(path, artifact)
     if offline:
         raise ValueError('Offline tool archive is missing: ' + artifact.filename)
@@ -99,7 +198,8 @@ def fetch(root, artifact, offline=False, opener=urllib.request.urlopen):
                     raise ValueError('Tool download exceeds its byte limit')
                 output.write(block)
         data = checked_bytes(temporary, artifact)
-        temporary.replace(path)
+        # Retried: endpoint protection may still hold the download just written.
+        replace_fresh(temporary, path)
         return data
     finally:
         temporary.unlink(missing_ok=True)
@@ -161,7 +261,7 @@ def check_tree(path, expected=None):
             if count > MAX_ENTRIES:
                 raise ValueError('Cached tool tree exceeds its entry limit')
             item = Path(base) / name
-            if item.resolve() != item:
+            if is_link(item.lstat()):
                 raise ValueError('Linked cached tool path is not allowed')
         for name in files:
             item = Path(base) / name
@@ -187,23 +287,25 @@ def restore_timestamps(root, entries):
 
 
 def publish(staging, destination):
-    for delay in PUBLISH_RETRY_DELAYS:
+    """Rename the staging directory into place; a hold is retried, then its first error raised."""
+    first_error = None
+    for delay in (*PUBLISH_RETRY_DELAYS, None):
         try:
             staging.rename(destination)
             return
-        except PermissionError as error:
-            if getattr(error, 'winerror', None) not in PUBLISH_RETRY_WINERRORS:
+        except OSError as error:
+            if getattr(error, 'winerror', None) not in FRESH_FILE_HOLDS:
                 raise
+            first_error = first_error or error
+            if delay is None:
+                raise first_error
             time.sleep(delay)
-    staging.rename(destination)
 
 
 def unpack(root, artifact, data):
     entries = archive_entries(artifact, data)
     tools = directory(root, 'tools')
-    destination = tools / artifact.name
-    if destination.resolve() != destination:
-        raise ValueError('Linked cached tool directory is not allowed')
+    destination = generated_child(tools, artifact.name)
     expected = {name: payload for name, is_dir, payload, _, _ in entries if not is_dir}
     if destination.exists():
         if not destination.is_dir():
@@ -227,8 +329,8 @@ def unpack(root, artifact, data):
         restore_timestamps(staging, entries)
         publish(staging, destination)
     finally:
-        # Only our freshly created, verified in-root staging directory may be removed.
-        if staging.exists() and staging.resolve() == staging and staging.parent == tools:
+        # Only our freshly created staging directory may be removed, never through a link.
+        if os.path.lexists(staging) and not is_link(staging.lstat()) and staging.parent == tools:
             shutil.rmtree(staging)
     return destination
 
@@ -251,7 +353,7 @@ def prepare(value, target, offline=False):
         try:
             with temporary.open('x', encoding='utf-8') as output:
                 output.write(json.dumps(receipt, indent=2) + '\n')
-            temporary.replace(root / 'tool-provenance.json')
+            replace_fresh(temporary, root / 'tool-provenance.json')
         finally:
             temporary.unlink(missing_ok=True)
     finally:

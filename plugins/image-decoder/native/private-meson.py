@@ -21,10 +21,11 @@ def main():
         raise ValueError('Run the private tool bootstrap before building dav1d')
     root = bootstrap.ordinary_root(value)
     artifact = bootstrap.MESON
-    data = bootstrap.checked_bytes(root / 'downloads' / artifact.filename, artifact)
+    downloads = bootstrap.generated_child(root, 'downloads')
+    data = bootstrap.checked_bytes(downloads / artifact.filename, artifact)
     entries = bootstrap.archive_entries(artifact, data)
-    package = root / 'tools' / artifact.name
-    if package.resolve() != package or not package.is_dir():
+    package = bootstrap.generated_child(bootstrap.generated_child(root, 'tools'), artifact.name)
+    if not package.is_dir():
         raise ValueError('Private Meson directory is missing or linked')
     expected = {name: payload for name, is_dir, payload, _, _ in entries if not is_dir}
     bootstrap.check_tree(package, expected)

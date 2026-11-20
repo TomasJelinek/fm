@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 plugin_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-build_root="$(realpath -m -- "$2")"
+build_root="$(realpath -ms -- "$2")"
 config="$(python3 "$plugin_root/scripts/prepare-sdk.py" "$1" "$build_root")"
 # The package build selects the native --target; test and lint with the same
 # target so Cargo reuses one dependency build instead of compiling it twice.

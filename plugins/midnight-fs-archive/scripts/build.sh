@@ -23,7 +23,43 @@ fi
 build_options=("${options[@]}")
 if [[ $profile == release ]]; then build_options+=(--release); fi
 plugin_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-case "$build_root" in /*/_build/*) ;; *) echo 'Build output must be under _build' >&2; exit 1;; esac
+# Generated output lies strictly below _build: for a path inside this plugin, or inside
+# the repository that holds it in plugins/NAME, their own _build; otherwise the first
+# _build of the path (a custom directory). That _build and every folder below it must
+# not be a symlink. The checkout and the folders above it may be links (Fedora
+# Silverblue's /home -> /var/home, a linked parent folder): a checkout is recognised
+# however the path spells it, at its shallowest place, so a link back to it is inspected.
+generated_output_problem() {
+    local path=$1 ancestors=() index top anchor=0 repository=
+    [[ $path == /* ]] || { printf 'must be an absolute path: %s\n' "$1"; return; }
+    [[ ${plugin_root%/*} != */plugins ]] || repository=${plugin_root%/*/*}
+    while [[ $path != / ]]; do ancestors+=("$path"); path=${path%/*}; path=${path:-/}; done
+    top=${#ancestors[@]}
+    for (( index=top-1; index>=0; index-- )); do
+        if [[ ${ancestors[index]} -ef $plugin_root || ( -n $repository && ${ancestors[index]} -ef $repository ) ]]; then
+            top=$index
+            break
+        fi
+    done
+    if (( top < ${#ancestors[@]} )); then
+        if (( top >= 2 )) && [[ ${ancestors[top-1]##*/} == _build ]]; then
+            anchor=$((top - 1))
+        elif (( top >= 4 )) && [[ -n $repository && ${ancestors[top]} -ef $repository && ${ancestors[top-1]##*/} == plugins &&
+                ${ancestors[top-2]} -ef $plugin_root && ${ancestors[top-3]##*/} == _build ]]; then
+            anchor=$((top - 3))
+        fi
+    else
+        for (( index=${#ancestors[@]}-1; index>0; index-- )); do
+            if [[ ${ancestors[index]##*/} == _build ]]; then anchor=$index; break; fi
+        done
+    fi
+    if (( anchor == 0 )); then printf 'must be under _build: %s\n' "$1"; return; fi
+    for (( index=0; index<=anchor; index++ )); do
+        if [[ -L ${ancestors[index]} ]]; then printf 'must not traverse symlinks: %s\n' "${ancestors[index]}"; return; fi
+    done
+}
+problem=$(generated_output_problem "$build_root")
+[[ -z $problem ]] || { echo "Build output $problem" >&2; exit 1; }
 export CARGO_TARGET_DIR="$build_root" CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 if [[ $run_tests == 1 ]]; then
     # Parser tests keep debug assertions and overflow checks for every package profile.
@@ -31,7 +67,9 @@ if [[ $run_tests == 1 ]]; then
 fi
 cargo build --manifest-path "$plugin_root/Cargo.toml" --locked --config "$sdk_config" "${build_options[@]}"
 if [[ -n "$package" ]]; then
-    case "$package" in /*/_build/*) ;; *) echo 'Package staging must be under _build' >&2; exit 1;; esac
+    package=$(realpath -ms -- "$package")
+    problem=$(generated_output_problem "$package")
+    [[ -z $problem ]] || { echo "Package staging $problem" >&2; exit 1; }
     mkdir -p -- "$package"
     # A running worker keeps its executable busy: rename a complete new inode into place.
     cp -- "$build_root/$profile/midnight-fs-archive" "$package/.midnight-fs-archive.new"
