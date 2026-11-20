@@ -290,6 +290,12 @@ impl Presenter {
             Event::PreferencesSaved { revision, result } => {
                 self.accepted_preferences_saved(revision, result)
             }
+            Event::PreferencesExported { request, result } => {
+                self.settings_exported(request, result)
+            }
+            Event::PreferencesImported { request, result } => {
+                self.settings_imported(request, result)
+            }
             // The app coordinates watch hints through refresh_if_changed so
             // they cannot trigger nested sends while apply owns this state.
             Event::DirectoryChanged { .. } => {}

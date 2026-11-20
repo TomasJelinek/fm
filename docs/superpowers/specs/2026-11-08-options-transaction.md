@@ -39,6 +39,22 @@ picker selection, validation for OK or the final save is in progress, Reset
 cannot race those operations. Its fixed footer button remains reachable in the
 minimum window size, where an icon and tooltip replace the longer label.
 
+Export configuration and Import configuration sit in the same footer and belong to
+the session (added 20 November 2026; user guide:
+[Export and import configuration](../../SETTINGS_FILES.md)). Export writes what OK
+would save at that moment, in the settings-file serialization, through a backend
+worker; it is not a settings edit and leaves the session open. Import is one
+staged edit of the whole settings snapshot: the backend reads and validates the
+complete file first, and a refused file changes nothing. An accepted file previews
+every Options-owned field like Reset does, discarding unfinished page drafts, and
+stages the remaining session fields (tabs, hot paths, window placement, panel
+split/view/filter state, viewer, terminal, checksum and Make File List choices).
+OK's save includes them; only its successful acknowledgement applies them to the
+running session, restoring tabs through the startup restoration path. Cancel
+discards both parts, and Reset discards the staged session part. `restore_fields`
+and `restore_session_fields` classify every preference exhaustively. OK and Reset
+wait while an import is being read; a result from a closed session never stages.
+
 Explicit maintenance actions such as clearing thumbnail cache are immediate
 actions, not settings edits; label their behavior accordingly. Custom Command
 preview must leave the Options transaction open rather than implicitly accepting

@@ -17,6 +17,9 @@ pub(crate) enum Target {
     WorkingDirectory,
     CommandIcon,
     CommandIconResource,
+    /// Options footer choosers; they belong to the Options session, not a page.
+    SettingsExport,
+    SettingsImport,
 }
 impl Target {
     fn comparator(self) -> bool {
@@ -24,6 +27,9 @@ impl Target {
             self,
             Self::ComparatorProgram | Self::ComparatorWorkingDirectory
         )
+    }
+    fn settings_file(self) -> bool {
+        matches!(self, Self::SettingsExport | Self::SettingsImport)
     }
 }
 struct Pending {
@@ -79,6 +85,24 @@ impl Presenter {
             None
         };
         let (kind, title, initial, revision, token) = match target {
+            Target::SettingsExport | Target::SettingsImport => {
+                let export = target == Target::SettingsExport;
+                (
+                    if export {
+                        PathPickerKind::SettingsSave
+                    } else {
+                        PathPickerKind::SettingsOpen
+                    },
+                    if export {
+                        "Export configuration"
+                    } else {
+                        "Import configuration"
+                    },
+                    self.preferences.settings_file.directory(),
+                    self.preferences.settings_file.session(),
+                    String::new(),
+                )
+            }
             Target::ComparatorProgram | Target::ComparatorWorkingDirectory => {
                 let Some(rule) = self
                     .comparators
@@ -216,7 +240,9 @@ impl Presenter {
                     Target::Editor
                     | Target::EditorWorkingDirectory
                     | Target::ComparatorProgram
-                    | Target::ComparatorWorkingDirectory => unreachable!(),
+                    | Target::ComparatorWorkingDirectory
+                    | Target::SettingsExport
+                    | Target::SettingsImport => unreachable!(),
                 };
                 (
                     kind,
@@ -248,7 +274,9 @@ impl Presenter {
             });
         } else {
             let error = "The file picker queue is busy. Try Browse again.";
-            if target.comparator() {
+            if target.settings_file() {
+                self.settings_file_failed("The file picker queue is busy. Try again.".into());
+            } else if target.comparator() {
                 self.comparators.error = error.into();
                 self.comparators.error_field = -1;
                 self.comparators.revision = self.comparators.revision.saturating_add(1);
@@ -261,6 +289,12 @@ impl Presenter {
     }
     pub(crate) fn settings_picker_context(&mut self, page: i32, send: &dyn Fn(Command) -> bool) {
         if let Some(pending) = &mut self.settings_picker.pending {
+            if pending.target.settings_file() {
+                // Any page keeps a footer chooser; closing Options cancels it.
+                pending.cancelled |= page < 0;
+                self.flush_settings_picker(send);
+                return;
+            }
             let expected = if pending.target.comparator() {
                 OPTIONS_TOPIC_COMPARATORS
             } else if matches!(
@@ -308,6 +342,10 @@ impl Presenter {
         let current = !pending.cancelled
             && !self.operations.closing
             && match pending.target {
+                Target::SettingsExport | Target::SettingsImport => {
+                    self.preferences.options.open
+                        && pending.revision == self.preferences.settings_file.session()
+                }
                 Target::ComparatorProgram | Target::ComparatorWorkingDirectory => {
                     pending.comparator_context.is_some()
                         && pending.comparator_context == self.comparator_picker_context()
@@ -335,6 +373,13 @@ impl Presenter {
             Ok(Some(path)) => path,
             Ok(None) => return,
             Err(error) => {
+                if pending.target.settings_file() {
+                    self.settings_file_failed(format!(
+                        "The file chooser failed: {}",
+                        error.message
+                    ));
+                    return;
+                }
                 let message = crate::error_presentation::describe(&error);
                 if pending.target.comparator() {
                     self.comparators.error = message;
@@ -352,6 +397,10 @@ impl Presenter {
             }
         };
         if !path.is_absolute() {
+            return;
+        }
+        if pending.target.settings_file() {
+            self.settings_file_picked(pending.target == Target::SettingsExport, path);
             return;
         }
         if pending.target.comparator() {
@@ -395,7 +444,9 @@ impl Presenter {
             Target::Editor
             | Target::EditorWorkingDirectory
             | Target::ComparatorProgram
-            | Target::ComparatorWorkingDirectory => unreachable!(),
+            | Target::ComparatorWorkingDirectory
+            | Target::SettingsExport
+            | Target::SettingsImport => unreachable!(),
         }
         self.remember_user_command_form(&pending.token, draft);
         self.user_command_settings.draft_revision =

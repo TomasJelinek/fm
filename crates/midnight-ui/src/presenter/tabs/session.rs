@@ -138,6 +138,19 @@ impl Presenter {
         }
     }
 
+    /// A committed settings import restores its saved tabs through the startup path
+    /// on the next flush. A panel without saved tabs keeps its current tabs.
+    pub(in crate::presenter) fn restore_imported_tab_sessions(
+        &mut self,
+        tabs: &[PaneTabPreferences; 2],
+    ) {
+        for (slot, saved) in tabs.iter().enumerate() {
+            if !saved.paths.is_empty() {
+                self.tabs.restore[slot] = Some(saved.clone());
+            }
+        }
+    }
+
     pub(crate) fn flush_tab_sessions(&mut self, send: &dyn Fn(Command) -> bool) {
         for pane in [PaneId::Left, PaneId::Right] {
             let Some(saved) = self.tabs.restore[pane.index()].clone() else {

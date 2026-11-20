@@ -3,6 +3,7 @@ use super::*;
 mod archive_associations;
 mod file_list;
 mod options;
+pub(crate) mod settings_file;
 mod viewers;
 
 #[cfg(test)]
@@ -22,6 +23,8 @@ mod window_geometry_tests;
 #[derive(Default)]
 pub(crate) struct PreferencesState {
     pub(crate) options: options::State,
+    /// Export/Import configuration within the Options session.
+    pub(crate) settings_file: settings_file::State,
     pub(crate) values: UserPreferences,
     pub(crate) revision: PreferencesRevision,
     pub(crate) unsaved: bool,

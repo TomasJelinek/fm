@@ -63,21 +63,101 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
         .clone_from(&from.archive_custom_extensions);
 }
 
+/// The settings outside Options, which an imported settings file replaces only once
+/// OK's save succeeds. The exhaustive pattern makes every new preference choose
+/// between this and `restore_fields`.
+pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPreferences) {
+    let UserPreferences {
+        // Options-owned: `restore_fields`.
+        user_commands: _,
+        archive_association_overrides: _,
+        archive_custom_extensions: _,
+        disabled_viewer_plugins: _,
+        viewer_associations: _,
+        editor: _,
+        file_comparators: _,
+        theme: _,
+        density: _,
+        font_family: _,
+        desktop_font_size: _,
+        touch_font_size: _,
+        glyph_fitting: _,
+        quick_search_filter: _,
+        size_display: _,
+        disk_io_concurrency: _,
+        remember_command_history: _,
+        copy_checksum_verification: _,
+        command_history: _,
+        thumbnails_enabled: _,
+        thumbnails_network: _,
+        thumbnails_archives: _,
+        thumbnailer_associations: _,
+        thumbnail_size: _,
+        shortcuts: _,
+        filename_colors: _,
+        show_hidden_files: _,
+        // Options owns the output choice; the session owns history and path.
+        file_list,
+        checksum_algorithms,
+        window_geometry,
+        panel_split_basis_points,
+        viewer,
+        windows_shell,
+        bookmarks,
+        tabs,
+        panel_view_modes,
+        panel_filters,
+        panel_filter_history,
+        // The Select/Deselect by mask dialog remembers its last pattern itself.
+        mask_selection,
+    } = from;
+    to.file_list
+        .template_history
+        .clone_from(&file_list.template_history);
+    to.file_list.path.clone_from(&file_list.path);
+    to.checksum_algorithms = *checksum_algorithms;
+    // Without a saved placement the window stays where it is.
+    if window_geometry.is_some() {
+        to.window_geometry.clone_from(window_geometry);
+    }
+    to.panel_split_basis_points = *panel_split_basis_points;
+    to.viewer.clone_from(viewer);
+    to.windows_shell = *windows_shell;
+    to.bookmarks.clone_from(bookmarks);
+    // A panel without saved tabs keeps its current tabs.
+    for (current, saved) in to.tabs.iter_mut().zip(tabs) {
+        if !saved.paths.is_empty() {
+            current.clone_from(saved);
+        }
+    }
+    to.panel_view_modes = *panel_view_modes;
+    to.panel_filters.clone_from(panel_filters);
+    to.panel_filter_history.clone_from(panel_filter_history);
+    to.mask_selection.clone_from(mask_selection);
+}
+
 impl PreferencesState {
     pub(super) fn persistable_values(&self) -> UserPreferences {
         let mut values = self.values.clone();
-        if !self.options.saving
-            && let Some(baseline) = &self.options.baseline
-        {
+        if self.options.saving {
+            // OK's save, and any session save behind it, includes a staged import.
+            if let Some(staged) = &self.settings_file.staged {
+                restore_session_fields(&mut values, staged);
+            }
+        } else if let Some(baseline) = &self.options.baseline {
             restore_fields(&mut values, baseline);
         }
-        // Commands run while history was not remembered stay session-only.
+        self.without_session_commands(&mut values);
+        values
+    }
+
+    /// Commands run while history was not remembered stay session-only.
+    pub(super) fn without_session_commands(&self, values: &mut UserPreferences) {
         if !self.session_commands.is_empty() {
             values
                 .command_history
                 .retain(|entry| !self.session_commands.contains(&entry.command));
         }
-        values
     }
 }
 
@@ -88,6 +168,9 @@ impl Presenter {
         }
         self.preferences.options.open = true;
         self.preferences.options.error_topic = None;
+        self.preferences
+            .settings_file
+            .next_session(&mut self.retired);
         self.capture_options_baseline();
         self.begin_comparator_options();
         self.discard_options_forms();
@@ -102,7 +185,7 @@ impl Presenter {
         }
     }
 
-    fn discard_options_forms(&mut self) {
+    pub(super) fn discard_options_forms(&mut self) {
         self.discard_editor_draft();
         self.discard_comparator_draft();
         self.discard_viewer_association_draft();
@@ -122,9 +205,14 @@ impl Presenter {
             || self.preferences.options.accepting
             || self.preferences.options.saving
             || self.settings_picker.busy()
+            || self.preferences.settings_file.importing()
         {
             return;
         }
+        // Reset keeps the current session state, including over a staged import.
+        self.preferences
+            .settings_file
+            .discard_staged(&mut self.retired);
         let defaults = UserPreferences {
             command_history: self.preferences.values.command_history.clone(),
             user_commands: self.preferences.values.user_commands.clone(),
@@ -183,6 +271,9 @@ impl Presenter {
         self.preferences.options.open = false;
         self.preferences.options.accepting = false;
         self.preferences.options.error_topic = None;
+        self.preferences
+            .settings_file
+            .next_session(&mut self.retired);
         self.discard_options_forms();
         self.settings_picker_context(-1, send);
     }
@@ -229,6 +320,7 @@ impl Presenter {
             || self.preferences.options.accepting
             || self.preferences.options.saving
             || self.settings_picker.busy()
+            || self.preferences.settings_file.importing()
         {
             return;
         }
@@ -335,6 +427,10 @@ impl Presenter {
         self.preferences.options.error_topic = None;
         self.retired
             .push(Box::new(self.preferences.options.baseline.take()));
+        self.apply_staged_settings();
+        self.preferences
+            .settings_file
+            .next_session(&mut self.retired);
         self.discard_comparator_draft();
     }
 }

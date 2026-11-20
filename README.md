@@ -846,6 +846,11 @@ editor scope and shortcuts reserved for later stages.
   **Reset to defaults** resets all Options pages while preserving tabs, command
   history, hot paths and custom commands. It is a preview until OK; Cancel undoes
   the reset too.
+  **Export configuration…** saves all settings, including tabs, hot paths and
+  window placement, to a versioned JSON file. **Import configuration…** checks a
+  whole file first and previews it in Options; OK saves it and then applies its
+  tabs, hot paths and window placement, and Cancel keeps the current settings.
+  See [Export and import configuration](docs/SETTINGS_FILES.md).
   See the [Options transaction design](docs/superpowers/specs/2026-11-08-options-transaction.md).
   Colors offers a visible priority list of wildcard/regex filename rules; the
   first matching enabled rule wins. Set a base text color and

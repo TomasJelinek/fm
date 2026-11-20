@@ -110,6 +110,7 @@ mod operations_native_ui;
 mod options;
 mod options_footer;
 mod options_reflow;
+mod options_settings_file;
 mod options_transaction;
 mod panel_activation;
 mod panel_choices;

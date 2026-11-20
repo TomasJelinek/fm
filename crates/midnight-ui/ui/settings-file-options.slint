@@ -1,0 +1,46 @@
+import { Theme } from "theme.slint";
+import { Tip } from "controls.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+
+// Export/Import configuration in the Options footer. The presenter owns this
+// state; choosing files, reading, writing and validation happen on backend workers.
+export global SettingsFileView {
+    // A chooser or settings-file transfer is outstanding; no second one may start.
+    in property <bool> busy;
+    // An import is being read or staged; OK and Reset wait for it.
+    in property <bool> importing;
+    // The latest result in this Options session; empty when there is none.
+    in property <string> message;
+    in property <bool> error;
+    // The chosen export destination already exists: Replace or Keep.
+    in property <bool> replace-pending;
+    callback export-file();
+    callback import-file();
+    callback replace();
+    callback keep();
+}
+
+// One line above the Options footer; Replace and Keep answer an existing destination.
+export component SettingsFileFeedback inherits HorizontalLayout {
+    spacing: 8px;
+    Text {
+        accessible-label: SettingsFileView.error ? "Settings file error" : "Settings file status";
+        accessible-value: self.text;
+        text: SettingsFileView.message;
+        min-width: 0px; horizontal-stretch: 1;
+        overflow: elide; vertical-alignment: center;
+        font-size: Theme.small-font;
+        color: SettingsFileView.error ? Theme.error-text : Theme.text;
+        Tip { text: SettingsFileView.message; }
+    }
+    if SettingsFileView.replace-pending : HintedActionButton {
+        text: "Replace"; min-height: Theme.control-height;
+        hint: "Replace the existing file with the exported settings. Where the filesystem supports it, the replaced file is kept for recovery.";
+        clicked => { SettingsFileView.replace(); }
+    }
+    if SettingsFileView.replace-pending : HintedActionButton {
+        text: "Keep"; min-height: Theme.control-height;
+        hint: "Keep the existing file and do not export.";
+        clicked => { SettingsFileView.keep(); }
+    }
+}

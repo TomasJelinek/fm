@@ -920,7 +920,19 @@ fn run_window(
         refusals.watch(pulse.clone());
     }
     let presentation = pulses.clone();
-    window.on_presentation_changed(move || pulse::wake_all(&presentation));
+    let imported_geometry = (Rc::downgrade(&window_state), Rc::downgrade(&presenter));
+    window.on_presentation_changed(move || {
+        pulse::wake_all(&presentation);
+        // A committed settings import moves the window from the geometry sampler.
+        if let (Some(state), Some(presenter)) =
+            (imported_geometry.0.upgrade(), imported_geometry.1.upgrade())
+            && presenter
+                .try_borrow()
+                .is_ok_and(|p| p.imported_window_geometry_pending())
+        {
+            state.geometry_changed();
+        }
+    });
     main_events.on_visibility(move || pulse::wake_all(&pulses));
     let geometry_state = Rc::downgrade(&window_state);
     let scale = [thumbnails.pulse()];

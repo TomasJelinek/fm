@@ -986,6 +986,7 @@ impl Presenter {
         self.flush_find_panels();
         // A manifest destination was just chosen: save to it now.
         self.begin_pending_checksum_saves(send);
+        self.flush_settings_file(send);
         self.dispatch_open_directories(send);
         self.flush_loaded_preferences(send);
     }

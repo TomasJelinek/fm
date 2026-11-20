@@ -12,6 +12,7 @@ plans and old verification reports do not establish current functionality.
 | Implemented features and remaining work | [Feature status](FEATURE_STATUS.md) |
 | Current checkpoint, open requirements and recorded deferrals | [Active work](ACTIVE_WORK.md), [implementation backlog](IMPLEMENTATION_BACKLOG.md) |
 | Current default shortcuts and configurable actions | [Keyboard reference](KEYBOARD_SHORTCUTS.md) |
+| Backing up or moving settings; the settings file format | [Export and import configuration](SETTINGS_FILES.md) |
 | Security, Unicode, identity, cancellation and integrity | [Security requirements](../SECURITY.md) |
 | Rust style, platform separation and source-size limits | [Code style](../CODE_STYLE.md) |
 | Public APIs, plugins and internal contracts | [Developer documentation](developer/README.md) |

@@ -94,6 +94,7 @@ mod scroll_input;
 mod search_input;
 mod selection_bridge;
 mod selection_rectangle;
+mod settings_file_presentation;
 mod settings_picker_presentation;
 mod shell_bridge;
 mod shortcut_bridge;
@@ -501,6 +502,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_right_can_measure_folders(presenter.panes[1].can_measure_folders());
     user_command_settings_presentation::refresh(window, presenter);
     editor_options_presentation::refresh(window, presenter);
+    settings_file_presentation::refresh(window, presenter);
     comparator_options_presentation::refresh(window, presenter);
     window.invoke_refresh_find_windows();
     window.invoke_refresh_checksum_windows();
@@ -1088,6 +1090,7 @@ pub fn install_with_owned(
     user_command_presentation::install(window, presenter.clone(), send.clone());
     user_command_settings_presentation::install(window, presenter.clone(), send.clone());
     editor_options_presentation::install(window, presenter.clone(), send.clone());
+    settings_file_presentation::install(window, presenter.clone(), send.clone());
     comparator_options_presentation::install(window, presenter.clone(), send.clone());
     plugin_options::install(window, presenter.clone(), send.clone());
     archive_options::install(window, presenter.clone(), send.clone());

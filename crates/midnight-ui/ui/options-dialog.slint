@@ -13,6 +13,7 @@ import { ArchiveOptions, ArchiveOptionsView } from "archive-options.slint";
 import { ArgumentEditing } from "argument-editor.slint";
 import { ColorOptions, ColorOptionsView } from "color-options.slint";
 import { UserCommandOptions, UserCommandSettingsView } from "user-command-options.slint";
+import { SettingsFileFeedback, SettingsFileView } from "settings-file-options.slint";
 import { DialogHeader, PopupFocus } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -138,6 +139,9 @@ export component OptionsBody inherits Rectangle {
     private property <string> fixed-page-error: root.topic-index == 10 ? "" : root.page-error;
     private property <bool> comparator-validation-error: ComparatorOptionsView.error != "" && ComparatorOptionsView.error-field >= 0;
     private property <bool> fixed-save-error: root.preferences-save-failed && !root.comparator-validation-error;
+    // Reset, Export, Import and OK need idle, loaded settings and no open color chooser.
+    private property <bool> footer-ready: root.preferences-ready && !root.options-busy
+        && !root.page-busy && ColorOptionsView.picker-field < 0;
     private property <string> save-status: root.page-error != "" ? "Check the highlighted settings."
         : root.page-busy ? "Checking settings…"
         : root.options-busy ? "Saving settings…"
@@ -459,6 +463,7 @@ export component OptionsBody inherits Rectangle {
             color: Theme.error-text;
             Tip { text: root.fixed-page-error != "" ? root.fixed-page-error : root.preferences-save-status; }
         }
+        if SettingsFileView.message != "" : SettingsFileFeedback { }
         footer := DialogFooter {
             compact-height: root.compact;
             fill-actions: true;
@@ -472,15 +477,33 @@ export component OptionsBody inherits Rectangle {
                 text: root.narrow ? "" : "Reset to defaults";
                 native-icon: root.action-icons.refresh; fallback-icon: FallbackIcons.refresh;
                 min-height: Theme.control-height;
-                enabled: root.preferences-ready && !root.options-busy && !root.page-busy && ColorOptionsView.picker-field < 0;
+                enabled: root.footer-ready && !SettingsFileView.importing;
                 hint: "Reset all Options settings. Keep tabs, history, hot paths and custom commands. OK saves; Cancel restores your previous settings.";
                 clicked => { UserCommandSettingsView.drag-cancel(); root.reset(); }
+            }
+            HintedActionButton {
+                accessible-label: "Export configuration…";
+                text: root.narrow ? "" : "Export configuration…";
+                native-icon: root.action-icons.save-again; fallback-icon: FallbackIcons.save-again;
+                min-height: Theme.control-height;
+                enabled: root.footer-ready && !SettingsFileView.busy;
+                hint: "Save all settings to a JSON settings file: what OK would save now, including tabs, hot paths, window placement and command history. Unfinished page edits are not included.";
+                clicked => { UserCommandSettingsView.drag-cancel(); SettingsFileView.export-file(); }
+            }
+            HintedActionButton {
+                accessible-label: "Import configuration…";
+                text: root.narrow ? "" : "Import configuration…";
+                native-icon: root.action-icons.open-path; fallback-icon: FallbackIcons.open-path;
+                min-height: Theme.control-height;
+                enabled: root.footer-ready && !SettingsFileView.busy;
+                hint: "Replace all settings with a checked settings file. Options previews it; OK saves it and applies its tabs, hot paths and window placement; Cancel keeps your current settings.";
+                clicked => { UserCommandSettingsView.drag-cancel(); SettingsFileView.import-file(); }
             }
             Rectangle { horizontal-stretch: 1; min-width: 0px; }
             save-button := HintedActionButton {
                 native-icon: root.action-icons.done; fallback-icon: FallbackIcons.done;
                 text: "OK"; primary: true; min-height: Theme.control-height;
-                enabled: root.preferences-ready && !root.options-busy && !root.page-busy && ColorOptionsView.picker-field < 0;
+                enabled: root.footer-ready && !SettingsFileView.importing;
                 hint: ColorOptionsView.picker-field >= 0 ? "Use color or Cancel to finish choosing a color first."
                     : root.save-status != "" ? root.save-status + "\nValidate changes on all pages, save settings and close Options."
                     : "Validate changes on all pages, save settings and close Options.";

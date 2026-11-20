@@ -149,6 +149,12 @@ impl OwnedCommandScope for FixtureScope {
                 preferences.thumbnailer_associations.clone(),
                 preferences.filename_colors.clone(),
             ))),
+            Command::ExportPreferences(request) => self.retire(Box::new((
+                request.preferences.user_commands.clone(),
+                request.preferences.viewer_associations.clone(),
+                request.preferences.thumbnailer_associations.clone(),
+                request.preferences.filename_colors.clone(),
+            ))),
             Command::PaneCommitted(source) => self.retire(Box::new(source.entries.clone())),
             Command::QueryVolumeInformation(request) => {
                 self.retire(Box::new(request.cancel.clone()));
@@ -229,6 +235,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::ListDesktopContext
             | Command::OpenSystemLocation { .. }
             | Command::LoadPreferences
+            | Command::ImportPreferences { .. }
             | Command::ListFontFamilies
             | Command::ReadLicenseNotice(_)
             | Command::ResolveDefaultEditor

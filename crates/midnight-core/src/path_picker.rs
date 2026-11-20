@@ -23,6 +23,11 @@ pub enum PathPickerKind {
     /// Choose a text export destination. Picking never creates, truncates or grants
     /// overwrite permission; the export worker separately validates any conflict.
     TextSave,
+    /// Open an existing settings file for Import configuration.
+    SettingsOpen,
+    /// Choose an Export configuration destination. Like `TextSave`, picking never
+    /// creates, truncates or grants overwrite permission.
+    SettingsSave,
 }
 
 impl PathPickerKind {
@@ -31,6 +36,7 @@ impl PathPickerKind {
         match self {
             Self::ChecksumSave(algorithm) => Some(algorithm.extension()),
             Self::TextSave => Some("txt"),
+            Self::SettingsSave => Some("json"),
             _ => None,
         }
     }
@@ -40,6 +46,7 @@ impl PathPickerKind {
         match self {
             Self::ChecksumSave(algorithm) => Some(format!("checksums.{}", algorithm.extension())),
             Self::TextSave => Some("file-list.txt".into()),
+            Self::SettingsSave => Some(crate::SETTINGS_FILE_SUGGESTED_NAME.into()),
             _ => None,
         }
     }

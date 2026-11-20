@@ -284,6 +284,14 @@ pub enum Command {
         revision: PreferencesRevision,
         preferences: Box<UserPreferences>,
     },
+    /// Export configuration: write one settings file on a backend worker.
+    ExportPreferences(Box<crate::PreferencesExportRequest>),
+    /// Import configuration: read and completely validate one settings file. The
+    /// result changes nothing until the UI stages it in its Options transaction.
+    ImportPreferences {
+        request: DesktopRequestId,
+        source: PathBuf,
+    },
     /// Acknowledge the listing the UI actually accepted; queued stale listings do not count.
     PaneCommitted(VisibleDirectory),
     LaunchTerminal {
@@ -592,6 +600,14 @@ pub enum Event {
     PreferencesSaved {
         revision: PreferencesRevision,
         result: Result<crate::FileComparatorSnapshot, crate::PreferencesApplyError>,
+    },
+    PreferencesExported {
+        request: DesktopRequestId,
+        result: Result<crate::PreferencesExportReceipt, FsError>,
+    },
+    PreferencesImported {
+        request: DesktopRequestId,
+        result: Result<Box<UserPreferences>, FsError>,
     },
     DirectoryChanged {
         pane: PaneId,

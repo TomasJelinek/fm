@@ -95,6 +95,7 @@ mod operations;
 mod outbox_tests;
 mod path_picker;
 mod preferences;
+mod preferences_file;
 mod private_spool;
 pub mod providers;
 pub mod reclaim;
@@ -625,6 +626,12 @@ impl EngineServices {
         let snapshots: Snapshots =
             Arc::new(resources.snapshots.own(Mutex::new(Default::default())));
         let mutation_gate = transfer_leases::namespace_gate();
+        let preferences_files = preferences_file::Controller::new(
+            scope.clone(),
+            self.transfers.clone(),
+            mutation_gate.clone(),
+            self.outbox.clone(),
+        );
         let trees = tree_controller::Controller::new(
             &resident,
             tree_controller::Services {
@@ -1146,6 +1153,8 @@ impl EngineServices {
                         Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut resident_tasks).await,
                         Some(Command::ReadPathClipboardText { request }) => clipboard.read_text(request, &mut resident_tasks).await,
                         Some(Command::PickPath { request, input }) => path_picker.show(request, input, &mut tasks).await,
+                        Some(Command::ExportPreferences(request)) => preferences_files.export(request, &mut tasks).await,
+                        Some(Command::ImportPreferences { request, source }) => preferences_files.import(request, source, &mut tasks),
                         Some(Command::CancelPathPicker { request }) => path_picker.cancel(request),
                         Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut resident_tasks).await,
                         Some(Command::CopyCapturedFiles { request, source, cancel }) => clipboard.copy_captured(request, source, cancel, &mut resident_tasks).await,
@@ -1418,6 +1427,7 @@ impl EngineServices {
         file_lists.shutdown();
         shell_menu.shutdown();
         path_picker.shutdown();
+        preferences_files.shutdown();
         drop(search);
         fonts.shutdown();
         license_notices.shutdown();

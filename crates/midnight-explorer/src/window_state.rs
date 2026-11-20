@@ -63,22 +63,24 @@ impl WindowState {
                     return false;
                 };
                 let mut shared = shared.borrow_mut();
+                let mut presenter = presenter.borrow_mut();
+                if let Some(imported) = presenter.take_imported_window_geometry()
+                    && shared.initialized
+                {
+                    shared.apply(&window, &imported);
+                }
                 // An unobservable window keeps its pending save, retry included, for
                 // the sample after its next native geometry event.
                 window.window().is_visible()
-                    && shared.sample(
-                        &window,
-                        &mut presenter.borrow_mut(),
-                        commands.as_ref(),
-                        false,
-                    )
+                    && shared.sample(&window, &mut presenter, commands.as_ref(), false)
                     && shared.pending()
             })
         });
         Self { pulse, state }
     }
 
-    /// A native resize, move or scale change of the main window: sample until it settles.
+    /// A native resize, move or scale change of the main window, or a committed
+    /// imported placement: sample until it settles.
     pub(crate) fn geometry_changed(&self) {
         if let Some(pulse) = &self.pulse {
             pulse.wake();
@@ -116,30 +118,36 @@ impl State {
         }
         self.initialized = true;
         if let Some(saved) = presenter.window_geometry() {
-            let (displays, decoration) = displays(window);
-            let mut restored = policy::restore(saved, &displays, decoration);
-            let bounds = restored.normal;
-            if !midnight_ui::restore_window_position(
-                window.window(),
-                slint::PhysicalPosition::new(bounds.x, bounds.y),
-            ) {
-                // An unavailable absolute origin (notably Wayland) must not erase
-                // coordinates retained from a session that could capture placement.
-                (restored.normal.x, restored.normal.y, restored.monitor) =
-                    placement(None, None, Some(saved));
-            }
-            window
-                .window()
-                .set_size(slint::PhysicalSize::new(bounds.width, bounds.height));
-            window.window().set_maximized(restored.maximized);
-            window.window().set_fullscreen(restored.fullscreen);
-            if &restored != saved {
-                let now = Instant::now();
-                self.changed_at = Some(now);
-                self.dirty_since = Some(now);
-            }
-            self.last = Some(restored);
+            self.apply(window, saved);
         }
+    }
+
+    /// Place the window at a saved geometry clamped to the current displays: at
+    /// startup, and once for a committed settings import.
+    fn apply(&mut self, window: &MainWindow, saved: &WindowGeometry) {
+        let (displays, decoration) = displays(window);
+        let mut restored = policy::restore(saved, &displays, decoration);
+        let bounds = restored.normal;
+        if !midnight_ui::restore_window_position(
+            window.window(),
+            slint::PhysicalPosition::new(bounds.x, bounds.y),
+        ) {
+            // An unavailable absolute origin (notably Wayland) must not erase
+            // coordinates retained from a session that could capture placement.
+            (restored.normal.x, restored.normal.y, restored.monitor) =
+                placement(None, None, Some(saved));
+        }
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(bounds.width, bounds.height));
+        window.window().set_maximized(restored.maximized);
+        window.window().set_fullscreen(restored.fullscreen);
+        if &restored != saved {
+            let now = Instant::now();
+            self.changed_at = Some(now);
+            self.dirty_since = Some(now);
+        }
+        self.last = Some(restored);
     }
 
     /// Returns whether a placement was observed: captured, or the last one at close.

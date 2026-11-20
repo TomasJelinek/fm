@@ -16,6 +16,8 @@ mod archive_associations;
 mod archive_extensions;
 mod checksums;
 mod editor_rules;
+mod exchange;
+pub use exchange::{SETTINGS_FILE_VERSION, decode_settings_file, encode_settings_file};
 mod file_comparators;
 mod file_list;
 mod thumbnailer_associations;

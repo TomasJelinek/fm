@@ -202,6 +202,9 @@ fn specific_filter(kind: PathPickerKind) -> Option<(&'static str, String)> {
             Some((algorithm.label(), format!("*.{}", algorithm.extension())))
         }
         PathPickerKind::TextSave => Some(("Text files", "*.txt".into())),
+        PathPickerKind::SettingsOpen | PathPickerKind::SettingsSave => {
+            Some(("Settings files", "*.json".into()))
+        }
         _ => None,
     }
 }
@@ -226,9 +229,9 @@ fn create_dialog(request: &PathPickerRequest) -> windows::core::Result<IFileDial
             PathPickerKind::Directory => options |= FOS_PICKFOLDERS,
             // Selecting a destination must not create the Shell's write-probe file.
             // The export worker exclusively creates and publishes later.
-            PathPickerKind::ChecksumSave(_) | PathPickerKind::TextSave => {
-                options |= FOS_NOTESTFILECREATE
-            }
+            PathPickerKind::ChecksumSave(_)
+            | PathPickerKind::TextSave
+            | PathPickerKind::SettingsSave => options |= FOS_NOTESTFILECREATE,
             _ => options |= FOS_FILEMUSTEXIST,
         }
         dialog.SetOptions(options)?;
