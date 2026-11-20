@@ -117,6 +117,15 @@ below, passed every job on Windows and Linux.
   old rule), and on Windows the renames of a script's own fresh output wait out
   errors 5, 32, 33 and File.Replace's 1175 for about 2 s. `c8e5f19d` verifies them
   with short budgets: the new hold tests take about 19 s instead of 48 s.
+- BUILD-04, the user's "fix BUILD-04 too" (`497a69a3`): the image decoder's native
+  helpers and the plugins' Linux build and CI scripts follow the same link rule, so
+  image, PDF and thumbnail builds work from linked, junctioned or hidden checkouts
+  while links from `_build` down stay refused; the native caches stay link-free and
+  the dav1d archive is extracted from the bytes that were verified; fresh native
+  downloads and stages wait out Windows holds for about 2 s. A real offline native
+  build through a junctioned checkout (Windows) and the Linux image `build.sh` path
+  through a symlinked parent folder succeeded. BUILD-05 lists the scripts still
+  outside the rule.
 - Docs, decision "clean up both" (`4f62d8f2`, `aee6d5a4`): FEATURE_STATUS keeps each
   of seven repeated evidence paragraphs once, with links where they repeated, and
   both documents' run-together words and numbers are split (whitespace only).
@@ -138,9 +147,10 @@ Not established:
   10:50 the ChangeTime of fresh 22.5 MB files had moved 1–2 s after writing), so
   COMPARE-02, TEST-04, VIEW-05 and the build-script retries are verified with
   injected revisions, injected ChangeTime moves and scripted holds.
-- A real build from a linked checkout (BUILD-04: the image decoder's native helpers
-  still refuse it) and the manual native CEF Office/HTML and qualified Source
-  acceptance tests.
+- A full Rust plugin build and an application build from a linked checkout (the
+  native image decoder build was run through a junction and a linked parent folder;
+  BUILD-05 lists the scripts still outside the rule), and the manual native CEF
+  Office/HTML and qualified Source acceptance tests.
 
 ### Post-merge validation integrated — 19 November 2026
 
