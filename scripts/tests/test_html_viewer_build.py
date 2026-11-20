@@ -1,4 +1,5 @@
 """HTML build wrappers require the pinned runtime and preserve previous packages on failure."""
+import ctypes
 import hashlib
 import json
 import importlib.util
@@ -6,6 +7,7 @@ import io
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -164,8 +166,13 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         temporary.mkdir(parents=True, exist_ok=True)
         owner = tempfile.TemporaryDirectory(prefix="html build ", dir=temporary)
         self.addCleanup(owner.cleanup)
-        self.root = Path(owner.name)
-        (self.root / "scripts").mkdir()
+        self.owner = Path(owner.name)
+        # Like a checkout in the user profile: Get-Item without -Force cannot find AppData.
+        hidden = self.owner / "AppData"
+        hidden.mkdir()
+        self.assertTrue(ctypes.windll.kernel32.SetFileAttributesW(str(hidden), stat.FILE_ATTRIBUTE_HIDDEN))
+        self.root = hidden / "checkout"
+        (self.root / "scripts").mkdir(parents=True)
         for name in ("build-html-viewer.ps1", "utf8-native-output.ps1"):
             shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
         plugin = self.root / "plugins/midnight-viewer-html"
@@ -220,13 +227,15 @@ class HtmlViewerBuildWindows(unittest.TestCase):
             self.environment.pop(name, None)
         self.package = self.root / "_build/debug/viewers/midnight-viewer-html"
 
-    def build(self, **environment):
+    def build(self, checkout=None, application=None, **environment):
+        """Run the checkout's wrapper, named as given, into its _build/debug by default."""
+        checkout = checkout or self.root
         self.log.unlink(missing_ok=True)
         result = subprocess.run(
             [shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-             str(self.root / "scripts/build-html-viewer.ps1"), "-SdkConfig", str(self.config),
-             "-AppDirectory", str(self.root / "_build/debug")],
-            cwd=self.root, env=dict(self.environment, **environment), capture_output=True, text=True, timeout=120)
+             str(checkout / "scripts/build-html-viewer.ps1"), "-SdkConfig", str(self.config),
+             "-AppDirectory", str(application or checkout / "_build/debug")],
+            cwd=checkout, env=dict(self.environment, **environment), capture_output=True, text=True, timeout=120)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return result.returncode, result.stdout + result.stderr, calls
 
@@ -271,6 +280,31 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assert_package(self.library.read_bytes())
         if len(str(short)) <= 80:
             self.assertNotIn("MIDNIGHT_HTML_TARGET_DIR", output)
+
+    def test_hidden_or_junction_parents_are_accepted_but_reparse_points_from_build_down_are_not(self):
+        import _winapi  # A junction needs no symlink privilege.
+        # The checkout lies below hidden AppData (see setUp) and is also reached through a
+        # junction to it, like a linked parent folder; neither is inspected.
+        linked = self.owner / "linked"
+        _winapi.CreateJunction(str(self.root.parent), str(linked))
+        checkout = linked / "checkout"
+        code, output, _ = self.build(checkout)
+        self.assertEqual(code, 0, output)
+        self.assert_package(self.library.read_bytes())
+        outside = self.owner / "outside"
+        outside.mkdir()
+        _winapi.CreateJunction(str(outside), str(self.root / "_build/redirect"))
+        _winapi.CreateJunction(str(self.root), str(self.root / "_build/loop"))
+        for application in (checkout / "_build/redirect/debug", checkout / "_build/loop/_build/debug"):
+            with self.subTest(application=application):
+                code, output, calls = self.build(checkout, application)
+                self.assertNotEqual(code, 0)
+                self.assertIn("must not traverse reparse points", output)
+                self.assertEqual(calls, [], "A refused destination reached Cargo")
+        code, output, _ = self.build(checkout, checkout / "debug")
+        self.assertNotEqual(code, 0)
+        self.assertIn("must be under _build", output)
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_dependency_notices_below_a_non_ascii_path_survive_a_legacy_console_code_page(self):
         # Cargo prints UTF-8, but PowerShell decodes native output with the console

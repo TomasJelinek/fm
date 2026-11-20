@@ -90,7 +90,9 @@ is unsigned. Archive checksums establish download integrity, not code signing.
 
 `scripts/package-release.py` uses Python 3.11+ standard-library tools to package an
 already built/verified executable. It neither builds nor publishes. All output must
-be under `_build`; it refuses an existing staging directory or archive. Every module
+be under the checkout's own `_build`; the checkout may be reached through a link, but
+`_build` and every folder below it must not be one. It refuses an existing staging
+directory or archive. Every module
 input and the README version are validated before the staging directory is created,
 so a refused run leaves nothing that blocks the next attempt. The `--readme` file
 must begin with `Midnight Explorer VERSION ` for the workspace version. Generate
@@ -155,7 +157,10 @@ capabilities. Library entries and archive executable entries remain distinct in
 `BUILD-INFO.json`. Both the image and the video thumbnail worker are required under
 `thumbnailers/` (or `--thumbnailers-root`), with the FFmpeg runtime, its corresponding
 source and build notices. Native providers run with application authority.
-It rejects symlinks, escaped paths and missing notices. Package hashes establish
+It rejects links (symlinks, junctions and other reparse points), `..` and other escaped
+paths inside module packages, crate license files and license overrides, and missing
+notices. Folders above a package root, such as a linked cargo home or Fedora
+Silverblue's `/home`, may be links. Package hashes establish
 integrity, not publisher authenticity. Native C ABI viewers retain application
 authority; image decoding additionally runs in the required restricted worker.
 If a crate omits license files

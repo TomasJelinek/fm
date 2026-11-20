@@ -40,7 +40,9 @@ class ThumbnailNoticeTests(unittest.TestCase):
         temporary.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=temporary)
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # The fixture checkout; its folder leaves room for links that lead to it.
+        self.owner = Path(self.temporary.name)
+        self.root = self.owner / "checkout"
         self.output = self.root / "_build/notices"
         self.plugins = ("midnight-thumbnail-image", "midnight-thumbnail-video")
         self.metadata = {}
@@ -124,9 +126,51 @@ class ThumbnailNoticeTests(unittest.TestCase):
         (outside / "MIT.txt").write_text("Unrelated private content\n", encoding="utf-8")
         self.directory_link(kind, crate / "LICENSES", outside)
         self.dependency(package)
-        with self.assertRaisesRegex(ValueError, "must not traverse symlinks: .*LICENSES$"):
+        # Discovery refuses the link itself; it never lists what lies behind it.
+        with self.assertRaisesRegex(ValueError, "link.*: .*LICENSES$"):
             self.generate()
         self.assertFalse(self.output.exists())
+
+    def assert_checkout_reached_through_a_link_is_accepted(self, kind):
+        # Fedora Silverblue's /home -> /var/home, a linked parent folder or a subst drive:
+        # the build names the output through the link, main() the checkout by its resolved
+        # path, and the output must still be recognised as below the checkout's _build.
+        linked = self.directory_link(kind, self.owner / "linked checkout", self.root)
+        self.notices.generate_notices(self.metadata, linked / "_build/notices", repository=self.root)
+        readme = self.output / "midnight-thumbnail-image/README.md"
+        self.assertEqual(readme.read_text(), "Documentation for midnight-thumbnail-image\n")
+        # Everything named through the link, as when Cargo reports the linked spelling.
+        for metadata in self.metadata.values():
+            for package in metadata["packages"]:
+                manifest = Path(package["manifest_path"])
+                package["manifest_path"] = str(linked / manifest.relative_to(self.root))
+        readme.unlink()
+        self.notices.generate_notices(self.metadata, linked / "_build/notices", repository=linked)
+        self.assertEqual(readme.read_text(), "Documentation for midnight-thumbnail-image\n")
+
+    def assert_links_at_or_below_build_are_refused(self, kind):
+        # _build and every folder below it must be real: a link there could redirect the
+        # replacement of generated notices to unrelated content, even back into the checkout.
+        outside = self.owner / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("user data\n", encoding="utf-8")
+        build = self.root / "_build"
+        self.directory_link(kind, build / "redirect", outside)
+        self.directory_link(kind, build / "loop", self.root)
+        for output in (build / "redirect/notices", build / "loop/_build/notices"):
+            with self.subTest(output=output), self.assertRaisesRegex(ValueError, "link"):
+                self.notices.generate_notices(self.metadata, output, repository=self.root)
+        self.assertEqual([path.name for path in outside.iterdir()], ["keep"])
+        for link in (build / "redirect", build / "loop"):
+            if os.name == "nt":
+                os.rmdir(link)  # Removes the junction or directory symlink, never its target.
+            else:
+                link.unlink()
+        build.rmdir()
+        self.directory_link(kind, build, outside)
+        with self.assertRaisesRegex(ValueError, "link"):
+            self.notices.generate_notices(self.metadata, self.output, repository=self.root)
+        self.assertEqual([path.name for path in outside.iterdir()], ["keep"])
 
     def test_both_workers_keep_transitive_and_vendored_terms_features_and_existing_shared_notices(self):
         self.dependency(self.package("codec", files={"LICENSE-MIT": "Codec terms\n",
@@ -255,20 +299,29 @@ class ThumbnailNoticeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Nonportable.*'(Z|LICENSE):"):
                     self.notices.add_file({}, source, Path("README.md"), root=crate)
 
-    def test_output_must_be_in_build_and_must_not_traverse_symlinks(self):
-        with self.assertRaisesRegex(ValueError, "_build"):
-            self.notices.generate_notices(self.metadata, self.root / "outside", repository=self.root)
-        outside = self.root / "outside"
-        outside.mkdir()
-        (self.root / "_build").mkdir()
-        try:
-            (self.root / "_build/redirect").symlink_to(outside, target_is_directory=True)
-        except OSError as error:
-            self.skipTest(f"OS does not permit fixture symlinks: {error}")
-        with self.assertRaises(ValueError):
-            self.notices.generate_notices(self.metadata, self.root / "_build/redirect/notices",
-                                          repository=self.root)
-        self.assertEqual(list(outside.iterdir()), [])
+    def test_output_must_be_below_the_checkouts_own_build(self):
+        (self.owner / "_build").mkdir()
+        for output in (self.root / "outside", self.root / "_build", self.root / "_build/x/../notices",
+                       self.owner / "_build/notices"):
+            with self.subTest(output=output), self.assertRaisesRegex(
+                    ValueError, "must be below the repository's _build|must not contain '\\.\\.'"):
+                self.notices.generate_notices(self.metadata, output, repository=self.root)
+        self.assertFalse((self.root / "outside").exists())
+        self.assertEqual(list((self.owner / "_build").iterdir()), [])
+
+    def test_checkout_reached_through_a_symlink_is_accepted(self):
+        self.assert_checkout_reached_through_a_link_is_accepted("symlink")
+
+    @unittest.skipUnless(os.name == "nt", "Junctions are Windows directory reparse points")
+    def test_checkout_reached_through_a_junction_is_accepted(self):
+        self.assert_checkout_reached_through_a_link_is_accepted("junction")
+
+    def test_symlinks_at_or_below_build_are_refused(self):
+        self.assert_links_at_or_below_build_are_refused("symlink")
+
+    @unittest.skipUnless(os.name == "nt", "Junctions are Windows directory reparse points")
+    def test_junctions_at_or_below_build_are_refused(self):
+        self.assert_links_at_or_below_build_are_refused("junction")
 
     def test_cli_uses_locked_offline_metadata_and_preserves_cargo_failure(self):
         config = self.root / "sdk.toml"

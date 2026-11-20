@@ -30,20 +30,108 @@ def portable_component(name):
         raise ValueError(f"Nonportable or ambiguous release path component: {name!r}")
 
 
+def is_link(metadata):
+    """A symbolic link or any Windows reparse point, such as a junction."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def plain_metadata(path):
     metadata = path.lstat()
-    if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
+    if is_link(metadata):
         raise ValueError(f"Symlink/reparse entry is not a release input: {path}")
     if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)):
         raise ValueError(f"Special file is not a release input: {path}")
     return metadata
 
 
+# Link rule of every collector and output (BUILD-02). Folders above a caller-named
+# package root, the checkout or its _build may be links: Fedora Silverblue's
+# /home -> /var/home, a linked parent folder, a subst drive or an 8.3 spelling.
+# Nothing below that root or below _build may be a link, a reparse point or '..'.
+
+def real_directory(path, description):
+    """A caller-named root that is itself a real directory; folders above it may be links."""
+    path = Path(path).absolute()
+    if ".." in path.parts or not stat.S_ISDIR(plain_metadata(path).st_mode):
+        raise ValueError(f"{description} must be a real directory named without '..': {path}")
+    return path
+
+
+def package_member(root, source):
+    """The path of an input below its package root; '..' or a path outside the root escapes."""
+    root, source = Path(root).absolute(), Path(source).absolute()
+    if source != root and source.is_relative_to(root):
+        member = source.relative_to(root)
+        if ".." not in member.parts:
+            return member
+    raise ValueError(f"Package input escapes its package: {source}")
+
+
+def package_path(source, *, root):
+    """The real path of a package input below its root, reached without links.
+
+    The caller names the root, such as a crate's manifest directory. Only the root is
+    resolved, so links above it and a root that is itself a link (a registry crate
+    folder) are accepted. Every component below it must be a portable name and is
+    inspected without following links, so neither a link, '..' nor a drive or stream
+    name can substitute content from outside the package.
+    """
+    root = Path(root).absolute()
+    member = package_member(root, source)
+    # Check the names before any access: on Windows, joining a drive-qualified name such
+    # as 'D:x' re-anchors the path on that drive, and 'LICENSE:x' names a data stream.
+    for part in member.parts:
+        portable_component(part)
+    # Descend from the resolved root; an error names the link as the caller spelled it.
+    path, given = root.resolve(strict=True), root
+    for part in member.parts:
+        path, given = path / part, given / part
+        if is_link(path.lstat()):
+            raise ValueError(f"Package input must not traverse links: {given}")
+    return path
+
+
+def build_output(output, repository):
+    """An output directory strictly below the checkout's own _build, reached without links.
+
+    The checkout is recognised as the same directory however the output spells it, so
+    it may be reached through links. _build and every existing folder below it down to
+    the output must be a real directory: no link redirects what the caller replaces.
+    """
+    output = Path(output).absolute()
+    if ".." in output.parts:
+        raise ValueError(f"Generated output must not contain '..': {output}")
+    checkout = os.stat(repository)
+
+    def is_checkout(path):
+        try:
+            return os.path.samestat(path.stat(), checkout)
+        except OSError:
+            return False
+
+    # The shallowest ancestor that is the checkout ends the walk, so a link below the
+    # checkout that leads back to it is still inspected, never mistaken for the checkout.
+    ancestors = (output, *output.parents)
+    depth = next((index for index in reversed(range(len(ancestors))) if is_checkout(ancestors[index])), 0)
+    below = ancestors[:depth]
+    if len(below) < 2 or os.path.normcase(below[-1].name) != "_build":
+        raise ValueError(f"Generated output must be below the repository's _build: {output}")
+    for path in below:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        if is_link(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"Generated output must not traverse links or files: {path}")
+    return output
+
+
 def plain_tree(root, maximum=4096):
+    """Every regular file below a real root directory, walked without following links."""
     root = Path(root).absolute()
     portable_component(root.name)
-    if root.resolve() != root or not stat.S_ISDIR(plain_metadata(root).st_mode):
-        raise ValueError(f"Release tree must be a real directory without redirected parents: {root}")
+    root = real_directory(root, "Release tree")
     pending, files, count = [root], [], 0
     while pending:
         directory = pending.pop()
@@ -52,10 +140,8 @@ def plain_tree(root, maximum=4096):
             count += 1
             if count > maximum:
                 raise ValueError(f"Release tree entry limit exceeded: {root}")
-            metadata = plain_metadata(path)
-            if path.resolve() != path:
-                raise ValueError(f"Release entry escapes its package: {path}")
-            if stat.S_ISDIR(metadata.st_mode):
+            # Links, reparse points and special files are refused, never followed.
+            if stat.S_ISDIR(plain_metadata(path).st_mode):
                 pending.append(path)
             else:
                 files.append(path)
@@ -84,10 +170,8 @@ def sha256_file(path):
 
 def copy_viewer_packages(stage, viewers, target, required_ids=(), *, validate_only=False):
     """Copy independently built packages, validating all inputs before staging any plugin."""
-    viewers = Path(viewers).absolute()
-    if viewers.resolve() != viewers or not stat.S_ISDIR(plain_metadata(viewers).st_mode):
-        raise ValueError("Viewer package root must be a real directory")
-    if Path(stage).resolve().is_relative_to(viewers):
+    viewers = real_directory(viewers, "Viewer package root")
+    if Path(stage).resolve().is_relative_to(viewers.resolve()):
         raise ValueError("Release staging cannot be inside its viewer input tree")
     packages, identities = [], set()
     entries = sorted(viewers.iterdir())
@@ -264,10 +348,8 @@ def validate_web_runtime(package, files, manifest, target):
 
 
 def worker_input(stage, source):
-    source = Path(source).absolute()
-    if source.resolve() != source or not stat.S_ISDIR(plain_metadata(source).st_mode):
-        raise ValueError("Worker input must be a real directory")
-    if Path(stage).resolve().is_relative_to(source):
+    source = real_directory(source, "Worker input")
+    if Path(stage).resolve().is_relative_to(source.resolve()):
         raise ValueError("Release staging cannot be inside its worker input")
     return source
 
@@ -470,9 +552,7 @@ def copy_thumbnail_packages(stage, source, target, *, require_media=False, valid
 
 def validate_runtime_installation(source, target):
     """Check the normal provider graph without creating staging or deployment files."""
-    source = Path(source).absolute()
-    if source.resolve() != source or not stat.S_ISDIR(plain_metadata(source).st_mode):
-        raise ValueError("Runtime installation must be a real directory")
+    source = real_directory(source, "Runtime installation")
     suffix = ".exe" if target.endswith("windows-msvc") else ""
     for name in ("me" + suffix, "midnight-elevated-listing" + suffix):
         if not stat.S_ISREG(plain_metadata(source / name).st_mode):
@@ -522,6 +602,12 @@ def dependency_packages(metadata, dependency_list, *, required_root="midnight-ex
 
 
 def license_files(package):
+    """A crate's declared license file and its license-named files, found without links.
+
+    Entries of the crate directory named like a license or notice are collected, and a
+    directory so named contributes every file below it. A link, reparse point or special
+    file among them is refused, not followed; package_path checks the declared file.
+    """
     source = Path(package["manifest_path"]).parent
     files = set()
     if package.get("license_file"):
@@ -529,11 +615,20 @@ def license_files(package):
     for entry in source.iterdir():
         name = entry.name.lower()
         if name.startswith(("license", "licence", "copying", "copyright", "notice")):
-            if entry.is_dir():
-                files.update(path for path in entry.rglob("*") if path.is_file())
-            elif entry.is_file():
+            if stat.S_ISDIR(plain_metadata(entry).st_mode):
+                files.update(plain_tree(entry, maximum=65536))
+            else:
                 files.add(entry)
     return source, sorted(files)
+
+
+def copy_package_file(source, destination, *, root):
+    """Copy a package input below its root to the same relative path below destination."""
+    path = package_path(source, root=root)
+    target = Path(destination) / package_member(root, source)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with plain_file(path) as original, target.open("xb") as output:
+        shutil.copyfileobj(original, output)
 
 
 def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
@@ -541,23 +636,22 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
     missing = []
     for package in dependency_packages(metadata, dependency_list):
         name = f'{package["name"]}-{package["version"]}'
+        portable_component(name)
         source, files = license_files(package)
         if not files and overrides:
-            source = overrides / name
-            files = sorted(path for path in source.rglob("*") if path.is_file())
+            source = Path(overrides) / name
+            files = plain_tree(source, maximum=65536) if os.path.lexists(source) else []
         if not files:
             missing.append(name)
         for path in files:
-            destination = stage / "licenses" / name / path.relative_to(source)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, destination)
+            copy_package_file(path, stage / "licenses" / name, root=source)
         inventory.append({key: package.get(key) for key in
                           ("name", "version", "license", "repository", "source", "authors")})
     if missing:
         raise ValueError("Missing dependency license files: " + ", ".join(missing))
     rust_target = stage / "licenses" / "rust"
     rust_target.mkdir(parents=True)
-    shutil.copyfile(rust_docs / "COPYRIGHT-library.html", rust_target / "COPYRIGHT-library.html")
+    copy_package_file(Path(rust_docs) / "COPYRIGHT-library.html", rust_target, root=rust_docs)
     project_docs = Path(__file__).resolve().parents[1] / "docs"
     for author in ("folke", "joshdick", "rose-pine", "catppuccin"):
         relative = Path("licenses/themes") / author / "LICENSE"
@@ -622,7 +716,7 @@ def authorization_helper(binary, target):
     name = "midnight-elevated-listing.exe" if target.endswith("windows-msvc") else "midnight-elevated-listing"
     source = (Path(binary).parent / name).absolute()
     metadata = plain_metadata(source)
-    if source.resolve() != source or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 512 * 1024 * 1024:
+    if ".." in source.parts or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 512 * 1024 * 1024:
         raise ValueError("Authorization helper must be a regular, bounded, unredirected sibling executable")
     return name, source, metadata
 
@@ -670,9 +764,7 @@ def main():
     version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     rust = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     name = f"midnight-explorer-{version}-{args.target}"
-    output = args.output.resolve()
-    if not output.is_relative_to(root / "_build"):
-        raise ValueError("Release output must remain under the repository's _build directory")
+    output = build_output(args.output, root)
     stage = output / name
     readme = args.readme.read_text(encoding="utf-8")
     if not readme.startswith(f"Midnight Explorer {version} "):

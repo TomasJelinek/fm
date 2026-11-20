@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import stat
 import subprocess
@@ -10,15 +11,55 @@ import subprocess
 # The inventory marks a directory as this script's output (see replace_notices).
 INVENTORY = "inventory.json"
 MAX_ENTRIES = 65536
+NOTICE_PREFIXES = ("license", "licence", "copying", "notice", "copyright")
+
+
+def linked(metadata):
+    """A symbolic link or a Windows reparse point such as a junction."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
 
 
 def is_link(path):
-    """A symbolic link or a Windows reparse point such as a junction."""
+    """Whether an existing path is a link; a missing path is not."""
     try:
         metadata = path.lstat()
     except FileNotFoundError:
         return False
-    return stat.S_ISLNK(metadata.st_mode) or bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+    return linked(metadata)
+
+
+def read_package_file(root, path):
+    """Read a regular file below a dependency's root without following links.
+
+    Only the root is resolved, so links above it (a linked CARGO_HOME, /home -> /var/home)
+    and a root that is itself a link are accepted. Every name below it must be a plain
+    portable name and no component may be a link, so neither a link, '..' nor a drive or
+    stream name can substitute content from outside the package.
+    """
+    root, path = pathlib.Path(root).absolute(), pathlib.Path(path).absolute()
+    if path == root or not path.is_relative_to(root):
+        raise SystemExit(f"Dependency notice escapes its package: {path}")
+    parts = path.relative_to(root).parts
+    # Names are checked before any access: on Windows 'D:x' re-anchors a joined path on
+    # drive D: and 'LICENSE:x' names a data stream.
+    for part in parts:
+        if (part in ("", ".", "..") or re.search(r'[\\/:<>"|?*\x00-\x1f]', part)
+                or part.endswith((".", " "))
+                or re.fullmatch(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", part, re.IGNORECASE)):
+            raise SystemExit(f"Dependency notice escapes its package or is not portable: {path}")
+    current = root.resolve(strict=True)
+    for part in parts:
+        current = current / part
+        metadata = current.lstat()
+        if linked(metadata):
+            raise SystemExit(f"Dependency notice must not traverse links: {path}")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"Dependency notice must be a regular file: {path}")
+    with open(current, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+            raise SystemExit(f"Dependency notice changed while it was opened: {path}")
+        return stream.read()
 
 
 def checked_output(value):
@@ -52,13 +93,21 @@ def notice_plan(metadata):
         if not license_name:
             raise SystemExit(f"Missing license metadata: {package['name']}")
         source = pathlib.Path(package["manifest_path"]).parent
-        files = sorted(p for p in source.iterdir() if p.is_file()
-                       and p.name.lower().startswith(("license", "licence", "copying", "notice", "copyright")))
+        # Discovery never follows links: a link named like a notice is refused, not read.
+        files = []
+        for path in sorted(source.iterdir()):
+            if path.name.lower().startswith(NOTICE_PREFIXES):
+                metadata = path.lstat()
+                if linked(metadata):
+                    raise SystemExit(f"Dependency notice must not traverse links: {path}")
+                if stat.S_ISREG(metadata.st_mode):
+                    files.append(path)
         if package.get("license_file"):
             files.append(source / package["license_file"])
         if not files:
             raise SystemExit(f"Pinned license files must be reviewed: {package['name']}")
-        plan[f"{package['name']}-{package['version']}"] = {path.name: path.read_bytes() for path in files}
+        plan[f"{package['name']}-{package['version']}"] = {
+            path.name: read_package_file(source, path) for path in files}
         inventory.append({"name": package["name"], "version": package["version"], "license": license_name})
     return plan, inventory
 

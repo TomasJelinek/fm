@@ -169,7 +169,9 @@ The launcher uses literal `$ORIGIN` ELF DT_RPATH so the supervisor's cleared
 environment resolves the package's sibling runtime libraries. Packaging requires a
 fresh package destination to prevent stale components and preserves target-filtered
 dependency metadata, all Rust/native notices and `runtime-files.json` SHA-256 entries.
-Optional private native-library input requires `MIDNIGHT_HTML_NATIVE_MANIFEST` with
+Dependency notices are found and read without following links: a link below a
+dependency's root fails packaging, while links above it (a linked cargo home) are
+accepted. Optional private native-library input requires `MIDNIGHT_HTML_NATIVE_MANIFEST` with
 explicit source/path/SHA-256 entries and matching license/source distribution data;
 see THIRD_PARTY.md. No install, root action or setuid configuration is performed.
 Each newly built package still needs real supervised rendering/input/cleanup

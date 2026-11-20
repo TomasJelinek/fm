@@ -9,12 +9,26 @@ api_config=$(realpath "$1")
 destination=$(realpath -ms "$2")
 build_root=$(realpath -ms "$3")
 notices_root=$(realpath "$4")
-[[ $destination == */_build/* && $build_root == */_build/* ]] || { echo 'Generated output must be under _build' >&2; exit 2; }
+# Generated output lies below _build: the checkout's own for a path in the checkout,
+# otherwise the first _build of a custom target directory. That _build and everything
+# below it must not be a symlink. The checkout and the folders above it may be reached
+# through links (Fedora Silverblue's /home -> /var/home, a linked parent folder); the
+# checkout is recognised as the same directory however the path spells it.
 for target in "$destination" "$build_root"; do
-    parent=$target
-    while [[ $parent != / ]]; do
-        [[ ! -L $parent ]] || { echo 'Generated deployment path must not traverse symlinks' >&2; exit 2; }
-        parent=$(dirname "$parent")
+    ancestors=() parent=$target
+    while [[ $parent != / ]]; do ancestors+=("$parent"); parent=$(dirname -- "$parent"); done
+    top=${#ancestors[@]}
+    for (( index=top-1; index>=0; index-- )); do
+        if [[ ${ancestors[index]} -ef $repository ]]; then top=$index; break; fi
+    done
+    anchor=0
+    for (( index=top-1; index>0; index-- )); do
+        if [[ ${ancestors[index]##*/} == _build ]]; then anchor=$index; break; fi
+        (( top == ${#ancestors[@]} )) || break
+    done
+    (( anchor > 0 )) || { echo "Generated output must be under _build: $target" >&2; exit 2; }
+    for (( index=0; index<=anchor; index++ )); do
+        [[ ! -L ${ancestors[index]} ]] || { echo "Generated output must not traverse symlinks: ${ancestors[index]}" >&2; exit 2; }
     done
 done
 profile=${8:-debug}

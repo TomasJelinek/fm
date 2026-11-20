@@ -139,8 +139,13 @@ and `midnight-thumbnail-video/`. Each contains pinned dependency declarations an
 original license/copyright files. `scripts/thumbnail-notices.py` reads each file
 below its package root (the crate's manifest directory, the shared decoder notices
 or the plugin directory) and refuses links, reparse points and `..` there; links
-above that root, such as a linked cargo home, are accepted. Missing notices fail
-staging. The inventory
+above that root, such as a linked cargo home, are accepted. Its output must lie
+below the checkout's own `_build`. The build scripts' destination and build root
+must lie below the checkout's own `_build` or, outside the checkout, below the first
+`_build` of a custom target directory. That `_build` and every folder below it must
+not be a link; the checkout and the folders above it may be one (Fedora Silverblue's
+`/home`, a linked parent folder or `subst` drive) or hidden, such as `AppData`.
+Missing notices fail staging. The inventory
 table alone does not generate these files. Optional video inputs are the verified FFmpeg prefix, matching
 source archive and libclang directory. A flat executable-adjacent
 `thumbnailers/` directory holds executable/JSON pairs, exact runtime libraries

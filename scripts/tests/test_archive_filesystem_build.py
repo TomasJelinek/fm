@@ -359,6 +359,106 @@ class ArchiveNoticeReplacementTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in moved.iterdir()), ["inventory.json", "kept-1.0.0"])
 
 
+class ArchiveNoticeInputTests(unittest.TestCase):
+    """Folders above a dependency's root may be links; nothing below it is followed."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "archive_notices", ROOT / "plugins/midnight-fs-archive/scripts/notices.py")
+        self.notices = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.notices)
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        owner = tempfile.TemporaryDirectory(prefix="archive notice inputs ", dir=temporary)
+        self.addCleanup(owner.cleanup)
+        self.root = Path(owner.name)
+        self.outside = self.root / "outside"
+        self.outside.mkdir()
+        (self.outside / "LICENSE").write_text("Unrelated private content\n")
+
+    def link(self, kind, link, target):
+        target.mkdir(parents=True, exist_ok=True)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "junction":
+            import _winapi  # A junction needs no symlink privilege.
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"OS does not permit fixture symlinks: {error}")
+        return link
+
+    def crate(self, directory, name="zip", files=None, license_file=None):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "Cargo.toml").write_text("[package]\n")
+        for relative, content in (files or {"LICENSE-MIT": f"{name} terms\n"}).items():
+            (directory / relative).parent.mkdir(parents=True, exist_ok=True)
+            (directory / relative).write_bytes(content.encode())
+        return {"name": name, "version": "1.0.0", "license": "MIT", "license_file": license_file,
+                "source": "registry+https://github.com/rust-lang/crates.io-index",
+                "manifest_path": str(directory / "Cargo.toml")}
+
+    def assert_linked_home_and_crate_root_are_accepted(self, kind):
+        # A linked cargo home (~/.cargo -> /data/cargo, /home -> /var/home) and a registry
+        # crate folder that is itself a link substitute nothing from outside the crate.
+        home = self.link(kind, self.root / "home/.cargo", self.root / "disk/cargo")
+        zip_crate = self.crate(home / "registry/src/index-0000/zip-1.0.0", license_file="COPYING.txt",
+                               files={"LICENSE-MIT": "zip terms\n", "COPYING.txt": "zip copying\n"})
+        crate = self.link(kind, self.root / "registry/xz-1.0.0", self.root / "disk/xz")
+        plan, inventory = self.notices.notice_plan({"packages": [zip_crate, self.crate(crate, "xz")]})
+        self.assertEqual(plan, {"zip-1.0.0": {"COPYING.txt": b"zip copying\n", "LICENSE-MIT": b"zip terms\n"},
+                                "xz-1.0.0": {"LICENSE-MIT": b"xz terms\n"}})
+        self.assertEqual([entry["name"] for entry in inventory], ["zip", "xz"])
+
+    def test_symlinked_home_and_crate_root_are_accepted(self):
+        self.assert_linked_home_and_crate_root_are_accepted("symlink")
+
+    @unittest.skipUnless(os.name == "nt", "Junctions are Windows directory reparse points")
+    def test_junction_home_and_crate_root_are_accepted(self):
+        self.assert_linked_home_and_crate_root_are_accepted("junction")
+
+    def assert_links_inside_a_crate_are_refused(self, kind):
+        # A link named like a notice is refused when it is found, and a declared license
+        # file is read without following a linked folder on its way.
+        listed = self.root / "registry/listed-1.0.0"
+        packages = [self.crate(listed, "listed")]
+        self.link(kind, listed / "LICENSES", self.outside)
+        declared = self.root / "registry/declared-1.0.0"
+        packages.append(self.crate(declared, "declared", license_file="docs/LICENSE"))
+        self.link(kind, declared / "docs", self.outside)
+        for package in packages:
+            with self.subTest(package=package["name"]), self.assertRaisesRegex(SystemExit, "link"):
+                self.notices.notice_plan({"packages": [package]})
+
+    def test_symlinks_inside_a_crate_are_refused(self):
+        self.assert_links_inside_a_crate_are_refused("symlink")
+
+    @unittest.skipUnless(os.name == "nt", "Junctions are Windows directory reparse points")
+    def test_junctions_inside_a_crate_are_refused(self):
+        self.assert_links_inside_a_crate_are_refused("junction")
+
+    def test_symlinked_license_file_is_refused(self):
+        crate = self.root / "registry/redirect-1.0.0"
+        package = self.crate(crate, "redirect")
+        try:
+            (crate / "LICENSE").symlink_to(self.outside / "LICENSE")
+        except OSError as error:
+            self.skipTest(f"OS does not permit fixture symlinks: {error}")
+        with self.assertRaisesRegex(SystemExit, "link"):
+            self.notices.notice_plan({"packages": [package]})
+
+    def test_declared_license_file_cannot_escape_its_crate(self):
+        crate = self.root / "registry/escape-1.0.0"
+        (crate.parent / "LICENSE").parent.mkdir(parents=True, exist_ok=True)
+        (crate.parent / "LICENSE").write_text("Unrelated private content\n")
+        for license_file in ("../LICENSE", str(self.outside / "LICENSE"), "LICENSE-MIT:stream"):
+            with self.subTest(license_file=license_file):
+                package = self.crate(crate, "escape", license_file=license_file)
+                with self.assertRaisesRegex(SystemExit, "escapes its package"):
+                    self.notices.notice_plan({"packages": [package]})
+
+
 # Runs the notices command line in a child Python. Only Cargo is replaced: a process replays
 # the fixture metadata's raw UTF-8 bytes, so the script's own decoding of the output is real.
 REPLAYING_CARGO = """import importlib.util, subprocess, sys

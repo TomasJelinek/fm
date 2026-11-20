@@ -6,16 +6,53 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
 import tomllib
 
 PROJECT = Path(__file__).resolve().parents[1]
 PIN = PROJECT / 'scripts/cef-linux-pinned.json'
+NOTICE = re.compile(r'^(LICENSE|LICENCE|COPYING|COPYRIGHT|NOTICE)([._-]|$)', re.I)
 
 
 def digest(path):
     with path.open('rb') as source:
         return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def is_link(metadata):
+    """A symbolic link or a Windows reparse point such as a junction."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def notice_files(root):
+    """License and notice files below a dependency root, found and read without links.
+
+    Only the root is resolved, so links above it (a linked CARGO_HOME, /home -> /var/home)
+    and a root that is itself a link are accepted. A link or reparse point below it is
+    refused, never followed, so no notice can carry content from outside the package.
+    """
+    base = Path(root).resolve(strict=True)
+    pending, notices = [base], {}
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                metadata = path.lstat()
+                if is_link(metadata):
+                    raise ValueError('Dependency notices must not traverse links: '
+                                     + str(Path(root) / path.relative_to(base)))
+                if stat.S_ISDIR(metadata.st_mode):
+                    pending.append(path)
+                elif stat.S_ISREG(metadata.st_mode) and NOTICE.match(entry.name):
+                    with path.open('rb') as stream:
+                        opened = os.fstat(stream.fileno())
+                        if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+                            raise ValueError(f'Dependency notice changed while it was opened: {path}')
+                        notices[path.relative_to(base)] = stream.read()
+    return dict(sorted(notices.items()))
 
 
 def validate_sdk(sdk, pin):
@@ -93,15 +130,14 @@ def package(sdk, destination, launcher, metadata, pin, native):
         source = Path(dependency['manifest_path']).parent
         if dependency['name'] in omissions:
             source = PROJECT / 'notices' / omissions[dependency['name']]
-        notices = [p for p in sorted(source.rglob('*')) if p.is_file() and re.match(
-            r'^(LICENSE|LICENCE|COPYING|COPYRIGHT|NOTICE)([._-]|$)', p.name, re.I)]
+        notices = notice_files(source)
         if not dependency['license'] or not notices:
             raise ValueError(f'Missing pinned license: {dependency["name"]}')
-        for notice in notices:
+        for relative, content in notices.items():
             output = destination / 'notices' / (
-                dependency['name'] + '-' + dependency['version']) / notice.relative_to(source)
+                dependency['name'] + '-' + dependency['version']) / relative
             output.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(notice, output)
+            output.write_bytes(content)
     shutil.copy2(metadata, destination / 'dependency-metadata.json')
     (destination / 'web-viewer.json').write_text(json.dumps(linux_manifest()) + '\n')
     files = [{'path': p.relative_to(destination).as_posix(), 'bytes': p.stat().st_size,

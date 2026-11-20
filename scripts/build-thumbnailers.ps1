@@ -20,11 +20,29 @@ $NoticesRoot=& $resolve $NoticesRoot
 $FfmpegPrefix=& $resolve $FfmpegPrefix
 $FfmpegSourceArchive=& $resolve $FfmpegSourceArchive
 $LibclangPath=& $resolve $LibclangPath
+# Generated output lies below _build: the checkout's own for a path in the checkout,
+# otherwise the first _build of a custom target directory. That _build and everything
+# below it must not be a reparse point (symlink or junction). The checkout and the
+# folders above it may be links, a subst drive or hidden folders such as AppData.
+$checkout=[IO.Path]::GetFullPath($repository).TrimEnd('\')
 foreach ($path in @($Destination,$BuildRoot)) {
-    if ($path -notmatch '[/\\]_build[/\\]') { throw 'Generated thumbnail output must be under _build' }
-    for ($part=$path; $part; $part=Split-Path -Parent $part) {
-        if ((Test-Path -LiteralPath $part) -and ((Get-Item -LiteralPath $part).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
-            throw 'Generated deployment path must not traverse reparse points'
+    $ancestors=@()
+    $inside=$false
+    for ($part=$path.TrimEnd('\'); $part; $part=[IO.Path]::GetDirectoryName($part)) {
+        # TrimEnd also matches a checkout at a drive root, such as a subst drive's M:\.
+        if ($part.TrimEnd('\') -eq $checkout) { $inside=$true; break }
+        $ancestors+=$part
+    }
+    $anchor=0
+    for ($index=$ancestors.Count - 1; $index -gt 0; $index--) {
+        if ([IO.Path]::GetFileName($ancestors[$index]) -eq '_build') { $anchor=$index; break }
+        if ($inside) { break }
+    }
+    if ($anchor -eq 0) { throw "Generated thumbnail output must be under _build: $path" }
+    foreach ($part in $ancestors[0..$anchor]) {
+        $item=Get-Item -LiteralPath $part -Force -ErrorAction Ignore
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Generated thumbnail output must not traverse reparse points: $part"
         }
     }
 }

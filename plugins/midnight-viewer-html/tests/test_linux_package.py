@@ -87,6 +87,56 @@ class LinuxBuildValidation(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 PACKAGER.package(sdk, destination, launcher, metadata, pin, None)
 
+    @staticmethod
+    def link(link, target):
+        """A directory symlink, or a junction on Windows, where symlinks need a privilege."""
+        target.mkdir(parents=True, exist_ok=True)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == 'nt':
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+        return link
+
+    def test_dependency_notices_are_found_and_read_without_following_links(self):
+        work = ROOT / '_build/qa/html-linux/tests'
+        work.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=work) as tmp:
+            tmp = Path(tmp)
+            # A linked cargo home (/home -> /var/home, ~/.cargo -> /data/cargo) and a crate
+            # folder that is itself a link are accepted: they lie at or above the root.
+            home = self.link(tmp / 'home/.cargo', tmp / 'disk/cargo')
+            crate = home / 'registry/src/index-0000/fixture-1.0.0'
+            (crate / 'nested').mkdir(parents=True)
+            (crate / 'LICENSE-MIT').write_bytes(b'Dependency license fixture')
+            (crate / 'nested/NOTICE').write_bytes(b'Bundled dependency notice fixture')
+            (crate / 'lib.rs').write_bytes(b'not a notice')
+            expected = {Path('LICENSE-MIT'): b'Dependency license fixture',
+                        Path('nested/NOTICE'): b'Bundled dependency notice fixture'}
+            for root in (crate, self.link(tmp / 'registry/fixture-1.0.0', crate)):
+                with self.subTest(root=root):
+                    self.assertEqual(PACKAGER.notice_files(root), expected)
+            # Below the root nothing is followed: a linked folder anywhere is refused.
+            outside = tmp / 'outside'
+            outside.mkdir()
+            (outside / 'LICENSE').write_bytes(b'Unrelated private content')
+            self.link(crate / 'nested/vendor', outside)
+            with self.assertRaisesRegex(ValueError, 'must not traverse links: .*vendor'):
+                PACKAGER.notice_files(crate)
+
+    @unittest.skipIf(os.name == 'nt', 'File symlinks need a privilege on Windows')
+    def test_linked_license_file_is_refused(self):
+        work = ROOT / '_build/qa/html-linux/tests'
+        work.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=work) as tmp:
+            tmp = Path(tmp)
+            (tmp / 'outside').write_bytes(b'Unrelated private content')
+            (tmp / 'dependency').mkdir()
+            (tmp / 'dependency/LICENSE').symlink_to(tmp / 'outside')
+            with self.assertRaisesRegex(ValueError, 'must not traverse links: .*LICENSE'):
+                PACKAGER.notice_files(tmp / 'dependency')
+
     def test_versioned_fallback_directory_is_rejected(self):
         work = ROOT / '_build/qa/html-linux/tests'
         work.mkdir(parents=True, exist_ok=True)

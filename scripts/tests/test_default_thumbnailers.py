@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -194,62 +195,70 @@ class ThumbnailerInputTests(unittest.TestCase):
             native.mkdir(parents=True)
             (native / "bootstrap-linux.sh").write_text("return 97\n")
             result = subprocess.run(["bash", str(fixture / "scripts/build-thumbnailers.sh"), str(config),
-                                     str(fixture / "destination"), str(fixture / "targets"), str(fixture)],
-                                    capture_output=True, text=True, timeout=20)
+                                     str(fixture / "_build/destination"), str(fixture / "_build/targets"),
+                                     str(fixture)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
             self.assertIn("FFMPEG", result.stderr)
-            self.assertFalse((fixture / "destination").exists())
+            self.assertFalse((fixture / "_build/destination").exists())
+
+    def checkout(self, fixture):
+        """A checkout with the real script; Cargo, sha256sum and the native build are stubs."""
+        (fixture / "scripts").mkdir(parents=True)
+        shutil.copyfile(ROOT / "scripts/build-thumbnailers.sh", fixture / "scripts/build-thumbnailers.sh")
+        native = fixture / "plugins/image-decoder/native"
+        native.mkdir(parents=True)
+        for name in ("bootstrap-linux.sh", "build-linux.sh"):
+            (native / name).write_text("return 0\n")
+        (fixture / "plugins/image-decoder/notices").mkdir()
+        (fixture / "plugins/image-decoder/notices/dav1d-LICENSE").write_text("dav1d terms\n")
+        notices = fixture / "notices"
+        for name in ("midnight-thumbnail-image", "midnight-thumbnail-video"):
+            (fixture / "plugins" / name).mkdir(parents=True)
+            (fixture / "plugins" / name / "thumbnailer.json").write_text("{}\n")
+            (notices / name).mkdir(parents=True)
+            (notices / name / "THIRD-PARTY.json").write_text("[]\n")
+        prefix = fixture / "ffmpeg"
+        (prefix / "lib").mkdir(parents=True)
+        (prefix / "share/midnight-ffmpeg").mkdir(parents=True)
+        (prefix / "share/midnight-ffmpeg/COPYING.LGPLv2.1").write_text("LGPL\n")
+        for name in ("libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10", "libswresample.so.7"):
+            (prefix / "lib" / name).write_bytes(b"new " + name.encode())
+        (fixture / "ffmpeg-9.0.2.tar.xz").write_bytes(b"source fixture")
+        (fixture / "registry.toml").write_text("# fixture\n")
+        tools = fixture / "bin"
+        tools.mkdir()
+        for name, body in (("sha256sum", "exit 0\n"),  # the pinned digest is checked elsewhere
+                           ("cargo", 'mkdir -p "$CARGO_TARGET_DIR/debug"\n'
+                                     'name=$(basename "$(dirname "$3")")\n'
+                                     'printf "new %s\\n" "$name" > "$CARGO_TARGET_DIR/debug/$name"\n'
+                                     'if [ "$name" = midnight-thumbnail-video ]; then\n'
+                                     '  printf "new video playback\\n" > "$CARGO_TARGET_DIR/debug/midnight-video-playback"\n'
+                                     'fi\n')):
+            (tools / name).write_text("#!/bin/sh\nset -eu\n" + body)
+            (tools / name).chmod(0o755)
+
+    def build(self, checkout, destination, build_root=None):
+        """Run the checkout's script, named as given; inputs are named through the same path."""
+        environment = dict(os.environ, PATH=str(checkout / "bin") + os.pathsep + os.environ["PATH"])
+        return subprocess.run(
+            ["bash", str(checkout / "scripts/build-thumbnailers.sh"), str(checkout / "registry.toml"),
+             str(destination), str(build_root or checkout / "_build/targets"), str(checkout / "notices"),
+             str(checkout / "ffmpeg"), str(checkout / "ffmpeg-9.0.2.tar.xz"), str(checkout), "debug"],
+            env=environment, capture_output=True, text=True, timeout=20)
 
     def test_rebuild_replaces_the_package_without_stale_files_or_truncating_mapped_libraries(self):
         temporary = ROOT / "_build/tmp"
         temporary.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=temporary) as directory:
-            fixture = Path(directory) / "_build/fixture"
-            (fixture / "scripts").mkdir(parents=True)
-            shutil.copyfile(ROOT / "scripts/build-thumbnailers.sh", fixture / "scripts/build-thumbnailers.sh")
-            native = fixture / "plugins/image-decoder/native"
-            native.mkdir(parents=True)
-            for name in ("bootstrap-linux.sh", "build-linux.sh"):
-                (native / name).write_text("return 0\n")
-            (fixture / "plugins/image-decoder/notices").mkdir()
-            (fixture / "plugins/image-decoder/notices/dav1d-LICENSE").write_text("dav1d terms\n")
-            notices = fixture / "notices"
-            for name in ("midnight-thumbnail-image", "midnight-thumbnail-video"):
-                (fixture / "plugins" / name).mkdir(parents=True)
-                (fixture / "plugins" / name / "thumbnailer.json").write_text("{}\n")
-                (notices / name).mkdir(parents=True)
-                (notices / name / "THIRD-PARTY.json").write_text("[]\n")
-            prefix = fixture / "ffmpeg"
-            (prefix / "lib").mkdir(parents=True)
-            (prefix / "share/midnight-ffmpeg").mkdir(parents=True)
-            (prefix / "share/midnight-ffmpeg/COPYING.LGPLv2.1").write_text("LGPL\n")
-            for name in ("libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10", "libswresample.so.7"):
-                (prefix / "lib" / name).write_bytes(b"new " + name.encode())
-            archive = fixture / "ffmpeg-9.0.2.tar.xz"
-            archive.write_bytes(b"source fixture")
-            (fixture / "registry.toml").write_text("# fixture\n")
-            tools = fixture / "bin"
-            tools.mkdir()
-            for name, body in (("sha256sum", "exit 0\n"),  # the pinned digest is checked elsewhere
-                               ("cargo", 'mkdir -p "$CARGO_TARGET_DIR/debug"\n'
-                                         'name=$(basename "$(dirname "$3")")\n'
-                                         'printf "new %s\\n" "$name" > "$CARGO_TARGET_DIR/debug/$name"\n'
-                                         'if [ "$name" = midnight-thumbnail-video ]; then\n'
-                                         '  printf "new video playback\\n" > "$CARGO_TARGET_DIR/debug/midnight-video-playback"\n'
-                                         'fi\n')):
-                (tools / name).write_text("#!/bin/sh\nset -eu\n" + body)
-                (tools / name).chmod(0o755)
-            destination = fixture / "app/thumbnailers"
+            fixture = Path(directory) / "checkout"
+            self.checkout(fixture)
+            destination = fixture / "_build/app/thumbnailers"
             (destination / "notices/removed-provider").mkdir(parents=True)
             (destination / "notices/removed-provider/LICENSE").write_text("stale notice\n")
             (destination / "libavcodec.so.62").write_bytes(b"stale library")
             (destination / "libavcodec.so.63").write_bytes(b"mapped library")
-            environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
             with (destination / "libavcodec.so.63").open("rb") as mapped:
-                result = subprocess.run(
-                    ["bash", str(fixture / "scripts/build-thumbnailers.sh"), str(fixture / "registry.toml"),
-                     str(destination), str(fixture / "targets"), str(notices), str(prefix), str(archive),
-                     str(fixture), "debug"], env=environment, capture_output=True, text=True, timeout=20)
+                result = self.build(fixture, destination)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(mapped.read(), b"mapped library", "A running worker's library was rewritten")
             self.assertFalse((destination / "libavcodec.so.62").exists())
@@ -260,7 +269,48 @@ class ThumbnailerInputTests(unittest.TestCase):
             self.assertTrue((destination / "libswresample.so.7").is_file())
             self.assertTrue((destination / "notices/midnight-thumbnail-image/dav1d-LICENSE").is_file())
             self.assertTrue((destination / "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz").is_file())
-            self.assertEqual(list((fixture / "app").glob(".thumbnailers-build.*")), [])
+            self.assertEqual(list(destination.parent.glob(".thumbnailers-build.*")), [])
+
+    def test_checkout_reached_through_a_symlink_builds_but_links_from_build_down_are_refused(self):
+        # Fedora Silverblue's /home -> /var/home or a linked parent folder: the checkout,
+        # however a path spells it, is not inspected, but _build and below must be real.
+        temporary = ROOT / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as directory:
+            owner = Path(directory)
+            real = owner / "var/home/checkout"
+            self.checkout(real)
+            (owner / "home").symlink_to(owner / "var/home", target_is_directory=True)
+            linked = owner / "home/checkout"
+            for destination in (linked / "_build/app/thumbnailers", real / "_build/other app/thumbnailers"):
+                with self.subTest(destination=destination):
+                    result = self.build(linked, destination)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((real / "_build/app/thumbnailers/midnight-thumbnail-image").read_text(),
+                             "new midnight-thumbnail-image\n")
+            self.assertTrue((real / "_build/other app/thumbnailers/libavcodec.so.63").is_file())
+            outside = owner / "outside"
+            outside.mkdir()
+            (outside / "keep").write_text("user data\n")
+            (real / "_build/redirect").symlink_to(outside, target_is_directory=True)
+            (real / "_build/loop").symlink_to(real, target_is_directory=True)
+            # Outside the checkout (a custom CARGO_TARGET_DIR), the walk starts at the path's
+            # first _build, which for this fixture is the repository's own _build above it.
+            (owner / "custom target").symlink_to(outside, target_is_directory=True)
+            refusals = {"must not traverse symlinks": (
+                            (linked / "_build/redirect/thumbnailers", None),
+                            (linked / "_build/app/thumbnailers", linked / "_build/redirect/targets"),
+                            (linked / "_build/loop/_build/app/thumbnailers", None),
+                            (owner / "custom target/_build/debug/thumbnailers", None)),
+                        "must be under _build": ((linked / "app/thumbnailers", None),)}
+            for message, cases in refusals.items():
+                for destination, build_root in cases:
+                    with self.subTest(destination=destination, build_root=build_root):
+                        result = self.build(linked, destination, build_root)
+                        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                        self.assertIn(message, result.stderr)
+            self.assertEqual([path.name for path in outside.iterdir()], ["keep"])
+            self.assertFalse((linked / "app").exists())
 
 
 @unittest.skipUnless(os.name == "nt", "Windows thumbnail build swap")
@@ -272,7 +322,12 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         temporary.mkdir(parents=True, exist_ok=True)
         owner = tempfile.TemporaryDirectory(prefix="thumbnail swap ", dir=temporary)
         self.addCleanup(owner.cleanup)
-        self.fixture = Path(owner.name) / "_build/fixture"
+        self.owner = Path(owner.name)
+        # Like a checkout in the user profile: Get-Item without -Force cannot find AppData.
+        hidden = self.owner / "AppData"
+        hidden.mkdir()
+        self.assertTrue(ctypes.windll.kernel32.SetFileAttributesW(str(hidden), stat.FILE_ATTRIBUTE_HIDDEN))
+        self.fixture = hidden / "checkout"
         (self.fixture / "scripts").mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/build-thumbnailers.ps1", self.fixture / "scripts/build-thumbnailers.ps1")
         native = self.fixture / "plugins/image-decoder/native"
@@ -307,26 +362,29 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{tools / "cargo.py"}" %*\n')
         self.environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
         self.environment.pop("CARGO_TARGET_DIR", None)
-        self.destination = self.fixture / "app/thumbnailers"
+        self.destination = self.fixture / "_build/app/thumbnailers"
 
-    def build(self):
+    def build(self, checkout=None, destination=None, build_root=None, *, status=0):
+        """Run the checkout's script, named as given; inputs are named through the same path."""
         def literal(path):
             return "'" + str(path).replace("'", "''") + "'"
+        checkout = checkout or self.fixture
         # The pinned FFmpeg source digest is checked elsewhere; only the swap is tested.
-        driver = self.fixture / "driver.ps1"
+        driver = checkout / "driver.ps1"
         driver.write_text(
             "function Get-FileHash([string]$LiteralPath, [string]$Algorithm) {\n"
             "    [pscustomobject]@{ Hash = '8C3850283EB25FA026482078A04051E0BE17347B09EF81A0849BEC15A96E002E' }\n"
             "}\n"
-            f"& {literal(self.fixture / 'scripts/build-thumbnailers.ps1')} -ApiConfig {literal(self.fixture / 'registry.toml')} "
-            f"-Destination {literal(self.destination)} -BuildRoot {literal(self.fixture / 'targets')} "
-            f"-NoticesRoot {literal(self.fixture / 'notices')} -FfmpegPrefix {literal(self.fixture / 'ffmpeg')} "
-            f"-FfmpegSourceArchive {literal(self.fixture / 'ffmpeg-9.0.2.tar.xz')} -LibclangPath {literal(self.fixture)} "
+            f"& {literal(checkout / 'scripts/build-thumbnailers.ps1')} -ApiConfig {literal(checkout / 'registry.toml')} "
+            f"-Destination {literal(destination or self.destination)} "
+            f"-BuildRoot {literal(build_root or checkout / '_build/targets')} "
+            f"-NoticesRoot {literal(checkout / 'notices')} -FfmpegPrefix {literal(checkout / 'ffmpeg')} "
+            f"-FfmpegSourceArchive {literal(checkout / 'ffmpeg-9.0.2.tar.xz')} -LibclangPath {literal(checkout)} "
             "-Profile debug\n", encoding="utf-8-sig")
         result = subprocess.run([shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                                  "-File", str(driver)], env=self.environment, capture_output=True, text=True,
                                 timeout=120)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
         return result.stdout + result.stderr
 
     def assert_current_package(self):
@@ -364,6 +422,31 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
             self.assertIn("Superseded thumbnail staging was retained", output)
         finally:
             kernel32.FreeLibrary(module)
+
+    def test_hidden_or_junction_parents_are_accepted_but_reparse_points_from_build_down_are_not(self):
+        import _winapi  # A junction needs no symlink privilege.
+        # The checkout lies below hidden AppData (see setUp) and is also reached through a
+        # junction to it, like a linked parent folder; neither is inspected.
+        linked = self.owner / "linked"
+        _winapi.CreateJunction(str(self.fixture.parent), str(linked))
+        checkout = linked / "checkout"
+        self.build(checkout, checkout / "_build/app/thumbnailers")
+        self.assert_current_package()
+        outside = self.owner / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("user data\n")
+        _winapi.CreateJunction(str(outside), str(self.fixture / "_build/redirect"))
+        _winapi.CreateJunction(str(self.fixture), str(self.fixture / "_build/loop"))
+        build = checkout / "_build"
+        for destination, build_root in ((build / "redirect/thumbnailers", None),
+                                        (build / "app/thumbnailers", build / "redirect/targets"),
+                                        (build / "loop/_build/app/thumbnailers", None)):
+            with self.subTest(destination=destination, build_root=build_root):
+                output = self.build(checkout, destination, build_root, status=1)
+                self.assertIn("must not traverse reparse points", output)
+        self.assertIn("must be under _build", self.build(checkout, checkout / "app/thumbnailers", status=1))
+        self.assertEqual([path.name for path in outside.iterdir()], ["keep"])
+        self.assertFalse((checkout / "app").exists())
 
 
 @unittest.skipUnless(os.name == "nt", "Windows thumbnail build wrapper")

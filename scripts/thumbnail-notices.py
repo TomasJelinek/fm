@@ -6,7 +6,6 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
-import stat
 import subprocess
 import sys
 
@@ -34,47 +33,21 @@ def first_party(package, repository):
     return Path(package["manifest_path"]).parent in expected
 
 
-def package_member(root, source):
-    """The path of a notice below its package root; '..' or a path outside the root escapes."""
-    root, source = Path(root).absolute(), Path(source).absolute()
-    if source != root and source.is_relative_to(root):
-        member = source.relative_to(root)
-        if ".." not in member.parts:
-            return member
-    raise ValueError(f"Notice input escapes its package: {source}")
-
-
-def is_link(metadata):
-    """A symbolic link or any Windows reparse point, such as a junction."""
-    return stat.S_ISLNK(metadata.st_mode) or bool(
-        getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-
-
 def add_file(plan, source, relative, *, root):
     """Read a notice: a regular file below its package root, reached without links.
 
     The caller names the root: the crate's manifest directory, the shared notice tree or
-    the plugin directory. Only the root is resolved, so links above it, such as a linked
-    CARGO_HOME or /home, and a root that is itself a link are accepted. Every component
-    below it must be a portable name and is inspected without following links, so neither
-    a link, '..' nor a drive or stream name can substitute content from outside the package.
+    the plugin directory. The release packager's package_path applies the common rule:
+    links above the root, such as a linked CARGO_HOME or /home, and a root that is itself
+    a link are accepted; a link, reparse point, '..' or a drive or stream name below it
+    is refused.
     """
-    source, root = Path(source).absolute(), Path(root).absolute()
-    member = package_member(root, source)
     relative = Path(relative)
     if relative.is_absolute() or not relative.parts:
         raise ValueError(f"Invalid notice destination: {relative}")
-    # Check the walked names before any access: on Windows, joining a drive-qualified name
-    # such as 'D:x' re-anchors the path on that drive, and 'LICENSE:x' names a data stream.
-    for part in (*member.parts, *relative.parts):
+    for part in relative.parts:
         _release.portable_component(part)
-    # Descend from the resolved root; an error names the link as the caller spelled it.
-    path, given = root.resolve(strict=True), root
-    for part in member.parts:
-        path, given = path / part, given / part
-        if is_link(path.lstat()):
-            raise ValueError(f"Notice input must not traverse symlinks: {given}")
-    with _release.plain_file(path) as stream:
+    with _release.plain_file(_release.package_path(source, root=root)) as stream:
         content = stream.read()
     if not content:
         raise ValueError(f"Required notice is empty: {source}")
@@ -83,7 +56,7 @@ def add_file(plan, source, relative, *, root):
 
 def add_tree(plan, directory, relative):
     for source in _release.plain_tree(directory, maximum=65536):
-        add_file(plan, source, relative / package_member(directory, source), root=directory)
+        add_file(plan, source, relative / _release.package_member(directory, source), root=directory)
 
 
 def ffmpeg_sys_override(package, repository):
@@ -135,7 +108,7 @@ def notice_plan(plugin, metadata, repository):
                 if (source / filename).is_file():
                     add_file(plan, source / filename, Path("licenses") / name / filename, root=source)
         for path in files:
-            add_file(plan, path, Path("licenses") / name / package_member(source, path), root=source)
+            add_file(plan, path, Path("licenses") / name / _release.package_member(source, path), root=source)
         inventory.append({**{key: package.get(key) for key in
                              ("name", "version", "license", "repository", "source")},
                           "features": features.get(package["id"], []), "project_owned": owned})
@@ -158,16 +131,12 @@ def notice_plan(plugin, metadata, repository):
 
 
 def generate_notices(metadata_by_plugin, output, *, repository=ROOT):
-    """Validate both complete metadata inputs before replacing generated notices."""
-    repository, output = Path(repository).absolute(), Path(output).absolute()
-    build = repository / "_build"
-    if output == build or not output.is_relative_to(build):
-        raise ValueError("Generated thumbnail notices must be under repository _build/")
-    if output.resolve() != output:
-        raise ValueError("Generated thumbnail notices must not traverse symlinks")
-    for parent in (output, *output.parents):
-        if parent.exists():
-            _release.plain_metadata(parent)
+    """Validate both complete metadata inputs before replacing generated notices.
+
+    The output lies below the checkout's own _build; the checkout may be reached through
+    links, but _build and everything below it must not be a link (see build_output).
+    """
+    output = _release.build_output(output, repository)
     if set(metadata_by_plugin) != set(PLUGINS):
         raise ValueError("Both image and video thumbnail metadata inputs are required")
     plans = {plugin: notice_plan(plugin, metadata_by_plugin[plugin], repository) for plugin in PLUGINS}
