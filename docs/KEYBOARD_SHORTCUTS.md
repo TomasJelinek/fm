@@ -8,9 +8,11 @@ perform a different action. These rules also apply to captured native folders in
 expanded tree branches; see the [drag design](superpowers/specs/2026-11-10-folder-drag-and-native-handoff.md).
 
 **Ctrl+F8 — checksums** opens the Checksums window for the selected files (or the
-focused file), described in the [checksum API](developer/CHECKSUMS.md). Nothing is
+focused file or folder; on the parent row with nothing selected, the files of the
+shown folder), described in the [checksum API](developer/CHECKSUMS.md). Nothing is
 calculated until you press **Calculate**; the algorithm dropdown has a checkbox per
-algorithm and an *Include subfolders* checkbox. If the selection contains a checksum
+algorithm, with only SHA-256 checked in a new window, and an *Include subfolders*
+checkbox. If the selection contains a checksum
 file, the window opens on **Verify file** with that file chosen. Ctrl+F7 continues to open
 filename case conversion. Default registration preserves user-customized bindings.
 These controls describe current source; packaged releases may precede it.

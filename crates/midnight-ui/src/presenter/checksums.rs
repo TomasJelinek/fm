@@ -238,20 +238,22 @@ impl Presenter {
             return;
         }
         let p = &self.panes[pane.index()];
+        // Nothing selected and no row under the cursor (the parent row, an empty
+        // folder): Calculate covers the shown folder's files, and its subfolders when
+        // Include subfolders is on. A focused file or folder is the selection action's
+        // fallback below, so Ctrl+F8 always opens with something to calculate.
         if p.selected.is_empty()
             && p.selection_revision == p.selection_resolved
-            && (p.parent_cursor
-                || p.cursor
-                    .and_then(|id| p.entry_by_id(id))
-                    .is_none_or(|e| e.kind != EntryKind::File))
+            && (p.parent_cursor || p.cursor.and_then(|id| p.entry_by_id(id)).is_none())
         {
+            let directory = p.display_path().to_owned();
             self.open_captured_checksums(
                 pane,
-                p.display_path().to_owned(),
+                directory.clone(),
                 SelectedFiles {
                     selection: Arc::new(SelectionSnapshot::default()),
                     view: Arc::new(DirectoryIndex::default()),
-                    fallback: None,
+                    fallback: Some(directory),
                 },
                 send,
             );
@@ -311,7 +313,8 @@ impl Presenter {
             return None;
         };
         self.checksums.next_job = id.0;
-        let algorithms = self.preferences.values.checksum_algorithms;
+        // Every window starts with SHA-256 alone; other algorithms are a per-window choice.
+        let algorithms = ChecksumAlgorithms::default();
         // A checksum file in the selection (or under the cursor) means the user wants to
         // verify it, so the window opens on Verify with that file chosen.
         let verify_initial = manifest.is_some()
@@ -409,12 +412,6 @@ impl Presenter {
         s.progress = ChecksumProgress::default();
         self.retired.push(Box::new(mem::take(&mut s.streamed)));
         self.retired.push(Box::new(s.run.take()));
-        if self.preferences.values.checksum_algorithms != algorithms {
-            self.preferences.edited.checksum_algorithms = true;
-            let mut values = self.preferences.values.clone();
-            values.checksum_algorithms = algorithms;
-            self.update_preferences(values, send);
-        }
         true
     }
 

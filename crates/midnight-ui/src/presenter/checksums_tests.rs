@@ -421,6 +421,42 @@ fn late_checksum_events_do_not_reopen_released_windows() {
 }
 
 #[test]
+fn ctrl_f8_without_a_selection_calculates_the_focused_folder_or_the_shown_folder() {
+    let root = std::env::temp_dir();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    let folder = root.join("fotky 文档");
+    let entries: Arc<[Entry]> = vec![
+        Entry::new(EntryId(1), folder.clone(), EntryKind::Directory),
+        Entry::new(EntryId(2), root.join("photo.jpg"), EntryKind::File),
+    ]
+    .into();
+    let pane = &mut p.panes[0];
+    pane.entries = entries.clone();
+    pane.index = Arc::new(DirectoryIndex::from_entries(&entries));
+    // The focused folder is the target, on the Calculate page.
+    pane.parent_cursor = false;
+    pane.cursor = Some(EntryId(1));
+    p.request_checksums(PaneId::Left, &|_| true);
+    let (&focused, s) = p.checksums.sessions.iter().next().unwrap();
+    assert_eq!(s.files.fallback.as_ref(), Some(&folder));
+    assert!(!s.verify_initial && !s.running);
+    assert_eq!(s.algorithms, ChecksumAlgorithms::default());
+    // On the parent row with nothing selected: the shown folder's files.
+    let pane = &mut p.panes[0];
+    pane.parent_cursor = true;
+    pane.cursor = None;
+    p.request_checksums(PaneId::Left, &|_| true);
+    let s = p
+        .checksums
+        .sessions
+        .iter()
+        .find_map(|(id, s)| (*id != focused).then_some(s))
+        .unwrap();
+    assert_eq!(s.files.fallback.as_deref(), Some(p.panes[0].display_path()));
+    assert!(!s.verify_initial);
+}
+
+#[test]
 fn opening_calculates_nothing_and_a_selected_checksum_file_opens_verification() {
     let root = std::env::temp_dir();
     let mut p = Presenter::new(root.clone(), root.clone());

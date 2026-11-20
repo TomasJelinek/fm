@@ -15,8 +15,11 @@ fallback, plus job/generation, algorithms, recursion and limits. The UI's existi
 selection-action broker waits for the specific selection revision before opening
 the window. A nonempty selection is authoritative; no parent (`..`) row becomes
 a file target. With no selection, calculation uses a focused regular native file.
-Opening the window calculates nothing; Calculate starts a run. An empty panel opens
-the Verify file page, and so does a checksum file the user points at, with that file
+Opening the window calculates nothing; Calculate starts a run. With nothing selected,
+the target is the focused file or folder; on the parent row or in an empty folder it
+is the shown folder itself, so Calculate covers its files (and its subfolders with
+Include subfolders). Ctrl+F8 therefore always opens on Calculate with a target. A
+checksum file the user points at opens the Verify file page instead, with that file
 chosen: the focused file when it is a checksum file and is selected (or nothing is),
 else, in a flat panel, the first selected checksum file in display order. The UI
 finds it from the selection bitset and the displayed rows, looking at no more
@@ -257,9 +260,10 @@ Preferences schema 16 stores a nonempty algorithm set as stable names `sha256`,
 `sha512`, `md5`, `sha1`, `crc32`. Older settings default to SHA-256. Invalid, repeated,
 empty and unexpected values are rejected; default-only preferences retain the
 older compatible encoding. Later schema 17 includes this field when storing
-Custom Commands. Local algorithm edits made before initial settings load are
-merged using the existing edited-field mechanism. Recursion is off for every new
-window. Additional window geometry/column persistence remains a follow-up; the
+Custom Commands. Every new window starts with SHA-256 alone, whatever that field
+holds: the algorithm set is chosen per window and a run no longer writes it back.
+The field stays readable for compatibility and travels unchanged through settings
+export and import. Recursion is off for every new window. Additional window geometry/column persistence remains a follow-up; the
 current result layout is responsive and does not expose adjustable columns.
 
 Reference behavior was checked against Salamander's

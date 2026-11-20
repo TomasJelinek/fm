@@ -82,7 +82,6 @@ pub(super) struct EditedFields {
     pub(super) panel_filter_history: bool,
     pub(super) shortcuts: bool,
     pub(super) filename_colors: bool,
-    pub(super) checksum_algorithms: bool,
     file_list: bool,
     pub(super) user_commands: bool,
     bookmarks: bool,
@@ -361,9 +360,6 @@ impl Presenter {
                 }
                 if edited.filename_colors {
                     loaded.filename_colors = local.filename_colors.clone();
-                }
-                if edited.checksum_algorithms {
-                    loaded.checksum_algorithms = local.checksum_algorithms;
                 }
                 if edited.file_list {
                     loaded.file_list = local.file_list.clone();

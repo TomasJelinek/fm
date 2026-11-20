@@ -58,6 +58,9 @@ fn empty_panel_can_choose_manifest_then_explicitly_start_verification() {
     main.invoke_calculate_checksums(0);
     assert_eq!(windows.borrow().len(), 2);
     let native = windows.borrow()[1].clone();
+    // The shown folder is the Calculate target; Verify file is the other page.
+    draw(&native, 1000, 620, "checksum-calculate-empty-panel");
+    click(&native, "Verify file");
     draw(&native, 1000, 620, "checksum-verify-empty-panel");
     click(&native, "Browse checksum file");
     let request = commands
@@ -358,6 +361,8 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
         .unwrap();
     assert_eq!(request.files.fallback, Some(path.clone()));
     assert!(!request.recursive);
+    // The MD5 + SHA-256 set saved by an earlier version is not the window's default.
+    assert_eq!(request.algorithms, ChecksumAlgorithms::default());
     let retention = ChecksumRetention::new(());
     let rows: Arc<[Arc<ChecksumRow>]> = vec![Arc::new(ChecksumRow {
         id: ChecksumRowId(1),
