@@ -1297,14 +1297,14 @@ app do not contain or qualify this branch's new changes. No new app artifact or
 branch merge is claimed; local API/SDK publication is scoped below. The retained 54-requirement goal remains active.
 
 **Work-branch checkpoint — 18 November 2026:** the Source mapped-prefix
-production fix and retained test are canonical (25af/d394, snapshotc500b7e0).
-Private evidence remains 3behavioralRED->18GREEN plus five prior controls and one
+production fix and retained test are canonical (25af/d394, snapshot c500b7e0).
+Private evidence remains 3 behavioral RED->18 GREEN plus five prior controls and one
 new exact retained test pass; the prior 23 were carried without reexecution.
-Build is assigned matching new normal/complete-C production inputs, canonical24
-integration and original Source34 native validation; none is accepted yet.
-Office's original five cases remain 2PASS/3FAIL/0UNRUN. Two separate diagnostic
+Build is assigned matching new normal/complete-C production inputs, canonical 24
+integration and original Source 34 native validation; none is accepted yet.
+Office's original five cases remain 2 PASS/3 FAIL/0 UNRUN. Two separate diagnostic
 observations failed initial wait-loaded with zero events/requests/frames; their
-cause is unknown. Backend109 compilation failed, leaving 74 runtime cases unrun.
+cause is unknown. Backend 109 compilation failed, leaving 74 runtime cases unrun.
 C9297 remains frozen at its epoch; all 54 requirements and final cleanup remain
 open. No publishing or Git integration is claimed. Earlier results retain their
 named source/environment.
@@ -1325,73 +1325,73 @@ The merge candidate requires its own build and runtime evidence.
 | Private Source corpus run | C++ reached ACK 21 and failed waiting for ACK 22 at `0.56375`. Both pages applied and completed. Window `[42563, 43236)` began at mapped `0.56451339`, and `[42410, 42921)` ended at `0.56307317`. Result 0 passed, 1 failed, 0 ignored, exit 101 in 64.39 seconds. Pre- and post-run guards each checked 7,116 inputs with zero drift, and the test process and observed helpers were gone at closure. [Corpus result](../_build/verification/viewer-refresh-20261117/build/source-window-frontier-repair-v1-corpus/source-frontier-corpus-1/result.json) | Rapid C++, Lua and YAML were not reached. App acceptance and highlighting validation remain open. |
 | Source coverage v1 review hold | Source-ready packet held for exact mapless and file-end fallback, queued wheel deltas that can move the ACK frame, and a failure path that can lose newer queued input. An exact retained recovery test is also pending. [Source-ready receipt](../_build/verification/viewer-refresh-20261117/viewer/source-coverage-recovery-v1/source-ready.json) · [Review hold](../_build/verification/viewer-refresh-20261117/coordination.md) | Compilation and runtime validation remain pending. Product qualification remains open. |
 | Additional HTML diagnostic, h1 | Archived harness `3666f4e2`, C9297, same single test and deadlines. The profile measured 209 UTF‑16 code units. Sixteen snapshots sampled two renderer identities. Header `(1, 1, 5)`, Loading 1 and Loaded 5 arrived. The run recorded no captured requests, completed or offset-zero source reads, or retained frame. It failed in the initial stage with 0 passed, 1 failed, 0 ignored and exit 101 in 20.83 seconds. Both guards checked 2,511 entries with zero drift across 2,487 install files, and no owned processes or monitor errors remained. [Run result](../_build/verification/viewer-refresh-20261117/build/office-native-phase-observation-v1-native-prep/h1/0/result.json) | The earlier 231-unit attempt received no header. Scratch path and run conditions differed. Path-length causation, content and paint acceptance remain open. |
-| Source Stage A | Source recovery post-review fixes passed **64 unique checks / 0 failures across seven groups**, strict Clippy/format0; prior 99 is pre-fix evidence, not rerun or additive. Real P2 RED→GREEN: target-boundary comparison count **67,117,056 → 16** in one callback; six offscreen pending cases **16 reads / 262,144 B / Ready=false → 1 read / Ready=true**. Retained-syntax upper bound **49,848 B** includes an 8KiB backward ring/overhead; measured giant-line incremental Rust heap peak **566,776 B**. | Preparation source SHA `74ee6b89…` retains its historical scope. The later current native Source run actually failed 0/1/0 at the frame deadline; see the current native row below. Earlier fixture/allocator observations do not qualify RSS, native rapid-scroll or the final app. Local API/SDK0.2 and host98 retain their scopes. |
-| Canonical SDK packaging | Canonical packager **9/0/0** (lib4+compatibility5), strict Clippy/format0. Normal packaging entrypoint exited 0, preserved exact0.1 inputs and reproduced issued 0.2 checksums. Relocated upload payload with a fresh Cargo cache resolved Basic/Markdown0.1 and Source0.2 locked/offline without app/API source trees. | This supersedes the earlier private-registry-only limitation. Sparse-consumer proof is dependency resolution, not plugin execution, a new remote-CI run or a new app. Packager final source snapshot lacks a pre-build packager-source inventory; public/release-input before/after guards are separate. |
-| Archive reader | Seek-preserving buffered reader and **50/0/0** selected plugin tests. Controlled 2,048-member fixture: **4,101 reads / 580,977,649 B → 3 reads / 402,507 B**, sampled IDs/contents unchanged. Exact user ZIP direct-plugin OLD/NEW pair: index **761.5608 / 92.0232 ms**, File reads **10,617 / 59**, returned bytes **2,449,672,583 / 14,990,974** (**163.41×** reduction). Ordered root metadata/pagination match; read/seek errors and storage calls0; both explicitly selected ignored probes exited 0 once, children exited. | One unoptimized OLD-first pair, unknown/warm cache; snapshot CPU73/76% and 30/33 foreign compiler-related processes (not active-job counts), none owned; no user process stopped. File-interface counters are not physical disk/broker I/O. Metadata stable, without source hash/native file-ID proof or member reads. This is not isolated latency, production native-capture or GUI opening qualification. |
+| Source Stage A | Source recovery post-review fixes passed **64 unique checks / 0 failures across seven groups**, strict Clippy/format 0; prior 99 is pre-fix evidence, not rerun or additive. Real P2 RED→GREEN: target-boundary comparison count **67,117,056 → 16** in one callback; six offscreen pending cases **16 reads / 262,144 B / Ready=false → 1 read / Ready=true**. Retained-syntax upper bound **49,848 B** includes an 8KiB backward ring/overhead; measured giant-line incremental Rust heap peak **566,776 B**. | Preparation source SHA `74ee6b89…` retains its historical scope. The later current native Source run actually failed 0/1/0 at the frame deadline; see the current native row below. Earlier fixture/allocator observations do not qualify RSS, native rapid-scroll or the final app. Local API/SDK 0.2 and host 98 retain their scopes. |
+| Canonical SDK packaging | Canonical packager **9/0/0** (lib 4+compatibility 5), strict Clippy/format 0. Normal packaging entrypoint exited 0, preserved exact 0.1 inputs and reproduced issued 0.2 checksums. Relocated upload payload with a fresh Cargo cache resolved Basic/Markdown 0.1 and Source 0.2 locked/offline without app/API source trees. | This supersedes the earlier private-registry-only limitation. Sparse-consumer proof is dependency resolution, not plugin execution, a new remote-CI run or a new app. Packager final source snapshot lacks a pre-build packager-source inventory; public/release-input before/after guards are separate. |
+| Archive reader | Seek-preserving buffered reader and **50/0/0** selected plugin tests. Controlled 2,048-member fixture: **4,101 reads / 580,977,649 B → 3 reads / 402,507 B**, sampled IDs/contents unchanged. Exact user ZIP direct-plugin OLD/NEW pair: index **761.5608 / 92.0232 ms**, File reads **10,617 / 59**, returned bytes **2,449,672,583 / 14,990,974** (**163.41×** reduction). Ordered root metadata/pagination match; read/seek errors and storage calls 0; both explicitly selected ignored probes exited 0 once, children exited. | One unoptimized OLD-first pair, unknown/warm cache; snapshot CPU 73/76% and 30/33 foreign compiler-related processes (not active-job counts), none owned; no user process stopped. File-interface counters are not physical disk/broker I/O. Metadata stable, without source hash/native file-ID proof or member reads. This is not isolated latency, production native-capture or GUI opening qualification. |
 | Comparison modes/themes | UI handoff confirms Side by side / Swipe / Onion skin buttons and restoration of all **26 historical theme selection fills**, retaining cursor outline/stripe and contrast policy. Five exact headless selectors, visual review, format/diff checks and scoped Clippy passed; lease released. The earlier shared gate includes **27 comparison-engine checks** covering typed whole-input identity; the later routing gate is separate below. | Requested mode is distinct from acknowledged rendered mode. Typed UI outcomes, real Options input and the final prominent green verdict still need their integration gate. |
-| Configured comparison routes | The 27-file freeze with 30 newly authored tests now has a targeted gate: **77 passed / 0 failed / 2 ignored**, actual raw log verified. Strict Clippy/format **0/0**, source drift empty and protected app unchanged. Architect/Perf reviews found no additional actionable defect. | Do not add77 to prior 275: scopes overlap. Four ignored Windows native comparator cases are authored, not qualified. Native Unknown outcomes and ReadAt counts remain unqualified; UI/Explorer and actual native-process acceptance remain separate. |
-| Office preview | User chose built-in readable contents; XLSX was the first service slice. Prior scoped Core/common/Office Wave1 **162/0**, QName **RED1 → GREEN9/0** and the 22 Viewer adapter cases within prior 275 retain their dated scopes. The coherent six-format service27-file and Viewer first-content/native fixture six-file freeze now compiled cleanly and passed **113/0/0**: service lib68, XLSX integration18, Viewer adapter/frame-guard27. | Formatting54 files passed. Three reader `collapsible_if` lint repairs are returned; strict Clippy rerun pending. These overlapping scopes are not additive. DOCX/XLSX/PPTX/ODT/ODS/ODP have scoped backend evidence, not completed native/app support. Initial readable contents on open is required; security/Linux/package and remaining native-policy acceptance stay open. |
-| Office recorded runtime checkpoints | Navigation and independent close/cancel retain their actual native passes. Latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**: completed real Find returned 0, Copy failed and Session stayed live. | The blank902×602 diagnostic image is **not a successful fresh content/resize proof**: resize_ok=false and fresh_contrasted_frame=false. Original Find failure remains final; retained old bitmap is not live DOM proof. Source refusal remains mandatory; provider/Find/loading/correlation cause is not established. |
-| Promoted Office revocation repair | Host47 +Viewer44 =**91/0/0** retains its preserved source binding. The later exact test-assertion lint repair passed strict Clippy0/format13files0 and two overlapping resource tests. | Do not add those two into a93-unique total. Current parent diagnostic is still RED despite live Session; no new validated resized-content proof or full native Office acceptance. |
-| Office performance/allocation | Amended **four canonical + two private cases passed / 0 failed**; seven result records include the private compiler, not a seventh test. Actual method8 combined-work budget rejection and same-session small second-sheet render recovery passed. The 10,000-entry / 1,048,512-name-byte fixture observed open requested-live Rust heap peak increment **11,322,758 B**, retained **6,013,594 B**, first-render peak **192,183 B** and after-session-drop increment **0**. The production service freeze is **RELEASED**. | Preserve the prior three passes/one compression-level fixture setup failure as historical evidence. These are synchronous quiescent requested-allocation observations, not RSS, exact concurrent peaks, a universal32MiB bound or leak proof. Allocator-instrumented timings and foreign compiler contention prevent broad speed claims. The historical performance-test Clippy101/format0 remains recorded; the newer60-check gate has scoped Clippy0, not an all-targets claim. No native Office or app qualification follows. |
-| PDF rule migration | Corrected fresh-artifact full filename_colors suite **20/0/0**, strict Clippy/format0. Exact legacy combined PDF/document rule migrates locally to PDF **#EF5A5A**, preserving unrelated custom rules and the full32-rule list if splitting has no room. | Retain the initial 12/8 stale-library attempt caused by Copy-Item mtime, not a behavior regression. Corrected library/harness fresh=false compilation established the final result. Descendant-style transport remains separate. |
-| Shared host, Viewer and comparison gate | Root verified **275 unique headless passes / 0 failures / 0 ignored**: native-filesystem host41, plugin host24, web host29, comparison27, Viewer146 plus 8 new image-input/worker cases. **325 executions include50 repeats**, not 325 unique passes. Final affected strict Clippy/format passed after owner repairs; initial compile/lint failures remain in dated receipts. | Viewer/comparison source closures were **RELEASED**. These results qualify the preceding stable slice only; later configured routes/UI outcomes are uncompiled. Do not add the earlier Source, Office, host98 or UI subsets into this total. |
-| Native PDF | **Final2/0** functional cases used Viewer harness `f00316db…` and the real C PDF worker, including mixed-size continuous pages/rapid camera replacement. Root read the receipts, confirmed no remaining child workers and unchanged app. | The earlier `b43d0280…` pre-lint run is a separate checkpoint. Captured-file fixtures do not qualify production native-filesystem capture, full-app input or performance. |
-| Engine policy bridge | New targeted gate passed **141 unique tests / 0 failed / 0 ignored**: five configuration integration tests plus 136 Engine lib tests, counted by actual names. Compilation qualified with **0 warnings**; post-test source drift is empty and the app unchanged. The earlier `FsError` → `PreferencesApplyError` compile error is corrected, with the failed attempt retained. Scope includes policy save/ownership, checked retirement, external capture/launch, admission/lifetimes and direct settings boundaries. | Initial strict Clippy101 exposed five private-preferences `result_large_err` findings, now closed by the separate repair gate below. The 141 passes retain their frozen source identity. Native process, GUI and Explorer composition remain unqualified. Engine contracts retain no Core changes, the exact two agreed GENERAL allowances and unchanged session/desktop/process limits. |
-| Engine private error-boxing repair | Separate new gate passed **5 configuration +22 preferences tests / 0 failures**, with tests, strict Clippy and formatting all **exit0**. Compilation has zero warnings; post-test/quality source guards have no drift and the protected app is unchanged. | Closes the five private error-boxing findings. This is overlapping scoped revalidation, **not 168 distinct Engine tests** and not a rerun of all 141 on the repair. Native/GUI/Explorer acceptance stays open. |
-| Current selected UI integration | Independent continuation **31/0/0**: MainUI28 +Viewer footer1 +keyboard2. Combined with the first comparator-options run7pass/1fail, the selected 39 now has **38 passes /1 Options-init-focus failure**. Unchanged CompareUI7 was retained by identical EXE hashes, not rerun or added. | The exact prior footer regression and two keyboard tests now pass on this checkpoint. Options initialization must still focus an existing error; that failure is open. This is not all 159 or native/app qualification. |
-| MainUI/CompareUI unit checkpoints | Earlier 55/0 retains its source. P3 MainUI units initially20/1; corrected draft exact selector now **1/0**. Other 20 were not rerun. Diagnostic compile qualified0/zero warnings/errors,1890 source guards/323 feature sets and unchanged binding/app. | No fresh 21 or 159 passes. Exact Options focus remains **0/1**: OK focused while expected pattern is visible. All overlapping snapshots remain separate. |
-| Native comparator and Source provenance | `comparator-d6ce28b8eb` ran all **four actual Windows native cases:4/0**, unchanged components and remainingOwned[] each. Actual raw parent/argv/cwd, NotStarted cleanup, two-credit/cancel/no-child and non-Unicode Automatic fallback passed. Source DLL9915 cached reuse/16fresh artifacts remains separate provenance. | The old settings-timeout failures stay historical. Corrected faithful fixture 16/6/10 is not an implemented production-pool fix and does not supply native ReadAt counts. Native Source acceptance and final product/deployment gates remain open. |
-| Work-branch retirement accounting | Architect's exact source identities were independently matched. This checkpoint had **330 payload slots / 8 reusable waiter tokens**. Relative to the older 324 table: comparator store1 +policy pins2 +desktop1 +shell2 =6 additional payload slots. Comparison has two counter-only credits, desktop six capture slots/four shared launch permits, and process trackers eight shared/sixteen opener slots; none is an extra retirement domain. | Supersedes older present-tense324/seven statements retained below as historical ledger content. The capacity correction changes documentation only; it does not close exhaustive LIFE-01 owner/first-poll/shutdown acceptance or prepared-Rename engine/UI integration. |
-| Common/Engine canonical integration | Corrected staged Engine libtest+configuration compile0/0warnings/errors; **51 disjoint passes** =initial7 +watch/tree39 +configuration5, no repeats/failed/ignored. Postguards drift[]/appunchanged. Historical eightE0308 attempt remains. | These passes retain staged Engine source; new coherent graph compilation/UI/runtime/native/performance qualification pending. |
-| Prior Viewer46 scoped checkpoint | Earlier canonicalfc4 helper: **46/0** actual, exact former failure1pass then other 45pass. All 9document+19image cases including immediate-open errors passed. | Earlier 0complete/timeout45unrun and 45/1 remain historical; counts overlap. No all 159/native/full-app/resident qualification. |
-| Office provider navigation contract | OfficeV3 exact16 retains its canonical checkpoint; latest post-drain finished-oracle710bea fixture is canonical at freeze6610deda. Prior 71 Office+F5exact1 remain their earlier source evidence. | Exact new helper unit and five actual native cases pending a legitimate complete NEW C product; no new Office/native success. |
-| Old-source production-pool RED | Actual 7e458befac run, original 2async/16blocking:13resident readiness/fourwindows;20,000ms prepared callback not entered/secondCompare incomplete. Closing2Viewers recovered SAMEsave (onecallback/rawpublicationcoherent) and SAMECompare. Strictcleanup/exclusivereaders checked before intentionalassert1159; rawtest23.02s. | Genuine old-source RED, not migration GREEN/performance/unrecoverabledeadlock proof. No ownedPIDs/monitorerrors;3941guardsunchanged, unconsumed 4917→F5fixtureexception separatelyrecorded. Current resident/opening-palette implementations remain private/unqualified. |
-| Coherent source canonical integration | Source2 nativefixture cleanup and UI8 corrections now canonical. Full34Sourceassertions/workloads preserved; Runtime/Owner5 shutdown/unwind fenced. UI8 preserves deadlines/exactassertions, strengthens6; productionOptionspopupfocus ordering+fullframehelpers applied. | Mainbindingslegitimate regeneration required; Viewer/CompareSlint unchanged. Build owns --keep-going source/Cargo lease; no newfullgraph/runtime/native success. Historicalcompile101/UI22-5 retained. |
-| Maximum-state new-product route | Architect selected genuine Cargo-built libtest at NEW complete C product root before freeze, beside real filesystem packages. Root authorized normal deploy-tool default-off validation payload route. | Actual assembly/qualification/child resolver+typedZIP gate/native execution pending. No Docs deployment or new EXE qualification; setup decision is not migration GREEN. |
-| Process-sampler prototype | Root actual functional review12/12; all 7 processes exited naturally, cleanup passed. | Collector functionality only; no application old/new performance or sampling-overhead qualification. |
-| Scoped Perf source review | Closed with no actionable finding;114canonical inputs matched reviewedbase07417133. Retained authentic generatedRust69,289,347B; no qualified old baseline/delta. | Bounded-page palette reshaping/preexisting Compare UI pixelcopy remain measurement limits. Latercompiler-onlyoverlay separate; no application responsiveness/performance acceptance. |
-| Next-container design status | PrivateH/Rv2 freeze3d6a34ee preserves8postimages/baselines and 30v1artifacts+manifest. New private 50 exactPASS/0/0 =15new+35directexisting; compiledonce39.157s,8compiledpostimages exact, artifact9fe3a727 unchanged/guards-clean. Registry42pins match; metadata42/compiled39features no expansion; raw11whole-row flags preserved as dependency-list pruning only. Root accepted R3.2 Metadata1 proposal/private implementation. | PRIVATE ONLY; earlier 15UNRUN handoff remains historical. Metadata1 adds one resident domain to Engine13/Viewer5/Compare2, proposed 21; transient2async/16blocking unchanged. No canonical fullA1/Core/history integration, native/fullfeature or executed M11 acceptance. |
-| A1 shared contract accepted | Root accepted frozen shared contract f319802d…ec06e/API64bfa555;153 unique owner paths/current baselines/decision documents/nine read-only guards verified. Engine config obtains vacant ServiceSlot before ownership transfer, no replacement; duplicate/unused-slot tests required. | Design accepted, implementation incomplete. B0 privately dispatched; Backend app-integration5rows afterB0, V/U private adapter/fixture preparation parallel, attach immutableB0 before compile. No new dependencies/canonicalA1writes. R2/M1-M11/laterB-C/native/full54 remain required; canonicalbuild/newC/native priority. |
-| Checked-spool private candidate | Root accepted7-file candidate privately, review5bb6d4b3;31unit declarations/common10Windows13Linux8+3docs wereUNRUN atfreeze. Actual partialreview79ff1271: Linux41PASS/0fail+3docs; Windows47PASS/1setupRED+3docs, rawlogs/guards verified. | WindowsRED unqualified/Backenddiagnoses rawWin32path-setup. Perplatformoverlap, no summedunique total or additiontoH/R50. No canonicalcode/M7staging/graphactorintegration/fullnativeclose acceptance; currentappproducerpriority. |
-| Direct UI runtime checkpoint | Retry4 exactly 23 unique passes /0 failed /0 ignored: immutable20, separate namedcaret1, separateOptionsTransaction2. Clean source guards/ownedcleanup. Root viewed the new complete initial-focus Options BMP and complete paged/continuous320x200footer captures. | Earlier 18/20/UI22-5 checkpoints overlap and retain their dated source. Selected visual/UI acceptance does not qualify all layouts/platforms, normal app/native runtime or performance; oldcaptures preserved. |
-| Retry4 complete compilation | Actual complete workspace/all-target no-run compilation passed exit0; raw Cargo ends build-finished success=true, zero errors/warnings, closing drift[]/appUnchanged=true. | Earlier Clippy101 Explorer issue fixed by canonical4-file wiring fec5c57f…d303cc/immutable Viewer freeze dd204ddc…d1a. Same strict retry1 advanced past Explorer, then 101 on 2CompareUI duplicate_mod diagnostics. CompareUI4-file cfgtest fix now canonical6bccd5af…d1d7fc;14test bodies/helpers/raw Unicode/runtime unchanged,2,288guard otherwise clean/fmt0. New lint/affected harness/direct7 checks pending. CEF1-line spelling canonical ad55e66a…322d06 retains locked packages/SDK/licenses/features; warning-free standalone replay pending. No new native/normalEXE qualification; compile/UI23 dated/full54 open. |
-| Latest strict Clippy checkpoints | Actual terminal101 on 3CompareEngine test pixelchunks uses; Root-requested v1 iterator correction386f10ae then triggered retry3 manual_contains101. Root promoted pixelv2 c92cae2a…ac50f3a: same 3membershipchecks use contains, sameRGBA/remainder/assertionvalues/runtime/production/dependencies. | Pinned isolatedprobe before 1/after0 only. Whole-workspace strict/direct runtime pending, no strictPASS/native/normalEXE qualification. Failedretries retained; future A1 adapters preserve acceptedv2baseline. |
-| Open cleanup receipt seams | Viewer reported explicit erased-resource and abandoned-layout cleanup receipt gaps; Architect owns additive seam decisions. | No implemented cleanup guarantee inferred; fullLIFE-01 remains open. Checked-spool7 has partial private platform results/WindowsRED, not canonical/fullnativeclose acceptance. |
-| Preliminary normal producer and later UI test-lint promotion | Normal Explorer/elevation producer actualexit0/build-finishedtrue/no diagnostics-warnings/2,288sourceguard clean. New test=false me.exe110,218,752B/c487eff2…5d3a9c1; elevation325,632B/b761e65f…1c62657. MainbindingFresh/hashunchanged. Root then promoted Main/ViewerUI4test-lintfiles5c166af1 with inverse/helper/fmtguards; newappunchanged duringpromotion. | Historical f311 intentionally replaced by authorizedproducer. Current-source strict/direct/finalnormal invocation pending; no completeCdeployment/native/full54 qualification. |
-| Latest strict retry5 and private lifecycle assignments | Actual strictretry5 terminal101/oneOfficeHTTPfixture collapsible_if; Root promoted exact1-file correction679bcf78/HTTPfixture545ff640←e053fc1c, normalc487unchanged/sourceguard otherwise clean. PinnedCHECKhelp43 supportskeep-going; strictreplayusesCHECKpass-through, no lint/coverage weakening. | Refresh test-only inputepoch before actualOffice native replay; oldreceipts not rebound. No strict/direct/finalnormalPASS yet. PrivateDRCore-native/POextraViewer reservations dispatched; no canonical lifecycleimplementation/fullgoalclosure. |
-| Checked-spool Windows fixture v2 | Exact1setupcorrection preserves production/other6postimages/29v1artifacts. Actualv2 now 48exactPASS+3docs; Rootf274e348 checked 100rawloghashes/7exe/7postimages, zeroerrors. | Originalv1WindowsRED retained; Linuxv1separate41+3unchangedscope, no summedunique total. Perfdispositionpending/no canonicalpromotion/M7/LIFE01closure. |
-| Prior strict retry6/B0 private scope | Keep-going retry6 actual 101/3testlints in 2files before the final canonical correction and retry7PASS below. B0immutable16rows+typedrecipe Rootreview09c428a3/privatecompileauthorized. Hostvalidate() loseslocalcancel underViewerlock; Architectminimaladditivehookdecisionpending. | Source review is not tests/canonicalactorfeature;14inline tests do not prove end-to-end cancellation. Canonical newnormalC/native pipeline priority; full54open. |
-| Full strict Clippy retry7 | After canonicalUI1+WorkBudget2 test-only lint batch99eb030d, actualfullworkspace/alltargets strictPASS exit0/1001JSONevents/build-finishedtrue/0warnings-errors/2288sourceguards0drift/appc487unchanged. Rootreview368be4ef verifiedactualrawreceipt. | Compile/lint only, no broad runtime claim. All 16directcases+separateOfficeunit remainrequired; six-targetproducer active then actualMainUIwrapperlibtest2casesrequired, onlygiantbindingscratelibtest excluded. No test dropping; finalnormal359graph/newC/native pending. |
-| Host notice completion-v3 | Eleven omitted-license sources resolved;662stagefiles/61overridefiles/0missing. Root75f68311 verifiedexactcratechecksum-VCScommit+27savedofficialresponse/copyhashes. ModuleRoot10be6a5a review1821runtimefiles/1945inputs/7historicalwrappers clean. | No dependency/projectlicense/licenseselection change. Finalnormal359graphcomparison/newCcopy-freeze/nativeSourceOfficeMAX pending; authoredunrunarchiveactor not implemented/full54open. |
-| Current exact boundary results RED | Seven-targetlinkedproducer2 exit0; originalruntime1 first 10PASS then case11ViewerUIpalette300sTIMEOUT/PID37548killed/countsabsent. Separate 6continuationPASS gives 15directPASS/1ViewerTIMEOUT +separateOffice710unitPASS, overallAccepted=false. Rootb66594d0 verifies51log-summary/5capturehashes(notvisual)/7EXE/exact17outcomes. | Separate 60snocapture diagnosticRED exposes appearance.rs508 restore_palette.unwrap Err("Viewer is closed."); original 300sRED retained/noacceptanceretry/timeoutreduction. Backendstopcause unobserved/closed-stopped-catalogstartup underdiagnosis. PrivateUIfailure-onlymaillogging/source review; ArchitectPreparedCatalogseams. No guardweakening/fakeruntime/canonicalfix/fullclosure. |
-| Private B0 v1 and composed Viewer v2 | B0v1actual34PASS=14new+20direct/d32d1ff2, one deprecatedfetch_update warning retained. Laterhostdelta9ddee287/Core-recipe29a13391 composedGREENv2 freeze51c32688/inventory58ff82bd/Root7e91006827sources accepted privately. | Sourcecheckpoint104Viewer/11Host+3RED declarations wereUNRUN; later 3RED/14GREEN verifycooperativeboundaryonly, notfull104/PO. UIextra5privateconsumersb72a7ef2 beyondUI30/originalfreezeunchanged. POv2P1nonintegratable/no canonical genericresource/native/B1/lifecycle/fullgoal closure. |
-| New normal673 and mailbox diagnostic v3 | normal-host-validation-input-2 actualproducerPASS/newDapp673084bb…bbc95/test=false/359graphmatchesnotices. Latermailbox-original-graph-v3 sameoriginal7targetcompile0/zeroW-E +diagnosticselectorPASS1/0.21s/no mailboxerroroutput. | No runtimeacceptance/rootcausefix; originalclosedpanic/300stimeout retained/unexplained. UI approvedprivateACK-closefixturevaliditychange underway, not provenrootcausefix. NewC/native/full54 open. |
-| Independent v3 review and PO v2 source P1 | Root2b311c88 verified3rawlogpairs/all2288sources/Cargo feature-profile variants equivalent/oneexactdiagnosticPASS0.21; no acceptance/rootcause. Root77c65185 confirmsmissing agreedtypedpreownership admission inprivatePOv2. | Oldv2immutable/NONINTEGRATABLE; Vieweradditivecorrectedepochpending/Architectcallerboundaryreview. Tokenbeforehandoff/serializedseal-admit/latefailuremustnotmutatecompletedreceipt; callerretainsalreadyownedrefusedsource. The 3REDs/14narrowGREEN below are separate from this PO P1; fullgoalopen. |
-| Actual cooperative3RED and sealed UI fixture candidate | Root63867970 independentlyverified3exactbehavioralREDs/9rawlog-list-summaryhashes/actualEXE42422763; rescue+bothjoins beforefinalassertions. REDcompile0/1historicalfetch_updatewarning/notstrictgreen. Palettehelperonefilee3bc→1e73 Root085a review25records/19oldtests unchanged/2newUNRUN/rustfmt0. | Scoped14GREEN subsequentlypassed below; typedPOvalidationseparate. UIpromotion initiallyheld forCassembly, latercanonical9c25below/runtimepending/no provenoriginalstopcausefix/no wholeLIFE-native acceptance. |
-| Actual narrow cooperative GREEN14 | After preserved3REDs, actual 14PASS/0failed/0ignored=11Host+3previouslyREDViewer. Rootd5d14402 independentlyverified4rawlogs/2EXE/all1294source-proof-absenceguards across 3schemas. Testcompile0/zeroW-E. | Privatecooperative-cancelboundaryonly; ordinarytestcompile NOTfullClippy-Dqualification. No canonicalpromotion/full104Viewer/typedPO/LIFE01/nativeApp. CassemblyPID54224 actualnormal673+testcf411/epoch9297 inputs populatingdestination/notfrozenaccepted; UIhelperhold persists. |
-| Completed C9297 input and new helper source epoch | Cvalidationassemblyexit0+normal-onlyregistration; Rootc14c67c8 exact2487files/752,608,762B:6Viewer/3FS/2thumbs/662notices/normal673+testcf411; freeze/postregistration hashesidentical. After actualBuildrelease Rootpromoted1helper e3bc→1e73/fdf06c25,2288guards/fmt0/normal673Mainunchanged. | No app/testnative launchoracceptance. NativeRootcopiedverbatim fromactualidentities/completion. Cbundle stays 9297; newcanonicalsource9c25, same 7graph+3selectorspending300s. Do not rebindoldC/failedEpochs orclaimoriginalcausefixed/full54closure. |
-| Private PO v3 source admission (historical) | Root2db73d40 verified33sealedreferences/all27sources;5Enginechanges/22unchanged/canonicalbaselines exact. Actualtoken-beforecapture/caller/neutralFinished paths sourceread; privateBuildauthorized. | At admission,3compatibleadmissionRED+129GREEN were expectations only. Later actualViewer118=116PASS/2FAIL and Host11prior separate are recorded below; no canonicalintegration. Oldv2immutable/nonintegratable. ActualUIcollector/App/DR/nativeLIFE remainpending; full54open. |
-| Fixture 1e73 actual partial run/source flaw | Originalpalette1PASS; newnormalteardown300sTIMEOUT/20UNRUN/ownedcleanupclean/currentEXE5b3. Root9642bcbe verifies6rawpairs andpinnedSlint1.18.1api503/1086: show retainscomponentuntilhide; newtestneverhides, RustUIhandledrops insufficientprecondition. | SourceflawPROVEN/solewaitcauseNOTproven. Privateonefilehide+weakUIdisappearance checks authorized/preserveactualSessionlivebeforeRuntimeDrop; oldpacket/run retained/noacceptance. EnginePO/UIcollectorindependent; fullgoalnotblocked. |
-| Helper v2 affected boundary accepted | Canonical helper012aff/sourcee0df; original seven-target compile exit0, zero warnings/errors, six Fresh/only ViewerUI rebuilt934254c5. Actual 22/0/0: original palette +2 teardown +19 existing, separately exact1 under 300s. Root637eb22f verifies66 raw pairs/44 invocations/2,288 clean guards/seven executable identities; parent checks77 pairs/all45 owned PIDs absent. | Affected fixture only. Earlier v1 timeout and original closed panic preserved; original stop cause unexplained. C9297 stays at its frozen epoch. No whole-product/native/full54 acceptance. |
-| Genuine native MAX corrected pass | Actual frozen-C cf411 payload:1PASS/0/0 in 7.95s; ZIP available, four Viewer/two Compare frames, settings/navigation progress7ms, pools joined and native/viewer/archive/report readers plus controlled clipboard cleaned. Roota9a6a4fb verified24 raw pairs/2,288 source hashes/all2,487 C files identities-size-mtime-hash-exactset. | Original setup failure was missing native-work before fixture canonicalize; new immutable adapter adds only MAX mkdir, no app/C changes. No all 20 simultaneously busy/image spare decoderReady proof or old-source genuine pressure RED claim. Source/HTML/XLSX failures remain; no whole-product acceptance. |
-| Native Source C++ actual failure | Actual 0/1/0, exit101, libtest61.56s; assertion at source_native_acceptance_tests.rs742: required Source frame absent before shared absolute45s deadline. Initial/closing4,807-entry guards clean, owned cleanup true/remaining[], private metadata unchanged. Metadata records expected automatic Source mode2 route, no first-destination report. | Missing phase unknown; no Source paint acceptance. Outer300s watchdog did not fire. DIAG1 one-test-file metadata promotion410e/sourcee39e preserves all 34assertions/45s, format0, production unchanged; matching seven-target compile0/zero diagnostics and reuse501a7 approved; later DIAG1 actual 0/1/0 exit101/61.68s, control ACKstep4/45s/C++trial0 target.82; expected Positionsgen1seq[3,0] vs lastgen2seq[0,0]/four frames. Position context is not Worker-open generation/file-reopen proof; cause unknown. Root3a853e4c verifies41 pairs/4835+2288+2498 clean guards/owned cleanup/Cppmetadata unchanged. C9297 epoch unchanged. HTML/XLSX/later Office navigation failures retained; Office total 2PASS/3FAIL/0UNRUN. Source mapped-prefix actual 3RED->18GREEN private, canonical production unchanged; new retained-v2 exact1PASS;25af/d394 nowcanonical, currentcanonical24/newnormal/newC/native34 validation pending. |
-| Source private behavioral and retained proof | Root83a3 verifies actual 3behavioralRED->18GREEN,119 original/copy pairs/42 invocations/both preservedEXEs/feature-profilevariants/all1,099 private sources; only production07f->25af/tests identical. False automatic classifier flag preserved; raw Reload panic genuine before Completed, GREEN reaches completion/pixels. Root861e reviews five prior 1e5 controls plus new 7ca exact retained Source pixel/gutter test1PASS0.09s,59 pairs/all1,099v2sources. | Prior 18+5 carried with explicit closure, not rerun. This qualifies authored corrected-frame/crop unit behavior, without liveSession/actual provider retained-line allowance/installedrapidDrag or native acceptance. Canonical promotion and new validation below are separate. |
-| Source production canonical promotion | Rootcb8821b9 promotes exactly worker_position.rs07f->25af and tests2e8d->d394,2,288 clean guards/fmt0/current fullsourcec500b7e0. Previous normal673/Main unchanged at promotion; C9297 never rebound. | Build assigned matching newnormal/currentnoticegraph/newcompleteC installation, currentcanonical24 targeted integration then originalSource34 realcorpus/WAIT45/300s. All pending; prior private passes and old normal/C do not qualify changed production. No native acceptance/publishing/full54 closure. |
-| Private PO v3 failure and v4 actual passes | V3 compile0/no compiler warnings;118 actual Viewer cases=116PASS/2FAIL/0ignore, failures preserved. Rootc57676ba accepted private v4:28 postimages/41 refs/three-file delta/25 v3 rows unchanged/original real-session prefix preserved. V4 now 128 distinct PASS/0/0=focused12+disjoint116; Root6dc45cea checks actual raw names/counts/three EXEs/1,387 reconstructed guards. | Host11 prior evidence separate/not replayed. Ordinary warning-free compile is not full strict Clippy. Opaque final Generated wrapper retained/unconfirmed; no full cleanup guarantee, Core API change or canonical promotion. |
-| Private Backend109 actual compiler failure | Baseline109 compile actualexit101/614.234s/14errors+4warningmessages, archived unchanged. Root4322124b reserves exactlyfive extra private Backend consumer rows for actual missing-field/old-API fixture corrections. | All 74 runtime cases UNRUN; compiler failure is not behavioral RED or normal strict qualification. Preserve baseline; fresh coherent composition/compile required before follow-on13new+59direct=72unique runtime. |
-| Private collector v2 actual 11 passes and remaining design work | Rootc19577ea independently accepts actual private Enginev4/UIcollectorv2 boundary:11exactPASS/0/0, each 300s;33 raw original/copy pairs,22 invocations, actual Cargo/UIEXEa60aa5ae,1,099 private sources and 3,894+6 runtime guard composition checked. Original compile/raw drift preserved; explicit unconsumed 410e cfgtest exception separate. | Private boundary only; no canonical/fullLIFE/original production failure cause acceptance. Cross-graph registered-idle bridge accepted for existing Backend3 private files over v3. Future Generated closed checked-spool amendment source-only/unreserved; history+idle follow-on Rootd0ff source-reviewed/13newUNRUN. Preserve109/74 baseline; additive109+5 compile and 13new+59direct=72unique remain required. No measured Perf gain/final cleanup acceptance. |
-| Additional cleanup — 18 November | Sealedadditionalreceipt:C412files/3,255,585,645logicalB;D642files/7,250,716,439logicalB/0skips, protectedEXEs unchanged/164defaultsymbols+QAretentionpreserved. | Separatefrom earliercleanup; logicalsizes notnetphysicalreclaim. No processkill/ACLchange/featurequalification. |
-| Follow-up cleanup — C then D | C132,982oldstaging-cache-logfiles/3,263,580,433logicalB deleted,90skips=88inuse+1changed+1alreadygone. D318explicitownerreleasedintermediate-PDBfiles/660,271,043logicalB/0skips;155REDentries identity-size-mtime rechecked. Installedrustc+3normalEXESHAunchanged;18auditfiles~166MBverifiedonD/tasktemporaryCauditonlyremoved. | Prior 642notrecounted; logicalsizes notphysicalreclaim. No ACL/processkill/systemmemory/source-userdocs-settings-chats-activebuild change. Cleanup only, no feature/test acceptance. |
-| Current normal module staging | Handoffall9modules+2thumbnailers compiled/staged; newerRootreview completed 1,821modulehashes/1,945inputchecks/zeroerrors. | Root notices/normal host/completeCassembly/native acceptance separate; no fullgoalclosure. |
-| Renewed cleanup — 18 November | C373files/3,208,506,127logicalB/observedfree+2,828,046,336B. Dexact6obsoleteFQAroots/1,795files/3,558,657,330logicalB; currentC-Dapp/Mainhashes unchanged. | Dwasalreadycompressed(~483MBpriorallocation), concurrentbuilds mean no3.56GBphysicalreclaimclaim. Separate from earliercleanup totals; no feature/native qualification. |
-| Native harness/driver work | Source2 owner/unwind cleanup canonical; current native Source frame-deadline failure preserved. Office finished-after-drain unit priorPASS/headless99 retains same-artifact scope. Genuine frozen-C MAX actual 1PASS/7.95s after wrapper-only mkdir, separate from original setup failure. | Native Office all 5 executed:2PASS/3FAIL/0UNRUN. HTML roundtrip timeout, XLSX Find and later-navigation failures retained; parent-change-before-data1PASS5.88s and close/cancel1PASS3.73s, clean guards/owned closures. Source DIAG1 promoted, compile0/zero diagnostics/reuse approved, native DIAG1 failed 0/1/0 in 61.68s; position-context metadata narrows phase, cause unknown. No complete native product or production leak claim. |
-| Office phase observer canonical test source | After final Buildrelease, Rootb2a6 promotes exactlyoffice_preview_native_tests.rs710bea->50eb/96,406B;2,288 clean pre/post guards/fmt0/normal673+Main3unchanged, production unchanged. Current fullsource2ae892; five prior 0bb EXE/depfile/producer/Office710 copies preserved/readback verified. | Independent original 7 Office phase producer actualcompile0/zero diagnostics/newEngine3666/normal673/source2ae; both metadata observations FAILED initialwait-loaded/0events-requests-frames:HTML20.29s/XLSX20.38s, clean4809+2288+2498guards/owned cleanup; startup/qualified-worker cause unknown, UItracing; distinct from originalnavigationfailures. Explicit unconsumed canonical50eb exception may be bridged while private 710/rawguards remain immutable. No extraRootapproval, no unchangedunit/prior2PASS replay;20s/300s/oracles/policy preserved. C9297 not rebound; all 5 Office outcomes2PASS/3FAIL/0UNRUN remain. |
-| Validation payload tooling | Root accepted exact3tools and frozen22payloadtests; prior 13unchangeddirectboundary passes retain scope. | Oldercombined34 overlaps; do not add again. Toolingready is not assembly/deployment/nativeMAX success. |
-| Scoped retry2 headless checkpoint | Actual 99distinctPASS/0fail/0ignore:Compare17+Viewer26+Host47+checksums4+5. Finished-after-drain unit PASS;1400guards/ownedcleanup clean. | Host47 overlaps prior 71/epoch results; no cross-epoch sum or synthetic fullgraphsuccess. Actualnative5/newproduct remain pending. |
-| Source-size guard after promotions | Root actualPASS:2542sourcefiles <=100000B. | Source policy check only; not compiler/runtime/native/all54 qualification. |
-| Disk cleanup — 18 November | COMPLETE. C4 unused runtime backups+obsoleteuv indexes:677,447,900 logicalB/observed390,033,408B. D1390obsolete rlib/rmeta files from 7oldtargets:2,500,434,725 logicalB/observed2,427,236,352B. | InitialDpreflight interruptedbeforedeletion/all1565presentbeforeHTMLexclusion. HTML/defaulttarget/qa/verification/EXE/DLL/nativeSDK/screenshots/currentCruntime preserved;3protectedappSourcehashesunchanged. Nocleanupholds/sourceorACLchanges. No feature/qualification completion. |
-| Disk cleanup — 17 November (historical) | C10 obsolete QA installs:1,826,040,781 logicalB/observed free delta1,168,015,360B. D obsolete caches659,051,203 logicalB/observed delta577,359,872B; historical captures NTFS allocation saving3,078,541,312B with bytes/paths/mtime retained. Runtime/D EXE preserved. | Concurrent writes prevent exclusive volume-delta attribution. Later Root check C≈21.3GB/D≈27.9GB free; C pagefile23,426,166,784B untouched. No new EXE qualification, Git integration, Office success or 54-item completion. |
+| Configured comparison routes | The 27-file freeze with 30 newly authored tests now has a targeted gate: **77 passed / 0 failed / 2 ignored**, actual raw log verified. Strict Clippy/format **0/0**, source drift empty and protected app unchanged. Architect/Perf reviews found no additional actionable defect. | Do not add 77 to prior 275: scopes overlap. Four ignored Windows native comparator cases are authored, not qualified. Native Unknown outcomes and ReadAt counts remain unqualified; UI/Explorer and actual native-process acceptance remain separate. |
+| Office preview | User chose built-in readable contents; XLSX was the first service slice. Prior scoped Core/common/Office Wave 1 **162/0**, QName **RED 1 → GREEN 9/0** and the 22 Viewer adapter cases within prior 275 retain their dated scopes. The coherent six-format service 27-file and Viewer first-content/native fixture six-file freeze now compiled cleanly and passed **113/0/0**: service lib 68, XLSX integration 18, Viewer adapter/frame-guard 27. | Formatting 54 files passed. Three reader `collapsible_if` lint repairs are returned; strict Clippy rerun pending. These overlapping scopes are not additive. DOCX/XLSX/PPTX/ODT/ODS/ODP have scoped backend evidence, not completed native/app support. Initial readable contents on open is required; security/Linux/package and remaining native-policy acceptance stay open. |
+| Office recorded runtime checkpoints | Navigation and independent close/cancel retain their actual native passes. Latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**: completed real Find returned 0, Copy failed and Session stayed live. | The blank 902×602 diagnostic image is **not a successful fresh content/resize proof**: resize_ok=false and fresh_contrasted_frame=false. Original Find failure remains final; retained old bitmap is not live DOM proof. Source refusal remains mandatory; provider/Find/loading/correlation cause is not established. |
+| Promoted Office revocation repair | Host 47 +Viewer 44 =**91/0/0** retains its preserved source binding. The later exact test-assertion lint repair passed strict Clippy 0/format 13 files 0 and two overlapping resource tests. | Do not add those two into a 93-unique total. Current parent diagnostic is still RED despite live Session; no new validated resized-content proof or full native Office acceptance. |
+| Office performance/allocation | Amended **four canonical + two private cases passed / 0 failed**; seven result records include the private compiler, not a seventh test. Actual method 8 combined-work budget rejection and same-session small second-sheet render recovery passed. The 10,000-entry / 1,048,512-name-byte fixture observed open requested-live Rust heap peak increment **11,322,758 B**, retained **6,013,594 B**, first-render peak **192,183 B** and after-session-drop increment **0**. The production service freeze is **RELEASED**. | Preserve the prior three passes/one compression-level fixture setup failure as historical evidence. These are synchronous quiescent requested-allocation observations, not RSS, exact concurrent peaks, a universal 32MiB bound or leak proof. Allocator-instrumented timings and foreign compiler contention prevent broad speed claims. The historical performance-test Clippy 101/format 0 remains recorded; the newer 60-check gate has scoped Clippy 0, not an all-targets claim. No native Office or app qualification follows. |
+| PDF rule migration | Corrected fresh-artifact full filename_colors suite **20/0/0**, strict Clippy/format 0. Exact legacy combined PDF/document rule migrates locally to PDF **#EF5A5A**, preserving unrelated custom rules and the full 32-rule list if splitting has no room. | Retain the initial 12/8 stale-library attempt caused by Copy-Item mtime, not a behavior regression. Corrected library/harness fresh=false compilation established the final result. Descendant-style transport remains separate. |
+| Shared host, Viewer and comparison gate | Root verified **275 unique headless passes / 0 failures / 0 ignored**: native-filesystem host 41, plugin host 24, web host 29, comparison 27, Viewer 146 plus 8 new image-input/worker cases. **325 executions include 50 repeats**, not 325 unique passes. Final affected strict Clippy/format passed after owner repairs; initial compile/lint failures remain in dated receipts. | Viewer/comparison source closures were **RELEASED**. These results qualify the preceding stable slice only; later configured routes/UI outcomes are uncompiled. Do not add the earlier Source, Office, host 98 or UI subsets into this total. |
+| Native PDF | **Final 2/0** functional cases used Viewer harness `f00316db…` and the real C PDF worker, including mixed-size continuous pages/rapid camera replacement. Root read the receipts, confirmed no remaining child workers and unchanged app. | The earlier `b43d0280…` pre-lint run is a separate checkpoint. Captured-file fixtures do not qualify production native-filesystem capture, full-app input or performance. |
+| Engine policy bridge | New targeted gate passed **141 unique tests / 0 failed / 0 ignored**: five configuration integration tests plus 136 Engine lib tests, counted by actual names. Compilation qualified with **0 warnings**; post-test source drift is empty and the app unchanged. The earlier `FsError` → `PreferencesApplyError` compile error is corrected, with the failed attempt retained. Scope includes policy save/ownership, checked retirement, external capture/launch, admission/lifetimes and direct settings boundaries. | Initial strict Clippy 101 exposed five private-preferences `result_large_err` findings, now closed by the separate repair gate below. The 141 passes retain their frozen source identity. Native process, GUI and Explorer composition remain unqualified. Engine contracts retain no Core changes, the exact two agreed GENERAL allowances and unchanged session/desktop/process limits. |
+| Engine private error-boxing repair | Separate new gate passed **5 configuration +22 preferences tests / 0 failures**, with tests, strict Clippy and formatting all **exit 0**. Compilation has zero warnings; post-test/quality source guards have no drift and the protected app is unchanged. | Closes the five private error-boxing findings. This is overlapping scoped revalidation, **not 168 distinct Engine tests** and not a rerun of all 141 on the repair. Native/GUI/Explorer acceptance stays open. |
+| Current selected UI integration | Independent continuation **31/0/0**: MainUI 28 +Viewer footer 1 +keyboard 2. Combined with the first comparator-options run 7 pass/1 fail, the selected 39 now has **38 passes /1 Options-init-focus failure**. Unchanged CompareUI 7 was retained by identical EXE hashes, not rerun or added. | The exact prior footer regression and two keyboard tests now pass on this checkpoint. Options initialization must still focus an existing error; that failure is open. This is not all 159 or native/app qualification. |
+| MainUI/CompareUI unit checkpoints | Earlier 55/0 retains its source. P3 MainUI units initially 20/1; corrected draft exact selector now **1/0**. Other 20 were not rerun. Diagnostic compile qualified 0/zero warnings/errors, 1890 source guards/323 feature sets and unchanged binding/app. | No fresh 21 or 159 passes. Exact Options focus remains **0/1**: OK focused while expected pattern is visible. All overlapping snapshots remain separate. |
+| Native comparator and Source provenance | `comparator-d6ce28b8eb` ran all **four actual Windows native cases: 4/0**, unchanged components and remainingOwned[] each. Actual raw parent/argv/cwd, NotStarted cleanup, two-credit/cancel/no-child and non-Unicode Automatic fallback passed. Source DLL 9915 cached reuse/16 fresh artifacts remains separate provenance. | The old settings-timeout failures stay historical. Corrected faithful fixture 16/6/10 is not an implemented production-pool fix and does not supply native ReadAt counts. Native Source acceptance and final product/deployment gates remain open. |
+| Work-branch retirement accounting | Architect's exact source identities were independently matched. This checkpoint had **330 payload slots / 8 reusable waiter tokens**. Relative to the older 324 table: comparator store 1 +policy pins 2 +desktop 1 +shell 2 =6 additional payload slots. Comparison has two counter-only credits, desktop six capture slots/four shared launch permits, and process trackers eight shared/sixteen opener slots; none is an extra retirement domain. | Supersedes older present-tense 324/seven statements retained below as historical ledger content. The capacity correction changes documentation only; it does not close exhaustive LIFE-01 owner/first-poll/shutdown acceptance or prepared-Rename engine/UI integration. |
+| Common/Engine canonical integration | Corrected staged Engine libtest+configuration compile 0/0 warnings/errors; **51 disjoint passes** =initial 7 +watch/tree 39 +configuration 5, no repeats/failed/ignored. Postguards drift[]/app unchanged. Historical eight E0308 attempt remains. | These passes retain staged Engine source; new coherent graph compilation/UI/runtime/native/performance qualification pending. |
+| Prior Viewer 46 scoped checkpoint | Earlier canonical fc4 helper: **46/0** actual, exact former failure 1 pass then other 45 pass. All 9 document+19 image cases including immediate-open errors passed. | Earlier 0 complete/timeout 45 unrun and 45/1 remain historical; counts overlap. No all 159/native/full-app/resident qualification. |
+| Office provider navigation contract | Office V3 exact 16 retains its canonical checkpoint; latest post-drain finished-oracle 710bea fixture is canonical at freeze 6610deda. Prior 71 Office+F5 exact 1 remain their earlier source evidence. | Exact new helper unit and five actual native cases pending a legitimate complete NEW C product; no new Office/native success. |
+| Old-source production-pool RED | Actual 7e458befac run, original 2 async/16 blocking: 13 resident readiness/four windows; 20,000ms prepared callback not entered/second Compare incomplete. Closing 2 Viewers recovered SAME save (one callback/raw publication coherent) and SAME Compare. Strict cleanup/exclusive readers checked before intentional assert 1159; raw test 23.02s. | Genuine old-source RED, not migration GREEN/performance/unrecoverable deadlock proof. No owned PIDs/monitor errors; 3941 guards unchanged, unconsumed 4917→F5 fixture exception separately recorded. Current resident/opening-palette implementations remain private/unqualified. |
+| Coherent source canonical integration | Source 2 native fixture cleanup and UI 8 corrections now canonical. Full 34 Source assertions/workloads preserved; Runtime/Owner 5 shutdown/unwind fenced. UI 8 preserves deadlines/exact assertions, strengthens 6; production Options popup focus ordering+full frame helpers applied. | Main bindings legitimate regeneration required; Viewer/Compare Slint unchanged. Build owns --keep-going source/Cargo lease; no new full graph/runtime/native success. Historical compile 101/UI 22-5 retained. |
+| Maximum-state new-product route | Architect selected genuine Cargo-built libtest at NEW complete C product root before freeze, beside real filesystem packages. Root authorized normal deploy-tool default-off validation payload route. | Actual assembly/qualification/child resolver+typed ZIP gate/native execution pending. No Docs deployment or new EXE qualification; setup decision is not migration GREEN. |
+| Process-sampler prototype | Root actual functional review 12/12; all 7 processes exited naturally, cleanup passed. | Collector functionality only; no application old/new performance or sampling-overhead qualification. |
+| Scoped Perf source review | Closed with no actionable finding; 114 canonical inputs matched reviewed base 07417133. Retained authentic generated Rust 69,289,347B; no qualified old baseline/delta. | Bounded-page palette reshaping/preexisting Compare UI pixel copy remain measurement limits. Later compiler-only overlay separate; no application responsiveness/performance acceptance. |
+| Next-container design status | Private H/R v2 freeze 3d6a34ee preserves 8 postimages/baselines and 30 v1 artifacts+manifest. New private 50 exact PASS/0/0 =15 new+35 direct existing; compiled once 39.157s, 8 compiled postimages exact, artifact 9fe3a727 unchanged/guards-clean. Registry 42 pins match; metadata 42/compiled 39 features no expansion; raw 11 whole-row flags preserved as dependency-list pruning only. Root accepted R3.2 Metadata 1 proposal/private implementation. | PRIVATE ONLY; earlier 15 UNRUN handoff remains historical. Metadata 1 adds one resident domain to Engine 13/Viewer 5/Compare 2, proposed 21; transient 2 async/16 blocking unchanged. No canonical full A1/Core/history integration, native/full feature or executed M11 acceptance. |
+| A1 shared contract accepted | Root accepted frozen shared contract f319802d…ec06e/API 64bfa555; 153 unique owner paths/current baselines/decision documents/nine read-only guards verified. Engine config obtains vacant ServiceSlot before ownership transfer, no replacement; duplicate/unused-slot tests required. | Design accepted, implementation incomplete. B0 privately dispatched; Backend app-integration 5 rows after B0, V/U private adapter/fixture preparation parallel, attach immutable B0 before compile. No new dependencies/canonical A1 writes. R2/M1-M11/later B-C/native/full 54 remain required; canonical build/new C/native priority. |
+| Checked-spool private candidate | Root accepted 7-file candidate privately, review 5bb6d4b3; 31 unit declarations/common 10 Windows 13 Linux 8+3 docs were UNRUN at freeze. Actual partial review 79ff1271: Linux 41 PASS/0 fail+3 docs; Windows 47 PASS/1 setup RED+3 docs, raw logs/guards verified. | Windows RED unqualified/Backend diagnoses raw Win32 path-setup. Per platform overlap, no summed unique total or addition to H/R 50. No canonical code/M7 staging/graph actor integration/full native close acceptance; current app producer priority. |
+| Direct UI runtime checkpoint | Retry 4 exactly 23 unique passes /0 failed /0 ignored: immutable 20, separate named caret 1, separate Options Transaction 2. Clean source guards/owned cleanup. Root viewed the new complete initial-focus Options BMP and complete paged/continuous 320x200 footer captures. | Earlier 18/20/UI 22-5 checkpoints overlap and retain their dated source. Selected visual/UI acceptance does not qualify all layouts/platforms, normal app/native runtime or performance; old captures preserved. |
+| Retry 4 complete compilation | Actual complete workspace/all-target no-run compilation passed exit 0; raw Cargo ends build-finished success=true, zero errors/warnings, closing drift[]/appUnchanged=true. | Earlier Clippy 101 Explorer issue fixed by canonical 4-file wiring fec5c57f…d303cc/immutable Viewer freeze dd204ddc…d1a. Same strict retry 1 advanced past Explorer, then 101 on 2 CompareUI duplicate_mod diagnostics. CompareUI 4-file cfg test fix now canonical 6bccd5af…d1d7fc; 14 test bodies/helpers/raw Unicode/runtime unchanged, 2,288 guard otherwise clean/fmt 0. New lint/affected harness/direct 7 checks pending. CEF 1-line spelling canonical ad55e66a…322d06 retains locked packages/SDK/licenses/features; warning-free standalone replay pending. No new native/normal EXE qualification; compile/UI 23 dated/full 54 open. |
+| Latest strict Clippy checkpoints | Actual terminal 101 on 3 Compare Engine test pixel chunks uses; Root-requested v1 iterator correction 386f10ae then triggered retry 3 manual_contains 101. Root promoted pixel v2 c92cae2a…ac50f3a: same 3 membership checks use contains, same RGBA/remainder/assertion values/runtime/production/dependencies. | Pinned isolated probe before 1/after 0 only. Whole-workspace strict/direct runtime pending, no strict PASS/native/normal EXE qualification. Failed retries retained; future A1 adapters preserve accepted v2 baseline. |
+| Open cleanup receipt seams | Viewer reported explicit erased-resource and abandoned-layout cleanup receipt gaps; Architect owns additive seam decisions. | No implemented cleanup guarantee inferred; full LIFE-01 remains open. Checked-spool 7 has partial private platform results/Windows RED, not canonical/full native close acceptance. |
+| Preliminary normal producer and later UI test-lint promotion | Normal Explorer/elevation producer actual exit 0/build-finished true/no diagnostics-warnings/2,288 source guard clean. New test=false me.exe 110,218,752B/c487eff2…5d3a9c1; elevation 325,632B/b761e65f…1c62657. Main binding Fresh/hash unchanged. Root then promoted Main/Viewer UI 4 test-lint files 5c166af1 with inverse/helper/fmt guards; new app unchanged during promotion. | Historical f311 intentionally replaced by authorized producer. Current-source strict/direct/final normal invocation pending; no complete C deployment/native/full 54 qualification. |
+| Latest strict retry 5 and private lifecycle assignments | Actual strict retry 5 terminal 101/one Office HTTP fixture collapsible_if; Root promoted exact 1-file correction 679bcf78/HTTP fixture 545ff640←e053fc1c, normal c487 unchanged/source guard otherwise clean. Pinned CHECK help 43 supports keep-going; strict replay uses CHECK pass-through, no lint/coverage weakening. | Refresh test-only input epoch before actual Office native replay; old receipts not rebound. No strict/direct/final normal PASS yet. Private DR Core-native/PO extra Viewer reservations dispatched; no canonical lifecycle implementation/full goal closure. |
+| Checked-spool Windows fixture v2 | Exact 1 setup correction preserves production/other 6 postimages/29 v1 artifacts. Actual v2 now 48 exact PASS+3 docs; Root f274e348 checked 100 raw log hashes/7 exe/7 postimages, zero errors. | Original v1 Windows RED retained; Linux v1 separate 41+3 unchanged scope, no summed unique total. Perf disposition pending/no canonical promotion/M7/LIFE01 closure. |
+| Prior strict retry 6/B0 private scope | Keep-going retry 6 actual 101/3 test lints in 2 files before the final canonical correction and retry 7 PASS below. B0 immutable 16 rows+typed recipe Root review 09c428a3/private compile authorized. Host validate() loses local cancel under Viewer lock; Architect minimal additive hook decision pending. | Source review is not tests/canonical actor feature; 14 inline tests do not prove end-to-end cancellation. Canonical new normal C/native pipeline priority; full 54 open. |
+| Full strict Clippy retry 7 | After canonical UI 1+WorkBudget 2 test-only lint batch 99eb030d, actual full workspace/all targets strict PASS exit 0/1001 JSON events/build-finished true/0 warnings-errors/2288 source guards 0 drift/app c487 unchanged. Root review 368be4ef verified actual raw receipt. | Compile/lint only, no broad runtime claim. All 16 direct cases+separate Office unit remain required; six-target producer active then actual MainUI wrapper libtest 2 cases required, only giant bindings crate libtest excluded. No test dropping; final normal 359 graph/new C/native pending. |
+| Host notice completion-v3 | Eleven omitted-license sources resolved; 662 stage files/61 override files/0 missing. Root 75f68311 verified exact crate checksum-VCS commit+27 saved official response/copy hashes. Module Root 10be6a5a review 1821 runtime files/1945 inputs/7 historical wrappers clean. | No dependency/project license/license selection change. Final normal 359 graph comparison/new C copy-freeze/native Source Office MAX pending; authored unrun archive actor not implemented/full 54 open. |
+| Current exact boundary results RED | Seven-target linked producer 2 exit 0; original runtime 1 first 10 PASS then case 11 Viewer UI palette 300 s TIMEOUT/PID 37548 killed/counts absent. Separate 6 continuation PASS gives 15 direct PASS/1 Viewer TIMEOUT +separate Office 710 unit PASS, overallAccepted=false. Root b66594d0 verifies 51 log-summary/5 capture hashes (not visual)/7 EXE/exact 17 outcomes. | Separate 60 s nocapture diagnostic RED exposes appearance.rs 508 restore_palette.unwrap Err("Viewer is closed."); original 300 s RED retained/no acceptance retry/timeout reduction. Backend stop cause unobserved/closed-stopped-catalog startup under diagnosis. Private UI failure-only mail logging/source review; Architect PreparedCatalog seams. No guard weakening/fake runtime/canonical fix/full closure. |
+| Private B0 v1 and composed Viewer v2 | B0 v1 actual 34 PASS=14 new+20 direct/d32d1ff2, one deprecated fetch_update warning retained. Later host delta 9ddee287/Core-recipe 29a13391 composed GREEN v2 freeze 51c32688/inventory 58ff82bd/Root 7e910068 27 sources accepted privately. | Source checkpoint 104 Viewer/11 Host+3 RED declarations were UNRUN; later 3 RED/14 GREEN verify cooperative boundary only, not full 104/PO. UI extra 5 private consumers b72a7ef2 beyond UI 30/original freeze unchanged. PO v2 P1 nonintegratable/no canonical generic resource/native/B1/lifecycle/full goal closure. |
+| New normal 673 and mailbox diagnostic v3 | normal-host-validation-input-2 actual producer PASS/new D app 673084bb…bbc95/test=false/359 graph matches notices. Later mailbox-original-graph-v3 same original 7 target compile 0/zero W-E +diagnostic selector PASS 1/0.21s/no mailbox error output. | No runtime acceptance/root cause fix; original closed panic/300 s timeout retained/unexplained. UI approved private ACK-close fixture validity change underway, not proven root cause fix. New C/native/full 54 open. |
+| Independent v3 review and PO v2 source P1 | Root 2b311c88 verified 3 raw log pairs/all 2288 sources/Cargo feature-profile variants equivalent/one exact diagnostic PASS 0.21; no acceptance/root cause. Root 77c65185 confirms missing agreed typed preownership admission in private PO v2. | Old v2 immutable/NONINTEGRATABLE; Viewer additive corrected epoch pending/Architect caller boundary review. Token before handoff/serialized seal-admit/late failure must not mutate completed receipt; caller retains already owned refused source. The 3 REDs/14 narrow GREEN below are separate from this PO P1; full goal open. |
+| Actual cooperative 3 RED and sealed UI fixture candidate | Root 63867970 independently verified 3 exact behavioral REDs/9 raw log-list-summary hashes/actual EXE 42422763; rescue+both joins before final assertions. RED compile 0/1 historical fetch_update warning/not strict green. Palette helper one file e3bc→1e73 Root 085a review 25 records/19 old tests unchanged/2 new UNRUN/rustfmt 0. | Scoped 14 GREEN subsequently passed below; typed PO validation separate. UI promotion initially held for C assembly, later canonical 9c25 below/runtime pending/no proven original stop cause fix/no whole LIFE-native acceptance. |
+| Actual narrow cooperative GREEN 14 | After preserved 3 REDs, actual 14 PASS/0 failed/0 ignored=11 Host+3 previously RED Viewer. Root d5d14402 independently verified 4 raw logs/2 EXE/all 1294 source-proof-absence guards across 3 schemas. Test compile 0/zero W-E. | Private cooperative-cancel boundary only; ordinary test compile NOT full Clippy-D qualification. No canonical promotion/full 104 Viewer/typed PO/LIFE01/native App. C assembly PID 54224 actual normal 673+test cf411/epoch 9297 inputs populating destination/not frozen accepted; UI helper hold persists. |
+| Completed C9297 input and new helper source epoch | C validation assembly exit 0+normal-only registration; Root c14c67c8 exact 2487 files/752,608,762B: 6 Viewer/3 FS/2 thumbs/662 notices/normal 673+test cf411; freeze/postregistration hashes identical. After actual Build release Root promoted 1 helper e3bc→1e73/fdf06c25, 2288 guards/fmt 0/normal 673 Main unchanged. | No app/test native launch or acceptance. Native Root copied verbatim from actual identities/completion. C bundle stays 9297; new canonical source 9c25, same 7 graph+3 selectors pending 300s. Do not rebind old C/failed Epochs or claim original cause fixed/full 54 closure. |
+| Private PO v3 source admission (historical) | Root 2db73d40 verified 33 sealed references/all 27 sources; 5 Engine changes/22 unchanged/canonical baselines exact. Actual token-before capture/caller/neutral Finished paths source read; private Build authorized. | At admission, 3 compatible admission RED+129 GREEN were expectations only. Later actual Viewer 118=116 PASS/2 FAIL and Host 11 prior separate are recorded below; no canonical integration. Old v2 immutable/nonintegratable. Actual UI collector/App/DR/native LIFE remain pending; full 54 open. |
+| Fixture 1e73 actual partial run/source flaw | Original palette 1 PASS; new normal teardown 300 s TIMEOUT/20 UNRUN/owned cleanup clean/current EXE 5b3. Root 9642bcbe verifies 6 raw pairs and pinned Slint 1.18.1 api 503/1086: show retains component until hide; new test never hides, Rust UI handle drops insufficient precondition. | Source flaw PROVEN/sole wait cause NOT proven. Private one file hide+weak UI disappearance checks authorized/preserve actual Session live before Runtime Drop; old packet/run retained/no acceptance. Engine PO/UI collector independent; full goal not blocked. |
+| Helper v2 affected boundary accepted | Canonical helper 012aff/source e0df; original seven-target compile exit 0, zero warnings/errors, six Fresh/only ViewerUI rebuilt 934254c5. Actual 22/0/0: original palette +2 teardown +19 existing, separately exact 1 under 300s. Root 637eb22f verifies 66 raw pairs/44 invocations/2,288 clean guards/seven executable identities; parent checks 77 pairs/all 45 owned PIDs absent. | Affected fixture only. Earlier v1 timeout and original closed panic preserved; original stop cause unexplained. C9297 stays at its frozen epoch. No whole-product/native/full 54 acceptance. |
+| Genuine native MAX corrected pass | Actual frozen-C cf411 payload: 1 PASS/0/0 in 7.95s; ZIP available, four Viewer/two Compare frames, settings/navigation progress 7ms, pools joined and native/viewer/archive/report readers plus controlled clipboard cleaned. Root a9a6a4fb verified 24 raw pairs/2,288 source hashes/all 2,487 C files identities-size-mtime-hash-exact set. | Original setup failure was missing native-work before fixture canonicalize; new immutable adapter adds only MAX mkdir, no app/C changes. No all 20 simultaneously busy/image spare decoder Ready proof or old-source genuine pressure RED claim. Source/HTML/XLSX failures remain; no whole-product acceptance. |
+| Native Source C++ actual failure | Actual 0/1/0, exit 101, libtest 61.56s; assertion at source_native_acceptance_tests.rs 742: required Source frame absent before shared absolute 45s deadline. Initial/closing 4,807-entry guards clean, owned cleanup true/remaining[], private metadata unchanged. Metadata records expected automatic Source mode 2 route, no first-destination report. | Missing phase unknown; no Source paint acceptance. Outer 300s watchdog did not fire. DIAG 1 one-test-file metadata promotion 410e/source e39e preserves all 34 assertions/45s, format 0, production unchanged; matching seven-target compile 0/zero diagnostics and reuse 501a7 approved; later DIAG 1 actual 0/1/0 exit 101/61.68s, control ACK step 4/45s/C++ trial 0 target .82; expected Positions gen 1 seq[3,0] vs last gen 2 seq[0,0]/four frames. Position context is not Worker-open generation/file-reopen proof; cause unknown. Root 3a853e4c verifies 41 pairs/4835+2288+2498 clean guards/owned cleanup/Cpp metadata unchanged. C9297 epoch unchanged. HTML/XLSX/later Office navigation failures retained; Office total 2 PASS/3 FAIL/0 UNRUN. Source mapped-prefix actual 3 RED->18 GREEN private, canonical production unchanged; new retained-v2 exact 1 PASS; 25af/d394 now canonical, current canonical 24/new normal/new C/native 34 validation pending. |
+| Source private behavioral and retained proof | Root 83a3 verifies actual 3 behavioral RED->18 GREEN, 119 original/copy pairs/42 invocations/both preserved EXEs/feature-profile variants/all 1,099 private sources; only production 07f->25af/tests identical. False automatic classifier flag preserved; raw Reload panic genuine before Completed, GREEN reaches completion/pixels. Root 861e reviews five prior 1e5 controls plus new 7ca exact retained Source pixel/gutter test 1 PASS 0.09s, 59 pairs/all 1,099 v2 sources. | Prior 18+5 carried with explicit closure, not rerun. This qualifies authored corrected-frame/crop unit behavior, without live Session/actual provider retained-line allowance/installed rapid Drag or native acceptance. Canonical promotion and new validation below are separate. |
+| Source production canonical promotion | Root cb8821b9 promotes exactly worker_position.rs 07f->25af and tests 2e8d->d394, 2,288 clean guards/fmt 0/current full source c500b7e0. Previous normal 673/Main unchanged at promotion; C9297 never rebound. | Build assigned matching new normal/current notice graph/new complete C installation, current canonical 24 targeted integration then original Source 34 real corpus/WAIT 45/300s. All pending; prior private passes and old normal/C do not qualify changed production. No native acceptance/publishing/full 54 closure. |
+| Private PO v3 failure and v4 actual passes | V3 compile 0/no compiler warnings; 118 actual Viewer cases=116 PASS/2 FAIL/0 ignore, failures preserved. Root c57676ba accepted private v4: 28 postimages/41 refs/three-file delta/25 v3 rows unchanged/original real-session prefix preserved. V4 now 128 distinct PASS/0/0=focused 12+disjoint 116; Root 6dc45cea checks actual raw names/counts/three EXEs/1,387 reconstructed guards. | Host 11 prior evidence separate/not replayed. Ordinary warning-free compile is not full strict Clippy. Opaque final Generated wrapper retained/unconfirmed; no full cleanup guarantee, Core API change or canonical promotion. |
+| Private Backend 109 actual compiler failure | Baseline 109 compile actual exit 101/614.234s/14 errors+4 warning messages, archived unchanged. Root 4322124b reserves exactly five extra private Backend consumer rows for actual missing-field/old-API fixture corrections. | All 74 runtime cases UNRUN; compiler failure is not behavioral RED or normal strict qualification. Preserve baseline; fresh coherent composition/compile required before follow-on 13 new+59 direct=72 unique runtime. |
+| Private collector v2 actual 11 passes and remaining design work | Root c19577ea independently accepts actual private Engine v4/UI collector v2 boundary: 11 exact PASS/0/0, each 300s; 33 raw original/copy pairs, 22 invocations, actual Cargo/UI EXE a60aa5ae, 1,099 private sources and 3,894+6 runtime guard composition checked. Original compile/raw drift preserved; explicit unconsumed 410e cfg test exception separate. | Private boundary only; no canonical/full LIFE/original production failure cause acceptance. Cross-graph registered-idle bridge accepted for existing Backend 3 private files over v3. Future Generated closed checked-spool amendment source-only/unreserved; history+idle follow-on Root d0ff source-reviewed/13 new UNRUN. Preserve 109/74 baseline; additive 109+5 compile and 13 new+59 direct=72 unique remain required. No measured Perf gain/final cleanup acceptance. |
+| Additional cleanup — 18 November | Sealed additional receipt: C 412 files/3,255,585,645 logical B; D 642 files/7,250,716,439 logical B/0 skips, protected EXEs unchanged/164 default symbols+QA retention preserved. | Separate from earlier cleanup; logical sizes not net physical reclaim. No process kill/ACL change/feature qualification. |
+| Follow-up cleanup — C then D | C 132,982 old staging-cache-log files/3,263,580,433 logical B deleted, 90 skips=88 in use+1 changed+1 already gone. D 318 explicit owner released intermediate-PDB files/660,271,043 logical B/0 skips; 155 RED entries identity-size-mtime rechecked. Installed rustc+3 normal EXE SHA unchanged; 18 audit files ~166 MB verified on D/task temporary C audit only removed. | Prior 642 not recounted; logical sizes not physical reclaim. No ACL/process kill/system memory/source-user docs-settings-chats-active build change. Cleanup only, no feature/test acceptance. |
+| Current normal module staging | Handoff all 9 modules+2 thumbnailers compiled/staged; newer Root review completed 1,821 module hashes/1,945 input checks/zero errors. | Root notices/normal host/complete C assembly/native acceptance separate; no full goal closure. |
+| Renewed cleanup — 18 November | C 373 files/3,208,506,127 logical B/observed free+2,828,046,336B. D exact 6 obsolete FQA roots/1,795 files/3,558,657,330 logical B; current C-D app/Main hashes unchanged. | D was already compressed (~483 MB prior allocation), concurrent builds mean no 3.56 GB physical reclaim claim. Separate from earlier cleanup totals; no feature/native qualification. |
+| Native harness/driver work | Source 2 owner/unwind cleanup canonical; current native Source frame-deadline failure preserved. Office finished-after-drain unit prior PASS/headless 99 retains same-artifact scope. Genuine frozen-C MAX actual 1 PASS/7.95s after wrapper-only mkdir, separate from original setup failure. | Native Office all 5 executed: 2 PASS/3 FAIL/0 UNRUN. HTML roundtrip timeout, XLSX Find and later-navigation failures retained; parent-change-before-data 1 PASS 5.88s and close/cancel 1 PASS 3.73s, clean guards/owned closures. Source DIAG 1 promoted, compile 0/zero diagnostics/reuse approved, native DIAG 1 failed 0/1/0 in 61.68s; position-context metadata narrows phase, cause unknown. No complete native product or production leak claim. |
+| Office phase observer canonical test source | After final Build release, Root b2a6 promotes exactly office_preview_native_tests.rs 710bea->50eb/96,406B; 2,288 clean pre/post guards/fmt 0/normal 673+Main 3 unchanged, production unchanged. Current full source 2ae892; five prior 0bb EXE/depfile/producer/Office 710 copies preserved/readback verified. | Independent original 7 Office phase producer actual compile 0/zero diagnostics/new Engine 3666/normal 673/source 2ae; both metadata observations FAILED initial wait-loaded/0 events-requests-frames: HTML 20.29s/XLSX 20.38s, clean 4809+2288+2498 guards/owned cleanup; startup/qualified-worker cause unknown, UI tracing; distinct from original navigation failures. Explicit unconsumed canonical 50eb exception may be bridged while private 710/raw guards remain immutable. No extra Root approval, no unchanged unit/prior 2 PASS replay; 20s/300s/oracles/policy preserved. C9297 not rebound; all 5 Office outcomes 2 PASS/3 FAIL/0 UNRUN remain. |
+| Validation payload tooling | Root accepted exact 3 tools and frozen 22 payload tests; prior 13 unchanged direct boundary passes retain scope. | Older combined 34 overlaps; do not add again. Tooling ready is not assembly/deployment/native MAX success. |
+| Scoped retry 2 headless checkpoint | Actual 99 distinct PASS/0 fail/0 ignore: Compare 17+Viewer 26+Host 47+checksums 4+5. Finished-after-drain unit PASS; 1400 guards/owned cleanup clean. | Host 47 overlaps prior 71/epoch results; no cross-epoch sum or synthetic full graph success. Actual native 5/new product remain pending. |
+| Source-size guard after promotions | Root actual PASS: 2542 source files <=100000B. | Source policy check only; not compiler/runtime/native/all 54 qualification. |
+| Disk cleanup — 18 November | COMPLETE. C 4 unused runtime backups+obsolete uv indexes: 677,447,900 logical B/observed 390,033,408B. D 1390 obsolete rlib/rmeta files from 7 old targets: 2,500,434,725 logical B/observed 2,427,236,352B. | Initial D preflight interrupted before deletion/all 1565 present before HTML exclusion. HTML/default target/qa/verification/EXE/DLL/native SDK/screenshots/current C runtime preserved; 3 protected app Source hashes unchanged. No cleanup holds/source or ACL changes. No feature/qualification completion. |
+| Disk cleanup — 17 November (historical) | C 10 obsolete QA installs: 1,826,040,781 logical B/observed free delta 1,168,015,360B. D obsolete caches 659,051,203 logical B/observed delta 577,359,872B; historical captures NTFS allocation saving 3,078,541,312B with bytes/paths/mtime retained. Runtime/D EXE preserved. | Concurrent writes prevent exclusive volume-delta attribution. Later Root check C≈21.3GB/D≈27.9GB free; C pagefile 23,426,166,784B untouched. No new EXE qualification, Git integration, Office success or 54-item completion. |
 
 Evidence: `_build/verification/viewer-refresh-20261117/` contains
 `viewer/stage-a-handoff.md`, `viewer/stage-a-green.log`,
@@ -1471,31 +1471,31 @@ Cleanup quantities are from `_build/verification/disk-cleanup-20261117/c-obsolet
 and `build/cleanup-preflight/{deleted-caches-receipt.json,capture-compression-receipt.json,final-receipt.json}`.
 Later free-space/pagefile observations are Root-reported, not new cleanup or feature evidence.
 
-Current Viewer46 all-pass receipt: `build/ui-runtime-worker/catalog-helper-viewer-1/execution-receipt.json`
-with two raw logs1+45. Catalog gate6 has actual 5pass/1fixture-preconditionfail;
-test-only raw-OsString repairF5 is canonical, replay pending. The later 7e458befac pressure run now establishes old-source production RED;
+Current Viewer 46 all-pass receipt: `build/ui-runtime-worker/catalog-helper-viewer-1/execution-receipt.json`
+with two raw logs 1+45. Catalog gate 6 has actual 5 pass/1 fixture-precondition fail;
+test-only raw-OsString repair F5 is canonical, replay pending. The later 7e458befac pressure run now establishes old-source production RED;
 this does not qualify the migration. Opening-palette getter amendment is in
 `architect/opening-palette-revision-contract-decision.md`, private implementation
 in progress. The scoped [dependency handoff](THIRD_PARTY.md#private-resident-worker-dependency-handoff--17-november-2026)
-records optional work-budget/Tokio1.54.1 MIT and consumer feature edges; Build owns
+records optional work-budget/Tokio 1.54.1 MIT and consumer feature edges; Build owns
 the coherent lockfile edge/captures after source release. No migration PASS follows.
 
 New actual old-source RED: `root-production-pool-red-review.json` and
 `build/native-worker/production-pool-7e458befac/{handoff.json,test.log,post-guards.json,excluded-unconsumed-test-after.json}`.
-Viewer combined-v2 opening getter/F5 tests and the UI41-file freeze are private
-source-review checkpoints; Root's3-delta/92-file and 41-file checks add no executed
-migration passes. Full54-item acceptance remains active.
+Viewer combined-v2 opening getter/F5 tests and the UI 41-file freeze are private
+source-review checkpoints; Root's 3-delta/92-file and 41-file checks add no executed
+migration passes. Full 54-item acceptance remains active.
 
 Newest bounded evidence: `build/html-navigation-private-gate/handoff.json`,
 `build/resident-common-round4-private-gate/completion.json`,
 `build/private-ui-codegen/final-result-v2.json`,
 `viewer/office-provider-denial/office-v3-canonical-freeze.json` and
 `architect/engine-resident-exit-observation-contract-decision.md`.
-Pure navigation34/0 and commonround4 29/0 are distinct source scopes; default13
-were filtered in round4. Slint generation3/3/194guards0 leaves generated Rust
-uncompiled. OfficeV3 exact16 canonical/132nonownedguards0 is source promotion;
-native5 require a legitimate complete new C product. No full54/Git/newEXE/deployment
-completion follows. Engine200ms follows actual ticket drain inside existing 2500ms.
+Pure navigation 34/0 and common round 4 29/0 are distinct source scopes; default 13
+were filtered in round 4. Slint generation 3/3/194 guards 0 leaves generated Rust
+uncompiled. Office V3 exact 16 canonical/132 nonowned guards 0 is source promotion;
+native 5 require a legitimate complete new C product. No full 54/Git/new EXE/deployment
+completion follows. Engine 200ms follows actual ticket drain inside existing 2500ms.
 
 18 November integration receipts: `backend/resident-workers/common-engine-canonical-stage/canonical-source-ready.json`,
 `build/engine-resident-stage-gate/{failure-handoff.json,compile-summary.json}`,
@@ -1504,298 +1504,298 @@ completion follows. Engine200ms follows actual ticket drain inside existing 2500
 `viewer/office-provider-denial/finished-oracle-v1-canonical-freeze.json`,
 `build/office-v3-catalog-coherent-gate/completion.json` and
 `architect/maximum-state-archive-discovery-decision.md`.
-Corrected Engine compile, new oracle helper and native5 remain pending; source
+Corrected Engine compile, new oracle helper and native 5 remain pending; source
 approval/canonical application is not runtime success. All 54 IDs remain active.
 
-Later 18November receipts: `build/engine-resident-stage-fixture-fix-gate/{compile-summary.json,initial-seven-result.json,guard-after-initial-seven.json}`,
+Later 18 November receipts: `build/engine-resident-stage-fixture-fix-gate/{compile-summary.json,initial-seven-result.json,guard-after-initial-seven.json}`,
 `viewer/resident-appearance/rebased-stage-v3-files.json`,
 `root-coherent-integration-rebased-viewer-review.json` and `root-process-sampler-review.json`.
-Corrected Engine compilation/two artifacts and initial 7/0/0 are actual. FullEngine/
-Viewer/UI/native remain unqualified; source integration112writes+2guards is only
-authorized after the consumer boundary. Sampler12/12+7naturalexits is not app performance.
+Corrected Engine compilation/two artifacts and initial 7/0/0 are actual. Full Engine/
+Viewer/UI/native remain unqualified; source integration 112 writes+2 guards is only
+authorized after the consumer boundary. Sampler 12/12+7 natural exits is not app performance.
 
 Latest applied coherent source: `root-coherent-source-integration/canonical-source-ready.json`
-SHA07417133be995b56d020525765eb37c45970c7378c9689b70933816175c2802a.
-All 112 writes+2guards are canonical;114postimages/7protectedhashes verified.
-The staged Engine gate's additional 44 (watch/tree39+configuration5) are in
+SHA 07417133be995b56d020525765eb37c45970c7378c9689b70933816175c2802a.
+All 112 writes+2 guards are canonical; 114 postimages/7 protected hashes verified.
+The staged Engine gate's additional 44 (watch/tree 39+configuration 5) are in
 `build/engine-resident-stage-fixture-fix-gate/{watch-boundaries-result.json,guard-after-watch-boundaries.json}`;
 initial 7+44 are 51 disjoint passes, not a coherent-graph runtime result. Coherent
 lock generation/compilation/UI/native qualification and the original 54 remain open.
 
 Latest coherent compile: `build/coherent-final-gate/{compile-result.json,compile-summary.json,compile.jsonl,guard-after-compile.json}`.
-Overall exit101/E0639 and one dead-code warning are retained; five fresh normal
+Overall exit 101/E0639 and one dead-code warning are retained; five fresh normal
 library artifacts advance generated-only status for those libraries. The full
-graph and coherent runtime/native remain unqualified; appF311 is unchanged.
+graph and coherent runtime/native remain unqualified; app F311 is unchanged.
 Two-file UI correction is in preparation with no Slint/assertion change claimed.
 
 Latest compiler-only source overlay: `root-coherent-source-integration/ui-compile-fix-v1/canonical-source-ready.json`
-SHAe0739b3c1acfb4f63607b3f2c1bf4ca7dc4b144a57caf0f59711df4214be9494;
+SHA e0739b3c1acfb4f63607b3f2c1bf4ca7dc4b144a57caf0f59711df4214be9494;
 two files compose with 07417133, not an additional application qualification.
 Perf receipt `perf/coherent-render-review-v1/review-receipt.json` closes source
-review only, with 114base-checkpoint matches/69,289,347 retained source bytes and
-no measured old/new delta. Warmcompile/runtime/native remain pending; original 54 open.
+review only, with 114 base-checkpoint matches/69,289,347 retained source bytes and
+no measured old/new delta. Warm compile/runtime/native remain pending; original 54 open.
 
 Latest consumer overlay: `root-coherent-source-integration/consumer-fix-v2/canonical-source-ready.json`
-SHA91150f0e9549694e0a781ed6e886aa8c21d8af8c191f071516465dfd71a94c25;
-seven additional paths compose121 with original 114/UI2override. Interim missing
-copy_nested_retirement compile failure is preserved. Retry2's observed fresh
+SHA 91150f0e9549694e0a781ed6e886aa8c21d8af8c191f071516465dfd71a94c25;
+seven additional paths compose 121 with original 114/UI 2 override. Interim missing
+copy_nested_retirement compile failure is preserved. Retry 2's observed fresh
 four-example/two-harness artifacts are partial only; the captured log has no
-errors/warnings/build-finished record or terminal result. Fullgraph/runtime/full54
-acceptance remains open. Next-container fixed2/1GiB limits are returned proposal
+errors/warnings/build-finished record or terminal result. Full graph/runtime/full 54
+acceptance remains open. Next-container fixed 2/1GiB limits are returned proposal
 items, not A1 authorization or completed implementation.
 
-Measured18November cleanup: `_build/verification/disk-cleanup-20261118/{final-result.json,c-result.json,d-result.json,d-preflight.json,d-candidates.json,d-candidates-without-html.json}`.
-C logical677,447,900B/observed390,033,408B;D1390files/7targets/logical2,500,434,725B/
-observed 2,427,236,352B. HTMLfullypreserved; interruptedpreflightdeletednothing,
-all 1565originalcandidatesconfirmedbeforeexclusion. Threeapp/Sourcehashesunchanged;
-noholds, source/ACL changes or broader implementation/qualification closure.
+Measured 18 November cleanup: `_build/verification/disk-cleanup-20261118/{final-result.json,c-result.json,d-result.json,d-preflight.json,d-candidates.json,d-candidates-without-html.json}`.
+C logical 677,447,900B/observed 390,033,408B; D 1390 files/7 targets/logical 2,500,434,725B/
+observed 2,427,236,352B. HTML fully preserved; interrupted preflight deleted nothing,
+all 1565 original candidates confirmed before exclusion. Three app/Source hashes unchanged;
+no holds, source/ACL changes or broader implementation/qualification closure.
 
 Latest runtime/fixture/tool/proposal records: `root-ui-runtime-overlap-review.json`,
 `root-coherent-source-integration/ui-literal-fixture-v1/canonical-source-ready.json`,
 `build/coherent-final-retry-2/{compile-result.json,compile-summary.json,guard-after-compile.json}`,
 `root-validation-payload-tool-review.json` and `architect/tree-container-next/handoff.json`.
-Retry2terminal101; scopedUI22/5 and clean guards are actual. Literal7713 replay,
-capture-helper/source-native fixtures, fresh 5caseOffice driver+unignoredunit/newC
-qualification remain pending. Tool22+prior 13/overlapping34 andR2source164/0drift
-do not close native/performance/A1/full54 acceptance.
+Retry 2 terminal 101; scoped UI 22/5 and clean guards are actual. Literal 7713 replay,
+capture-helper/source-native fixtures, fresh 5 case Office driver+unignored unit/new C
+qualification remain pending. Tool 22+prior 13/overlapping 34 and R2 source 164/0 drift
+do not close native/performance/A1/full 54 acceptance.
 
-Newest scoped evidence: `root-headless-retry2-review.json` actual 99distinctPASS
-(Compare17/Viewer26/Host47/checksums4+5), finished-after-drain unit passed,
-1400guards/ownedcleanup clean; Host47/older71 overlap is not additive.
+Newest scoped evidence: `root-headless-retry2-review.json` actual 99 distinct PASS
+(Compare 17/Viewer 26/Host 47/checksums 4+5), finished-after-drain unit passed,
+1400 guards/owned cleanup clean; Host 47/older 71 overlap is not additive.
 `root-coherent-source-integration/{source-native-retirement-v1,ui-scoped-corrections-v1}/canonical-source-ready.json`
-records actualSource2/UI8 promotion, not passing replays. Full34Sourceassertions,
-workloads/deadlines retained; UI strengthens6assertions. Mainbindings regeneration
-is legitimate, Viewer/CompareSlint unchanged. Build --keep-going lease active;
-source-size actualPASS2542files<=100000B is separate. Private R2H/Rstagingseam
-only; fullA1/history/fourPerfproposal obligations remain open, as does original 54.
+records actual Source 2/UI 8 promotion, not passing replays. Full 34 Source assertions,
+workloads/deadlines retained; UI strengthens 6 assertions. Main bindings regeneration
+is legitimate, Viewer/Compare Slint unchanged. Build --keep-going lease active;
+source-size actual PASS 2542 files<=100000B is separate. Private R2 H/R staging seam
+only; full A1/history/four Perf proposal obligations remain open, as does original 54.
 
-Latest retry4 evidence supersedes the pending compile/Options status above:
+Latest retry 4 evidence supersedes the pending compile/Options status above:
 `root-ui-retry4-runtime-final-addendum.json` verifies actual full workspace/all-target
-no-run compile success, exit0 and clean source/app guards. Exactly 23 unique targeted
-UI cases passed /0failed /0ignored: immutable20 plus separate caret1 plus separate
-Options transactions2, with clean guards and owned cleanup. Earlier 18/20 receipts
+no-run compile success, exit 0 and clean source/app guards. Exactly 23 unique targeted
+UI cases passed /0 failed /0 ignored: immutable 20 plus separate caret 1 plus separate
+Options transactions 2, with clean guards and owned cleanup. Earlier 18/20 receipts
 overlap and are not added again. Root viewed the complete new initial-focus BMP:
 focused error field visible inside the scroll body, readable Options/Comparators
-layout. `root-render-review/retry4/conversion.json` binds the complete 320x200footers;
+layout. `root-render-review/retry4/conversion.json` binds the complete 320x200 footers;
 old partial captures remain historical. Strict Clippy subsequently exited 101 on
 one clippy::duplicate_mod finding: Explorer's resident_test_runtime helper loaded
-three times. Root subsequently promoted the exact4-file cfg(test) single-definition/
+three times. Root subsequently promoted the exact 4-file cfg(test) single-definition/
 import correction at `explorer-test-module-lint-v1` (`fec5c57f…d303cc`). Root's
 inverse byte guard proves original test bodies/helper/runtime behavior unchanged;
 the complete 2,288-source guard is clean outside the intended 4, helper/app unchanged.
 Viewer's immutable freeze dd204ddc…d1a matches the canonical receipt. Same-command
-strict Clippy retry1 advanced past Explorer, then terminal101 on 2CompareUI libtest
+strict Clippy retry 1 advanced past Explorer, then terminal 101 on 2 CompareUI libtest
 duplicate_mod helper declarations (raw platform paths and tests/support), with
-2,288-source drift[]/appUnchanged=true. Root subsequently promoted the reviewed4-file
-CompareUI shared cfgtest definition/import correction (`6bccd5af…d1d7fc`). All 14test
-bodies/helperbytes/raw Unicodefixtures/runtime limits remain unchanged by inverse/
-body guards; full2,288-source guard otherwise clean and Root4-file rustfmt0.
+2,288-source drift[]/appUnchanged=true. Root subsequently promoted the reviewed 4-file
+CompareUI shared cfg test definition/import correction (`6bccd5af…d1d7fc`). All 14 test
+bodies/helper bytes/raw Unicode fixtures/runtime limits remain unchanged by inverse/
+body guards; full 2,288-source guard otherwise clean and Root 4-file rustfmt 0.
 New strict Clippy, affected harness compilation and direct 7 checks remain pending
 with Build. Source/format checks are not new runtime/lint qualification. Root separately
 promoted the approved 1-line HTML CEF requirement-spelling correction at the terminal
 boundary (`ad55e66a…322d06`): metadata suffix removed, same locked cef/sys
-156.4.0+156.0.26/checksums/selectedMIT/nativeSDK/sandboxfeatures. Dependency resolution,
+156.4.0+156.0.26/checksums/selected MIT/native SDK/sandbox features. Dependency resolution,
 inventory and notices are unchanged; no inventory/notice update is required for
 this spelling-only correction. Warning-free standalone Build replay remains pending;
 historical Cargo warnings are retained, not yet demonstrated removed.
 Build owns further qualification; strict lint/corrected Explorer harness/native/
-new normal EXE stay open. Earlier compile/UI23 retain their pre-fix source; no new
+new normal EXE stay open. Earlier compile/UI 23 retain their pre-fix source; no new
 pass is claimed. No normal
-application/native runtime acceptance follows from no-run compilation or UI23.
+application/native runtime acceptance follows from no-run compilation or UI 23.
 Private H/R `backend/decoded-work-r2-20261118/fixture-path-v2/source-ready-v2.json`
-SHA3d6a34ee binds8postimages/baselines/exact2fixture-root corrections and preserved
-30v1artifacts+manifest;15testsUNRUN at that historical handoff. New private runtime
+SHA 3d6a34ee binds 8 postimages/baselines/exact 2 fixture-root corrections and preserved
+30 v1 artifacts+manifest; 15 tests UNRUN at that historical handoff. New private runtime
 review `root-decoded-work-private-v2-runtime-review.json` (`4219ebdc…98ec2`) records
-one39.157s compile and 50uniqueexactPASS/0/0:15new+35directexisting. Root checked all 50
-rawstdout/stderr hashes/outcomes, exact8compiledv2postimages, unchanged9fe3a727artifact
-and clean cleanup/source/Root guards. Required42registrypins match; metadata42/
-compiled 39features show no expansion. Raw11whole-lock-row flags remain intact and
-are explained by pruned dependencylists only, not repins. PRIVATE ONLY: no canonical
-A1/fullfeature/native acceptance or summing with unrelated earlier passes.
-Root separately accepted the 7-file checked-spool/nativeRoot candidate for PRIVATE
-qualification only (`root-checked-spool-r3-private-review.json`,5bb6d4b3), after
-source/nativeownership review/exactpre-post-legacydiffguards. Its 31authoredunits
-(common10/Windows13/Linux8) plus 3compilefaildoctests wereUNRUN atsourcefreeze.
-New actualpartialreview79ff1271 records Linux41PASS/0fail+3docs and
-Windows47PASS/1setupRED+3docs; Root verifiedrawlogs/sourcepinsfeatureguards. Windows
-failedconstruction remainsunqualified; Backenddiagnoses rawWin32path/setup only.
-Do not sum overlapping platformcases asunique or addtoH/R50. Currentappproducer
-retainspriority; no canonicalcode/M7staging/graphactorintegration/fullnativeclose
+one 39.157s compile and 50 unique exact PASS/0/0: 15 new+35 direct existing. Root checked all 50
+raw stdout/stderr hashes/outcomes, exact 8 compiled v2 postimages, unchanged 9fe3a727 artifact
+and clean cleanup/source/Root guards. Required 42 registry pins match; metadata 42/
+compiled 39 features show no expansion. Raw 11 whole-lock-row flags remain intact and
+are explained by pruned dependency lists only, not repins. PRIVATE ONLY: no canonical
+A1/full feature/native acceptance or summing with unrelated earlier passes.
+Root separately accepted the 7-file checked-spool/native Root candidate for PRIVATE
+qualification only (`root-checked-spool-r3-private-review.json`, 5bb6d4b3), after
+source/native ownership review/exact pre-post-legacy diff guards. Its 31 authored units
+(common 10/Windows 13/Linux 8) plus 3 compile fail doctests were UNRUN at source freeze.
+New actual partial review 79ff1271 records Linux 41 PASS/0 fail+3 docs and
+Windows 47 PASS/1 setup RED+3 docs; Root verified raw logs/source pins feature guards. Windows
+failed construction remains unqualified; Backend diagnoses raw Win32 path/setup only.
+Do not sum overlapping platform cases as unique or add to H/R 50. Current app producer
+retains priority; no canonical code/M7 staging/graph actor integration/full native close
 acceptance follows.
-R3.2 explicitly declares one app-wide ArchiveMetadata1 domain at Explorer bootstrap,
+R3.2 explicitly declares one app-wide Archive Metadata 1 domain at Explorer bootstrap,
 outer guard ownership and ordered drain/join after native retirement; existing
-Engine13/Viewer5/Compare2 and transient2async/16blocking remain unchanged, proposed
+Engine 13/Viewer 5/Compare 2 and transient 2 async/16 blocking remain unchanged, proposed
 resident total 21. Root accepted the contract at proposal level and authorized only
 isolated private checked-spool/native-root implementation. Production implementation,
 M11 execution and canonical A1/Core/history integration are not qualified.
 Root subsequently accepted the completed shared A1 contract, not implementation:
 `architect/tree-container-next/a1-freeze-v1.json` SHA
 f319802d9ecf7ddc0fafce62650dd9a07b41092df952d6602678e7fe834ec06e,
-sharedAPI64bfa555. Root review `root-a1-shared-contract-v1-review.json` verifies153
-uniqueownerpaths/currentbaselines/decisiondocuments/ninereadonlyguards. The corrected
+shared API 64bfa555. Root review `root-a1-shared-contract-v1-review.json` verifies 153
+unique owner paths/current baselines/decision documents/nine readonly guards. The corrected
 Engine interface uses existing vacant ServiceSlot before ownership transfer, never
 replacement; duplicate/unused-slot tests remain required. Backend B0 privately
-dispatched, app-integrator5rows assignedBackend afterB0; ViewerV/UIU prepare private
-adapters/fixtures in parallel and attach immutableB0 before compilation. No new
-dependency or canonical A1 write is authorized. FullR2/M1-M11 and laterB/C remain
-required; canonicalbuild/newcompleteC/native retain priority, full54 incomplete.
-The accepted baseline now also includes Root's2-file/3-expression CompareEngine
-pixel iteration correction386f10ae…1e951: sameRGBA/ignoredremainder, original
-assertions/runtime/production/dependencies unchanged, sourceguard otherwiseclean/
-appf311unchanged. Strict replay is pending, not PASS. Viewer identified a concrete
+dispatched, app-integrator 5 rows assigned Backend after B0; Viewer V/UI U prepare private
+adapters/fixtures in parallel and attach immutable B0 before compilation. No new
+dependency or canonical A1 write is authorized. Full R2/M1-M11 and later B/C remain
+required; canonical build/new complete C/native retain priority, full 54 incomplete.
+The accepted baseline now also includes Root's 2-file/3-expression Compare Engine
+pixel iteration correction 386f10ae…1e951: same RGBA/ignored remainder, original
+assertions/runtime/production/dependencies unchanged, source guard otherwise clean/
+app f311 unchanged. Strict replay is pending, not PASS. Viewer identified a concrete
 frozen ArchiveViewer/source_identity declaration omission; Architect/Backend are
 preparing an additive B0 clarification. Original frozen artifacts remain immutable;
 no locally invented source IDs or adapter compilation success is authorized/implied.
-Root-requested pixelv1 iterator shape then triggered strictretry3 manual_contains101,
-retained as failed history. Root promoted pixelv2 contains correctionc92cae2a…ac50f3a:
-sameRGBA/remainder/assertionvalues/runtime/production/dependencies. Build's pinned
-isolatedprobe passed (before 1/after0), not wholeworkspace/directruntime acceptance;
-strict replay remains pending. Checked-spool7 was authorized/UNRUN at that source
-checkpoint; later partial platform results retain WindowsRED/no promotion. Viewer reported erased-resource/abandoned-layout cleanup
-receipt gaps; Architect owns additive seam decisions and fullLIFE-01 remains open.
-Latest normal milestone: preliminary Explorer/elevation producer exit0 with
-build-finishedtrue/no diagnostics-warnings/2,288sourceguardclean; actual Mainbinding
-Fresh with unchanged artifacthashes. Normal test=false me.exe110,218,752B SHA
+Root-requested pixel v1 iterator shape then triggered strict retry 3 manual_contains 101,
+retained as failed history. Root promoted pixel v2 contains correction c92cae2a…ac50f3a:
+same RGBA/remainder/assertion values/runtime/production/dependencies. Build's pinned
+isolated probe passed (before 1/after 0), not whole workspace/direct runtime acceptance;
+strict replay remains pending. Checked-spool 7 was authorized/UNRUN at that source
+checkpoint; later partial platform results retain Windows RED/no promotion. Viewer reported erased-resource/abandoned-layout cleanup
+receipt gaps; Architect owns additive seam decisions and full LIFE-01 remains open.
+Latest normal milestone: preliminary Explorer/elevation producer exit 0 with
+build-finished true/no diagnostics-warnings/2,288 source guard clean; actual Main binding
+Fresh with unchanged artifact hashes. Normal test=false me.exe 110,218,752B SHA
 c487eff2c29469262f0a9ed3c978d162af8ae842dc5f6e02d9c8663bb5d3a9c1;
-elevation325,632B SHA b761e65ff3a70a88c2bb7570711f8d5343f27613701e856ef0fc9037d1c62657.
-Earlier f311 is historical, intentionally replaced by the authorizedproducer.
-After released producerboundary Root promoted Main/ViewerUI4-filetest-lintbatch
-5c166af1 with inverse/helper/fmtguards, otherwise clean2,288sourceguard and newapp
-unchanged duringpromotion. Current-source strict/direct/finalnormal invocation
-pending; no completeCdeployment/native/full54qualification follows.
-Strictretry5 subsequently101 ononeOfficeHTTPfixture collapsible_if; Viewerassigned
-exactshortcircuit-equivalent correction, noPASSclaimed. Pinnedcargocheckhelp43
-advertises--keep-going; RootauthorizedClippyCHECKpass-through next replay tocollect
-independentfailures, not anunsupportedcargoTESTflag or actualsuccessfulresult.
-PrivateDRCore/native andPOextraViewer reservations dispatched toexactcontracts;
-no canonical lifecycleimplementation/fullgoalclosure. Newnormalc487preliminary
-remains actualtest=false/sourceguardclean/MainbindingFresh, no finalCbundle/native.
-Root subsequently promoted Office HTTPfixture1-file shortcircuit correction679bcf78,
-545ff640←e053fc1c, complete sourceguardotherwiseclean/normalc487unchanged. Refresh
-test-only inputepoch foractualOffice native replay; oldreceipts not rebound.
-Strictreplayuses supportedCHECKkeep-going/no lintcoverageweakening, noPASSclaimed.
-Root also approved checked-spoolWindowsfixturev2privatereplay908d8f8b: one setup
-expression corrected, production/other6files/29v1artifacts unchanged. V2UNRUN/no
-canonicalcheckedspoolpromotion; originalWindowsRED retained. OS123failure proven,
-mixedseparator-verbatim cause remainsinference pendingexactWin32probe; earlier
-Linux41+3 keeps its unchangedconsumed-sourceepoch.
-LatestWindowsv2actual48exactPASS+3docs is now independentlyRoot-reviewedf274e348:
-100rawloghashes/7exe/7composedpostimages, noerrors. V1Windowsfailure is retained,
-Linuxv1separate41+3unchangedscope; Perfdispositionpending/no M7/LIFE01closure.
-B0immutable16rows+typedrecipe Rootsource/hashreview09c428a3/privatecompileauthorized,
-notcanonicalactorfeature. Hostvalidate() breaks localcancel onViewerlock; Architect
-minimaladditivehookdecisionpending, not end-to-endcancel qualification.
-B0's immutable ArchiveViewer declaration/constructor and typedfixture clarification
-now addresses the earlier missingdeclaration, with originalA1freeze/API unchanged;
-this does not close the separate Hostvalidate/localcancel hook gap or prove runtime.
-Keep-going strictretry6collected3testlints/2files, actual 101/ownersfixing/nofullPASS.
-Modulehandoffall9+2compiledstaged; newerRootreview completed 1,821modulehashes and
-1,945inputchecks/zeroerrors, noCassembly/native acceptance.
-Renewedcleanup receipt `_build/verification/disk-cleanup-20261118-current/final-result.json`:
-C373files/3,208,506,127logicalB/observedfree+2,828,046,336B; Dexact6obsoleteFQAroots/
-1,795files/3,558,657,330logicalB. Dpriorcompressedallocation~483MB/concurrentbuilds:
-do not claim3.56GBphysicalreclaim. CurrentC-Dapp/Mainhashes unchanged; earliercleanup
-totals remain separate. Source/PDF/Office/newnormalCassembly/nativeMAX/full54 open.
-Root promoted finalUI1+WorkBudget2testlintbatch99eb030d; actualwholeworkspace/alltarget
-strictClippyretry7PASS exit0,1001JSONevents/build-finishedtrue/0warnings-errors,
-2,288sourceguards/drift0/appc487unchanged. IndependentRootreport368be4ef...38dd
-bindsactualrawJSONL; earlierfailedretries retained/no broad runtimePASS.
-Six-targetproducer actuallyrunning atRootcheckpoint; actualMainUIwrapperlibtest
-thenallowed/required2cases, onlybindingscrategiantlibtestexcluded. Correctedscope
-retainsall16directcases+separateOfficeunit; no testdropping. Authoredunrunarchiveactor
-is not implemented by a lint pass. Finalnormal359graph/newCfreeze/nativeSourceOfficeMAX pending.
-Hostnoticecompletion-v3:11omittedlicensepackages resolved/662files/61overridefiles/
-0missing; Root75f68311 exactcratechecksum-VCScommit+27savedofficialresponse-copyhash
-review complete. No dependency/projectlicense/licenseselection change. Current9module
-plus 2thumbnail staging Root10be6a5a1821runtimefiles/1945inputs/7historicalwrappers clean,
-notCdistribution/nativequalification. Full54 staysopen.
-Currentlinked7targetproducer2 exit0 but runtime1RED: first 10PASS, case11ViewerUI
-appearance palette selector exceeds existing 300s; PID37548killed/countsabsent,
-cleanup/sourceguards clean. Sixremainingcases separatelyauthorized/unruninreceipt;
-not 16PASS. Oneexactartifact-selector nocapture60sdiagnostic authorized toexpose
-potentialbufferedprimarypanic, notacceptanceretry/validationtimeoutreduction.
-PrivateB0v1actual34PASS(14new20direct)/Rootd32d1ff2 retains1deprecatedfetch_update
-constructorwarning/notstrictqualified. Lateractualhostdelta9ddee287 andCoretypedrecipe
-correction29a13391 forwarded; composedViewerGREENv2freeze51c32688/inventory58ff82bd
-Root7e91006827sourceverification acceptedforprivate104Viewer+11Host and 3separate
-originalB0v1REDdeclarations, ALLruntimeUNRUN/compilefailureorzerocasesnotbehavioralRED.
-UI5extra productionconsumerreservationsb72a7ef2 beyondUI30 authorizedprivately;
-originalA1freezeunchanged. No rebindofB0v134passes tolaterepochs. Productiongeneric
-resource/native/B1/fullcurrentgoal remainopen; no canonical lifecycleclosure.
-Root finalpartialruntime review b66594d0 now bindsall17selectoroutcomes:15direct
-PASS/1ViewerTIMEOUT plus separateOffice710unitPASS, overallAccepted=false. Six
-independentcontinuationcases actuallypassed; original 10PASS/300stimeout retained.
-Rootchecked51readbacklog-summaryhashes/5capturehashes(notvisualreview)/7actualEXEs.
-Separate 60snocapture diagnosticterminalRED exposedprimarypanic appearance.rs508:
-palette.restore_palette.unwrap Err("Viewer is closed."). Original 300sRED unchanged;
-notacceptanceretry/validationtimeoutreduction. Backendstopcause NOTobserved;
-closed/stopped/catalogstartup remains under source/runtime diagnosis. UI ownsprivate
-failure-onlymailboxlogging andfixture/lifecyclereview; Architectreviewsexisting
-PreparedCatalogseams. No productionguardweakening/newfakeruntime/canonicalfix.
-FullUI/newC/native/B1/DR/PO/full54 remainopen.
-New normalvalidation-input2 passed/currentnormalDapp673084bb…bbc95;359graphmatches
-notices, no runtimeacceptance. Sameoriginal7target mailboxdiagnosticv3 compile0/
-zeroW-E andoneactualselectorPASS/0.21s/no mailboxerroroutput; originalclosedpanic/
-300stimeout remainsunexplained, notfixed/accepted. UI approvedprivateACK-close
-fixturevaliditychange underway, notprovenrootcausefix. Additionalsealedcleanup
+elevation 325,632B SHA b761e65ff3a70a88c2bb7570711f8d5343f27613701e856ef0fc9037d1c62657.
+Earlier f311 is historical, intentionally replaced by the authorized producer.
+After released producer boundary Root promoted Main/Viewer UI 4-file test-lint batch
+5c166af1 with inverse/helper/fmt guards, otherwise clean 2,288 source guard and new app
+unchanged during promotion. Current-source strict/direct/final normal invocation
+pending; no complete C deployment/native/full 54 qualification follows.
+Strict retry 5 subsequently 101 on one Office HTTP fixture collapsible_if; Viewer assigned
+exact short circuit-equivalent correction, no PASS claimed. Pinned cargo check help 43
+advertises --keep-going; Root authorized Clippy CHECK pass-through next replay to collect
+independent failures, not an unsupported cargo TEST flag or actual successful result.
+Private DR Core/native and PO extra Viewer reservations dispatched to exact contracts;
+no canonical lifecycle implementation/full goal closure. New normal c487 preliminary
+remains actual test=false/source guard clean/Main binding Fresh, no final C bundle/native.
+Root subsequently promoted Office HTTP fixture 1-file short circuit correction 679bcf78,
+545ff640←e053fc1c, complete source guard otherwise clean/normal c487 unchanged. Refresh
+test-only input epoch for actual Office native replay; old receipts not rebound.
+Strict replay uses supported CHECK keep-going/no lint coverage weakening, no PASS claimed.
+Root also approved checked-spool Windows fixture v2 private replay 908d8f8b: one setup
+expression corrected, production/other 6 files/29 v1 artifacts unchanged. V2 UNRUN/no
+canonical checked spool promotion; original Windows RED retained. OS 123 failure proven,
+mixed separator-verbatim cause remains inference pending exact Win32 probe; earlier
+Linux 41+3 keeps its unchanged consumed-source epoch.
+Latest Windows v2 actual 48 exact PASS+3 docs is now independently Root-reviewed f274e348:
+100 raw log hashes/7 exe/7 composed postimages, no errors. V1 Windows failure is retained,
+Linux v1 separate 41+3 unchanged scope; Perf disposition pending/no M7/LIFE01 closure.
+B0 immutable 16 rows+typed recipe Root source/hash review 09c428a3/private compile authorized,
+not canonical actor feature. Host validate() breaks local cancel on Viewer lock; Architect
+minimal additive hook decision pending, not end-to-end cancel qualification.
+B0's immutable ArchiveViewer declaration/constructor and typed fixture clarification
+now addresses the earlier missing declaration, with original A1 freeze/API unchanged;
+this does not close the separate Host validate/local cancel hook gap or prove runtime.
+Keep-going strict retry 6 collected 3 test lints/2 files, actual 101/owners fixing/no full PASS.
+Module handoff all 9+2 compiled staged; newer Root review completed 1,821 module hashes and
+1,945 input checks/zero errors, no C assembly/native acceptance.
+Renewed cleanup receipt `_build/verification/disk-cleanup-20261118-current/final-result.json`:
+C 373 files/3,208,506,127 logical B/observed free+2,828,046,336B; D exact 6 obsolete FQA roots/
+1,795 files/3,558,657,330 logical B. D prior compressed allocation ~483MB/concurrent builds:
+do not claim 3.56 GB physical reclaim. Current C-D app/Main hashes unchanged; earlier cleanup
+totals remain separate. Source/PDF/Office/new normal C assembly/native MAX/full 54 open.
+Root promoted final UI 1+WorkBudget 2 test lint batch 99eb030d; actual whole workspace/all target
+strict Clippy retry 7 PASS exit 0, 1001 JSON events/build-finished true/0 warnings-errors,
+2,288 source guards/drift 0/app c487 unchanged. Independent Root report 368be4ef...38dd
+binds actual raw JSONL; earlier failed retries retained/no broad runtime PASS.
+Six-target producer actually running at Root checkpoint; actual MainUI wrapper libtest
+then allowed/required 2 cases, only bindings crate giant libtest excluded. Corrected scope
+retains all 16 direct cases+separate Office unit; no test dropping. Authored unrun archive actor
+is not implemented by a lint pass. Final normal 359 graph/new C freeze/native Source Office MAX pending.
+Host notice completion-v3: 11 omitted license packages resolved/662 files/61 override files/
+0 missing; Root 75f68311 exact crate checksum-VCS commit+27 saved official response-copy hash
+review complete. No dependency/project license/license selection change. Current 9 module
+plus 2 thumbnail staging Root 10be6a5a 1821 runtime files/1945 inputs/7 historical wrappers clean,
+not C distribution/native qualification. Full 54 stays open.
+Current linked 7 target producer 2 exit 0 but runtime 1 RED: first 10 PASS, case 11 Viewer UI
+appearance palette selector exceeds existing 300s; PID 37548 killed/counts absent,
+cleanup/source guards clean. Six remaining cases separately authorized/unrun in receipt;
+not 16 PASS. One exact artifact-selector nocapture 60 s diagnostic authorized to expose
+potential buffered primary panic, not acceptance retry/validation timeout reduction.
+Private B0 v1 actual 34 PASS (14 new 20 direct)/Root d32d1ff2 retains 1 deprecated fetch_update
+constructor warning/not strict qualified. Later actual host delta 9ddee287 and Core typed recipe
+correction 29a13391 forwarded; composed Viewer GREEN v2 freeze 51c32688/inventory 58ff82bd
+Root 7e910068 27 source verification accepted for private 104 Viewer+11 Host and 3 separate
+original B0 v1 RED declarations, ALL runtime UNRUN/compile failure or zero cases not behavioral RED.
+UI 5 extra production consumer reservations b72a7ef2 beyond UI 30 authorized privately;
+original A1 freeze unchanged. No rebind of B0 v1 34 passes to later epochs. Production generic
+resource/native/B1/full current goal remain open; no canonical lifecycle closure.
+Root final partial runtime review b66594d0 now binds all 17 selector outcomes: 15 direct
+PASS/1 Viewer TIMEOUT plus separate Office 710 unit PASS, overallAccepted=false. Six
+independent continuation cases actually passed; original 10 PASS/300 s timeout retained.
+Root checked 51 readback log-summary hashes/5 capture hashes (not visual review)/7 actual EXEs.
+Separate 60 s nocapture diagnostic terminal RED exposed primary panic appearance.rs 508:
+palette.restore_palette.unwrap Err("Viewer is closed."). Original 300 s RED unchanged;
+not acceptance retry/validation timeout reduction. Backend stop cause NOT observed;
+closed/stopped/catalog startup remains under source/runtime diagnosis. UI owns private
+failure-only mailbox logging and fixture/lifecycle review; Architect reviews existing
+PreparedCatalog seams. No production guard weakening/new fake runtime/canonical fix.
+Full UI/new C/native/B1/DR/PO/full 54 remain open.
+New normal validation-input 2 passed/current normal D app 673084bb…bbc95; 359 graph matches
+notices, no runtime acceptance. Same original 7 target mailbox diagnostic v3 compile 0/
+zero W-E and one actual selector PASS/0.21s/no mailbox error output; original closed panic/
+300 s timeout remains unexplained, not fixed/accepted. UI approved private ACK-close
+fixture validity change underway, not proven root cause fix. Additional sealed cleanup
 `_build/verification/disk-cleanup-20261118-additional/final-result.json` records
-C412files/3,255,585,645logicalB andD642files/7,250,716,439logicalB, protectedEXEs
-unchanged/164defaultsymbols+QAretention preserved; no netphysicalreclaim claim,
-processkill orACLchange. Full54/newC/native/B1/DR/PO remainopen.
-AdditionalRootv3review2b311c88 confirms3rawlogpairs/2288sources andindependentCargo
-feature-profilevariantequivalence/oneexactdiagnosticPASS0.21; originalfailure still
-unexplained/noacceptance. NewRootsourceP1review77c65185 confirmsprivatePOv2missing
-previouslyagreedtypedpreownershipadmission: tokenbeforehandoff, serializedseal-admit,
-immutableterminalreceipt/latefailurechangesnocountsresults, refusedalreadyowned
-source in callercheckeddispositionboundary. Oldv2immutable/nonintegratable;
-Viewernarrowadditivecorrectedepochpending/Architectcallerboundaryconfirmation.
-ThreeHostbehavioralRED compileactuallyliveunderBuild, no runtimePASS/behavioralRED
-yet. Preserve livejobs/oldinputs and no rebinding; no full54closure.
-LaterRoot63867970 actual 3exactHost/ViewerbehavioralREDs independentlyverified:
-9rawlogsummaries/actualEXE42422763/rescue+bothjoins BEFOREfinalassertions. REDcompile0
-with 1historicalfetch_updatewarning retained/notstrictgreen. Scoped14cooperative
-GREENv2tests authorized/noPASSyet; distinctPOv2typedpreadmissionP1stillopen.
-Root085a sourceacceptedsealedUIhelperonefilee3bc→1e73/25records/19oldtests unchanged/
-2newUNRUN/rustfmt0. Canonicalpromotion waits actualCassemblyhold release andtargeted
-runtime; onlyhelpertrackedSessions+entryACK/no productioncatalogruntimeinputchange.
-Originalstopcause notexplained/fixed/accepted; wholeLIFE/native/full54remainopen.
-Subsequent actualnarrowGREEN14PASS/0/0=11Host+3previouslyREDViewer independently
-Rootreviewedd5d14402:4rawlogs/2actualEXE/all1294source-proof-absenceguards across 3
-schemas. Privatecooperative-cancellationboundaryonly/no canonicalpromotion/full104/
-typedPO/wholeLIFE/nativeApp. Zero-warning ordinarytestcompile is NOTfullClippy-D;
-retainoriginal3REDproof63867970 andits1historicalwarning. Palettecandidate19oldtests
-sourcepreserved/2newUNRUN stillawaitactualCassemblyholdrelease/promotion/runtime.
-RootobservedactualassemblyPID54224 withnormal673 andrealtestcf411/sourceepoch9297;
-destinationbeingpopulated/notfrozenaccepted. Full54 staysopen.
-LaterCassembly actuallycompleted0/normal-onlyregistration; Rootc14c67c8 rehashedexact
-2,487files/752,608,762B incl6Viewers/3FS/2thumbs/662notices/normal673/testcf411.
-Freeze/postregistrationhashesmatch; no app/testlaunched/nativeacceptance. Actual
-NativeRoot fromnative-identities/completion, verbatim:
+C 412 files/3,255,585,645 logical B and D 642 files/7,250,716,439 logical B, protected EXEs
+unchanged/164 default symbols+QA retention preserved; no net physical reclaim claim,
+process kill or ACL change. Full 54/new C/native/B1/DR/PO remain open.
+Additional Root v3 review 2b311c88 confirms 3 raw log pairs/2288 sources and independent Cargo
+feature-profile variant equivalence/one exact diagnostic PASS 0.21; original failure still
+unexplained/no acceptance. New Root source P1 review 77c65185 confirms private PO v2 missing
+previously agreed typed preownership admission: token before handoff, serialized seal-admit,
+immutable terminal receipt/late failure changes no counts results, refused already owned
+source in caller checked disposition boundary. Old v2 immutable/nonintegratable;
+Viewer narrow additive corrected epoch pending/Architect caller boundary confirmation.
+Three Host behavioral RED compile actually live under Build, no runtime PASS/behavioral RED
+yet. Preserve live jobs/old inputs and no rebinding; no full 54 closure.
+Later Root 63867970 actual 3 exact Host/Viewer behavioral REDs independently verified:
+9 raw log summaries/actual EXE 42422763/rescue+both joins BEFORE final assertions. RED compile 0
+with 1 historical fetch_update warning retained/not strict green. Scoped 14 cooperative
+GREEN v2 tests authorized/no PASS yet; distinct PO v2 typed preadmission P1 still open.
+Root 085a source accepted sealed UI helper one file e3bc→1e73/25 records/19 old tests unchanged/
+2 new UNRUN/rustfmt 0. Canonical promotion waits actual C assembly hold release and targeted
+runtime; only helper tracked Sessions+entry ACK/no production catalog runtime input change.
+Original stop cause not explained/fixed/accepted; whole LIFE/native/full 54 remain open.
+Subsequent actual narrow GREEN 14 PASS/0/0=11 Host+3 previously RED Viewer independently
+Root reviewed d5d14402: 4 raw logs/2 actual EXE/all 1294 source-proof-absence guards across 3
+schemas. Private cooperative-cancellation boundary only/no canonical promotion/full 104/
+typed PO/whole LIFE/native App. Zero-warning ordinary test compile is NOT full Clippy-D;
+retain original 3 RED proof 63867970 and its 1 historical warning. Palette candidate 19 old tests
+source preserved/2 new UNRUN still await actual C assembly hold release/promotion/runtime.
+Root observed actual assembly PID 54224 with normal 673 and real test cf411/source epoch 9297;
+destination being populated/not frozen accepted. Full 54 stays open.
+Later C assembly actually completed 0/normal-only registration; Root c14c67c8 rehashed exact
+2,487 files/752,608,762B incl 6 Viewers/3 FS/2 thumbs/662 notices/normal 673/test cf411.
+Freeze/postregistration hashes match; no app/test launched/native acceptance. Actual
+Native Root from native-identities/completion, verbatim:
 `<user-profile>\MidnightExplorer-validation-20261118-07672814`.
-AfteractualBuildsourceholdrelease RootpromotedONEhelper e3bc→1e73/fdf06c25 withfull
-2288guards/fmt0/normal673Mainunchanged. Currentcanonicalsource9c25 distinctoldC9297;
-same 7graphcompile+originalpalettecase/2newlifecyclecasespending300s. OldCbundleand
-originalfailedEpochs remainimmutable/notrebound; causeunexplained/full54open.
-RootPOv3private source review2db73d40:33sealedreferences/full27source/5newEngine
-changes22unchanged/canonicalbaselines exact; token-beforecapture/caller/neutral
-Finished paths read. PRIVATEactual3compatibleadmissionRED+129GREEN expectations
-authorized only, NOT results/canonicalintegration. Oldv2immutable/nonintegratable;
-actualUIcollector/App/DR/nativeLIFE pending. C9297 andcurrentcanonical9c25 epochs
-remain distinct; full54 open.
-Currentfixture1e73runtime Root9642bcbe: originalpalette1PASS/newnormalteardown
-300sTIMEOUT/other20UNRUN/cleanupclean/currentEXE5b3/6rawpairs. PinnedSlint1.18.1
-api.rs503/1086 establishes show retainscomponentuntilhide; newtestneverhide,
-droppingRustUIhandles doesnotproveUI-callback-service termination precondition.
-Sourceflaw proven, solewaitcause NOTproven. UI privateadditiveonefilehide+weakUI
-disappearance correction authorized/preserveactualSessionlivebeforeRuntimeDrop.
-Keepoldfailedpacket/run distinct/noacceptance. EnginePO/UIcollectorwork independent;
-full54 remainsopen, notmarkedblocked bythisfixtureboundary.
-Full54/newEXE/native/Git completion is not claimed.
+After actual Build source hold release Root promoted ONE helper e3bc→1e73/fdf06c25 with full
+2288 guards/fmt 0/normal 673 Main unchanged. Current canonical source 9c25 distinct old C9297;
+same 7 graph compile+original palette case/2 new lifecycle cases pending 300s. Old C bundle and
+original failed Epochs remain immutable/not rebound; cause unexplained/full 54 open.
+Root PO v3 private source review 2db73d40: 33 sealed references/full 27 source/5 new Engine
+changes 22 unchanged/canonical baselines exact; token-before capture/caller/neutral
+Finished paths read. PRIVATE actual 3 compatible admission RED+129 GREEN expectations
+authorized only, NOT results/canonical integration. Old v2 immutable/nonintegratable;
+actual UI collector/App/DR/native LIFE pending. C9297 and current canonical 9c25 epochs
+remain distinct; full 54 open.
+Current fixture 1e73 runtime Root 9642bcbe: original palette 1 PASS/new normal teardown
+300 s TIMEOUT/other 20 UNRUN/cleanup clean/current EXE 5b3/6 raw pairs. Pinned Slint 1.18.1
+api.rs 503/1086 establishes show retains component until hide; new test never hide,
+dropping Rust UI handles does not prove UI-callback-service termination precondition.
+Source flaw proven, sole wait cause NOT proven. UI private additive one file hide+weak UI
+disappearance correction authorized/preserve actual Session live before Runtime Drop.
+Keep old failed packet/run distinct/no acceptance. Engine PO/UI collector work independent;
+full 54 remains open, not marked blocked by this fixture boundary.
+Full 54/new EXE/native/Git completion is not claimed.
 
 ### Clipboard and tree fixture ordering — 17 November 2026
 
 CI [44029256172](https://github.com/TomasJelinek/fm/actions/runs/44029256172)
-failed Gate40 clipboard on both platforms: Linux **8 passed / 4 failed**,
+failed Gate 40 clipboard on both platforms: Linux **8 passed / 4 failed**,
 Windows **11 passed / 1 failed**. Clipboard actor counts were **0** and trace
 attempts `[6,0,0]`: the exact pre-ACK capture was canceled by independently
 arriving startup-maintenance view churn before the capture command. No native
@@ -1830,7 +1830,7 @@ Both platform build leases are released; no runtime checks were repeated for
 the supplemental lint coverage.
 
 Fresh full integrated CI remains **PENDING**, not GREEN; run `44029256172`
-remains RED history. The original c97 Gate43 failing predicate remains
+remains RED history. The original c97 Gate 43 failing predicate remains
 **UNATTRIBUTED**: local fixture results do not prove its cause or a watcher behavior
 fix. Architect/Perf final source reviews accepted the test-only changes. Windows
 production remains unchanged from the qualified c97 EXE; no app rebuild/deployment
@@ -1894,7 +1894,7 @@ outstanding. Windows quality status is recorded below.
 Linux regression proof: both tests-only cases reached intended **RED** assertions
 (exit **101**). Corrected namespace **42/0**, four unchanged native-overlap cases
 **4/0**, and complete Engine lib **1370 passed / 0 failed / 9 ignored**, **19.99 s**,
-are GREEN. Strict Engine all-targets Clippy and format exited **0**, uid1000 on
+are GREEN. Strict Engine all-targets Clippy and format exited **0**, uid 1000 on
 the existing native WSL checkout; source guard passed and all owned children exited.
 These fix the two source-proven host races; the original CI result did not
 distinguish them. Prior Linux main Test **1366/1/9**, synthetic WouldBlock publishing

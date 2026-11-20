@@ -980,7 +980,11 @@ do not establish production native-filesystem capture, app input or performance.
 Viewer/comparison source closures were then released. A later configured-route
 gate passed **77 / 0 / 2** (passed/failed/ignored), strict Clippy/format0, with no
 source drift and unchanged app. Architect/Perf review found no further actionable
-defect. This overlaps prior comparison checks; do not add the totals. The canonical P3 UI packet is promoted: **104 source files /159 source-derived
+defect. This overlaps prior comparison checks; do not add the totals.
+
+<a id="p3-ui-packet-results"></a>
+
+The canonical P3 UI packet is promoted: **104 source files /159 source-derived
 selections**, not 159 executed passes. The continuation passed **31/0** (MainUI28,
 Viewer footer1 and keyboard2); Root independently rehashed/read all seven exported
 raw logs. With the initial 7/1, the selected 39 is **38 passed /1 Options-init-focus
@@ -998,6 +1002,8 @@ Both raw logs retain their separate 1+45 counts; all nine document cases and
 19 image-presentation cases passed, including the genuine immediate-open errors.
 These overlap earlier scopes and are not additional unique passes or all 159.
 Options focus, native/full-app and production migration acceptance remain open.
+
+<a id="faithful-native-comparator-fixture"></a>
 
 The corrected faithful native comparator fixture ran **4 actual Windows cases /
 0 failures** (`comparator-d6ce28b8eb`): raw parent/argv/cwd, NotStarted cleanup,
@@ -1035,13 +1041,19 @@ failure across separate runs. No earlier case was rerun to obtain that result.
 Host5 changed files and coherent Viewer3 are now canonical after Architect/Root
 review (freezes `d9d1dedb…` / `29e79f51…`). Their initial 16-new-Host/18-target-Viewer
 plan was subsequently qualified within **47 Host +44 Viewer =91/0/0** on that
-preserved source. The latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**:
+preserved source.
+
+<a id="office-parent-diagnostic-9fe36f20a6"></a>
+
+The latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**:
 completed real Find returned 0, Copy failed and Session stayed live. Its blank902×602
 diagnostic frame is not validated fresh content/resize proof (resize_ok=false,
 fresh_contrasted_frame=false). Source refusal remains required; no provider/Find/
 loading root cause is established. Host47 +Viewer44 =91/0 retain their frozen source;
 the later four assertion-style lint fixes passed strict Clippy0/format13files0 and
 two overlapping resource tests, not 93 unique tests or a full91 rerun.
+
+<a id="small-body-navigation-and-office-v3"></a>
 
 Root accepted the generic provider small-body navigation contract for private
 implementation: captured main-frame GET/no-post targets of 0..1MiB are completely
@@ -1108,6 +1120,8 @@ guards checked. This was not code recompilation, DLL loading/deployment or nativ
 Source acceptance. The four actual comparator passes above retain their faithful-fixture scope.
 
 
+<a id="resident-worker-design-and-production-pool"></a>
+
 The accepted private resident-worker design is **13 Engine /5 Viewer /2 Compare**
 resident threads, keeping 2 async/16 transient blocking. These are planned domains,
 not implemented threads, process measurements or new payload/waiter capacities.
@@ -1141,6 +1155,8 @@ parent `e3a869…`. The later genuine pressure RED exercised qualified catalogs 
 the exact F5 alias test replay and migrated-consumer acceptance remain open. The
 prior missing-plugin setup failure is a separate historical attempt.
 
+<a id="round-two-common-worker-qa"></a>
+
 Archived private common-worker round-two QA passed **13 default-feature-off tests**
 and **24 resident-feature-on tests**. The latter follows exactly three unit-channel
 type annotations (18 test-only bytes); production `resident.rs` remains
@@ -1149,6 +1165,8 @@ These are isolated immutable round-two snapshots, not final round-four, migrated
 consumer, native, performance or production qualification. In particular, the
 known repeated-panic-retention finding is not closed by these passes.
 The faithful native fixture 4/0 is separate and cannot qualify this production repair.
+
+<a id="viewer-compare-live-appearance-contract"></a>
 
 Root accepted the Viewer/Compare live-appearance contract for private
 implementation; it is not implemented or passing. Application UI font is separate
@@ -1575,74 +1593,17 @@ proof of missing implementation.
 
 ### Implementation still missing after this batch
 
-The accepted private resident-worker design is **13 Engine /5 Viewer /2 Compare**
-resident threads, keeping 2 async/16 transient blocking. These are planned domains,
-not implemented threads, process measurements or new payload/waiter capacities.
-Preserve worker affinity, distinct external ownership, checked retirement and current
-window/session credits. The later old-scheduler run `production-pool-7e458befac` is genuine production RED.
-With the original 2 async/16 blocking threads,13-resident readiness and four windows,
-the prepared-save callback had not entered and the second Compare was incomplete
-at the original 20,000ms pressure boundary. Closing two Viewers recovered the same
-prepared save (exactly one callback, coherent raw publication) and the same Compare.
-Strict cleanup and exclusive capture-reader reopen checks completed before the
-intended progress-failure assertion; no owned processes/monitor errors remained.
-All 3,941 guarded identities were unchanged; the unconsumed 4917→F5 test-fixture
-exception is separately recorded. Raw test time was 23.02s. This establishes the
-old-source failure and same-work recovery, not migration GREEN, an unrecoverable
-deadlock or a performance result. The earlier missing-plugin setup failure remains
-historical and distinct. The old-source production-pool attempt `production-pool-27587e6553` reached real
-watch/report and 13-nonwindow readiness, then failed Viewer setup because no compatible
-Basic Viewer plugin was installed beside the test executable. The raw test ended in
-0.23s before four-window pressure, the 20-second pressure deadline, pre-rescue counters
-or recovery. Cleanup/exclusive-open checks preceded the failed outcome assertion;
-remainingOwned[] and source/harness identities were unchanged. This is a setup
-failure, not a production-starvation reproduction or a progress pass. Production
-implementation promotion stays held.
-The catalog-only host constructor is canonical; the old scheduler and dependency
-pins are unchanged. Its six selected catalog/startup checks actually recorded
-**5 passes /1 fixture-precondition failure**: constructing a dot alias had already
-normalized the path, so the test failed before the product validator. The exact
-raw-OsString test-only repair is canonical `f5d09b3b…`; replay is pending. Root's
-44,433-byte `eb391200…` consumer remains canonical with unchanged registration
-parent `e3a869…`. The later genuine pressure RED exercised qualified catalogs through this constructor;
-the exact F5 alias test replay and migrated-consumer acceptance remain open. The
-prior missing-plugin setup failure is a separate historical attempt.
+The resident-worker design, its production-pool runs and the catalog-only host
+constructor are recorded under [Previous scoped checkpoints](#resident-worker-design-and-production-pool).
 
-Archived private common-worker round-two QA passed **13 default-feature-off tests**
-and **24 resident-feature-on tests**. The latter follows exactly three unit-channel
-type annotations (18 test-only bytes); production `resident.rs` remains
-`60908d11119f…`. Retain the original feature-on test-build E0282 failure separately.
-These are isolated immutable round-two snapshots, not final round-four, migrated
-consumer, native, performance or production qualification. In particular, the
-known repeated-panic-retention finding is not closed by these passes.
-The faithful native fixture 4/0 is separate and cannot qualify this production repair.
+The archived round-two common-worker QA is recorded under
+[Previous scoped checkpoints](#round-two-common-worker-qa).
 
-Root accepted the Viewer/Compare live-appearance contract for private
-implementation; it is not implemented or passing. Application UI font is separate
-from document font. Frontend apply_appearance consumes actual applied/preview Theme,
-density and UI font scalars for existing/new windows; backend restore_palette accepts
-foreground/background/selection/accent only. Accepted revision is not painted/native
-acknowledgement. Bounded latest requests, A→B→A, rollback and frame-generation fences
-must preserve source/layout/position without recapture, relaunch or source I/O.
-Source/Markdown semantic roles must recolor active/cached content, gutters and raster;
-Office/author HTML CSS and original image/PDF pixels remain content-owned. Reuse
-supported UI controls and preserve input/accessibility; no SDK expansion is selected.
+The Viewer/Compare live-appearance contract is recorded under
+[Previous scoped checkpoints](#viewer-compare-live-appearance-contract).
 
-Root accepted the generic provider small-body navigation contract for private
-implementation: captured main-frame GET/no-post targets of 0..1MiB are completely
-admitted through genuine Resolve/ResourceRead/Data before replacement navigation;
-larger targets retain streaming through the same resolved capability. Small-body
-failure cannot fall back to streaming/old bytes. Preserve one body credit through
-actual response release, exact one-shot request binding, a30-second admission
-deadline and current authority checks. This changes no public API/SDK or dependency
-pins. The strong retained-document boundary applies to eligible small targets;
-large streaming retains its late-Read-denial limitation. Office V3's exact16 sources are now canonical (freeze `10d0a5e6…`), with
-132 nonowned guards unchanged and public API/SDK, Cargo, executable and runtime
-preserved. The unchanged pure navigation core `c6596c4c…` passed **34/0**, compile0;
-the existing CEF version-metadata manifest warning remains, so this is not a
-zero-warning gate. These tests exclude CEF/native execution and do not qualify
-new V3 route/adapter integration. Five native cases await a legitimate complete
-new C product; no new executable or deployment is claimed.
+The small-body navigation contract and the canonical Office V3 sources are recorded
+under [Previous scoped checkpoints](#small-body-navigation-and-office-v3).
 
 - Nested provider-content archive mounts, container discovery and archive watches
   remain under ARCH-02/TREE-01. Prepared-Rename engine/UI finishing and provider
@@ -1660,56 +1621,21 @@ new C product; no new executable or deployment is claimed.
 
 ### Validation and diagnosis still open
 
-The canonical P3 UI packet is promoted: **104 source files /159 source-derived
-selections**, not 159 executed passes. The continuation passed **31/0** (MainUI28,
-Viewer footer1 and keyboard2); Root independently rehashed/read all seven exported
-raw logs. With the initial 7/1, the selected 39 is **38 passed /1 Options-init-focus
-failure**. The former footer failure and both keyboard tests pass on this snapshot.
-The older MainUI/CompareUI55/0 retains its own source and overlaps these scopes.
-P3 MainUI units initially recorded 20/1; after the fixture precondition correction,
-the exact draft selector passed once. The other 20 were not rerun, so there is no
-fresh 21-pass claim. Options focus still fails: the trace/screenshot show OK focused
-while the expected pattern field is visible. The diagnostic compile qualified with
-zero warnings/errors,1890 source guards and 323 feature sets; app/bindings unchanged.
-The earlier Viewer46 timeout and subsequent45/1 retain their dated source.
-On the canonical `fc4fcdf7…` shared-helper checkpoint, the exact former failure
-passed first and the other 45 then passed: **46 actual passes /0 failures**.
-Both raw logs retain their separate 1+45 counts; all nine document cases and
-19 image-presentation cases passed, including the genuine immediate-open errors.
-These overlap earlier scopes and are not additional unique passes or all 159.
-Options focus, native/full-app and production migration acceptance remain open.
+The P3 UI packet and shared-helper Viewer results are recorded under
+[Previous scoped checkpoints](#p3-ui-packet-results). The Options focus failure
+recorded there was resolved later: the immutable20 set, including both Options
+focus/layout cases, passed 20/0/0
+([current checkpoint](#current-integration-checkpoint--18-november-2026)); its
+native/full-app and production migration acceptance remain open.
 
-The corrected faithful native comparator fixture ran **4 actual Windows cases /
-0 failures** (`comparator-d6ce28b8eb`): raw parent/argv/cwd, NotStarted cleanup,
-preworker cancellation/two session credits/no child, and non-Unicode Automatic
-fallback. Components were unchanged and every case left remainingOwned[]. This
-closes the old fixture settings-timeout for those cases; historical failures remain
-recorded. Fixture 16 blocking/6 resident/10 transient-holder qualification does not
-implement the production-pool repair or supply native ReadAt counts.
+The faithful native comparator fixture run is recorded under
+[Previous scoped checkpoints](#faithful-native-comparator-fixture).
 
-The latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**:
-completed real Find returned 0, Copy failed and Session stayed live. Its blank902×602
-diagnostic frame is not validated fresh content/resize proof (resize_ok=false,
-fresh_contrasted_frame=false). Source refusal remains required; no provider/Find/
-loading root cause is established. Host47 +Viewer44 =91/0 retain their frozen source;
-the later four assertion-style lint fixes passed strict Clippy0/format13files0 and
-two overlapping resource tests, not 93 unique tests or a full91 rerun.
+The Office parent diagnostic `office-9fe36f20a6` is recorded under
+[Previous scoped checkpoints](#office-parent-diagnostic-9fe36f20a6).
 
-Root accepted the generic provider small-body navigation contract for private
-implementation: captured main-frame GET/no-post targets of 0..1MiB are completely
-admitted through genuine Resolve/ResourceRead/Data before replacement navigation;
-larger targets retain streaming through the same resolved capability. Small-body
-failure cannot fall back to streaming/old bytes. Preserve one body credit through
-actual response release, exact one-shot request binding, a30-second admission
-deadline and current authority checks. This changes no public API/SDK or dependency
-pins. The strong retained-document boundary applies to eligible small targets;
-large streaming retains its late-Read-denial limitation. Office V3's exact16 sources are now canonical (freeze `10d0a5e6…`), with
-132 nonowned guards unchanged and public API/SDK, Cargo, executable and runtime
-preserved. The unchanged pure navigation core `c6596c4c…` passed **34/0**, compile0;
-the existing CEF version-metadata manifest warning remains, so this is not a
-zero-warning gate. These tests exclude CEF/native execution and do not qualify
-new V3 route/adapter integration. Five native cases await a legitimate complete
-new C product; no new executable or deployment is claimed.
+The small-body navigation contract, its navigation-core checks and the five pending
+native cases are recorded under [Previous scoped checkpoints](#small-body-navigation-and-office-v3).
 
 Source DLL cached reuse remains qualified; native Source acceptance is unrun.
 The full54-item implementation/acceptance goal remains open.
