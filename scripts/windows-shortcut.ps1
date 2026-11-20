@@ -72,9 +72,17 @@ function Install-MidnightDesktopShortcut([string]$InstallationDirectory,
         $temporary = $null
         Write-Output "Desktop shortcut: $shortcutPath"
     } finally {
-        if ($temporary -and [IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
-        if ($desktopPins) { $desktopPins.Dispose() }
-        if ($executableStream) { $executableStream.Dispose() }
-        $runtimePins.Dispose()
+        # Only a failed installation still owns its staged shortcut; it is removed while the
+        # pins hold. Failing to remove it must neither keep the pins open nor replace the
+        # error that failed the installation.
+        try {
+            if ($temporary -and [IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+        } catch {
+            Write-Warning "Staged shortcut was not removed: $temporary ($($_.Exception.Message))"
+        } finally {
+            if ($desktopPins) { $desktopPins.Dispose() }
+            if ($executableStream) { $executableStream.Dispose() }
+            $runtimePins.Dispose()
+        }
     }
 }
