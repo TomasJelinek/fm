@@ -218,6 +218,7 @@ impl Worker {
         output: &Mailbox,
     ) -> Result<(), String> {
         let PreparedOpening { file, route, image } = opening;
+        self.chains.clear();
         self.session = match route {
             crate::routing::Route::Office { renderer } => {
                 let provider = renderer

@@ -23,6 +23,8 @@ mod raster;
 #[path = "worker_source_continuity_tests.rs"]
 mod source_continuity;
 
+#[path = "worker_chain_tests.rs"]
+mod chain;
 #[path = "worker_nearest_edge_tests.rs"]
 mod nearest_edge;
 #[path = "worker_seam_tests.rs"]
@@ -210,6 +212,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         land_at_bottom: false,
         continuation: None,
         seam: None,
+        chains: Default::default(),
         motion: RelativeMotion::default(),
         caption: String::new(),
         status: String::new(),

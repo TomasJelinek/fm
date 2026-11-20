@@ -139,6 +139,15 @@ impl Worker {
         self.text.syntax.invalidate();
     }
 
+    /// The admitted request of the current source refresh.
+    pub(super) fn source_refresh_request(&self) -> Option<u64> {
+        self.text
+            .syntax
+            .refresh
+            .as_ref()
+            .and_then(|refresh| refresh.id)
+    }
+
     pub(super) fn close_source_target(&mut self) {
         self.invalidate_source_target();
         self.text.syntax.latest = None;
@@ -325,7 +334,10 @@ impl Worker {
         output: &Mailbox,
     ) {
         match admission {
-            Ok(id) => self.text.syntax.refresh_admitted(id),
+            Ok(id) => {
+                self.text.syntax.refresh_admitted(id);
+                self.chain_requested(id, &key.viewport);
+            }
             Err(AdmissionError::Capacity) => self.text.syntax.retry(),
             Err(AdmissionError::Closing) => self.finish_source_key(key, None, output),
             Err(AdmissionError::Invalid(error)) => {

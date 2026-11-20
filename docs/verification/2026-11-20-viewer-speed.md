@@ -609,6 +609,149 @@ After the fix, same files and plugins, each sweep after End and Home:
 - Final code, after that exemption: the CSV and the source sweeps at 2 % steps again
   51 of 51 each, the largest differences 0.0002 (CSV, 44 %) and 0.0006 (source, 52 %).
 
+## Wheel and key travel across byte-capped text and source pages
+
+The viewer acceptance run `20261120-143743` (scenario `viewers_scroll`, plugins
+`_build/try-1505`) reported:
+
+- In the source viewer, five wheel notches at once in a Rust file moved 256 px, not
+  300.
+- After PageUp, twelve Down presses in a CSV, a TSV or that Rust file moved far less
+  than 12 × 28 px.
+- In the plain-text view (Alt+F3) of the CSV, one notch up moved 32 of 60 px and showed
+  the tail of the previous row as a line of its own, and Down jumped.
+
+Reproduced with a temporary end-to-end probe, which is kept outside the tree:
+
+- The real viewer window runs on the test platform and drives the real engine and the
+  try-1505 plugins, in a 1340 × 820 window.
+- The content area is 1312 × 712 in the source viewer and 1312 × 748 in the plain-text
+  view. The font is monospace 14, with line numbers.
+- Input is the harness's own: Slint wheel events of 60 px per notch, key presses
+  through the viewer's bindings, and scrollbar drags.
+- Movement is measured from rendered pixels with the harness's row matching. Each frame
+  has held still for 300 ms, and again 700 ms later.
+- The platform clock follows real time, and the window is painted on every turn.
+- The fixtures are the run's generated `inventory.csv` and `inventory.tsv` (1,500 rows
+  of 100–260 bytes, 271,492 bytes) and `long.rs` (6,000 lines).
+
+The before and after runs share one build; the "before" runs have the change below
+switched off:
+
+| File, view | Before: wheel | Before: keys | After: wheel | After: keys |
+| --- | --- | --- | --- | --- |
+| CSV, source viewer | 60, −60, 300 | Down 28, Up −28; PageDown and PageUp could not be measured; 20 × Down 0 px | 60, −60, 300 | 28, −28, 712, −712; 20 × Down 560 |
+| TSV, source viewer | 60, −60, 300 | as the CSV | 60, −60, 300 | 28, −28, 712, −712; 20 × Down 560 |
+| CSV, plain text (Alt+F3) | down 49; up and five notches could not be measured | Down could not be measured, Up −18, PageDown 918 (screen 748), PageUp could not be measured, 20 × Down 412 | 60, −60, 300 | 28, −28, 748, −748; 20 × Down 560 |
+
+In the plain-text view before the change, 11 of 12 single notches up and 11 of 12
+single Down presses did not move the content as one piece (one notch moved −49 px, one
+press 18 px). After it, all 12 moved −60 px and all 12 moved 28 px. Before the change,
+"could not be measured" means the content changed but no shift matched 80 % of its rows,
+as in the acceptance run (PageUp of the TSV: −653 px matching 7 % of the rows here, 18 %
+there).
+
+Cause, from engine traces of those runs: the providers' byte budgets.
+
+- **Pages about one screen tall.** The basic viewer sends at most 8,180 bytes of text
+  per page, and the source viewer at most 8,192, whatever the engine asks for (12 KiB
+  and the rows of the viewport plus its 256 px guards). For these rows that is 44–46
+  rows:
+  - In the source viewer, pages were 733–766 px tall for a 712 px viewport. That left
+    5–38 px of camera travel, and the retained guard shrank to half of it (10.7 px).
+  - In the plain-text view, pages were shorter than the 748 px viewport, so they never
+    reached retained scrolling at all. Every key went to the engine as a plain scroll.
+- **Forward refills that could not advance.** A forward refill is anchored at the
+  camera minus the guard. With a guard under one row, it anchored at the page's first
+  row again, and the byte cap answered with the same page. The fallback for a reply
+  that cannot pass its edge (`Continuation::seam`, written for Markdown tables) then
+  loaded the page that starts where this one ends, without a continuation. The view
+  jumped about 45 rows, and the new raster surface discarded the rest of the motion.
+- **Backward pages starting inside a row**, where the byte budget ends. A source camera
+  then handed every backward refill through a raster rebase, about 32 px per round
+  trip. At the top of each page it showed the cut row's tail as a line (status
+  "Col 135").
+- **A refill that never advanced.** After PageUp, a camera at its page's edge waited
+  for a refill that the same-page answer never advanced.
+
+In the traced CSV key sequence before the change:
+
+- 20 key presses went to the engine as plain scrolls;
+- the camera was cleared 4 times;
+- a new surface dropped pending motion twice;
+- 40 refills became rebases.
+
+After the change, all four counts were 0.
+
+Fix, in the engine only (`worker_chain.rs`):
+
+- **Holding back a short reply.** When the provider ends a Text or Source reply by
+  bytes before the request's line budget, the reply is held back. The engine requests
+  the contiguous next range (backwards, the previous one) and joins the replies into
+  one page. That page reaches the worker as the reply to the original request, so
+  positions, motion and raster continuity work as with a larger page.
+- **Stopping and failing.** A chain stops:
+  - at the line budget (backwards, one line short of it, as a provider's backward page
+    holds one newline less);
+  - at 64 KiB;
+  - after 16 reads;
+  - when a read adds nothing.
+
+  A failed or cancelled continuation delivers what was joined. A chain whose request
+  was replaced is cancelled.
+- **No cut first row.** A backward chain's first row is dropped unless it is known to
+  be whole: at the start of the file, or when the read ended at a row with a clear edge
+  flag. So a cut row never shows as a line. A whole row dropped this way is shown by
+  the page above it.
+- **The source refresh.** Its request is joined the same way, so restyling does not
+  shrink the page again.
+- **No UI change.** The camera, the raster presentation and the wheel motion behaved
+  correctly; they were starved of coverage.
+
+Drags after the change, through the engine (`Service`, 1000 × 700, after End and Home),
+all acknowledged with their own sequence and without an error:
+
+- `third-party-inventory.csv` at 2 % steps:
+  - source viewer: 51 of 51;
+  - basic viewer: 51 of 51;
+  - the same content as `.sql`: 51 of 51.
+- The acceptance fixture `inventory.csv` at 1 % steps:
+  - source viewer: 101 of 101;
+  - basic viewer: 101 of 101.
+- The integration tree's `docs/IMPLEMENTATION_BACKLOG.md` (Markdown, not joined; now
+  133,059 bytes) at 1 % steps: 101 of 101. Five settled at the nearest view beside whole
+  tables, as before this change: 18 % at 0.1740, 19 % at 0.1923, 42 % and 43 % at
+  0.4144, and 68 % at 0.6783.
+- With the retained raster on, as in the application, whose requests include the guard
+  rows and whose replies are therefore joined:
+  - `third-party-inventory.csv` at 2 % steps: source viewer 51 of 51, basic viewer 51 of
+    51, `.sql` 51 of 51;
+  - `inventory.csv` at 1 % steps: source viewer 101 of 101, basic viewer 101 of 101.
+
+Every drag of the text and source sweeps landed at its target (largest difference below
+0.00005). Before this change, some drags of the same CSV settled at the nearest view
+instead (up to 0.0002 from the target in the basic viewer and 0.0006 in the source
+viewer; previous section).
+
+Limits:
+
+- **Rust burst not reproduced.** The acceptance run's Rust results (five notches
+  256 px in 3 of 3 runs, PageUp −792 px) did not reproduce here. All of these moved
+  exactly 300 px for the burst, and 28, −28, 712, −712 and 560 px for the keys:
+  - the probe on the real-time clock and on a 4 ms test clock;
+  - with every page reply delayed by 1.2 s in the engine;
+  - with five bursts fired right after drags, while source highlighting was being
+    prepared;
+  - after the scenario's full 51-drag sweep.
+
+  Rust pages hold the line budget (78 lines, about 3.6 KiB), so this change does not
+  touch them. A rerun of the scenario with this change is needed to settle it.
+- **Rows longer than about 830 bytes.** With such rows, 64 KiB is less than the line
+  budget, so a joined page can still be short of the viewport plus its guards. A row
+  longer than 64 KiB is one fragment, as before.
+- **Extra round trips.** Each refill of such rows costs one or two more provider round
+  trips.
+
 ## Tests
 
 All in the project's Docker build image, `--locked`:
@@ -735,3 +878,20 @@ All in the project's Docker build image, `--locked`:
   `source_terminal_byte_exception_rejects_clipped_edges_and_interior_near_end`.
   All-target Clippy with `-D warnings` and `rustfmt --check` on the changed files passed.
   These builds used a private target directory under `_build`, removed afterwards.
+- Wheel and key travel across byte-capped pages: `cargo test -p midnight-viewer-engine
+  --lib` 536 passed, 0 failed, 7 ignored (in the build container), including the five
+  new `worker::tests::chain` tests, whose replies follow the basic viewer's byte-capped
+  selection:
+  - `a_byte_capped_forward_reply_is_joined_to_its_line_budget`
+  - `a_byte_capped_backward_reply_is_joined_and_starts_at_a_row`
+  - `a_bounded_backward_join_drops_its_cut_first_row`
+  - `a_superseded_chain_shows_nothing`
+  - `adjacent_text_pages_join_and_a_cut_first_row_is_dropped`
+
+  With the joining switched off (requests not tracked, so replies pass through as
+  before), the four that drive the worker failed: the short reply was published on its
+  own, or no further range was read. The pure join and trim test passes either way.
+  With the code restored (`cmp`), all five passed.
+  `cargo test -p midnight-viewer-ui --lib` 203 passed. All-target Clippy for the engine
+  with `-D warnings` and `rustfmt --check` on the changed files passed. These builds used
+  a private target directory under `_build`, removed afterwards.

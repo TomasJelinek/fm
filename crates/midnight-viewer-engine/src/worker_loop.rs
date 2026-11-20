@@ -307,7 +307,9 @@ impl Worker {
                 self.session_failed(message, output);
                 return;
             }
-            self.event(event.request_id, event.kind, output);
+            for (id, kind) in self.chain_event(event.request_id, event.kind) {
+                self.event(id, kind, output);
+            }
         }
     }
 
@@ -321,6 +323,7 @@ impl Worker {
         if let Some(session) = self.session.take() {
             self.closing = Some(session);
         }
+        self.chains.clear();
         if let Some(id) = self.viewport_request {
             self.viewport_failed(id, &message, output);
         }

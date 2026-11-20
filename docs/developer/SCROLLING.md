@@ -360,10 +360,18 @@ Service, including closed workers awaiting retirement. This caps retained CPU
 raster storage at 288 MiB, separately from UI/GPU images and layout caches; each
 snapshot is painted in its shared allocation, so building one adds no second
 snapshot-sized buffer. Dead weak allocation owners are reaped off the UI
-thread. Text decoding remains capped at 12 KiB (4 KiB for binary) and 512 lines;
-guards do not widen word wrapping or permit whole-file loading. An incomplete
-byte-limited fragment shorter than a viewport temporarily retains the existing
-viewport renderer rather than inventing continuous coverage or EOF.
+thread. A text request asks for 12 KiB (4 KiB for binary) and the rows of the
+viewport and its guards, at most 512 lines; guards do not widen word wrapping or
+permit whole-file loading. A provider can stop earlier at a byte budget of its own:
+the basic and source viewers send at most about 8 KiB, which for rows of a few
+hundred bytes is no taller than the viewport. The engine then reads the contiguous
+next range (backwards, the previous one) and joins the replies into one page, up to
+the request's line budget and at most 64 KiB (`worker_chain.rs`), so such rows scroll
+with full guards like short ones. A joined backward page whose first row may be cut
+drops that row: a row's tail never shows as a line of its own. An incomplete
+byte-limited fragment that is still shorter than a viewport (a row longer than that
+bound) temporarily retains the existing viewport renderer rather than inventing
+continuous coverage or EOF.
 
 Native GPU allocation stalls are addressed separately by the pinned FemtoVG
 [upload cache](../../vendor/README.md). In-flight buffers become reusable only

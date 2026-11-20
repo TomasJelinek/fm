@@ -43,6 +43,8 @@ fn visible_rows(page: &TextPage, origin: f32, geometry: ViewerGeometry) -> (usiz
     (first, last)
 }
 
+#[path = "worker_chain.rs"]
+mod chain;
 #[path = "worker_loop.rs"]
 mod event_loop;
 #[path = "worker_find.rs"]
@@ -262,6 +264,8 @@ struct Worker {
     /// The page edge to continue at once the current reply has completed, because that
     /// reply could not pass the edge the motion wanted to cross (`Continuation::seam`).
     seam: Option<(u64, bool)>,
+    /// Text replies still being joined to their request's line budget (`chain`).
+    chains: chain::Chains,
     motion: RelativeMotion,
     caption: String,
     status: String,
@@ -425,6 +429,7 @@ pub(crate) fn run(
         land_at_bottom: false,
         continuation: None,
         seam: None,
+        chains: Default::default(),
         motion: RelativeMotion::default(),
         caption: String::new(),
         status: String::new(),
@@ -848,6 +853,7 @@ impl Worker {
                     self.land_at_bottom = viewport.backwards;
                     self.anchor = viewport.source_anchor;
                 }
+                self.chain_requested(id, &viewport);
                 self.source_requested(id, viewport);
             }
             Err(error) if !source_position => {
