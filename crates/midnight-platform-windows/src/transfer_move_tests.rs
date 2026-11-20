@@ -741,6 +741,12 @@ fn preparation_does_not_capture_or_create_recovery_until_explicit_invocation() {
 
 #[test]
 fn whole_root_capture_retains_every_child_and_survives_all_pin_drops() {
+    // TEST-04: the capture renames a directory that holds a file written just before.
+    crate::test_fixtures::rerun_on_fresh_fixture_hold(whole_root_capture_attempt).unwrap();
+}
+
+/// One run on a brand-new fixture; only the capture's own failure is returned.
+fn whole_root_capture_attempt() -> Result<(), midnight_core::FsError> {
     let (_temp, parent) = fixture();
     let source = parent.join("source 文档 🦀");
     fs::create_dir(&source).unwrap();
@@ -750,7 +756,7 @@ fn whole_root_capture_retains_every_child_and_survives_all_pin_drops() {
         .prepare_move_source(&source, &Cancellation::default())
         .unwrap();
     let identity = prepared.capture.entry().identity;
-    let outcome = prepared.capture.capture(&Cancellation::default()).unwrap();
+    let outcome = prepared.capture.capture(&Cancellation::default())?;
     let recovery = match &outcome {
         TransferMoveCaptureOutcome::Captured {
             source: actual,
@@ -780,6 +786,7 @@ fn whole_root_capture_retains_every_child_and_survives_all_pin_drops() {
         b"original bytes"
     );
     assert_eq!(fs::read(source.join("winner")).unwrap(), b"new source name");
+    Ok(())
 }
 
 #[test]

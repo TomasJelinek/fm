@@ -21,9 +21,60 @@ function Refuses([scriptblock]$Action, [string]$Reason) {
     try { & $Action | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw "Expected refusal: $Reason" }
 }
-function Read-Shortcut([string]$Path) {
-    return [MidnightShortcut.Native]::ReadShortcut($Path)
+# TEST-04: endpoint protection briefly holds files that were just written. The test's own
+# operations on such fresh fixtures, and installations expected to succeed, retry access
+# denied (5), sharing (32) and lock (33) violations for about 2 s, then rethrow the last
+# error. Expected refusals and the direct PinDirectory and Publish calls are never retried.
+function Invoke-WithFreshFileRetry([string]$What, [scriptblock]$Operation) {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $delay = 10
+    while ($true) {
+        try {
+            $output = & $Operation
+            if ($delay -gt 10) { Write-Warning "TEST-04: $What succeeded after $($clock.ElapsedMilliseconds) ms" }
+            return $output
+        } catch {
+            $held = $false
+            for ($failure = $_.Exception; $failure; $failure = $failure.InnerException) {
+                $code = if ($failure -is [ComponentModel.Win32Exception]) { $failure.NativeErrorCode }
+                    elseif ((($failure.HResult -shr 16) -band 0x1fff) -eq 7) { $failure.HResult -band 0xffff }
+                if ($code -in 5, 32, 33) { $held = $true }
+            }
+            if (-not $held) { throw }
+            if ($clock.ElapsedMilliseconds -ge 2000) {
+                Write-Warning "TEST-04: $What was still held after $($clock.ElapsedMilliseconds) ms"
+                throw
+            }
+        }
+        Start-Sleep -Milliseconds $delay
+        $delay = [Math]::Min(2 * $delay, 200)
+    }
 }
+function Read-Shortcut([string]$Path) {
+    # The test's own readback of a shortcut that was just published.
+    return Invoke-WithFreshFileRetry "read $Path" { [MidnightShortcut.Native]::ReadShortcut($Path) }
+}
+function Install-ShortcutWithFreshFileRetry([string]$Installation, [string]$Desktop, [string]$Hash) {
+    # The installer is idempotent, so an installation expected to succeed reruns after a hold.
+    # A held run can leave its staged shortcut (the installer warns); once a run succeeded,
+    # those leftovers are removed so that the leak check still covers the installer itself.
+    $known = New-Object Collections.Generic.List[string]
+    foreach ($stage in Get-ChildItem -LiteralPath $Installation -Filter '.shortcut-*.lnk' -Force) {
+        $known.Add($stage.FullName)
+    }
+    $left = New-Object Collections.Generic.List[string]
+    Invoke-WithFreshFileRetry "install into $Desktop" {
+        try { Install-MidnightDesktopShortcut $Installation $Desktop $Hash | Out-Null }
+        catch {
+            foreach ($stage in Get-ChildItem -LiteralPath $Installation -Filter '.shortcut-*.lnk' -Force) {
+                if (-not $known.Contains($stage.FullName)) { $known.Add($stage.FullName); $left.Add($stage.FullName) }
+            }
+            throw
+        }
+    }
+    foreach ($stage in $left) { Invoke-WithFreshFileRetry "remove $stage" { Remove-Item -LiteralPath $stage -Force } }
+}
+$completed = $false
 try {
     # Build native Unicode fixtures without depending on the PS5.1 source code page.
     $installation = Join-Path $testRoot ('installed-' + [char]0x6587 + [char]0x010d)
@@ -34,13 +85,16 @@ try {
     [IO.File]::WriteAllText($executable, 'owned native shortcut fixture')
     $hash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
     $linkPath = Join-Path $desktop 'Midnight Explorer.lnk'
-    Install-MidnightDesktopShortcut $installation $desktop $hash | Out-Null
+    # Expected to succeed: reruns after a hold on the installation's fresh files.
+    Install-ShortcutWithFreshFileRetry $installation $desktop $hash
     $values = Read-Shortcut $linkPath
     if ($values[0] -cne $executable -or $values[1] -cne ($executable + ',0') -or $values[3]) {
         throw 'Created shortcut values differ'
     }
-    [IO.File]::WriteAllText($linkPath, 'old shortcut contents')
-    Install-MidnightDesktopShortcut $installation $desktop $hash | Out-Null
+    # Overwrites the shortcut that was just published.
+    Invoke-WithFreshFileRetry "overwrite $linkPath" { [IO.File]::WriteAllText($linkPath, 'old shortcut contents') }
+    # Expected to succeed: reruns after a hold on the replaced shortcut or the new stage.
+    Install-ShortcutWithFreshFileRetry $installation $desktop $hash
     if ((Read-Shortcut $linkPath)[0] -cne $executable) { throw 'Existing shortcut was not replaced' }
     $before = (Get-FileHash -LiteralPath $linkPath).Hash
     Refuses { Install-MidnightDesktopShortcut $installation $desktop ('0' * 64) } 'wrong runtime hash'
@@ -70,7 +124,8 @@ try {
     finally { [IO.Directory]::Delete($junction) }
     if ((Get-FileHash -LiteralPath $sentinel).Hash -cne $sentinelHash) { throw 'Junction target changed' }
 
-    Remove-Item -LiteralPath $linkPath
+    # Removes the shortcut that was just published.
+    Invoke-WithFreshFileRetry "remove $linkPath" { Remove-Item -LiteralPath $linkPath }
     New-Item -ItemType Junction -Path $linkPath -Target $outside | Out-Null
     try { Refuses { Install-MidnightDesktopShortcut $installation $desktop $hash } 'final destination junction' }
     finally { [IO.Directory]::Delete($linkPath) }
@@ -122,7 +177,8 @@ try {
             if ((Split-Path -Parent ([IO.Path]::GetFullPath($crossRoot))) -cne $crossParent) {
                 throw 'Unexpected cross-volume fixture cleanup path'
             }
-            Remove-Item -LiteralPath $crossRoot -Recurse -Force
+            # Removes the cross-volume stage that was just written.
+            Invoke-WithFreshFileRetry "remove $crossRoot" { Remove-Item -LiteralPath $crossRoot -Recurse -Force }
         }
     } finally { $pins.Dispose() }
     # Retag the very same retained leaf after validation. Publishing must still use
@@ -153,7 +209,10 @@ try {
         if ($retagPublished) {
             if ([IO.File]::ReadAllText((Join-Path $retagged 'Midnight Explorer.lnk')) -cne
                 'retained directory object') { throw 'Publication lost the pinned directory object' }
-        } else { Remove-Item -LiteralPath $retagStage }
+        } else {
+            # Removes the unpublished stage that was just written.
+            Invoke-WithFreshFileRetry "remove $retagStage" { Remove-Item -LiteralPath $retagStage }
+        }
         Write-Output 'Retagged destination leaf: outside sentinel unchanged; publication stayed contained or failed closed.'
     } finally {
         if ($retagSet) { [ShortcutReparseFixture]::SetJunction($retagged, $outside, $true) }
@@ -180,8 +239,16 @@ try {
         } finally { $realPins.Dispose() }
     }
     Write-Output 'Desktop shortcut checks passed: create/update, hash, junctions, pins, atomic no-replace/replace, late hard link, cloud tags, cleanup.'
+    $completed = $true
 } finally {
     if ((Split-Path -Parent ([IO.Path]::GetFullPath($testRoot))) -cne
         [IO.Path]::GetFullPath($testParent).TrimEnd('\')) { throw 'Unexpected fixture cleanup path' }
-    Remove-Item -LiteralPath $testRoot -Recurse -Force
+    try {
+        # Removes the shortcuts and fixtures that were just written.
+        Invoke-WithFreshFileRetry "remove $testRoot" { Remove-Item -LiteralPath $testRoot -Recurse -Force }
+    } catch {
+        # A cleanup failure must not mask the error that already failed the test.
+        if ($completed) { throw }
+        Write-Warning "Fixture cleanup also failed and left ${testRoot}: $_"
+    }
 }

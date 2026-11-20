@@ -15,6 +15,7 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Security::{
@@ -335,6 +336,46 @@ pub fn build_temp(prefix: &str) -> tempfile::TempDir {
         .prefix(prefix)
         .tempdir_in(root)
         .expect("create fixture directory")
+}
+
+/// TEST-04: endpoint protection briefly holds files that were just written; while one is
+/// open, Windows refuses to rename a directory above it (os error 5) or reports a sharing
+/// (32) or lock (33) violation. `attempt` runs a whole test on a brand-new fixture and
+/// returns only its operation under test's error. On one of these three errors the test
+/// runs again on another new fixture, with a short backoff, for about 2 s. Panics (failed
+/// assertions) and other errors are never retried, and the last error stands.
+pub fn rerun_on_fresh_fixture_hold<T, E: std::fmt::Display>(
+    mut attempt: impl FnMut() -> Result<T, E>,
+) -> Result<T, E> {
+    let started = Instant::now();
+    let mut delay = Duration::from_millis(10);
+    loop {
+        let error = match attempt() {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        let held = ["(os error 5)", "(os error 32)", "(os error 33)"]
+            .iter()
+            .any(|code| message.contains(code));
+        let elapsed = started.elapsed();
+        if !held {
+            return Err(error);
+        }
+        if elapsed >= Duration::from_secs(2) {
+            eprintln!(
+                "TEST-04: still held after {} ms: {message}",
+                elapsed.as_millis()
+            );
+            return Err(error);
+        }
+        eprintln!(
+            "TEST-04: held after {} ms, rerunning on a new fixture: {message}",
+            elapsed.as_millis()
+        );
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(Duration::from_millis(200));
+    }
 }
 
 /// A Unicode name that also contains an unpaired surrogate.

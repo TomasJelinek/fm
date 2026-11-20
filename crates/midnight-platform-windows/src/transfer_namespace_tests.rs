@@ -1090,6 +1090,13 @@ fn closed_private_alias_reannouncement_precedes_same_slot_prospective_create() {
 
 #[test]
 fn directory_move_announces_exact_retained_private_descendants_before_native_commit() {
+    // TEST-04: the native move renames a directory that holds a file published just before.
+    crate::test_fixtures::rerun_on_fresh_fixture_hold(directory_move_announcement_attempt).unwrap();
+}
+
+/// One run with a brand-new fixture, events and context; only the native move's own
+/// failure is returned, after this run's pins are released.
+fn directory_move_announcement_attempt() -> Result<(), FsError> {
     let temp = temporary();
     fs::create_dir(temp.path().join("source")).unwrap();
     let events = Arc::new(TouchedAliasEvents::default());
@@ -1116,10 +1123,19 @@ fn directory_move_announces_exact_retained_private_descendants_before_native_com
         );
         events.child(&directory, "moved", EntryKind::Directory);
         let before = events.reannouncements.load(Ordering::SeqCst);
-        let outcome = prepared
-            .capture
-            .try_native_move(&directory, OsStr::new("moved"), None, &cancel)
-            .unwrap();
+        let moved =
+            prepared
+                .capture
+                .try_native_move(&directory, OsStr::new("moved"), None, &cancel);
+        let outcome = match moved {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                drop(prepared);
+                drop(child);
+                events.release_pins();
+                return Err(failure);
+            }
+        };
         assert!(matches!(
             outcome,
             midnight_core::TransferNativeMoveOutcome::Moved { .. }
@@ -1150,7 +1166,8 @@ fn directory_move_announces_exact_retained_private_descendants_before_native_com
         drop(prepared);
         drop(child);
         events.release_pins();
-    });
+        Ok(())
+    })
 }
 
 #[test]
