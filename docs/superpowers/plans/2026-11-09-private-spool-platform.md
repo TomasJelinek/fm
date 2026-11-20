@@ -46,7 +46,7 @@ verification are tracked in `_build/archive-streaming-spool/ledger.md`.
 
 ## Execution record
 
-The resumed implementation passes17 Windows tests and18 native Linux tests,
+The resumed implementation passes17 Windows tests and 18 native Linux tests,
 including existing process containment/private-store tests, with strict Clippy
 and formatting checks. The fixture using `/dev/full` proves Linux ENOSPC;
 controlled fault injection covers partial writes followed by disk exhaustion and

@@ -18,7 +18,7 @@ operations. Specification: [navigation and appearance](../specs/2026-11-04-navig
   per-pane tab navigation, default folder captions and stale-result rejection.
 - [x] Add compact accessible tab controls and named/numbered bookmark controls.
 - [x] Derive native window title version0.1 from Cargo SemVer0.1.0.
-- [x] Compact the Touch profile to40px controls and smaller chrome/gaps, preserving
+- [x] Compact the Touch profile to 40px controls and smaller chrome/gaps, preserving
   existing font choices; verify affected keyboard/pointer/render behavior.
 - [x] Resolve initial preferences-load/local-edit race without dropping saved paths,
   including bounded reconciliation after the window closes.

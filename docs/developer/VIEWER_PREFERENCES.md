@@ -95,15 +95,15 @@ of pages. **Fit**, **1:1** and the zoom controls remain beside the layout button
 The backend prepares bounded page regions as the view changes.
 
 The new layout controls remain in development until their UI/application gates pass.
-The prior Fit/Paged footer regression and two keyboard cases now pass within the31
-continuation. Selected39 remains38/1 because Options focus still fails. The current
-canonical104-source/159-selection packet is source-derived, not159 passes; the separate
+The prior Fit/Paged footer regression and two keyboard cases now pass within the 31
+continuation. Selected39 remains 38/1 because Options focus still fails. The current
+canonical104-source/159-selection packet is source-derived, not 159 passes; the separate
 The earlier Viewer46 timeout and subsequent45/1 retain their dated source.
 On the canonical `fc4fcdf7…` shared-helper checkpoint, the exact former failure
-passed first and the other45 then passed: **46 actual passes /0 failures**.
-Both raw logs retain their separate1+45 counts; all nine document cases and
+passed first and the other 45 then passed: **46 actual passes /0 failures**.
+Both raw logs retain their separate 1+45 counts; all nine document cases and
 19 image-presentation cases passed, including the genuine immediate-open errors.
-These overlap earlier scopes and are not additional unique passes or all159.
+These overlap earlier scopes and are not additional unique passes or all 159.
 Options focus, native/full-app and production migration acceptance remain open.
 
 The preceding backend slice and two final native PDF cases passed, including
@@ -181,27 +181,27 @@ contract is approved, with initial-content adapter cases passing in the scoped
 headless gate. Native and application qualification remain open.
 
 **XLSX was the first backend slice.** DOCX, XLSX, PPTX, ODT, ODS and ODP now have
-a scoped six-format gate:68 service,18 XLSX integration and27 Viewer adapter/
-frame-guard cases passed, with clean compilation. The later scoped repair gate passed60 checks and strict
-Clippy/format0; prior113/86 overlap. The earlier native CEF attempt rendered
+a scoped six-format gate:68 service,18 XLSX integration and 27 Viewer adapter/
+frame-guard cases passed, with clean compilation. The later scoped repair gate passed 60 checks and strict
+Clippy/format0; prior 113/86 overlap. The earlier native CEF attempt rendered
 content but failed a resource-policy assertion; that failed snapshot remains
 historical. The coherent CSS/
-reader/diagnostic checkpoint later passed86 scoped headless checks. Worker image
+reader/diagnostic checkpoint later passed 86 scoped headless checks. Worker image
 review found readable minimum-width columns with horizontal scrolling. Its native
-navigation now passed all11 content proofs with expected generated requests only
+navigation now passed all 11 content proofs with expected generated requests only
 and no denied/unexpected requests. Parent-change then failed with the browser
 exiting before requested evidence. The separately authorized close/cancel case
 then passed once on the same old harness. Those two native passes/one failure
 retain their source identity. The latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**:
-completed real Find returned0, Copy failed and Session stayed live. Its blank902×602
+completed real Find returned 0, Copy failed and Session stayed live. Its blank902×602
 diagnostic frame is not validated fresh content/resize proof (resize_ok=false,
 fresh_contrasted_frame=false). Source refusal remains required; no provider/Find/
 loading root cause is established. Host47 +Viewer44 =91/0 retain their frozen source;
 the later four assertion-style lint fixes passed strict Clippy0/format13files0 and
-two overlapping resource tests, not93 unique tests or a full91 rerun.
+two overlapping resource tests, not 93 unique tests or a full91 rerun.
 
 Root accepted the generic provider small-body navigation contract for private
-implementation: captured main-frame GET/no-post targets of0..1MiB are completely
+implementation: captured main-frame GET/no-post targets of 0..1MiB are completely
 admitted through genuine Resolve/ResourceRead/Data before replacement navigation;
 larger targets retain streaming through the same resolved capability. Small-body
 failure cannot fall back to streaming/old bytes. Preserve one body credit through

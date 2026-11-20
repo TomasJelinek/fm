@@ -81,7 +81,7 @@ can invalidate completed estimates, but do not restart a healthy active scan
 after every notification. Totals remain live estimates rather than atomic
 filesystem snapshots. Existing SSD/HDD/network budgets are unchanged.
 
-Intermediate backend progress is limited to250ms per folder. One shared UI
+Intermediate backend progress is limited to 250ms per folder. One shared UI
 presentation timer merges size-only changes from both panes and repaints at
 most four times per second while idle; completion is delivered at the next
 pulse. Input and other backend events repaint immediately using the current

@@ -137,7 +137,7 @@ rejected stale publication cannot change the saved caret or cancel valid input.
 
 Use a slightly smaller `Theme.small-font`. Prefer an approximately14px right and
 18px downward pointer gap; flip each axis when its preferred side will overflow,
-and keep the visible box inside its hosting window/surface with an8px margin.
+and keep the visible box inside its hosting window/surface with an 8px margin.
 Adapt text wrapping/viewport sizing for constrained surfaces, retaining complete
 plain text in accessibility data. Tooltips stay input-transparent and never steal
 focus, including inside menus, dropdowns and Options. File-row tooltips stay removed.

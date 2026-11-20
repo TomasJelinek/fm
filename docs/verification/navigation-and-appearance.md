@@ -10,7 +10,7 @@ Copy parallelism remains [design only](../superpowers/specs/2026-11-04-copy-conc
 
 Meaningful regressions cover raw Unicode/native identities, long paths, settings
 v1/v2 migration and malformed encodings, tab history/sort/cursor independence,
-stale results and IDs, queue failures, last-tab protection and32-tab overflow.
+stale results and IDs, queue failures, last-tab protection and 32-tab overflow.
 The installed bridge exercises actual IDs, active-pane focus, persistence and
 quoted Ctrl+Enter/Ctrl+P insertion without terminal/file activation.
 
@@ -51,7 +51,7 @@ and `target/verification/tabs_bookmarks-session61466.log` /
 Windows x64: **338 tests passed**, zero failures; two subprocess-only fixtures
 are directly ignored and are exercised by their passing parent tests. Workspace
 formatting, strict all-targets Clippy, the application build, engine smoke and
-the135-file/100000-byte source guard passed. The later cosmetic version addition
+the 135-file/100000-byte source guard passed. The later cosmetic version addition
 was included in the fresh build and native title check.
 
 Native Windows FemtoVG-WGPU smoke exited successfully. The inspected
@@ -62,12 +62,12 @@ desktop account with title **FM 0.1 — File Manager**; its window was visible a
 responding. Exact PID/title/account evidence is in `native-window.json`.
 
 Later compact-Touch request:40px file rows/controls/bottom buttons,48px main
-bands,10px outer padding,6px gaps and20px icons, preserving existing font choices
+bands,10px outer padding,6px gaps and 20px icons, preserving existing font choices
 and Desktop geometry. Seven affected Windows UI binaries passed, followed by
 the existing scroll-settle test using40px rows. Evidence:
 `.tools/compact-touch-targeted.log` and `.tools/compact-touch-panel-scroll.log`.
 Fresh strict Windows workspace Clippy also passed after this change.
-The fresh compact-Touch application build and135-file source guard passed;
+The fresh compact-Touch application build and 135-file source guard passed;
 native Windows smoke passed again and the updated executable was launched as
 the desktop user with the verified FM 0.1 title. The captured current Desktop
 profile is [here](../screenshots/compact-touch-windows.png); Touch-specific

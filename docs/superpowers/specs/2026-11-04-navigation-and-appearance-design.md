@@ -4,7 +4,7 @@ This extends the read-only native-filesystem milestone. The user's implementatio
 request authorizes these changes. File-writing operations retain their separate
 milestone; copy concurrency is specified in the [copy design](2026-11-04-copy-concurrency-design.md).
 
-The product version is0.1, stored centrally as Cargo SemVer0.1.0. The application
+The product version is 0.1, stored centrally as Cargo SemVer0.1.0. The application
 derives the native title `Midnight Explorer 0.1 — File Manager` from that version and supplies
 it to Slint as presentation data; no extra in-content header is added.
 
@@ -122,8 +122,8 @@ controls grow to fit, and touch targets retain their minimum. Ordinary strings
 and metadata elide visually with full values available in tooltips.
 
 The later user request for a smaller Touch profile supersedes the previous44px
-baseline. Touch now uses40px rows/controls/bottom buttons,48px main toolbar/path/
-location/command bands,10px window padding,6px gaps/control padding and20px
+baseline. Touch now uses 40px rows/controls/bottom buttons,48px main toolbar/path/
+location/command bands,10px window padding,6px gaps/control padding and 20px
 icons. Font-driven growth still applies. Existing user font family and size
 preferences remain intact; this change reduces density metrics, not saved font
 choices. Desktop geometry is unchanged.
@@ -148,8 +148,8 @@ are visible and leave session choices usable.
 ## Pixel scrolling and native drive icons
 
 Panels retain virtualized rows and Slint's native scrolling physics. Wheel
-motion is pixel-based with180ms interpolation; touch/pad inertia continues until
-idle. After80ms of quiet, a100ms ease-out settles at the nearest row. Held pointer
+motion is pixel-based with 180ms interpolation; touch/pad inertia continues until
+idle. After 80ms of quiet, a100ms ease-out settles at the nearest row. Held pointer
 gestures, continuing momentum and low-frame-rate updates postpone settling.
 Bounds win at the exact end when the viewport is not a whole number of rows;
 no blank gap is introduced. Programmatic cursor reveal cancels motion. Refresh

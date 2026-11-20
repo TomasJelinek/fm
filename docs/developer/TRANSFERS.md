@@ -416,7 +416,7 @@ its path. A repeated capture announces the reused directory again; granted peers
 can refuse that (nothing has moved), and the capture keeps it the same way until
 the engine repeats the capture.
 Progress reports actual file removals, source disposition/durability facts, exceptional
-residual counts, first16 raw residual mappings and at most64 source parents for
+residual counts, first 16 raw residual mappings and at most 64 source parents for
 refresh, prioritizing selected-root parents. File-removal counts exclude directories;
 disposition/durability counters include empty-directory removals. They do not
 measure reclaimed space.

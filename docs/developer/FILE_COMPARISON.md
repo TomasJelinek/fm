@@ -12,11 +12,11 @@ Configurable comparator associations remain **in development**. The
 cover ordered BOTH-basename routing to existing built-ins or a trusted external
 program. Configured backend routing now has a targeted **77 passed / 0 failed /
 2 ignored** gate, with strict Clippy/format0, empty source drift and unchanged app.
-It consumes the 27-file freeze with30 newly authored tests and overlaps earlier
+It consumes the 27-file freeze with 30 newly authored tests and overlaps earlier
 comparison checks. The canonical P3 packet is promoted (104 sources/159 source-derived selections).
-The selected39 integration cases are38 passed/1 Options-init-focus failure.
+The selected 39 integration cases are 38 passed/1 Options-init-focus failure.
 P3 units initially20/1; the corrected draft exact selector now passes once, with
-the other20 not rerun. Native comparator4/0 is scoped below; no full159/native
+the other 20 not rerun. Native comparator4/0 is scoped below; no full159/native
 input or ReadAt acceptance follows. See the [current checkpoint](../ACTIVE_WORK.md#current-checkpoint).
 
 The corrected faithful native comparator fixture ran **4 actual Windows cases /
@@ -24,7 +24,7 @@ The corrected faithful native comparator fixture ran **4 actual Windows cases /
 preworker cancellation/two session credits/no child, and non-Unicode Automatic
 fallback. Components were unchanged and every case left remainingOwned[]. This
 closes the old fixture settings-timeout for those cases; historical failures remain
-recorded. Fixture16 blocking/6 resident/10 transient-holder qualification does not
+recorded. Fixture 16 blocking/6 resident/10 transient-holder qualification does not
 implement the production-pool repair or supply native ReadAt counts.
 
 The current pairing and ownership behavior below remains implemented.
@@ -244,8 +244,8 @@ the entire ui_polish target or a new application. A prominent green identical
 result still requires an input-bound whole-input typed backend verdict; neither
 status text nor equal image dimensions/pixels is a substitute. A separate work-branch selection recorded 38 passes and one Options initial-focus failure.
 The diagnostic handoff records OK focused while the expected pattern is visible.
-The corrected draft exact selector passed once after initial20/1; the other20
-were not rerun. Prior55 unit passes retain their own frozen source, and no full159
+The corrected draft exact selector passed once after initial 20/1; the other 20
+were not rerun. Prior 55 unit passes retain their own frozen source, and no full159
 or native input qualification follows. See the
 [current checkpoint](../ACTIVE_WORK.md#current-checkpoint) for exact receipts.
 
@@ -254,7 +254,7 @@ The corrected faithful native comparator fixture ran **4 actual Windows cases /
 preworker cancellation/two session credits/no child, and non-Unicode Automatic
 fallback. Components were unchanged and every case left remainingOwned[]. This
 closes the old fixture settings-timeout for those cases; historical failures remain
-recorded. Fixture16 blocking/6 resident/10 transient-holder qualification does not
+recorded. Fixture 16 blocking/6 resident/10 transient-holder qualification does not
 implement the production-pool repair or supply native ReadAt counts.
 
 The work-branch appearance handoff defines the contract for Viewer and Compare.

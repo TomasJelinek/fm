@@ -66,7 +66,7 @@ actual desktop session with the visible, responding title
 `native-window.json` outside the commit.
 
 Linux workspace: **351 tests passed**, zero failures, followed by strict
-all-targets Clippy, application build, the145-file/100000-byte source guard and
+all-targets Clippy, application build, the 145-file/100000-byte source guard and
 backend smoke. Linux interaction tests use the headless software-window harness;
 native rendering was inspected on Windows.
 

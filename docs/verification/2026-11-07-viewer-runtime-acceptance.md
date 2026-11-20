@@ -119,7 +119,7 @@ After the core/engine integration, `native_acceptance` was freshly rebuilt with
 the profile0 Windows toolchain and copied beside the already protected QA plugin
 packages. Its SHA-256 was
 `483719E76B27FB675D3D85F41943EE4C0301ABD49D37950A3D481BC46624C6BC`.
-All thirteen native DX12 stages passed again in7.02 seconds, exit0: text/wrap/search,
+All thirteen native DX12 stages passed again in 7.02 seconds, exit0: text/wrap/search,
 binary, highlighted source, Markdown, image zoom, PDF pages, placement and Escape.
 The current source/PDF screenshots were visually checked. Evidence is under
 `_build/goal/viewers/native-current/`, including the executable path/hash in

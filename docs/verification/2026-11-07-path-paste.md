@@ -13,7 +13,7 @@ Insertion uses the pinned native committed-text edit path, retaining selection,
 IME and native Undo/Redo semantics. No panic catch, dependency patch or changed
 generic text editor is involved.
 
-Windows and Linux each pass all9 actual widget tests: keyboard/context Paste,
+Windows and Linux each pass all 9 actual widget tests: keyboard/context Paste,
 selection replacement/suffix, Undo/Redo, Enter-only navigation, stale edits,
 selection/cancellation/navigation/supersession, queue/backend refusal, empty paste,
 Shift+Insert, private-use/supplementary Unicode, TAB, old IME preedit, both panes,

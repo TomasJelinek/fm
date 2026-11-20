@@ -32,11 +32,11 @@ TREE-01; flat panel filtering is delivered in this increment.
   present(field)/missing(field) expose it. Unknown attributes are not false flags;
   Linux dot-names are not inferred as native hidden attributes.
 - Date literals require explicit UTC Z or numeric offset, checked Gregorian
-  years1..9999 and up to9 fractional digits. Literal and snapshot timestamps compare
+  years1..9999 and up to 9 fractional digits. Literal and snapshot timestamps compare
   exact UTC nanoseconds without Windows SystemTime literal rounding. No local
   dates, implicit now, arithmetic or locale-dependent interpretation.
 - Source4096bytes, tokens512, nodes256, syntactic nesting32, name patterns16.
-  Per-pattern compiled64KiB/DFA64KiB bounds are resource budgets, not RSS or an
+  Per-pattern compiled 64KiB/DFA64KiB bounds are resource budgets, not RSS or an
   allocation-free guarantee. Numeric units and overflow are checked.
 - Disabled Expressions still validate syntax/types before being accepted and then
   match every entry; legacy disabled-mode behavior remains compatible.

@@ -50,8 +50,8 @@ details. Custom popup rows retain keyboard and accessibility behavior. Existing
 F1 help remains available without reserving persistent workspace.
 
 Follow-up corrections: center all file/folder icons inside their row height.
-Desktop uses22px rows,24px controls,14px icons,6px window padding and4px gaps;
-Touch now uses40px controls/rows. Desktop drive
+Desktop uses 22px rows,24px controls,14px icons,6px window padding and 4px gaps;
+Touch now uses 40px controls/rows. Desktop drive
 buttons use46px captions such as `C:`; special locations use24px icon buttons
 with full accessible tooltip labels, while Touch retains descriptive captions.
 The current folder is visible in full beside the editor in a single command row,

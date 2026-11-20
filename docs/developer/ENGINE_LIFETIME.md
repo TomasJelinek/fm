@@ -452,24 +452,24 @@ The plugin ABI, operation authority, confirmation and checksum policy are unchan
 ## Accepted private resident-worker follow-up
 
 The accepted private resident-worker design is **13 Engine /5 Viewer /2 Compare**
-resident threads, keeping2 async/16 transient blocking. These are planned domains,
+resident threads, keeping 2 async/16 transient blocking. These are planned domains,
 not implemented threads, process measurements or new payload/waiter capacities.
 Preserve worker affinity, distinct external ownership, checked retirement and current
 window/session credits. The later old-scheduler run `production-pool-7e458befac` is genuine production RED.
-With the original2 async/16 blocking threads,13-resident readiness and four windows,
+With the original 2 async/16 blocking threads,13-resident readiness and four windows,
 the prepared-save callback had not entered and the second Compare was incomplete
-at the original20,000ms pressure boundary. Closing two Viewers recovered the same
+at the original 20,000ms pressure boundary. Closing two Viewers recovered the same
 prepared save (exactly one callback, coherent raw publication) and the same Compare.
 Strict cleanup and exclusive capture-reader reopen checks completed before the
 intended progress-failure assertion; no owned processes/monitor errors remained.
-All3,941 guarded identities were unchanged; the unconsumed4917→F5 test-fixture
-exception is separately recorded. Raw test time was23.02s. This establishes the
+All 3,941 guarded identities were unchanged; the unconsumed 4917→F5 test-fixture
+exception is separately recorded. Raw test time was 23.02s. This establishes the
 old-source failure and same-work recovery, not migration GREEN, an unrecoverable
 deadlock or a performance result. The earlier missing-plugin setup failure remains
 historical and distinct. The old-source production-pool attempt `production-pool-27587e6553` reached real
-watch/report and13-nonwindow readiness, then failed Viewer setup because no compatible
+watch/report and 13-nonwindow readiness, then failed Viewer setup because no compatible
 Basic Viewer plugin was installed beside the test executable. The raw test ended in
-0.23s before four-window pressure, the20-second pressure deadline, pre-rescue counters
+0.23s before four-window pressure, the 20-second pressure deadline, pre-rescue counters
 or recovery. Cleanup/exclusive-open checks preceded the failed outcome assertion;
 remainingOwned[] and source/harness identities were unchanged. This is a setup
 failure, not a production-starvation reproduction or a progress pass. Production
@@ -491,16 +491,16 @@ type annotations (18 test-only bytes); production `resident.rs` remains
 These are isolated immutable round-two snapshots, not final round-four, migrated
 consumer, native, performance or production qualification. In particular, the
 known repeated-panic-retention finding is not closed by these passes.
-The faithful native fixture4/0 is separate and cannot qualify this production repair.
+The faithful native fixture 4/0 is separate and cannot qualify this production repair.
 
 The newer immutable resident common round-four checkpoint `6c04f591…` passed
-**29 tests /0 failures**, with13 default tests filtered out rather than rerun.
-Production source is `31178fbd…`, tests `fb306359…`; raw runtime was0.20s and
-compilation completed in4.05s with no warnings. This is separate from archived
+**29 tests /0 failures**, with 13 default tests filtered out rather than rerun.
+Production source is `31178fbd…`, tests `fb306359…`; raw runtime was 0.20s and
+compilation completed in 4.05s with no warnings. This is separate from archived
 round-two13/24 evidence. It does not qualify Engine/Viewer/Compare integration,
 native cleanup, performance or the full resident migration.
 
-The Architect accepted the Engine's additional200ms pool-exit observation only
+The Architect accepted the Engine's additional 200ms pool-exit observation only
 after existing stop/abort controls and actual resident-ticket drain, followed by
 tree-root shutdown. It stays inside Explorer's original shared absolute2,500ms
 deadline and cannot reset/extend it or shorten actor observation. Expiry means

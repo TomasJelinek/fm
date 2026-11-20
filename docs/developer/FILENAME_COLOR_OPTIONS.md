@@ -98,8 +98,8 @@ enabled state are preserved; unrelated rules are not reset. Standalone gray PDF
 rules or changed match/target/style options remain intentional customizations.
 At the full32-rule limit no split/truncation occurs. No schema change is needed.
 
-The fresh full filename_colors suite passed20/0/0 with strict Clippy/format0.
-An earlier12/8 run used the old library because Copy-Item retained its timestamp;
+The fresh full filename_colors suite passed 20/0/0 with strict Clippy/format0.
+An earlier 12/8 run used the old library because Copy-Item retained its timestamp;
 that attempt is not behavior-regression evidence. Fresh compilation of both
 library and harness established the result. Descendant-style transport and new
 app/native rendering qualification remain separate.

@@ -39,7 +39,7 @@
   opened-file validation, private Unix modes; graceful latest save is bounded.
   Settings worker GREEN9, common codec/storage GREEN6.
 - Storage-aware sizing GREEN24 (13 traversal +11 scheduling tests); global
-  weighted budget permits4 SSD reads or1 HDD/network/unknown stream across panes.
+  weighted budget permits4 SSD reads or 1 HDD/network/unknown stream across panes.
   Parent-linked cancellation fixed three cancellation-observation regressions.
 - Windows terminal creation now uses owned native processes/new console standard
   handles, preventing command output from leaking to redirected Midnight Explorer diagnostics.

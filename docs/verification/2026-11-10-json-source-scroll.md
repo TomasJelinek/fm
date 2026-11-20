@@ -36,7 +36,7 @@ incomplete tail rows and bounded long-line progress have causal regressions.
 
 Final `tail-locate-green-linux.log` passes **116 viewer-engine tests**, four
 existing installed-package opt-ins ignored, and **41 renderer tests** across all
-targets. Session4536 exited0. No independent plugin source was changed for the
+targets. Session4536 exited 0. No independent plugin source was changed for the
 rendering correction; the subsequent bounded-Locate package change is separate.
 
 `source_scroll` uses the production service and installed Source plugin, asserts

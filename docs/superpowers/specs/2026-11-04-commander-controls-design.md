@@ -55,7 +55,7 @@ The external command line is an explicit user-controlled shell action.
   Remove the persistent keyboard footer, command placeholder help and ACTIVE
   word; retain pane decoration, actual status/errors and explicit F1 help.
   The cwd remains visible in a compact read-only prompt, with the full path in
-  a tooltip. Mouse density uses22px rows/24px controls/14px icons and narrower
+  a tooltip. Mouse density uses 22px rows/24px controls/14px icons and narrower
   spacing; Touch retains44px targets. File/folder icons are vertically centered.
   Options uses explicit close-on-click-outside behavior so interior clicks and
   nested theme/density selection do not dismiss it.
@@ -175,7 +175,7 @@ No shell is parsed or invoked by this editing action.
   panel tools scroll. No replacement full-width branding header is added.
 - Themes: Blue(default), neutral Dark, Light. One Slint Theme global owns semantic
   surfaces/text/focus/selection/error/disabled colors and the std-widget scheme.
-- Density: Desktop/mouse compact; Touch uses at least44 logical px for principal
+- Density: Desktop/mouse compact; Touch uses at least 44 logical px for principal
   hit targets and file rows. Shared metrics also drive scrolling/reveal/hit tests.
 - Preview is immediate and does not change pane paths, selection, operation state
   or command editing. Backend SettingsService persists typed version3 preferences
@@ -183,7 +183,7 @@ No shell is parsed or invoked by this editing action.
 - Missing config yields defaults. Strict bounded decoding rejects malformed data,
   unknown fields/versions and non-regular/symlink/FIFO targets. Atomic save uses
   an exclusively created temp, complete writes/sync and safe same-directory
-  publication; existing settings survive errors. Linux files are private0600.
+  publication; existing settings survive errors. Linux files are private 0600.
 - Monotonic PreferencesRevision protects local edits against late load/save
   responses. Engine serializes native calls and coalesces pending writes to the
   latest state. Failures retain preview and expose retry. On close, the window

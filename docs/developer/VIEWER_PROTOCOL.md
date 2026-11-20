@@ -1,7 +1,7 @@
 # Viewer protocol reference
 
 The baseline schemas describe public API 0.1.0 with the source-implemented
-optional preparation extension in API/SDK0.2.0; C ABI remains1.0. Full
+optional preparation extension in API/SDK0.2.0; C ABI remains 1.0. Full
 Source plugin recovery remains separate from the verified local0.2
 publication and selected host/engine gate. Source definitions are
 [messages.rs](../../api/midnight-plugin-api/src/messages.rs),
@@ -123,20 +123,20 @@ Immutable local0.2 packages are published beside byte-unchanged0.1. Basic and
 Markdown still resolve their exact0.1 pins, and an independent consumer resolves
 registry API/SDK0.2; this is local release availability, not complete Source
 plugin recovery or a new app. C/Rust ABI1.0 sizes, alignments and offsets match.
-The scoped host/engine gate compiled with453 source hashes/zero drift and passed
+The scoped host/engine gate compiled with 453 source hashes/zero drift and passed
 98 selected checks (26 new +72 direct boundary); app f311 remained unchanged.
-The later canonical packager passed9/0/0 and strict Clippy/format0, preserving
-exact old0.1 and reproducing issued0.2 archives. Relocated upload payload resolves
+The later canonical packager passed 9/0/0 and strict Clippy/format0, preserving
+exact old 0.1 and reproducing issued 0.2 archives. Relocated upload payload resolves
 Basic/Markdown0.1 and Source0.2 in a fresh sparse Cargo cache without app/API
 sources. That is dependency resolution, not plugin execution or new remote CI.
 Source post-review64 closes its two measured P2 cases on that snapshot;
-prior99 is not rerun/additive. Combined integration, final UI/native and app
+prior 99 is not rerun/additive. Combined integration, final UI/native and app
 qualification remain separate.
 
 Prepare uses the existing request/session/generation identity, zero flags and
 empty raw content after Open in Source mode. It binds the captured revision and
 **full** ordinary Viewport. Its model validates that Viewport and requires
-`max_scan_bytes` from1 through262144 inclusive. The session owner checks revision,
+`max_scan_bytes` from 1 through 262144 inclusive. The session owner checks revision,
 anchor/frontier against a known captured length, preserving unknown-length semantics.
 
 A successful accepted request emits exactly one SourcePrepared then Completed.

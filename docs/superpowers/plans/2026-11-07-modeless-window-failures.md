@@ -7,7 +7,7 @@ bounded failure coordinator for Find and Checksums and accessible Find rows.
 
 - Add `tool_window_failure.rs` and a module declaration. A per-manager failed-ID
   set suppresses repeated creation immediately. Report once after the caller's
-  Presenter borrow ends. Retry close/release only every250ms, with weak host,
+  Presenter borrow ends. Retry close/release only every 250ms, with weak host,
   Presenter, registry and closing references. Keep retrying until admission works;
   host shutdown/drop stops retries and the engine shutdown barrier owns cleanup.
 - Narrow `find_windows.rs`/`checksum_windows.rs` edits to coordinator wiring and

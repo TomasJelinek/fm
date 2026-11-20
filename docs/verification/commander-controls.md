@@ -47,9 +47,9 @@ after commands complete; test configuration alone is not evidence of execution.
 
 Later authorized extensions add headerless Blue/Dark/Light appearance,
 Desktop/Touch controls, persistent preferences, terminal selection and storage-aware
-folder batching. Fresh targeted evidence is52 UI unit +2 actual input/render
+folder batching. Fresh targeted evidence is 52 UI unit +2 actual input/render
 tests,9 preferences-worker tests,24 folder tests,6 common storage/codec tests,
-24 Windows native tests and22 Linux native tests. Final whole-workspace counts
+24 Windows native tests and 22 Linux native tests. Final whole-workspace counts
 below supersede the earlier targeted-control counts.
 
 Viewer/VFS/native-provider migration and automatic reusable sudo routing are
@@ -97,7 +97,7 @@ refused by Windows, so no claim that it is in front of the current app is made.
 Evidence: `.superpowers/sdd/commander-controls/native-final-window.json`.
 
 Cargo audit of the actual final lockfile against the locally fetched advisory DB
-reported0 matching known vulnerabilities and5 unmaintained transitive warnings.
+reported0 matching known vulnerabilities and 5 unmaintained transitive warnings.
 This is not proof of absence of unknown vulnerabilities. Detailed audit JSON is
 `.superpowers/sdd/commander-controls/cargo-audit.json`.
 

@@ -91,7 +91,7 @@ and progress in the companion progress document instead of Git-dependent scripts
       file/symlink reads, atomic exclusive-temp publication and private Linux files.
 - [x] Serial latest-wins settings worker, revisions, late-load protection, retries,
       bounded graceful close after the window ends. No configuration I/O on UI.
-- [x] Real theme/touch render tests, all6 combinations, errors/races/FIFO/long-path
+- [x] Real theme/touch render tests, all 6 combinations, errors/races/FIFO/long-path
       native storage tests, fresh review and platform verification.
 
 ### Task 8: User-added fair, storage-aware folder sizing

@@ -291,7 +291,7 @@ inspected as possibly holding the item; neither is described as unneeded.
 - Command history intentionally persists exact user-submitted text only after a
   successful terminal launch, never command output or passwords collected by Midnight Explorer.
   Commands can contain secrets; the user authorized persistence and can disable
-  it or clear history in Options. Keep at most100 distinct strings and1MiB of
+  it or clear history in Options. Keep at most 100 distinct strings and 1MiB of
   aggregate text without truncation; this is a retention budget, not an execution
   limit. Deduplicate by exact text across shells; recall restores compatible
   grammar and standard privileges, never executes and never restores elevation.
@@ -630,7 +630,7 @@ see [recursive Move evidence](docs/verification/2026-11-08-recursive-move.md).
 3. By default hash the exact source bytes using SHA-256, synchronize writes and
    independently read/hash the entire destination; compare length and digest.
    Explicit quick mode instead captures first/middle/last64 KiB during source
-   streaming and compares those bytes after sync, plus exact length. Up to192 KiB
+   streaming and compares those bytes after sync, plus exact length. Up to 192 KiB
    is compared entirely. Checking only size or hashing an outgoing buffer twice
    does not satisfy either policy. Native same-volume rename copies no data.
 4. Reject any detected source change. Source metadata checks do not prove a

@@ -72,7 +72,7 @@ revalidation and preview conversion rather than suppressing unused-method lints.
 
 Windows passed actual Program3 plus its owned fixture, environment encoder2 and
 hidden PowerShell/Cmd-policy2. Linux passed actual Program1 and the owned POSIX
-terminal/environment fixture1. Strict Clippy passed for all targets of core,
+terminal/environment fixture 1. Strict Clippy passed for all targets of core,
 common, engine and each native platform crate. Exact command output is retained
 in `_build/goal/commands/{final-engine,actor-units,settings-green,clippy}-*.log`,
 `native-green-*.log`, `terminal-green-*.log` and `clippy-native-linux.log`.

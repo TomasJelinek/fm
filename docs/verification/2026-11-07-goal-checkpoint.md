@@ -11,7 +11,7 @@ goal or turn the remaining provider/platform designs into supported features.
   remain in recovery storage. SHA-256 source streaming and independent complete
   destination readback remain mandatory.
 - F6 and Cut/Paste use a captured Move draft and the backend queue. The current
-  Move capability accepts at most64 ordinary native files. All files must pass
+  Move capability accepts at most 64 ordinary native files. All files must pass
   publication, durability and complete source/destination proof checks before
   originals are captured into recovery folders. It retains their data and does
   not reclaim source disk space. Directories, links and archive Move are refused.
@@ -43,14 +43,14 @@ path identities remain distinct from bounded presentation strings.
 
 ## Windows UI regression evidence
 
-The complete UI run covered the library and62 integration targets. Its only two
+The complete UI run covered the library and 62 integration targets. Its only two
 failures were obsolete Move-disabled and pre-Cut menu-position expectations.
 The corrected fixtures and every subsequently changed presentation boundary were
-rebuilt and rerun. The final focused run passed437 library tests and12 integration
+rebuilt and rerun. The final focused run passed 437 library tests and 12 integration
 tests (checksum3, focus1, compact menus3, command settings3 and toolbar2).
 
-Combining the complete run with these fresh replacements gives589 passed,
-zero failed and one intentionally ignored performance benchmark across63 groups.
+Combining the complete run with these fresh replacements gives 589 passed,
+zero failed and one intentionally ignored performance benchmark across 63 groups.
 The counts do not include duplicate reruns. Logs:
 `_build/goal/commands/windows-ui-final.log`,
 `windows-ui-focused-final-2.log` and `windows-ui-final-counts.json`.
@@ -62,8 +62,8 @@ right-click events consumed before opening the toolbar context menu, and shortcu
 updates failing to notify cached toolbar rows. Each failed before its correction
 and passed afterwards. The tooltip regression preserves command identity across
 binding changes, bounds Unicode folder display and omits script/argument values.
-Settings captures cover54 theme/density/size combinations; checksum controls
-cover108 layout/action combinations. Selected normal and320×200 captures were
+Settings captures cover 54 theme/density/size combinations; checksum controls
+cover 108 layout/action combinations. Selected normal and 320×200 captures were
 visually reviewed.
 
 These tests dispatch real Slint pointer/key events through software-window
@@ -79,15 +79,15 @@ protected deployment and fresh native application/viewer checks are recorded
 below when observed. Native process/transfer/backend evidence is maintained in
 the linked feature reports; it is separate from these presentation tests.
 
-The corrected Linux UI baseline and focused replacements passed586 tests across
-the same63 groups, with one intentionally ignored benchmark. Strict Clippy passed
+The corrected Linux UI baseline and focused replacements passed 586 tests across
+the same 63 groups, with one intentionally ignored benchmark. Strict Clippy passed
 for Windows UI/application all targets and Linux UI all targets. Windows core
-shortcut integration passed14 tests, including Move/Cut migration. Subsequent
+shortcut integration passed 14 tests, including Move/Cut migration. Subsequent
 manifest-destination and settings drag-order changes require their own fresh
 focused checks; these totals describe the preceding source boundary.
 
 A freshly compiled native Windows viewer probe passed all thirteen DX12 stages
-in7.02 seconds, including text/binary/source/Markdown/image/PDF, controls, placement
+in 7.02 seconds, including text/binary/source/Markdown/image/PDF, controls, placement
 and Escape. Source/PDF captures were inspected; this is actual Windows renderer
 evidence, distinct from the software UI tests.
 [Viewer evidence](2026-11-07-viewer-runtime-acceptance.md).

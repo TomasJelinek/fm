@@ -78,10 +78,10 @@ wheel scrolling to reveal Apply and a physical pointer click to save. The compac
 
 ## Reference behavior
 
-Salamander's `src/edtlbwnd.cpp::MoveItem` (around369) validates insertion
+Salamander's `src/edtlbwnd.cpp::MoveItem` (around 369) validates insertion
 boundaries, adjusts a downward insertion and preserves the moved selection. Its
-mouse path (around984) uses a movement threshold, timer scrolling and an insertion
-marker; the right-button/cancel path (around1015) aborts the gesture. User Menu
-consumes `EDTLBN_MOVEITEM2` in `src/dialogs4.cpp` (around2580). This implementation
+mouse path (around 984) uses a movement threshold, timer scrolling and an insertion
+marker; the right-button/cancel path (around 1015) aborts the gesture. User Menu
+consumes `EDTLBN_MOVEITEM2` in `src/dialogs4.cpp` (around 2580). This implementation
 follows those interaction contracts through the existing immutable configuration
 transaction. No reference code or assets are copied.

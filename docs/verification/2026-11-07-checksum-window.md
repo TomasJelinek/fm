@@ -19,7 +19,7 @@ the newly built test executable:
 - Captured Unicode filename, streamed results, Stop, verified-manifest request,
   refusal to discard a live window when Release is rejected, Escape and main-host
   shutdown without resurrection.
-- Results/Details/Save and reachable actions at 860x620 and320x200 across all nine
+- Results/Details/Save and reachable actions at 860x620 and 320x200 across all nine
   themes and both input densities (108 layout/action combinations).
 - Accessible selection, all four per-algorithm context copies and full-row copy,
   plus closing a pending context menu when the generation changes. Callbacks use
@@ -37,7 +37,7 @@ controls now use their required height instead of a fixed148-pixel allocation.
 `_build/goal/transfers/ui-checksum-root-profile0-red.log` records a further causal
 regression: copying a full row with SHA-256 calculated but an uncalculated MD5
 output selector produced no clipboard request. The whole-row branch and button
-availability are corrected; the new regression passed in the combined435-test
+availability are corrected; the new regression passed in the combined 435-test
 Windows UI library run (`_build/goal/commands/windows-ui-final.log`). Single-hash
 copy still refuses uncalculated algorithms. That run also passed all three
 checksum input tests with the compact algorithm controls, leaving the results

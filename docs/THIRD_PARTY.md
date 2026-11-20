@@ -502,10 +502,10 @@ Security review remains open: RustSec extraction advisories
 [RUSTSEC-2026-0429](https://rustsec.org/advisories/RUSTSEC-2026-0429.html),
 [0369](https://rustsec.org/advisories/RUSTSEC-2026-0369.html),
 [0368](https://rustsec.org/advisories/RUSTSEC-2026-0368.html) and
-[0367](https://rustsec.org/advisories/RUSTSEC-2026-0367.html) list fixes in9.0.0.
+[0367](https://rustsec.org/advisories/RUSTSEC-2026-0367.html) list fixes in 9.0.0.
 The cached8.6 extraction allocation matches0429; current Office source uses a
 captured ZIP reader without an `extract()` call. That narrow observation is not
-complete reachability clearance. Prior0168 is patched from2.3.0. A complete
+complete reachability clearance. Prior 0168 is patched from 2.3.0. A complete
 transitive maintenance/advisory review, selected Cargo-tree captures, Linux Office
 feature capture and actual packaged-notice verification remain pending. The
 generated direct/complete/CSV inventories below receive a bounded Office Windows
@@ -863,17 +863,17 @@ inventory capture.
 ## Host notice-source staging — 18 November 2026
 
 The current completion-v3 stage resolves the eleven omitted license-source
-packages for the selected359-package normal/build graph. It contains662 staged
-files and61 reviewed override files, with zero missing license inputs. Root
-independently checked the exact pinned crate checksums/VCS commits and27 saved
+packages for the selected 359-package normal/build graph. It contains 662 staged
+files and 61 reviewed override files, with zero missing license inputs. Root
+independently checked the exact pinned crate checksums/VCS commits and 27 saved
 official manifest/license responses and copy hashes. Dependencies, the project's
 license and license selections are unchanged; the historical blocked stage and
 its missing-input findings remain preserved.
 
 This is qualified notice-source staging. The later normal validation-input2
-producer now matches package/source/version/checksum identities against the359
+producer now matches package/source/version/checksum identities against the 359
 selected tuples and locked graph; the stage's662 files were verified. Explicit
-copy of the662 notices into the new C9297 validation bundle is now complete and
+copy of the 662 notices into the new C9297 validation bundle is now complete and
 included in its exact2,487-file freeze; normal-only registration preserved the
 inventory. Root reviewed that complete input separately. This remains validation-
 input assembly/graph qualification, without runtime, final distribution or native

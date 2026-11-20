@@ -17,7 +17,7 @@ only routes input and presents cached state.
 ## Constraints and review focus
 
 Preserve lossless native paths, no application MAX_PATH cap, separate platform
-implementations, public Rust style, rustfmt100 and100000-byte source limit.
+implementations, public Rust style, rustfmt100 and 100000-byte source limit.
 No write operations are enabled. Watch stale entry IDs, rapid commands/manual
 toggles, partial listings, failed queue sends, retired tabs and large cleanup.
 The supplied workspace is now a user-created Git repository without a first

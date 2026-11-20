@@ -165,7 +165,7 @@ is retained when Find is opened again. The button is offered for text, binary,
 Source, Markdown and HTML views; image and PDF document views hide it.
 
 The visible Find integration selector passed in its earlier component. The later
-footer selector and two keyboard tests passed within the31-test continuation.
+footer selector and two keyboard tests passed within the 31-test continuation.
 Options focus and Viewer46 diagnostics remain open as described below; this is
 not final native/app input qualification. Office HTML search covers the current
 generated bounded page, not the complete workbook or document.
@@ -190,14 +190,14 @@ the post-review64 receipt below, with no unresolved owner failure in that scope;
 this is not an arbitrary-token guarantee or full native cold-target qualification.
 
 The post-review Source snapshot passed **64 unique checks / 0 failures** across
-seven groups, strict `--lib --tests` Clippy/format0. Prior99 is pre-fix evidence,
+seven groups, strict `--lib --tests` Clippy/format0. Prior 99 is pre-fix evidence,
 not a rerun or an additive total. Two real P2 RED→GREEN cases reduce the target
-boundary predicate from67,117,056 comparisons to16 in one preparation callback
+boundary predicate from 67,117,056 comparisons to 16 in one preparation callback
 (excluding independent decoder/source lookups), and six offscreen pending cases
-from16 reads/262,144 bytes/Ready=false to1 read/Ready=true. These are fixture
+from 16 reads/262,144 bytes/Ready=false to 1 read/Ready=true. These are fixture
 observations, not a general one-read or latency guarantee.
 
-The conservative retained-syntax upper bound is49,848 bytes, including the bounded
+The conservative retained-syntax upper bound is 49,848 bytes, including the bounded
 8KiB backward ring and overhead; the giant-line case measured566,776 bytes of
 incremental Rust heap peak, not RSS. The subsequent five-library host/Viewer/
 comparison slice passed **275 unique headless tests / 0 failures / 0 ignored**;
@@ -206,36 +206,36 @@ with the real C worker, using Viewer harness `f00316db…`, with no remaining ch
 workers. The earlier `b43d0280…` pre-lint run is a separate checkpoint. This is
 functional captured-file fixture evidence, not a production native-filesystem
 capture, benchmark or full-app result. The source closures were released after
-that gate. Configured backend routes subsequently passed77/0/2 with scoped
+that gate. Configured backend routes subsequently passed 77/0/2 with scoped
 Clippy/format0. The canonical P3 UI packet is promoted: **104 source files /159 source-derived
-selections**, not159 executed passes. The continuation passed **31/0** (MainUI28,
+selections**, not 159 executed passes. The continuation passed **31/0** (MainUI28,
 Viewer footer1 and keyboard2); Root independently rehashed/read all seven exported
-raw logs. With the initial7/1, the selected39 is **38 passed /1 Options-init-focus
+raw logs. With the initial 7/1, the selected 39 is **38 passed /1 Options-init-focus
 failure**. The former footer failure and both keyboard tests pass on this snapshot.
 The older MainUI/CompareUI55/0 retains its own source and overlaps these scopes.
-P3 MainUI units initially recorded20/1; after the fixture precondition correction,
-the exact draft selector passed once. The other20 were not rerun, so there is no
-fresh21-pass claim. Options focus still fails: the trace/screenshot show OK focused
+P3 MainUI units initially recorded 20/1; after the fixture precondition correction,
+the exact draft selector passed once. The other 20 were not rerun, so there is no
+fresh 21-pass claim. Options focus still fails: the trace/screenshot show OK focused
 while the expected pattern field is visible. The diagnostic compile qualified with
-zero warnings/errors,1890 source guards and323 feature sets; app/bindings unchanged.
+zero warnings/errors,1890 source guards and 323 feature sets; app/bindings unchanged.
 The earlier Viewer46 timeout and subsequent45/1 retain their dated source.
 On the canonical `fc4fcdf7…` shared-helper checkpoint, the exact former failure
-passed first and the other45 then passed: **46 actual passes /0 failures**.
-Both raw logs retain their separate1+45 counts; all nine document cases and
+passed first and the other 45 then passed: **46 actual passes /0 failures**.
+Both raw logs retain their separate 1+45 counts; all nine document cases and
 19 image-presentation cases passed, including the genuine immediate-open errors.
-These overlap earlier scopes and are not additional unique passes or all159.
+These overlap earlier scopes and are not additional unique passes or all 159.
 Options focus, native/full-app and production migration acceptance remain open.
 
 The latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**:
-completed real Find returned0, Copy failed and Session stayed live. Its blank902×602
+completed real Find returned 0, Copy failed and Session stayed live. Its blank902×602
 diagnostic frame is not validated fresh content/resize proof (resize_ok=false,
 fresh_contrasted_frame=false). Source refusal remains required; no provider/Find/
 loading root cause is established. Host47 +Viewer44 =91/0 retain their frozen source;
 the later four assertion-style lint fixes passed strict Clippy0/format13files0 and
-two overlapping resource tests, not93 unique tests or a full91 rerun.
+two overlapping resource tests, not 93 unique tests or a full91 rerun.
 
 Root accepted the generic provider small-body navigation contract for private
-implementation: captured main-frame GET/no-post targets of0..1MiB are completely
+implementation: captured main-frame GET/no-post targets of 0..1MiB are completely
 admitted through genuine Resolve/ResourceRead/Data before replacement navigation;
 larger targets retain streaming through the same resolved capability. Small-body
 failure cannot fall back to streaming/old bytes. Preserve one body credit through
@@ -251,7 +251,7 @@ new V3 route/adapter integration. Five native cases await a legitimate complete
 new C product; no new executable or deployment is claimed.
 
 The selected MainUI/CompareUI55/0 retains its separate source; Engine was guarded
-only. Canonical old0.1/new0.2 packaging9/0 and fresh-cache sparse-consumer resolution
+only. Canonical old 0.1/new0.2 packaging9/0 and fresh-cache sparse-consumer resolution
 remain dependency-resolution evidence, not app/native qualification.
 
 
@@ -282,8 +282,8 @@ implementation in progress, without Core DTO/public plugin SDK changes or passin
 integration evidence.
 
 Private Slint V2 generation passed all three build-script steps with zero
-errors/warnings and194 input guards unchanged. Main's ordinary and tooltip passes
-finished in57.438s and generated63,596,709 bytes of Rust; Viewer/Compare each took
-about1.3–1.4s. These are code-generation observations, not a performance benchmark.
+errors/warnings and 194 input guards unchanged. Main's ordinary and tooltip passes
+finished in 57.438s and generated63,596,709 bytes of Rust; Viewer/Compare each took
+about 1.3–1.4s. These are code-generation observations, not a performance benchmark.
 Generated Rust is uncompiled; there is no input, paint, palette-acknowledgement or
 full application result.
