@@ -202,8 +202,9 @@ impl Worker {
         self.raster.reset(self.origin);
         // No-match searches, font changes and direct scrollbar movement keep the
         // existing accepted selection. A rejected same-context selection never
-        // takes this path and cannot silently restore old Copy contents.
-        if self.retained_active() && self.selection.is_some() {
+        // takes this path and cannot silently restore old Copy contents. Frames
+        // without retained raster (a short fragment) copy this capture as well.
+        if self.raster.enabled && self.selection.is_some() {
             self.capture_raster_selection();
         }
     }
@@ -217,16 +218,15 @@ impl Worker {
         if self.raster_rebase_blocks(surface, &input) {
             return;
         }
-        if !self.retained_active() {
-            return;
-        }
-        if surface.0 != self.raster.surface {
-            // Copy has no coordinates: a replaced surface that already showed the
-            // current selection still copies it. Every other input needs this surface.
-            if matches!(input, ViewerRasterInput::Copy)
-                && self.frames.accepts_surface_copy(surface.0)
-            {
-                self.copy_raster_selection(output);
+        if !self.retained_active() || surface.0 != self.raster.surface {
+            // Copy has no coordinates: a surface that already showed the current
+            // selection still copies it after a later context replaced that surface,
+            // or the page left the retained path before the UI saw a frame without
+            // raster. Every other input needs the current retained surface.
+            let copy = matches!(input, ViewerRasterInput::Copy)
+                && self.frames.accepts_surface_copy(surface.0);
+            if copy && !self.copy_raster_selection(output) {
+                self.copy_page_selection(output);
             }
             return;
         }
@@ -378,6 +378,10 @@ impl Worker {
         if !self.retained_active() {
             if self.raster.enabled {
                 self.raster.reset(self.origin);
+                // Its frames carry no raster but still copy the shown selection.
+                if self.selection.is_some() {
+                    self.capture_raster_selection();
+                }
             }
             return;
         }

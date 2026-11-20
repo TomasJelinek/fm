@@ -1095,11 +1095,7 @@ impl Worker {
                 if self.copy_raster_selection(output) {
                     return;
                 }
-                if let (Some(page), Some((a, b))) = (&self.shaped, self.selection)
-                    && let Ok(text) = page.selected_text(a.min(b)..a.max(b))
-                {
-                    output.put(ViewerOutput::CopyText(text.to_owned()));
-                }
+                self.copy_page_selection(output);
             }
             _ => {}
         }
@@ -1841,6 +1837,15 @@ impl Worker {
         if selection != self.selection {
             self.selection = selection;
             self.frames.selection_changed();
+        }
+    }
+
+    /// Copy the shown page's selection, as frames without retained raster show it.
+    fn copy_page_selection(&self, output: &Mailbox) {
+        if let (Some(page), Some((a, b))) = (&self.shaped, self.selection)
+            && let Ok(text) = page.selected_text(a.min(b)..a.max(b))
+        {
+            output.put(ViewerOutput::CopyText(text.to_owned()));
         }
     }
 

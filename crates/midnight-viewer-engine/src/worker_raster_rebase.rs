@@ -288,6 +288,10 @@ impl Worker {
         false
     }
 
+    /// With retained raster enabled, Copy returns the captured selection, even from a
+    /// frame without raster: an automatic handoff keeps it although the new page may
+    /// not show it, and every context reset recaptures the shown one. An invalid
+    /// (rejected) selection copies nothing. Returns false when retained raster is off.
     pub(in crate::worker) fn copy_raster_selection(&self, output: &Mailbox) -> bool {
         if !self.raster.enabled {
             return false;

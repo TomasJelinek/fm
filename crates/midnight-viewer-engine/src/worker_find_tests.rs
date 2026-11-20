@@ -716,6 +716,119 @@ fn a_page_that_selects_the_same_source_keeps_earlier_find_frames_copyable() {
     assert!(!worker.frames.accepts_copy(found.revision));
 }
 
+/// Rows around one long row with a match. A fragment of that row alone is shorter
+/// than the window, which the retained path cannot refill: its frames carry no raster.
+fn long_row_file() -> (String, std::ops::Range<usize>) {
+    let rows = "row\n".repeat(40);
+    let long = format!("{} target {}\n", "x".repeat(300), "x".repeat(100));
+    let text = format!("{rows}{long}{rows}");
+    (text, rows.len()..rows.len() + long.len())
+}
+
+fn fragment(text: &str, range: std::ops::Range<usize>) -> Page {
+    let mut fragment = page(&text[range.clone()], range.start as u64);
+    fragment.after = range.end < text.len();
+    fragment
+}
+
+#[test]
+fn fallback_frames_with_retained_raster_enabled_copy_the_shown_find_result() {
+    let (mut worker, output) = worker();
+    worker.input(ViewerInput::RetainedRaster(true), &output);
+    let (text, long_row) = long_row_file();
+    worker.length = text.len() as u64;
+    assert!(worker.set_page(fragment(&text, long_row), &output));
+    find_target(&mut worker, &output, &text);
+    let found = painted(&mut worker, &output);
+    assert!(worker.raster.enabled && !worker.retained_active());
+    assert!(found.raster.is_none(), "a frame without retained raster");
+    assert_eq!(
+        copied(
+            &mut worker,
+            &output,
+            ViewerInput::Copy {
+                frame: found.revision
+            }
+        )
+        .as_deref(),
+        Some("target")
+    );
+}
+
+#[test]
+fn a_stale_retained_surface_copies_the_shown_selection_after_the_page_falls_back() {
+    let (mut worker, output) = worker();
+    worker.input(ViewerInput::RetainedRaster(true), &output);
+    let (text, long_row) = long_row_file();
+    worker.length = text.len() as u64;
+    assert!(worker.set_page(fragment(&text, 0..long_row.end + 80), &output));
+    find_target(&mut worker, &output, &text);
+    let surface = painted(&mut worker, &output)
+        .raster
+        .expect("a retained frame")
+        .surface;
+    // A seek shows the long row alone; the UI still presents the retained surface.
+    assert!(worker.set_page(fragment(&text, long_row), &output));
+    assert!(!worker.retained_active());
+    let copy = || ViewerInput::Raster {
+        surface,
+        input: ViewerRasterInput::Copy,
+    };
+    assert_eq!(
+        copied(&mut worker, &output, copy()).as_deref(),
+        Some("target")
+    );
+    // Ctrl+A on the frame without raster: that surface showed another selection.
+    let shown = painted(&mut worker, &output);
+    assert!(shown.raster.is_none());
+    worker.input(
+        ViewerInput::SelectPage {
+            frame: shown.revision,
+        },
+        &output,
+    );
+    assert_eq!(copied(&mut worker, &output, copy()), None);
+}
+
+#[test]
+fn a_rejected_retained_selection_copies_nothing_even_when_a_frame_names_it() {
+    let (mut worker, output) = worker();
+    worker.input(ViewerInput::RetainedRaster(true), &output);
+    let text = match_page(&mut worker, &output);
+    find_target(&mut worker, &output, &text);
+    let info = painted(&mut worker, &output)
+        .raster
+        .expect("a retained frame");
+    // A selection the worker cannot place invalidates the retained Copy. The match
+    // stays shown, but Copy must not fall back to it.
+    worker.input(
+        ViewerInput::Raster {
+            surface: info.surface,
+            input: ViewerRasterInput::Select {
+                pixel_id: info.pixel_id,
+                origin: info.origin,
+                x: f32::NAN,
+                y: 0.0,
+                extend: false,
+            },
+        },
+        &output,
+    );
+    assert!(worker.selection.is_some() && worker.retained_active());
+    let shown = painted(&mut worker, &output);
+    assert!(shown.raster.is_some());
+    assert_eq!(
+        copied(
+            &mut worker,
+            &output,
+            ViewerInput::Copy {
+                frame: shown.revision
+            }
+        ),
+        None
+    );
+}
+
 #[test]
 fn synthetic_or_ambiguous_word_anchors_fall_back_without_claiming_a_local_match() {
     let request = Request {
