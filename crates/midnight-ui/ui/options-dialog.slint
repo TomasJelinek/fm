@@ -13,7 +13,7 @@ import { ArchiveOptions, ArchiveOptionsView } from "archive-options.slint";
 import { ArgumentEditing } from "argument-editor.slint";
 import { ColorOptions, ColorOptionsView } from "color-options.slint";
 import { UserCommandOptions, UserCommandSettingsView } from "user-command-options.slint";
-import { SettingsFileFeedback, SettingsFileView } from "settings-file-options.slint";
+import { SettingsFileButton, SettingsFileFeedback, SettingsFileView } from "settings-file-options.slint";
 import { DialogHeader, PopupFocus } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -142,6 +142,32 @@ export component OptionsBody inherits Rectangle {
     // Reset, Export, Import and OK need idle, loaded settings and no open color chooser.
     private property <bool> footer-ready: root.preferences-ready && !root.options-busy
         && !root.page-busy && ColorOptionsView.picker-field < 0;
+    // Export and Import sit beside Reset where they fit with their labels, or with
+    // icons only, and otherwise at the end of the General page. OK must stay in view:
+    // Slint drops the focus of a control clipped out of view, and the next key, Escape
+    // included, then reaches no handler. A button is padding, icon, gap and caption.
+    private property <length> footer-base: reset-button.min-width + save-button.min-width + 4 * 8px;
+    private property <bool> settings-file-labels: !root.narrow
+        && footer.action-room >= root.footer-base + 2 * (Theme.icon-size + 28px) + footer.measured-width;
+    private property <bool> settings-file-fits: root.settings-file-labels
+        || footer.action-room >= root.footer-base + 2 * (Theme.icon-size + 24px);
+    // Follows settings-file-fits. A focused Export or Import hands the focus to OK
+    // before it moves, instead of losing it with the button.
+    private property <bool> settings-file-in-footer: true;
+    private property <bool> export-focus;
+    private property <bool> import-focus;
+    changed settings-file-fits => {
+        if root.export-focus || root.import-focus { root.focus-confirm(); }
+        root.export-focus = false; root.import-focus = false;
+        root.settings-file-in-footer = root.settings-file-fits;
+    }
+    function focus-confirm() {
+        if save-button.enabled { save-button.focus(); } else { footer.focus-dismiss(); }
+    }
+    function choose-settings-file(import-action: bool) {
+        UserCommandSettingsView.drag-cancel();
+        if import-action { SettingsFileView.import-file(); } else { SettingsFileView.export-file(); }
+    }
     private property <string> save-status: root.page-error != "" ? "Check the highlighted settings."
         : root.page-busy ? "Checking settings…"
         : root.options-busy ? "Saving settings…"
@@ -181,6 +207,7 @@ export component OptionsBody inherits Rectangle {
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
     init => {
+        root.settings-file-in-footer = root.settings-file-fits;
         if !root.preferences-ready { footer.focus-dismiss(); }
         // Conditional page init can precede popup activation, which clears focus.
         // Route the diagnostic again from this post-activation parent init.
@@ -389,6 +416,33 @@ export component OptionsBody inherits Rectangle {
                         clicked => { root.command-history-clear(); }
                     }
                 }
+                // Export and Import when the footer has no room for them.
+                if !root.settings-file-in-footer : VerticalLayout {
+                    spacing: 16px;
+                    Rectangle { height: 1px; background: Theme.frame; }
+                    Text { text: "Settings file"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
+                    HorizontalLayout {
+                        height: Theme.control-height; alignment: start;
+                        SettingsFileButton {
+                            short-label: root.narrow;
+                            native-icon: root.action-icons.save-again;
+                            enabled: root.footer-ready && !SettingsFileView.busy;
+                            clicked => { root.choose-settings-file(false); }
+                            changed has-focus => { root.export-focus = self.has-focus; }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: Theme.control-height; alignment: start;
+                        SettingsFileButton {
+                            import-action: true;
+                            short-label: root.narrow;
+                            native-icon: root.action-icons.open-path;
+                            enabled: root.footer-ready && !SettingsFileView.busy;
+                            clicked => { root.choose-settings-file(true); }
+                            changed has-focus => { root.import-focus = self.has-focus; }
+                        }
+                    }
+                }
             }
             if root.topic-index == 1 : VerticalLayout {
                 spacing: 10px; alignment: start;
@@ -472,7 +526,8 @@ export component OptionsBody inherits Rectangle {
             dismiss-fallback-icon: FallbackIcons.close;
             dismiss-hint: "Discard all changes, restore previewed appearance and close Options.";
             dismiss => { root.close-options(); }
-            HintedActionButton {
+            measure-text: "Export configuration…" + "Import configuration…";
+            reset-button := HintedActionButton {
                 accessible-label: "Reset to defaults";
                 text: root.narrow ? "" : "Reset to defaults";
                 native-icon: root.action-icons.refresh; fallback-icon: FallbackIcons.refresh;
@@ -481,23 +536,24 @@ export component OptionsBody inherits Rectangle {
                 hint: "Reset all Options settings. Keep tabs, history, hot paths and custom commands. OK saves; Cancel restores your previous settings.";
                 clicked => { UserCommandSettingsView.drag-cancel(); root.reset(); }
             }
-            HintedActionButton {
-                accessible-label: "Export configuration…";
-                text: root.narrow ? "" : "Export configuration…";
-                native-icon: root.action-icons.save-again; fallback-icon: FallbackIcons.save-again;
-                min-height: Theme.control-height;
-                enabled: root.footer-ready && !SettingsFileView.busy;
-                hint: "Save all settings to a JSON settings file: what OK would save now, including tabs, hot paths, window placement and command history. Unfinished page edits are not included.";
-                clicked => { UserCommandSettingsView.drag-cancel(); SettingsFileView.export-file(); }
-            }
-            HintedActionButton {
-                accessible-label: "Import configuration…";
-                text: root.narrow ? "" : "Import configuration…";
-                native-icon: root.action-icons.open-path; fallback-icon: FallbackIcons.open-path;
-                min-height: Theme.control-height;
-                enabled: root.footer-ready && !SettingsFileView.busy;
-                hint: "Replace all settings with a checked settings file. Options previews it; OK saves it and applies its tabs, hot paths and window placement; Cancel keeps your current settings.";
-                clicked => { UserCommandSettingsView.drag-cancel(); SettingsFileView.import-file(); }
+            // One conditional, with the footer's spacing, for both (settings-file-fits).
+            if root.settings-file-in-footer : HorizontalLayout {
+                spacing: 8px;
+                SettingsFileButton {
+                    icon-only: !root.settings-file-labels;
+                    native-icon: root.action-icons.save-again;
+                    enabled: root.footer-ready && !SettingsFileView.busy;
+                    clicked => { root.choose-settings-file(false); }
+                    changed has-focus => { root.export-focus = self.has-focus; }
+                }
+                SettingsFileButton {
+                    import-action: true;
+                    icon-only: !root.settings-file-labels;
+                    native-icon: root.action-icons.open-path;
+                    enabled: root.footer-ready && !SettingsFileView.busy;
+                    clicked => { root.choose-settings-file(true); }
+                    changed has-focus => { root.import-focus = self.has-focus; }
+                }
             }
             Rectangle { horizontal-stretch: 1; min-width: 0px; }
             save-button := HintedActionButton {

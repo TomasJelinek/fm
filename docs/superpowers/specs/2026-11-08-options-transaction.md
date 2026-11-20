@@ -41,7 +41,12 @@ minimum window size, where an icon and tooltip replace the longer label.
 
 Export configuration and Import configuration sit in the same footer and belong to
 the session (added 20 November 2026; user guide:
-[Export and import configuration](../../SETTINGS_FILES.md)). Export writes what OK
+[Export and import configuration](../../SETTINGS_FILES.md)). They are optional
+footer actions: with labels where everything fits, with icons only where only
+that fits, and otherwise at the end of the General page. OK must never scroll out
+of the footer, because Slint 1.18 drops the focus of a control clipped out of view
+on the next key, so Escape or Return would reach no handler; a focused Export or
+Import hands the focus to OK before it moves. Export writes what OK
 would save at that moment, in the settings-file serialization, through a backend
 worker; it is not a settings edit and leaves the session open. Import is one
 staged edit of the whole settings snapshot: the backend reads and validates the

@@ -1,9 +1,11 @@
 import { Theme } from "theme.slint";
 import { Tip } from "controls.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
+import { FallbackIcons } from "action-icons.slint";
 
-// Export/Import configuration in the Options footer. The presenter owns this
-// state; choosing files, reading, writing and validation happen on backend workers.
+// Export/Import configuration in Options: in the footer where they fit, otherwise at
+// the end of the General page. The presenter owns this state; choosing files,
+// reading, writing and validation happen on backend workers.
 export global SettingsFileView {
     // A chooser or settings-file transfer is outstanding; no second one may start.
     in property <bool> busy;
@@ -18,6 +20,23 @@ export global SettingsFileView {
     callback import-file();
     callback replace();
     callback keep();
+}
+
+// Export or Import configuration, with the same accessible name in the footer and
+// on the General page. The host sets its icon artwork, enablement and action.
+export component SettingsFileButton inherits HintedActionButton {
+    // Import configuration; otherwise Export configuration.
+    in property <bool> import-action;
+    in property <bool> icon-only;
+    in property <bool> short-label;
+    private property <string> full-label: root.import-action ? "Import configuration…" : "Export configuration…";
+    accessible-label: root.full-label;
+    text: root.icon-only ? "" : !root.short-label ? root.full-label : root.import-action ? "Import…" : "Export…";
+    fallback-icon: root.import-action ? FallbackIcons.open-path : FallbackIcons.save-again;
+    min-height: Theme.control-height;
+    hint: root.import-action
+        ? "Replace all settings with a checked settings file. Options previews it; OK saves it and applies its tabs, hot paths and window placement; Cancel keeps your current settings."
+        : "Save all settings to a JSON settings file: what OK would save now, including tabs, hot paths, window placement and command history. Unfinished page edits are not included.";
 }
 
 // One line above the Options footer; Replace and Keep answer an existing destination.

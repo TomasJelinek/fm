@@ -2,10 +2,15 @@
 //! answers are simulated, the Options transaction and its Cancel/OK are real.
 use crate::support::ui;
 
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::{
+    accessibility::{AccessibilityAction, AccessibleStringProperty},
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    items::AccessibleRole,
+    window::WindowInner,
+};
 use midnight_core::*;
 use midnight_ui::{Presenter, SettingsFileView, Theme, install, refresh};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, platform::Key};
 use std::{
     cell::RefCell,
     io,
@@ -75,6 +80,10 @@ fn imported() -> UserPreferences {
 
 impl Harness {
     fn new() -> Self {
+        Self::with(current())
+    }
+
+    fn with(preferences: UserPreferences) -> Self {
         let ui = ui::TestUi::new();
         // Absolute like real panes: OK persists the pane the import leaves unchanged.
         let presenter = Rc::new(RefCell::new(Presenter::new(
@@ -95,7 +104,7 @@ impl Harness {
             .borrow_mut()
             .apply(Event::PreferencesLoaded(Ok(Box::new(
                 AcceptedPreferences {
-                    preferences: current(),
+                    preferences,
                     comparators: FileComparatorSnapshot::default(),
                 },
             ))));
@@ -344,4 +353,80 @@ fn a_refused_import_shows_its_error_and_changes_nothing() {
     assert_eq!(h.presenter.borrow().bookmarks(), current().bookmarks);
     h.click("Cancel");
     assert!(Harness::saves(&h.take()).is_empty());
+}
+
+/// Window bounds of an Options control: left, top, right, bottom.
+fn bounds(item: &ItemRc) -> (f32, f32, f32, f32) {
+    let geometry = item.geometry();
+    let origin = item.map_to_native_window(geometry.origin);
+    (
+        origin.x,
+        origin.y,
+        origin.x + geometry.width(),
+        origin.y + geometry.height(),
+    )
+}
+
+/// The label of the focused control, or of its nearest labelled parent.
+fn focused(h: &Harness) -> Option<String> {
+    let inner = WindowInner::from_pub(h.ui.window.window());
+    let mut current = inner.focus_item.borrow().upgrade();
+    while let Some(item) = current {
+        if let Some(label) = item.accessible_string_property(AccessibleStringProperty::Label)
+            && !label.is_empty()
+        {
+            return Some(label.to_string());
+        }
+        current = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    None
+}
+
+#[test]
+fn export_and_import_leave_a_footer_without_room_and_ok_stays_in_view() {
+    let mut h = Harness::with(UserPreferences {
+        desktop_font_size: 32,
+        touch_font_size: 32,
+        ..current()
+    });
+    let button = |h: &Harness, label: &str| {
+        bounds(&ui::popup_item(&h.ui.window, label, AccessibleRole::Button))
+    };
+    // A large window has room for their icons beside Reset, OK and Cancel.
+    let ok = button(&h, "OK");
+    assert_eq!(button(&h, "Export configuration…").1, ok.1, "in the footer");
+    ui::key(&h.ui.window, Key::Backtab);
+    h.ui.draw();
+    assert_eq!(focused(&h).as_deref(), Some("Import configuration…"));
+    // The smallest window has not: they move to the General page, and the focus
+    // they had moves to OK, which stays in view beside Cancel.
+    h.ui.resize(320, 200);
+    h.ui.draw();
+    let (ok, cancel) = (button(&h, "OK"), button(&h, "Cancel"));
+    assert!(
+        ok.0 >= 0.0 && ok.2 <= cancel.0 && ok.3 <= 200.0,
+        "OK {ok:?} beside Cancel {cancel:?}"
+    );
+    for label in ["Export configuration…", "Import configuration…"] {
+        assert_ne!(button(&h, label).1, ok.1, "{label} left the footer");
+    }
+    assert_eq!(focused(&h).as_deref(), Some("OK"));
+    ui::key(&h.ui.window, Key::Escape);
+    h.ui.draw();
+    assert!(!h.ui.window.get_options_open(), "Escape closes Options");
+    // Reopened at this size, the General page's Export still opens the chooser.
+    h.ui.window.invoke_show_options();
+    h.ui.draw();
+    h.take();
+    ui::popup_item(
+        &h.ui.window,
+        "Export configuration…",
+        AccessibleRole::Button,
+    )
+    .accessible_action(&AccessibilityAction::Default);
+    h.ui.draw();
+    assert!(h.take().iter().any(|command| matches!(
+        command,
+        Command::PickPath { input, .. } if input.kind == PathPickerKind::SettingsSave
+    )));
 }

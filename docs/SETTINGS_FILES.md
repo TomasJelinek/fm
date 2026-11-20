@@ -3,8 +3,11 @@
 Options has **Export configuration…** and **Import configuration…** in its footer,
 next to **Reset to defaults**. Use them to keep a backup of your settings or to
 move them to another computer. Both use the same file format as Midnight
-Explorer's own settings file. In a narrow Options dialog the buttons show only
-their icons; their tooltips keep the full names.
+Explorer's own settings file. In a narrow Options dialog, or with a large font,
+the buttons show only their icons; their tooltips keep the full names. Where the
+footer has no room even for their icons, in a very small window or with a very
+large font, they move to the end of the **General** page, under **Settings
+file**, so that **OK** and **Cancel** always stay in view.
 
 File choice, reading, writing and validation run in backend services. The Options
 dialog only shows the result.
