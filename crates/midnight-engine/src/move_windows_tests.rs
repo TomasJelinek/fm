@@ -148,7 +148,14 @@ fn move_skip_retains_that_file_and_cancel_keeps_unfinished_sources() {
         assert_eq!(done.source_files_removed, u64::from(skip));
         assert_eq!(paths[0].exists(), !skip);
         assert!(paths[1].exists());
-        assert_ne!(done.state, CopyOperationState::Completed);
+        if skip {
+            // The existing name the user chose to skip is not an error
+            // (`terminal_progress`): the job completes and only reports the skip.
+            assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+            assert_eq!((done.skipped, done.failed), (1, 0), "{done:?}");
+        } else {
+            assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+        }
     }
 }
 

@@ -83,6 +83,8 @@ fn status(h: &Harness, id: u64) -> Option<CopyProgress> {
 
 /// Wait until job `id`'s live status satisfies `ready`, draining events meanwhile so no
 /// job blocks on a full event queue. An existing folder is merged into, as a user may.
+/// A job that has already ended is judged by its terminal progress at once, instead of
+/// waiting out `limit` for a status that can no longer change.
 async fn until(
     h: &mut Harness,
     id: u64,
@@ -94,6 +96,13 @@ async fn until(
         drain(h).await;
         if let Some(progress) = status(h, id).filter(|p| ready(p)) {
             return progress;
+        }
+        if let Some(done) = h.terminals.get(&OperationId(id)) {
+            assert!(
+                ready(done),
+                "job {id} ended before reaching the expected status: {done:?}"
+            );
+            return (**done).clone();
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -322,7 +331,9 @@ async fn reading_the_busy_copys_output_waits_for_it_with_its_reason() {
     h.close().await;
 }
 
-/// A Copy as the Linux dialog submits it by default: following links.
+/// A Copy as the dialog submits it by default, following links: Linux follows every
+/// link (`FollowLinks`); Windows, which does not recreate links yet and so refuses that
+/// policy, follows directory links and junctions (`FollowDirectoryContents`).
 fn followed(id: u64, sources: &[PathBuf], destination: &Path) -> CopyOptionsRequest {
     CopyOptionsRequest {
         input: CopyOptionsInput::Native(MetadataTransferRequest {
@@ -330,7 +341,11 @@ fn followed(id: u64, sources: &[PathBuf], destination: &Path) -> CopyOptionsRequ
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
         }),
-        links: CopyLinkPolicy::FollowLinks,
+        links: if cfg!(windows) {
+            CopyLinkPolicy::FollowDirectoryContents
+        } else {
+            CopyLinkPolicy::FollowLinks
+        },
     }
 }
 
