@@ -676,6 +676,9 @@ try {
         # As in CI: listing archives of millions of members is a manual measurement.
         Variables = @{ Selection = @('midnight-filesystem-host', 'test:worker', '--ignored', '--test-threads=1',
                 '--skip', 'real_sandboxed_worker_lists_archives_of_millions_of_members') } }
+    Add-Step @{ Id = 'archive-nested-ignored'; Job = 'check'; Title = 'Restricted archive workers inside archives'
+        Needs = @('test-install', 'archive'); Body = $ignoredBody
+        Variables = @{ Selection = @('midnight-filesystem-host', 'test:nested_worker', '--ignored', '--test-threads=1') } }
     Add-Step @{ Id = 'archive-streaming-ignored'; Job = 'check'; Title = 'Installed archive worker streaming and discovery'
         Needs = @('test-install', 'archive'); Body = {
         $env:ARCHIVE_CAPTURE_INSTALLATION = $env:HOST_TEST_INSTALL_ROOT

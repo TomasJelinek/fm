@@ -570,6 +570,8 @@ add_step pdf-process-ignored check 'Restricted PDF process qualification' \
 # As in CI: listing archives of millions of members is a manual measurement.
 add_step archive-worker-ignored check 'Restricted archive worker listing' 'needs=test-install archive' \
     body=ignored_step 'variables=selection_words=midnight-filesystem-host test:worker --ignored --test-threads=1 --skip real_sandboxed_worker_lists_archives_of_millions_of_members'
+add_step archive-nested-ignored check 'Restricted archive workers inside archives' 'needs=test-install archive' \
+    body=ignored_step 'variables=selection_words=midnight-filesystem-host test:nested_worker --ignored --test-threads=1'
 add_step archive-streaming-ignored check 'Installed archive worker streaming and discovery' 'needs=test-install archive'
 add_step x11-dnd check 'Native X11 drag and drop (isolated display)' prerequisite=prerequisite_xvfb
 add_step x11-clipboard check 'Native X11 clipboard (isolated display)' prerequisite=prerequisite_xvfb

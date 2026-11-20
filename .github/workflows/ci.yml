@@ -598,6 +598,8 @@ jobs:
       # the archive plugin's measure_index_memory generates (TEST_EXECUTION.md).
       - name: Restricted archive worker listing, source validation and cancellation
         run: python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:worker --ignored --test-threads=1 --skip real_sandboxed_worker_lists_archives_of_millions_of_members
+      - name: Restricted archive workers open archives inside archives
+        run: python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:nested_worker --ignored --test-threads=1
       - name: Installed archive worker streaming, all formats, cooperative cancellation and package discovery
         shell: pwsh
         run: |

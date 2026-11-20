@@ -374,7 +374,8 @@ your working desktop display.
 
 The ignored real-worker tests of `midnight-filesystem-host` launch the independently
 built archive worker from a [private installation root](#private-plugin-installation-root).
-`test:worker` installs `ARCHIVE_WORKER` below `ARCHIVE_TEST_INSTALL_ROOT`;
+`test:worker` and `test:nested_worker` (archives inside archives) install
+`ARCHIVE_WORKER` below `ARCHIVE_TEST_INSTALL_ROOT`;
 `test:streaming_worker` and the library's `captured_source_tests::` use the package
 installed at `ARCHIVE_CAPTURE_INSTALLATION/filesystems/archive`; `test:discovery_kinds`
 creates its packages below `HOST_TEST_INSTALL_ROOT`. CI's `check` job runs all of them
@@ -404,7 +405,8 @@ them locally:
    `ARCHIVE_CAPTURE_INSTALLATION` to `<root>`, `ARCHIVE_WORKER` to the packaged
    executable, and `MIDNIGHT_ARCHIVE_FIXTURES` and `MIDNIGHT_ARCHIVE_TEST_ZIP` to the
    fixtures. Then run `cargo test -p midnight-filesystem-host` with `--test worker`,
-   `--test streaming_worker`, `--test discovery_kinds` and `--lib captured_source_tests::`,
+   `--test nested_worker`, `--test streaming_worker`, `--test discovery_kinds` and
+   `--lib captured_source_tests::`,
    each followed by `-- --ignored --test-threads=1`. Without the generated archives, add
    `--skip real_sandboxed_worker_lists_archives_of_millions_of_members` to `--test worker`.
 

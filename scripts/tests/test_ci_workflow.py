@@ -118,6 +118,8 @@ class WorkflowTests(unittest.TestCase):
         for selection in ("test:streaming_worker --ignored", "lib captured_source_tests:: --ignored",
                           "test:discovery_kinds --ignored"):
             self.assertIn(f"run midnight-filesystem-host {selection}", text)
+        nested = step(check, "Restricted archive workers open archives inside archives")
+        self.assertIn("run midnight-filesystem-host test:nested_worker --ignored --test-threads=1", nested)
 
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
     def test_workflow_and_local_actions_parse_with_a_consistent_structure(self):

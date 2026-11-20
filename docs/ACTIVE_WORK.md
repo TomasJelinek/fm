@@ -74,21 +74,32 @@ failed in the two CI-only tests that `f26f7c72` fixes. Run 44814555541 at
 `f26f7c72` passed every step on Windows and Linux before the archive worker step
 and failed there only in the manual test that `e862517b` skips. CI run 44819849685
 at `632c12ab`, which contains every item above, passed all 26 jobs on Windows and
-Linux, with every check step of each platform run.
+Linux, with every check step of each platform run. Its check jobs passed 7,743 tests
+on Windows and 7,799 on Linux and failed none; among them are the non-ignored
+workspace tests that the batch's table names without a recorded result. The
+acceptance scenarios it names (`viewers_archives`, `tools_compare_dirs`) need the
+opt-in `acceptance` feature and are not part of CI.
+
+The batch's nested-archive worker test
+(`real_workers_open_archives_inside_archives_and_give_every_level_up`) ran in no CI
+step, although CI has the archive worker it needs. CI's check job and both
+validation scripts now run it in a step of its own (`test:nested_worker`). Against
+archive workers built from the current tree it passed 3 of 3 runs on Windows and on
+Linux (WSL); against a worker built on 19 November, before the plugin's "This file is
+not a valid ZIP archive." message, it failed.
 
 Not established:
 
 - the Linux settings-file picker filter (`*.json`), which is compiled but exercised
-  by no test;
-- the batch's nested-archive worker test
-  (`real_workers_open_archives_inside_archives_and_give_every_level_up`), which no
-  CI step runs although CI has the archive worker it needs.
+  by no test.
 
 ### Integration batch — 20 November 2026
 
 This batch enters `main` as one commit. The table names the source of each change
 and the dated record that holds its test results; where no record lists results, the
-row says so. The opt-in acceptance suite (`./build.sh --acceptance`,
+row says so. Those notes predate CI run 44819849685, which passed the non-ignored
+workspace tests they name on Windows and Linux
+([Integration follow-up](#integration-follow-up--20-november-2026)). The opt-in acceptance suite (`./build.sh --acceptance`,
 [ACCEPTANCE.md](developer/ACCEPTANCE.md)) found most of these gaps. Its area runs
 are recorded for [files](verification/2026-11-20-acceptance-acc-files.md),
 [tools](verification/2026-11-20-acceptance-acc-tools.md),
