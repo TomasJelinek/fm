@@ -684,7 +684,11 @@ fn result_columns_resize_by_dragging_their_header_separators() {
     ])));
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
-    draw(&native, 1000, 620, "checksum-columns");
+    // Wide enough that the last grip stays in view after the other three drags: the
+    // header is clipped to the visible width, and the digest column follows the
+    // platform's monospace font, which is wider on Linux than on Windows.
+    const WIDTH: u32 = 1400;
+    draw(&native, WIDTH, 620, "checksum-columns");
     let edges = |item: &i_slint_core::item_tree::ItemRc| {
         let rect = item.geometry();
         let origin = item.map_to_native_window(rect.origin);
@@ -713,7 +717,7 @@ fn result_columns_resize_by_dragging_their_header_separators() {
             slint::LogicalPosition::new(right + 5.0, status_y()),
             40.0,
         );
-        draw(&native, 1000, 620, "checksum-columns-dragged");
+        draw(&native, WIDTH, 620, "checksum-columns-dragged");
         assert!(
             (header(title).geometry().width() - before - 40.0).abs() <= 1.0,
             "{title} widens with the drag"
@@ -732,7 +736,7 @@ fn result_columns_resize_by_dragging_their_header_separators() {
         true, true, false, false, false,
     ])));
     window.set_output_algorithm(1);
-    draw(&native, 1000, 620, "checksum-columns-sha512");
+    draw(&native, WIDTH, 620, "checksum-columns-sha512");
     assert_eq!(window.get_column_widths().hash, 0.0);
     assert_eq!(
         window.get_column_widths().name,
