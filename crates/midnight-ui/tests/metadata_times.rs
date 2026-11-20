@@ -24,6 +24,8 @@ struct Editor {
     commands: Rc<RefCell<Vec<Command>>>,
     id: OperationId,
     root: PathBuf,
+    /// The worker-captured system date and time edit format, if any.
+    format: Option<&'static str>,
 }
 
 fn calendar(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> LocalCalendarTime {
@@ -40,6 +42,10 @@ fn calendar(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> 
 
 impl Editor {
     fn open() -> Self {
+        Self::open_with(None)
+    }
+
+    fn open_with(format: Option<&'static str>) -> Self {
         let test = ui::TestUi::new();
         let root = std::env::temp_dir();
         let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
@@ -89,6 +95,7 @@ impl Editor {
             commands,
             id: OperationId(0),
             root,
+            format,
         };
         editor.test.draw();
         editor.test.window.invoke_row_click(0, 1, false, false);
@@ -116,7 +123,10 @@ impl Editor {
             revision,
             patch,
             localized_times: Default::default(),
-            time_input_format: None,
+            time_input_format: self.format.map(|pattern| DateTimeInputFormat {
+                pattern: pattern.into(),
+                am_pm: [String::new(), String::new()],
+            }),
             time_defaults: MetadataTimeDefaults {
                 now: Some(calendar(2026, 11, 19, 10, 0, 0)),
                 modified: Some(calendar(2026, 1, 2, 3, 4, 5)),
@@ -172,6 +182,13 @@ impl Editor {
     fn value(&self, label: &str) -> String {
         ui::popup_item(&self.test.window, label, AccessibleRole::TextInput)
             .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn description(&self, label: &str) -> String {
+        ui::popup_item(&self.test.window, label, AccessibleRole::TextInput)
+            .accessible_string_property(AccessibleStringProperty::Description)
             .unwrap_or_default()
             .to_string()
     }
@@ -275,4 +292,28 @@ fn calendar_and_time_picker_start_from_the_files_time_and_keep_the_dialog_open()
     let patch = editor.review_and_apply();
     // 2026-01-03 03:05:05 +01:00
     assert_eq!(patch.modified, at(1_767_405_905));
+}
+
+#[test]
+fn a_date_typed_in_the_system_order_keeps_that_order_through_arrows_and_the_calendar() {
+    let mut editor = Editor::open_with(Some("%d.%m.%Y %H:%M:%S"));
+    editor.click("Times", AccessibleRole::Button);
+    let hint = editor.description("Modified date");
+    assert!(
+        hint.contains("2026-11-24") && hint.contains("24.11.2026"),
+        "{hint}"
+    );
+    editor.type_into("Modified date", "24.12.2025");
+    assert_eq!(editor.value("Modified time"), "03:04:05");
+    // The cursor is at the end of the text, which in this order is the year.
+    editor.key(Key::UpArrow);
+    assert_eq!(editor.value("Modified date"), "24.12.2026");
+    editor.click("Modified: choose date", AccessibleRole::Button);
+    assert!(editor.texts().iter().any(|text| text == "December 2026"));
+    editor.key(Key::RightArrow);
+    editor.key(Key::Return);
+    assert_eq!(editor.value("Modified date"), "25.12.2026");
+    let patch = editor.review_and_apply();
+    // 2026-12-25 03:04:05 +01:00
+    assert_eq!(patch.modified, at(1_798_164_245));
 }

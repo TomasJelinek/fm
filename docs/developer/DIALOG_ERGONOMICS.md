@@ -115,7 +115,11 @@ operations and copy actions (Copy details,
   UTC offset fields (`metadata-time-field.slint`): typing always works, Up/Down
   step the part under the cursor, and calendar/time picker popups are aids. Their
   starting values come from the preparation worker (`LocaleService::local_calendar`);
-  the UI never infers a timezone. A clean Apply closes without a result notice.
+  the UI never infers a timezone. Dates start as year-month-day, and the date field
+  also accepts the system's numeric date order: the date part of the worker-captured
+  `DateTimeInputFormat` (on Linux, glibc padding flags such as cs_CZ's `%-d` are
+  read). Arrow steps and calendar picks keep the form the date was typed in, and the
+  field's hint and errors show both forms with an example. A clean Apply closes without a result notice.
 
 ## Command-line insertion
 

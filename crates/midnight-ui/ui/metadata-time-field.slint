@@ -16,6 +16,10 @@ export global MetadataTimeCodec {
     in property <MetadataTimeValue> modified-default;
     in property <MetadataTimeValue> accessed-default;
     in property <MetadataTimeValue> now-default;
+    // The system's numeric date order, e.g. "%d.%m.%Y": dates may be typed in it too.
+    in property <string> date-format;
+    // How a date can be typed, with examples; ends with a period.
+    in property <string> date-forms: "year-month-day, e.g. 2026-11-24.";
     // Step the part under a byte cursor; an unparsable text becomes the fallback.
     pure callback step(string, int, int, int, string) -> MetadataTimeStep;
     pure callback step-part(string, int, int, int, string) -> MetadataTimeStep;
@@ -23,6 +27,8 @@ export global MetadataTimeCodec {
     pure callback month(string, string) -> MetadataMonthView;
     pure callback shift(string, string, int, int) -> string;
     pure callback compose(int, int, int) -> string;
+    // A date written in the form of another date text: system order or year-month-day.
+    pure callback restyle(string, string) -> string;
 }
 
 // A typed field; Up/Down change the part under the cursor. Typing always works.
@@ -161,7 +167,8 @@ component DateField inherits HorizontalLayout {
     }
     function choose(date: string) {
         if date != "" {
-            root.text = date; root.edited();
+            // A picked date keeps the form the field was typed in.
+            root.text = MetadataTimeCodec.restyle(date, root.text); root.edited();
         }
         popup.close();
         field.focus();
@@ -173,7 +180,7 @@ component DateField inherits HorizontalLayout {
         field: 0; label: root.label + " date"; enabled: root.enabled;
         text <=> root.text; placeholder: root.placeholder; fallback: root.fallback;
         min-width: Theme.font-size * 6.5; horizontal-stretch: 2;
-        hint: "Year-month-day, e.g. 2026-11-06. Up/Down change the part under the cursor; Alt+Down opens the calendar.";
+        hint: "Type " + MetadataTimeCodec.date-forms + " Up/Down change the part under the cursor; Alt+Down opens the calendar.";
         edited => { root.edited(); }
         open-picker => { root.open(); }
     }

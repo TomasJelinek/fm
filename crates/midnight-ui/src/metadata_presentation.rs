@@ -100,7 +100,8 @@ pub(super) fn bind(
         p.dirty_metadata(token.as_str());
     });
     callback!(on_preview_metadata, |p, s, token, draft| {
-        let patch = metadata_input::patch(&draft);
+        let locale = locale_date(p.metadata.preview.as_deref());
+        let patch = metadata_input::patch(&draft, locale.as_ref());
         p.preview_metadata(token.as_str(), patch, s);
     });
     callback!(on_confirm_metadata, |p, s, token, revision, policy| {
@@ -225,8 +226,14 @@ fn selection_summary(preview: &MetadataPreview) -> String {
     lines.join("\n")
 }
 
+/// The system date order from the worker-captured edit format, if it has one.
+fn locale_date(preview: Option<&MetadataPreview>) -> Option<metadata_time::LocaleDate> {
+    metadata_time::LocaleDate::from_pattern(&preview?.time_input_format.as_ref()?.pattern)
+}
+
 /// Starting values for the time fields: each field's shared current value, else now.
-/// Without worker-local values, now is shown in UTC with an explicit +00:00.
+/// Without worker-local values, now is shown in UTC with an explicit +00:00. Dates
+/// start as year-month-day; the system date order is accepted as well.
 fn set_time_defaults(window: &MainWindow, preview: Option<&MetadataPreview>) {
     let defaults = preview
         .map(|preview| preview.time_defaults)
@@ -248,54 +255,108 @@ fn set_time_defaults(window: &MainWindow, preview: Option<&MetadataPreview>) {
     codec.set_modified_default(value(defaults.modified));
     codec.set_accessed_default(value(defaults.accessed));
     codec.set_now_default(value(None));
+    let locale = locale_date(preview);
+    codec.set_date_format(
+        locale
+            .as_ref()
+            .map(metadata_time::LocaleDate::pattern)
+            .unwrap_or_default()
+            .into(),
+    );
+    codec.set_date_forms(metadata_time::date_forms(locale.as_ref()).into());
 }
 
 fn install_time_codec(window: &MainWindow) {
     use metadata_time::Field;
     let codec = window.global::<MetadataTimeCodec>();
-    codec.on_step(|text, field, cursor, delta, fallback| {
-        let failed = MetadataTimeStep::default();
-        let Some(field) = Field::from_index(field) else {
-            return failed;
-        };
-        let part = metadata_time::part_at(&text, usize::try_from(cursor).unwrap_or_default());
-        step_result(metadata_time::step(&text, field, part, delta, &fallback))
+    // The system date order published by `set_time_defaults` with the starting values.
+    let locale = {
+        let window = window.as_weak();
+        move || {
+            let format = window
+                .upgrade()?
+                .global::<MetadataTimeCodec>()
+                .get_date_format();
+            metadata_time::LocaleDate::from_pattern(&format)
+        }
+    };
+    codec.on_step({
+        let locale = locale.clone();
+        move |text, field, cursor, delta, fallback| {
+            let Some(field) = Field::from_index(field) else {
+                return MetadataTimeStep::default();
+            };
+            let part = metadata_time::part_at(&text, usize::try_from(cursor).unwrap_or_default());
+            let locale = locale();
+            step_result(metadata_time::step(
+                &text,
+                field,
+                part,
+                delta,
+                &fallback,
+                locale.as_ref(),
+            ))
+        }
     });
-    codec.on_step_part(|text, field, part, delta, fallback| {
-        let Some(field) = Field::from_index(field) else {
-            return MetadataTimeStep::default();
-        };
-        let part = usize::try_from(part).unwrap_or_default();
-        step_result(metadata_time::step(&text, field, part, delta, &fallback))
+    codec.on_step_part({
+        let locale = locale.clone();
+        move |text, field, part, delta, fallback| {
+            let Some(field) = Field::from_index(field) else {
+                return MetadataTimeStep::default();
+            };
+            let part = usize::try_from(part).unwrap_or_default();
+            let locale = locale();
+            step_result(metadata_time::step(
+                &text,
+                field,
+                part,
+                delta,
+                &fallback,
+                locale.as_ref(),
+            ))
+        }
     });
-    codec.on_parts(|text, field, fallback| {
-        let parts = Field::from_index(field)
-            .map(|field| metadata_time::parts(&text, field, &fallback))
-            .unwrap_or_default();
-        ModelRc::new(VecModel::from(
-            parts
-                .into_iter()
-                .map(SharedString::from)
-                .collect::<Vec<_>>(),
-        ))
+    codec.on_parts({
+        let locale = locale.clone();
+        move |text, field, fallback| {
+            let locale = locale();
+            let parts = Field::from_index(field)
+                .map(|field| metadata_time::parts(&text, field, &fallback, locale.as_ref()))
+                .unwrap_or_default();
+            ModelRc::new(VecModel::from(
+                parts
+                    .into_iter()
+                    .map(SharedString::from)
+                    .collect::<Vec<_>>(),
+            ))
+        }
     });
-    codec.on_month(|cursor, fallback| {
-        metadata_time::month_view(&cursor, &fallback)
-            .map(|view| MetadataMonthView {
-                title: view.title.into(),
-                year: view.year,
-                month: view.month as i32,
-                leading: view.leading as i32,
-                days: view.days as i32,
-                day: view.day as i32,
-                valid: true,
-            })
-            .unwrap_or_default()
+    codec.on_month({
+        let locale = locale.clone();
+        move |cursor, fallback| {
+            metadata_time::month_view(&cursor, &fallback, locale().as_ref())
+                .map(|view| MetadataMonthView {
+                    title: view.title.into(),
+                    year: view.year,
+                    month: view.month as i32,
+                    leading: view.leading as i32,
+                    days: view.days as i32,
+                    day: view.day as i32,
+                    valid: true,
+                })
+                .unwrap_or_default()
+        }
     });
-    codec.on_shift(|cursor, fallback, days, months| {
-        metadata_time::shift(&cursor, &fallback, days, months)
-            .unwrap_or_else(|| cursor.to_string())
-            .into()
+    codec.on_shift({
+        let locale = locale.clone();
+        move |cursor, fallback, days, months| {
+            metadata_time::shift(&cursor, &fallback, days, months, locale().as_ref())
+                .unwrap_or_else(|| cursor.to_string())
+                .into()
+        }
+    });
+    codec.on_restyle(move |date, like| {
+        metadata_time::restyle(&date, &like, locale().as_ref()).map_or(date, SharedString::from)
     });
     codec.on_compose(|year, month, day| {
         metadata_time::compose(year, month, day)

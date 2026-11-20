@@ -37,7 +37,17 @@ fn pattern(native: &str, locale: &NativeLocale, depth: u8) -> Option<String> {
             output.push(ch);
             continue;
         }
-        let token = input.next()?;
+        let mut token = input.next()?;
+        // glibc padding flags (cs_CZ uses `%-d.%-m.%Y`) only change number padding.
+        if matches!(token, '-' | '_' | '0') {
+            token = input.next()?;
+            if !matches!(
+                token,
+                'Y' | 'y' | 'm' | 'd' | 'e' | 'H' | 'k' | 'I' | 'l' | 'M' | 'S'
+            ) {
+                return None;
+            }
+        }
         output.push_str(match token {
             'Y' | 'y' => "%Y",
             'm' => "%m",
@@ -81,5 +91,22 @@ mod tests {
         );
         assert!(pattern("%Ex", &locale, 0).is_none());
         assert!(pattern("%d %B %Y", &locale, 0).is_none());
+    }
+
+    #[test]
+    fn glibc_padding_flags_keep_the_numeric_date_order() {
+        let locale = NativeLocale::new(c"C").unwrap();
+        // cs_CZ: `d_fmt "%-d.%-m.%Y"`; the editor reads 1-2 digit days and months.
+        assert_eq!(
+            pattern("%-d.%-m.%Y", &locale, 0).as_deref(),
+            Some("%d.%m.%Y")
+        );
+        assert_eq!(
+            pattern("%_H:%0M:%-S", &locale, 0).as_deref(),
+            Some("%H:%M:%S")
+        );
+        for flagged in ["%-p", "%-B", "%-", "%-T"] {
+            assert!(pattern(flagged, &locale, 0).is_none(), "{flagged}");
+        }
     }
 }
