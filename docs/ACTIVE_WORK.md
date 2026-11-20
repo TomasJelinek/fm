@@ -23,15 +23,17 @@ comes first; role work still requires scoped acceptance and exclusive ownership.
 
 ### Integration — 20 November 2026
 
-`main` integrates the commits of 19 and 20 November and implements the four
+`main` integrates the commits of 19 and 20 November and implements the eight
 decisions of 20 November. Each change below was reviewed against its source and
 verified on Windows as stated. CI run 44708841616 at `3fcfb3d3`, which contains the
 first two items, passed every job on Windows and Linux. CI run 44715333960 at
-`1ee00535` (the four decisions) passed 25 of 26 jobs, the Linux checks and both
-release builds included; the Windows check failed only in
+`1ee00535` (the morning's four decisions) passed 25 of 26 jobs, the Linux checks and
+both release builds included; the Windows check failed only in
 `icons::tests::unassociated_document_art_is_identified_for_semantic_fallbacks`,
 which ran its native stock-icon lookup outside the guard that serializes the
-module's native icon tests; `064df204` adds the guard.
+module's native icon tests; `064df204` adds the guard. CI run 44746089017 at
+`67298a96` (VIEW-05) and run 44753500560 at `1a33b1fd`, which contains every item
+below, passed every job on Windows and Linux.
 
 - CI follow-ups: rustfmt on the panel selection bridge (`2e562958`) and a named
   closure type for Clippy in an operation test (`c2ea6035`). CI run 44706184619 at
@@ -65,13 +67,28 @@ module's native icon tests; `064df204` adds the guard.
   `19d9e3f8` fixes the shortcut installer's cleanup: a staged shortcut that could
   not be removed left the Desktop and installation pins open and replaced the
   original error.
-- New, VIEW-05: endpoint protection moves a fresh file's ChangeTime 1–2 s after it
-  is written, and native live-validated revisions include ChangeTime. A viewer
-  reading the file then shows "Content read failed"
-  (`real_plugins_render_search_copy_cycle_modes_and_reject_changed_files` failed so
-  in 6 of 7 local runs, 3 of 3 without the copy change), and a transfer revalidating
-  a consented fresh target fails with "consented destination changed" (a user
-  command process test, once in a loaded full run). It needs an Architect decision.
+- VIEW-05, decision "accept ChangeTime-only" (`67298a96`): endpoint protection moves
+  a fresh file's ChangeTime 1–2 s after it is written, so viewers showed "Content
+  read failed" and Copy/Move "consented destination changed". Viewer reads and
+  Copy/Move checks now accept a revision whose change time alone moved (identity,
+  length and write time are still compared) through explicit policies whose default
+  stays exact; the comparator, Find, checksums, user commands, Rename, archives and
+  thumbnails stay exact, as VIEW-05 lists. The real-plugins viewer test passed 6 of
+  6 with its fixture's ChangeTime moved four times per run and failed again with
+  "Content read failed" when the viewer capture was set back to exact.
+- Build scripts, decisions "Yes, now" for BUILD-03 and "Retry for ~2 s" (`d0207d3e`,
+  `1a33b1fd`): the BUILD-02 link rule covers the remaining build scripts and test
+  runners (BUILD-04 lists the image decoder's native helpers, which still apply the
+  old rule), and on Windows the renames of a script's own fresh output wait out
+  errors 5, 32, 33 and File.Replace's 1175 for about 2 s. `c8e5f19d` verifies them
+  with short budgets: the new hold tests take about 19 s instead of 48 s.
+- Docs, decision "clean up both" (`4f62d8f2`, `aee6d5a4`): FEATURE_STATUS keeps each
+  of seven repeated evidence paragraphs once, with links where they repeated, and
+  both documents' run-together words and numbers are split (whitespace only).
+- CI flakes in untouched tests: an icon test now takes the module's native-icon
+  guard (`064df204`); a thumbnail test accepts either drain order once cancelled
+  reads free their slots (`a51de7b3`); the web viewer watchdog test allows one wake
+  per busy limit a stalled write burst spans (`e9c7809f`).
 - Test speed (Windows, per-test timing of every workspace test executable): 238.8 s
   of executable wall time for 7,136 timed tests, against 238.5 s on 18 November with
   1,034 fewer tests and 295.4 s that morning. The comparator UI target fell from
@@ -81,11 +98,14 @@ module's native icon tests; `064df204` adds the guard.
 
 Not established:
 
-- Live endpoint-protection drift and holds: none occurred during these runs (fresh
-  small files got no stream, no hold was seen after 10:04), so COMPARE-02 and
-  TEST-04 are verified with injected revisions and scripted holds.
-- A real build from a linked checkout (BUILD-03 still refuses it) and the manual
-  native CEF Office/HTML and qualified Source acceptance tests.
+- Live endpoint-protection activity during the verification runs: no hold was seen
+  after 10:04, and a 14:08 probe saw no ChangeTime move on fresh files (at about
+  10:50 the ChangeTime of fresh 22.5 MB files had moved 1–2 s after writing), so
+  COMPARE-02, TEST-04, VIEW-05 and the build-script retries are verified with
+  injected revisions, injected ChangeTime moves and scripted holds.
+- A real build from a linked checkout (BUILD-04: the image decoder's native helpers
+  still refuse it) and the manual native CEF Office/HTML and qualified Source
+  acceptance tests.
 
 ### Post-merge validation integrated — 19 November 2026
 
