@@ -177,7 +177,10 @@ fn repaint(window: &MainWindow, presenter: &Rc<RefCell<Presenter>>, pane: PaneId
         let (structure, edits) = {
             let presenter = presenter.borrow();
             let pane = &presenter.panes[pane.index()];
-            (crate::RowStructure::from_pane(pane), pane.row_edits().cloned())
+            (
+                crate::RowStructure::from_pane(pane),
+                pane.row_edits().cloned(),
+            )
         };
         rows.refresh_structure(
             structure,
