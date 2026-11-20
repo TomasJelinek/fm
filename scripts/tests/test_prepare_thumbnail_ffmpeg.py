@@ -14,6 +14,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+# Sibling fixture module, also when run as scripts.tests.<module> from the checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from link_fixtures import directory_link, hidden_directory, hold  # noqa: E402
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'prepare-thumbnail-ffmpeg.py'
 REPOSITORY = SCRIPT.parent.parent
@@ -213,16 +217,16 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
             (library / 'libclang.so.1').write_bytes(b'Compiler fixture')
         environment = {'PATH': str(self.root / 'no-tools')}
         self.assertEqual(module.find_libclang(environment, usr), usr / 'lib' / 'llvm-18' / 'lib')
-        # A distribution link (here the newest LLVM directory) is skipped, not fatal.
-        newest = usr / 'lib' / 'llvm-19'
-        try:
-            newest.symlink_to(usr / 'lib' / 'llvm-17', target_is_directory=True)
-        except OSError:
-            self.skipTest('symlink creation requires platform privilege')
+        # A distribution link below the search root (here the newest LLVM directory, which
+        # holds another version) is skipped, not fatal.
+        newest = directory_link(usr / 'lib' / 'llvm-19', usr / 'lib' / 'llvm-17')
         self.assertEqual(module.find_libclang(environment, usr), usr / 'lib' / 'llvm-18' / 'lib')
-        # An explicit choice is never replaced by an automatic candidate.
-        with self.assertRaisesRegex(ValueError, 'link'):
-            module.find_libclang(dict(environment, LIBCLANG_PATH=str(newest / 'lib')), usr)
+        # An explicit choice names its own root, so it may be reached through a link; it is
+        # never replaced by an automatic candidate.
+        self.assertEqual(module.find_libclang(dict(environment, LIBCLANG_PATH=str(newest / 'lib')), usr),
+                         newest / 'lib')
+        with self.assertRaisesRegex(ValueError, 'libclang is required'):
+            module.find_libclang(dict(environment, LIBCLANG_PATH=str(usr / 'lib')), usr)
 
     def test_windows_prebuilt_requires_the_four_msvc_import_libraries(self):
         module = self.module()
@@ -232,12 +236,14 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'avformat.lib'):
             module.validate_prefix(prefix, 'win32')
 
-    @unittest.skipUnless(sys.platform == 'linux', 'Linux source builder/cache integration')
-    def test_cached_runtime_is_reused_until_binary_or_recipe_changes(self):
-        module = self.module()
+    def source_build(self, module, repository):
+        """A repository whose download cache and FFmpeg build script are fixtures.
+
+        Returns the patches that point the module at it, the build counter and script.
+        """
         fixture = self.prefix(module)
-        cache = self.root / 'cache'
-        cache.mkdir()
+        cache = repository / '.tools' / 'media-native' / ('ffmpeg-' + module.VERSION)
+        cache.mkdir(parents=True)
         archive = cache / module.ARCHIVE_NAME
         with tarfile.open(archive, 'w:xz') as bundle:
             release = tarfile.TarInfo('ffmpeg-9.0.2/RELEASE')
@@ -245,7 +251,6 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
             bundle.addfile(release, io.BytesIO(b'9.0.2\n'))
         for name in (module.ARCHIVE_NAME + '.asc', 'ffmpeg-devel.asc'):
             (cache / name).write_bytes(b'Acquisition verification is a separate boundary')
-        repository = self.root / 'repository'
         (repository / 'scripts').mkdir(parents=True)
         script = repository / 'scripts' / 'build-media-ffmpeg.sh'
         count = self.root / 'build-count'
@@ -253,13 +258,20 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
             '#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p -- "$3"\n'
             + 'cp -R -- ' + shlex.quote(str(fixture) + '/.') + ' "$3/"\n'
             + 'printf "build\\n" >> ' + shlex.quote(str(count)) + '\n', encoding='utf-8')
+        patches = (patch.object(module, 'CACHE_ROOT', cache), patch.object(module, 'REPOSITORY', repository),
+                   patch.object(module, 'SOURCE_SHA256', hashlib.sha256(archive.read_bytes()).hexdigest()),
+                   patch.object(module, 'verify_release'))
+        return patches, count, script
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux source builder/cache integration')
+    def test_cached_runtime_is_reused_until_binary_or_recipe_changes(self):
+        module = self.module()
+        repository = self.root / 'repository'
+        patches, count, script = self.source_build(module, repository)
         clang = self.root / 'clang'
         clang.mkdir()
         (clang / 'libclang.so').write_bytes(b'Compiler fixture')
-        with patch.object(module, 'CACHE_ROOT', cache), \
-                patch.object(module, 'REPOSITORY', repository), \
-                patch.object(module, 'SOURCE_SHA256', hashlib.sha256(archive.read_bytes()).hexdigest()), \
-                patch.object(module, 'verify_release'):
+        with patches[0], patches[1], patches[2], patches[3]:
             arguments = {'offline': True, 'environ': {'LIBCLANG_PATH': str(clang)}}
             result = module.prepare(self.root / 'native', **arguments)
             self.assertEqual(count.read_text().splitlines(), ['build'])
@@ -272,6 +284,160 @@ class PrepareThumbnailFfmpeg(unittest.TestCase):
             script.write_text(script.read_text() + '# Recipe changed\n')
             module.prepare(self.root / 'native', **arguments)
             self.assertEqual(len(count.read_text().splitlines()), 3)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux source builder/cache integration')
+    def test_source_build_from_a_linked_checkout_waits_out_a_held_receipt(self):
+        # The checkout lies below a link (Fedora Silverblue's /home -> /var/home); its build
+        # root is named through it. The receipt just written is renamed into place with the
+        # retry; here a scripted Windows hold stands in for endpoint protection.
+        module = self.module()
+        real = self.root / 'var' / 'home' / 'checkout'
+        patches, count, _ = self.source_build(module, real)
+        checkout = directory_link(self.root / 'home', self.root / 'var' / 'home') / 'checkout'
+        clang = self.root / 'clang'
+        clang.mkdir()
+        (clang / 'libclang.so').write_bytes(b'Compiler fixture')
+        replace, held = Path.replace, []
+
+        def held_receipt(path, target):
+            if Path(target).name == 'verified-build.json' and not held:
+                held.append(path)
+                error = PermissionError(13, 'scripted hold')
+                error.winerror = 32
+                raise error
+            return replace(path, target)
+        with patches[0], patches[1], patches[2], patches[3], \
+                patch.object(module, 'FRESH_FILE_HOLDS', (32,)), patch.object(Path, 'replace', held_receipt):
+            result = module.prepare(checkout / '_build' / 'thumbnailers' / 'ffmpeg', offline=True,
+                                    environ={'LIBCLANG_PATH': str(clang)})
+        self.assertEqual(len(held), 1)
+        self.assertEqual(Path(result['prefix']), checkout / '_build' / 'thumbnailers' / 'ffmpeg' / 'prefix')
+        self.assertTrue((real / '_build/thumbnailers/ffmpeg/verified-build.json').is_file())
+        self.assertEqual(count.read_text().splitlines(), ['build'])
+
+    def linked_checkout(self, module):
+        """A checkout below hidden AppData, reached through a link to AppData.
+
+        The script's checkout is pointed at it, as if the script were run from there.
+        """
+        real = hidden_directory(self.root / 'AppData') / 'checkout'
+        (real / '_build').mkdir(parents=True)
+        (real / '.tools' / 'media-native').mkdir(parents=True)
+        linked = directory_link(self.root / 'linked', real.parent) / 'checkout'
+        patcher = patch.object(module, 'REPOSITORY', real)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return real, linked
+
+    def test_build_root_follows_the_checkout_however_it_is_spelled(self):
+        module = self.module()
+        real, checkout = self.linked_checkout(module)
+        root = checkout / '_build' / 'thumbnailers' / 'ffmpeg'
+        self.assertEqual(module.build_directory(root), root)
+        self.assertTrue((real / '_build' / 'thumbnailers' / 'ffmpeg').is_dir())
+        outside = self.root / 'outside'
+        outside.mkdir()
+        directory_link(real / '_build' / 'redirect', outside)
+        directory_link(real / '_build' / 'loop', real)
+        # Outside the checkout the walk starts at the path's first _build, which for this
+        # fixture is the repository's own _build above it; a link below that is refused.
+        custom = directory_link(self.root / 'custom target', outside)
+        for path in (checkout / '_build' / 'redirect' / 'ffmpeg', checkout / '_build' / 'loop' / '_build' / 'ffmpeg',
+                     custom / '_build' / 'ffmpeg'):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ValueError, 'link'):
+                    module.build_directory(path)
+        for path in (checkout / 'ffmpeg', checkout / 'sources' / '_build' / 'ffmpeg'):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ValueError, 'beneath an explicit _build'):
+                    module.build_directory(path)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse((checkout / 'ffmpeg').exists())
+
+    def test_prefix_and_its_parents_may_be_links_but_nothing_inside_it(self):
+        module = self.module()
+        platform_name = 'win32' if os.name == 'nt' else 'linux'
+        prefix = self.prefix(module, platform_name)
+        current = directory_link(self.root / 'current', prefix)
+        parent = directory_link(self.root / 'linked parent', self.root)
+        for spelling in (current, parent / 'prefix'):
+            with self.subTest(prefix=spelling):
+                paths = module.validate_prefix(spelling, platform_name)
+                self.assertTrue(all(path.is_relative_to(prefix.resolve()) for path in paths))
+                self.assertEqual(set(module.artifact_hashes(paths, spelling)),
+                                 set(module.artifact_hashes(paths, prefix)))
+        notices = prefix / 'share' / 'midnight-ffmpeg'
+        moved = self.root / 'notices elsewhere'
+        notices.rename(moved)
+        directory_link(notices, moved)
+        with self.assertRaisesRegex(ValueError, 'link'):
+            module.validate_prefix(current, platform_name)
+
+    def test_source_archive_and_libclang_may_lie_below_links(self):
+        module = self.module()
+        archive = self.root / 'ffmpeg-9.0.2.tar.xz'
+        archive.write_bytes(b'Pinned source fixture')
+        downloads = directory_link(self.root / 'downloads', self.root)
+        with patch.object(module, 'SOURCE_SHA256', hashlib.sha256(archive.read_bytes()).hexdigest()):
+            self.assertEqual(module.check_source_archive(downloads / archive.name), downloads / archive.name)
+        library = self.root / 'llvm-18' / 'lib'
+        library.mkdir(parents=True)
+        (library / 'libclang.dll').write_bytes(b'Compiler fixture')
+        llvm = directory_link(self.root / 'llvm', self.root / 'llvm-18')
+        self.assertEqual(module.find_libclang({'LIBCLANG_PATH': str(llvm / 'lib')}), llvm / 'lib')
+
+    def test_download_cache_stays_a_plain_folder_inside_the_checkout(self):
+        # Kept stricter than the input rule: verified downloads are opened again by path.
+        module = self.module()
+        real, checkout = self.linked_checkout(module)
+        cached = checkout / '.tools' / 'media-native' / 'ffmpeg-devel.asc'
+        cached.write_bytes(b'Cached key')
+        self.assertEqual(module.fetch_artifact(cached, module.KEY_URL, 64 * 1024, offline=True), cached)
+        shared = self.root / 'shared tools'
+        (shared / 'media-native').mkdir(parents=True)
+        (shared / 'media-native' / 'ffmpeg-devel.asc').write_bytes(b'Shared key')
+        shutil.rmtree(real / '.tools')
+        directory_link(real / '.tools', shared)
+        with self.assertRaisesRegex(ValueError, 'link'):
+            module.fetch_artifact(cached, module.KEY_URL, 64 * 1024, offline=True)
+        with self.assertRaisesRegex(ValueError, 'inside the checkout'):
+            module.fetch_artifact(shared / 'media-native' / 'ffmpeg-devel.asc', module.KEY_URL, 64 * 1024,
+                                  offline=True)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows refuses to rename a held file')
+    def test_brief_hold_of_a_new_download_is_waited_out(self):
+        module = self.module()
+        cache = self.root / 'cache'
+        cache.mkdir()
+        timers = []
+
+        class Response:
+            """The download; once it is complete, endpoint protection holds the new file."""
+            def __init__(self):
+                self.blocks = [b'Downloaded key']
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *failure):
+                return False
+
+            def geturl(self):
+                return module.KEY_URL
+
+            def read(self, size):
+                if self.blocks:
+                    return self.blocks.pop()
+                (download,) = cache.glob('*.download')
+                timers.append(hold(download, 0.3, share_delete=False))
+                return b''
+        with patch.object(module.urllib.request, 'urlopen', return_value=Response()):
+            path = module.fetch_artifact(cache / 'ffmpeg-devel.asc', module.KEY_URL, 64 * 1024)
+        for timer in timers:
+            timer.join()
+        self.assertEqual(len(timers), 1)
+        self.assertEqual(path.read_bytes(), b'Downloaded key')
+        self.assertEqual(list(cache.glob('*.download')), [])
 
     @unittest.skipUnless(shutil.which('gpg'), 'GPG release-verification prerequisite')
     def test_wrong_archive_fails_before_any_gpg_import(self):

@@ -6,6 +6,36 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $pluginRoot = Split-Path -Parent $PSScriptRoot
+# Generated output lies strictly below _build: for a path inside this plugin, or inside
+# the repository that holds it in plugins/NAME, their own _build; otherwise the first
+# _build of the path (a custom directory). That _build and every folder below it must
+# not be a reparse point (symlink or junction); the checkout and the folders above it
+# may be links, a subst drive or hidden folders such as AppData.
+function Get-GeneratedOutputProblem([string]$Path) {
+    $checkouts = @([IO.Path]::GetFullPath($pluginRoot).TrimEnd('\'))
+    $plugins = Split-Path -Parent $checkouts[0]
+    if ((Split-Path -Leaf $plugins) -eq 'plugins') { $checkouts += (Split-Path -Parent $plugins).TrimEnd('\') }
+    $ancestors = @()
+    $inside = $false
+    for ($part = [IO.Path]::GetFullPath($Path).TrimEnd('\'); $part; $part = [IO.Path]::GetDirectoryName($part)) {
+        # TrimEnd also matches a checkout at a drive root, such as a subst drive's M:\.
+        if ($checkouts -contains $part.TrimEnd('\')) { $inside = $true; break }
+        $ancestors += $part
+    }
+    $anchor = 0
+    for ($index = $ancestors.Count - 1; $index -gt 0; $index--) {
+        if ([IO.Path]::GetFileName($ancestors[$index]) -eq '_build') { $anchor = $index; break }
+        if ($inside) { break }
+    }
+    if ($anchor -eq 0) { return "must be under _build: $Path" }
+    foreach ($part in $ancestors[0..$anchor]) {
+        $item = Get-Item -LiteralPath $part -Force -ErrorAction Ignore
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            return "must not traverse reparse points: $part"
+        }
+    }
+    return $null
+}
 # Relative arguments follow the PowerShell location, not the process directory.
 $BuildRoot = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot))
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $BuildRoot 'package/midnight-viewer-source' }
@@ -51,10 +81,7 @@ if (Test-Path -LiteralPath $notices) {
         }
     }
     $generated = (Test-Path -LiteralPath $marker -PathType Leaf) -and [IO.File]::ReadAllText($marker) -ceq $markerText
-    $underBuild = $OutputDirectory -match '[/\\]_build([/\\]|$)'
-    for ($part = $OutputDirectory; $underBuild -and $part; $part = Split-Path -Parent $part) {
-        if ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { $underBuild = $false }
-    }
+    $underBuild = -not (Get-GeneratedOutputProblem $OutputDirectory)
     if (-not ($generated -or $underBuild)) {
         throw "Refusing to replace notices that this script did not generate: $notices"
     }

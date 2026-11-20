@@ -10,6 +10,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+# Sibling fixture module, also when run as scripts.tests.<module> from the checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from link_fixtures import directory_link  # noqa: E402
+
 SCRIPT = Path(__file__).resolve().parents[1] / 'ci-workspace-tests.py'
 spec = importlib.util.spec_from_file_location('ci_workspace_tests', SCRIPT)
 runner = importlib.util.module_from_spec(spec)
@@ -296,6 +300,45 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '_build'):
             runner.execute(self.root, metadata, lambda *args: calls.append(args))
         self.assertEqual(calls, [])
+
+    def test_target_directory_named_through_a_linked_checkout_retires_its_artifacts(self):
+        # CARGO_TARGET_DIR may name the checkout through a link (Fedora Silverblue's /home
+        # -> /var/home, a linked parent folder); Cargo then reports artifacts that way.
+        outer = tempfile.TemporaryDirectory()
+        self.addCleanup(outer.cleanup)
+        linked = directory_link(Path(outer.name) / 'checkout', self.root)
+        metadata = graph(linked, [target('selection')])
+        artifact = self.artifact()
+        executable = Path(artifact['executable'])
+        artifact['executable'] = str(linked / executable.relative_to(self.root))
+        def invoke(command, root, gate):
+            return 0, [artifact] if gate['cleanup'] else []
+        self.assertEqual(runner.execute(self.root, metadata, invoke), 0)
+        self.assertFalse(executable.exists())
+
+    def test_links_from_build_down_are_refused_and_nothing_is_deleted(self):
+        metadata = graph(self.root, [target('selection')])
+        artifact = self.artifact()
+        def invoke(command, root, gate):
+            return 0, [artifact] if gate['cleanup'] else []
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        protected = Path(outside.name) / 'deps'
+        protected.mkdir()
+        keep = protected / 'selection-0123456789abcdef.exe'
+        keep.write_bytes(b'not generated here')
+        debug = self.root / '_build/debug'
+        (debug / 'deps').rename(debug / 'real-deps')
+        directory_link(debug / 'deps', protected)
+        with self.assertRaisesRegex(ValueError, 'redirect'):
+            runner.execute(self.root, metadata, invoke)
+        self.assertEqual(keep.read_bytes(), b'not generated here')
+        # A link below the checkout that leads back into _build is no _build either.
+        directory_link(self.root / 'build-link', self.root / '_build')
+        metadata['target_directory'] = str(self.root / 'build-link')
+        with self.assertRaisesRegex(ValueError, '_build'):
+            runner.execute(self.root, metadata, invoke)
+        self.assertEqual(keep.read_bytes(), b'not generated here')
 
     def test_symlinked_owned_name_cannot_authorize_another_file(self):
         protected = self.root / 'protected'

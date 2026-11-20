@@ -6,10 +6,16 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest import mock
+
+# Sibling fixture module, also when run as scripts.tests.<module> from the checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from link_fixtures import directory_link, hidden_directory, hold  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,7 +37,7 @@ class PrepareHtmlCef(unittest.TestCase):
         self.cache = self.root / "cache"
         self.cache.mkdir()
 
-    def archive(self, platform="linux", extra=()):
+    def archive(self, platform="linux", extra=(), cache=None):
         filename = f"cef_fixture_{platform}_minimal.tar.bz2"
         prefix = filename.removesuffix(".tar.bz2")
         files = {"LICENSE.txt": b"CEF license\n", "CREDITS.html": b"Component notices\n",
@@ -42,7 +48,8 @@ class PrepareHtmlCef(unittest.TestCase):
                       "locales/en-US.pak": b"Locale data\n"} if platform == "linux" else
                      {"libcef.dll": b"Windows runtime\n", "bootstrap.exe": b"Sandbox bootstrap\n",
                       "libcef.lib": b"Import library\n", "locales/en-US.pak": b"Locale data\n"})
-        archive = self.cache / filename
+        archive = (cache or self.cache) / filename
+        archive.parent.mkdir(parents=True, exist_ok=True)
         with tarfile.open(archive, "w:bz2") as bundle:
             for name, contents in files.items():
                 section = "Resources/" if name.startswith("locales/") else "Release/"
@@ -142,6 +149,124 @@ class PrepareHtmlCef(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "links/reparse points"):
             self.prepare(pin)
         self.assertEqual(list(outside.iterdir()), [])
+
+    def linked_checkout(self):
+        """A checkout below hidden AppData, reached through a directory link to AppData.
+
+        The script's checkout is pointed at it, as if the script were run from there:
+        like a linked parent folder, Fedora Silverblue's /home or a profile's AppData.
+        """
+        real = hidden_directory(self.root / "AppData") / "checkout"
+        (real / ".tools/cef").mkdir(parents=True)
+        (real / "_build").mkdir()
+        linked = directory_link(self.root / "linked", real.parent) / "checkout"
+        patcher = mock.patch.object(self.cef, "ROOT", real)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return real, linked
+
+    def prepare_in(self, checkout, output, pin, **environment):
+        return self.cef.prepare(output, offline=True, platform_name="linux",
+                                cache_root=checkout / ".tools/cef", environ=environment, pin=pin)
+
+    def test_checkout_through_a_link_and_a_hidden_folder_prepares_below_its_own_build(self):
+        real, checkout = self.linked_checkout()
+        _, pin, files = self.archive(cache=real / ".tools/cef")
+        output = checkout / "_build/html-viewer/cef-sdk/linux"
+        with mock.patch.object(self.cef.urllib.request, "urlopen", side_effect=AssertionError("network")):
+            self.assertEqual(self.prepare_in(checkout, output, pin), output)
+            self.assertEqual(self.prepare_in(checkout, output, pin), output)
+        installed = real / "_build/html-viewer/cef-sdk/linux"
+        self.assertEqual({path.relative_to(installed).as_posix(): path.read_bytes()
+                          for path in installed.rglob("*") if path.is_file()}, files)
+
+    def test_links_from_build_down_and_outputs_outside_build_are_refused(self):
+        real, checkout = self.linked_checkout()
+        _, pin, _ = self.archive(cache=real / ".tools/cef")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("user data\n")
+        directory_link(real / "_build/redirect", outside)
+        directory_link(real / "_build/loop", real)
+        # Outside the checkout the walk starts at the path's first _build, which for this
+        # fixture is the repository's own _build above it; a link below that is refused.
+        custom = directory_link(self.root / "custom target", outside)
+        refusals = {"links/reparse points": (checkout / "_build/redirect/cef-sdk",
+                                             checkout / "_build/loop/_build/cef-sdk",
+                                             custom / "_build/cef-sdk"),
+                    "must be under _build": (checkout / "cef-sdk", checkout / "sources/_build/cef-sdk")}
+        for message, outputs in refusals.items():
+            for output in outputs:
+                with self.subTest(output=output):
+                    with self.assertRaisesRegex(ValueError, message):
+                        self.prepare_in(checkout, output, pin)
+        self.assertEqual([path.name for path in outside.iterdir()], ["keep"])
+        self.assertFalse((checkout / "cef-sdk").exists())
+
+    def test_download_cache_stays_a_plain_folder_inside_the_checkout(self):
+        # Kept stricter than the input rule: the verified archive is opened again by path.
+        real, checkout = self.linked_checkout()
+        shared = self.root / "shared tools"
+        _, pin, _ = self.archive(cache=shared / "cef")
+        output = checkout / "_build/cef-sdk"
+        with self.assertRaisesRegex(ValueError, "inside the checkout"):
+            self.cef.prepare(output, offline=True, platform_name="linux", cache_root=shared / "cef",
+                             environ={}, pin=pin)
+        (real / ".tools/cef").rmdir()
+        (real / ".tools").rmdir()
+        directory_link(real / ".tools", shared)
+        with self.assertRaisesRegex(ValueError, "links/reparse points"):
+            self.prepare_in(checkout, output, pin)
+        self.assertFalse((real / "_build/cef-sdk").exists())
+
+    def test_linux_cef_path_may_itself_be_a_link_but_nothing_inside_it(self):
+        _, pin, _ = self.archive()
+        self.prepare(pin)
+        link = directory_link(self.root / "sdk link", self.output)
+        override = {"CEF_PATH": str(link)}
+        self.assertEqual(self.cef.prepare(self.root / "_build/unused", offline=True, platform_name="linux",
+                                          cache_root=self.cache, environ=override, pin=pin), link)
+        outside = self.root / "outside"
+        outside.mkdir()
+        directory_link(self.output / "linked-resources", outside)
+        with self.assertRaisesRegex(ValueError, "SDK"):
+            self.cef.prepare(self.root / "_build/unused", offline=True, platform_name="linux",
+                             cache_root=self.cache, environ=override, pin=pin)
+
+    def held_extraction(self, seconds):
+        """Extract as usual, then keep a fresh file of the new stage open for `seconds`."""
+        extract, timers = self.cef.extract_flat, []
+
+        def extract_and_hold(archive, output, pin, platform_name):
+            extract(archive, output, pin, platform_name)
+            timers.append(hold(output / "LICENSE.txt", seconds))
+        self.addCleanup(lambda: [timer.join() for timer in timers])
+        return mock.patch.object(self.cef, "extract_flat", extract_and_hold)
+
+    @unittest.skipUnless(os.name == "nt", "Windows refuses to rename a folder above a held file")
+    def test_brief_hold_of_the_new_stage_is_waited_out(self):
+        # TEST-04: endpoint protection held a freshly extracted file and the stage rename
+        # failed with WinError 5; the rename now waits for about 2 s.
+        _, pin, _ = self.archive()
+        self.prepare(pin)
+        (self.output / "libcef.so").write_bytes(b"Corrupt SDK cache")
+        with self.held_extraction(0.3):
+            self.assertEqual(self.prepare(pin), self.output)
+        self.assertEqual((self.output / "libcef.so").read_bytes(), b"Linux runtime\n")
+        self.assertEqual(list(self.output.parent.glob(".cef-stage-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows refuses to rename a folder above a held file")
+    def test_hold_beyond_two_seconds_fails_with_the_rename_error_and_keeps_the_previous_sdk(self):
+        _, pin, _ = self.archive()
+        self.prepare(pin)
+        (self.output / "libcef.so").write_bytes(b"Previous SDK")
+        started = time.monotonic()
+        with self.held_extraction(2.6), self.assertRaises(PermissionError) as caught:
+            self.prepare(pin)
+        elapsed = time.monotonic() - started
+        self.assertEqual(caught.exception.winerror, 5)
+        self.assertGreaterEqual(elapsed, 1.9)
+        self.assertEqual((self.output / "libcef.so").read_bytes(), b"Previous SDK")
 
 
 if __name__ == "__main__":

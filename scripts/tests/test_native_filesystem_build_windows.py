@@ -4,8 +4,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+# Sibling fixture module, also when run as scripts.tests.<module> from the checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from link_fixtures import POWERSHELL_HOLD  # noqa: E402
 
 
 @unittest.skipUnless(os.name == "nt", "Windows native build helper")
@@ -122,6 +127,27 @@ class NativeFilesystemBuildWindows(unittest.TestCase):
         package = self.root / f"_build/debug/filesystems/{self.provider}.windows"
         self.assertEqual((package / self.library.name).read_bytes(), b"new DLL")
         self.assertFalse((elsewhere / "_build").exists())
+
+    def test_brief_hold_of_the_staged_library_is_waited_out(self):
+        # Endpoint protection holds the library just copied into the stage; publishing
+        # it is retried for about 2 s instead of failing (and losing the installed one).
+        driver = self.root / "held-stage.ps1"
+        driver.write_text(
+            POWERSHELL_HOLD +
+            "function Copy-Item {\n"
+            "    Microsoft.PowerShell.Management\\Copy-Item @args\n"
+            "    $destination = [string]$args[[array]::IndexOf($args, '-Destination') + 1]\n"
+            "    if ($destination.EndsWith('.dll') -and (Split-Path -Leaf (Split-Path -Parent $destination)) -like '.*-stage.*') {\n"
+            "        [MidnightFreshHold]::Hold($destination, 300, $false)\n"
+            "    }\n"
+            "}\n"
+            f"& '{self.script}' -AppDirectory '{self.application}'\n", encoding="utf-8-sig")
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver)],
+                                cwd=self.root, env=self.environment, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.library.read_bytes(), b"new DLL")
+        self.assertEqual((self.package / "unrelated-user-file").read_bytes(), b"retain")
+        self.assertEqual(len(list(self.package.iterdir())), 5)
 
     def test_locked_installed_library_keeps_previous_package(self):
         before = self.snapshot()

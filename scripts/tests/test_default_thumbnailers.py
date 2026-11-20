@@ -13,6 +13,7 @@ import unittest
 # Sibling fixture module, also when run as scripts.tests.<module> from the checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pe_image import unsigned_pe  # noqa: E402
+from link_fixtures import POWERSHELL_HOLD  # noqa: E402
 
 if os.name == "nt":
     from ctypes import wintypes
@@ -364,7 +365,7 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         self.environment.pop("CARGO_TARGET_DIR", None)
         self.destination = self.fixture / "_build/app/thumbnailers"
 
-    def build(self, checkout=None, destination=None, build_root=None, *, status=0):
+    def build(self, checkout=None, destination=None, build_root=None, *, status=0, prelude=""):
         """Run the checkout's script, named as given; inputs are named through the same path."""
         def literal(path):
             return "'" + str(path).replace("'", "''") + "'"
@@ -372,6 +373,7 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         # The pinned FFmpeg source digest is checked elsewhere; only the swap is tested.
         driver = checkout / "driver.ps1"
         driver.write_text(
+            prelude +
             "function Get-FileHash([string]$LiteralPath, [string]$Algorithm) {\n"
             "    [pscustomobject]@{ Hash = '8C3850283EB25FA026482078A04051E0BE17347B09EF81A0849BEC15A96E002E' }\n"
             "}\n"
@@ -447,6 +449,38 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         self.assertIn("must be under _build", self.build(checkout, checkout / "app/thumbnailers", status=1))
         self.assertEqual([path.name for path in outside.iterdir()], ["keep"])
         self.assertFalse((checkout / "app").exists())
+
+    @staticmethod
+    def held_package(milliseconds, share_delete):
+        """A driver prelude that holds a file of the new package once it is complete.
+
+        The playback executable's ACL is the last change before the swap; a file beside it
+        is then held, as endpoint protection holds a file that was just written.
+        """
+        return POWERSHELL_HOLD + (
+            "function Set-Acl([string]$LiteralPath, $AclObject) {\n"
+            "    Microsoft.PowerShell.Security\\Set-Acl -LiteralPath $LiteralPath -AclObject $AclObject\n"
+            "    if ((Split-Path -Leaf $LiteralPath) -eq 'midnight-video-playback.exe') {\n"
+            "        $held = Join-Path (Split-Path -Parent $LiteralPath) 'midnight-thumbnail-image.json'\n"
+            f"        [MidnightFreshHold]::Hold($held, {milliseconds}, ${str(share_delete).lower()})\n"
+            "    }\n"
+            "}\n")
+
+    def test_brief_hold_of_the_new_package_is_waited_out(self):
+        self.destination.mkdir(parents=True)
+        (self.destination / "avcodec-63.dll").write_bytes(b"previous library")
+        self.build(prelude=self.held_package(300, share_delete=False))
+        self.assert_current_package()
+        self.assertEqual(list(self.destination.parent.glob(".thumbnailers-build.*")), [])
+
+    def test_hold_beyond_two_seconds_fails_and_restores_the_previous_package(self):
+        self.destination.mkdir(parents=True)
+        (self.destination / "avcodec-63.dll").write_bytes(b"previous library")
+        output = self.build(prelude=self.held_package(2600, share_delete=True), status=1)
+        self.assertIn("denied", output)
+        self.assertEqual([path.name for path in self.destination.iterdir()], ["avcodec-63.dll"])
+        self.assertEqual((self.destination / "avcodec-63.dll").read_bytes(), b"previous library")
+        self.assertEqual(list(self.destination.parent.glob(".thumbnailers-build.*")), [])
 
 
 @unittest.skipUnless(os.name == "nt", "Windows thumbnail build wrapper")

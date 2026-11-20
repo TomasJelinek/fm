@@ -9,6 +9,31 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'Use the .sh filesystem helper on Linux' }
+
+# Endpoint protection briefly holds files that were just written. While it does, Windows
+# refuses to rename them or a folder above them: access denied (5), a sharing (32) or a
+# lock (33) violation. A rename of fresh output retries only those errors, with a short
+# backoff for about 2 s, and then fails with the first error.
+function Invoke-FreshRename([scriptblock]$Rename) {
+    $firstHold = $null
+    $holdDelay = 20
+    while ($true) {
+        try { & $Rename; return }
+        catch {
+            $holdCode = 0
+            for ($failure = $_.Exception; $failure -and -not $holdCode; $failure = $failure.InnerException) {
+                if ((($failure.HResult -shr 16) -band 0x1FFF) -eq 7) { $holdCode = $failure.HResult -band 0xFFFF }
+            }
+            if ($holdCode -notin @(5, 32, 33)) { throw }
+            if (-not $firstHold) { $firstHold = $_; $holdWatch = [Diagnostics.Stopwatch]::StartNew() }
+            $holdLeft = 2000 - $holdWatch.ElapsedMilliseconds
+            if ($holdLeft -le 0) { throw $firstHold }
+            Start-Sleep -Milliseconds ([Math]::Max(1, [Math]::Min($holdDelay, $holdLeft)))
+            $holdDelay = [Math]::Min(2 * $holdDelay, 200)
+        }
+    }
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $pluginName = if ($Provider -eq 'native') { 'midnight-filesystem-native-windows' } else { 'midnight-filesystem-network' }
 $pluginRoot = Join-Path $projectRoot "plugins/$pluginName"
@@ -62,7 +87,8 @@ try {
             Copy-Item -LiteralPath (Join-Path $pluginRoot $name) -Destination $stage
         }
         foreach ($name in $packageFiles) {
-            Move-Item -LiteralPath (Join-Path $stage $name) -Destination (Join-Path $package $name) -Force
+            # Retried: endpoint protection may still hold the file just staged.
+            Invoke-FreshRename { Move-Item -LiteralPath (Join-Path $stage $name) -Destination (Join-Path $package $name) -Force }
         }
     } finally {
         # Remove only the known files in our exclusive staging directory.

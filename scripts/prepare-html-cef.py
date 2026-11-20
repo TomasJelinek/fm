@@ -11,6 +11,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -22,6 +23,9 @@ CACHE_ROOT = ROOT / ".tools/cef"
 MAX_MEMBERS = 20000
 MAX_EXPANDED = 5 * 1024**3
 MAX_FILE = 2 * 1024**3
+# Windows errors while endpoint protection holds a file that was just written: access
+# denied (5) renaming a folder above it, and sharing (32) or lock (33) violations.
+FRESH_FILE_HOLDS = (5, 32, 33) if os.name == "nt" else ()
 
 
 def pin_for(platform_name):
@@ -35,18 +39,116 @@ def pin_for(platform_name):
     raise ValueError("CEF runtime builds support Linux x64 and Windows x64 only")
 
 
-def ordinary(value):
+# Link rule of the build scripts (BUILD-02). Folders above the checkout, above a _build
+# outside it or above an input root that the caller names may be links, a subst drive
+# or hidden folders: Fedora Silverblue's /home -> /var/home, a linked parent folder or
+# AppData. Below such a root, and from _build down, nothing may be a link, a junction
+# or another reparse point, and no path may contain '..'.
+
+def is_link(metadata):
+    """A symbolic link or any Windows reparse point, such as a junction."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def named(value):
     path = Path(value).absolute()
     if ".." in path.parts:
         raise ValueError("CEF paths must not contain parent traversal")
-    for entry in (path, *path.parents):
+    return path
+
+
+def unlinked(base, path):
+    """`path` below `base` with no link from `base` down; missing folders are accepted."""
+    current = base
+    for part in path.relative_to(base).parts:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            break
+        if is_link(metadata):
+            raise ValueError(f"CEF paths must not traverse links/reparse points: {current}")
+    return path
+
+
+def checkout_depth(path):
+    """Index in (path, *path.parents) of the shallowest ancestor that is the checkout.
+
+    The checkout is recognised however the path spells it. Taking the shallowest one
+    means a link below the checkout that leads back to it is inspected, not trusted.
+    """
+    checkout = os.stat(ROOT)
+    ancestors = (path, *path.parents)
+    for index in reversed(range(len(ancestors))):
+        try:
+            if os.path.samestat(ancestors[index].stat(), checkout):
+                return index
+        except OSError:
+            continue
+    return None
+
+
+def generated_output(value):
+    """Generated output strictly below _build, with no link from that _build down.
+
+    The checkout's own _build for a path in the checkout; outside it, the path's first
+    _build (a custom target directory).
+    """
+    path = named(value)
+    ancestors = (path, *path.parents)
+    depth = checkout_depth(path)
+    builds = [index for index in range(1, len(ancestors) if depth is None else depth)
+              if os.path.normcase(ancestors[index].name) == "_build"]
+    if not builds or (depth is not None and builds[-1] != depth - 1):
+        raise ValueError(f"Generated CEF SDK output must be under _build/: {path}")
+    for entry in ancestors[builds[-1]::-1]:
         try:
             metadata = entry.lstat()
         except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
-            raise ValueError(f"CEF paths must not traverse links/reparse points: {entry}")
+            break
+        if is_link(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"CEF paths must not traverse links/reparse points or files: {entry}")
     return path
+
+
+def download_cache(value):
+    """The download cache inside the checkout, with no link from the checkout down.
+
+    Stricter than the input rule on purpose: the verified archive is opened again by
+    path after its checksums are compared, so the cache must stay a plain folder of
+    the checkout rather than a link to a place that others may write in between. The
+    checkout and the folders above it are not inspected.
+    """
+    path = named(value)
+    depth = checkout_depth(path)
+    if depth is None:
+        raise ValueError(f"The CEF download cache must lie inside the checkout: {path}")
+    return unlinked(path.parents[depth - 1] if depth else path, path)
+
+
+def replace_fresh(source, target, timeout=2.0):
+    """Rename `source` over `target`, waiting out a brief hold of freshly written files.
+
+    Only the Windows errors in FRESH_FILE_HOLDS are retried, with a short backoff for
+    about `timeout` seconds; then the first error is raised. Other errors, and every
+    error on other platforms, are raised at once.
+    """
+    first_error, deadline, delay = None, 0.0, 0.02
+    while True:
+        try:
+            return Path(source).replace(target)
+        except OSError as error:
+            if getattr(error, "winerror", None) not in FRESH_FILE_HOLDS:
+                raise
+            now = time.monotonic()
+            if first_error is None:
+                first_error, deadline = error, now + timeout
+            if now >= deadline:
+                break
+        time.sleep(min(delay, deadline - now))
+        delay = min(2 * delay, 0.2)
+    raise first_error
 
 
 def digest(path, algorithm="sha256"):
@@ -55,8 +157,14 @@ def digest(path, algorithm="sha256"):
 
 
 def checked_archive(archive, pin):
-    archive = ordinary(archive)
-    if not archive.is_file() or archive.stat().st_size != pin["bytes"]:
+    archive = named(archive)
+    try:
+        metadata = archive.lstat()
+    except FileNotFoundError:
+        metadata = None
+    if metadata is not None and is_link(metadata):
+        raise ValueError(f"CEF paths must not traverse links/reparse points: {archive}")
+    if metadata is None or not stat.S_ISREG(metadata.st_mode) or metadata.st_size != pin["bytes"]:
         raise ValueError("CEF archive size does not match the pinned minimal distribution")
     if digest(archive) != pin["archive_sha256"] or digest(archive, "sha1") != pin["sha1"]:
         raise ValueError("CEF archive checksum does not match the pinned minimal distribution")
@@ -64,8 +172,8 @@ def checked_archive(archive, pin):
 
 
 def acquire(cache, pin, offline):
-    archive = ordinary(cache / pin["archive"])
-    if not archive.exists():
+    archive = cache / pin["archive"]
+    if not os.path.lexists(archive):
         if offline:
             raise ValueError(f"Offline CEF cache is missing: {archive}")
         cache.mkdir(parents=True, exist_ok=True)
@@ -83,7 +191,8 @@ def acquire(cache, pin, offline):
                         raise ValueError("CEF download exceeds its pinned byte count")
                     output.write(block)
             checked_archive(temporary, pin)
-            temporary.replace(archive)
+            # Retried: endpoint protection may still hold the download just written.
+            replace_fresh(temporary, archive)
         finally:
             temporary.unlink(missing_ok=True)
     return checked_archive(archive, pin)
@@ -94,8 +203,10 @@ def tree_hashes(root):
     for index, path in enumerate(root.rglob("*")):
         if index >= MAX_MEMBERS:
             raise ValueError("CEF SDK exceeds its entry budget")
-        ordinary(path)
-        mode = path.lstat().st_mode
+        metadata = path.lstat()
+        if is_link(metadata):
+            raise ValueError(f"CEF paths must not traverse links/reparse points: {path}")
+        mode = metadata.st_mode
         if stat.S_ISREG(mode):
             result[path.relative_to(root).as_posix()] = digest(path)
         elif not stat.S_ISDIR(mode):
@@ -151,7 +262,7 @@ def extract_flat(archive, output, pin, platform_name):
             if identity in written:
                 raise ValueError(f"Duplicate flattened CEF SDK member: {relative}")
             written.add(identity)
-            target = ordinary(output / relative)
+            target = unlinked(output, output / relative)
             target.parent.mkdir(parents=True, exist_ok=True)
             with bundle.extractfile(member) as source, target.open("xb") as destination:
                 shutil.copyfileobj(source, destination, 256 * 1024)
@@ -166,22 +277,24 @@ def prepare(output, offline=False, platform_name=None, cache_root=CACHE_ROOT, en
     platform_name = sys.platform if platform_name is None else platform_name
     pin = pin_for(platform_name) if pin is None else pin
     environ = os.environ if environ is None else environ
-    output, cache = ordinary(output), ordinary(cache_root)
-    if "_build" not in output.parts[:-1]:
-        raise ValueError("Generated CEF SDK output must be under _build/")
+    output, cache = generated_output(output), download_cache(cache_root)
     if any(name in environ for name in ("FLATPAK", "NIX_CEF_BINARY")):
         raise ValueError("CEF environment overrides bypass the verified SDK")
     override = environ.get("CEF_PATH")
     if override and platform_name == "linux":
-        sdk = ordinary(override)
-        if not sdk.is_absolute():
+        if not Path(override).is_absolute():
             raise ValueError("CEF_PATH must be absolute")
+        # The caller names the SDK root: it and the folders above it may be links, while
+        # validate_linux refuses any link inside it and checks every file's digest.
+        sdk = named(override)
         validate_linux(sdk, pin)
         return sdk
-    if override and ordinary(override) != output:
+    if override and named(override) != output:
         raise ValueError("Windows CEF_PATH must name this build's verified cef-sdk directory")
     archive = acquire(cache, pin, offline)
-    receipt = ordinary(output.with_name(output.name + ".verified.json"))
+    receipt = output.with_name(output.name + ".verified.json")
+    if os.path.lexists(receipt) and is_link(receipt.lstat()):
+        raise ValueError(f"CEF paths must not traverse links/reparse points: {receipt}")
     if output.is_dir():
         try:
             hashes = tree_hashes(output)
@@ -206,12 +319,15 @@ def prepare(output, offline=False, platform_name=None, cache_root=CACHE_ROOT, en
         hashes = tree_hashes(stage)
         previous = Path(temporary) / "previous"
         if output.exists():
-            output.replace(previous)
+            # Retried: endpoint protection may still hold files of a recent build.
+            replace_fresh(output, previous)
         try:
-            stage.replace(output)
+            # Retried: endpoint protection may still hold the files just extracted.
+            replace_fresh(stage, output)
         except OSError:
             if previous.exists():
-                previous.replace(output)
+                # Retried like the publication: the previous SDK returns to its place.
+                replace_fresh(previous, output)
             raise
         receipt.write_text(json.dumps({"archive_sha256": pin["archive_sha256"], "files": hashes},
                                       sort_keys=True) + "\n", encoding="utf-8")

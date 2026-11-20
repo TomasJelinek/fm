@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -48,6 +49,46 @@ def beneath(path, parent):
     return path == parent or parent in path.parents
 
 
+def is_link(metadata):
+    """A symbolic link or any Windows reparse point, such as a junction."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def in_checkout(value, root):
+    """`value` spelled below the resolved checkout `root`, reached without links below it.
+
+    Cargo reports paths as it was invoked, so the checkout is recognised however a path
+    spells it: through Fedora Silverblue's /home -> /var/home, a linked parent folder or
+    a subst drive. Below the checkout no component may be a link, a junction or another
+    reparse point, or '..'. Components that do not exist yet are accepted.
+    """
+    path = Path(value)
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError(f'Expected an absolute path without parent traversal: {path}')
+    checkout = os.stat(root)
+    ancestors = (path, *path.parents)
+    # The shallowest match: a link below the checkout back to it is inspected, not trusted.
+    for depth in reversed(range(len(ancestors))):
+        try:
+            if os.path.samestat(ancestors[depth].stat(), checkout):
+                break
+        except OSError:
+            continue
+    else:
+        raise ValueError(f'Path lies outside the repository: {path}')
+    result = Path(root)
+    for part in path.relative_to(ancestors[depth]).parts:
+        result = result / part
+        try:
+            metadata = result.lstat()
+        except FileNotFoundError:
+            continue
+        if is_link(metadata):
+            raise ValueError(f'Path must not traverse links below the repository: {path}')
+    return result
+
+
 def signature(path):
     value = path.stat()
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
@@ -76,22 +117,32 @@ def read_receipts(paths):
 
 
 def selected_workspace(root, workspace):
-    workspace = root if workspace is None else Path(workspace).absolute()
-    if (not workspace.is_dir() or workspace.resolve(strict=True) != workspace
-            or not beneath(workspace, root)):
+    try:
+        workspace = root if workspace is None else in_checkout(Path(workspace).absolute(), root)
+    except ValueError:
+        workspace = None
+    if workspace is None or not workspace.is_dir() or not beneath(workspace, root):
         raise ValueError('Selected workspace must be an ordinary directory within the repository')
     return workspace
+
+
+def reported(value, root):
+    """A path Cargo reported, spelled below the resolved checkout, or None if it escapes."""
+    try:
+        return in_checkout(value, root)
+    except ValueError:
+        return None
 
 
 def prepare(root, metadata, receipts, selections, workspace=None):
     root = root.resolve(strict=True)
     workspace = selected_workspace(root, workspace)
-    if Path(metadata['workspace_root']) != workspace:
+    if reported(metadata['workspace_root'], root) != workspace:
         raise ValueError('Metadata belongs to a different workspace')
     build = root / '_build'
-    target = Path(metadata['target_directory'])
-    if (not target.is_absolute() or target.resolve(strict=True) != target
-            or not beneath(target, build) or build.resolve(strict=True) != build):
+    # The checkout's own _build or a folder below it; none of them may be a link.
+    target = reported(metadata['target_directory'], root)
+    if target is None or not target.is_dir() or not beneath(target, build):
         raise ValueError('Test artifacts must reside in the ordinary workspace _build directory')
     finished = [event.get('success') for event in receipts if event.get('reason') == 'build-finished']
     if not finished or not all(value is True for value in finished):
@@ -121,9 +172,8 @@ def prepare(root, metadata, receipts, selections, workspace=None):
                    and target_kind(item) == selected.kind and item.get('test', False)]
         if len(matches) != 1:
             raise ValueError(f'Unknown or ambiguous test target: {selected}')
-        manifest = Path(package['manifest_path'])
-        if (not manifest.is_absolute() or not manifest.is_file()
-                or manifest.resolve(strict=True) != manifest or not beneath(manifest, workspace)):
+        manifest = reported(package['manifest_path'], root)
+        if manifest is None or not manifest.is_file() or not beneath(manifest, workspace):
             raise ValueError('Package manifest must be an ordinary workspace file')
         identity = (package['id'], selected.kind, selected.target)
         group = groups.setdefault(identity, {'package': selected.package, 'kind': selected.kind,
@@ -141,12 +191,11 @@ def prepare(root, metadata, receipts, selections, workspace=None):
                      and event.get('profile', {}).get('test') is True]
         if len(artifacts) != 1 or not isinstance(artifacts[0].get('executable'), str):
             raise ValueError(f'Missing or duplicate executable receipt for {identity}')
-        executable = Path(artifacts[0]['executable'])
+        executable = reported(artifacts[0]['executable'], root)
         pattern = re.escape(group['target'].replace('-', '_')) + r'-[0-9a-f]+(?:\.exe)?'
-        if (not executable.is_absolute() or not executable.is_file()
-                or executable.resolve(strict=True) != executable or not beneath(executable, target)
+        if (executable is None or not executable.is_file() or not beneath(executable, target)
                 or not re.fullmatch(pattern, executable.name)):
-            raise ValueError(f'Unowned test executable: {executable}')
+            raise ValueError(f'Unowned test executable: {artifacts[0]["executable"]}')
         if executable in executable_owners:
             raise ValueError('One executable cannot represent multiple package/target identities')
         executable_owners.add(executable)
@@ -279,9 +328,10 @@ def execute(root, metadata, receipts, selections, log_dir, *, jobs=None, thread_
     threads = max(1, thread_budget // jobs)
     if inherited_threads:
         threads = min(threads, int(inherited_threads))
-    log_dir = Path(log_dir).absolute()
-    build = Path(root).resolve(strict=True) / '_build'
-    if log_dir.resolve() != log_dir or not beneath(log_dir, build):
+    build = root / '_build'
+    # Strictly below the checkout's own _build; neither it nor a folder below it is a link.
+    log_dir = reported(Path(log_dir).absolute(), root)
+    if log_dir is None or log_dir == build or not beneath(log_dir, build):
         raise ValueError('Logs must remain under the ordinary workspace _build directory')
     log_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
     # Cargo exposes generated native library search directories inside its target tree.

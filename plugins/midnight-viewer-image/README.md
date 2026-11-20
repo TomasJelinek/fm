@@ -35,7 +35,10 @@ count, source revision, per-response deadlines and a 512 MiB/60 CPU-second proce
 The CPU allowance is cumulative across a session; exhaustion ends that session.
 
 Use a separately released offline SDK registry. The project never edits host
-sources. All build/test output must be inside a directory named `_build`:
+sources. All build/test output must lie below a `_build` directory: this project's own
+(`./_build`), that of the repository holding it in `plugins/`, or otherwise the first
+`_build` of the path. That `_build` and every folder below it must not be a link or
+junction; the folders above it may be links or hidden, such as `AppData`:
 
 ```powershell
 ./scripts/ci.ps1 -SdkConfig C:/sdk/.cargo/registry.toml -BuildRoot ./_build/check

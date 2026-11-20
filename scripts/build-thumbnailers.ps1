@@ -11,6 +11,30 @@ param(
 )
 $ErrorActionPreference='Stop'
 $repository=Split-Path -Parent $PSScriptRoot
+# Endpoint protection briefly holds files that were just written. While it does, Windows
+# refuses to rename them or a folder above them: access denied (5), a sharing (32) or a
+# lock (33) violation. A rename of fresh output retries only those errors, with a short
+# backoff for about 2 s, and then fails with the first error.
+function Invoke-FreshRename([scriptblock]$Rename) {
+    $firstHold = $null
+    $holdDelay = 20
+    while ($true) {
+        try { & $Rename; return }
+        catch {
+            $holdCode = 0
+            for ($failure = $_.Exception; $failure -and -not $holdCode; $failure = $failure.InnerException) {
+                if ((($failure.HResult -shr 16) -band 0x1FFF) -eq 7) { $holdCode = $failure.HResult -band 0xFFFF }
+            }
+            if ($holdCode -notin @(5, 32, 33)) { throw }
+            if (-not $firstHold) { $firstHold = $_; $holdWatch = [Diagnostics.Stopwatch]::StartNew() }
+            $holdLeft = 2000 - $holdWatch.ElapsedMilliseconds
+            if ($holdLeft -le 0) { throw $firstHold }
+            Start-Sleep -Milliseconds ([Math]::Max(1, [Math]::Min($holdDelay, $holdLeft)))
+            $holdDelay = [Math]::Min(2 * $holdDelay, 200)
+        }
+    }
+}
+
 # Resolve caller paths against the PowerShell location, not the process directory.
 $resolve={ param($path) [System.IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path)) }
 $ApiConfig=& $resolve $ApiConfig
@@ -128,11 +152,19 @@ public static class MidnightWorkerBuildIdentity {
     Get-ChildItem -LiteralPath (Join-Path $FfmpegPrefix 'share/midnight-ffmpeg') | Copy-Item -Destination $notices -Recurse -Force
     Copy-Item -LiteralPath $FfmpegSourceArchive -Destination (Join-Path $notices 'ffmpeg-9.0.2.tar.xz')
     $previous=Join-Path $staging 'previous'
-    if (Test-Path -LiteralPath $Destination) { Move-Item -LiteralPath $Destination -Destination $previous }
-    try { Move-Item -LiteralPath $package -Destination $Destination }
+    # Directory.Move is one rename that leaves nothing behind when it is refused; Move-Item
+    # would then move item by item and leave a created destination that a retry or the
+    # restoration below would nest the package in.
+    if (Test-Path -LiteralPath $Destination) {
+        # Retried: endpoint protection may still hold files of a package built moments ago.
+        Invoke-FreshRename { [IO.Directory]::Move($Destination, $previous) }
+    }
+    # Retried: endpoint protection may still hold the files just assembled.
+    try { Invoke-FreshRename { [IO.Directory]::Move($package, $Destination) } }
     catch {
         if (Test-Path -LiteralPath $previous) {
-            try { Move-Item -LiteralPath $previous -Destination $Destination }
+            # Retried like the publication: the previous package returns to its place.
+            try { Invoke-FreshRename { [IO.Directory]::Move($previous, $Destination) } }
             catch { $cleanStaging=$false; throw "Previous thumbnail package retained at $previous; restoration failed: $_" }
         }
         throw

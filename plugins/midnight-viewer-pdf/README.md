@@ -29,7 +29,11 @@ decrypt them. Hayro is experimental: some PDF constructs and nonembedded fonts
 may render differently or be unsupported. Reported missing-font/image/annotation
 warnings reject the page; the plugin does not promise complete PDF fidelity.
 
-Build/test against an exported public SDK bundle, with generated files under `_build`:
+Build/test against an exported public SDK bundle, with generated files below a `_build`
+directory: this project's own, that of the repository holding it in `plugins/`, or
+otherwise the first `_build` of the path. That `_build` and every folder below it must
+not be a link or junction; the folders above it may be links or hidden, such as
+`AppData`:
 
 ```powershell
 ./scripts/ci.ps1 -SdkConfig SDK_CONFIG -BuildRoot _build/pdf-plugin -Profile debug

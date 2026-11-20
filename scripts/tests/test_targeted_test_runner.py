@@ -11,6 +11,10 @@ import threading
 import unittest
 from unittest import mock
 
+# Sibling fixture module, also when run as scripts.tests.<module> from the checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from link_fixtures import directory_link  # noqa: E402
+
 SCRIPT = Path(__file__).resolve().parents[1] / 'run-targeted-tests.py'
 
 FIXTURE = r'''
@@ -187,6 +191,55 @@ class TargetedRunnerTests(unittest.TestCase):
         self.metadata['workspace_root'] = str(self.package)
         with self.assertRaisesRegex(ValueError, 'ordinary.*workspace|workspace.*ordinary'):
             self.run_cases([selected], workspace=link)
+        self.assertEqual(self.launched, [])
+
+    def linked_checkout(self):
+        """The checkout reached through a directory link outside it (a linked parent folder)."""
+        outer = tempfile.TemporaryDirectory()
+        self.addCleanup(outer.cleanup)
+        return directory_link(Path(outer.name) / 'checkout', self.root)
+
+    def test_checkout_reached_through_a_link_runs_the_artifacts_cargo_reported_that_way(self):
+        selected = self.add('alpha')
+        linked = self.linked_checkout()
+        def spelled(value):
+            return str(linked / Path(value).relative_to(self.root))
+        package = self.metadata['packages'][0]
+        self.metadata.update(workspace_root=str(linked), target_directory=str(linked / '_build'))
+        package['manifest_path'] = spelled(package['manifest_path'])
+        self.receipts[-1]['executable'] = spelled(self.receipts[-1]['executable'])
+        code = self.runner.execute(linked, self.metadata, self.receipts, [selected],
+                                   linked / '_build/qa/linked', jobs=1, thread_budget=1,
+                                   environment=dict(os.environ), spawn=self.spawn, workspace=linked)
+        self.assertEqual(code, 0)
+        summary = json.loads((self.root / '_build/qa/linked/summary.json').read_text())
+        self.assertEqual(summary['cases'][0]['status'], 'passed', summary)
+        self.assertEqual(summary['cases'][0]['cwd'], str(self.package))
+        self.assertEqual([name for name, _ in self.launched], ['alpha', 'alpha'])
+
+    def test_links_below_the_checkout_are_refused_before_launch(self):
+        selected = self.add('alpha')
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        directory_link(self.root / '_build/qa-link', Path(outside.name))
+        with self.assertRaisesRegex(ValueError, 'Logs must remain'):
+            self.runner.execute(self.root, self.metadata, self.receipts, [selected],
+                                self.root / '_build/qa-link/run', spawn=self.spawn)
+        self.assertEqual(list(Path(outside.name).iterdir()), [])
+        directory_link(self.root / 'target-link', self.root / '_build')
+        for key, value, message in (
+                ('target_directory', self.root / 'target-link', 'Test artifacts must reside'),
+                ('executable', self.root / 'target-link/debug/deps' / Path(self.receipts[-1]['executable']).name,
+                 'Unowned')):
+            with self.subTest(key=key):
+                metadata, receipts = json.loads(json.dumps(self.metadata)), json.loads(json.dumps(self.receipts))
+                if key == 'executable':
+                    receipts[-1]['executable'] = str(value)
+                else:
+                    metadata[key] = str(value)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.runner.execute(self.root, metadata, receipts, [selected], self.root / '_build/qa/run',
+                                        spawn=self.spawn)
         self.assertEqual(self.launched, [])
 
     def test_two_real_children_rendezvous_and_each_has_private_output_and_package_cwd(self):

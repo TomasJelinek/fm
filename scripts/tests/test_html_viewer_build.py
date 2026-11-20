@@ -17,6 +17,7 @@ import unittest
 # Sibling fixture module, also when run as scripts.tests.<module> from the checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pe_image import unsigned_pe  # noqa: E402
+from link_fixtures import POWERSHELL_HOLD, directory_link  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -84,9 +85,44 @@ package.mkdir()
         rows = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return [row[1] for row in rows if row[0] == name]
 
-    def run_build(self, *arguments):
-        return subprocess.run(["bash", str(self.root / "scripts/build-html-viewer.sh"), *arguments],
+    def run_build(self, *arguments, checkout=None):
+        """Run the checkout's wrapper, named as given (by default the fixture's real path)."""
+        checkout = checkout or self.root
+        return subprocess.run(["bash", str(checkout / "scripts/build-html-viewer.sh"), *arguments],
                               cwd=self.root.parent, env=self.environment, text=True, capture_output=True, timeout=20)
+
+    def test_checkout_reached_through_a_symlink_builds_but_links_from_build_down_are_refused(self):
+        # Fedora Silverblue's /home -> /var/home or a linked parent folder: the checkout,
+        # however a path spells it, is not inspected, but _build and below must be real.
+        owner = self.root.parent
+        checkout = directory_link(owner / "linked", owner) / self.root.name
+        result = self.run_build("debug", str(self.config), checkout=checkout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.root / "_build/debug/viewers/midnight-viewer-html/midnight-viewer-html").read_text(),
+                         "debug")
+        self.assertEqual(Path(self.calls("cef")[0][1]), checkout / "_build/html-viewer/cef-sdk/linux")
+        outside = owner / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("user data\n")
+        directory_link(self.root / "_build/redirect", outside)
+        directory_link(self.root / "_build/loop", self.root)
+        # Outside the checkout (a custom CARGO_TARGET_DIR), the walk starts at the path's
+        # first _build, which for this fixture is the repository's own _build above it.
+        custom = directory_link(owner / "custom target", outside)
+        refusals = {"must not traverse links": (checkout / "_build/redirect/debug",
+                                                checkout / "_build/loop/_build/debug",
+                                                custom / "_build/debug"),
+                    "must be under _build": (checkout / "debug",)}
+        for message, applications in refusals.items():
+            for application in applications:
+                with self.subTest(application=application):
+                    builds = len(self.calls("build"))
+                    result = self.run_build("debug", str(self.config), str(application), checkout=checkout)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(len(self.calls("build")), builds)
+        self.assertEqual([path.name for path in outside.iterdir()], ["keep"])
+        self.assertFalse((self.root / "debug").exists())
 
     def test_debug_default_caches_matching_web_sdk_and_rebuilds_into_fresh_package(self):
         for _ in range(2):
@@ -305,6 +341,39 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("must be under _build", output)
         self.assertEqual(list(outside.iterdir()), [])
+
+    def hold_new_package(self, milliseconds, share_delete):
+        """Make the fixture packager hold a file of the package it has just written.
+
+        Endpoint protection holds a file that was just written in the same way; while
+        it does, Windows refuses to rename the package folder (access denied).
+        """
+        packager = self.root / "plugins/midnight-viewer-html/scripts/package-windows.ps1"
+        with packager.open("a", encoding="utf-8") as stream:
+            stream.write(POWERSHELL_HOLD + "[MidnightFreshHold]::Hold((Join-Path $package 'runtime-files.json'), "
+                         f"{milliseconds}, ${str(share_delete).lower()})\n")
+
+    def test_brief_hold_of_the_new_package_is_waited_out(self):
+        code, output, _ = self.build()
+        self.assertEqual(code, 0, output)
+        self.library.write_bytes(unsigned_pe(True, b"second build"))
+        self.hold_new_package(300, share_delete=False)
+        code, output, _ = self.build()
+        self.assertEqual(code, 0, output)
+        self.assert_package(self.library.read_bytes())
+        self.assertEqual(list(self.package.parent.parent.glob(".html-build.*")), [])
+
+    def test_hold_beyond_two_seconds_fails_and_restores_the_previous_package(self):
+        code, output, _ = self.build()
+        self.assertEqual(code, 0, output)
+        previous = self.library.read_bytes()
+        self.library.write_bytes(unsigned_pe(True, b"second build"))
+        self.hold_new_package(2600, share_delete=True)
+        code, output, _ = self.build()
+        self.assertNotEqual(code, 0)
+        self.assertIn("denied", output)
+        self.assert_package(previous)
+        self.assertEqual(list(self.package.parent.parent.glob(".html-build.*")), [])
 
     def test_dependency_notices_below_a_non_ascii_path_survive_a_legacy_console_code_page(self):
         # Cargo prints UTF-8, but PowerShell decodes native output with the console

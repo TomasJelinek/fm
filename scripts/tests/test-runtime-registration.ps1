@@ -16,6 +16,31 @@ function Refuses([scriptblock]$Action, [string]$Reason) {
     try { & $Action | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw "Expected refusal: $Reason" }
 }
+function Start-BriefHold([string]$Path, [string]$Trigger, [int]$Milliseconds) {
+    # Opens $Path without delete sharing, as endpoint protection opens a file just written,
+    # and closes it $Milliseconds after $Trigger appears; returns the releasing thread.
+    if (-not ('MidnightRegistrationHoldFixture' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System.IO;
+using System.Threading;
+public static class MidnightRegistrationHoldFixture {
+    public static Thread Hold(string path, string trigger, int milliseconds) {
+        FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        Thread release = new Thread(delegate() {
+            try {
+                for (int waited = 0; !File.Exists(trigger) && waited < 120000; waited += 5) Thread.Sleep(5);
+                Thread.Sleep(milliseconds);
+            } finally { stream.Dispose(); }
+        });
+        release.IsBackground = true;
+        release.Start();
+        return release;
+    }
+}
+'@
+    }
+    return [MidnightRegistrationHoldFixture]::Hold($Path, $Trigger, $Milliseconds)
+}
 function Assert-DeploymentReadLease {
     $source = Join-Path $testRoot 'held-source.exe'
     $replacement = Join-Path $testRoot 'held-replacement.exe'
@@ -256,6 +281,17 @@ try {
     $hash = $nextHash
     $pointer = Assert-LauncherPointer $registry $sourceExecutable $hash
 
+    # A brief hold of the pointer while it is replaced, like endpoint protection's, is
+    # waited out: the publication retries for about 2 s, which the lock above outlasts.
+    [IO.File]::WriteAllText($sourceExecutable, 'a registered executable fixture published through a brief hold')
+    $heldHash = (Get-FileHash -LiteralPath $sourceExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+    $release = Start-BriefHold $pointer.Path (Join-Path $registry "$heldHash.toml") 300
+    try { & $deploy -SourceDirectory $source -Destination "$testRoot/briefly-held" -RegisterRuntime -RegistrationDirectory $registry | Out-Null }
+    finally { $release.Join() }
+    $hash = $heldHash
+    $pointer = Assert-LauncherPointer $registry $sourceExecutable $hash
+    Assert-NoTemporaryRecords $registry
+
     $unsafe = Join-Path $testRoot 'shared-registry'
     New-Item -ItemType Directory -Path $unsafe | Out-Null
     $acl = Get-Acl -LiteralPath $unsafe
@@ -328,7 +364,7 @@ try {
         Refuses { & $deploy -SourceDirectory $source -Destination "$testRoot/redirected" -RegisterRuntime -RegistrationDirectory $redirect } 'registry junction'
     } finally { [IO.Directory]::Delete($redirect) }
     if (Test-Path -LiteralPath "$testRoot/redirected") { throw 'Redirected registry left deployment' }
-    Write-Output 'Runtime registration checks passed: unchanged legacy schema, exact source pointer metadata, five UTF-16 codec vectors, native case/verbatim aliases and long path, atomic publication order, explicit migration, no-register invariance, private ACL and hostile/reparse refusals.'
+    Write-Output 'Runtime registration checks passed: unchanged legacy schema, exact source pointer metadata, five UTF-16 codec vectors, native case/verbatim aliases and long path, atomic publication order, explicit migration, a brief publication hold waited out, no-register invariance, private ACL and hostile/reparse refusals.'
     Write-Output 'Not run: native UNC resolution (no controlled network share); the UNC codec vector is covered.'
 } finally {
     $resolvedParent = [IO.Path]::GetFullPath($parent).TrimEnd('\')

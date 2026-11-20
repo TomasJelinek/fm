@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -105,18 +106,81 @@ def integration_identities(gate):
             for package in packages}
 
 
+def is_link(metadata):
+    """A symbolic link or any Windows reparse point, such as a junction."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def in_checkout(value, root):
+    """`value` spelled below the resolved checkout `root`, or None if it escapes it.
+
+    Cargo reports paths as it was invoked (CARGO_TARGET_DIR may name the checkout through
+    Fedora Silverblue's /home -> /var/home, a linked parent folder or a subst drive), so
+    the checkout is recognised however a path spells it. Below the checkout no component
+    may be a link, a junction or another reparse point, or '..'.
+    """
+    path = Path(value)
+    if not path.is_absolute() or '..' in path.parts:
+        return None
+    checkout = os.stat(root)
+    ancestors = (path, *path.parents)
+    # The shallowest match: a link below the checkout back to it is inspected, not trusted.
+    for depth in reversed(range(len(ancestors))):
+        try:
+            if os.path.samestat(ancestors[depth].stat(), checkout):
+                break
+        except OSError:
+            continue
+    else:
+        return None
+    result = Path(root)
+    for part in path.relative_to(ancestors[depth]).parts:
+        result = result / part
+        try:
+            if is_link(result.lstat()):
+                return None
+        except FileNotFoundError:
+            continue
+    return result
+
+
+def plain_directories(*paths):
+    """Whether every path is an existing directory that is not a link."""
+    for path in paths:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return False
+        if is_link(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            return False
+    return True
+
+
+def plain_file(path):
+    """The (device, inode) identity of a regular file that is not a link, or None."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if is_link(metadata) or not stat.S_ISREG(metadata.st_mode):
+        return None
+    return metadata.st_dev, metadata.st_ino
+
+
 def output_root(root, metadata):
+    """The checkout's own _build, which Cargo's target directory must be, however spelled."""
     root = root.resolve(strict=True)
     expected = root / '_build'
-    actual = Path(metadata['target_directory'])
-    if expected.is_symlink() or not actual.is_absolute() or actual.resolve() != expected:
+    if in_checkout(metadata['target_directory'], root) != expected or not plain_directories(expected):
         raise ValueError('CI artifact retirement requires the plain repository _build target directory')
     return expected
 
 
 def retire(root, gate, artifacts):
+    """Delete the reported executables of a passing gate; `root` is the checkout's _build."""
     deps = root / 'debug/deps'
-    if deps.is_symlink() or deps.resolve() != deps:
+    if not plain_directories(root, deps.parent, deps):
         raise ValueError('Generated test directory must not redirect outside _build/debug/deps')
     expected = integration_identities(gate)
     selected = set()
@@ -131,21 +195,19 @@ def retire(root, gate, artifacts):
         value = artifact.get('executable')
         if not isinstance(value, str):
             raise ValueError('Missing integration executable artifact')
-        executable = Path(value)
+        # Spelled below the resolved checkout, so the comparison with deps is exact.
+        executable = in_checkout(value, root.parent)
         pattern = re.escape(identity[1].replace('-', '_')) + r'-[0-9a-f]+(?:\.exe)?'
-        if (not executable.is_absolute() or executable.is_symlink()
-                or executable.parent != deps or executable.resolve(strict=True) != executable
-                or not executable.is_file() or not re.fullmatch(pattern, executable.name)):
-            raise ValueError(f'Unowned integration artifact: {executable}')
+        if (executable is None or executable.parent != deps or plain_file(executable) is None
+                or not re.fullmatch(pattern, executable.name)):
+            raise ValueError(f'Unowned integration artifact: {value}')
         if executable in paths:
             raise ValueError('Duplicate integration executable artifact')
         paths.add(executable)
         if executable.suffix == '.exe':
             pdb = executable.with_suffix('.pdb')
-            if pdb.is_symlink():
-                raise ValueError(f'Unowned integration symbols: {pdb}')
-            if pdb.exists():
-                if not pdb.is_file() or pdb.resolve(strict=True) != pdb:
+            if os.path.lexists(pdb):
+                if plain_file(pdb) is None:
                     raise ValueError(f'Unowned integration symbols: {pdb}')
                 paths.add(pdb)
         selected.add(identity)
@@ -159,8 +221,10 @@ def retire(root, gate, artifacts):
 
 
 def artifact_identity(path):
-    metadata = path.lstat()
-    return metadata.st_dev, metadata.st_ino
+    identity = plain_file(path)
+    if identity is None:
+        raise ValueError(f'Unowned or changed generated artifact: {path}')
+    return identity
 
 
 def unlink_artifact(path, deps, identity):
@@ -171,9 +235,8 @@ def unlink_artifact(path, deps, identity):
     while True:
         if first_error is not None and time.monotonic() >= deadline:
             raise first_error
-        if (deps.is_symlink() or deps.resolve(strict=True) != deps
-                or path.parent != deps or path.is_symlink() or not path.is_file()
-                or path.resolve(strict=True) != path or artifact_identity(path) != identity):
+        if (not plain_directories(deps.parent.parent, deps.parent, deps)
+                or path.parent != deps or plain_file(path) != identity):
             raise ValueError(f'Unowned or changed generated artifact: {path}')
         try:
             path.unlink()

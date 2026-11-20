@@ -43,8 +43,12 @@ Defaults derive from the checkout root; `-TargetDirectory` selects output beneat
 (`scripts/build-html-viewer.ps1`) passes `-CefSdk` with the flattened SDK that
 `scripts/prepare-html-cef.py` verified: Cargo compiles against it in place and the
 package copies its runtime files from it, checking them against its `.verified.json`
-receipt. With `-CefDistribution` (default: the extracted distribution beneath
-`_build/html-viewer/cef`) the helper flattens the layout required by `cef-dll-sys`
+receipt. That SDK lies below the checkout's own `_build`, however the checkout is
+spelled (it may lie below a link or hidden `AppData`), with no link from `_build` down;
+the download cache must be a plain folder inside the checkout. On Windows, renaming
+the fresh SDK and package into place waits for about 2 s while endpoint protection
+holds a file just written. With `-CefDistribution` (default: the extracted distribution
+beneath `_build/html-viewer/cef`) the helper flattens the layout required by `cef-dll-sys`
 once into `<target>\cef-sdk` and records a `.staged.json` receipt, which the package
 checks the same way. The helper builds the Rust DLL and creates
 `_build/html-viewer/provider-target/package`.

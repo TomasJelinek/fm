@@ -145,6 +145,13 @@ must lie below the checkout's own `_build` or, outside the checkout, below the f
 `_build` of a custom target directory. That `_build` and every folder below it must
 not be a link; the checkout and the folders above it may be one (Fedora Silverblue's
 `/home`, a linked parent folder or `subst` drive) or hidden, such as `AppData`.
+`scripts/prepare-thumbnail-ffmpeg.py` applies the same rule to its build root. A
+verified FFmpeg prefix, its source archive and the libclang directory may be named
+through links, and the prefix and libclang directory may themselves be links; nothing
+inside the prefix may be one, except the versioned runtime library names, which must
+resolve inside it. Its download cache must be a plain folder inside the checkout.
+On Windows the package swap and the FFmpeg download and receipt renames wait for
+about 2 s while endpoint protection holds a file just written.
 Missing notices fail staging. The inventory
 table alone does not generate these files. Optional video inputs are the verified FFmpeg prefix, matching
 source archive and libclang directory. A flat executable-adjacent

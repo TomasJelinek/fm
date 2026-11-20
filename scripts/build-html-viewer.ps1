@@ -8,6 +8,30 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'utf8-native-output.ps1')
 
+# Endpoint protection briefly holds files that were just written. While it does, Windows
+# refuses to rename them or a folder above them: access denied (5), a sharing (32) or a
+# lock (33) violation. A rename of fresh output retries only those errors, with a short
+# backoff for about 2 s, and then fails with the first error.
+function Invoke-FreshRename([scriptblock]$Rename) {
+    $firstHold = $null
+    $holdDelay = 20
+    while ($true) {
+        try { & $Rename; return }
+        catch {
+            $holdCode = 0
+            for ($failure = $_.Exception; $failure -and -not $holdCode; $failure = $failure.InnerException) {
+                if ((($failure.HResult -shr 16) -band 0x1FFF) -eq 7) { $holdCode = $failure.HResult -band 0xFFFF }
+            }
+            if ($holdCode -notin @(5, 32, 33)) { throw }
+            if (-not $firstHold) { $firstHold = $_; $holdWatch = [Diagnostics.Stopwatch]::StartNew() }
+            $holdLeft = 2000 - $holdWatch.ElapsedMilliseconds
+            if ($holdLeft -le 0) { throw $firstHold }
+            Start-Sleep -Milliseconds ([Math]::Max(1, [Math]::Min($holdDelay, $holdLeft)))
+            $holdDelay = [Math]::Min(2 * $holdDelay, 200)
+        }
+    }
+}
+
 function Test-HtmlPackageCurrent([string]$StatePath, [string]$Fingerprint, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return $false }
     $state = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -192,11 +216,19 @@ try {
         }
     }
     $previous = Join-Path $staging 'previous'
-    if (Test-Path -LiteralPath $destination) { Move-Item -LiteralPath $destination -Destination $previous }
-    try { Move-Item -LiteralPath $package -Destination $destination }
+    # Directory.Move is one rename that leaves nothing behind when it is refused; Move-Item
+    # would then move item by item and leave a created destination that a retry or the
+    # restoration below would nest the package in.
+    if (Test-Path -LiteralPath $destination) {
+        # Retried: endpoint protection may still hold files of a package built moments ago.
+        Invoke-FreshRename { [IO.Directory]::Move($destination, $previous) }
+    }
+    # Retried: endpoint protection may still hold the files just packaged.
+    try { Invoke-FreshRename { [IO.Directory]::Move($package, $destination) } }
     catch {
         if (Test-Path -LiteralPath $previous) {
-            try { Move-Item -LiteralPath $previous -Destination $destination }
+            # Retried like the publication: the previous package returns to its place.
+            try { Invoke-FreshRename { [IO.Directory]::Move($previous, $destination) } }
             catch { $cleanStaging = $false; throw "Previous HTML module retained at $previous; restoration failed: $_" }
         }
         throw

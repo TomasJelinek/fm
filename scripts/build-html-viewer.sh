@@ -14,12 +14,27 @@ build_root="$project_root/_build/html-viewer"
 target_root=${CARGO_TARGET_DIR:-"$project_root/_build"}
 app_directory=$(realpath -ms -- "${3:-$target_root/$profile}")
 destination="$app_directory/viewers/midnight-viewer-html"
+# Generated output lies below _build: the checkout's own for a path in the checkout,
+# otherwise the first _build of a custom target directory. That _build and everything
+# below it must not be a symlink. The checkout and the folders above it may be reached
+# through links (Fedora Silverblue's /home -> /var/home, a linked parent folder); the
+# checkout is recognised as the same directory however the path spells it.
 for target in "$build_root" "$destination"; do
-    case "$target" in /*/_build/*) ;; *) echo 'Generated HTML output must be under _build' >&2; exit 2 ;; esac
-    parent=$target
-    while [[ $parent != / ]]; do
-        [[ ! -L $parent ]] || { echo 'Generated HTML output must not traverse links' >&2; exit 2; }
-        parent=$(dirname -- "$parent")
+    ancestors=() parent=$target
+    while [[ $parent != / ]]; do ancestors+=("$parent"); parent=$(dirname -- "$parent"); done
+    top=${#ancestors[@]}
+    for (( index=top-1; index>=0; index-- )); do
+        if [[ ${ancestors[index]} -ef $project_root ]]; then top=$index; break; fi
+    done
+    anchor=0
+    for (( index=top-1; index>0; index-- )); do
+        if [[ ${ancestors[index]##*/} == _build ]]; then anchor=$index; break; fi
+        (( top == ${#ancestors[@]} )) || break
+    done
+    (( anchor > 0 )) || { echo "Generated HTML output must be under _build: $target" >&2; exit 2; }
+    for (( index=0; index<=anchor; index++ )); do
+        [[ ! -L ${ancestors[index]} ]] || {
+            echo "Generated HTML output must not traverse links: ${ancestors[index]}" >&2; exit 2; }
     done
 done
 mkdir -p -- "$build_root" "$project_root/_build/tmp"

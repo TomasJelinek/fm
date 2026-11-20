@@ -347,6 +347,30 @@ function Initialize-PrivateRegistrationDirectory([string]$Directory,
     }
 }
 
+# Endpoint protection briefly holds files that were just written. While it does, Windows
+# refuses to rename them or a folder above them: access denied (5), a sharing (32) or a
+# lock (33) violation. A rename of fresh output retries only those errors, with a short
+# backoff for about 2 s, and then fails with the first error.
+function Invoke-FreshRename([scriptblock]$Rename) {
+    $firstHold = $null
+    $holdDelay = 20
+    while ($true) {
+        try { & $Rename; return }
+        catch {
+            $holdCode = 0
+            for ($failure = $_.Exception; $failure -and -not $holdCode; $failure = $failure.InnerException) {
+                if ((($failure.HResult -shr 16) -band 0x1FFF) -eq 7) { $holdCode = $failure.HResult -band 0xFFFF }
+            }
+            if ($holdCode -notin @(5, 32, 33)) { throw }
+            if (-not $firstHold) { $firstHold = $_; $holdWatch = [Diagnostics.Stopwatch]::StartNew() }
+            $holdLeft = 2000 - $holdWatch.ElapsedMilliseconds
+            if ($holdLeft -le 0) { throw $firstHold }
+            Start-Sleep -Milliseconds ([Math]::Max(1, [Math]::Min($holdDelay, $holdLeft)))
+            $holdDelay = [Math]::Min(2 * $holdDelay, 200)
+        }
+    }
+}
+
 function Write-PrivateRegistrationRecord([string]$Directory, [string]$Name, [byte[]]$Bytes) {
     if ($Name -cnotmatch '^[0-9a-f]{64}\.toml\z') { throw 'Invalid registration record name' }
     if ($Bytes.Length -gt 1048576) { throw 'Runtime registration exceeds 1 MiB' }
@@ -365,11 +389,12 @@ function Write-PrivateRegistrationRecord([string]$Directory, [string]$Name, [byt
         try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) }
         finally { $stream.Dispose() }
         Assert-PrivatePath $temporary $true
+        # Retried: endpoint protection may still hold the record just written.
         if (Test-Path -LiteralPath $record) {
             Assert-PrivatePath $record $true
-            [IO.File]::Replace($temporary, $record, [NullString]::Value)
+            Invoke-FreshRename { [IO.File]::Replace($temporary, $record, [NullString]::Value) }
         } else {
-            [IO.File]::Move($temporary, $record)
+            Invoke-FreshRename { [IO.File]::Move($temporary, $record) }
         }
         Assert-PrivatePath $record $true
     } finally {
