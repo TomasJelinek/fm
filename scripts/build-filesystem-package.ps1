@@ -12,9 +12,11 @@ if ($env:OS -ne 'Windows_NT') { throw 'Use the .sh filesystem helper on Linux' }
 
 # Endpoint protection briefly holds files that were just written. While it does, Windows
 # refuses to rename them or a folder above them: access denied (5), a sharing (32) or a
-# lock (33) violation. A rename of fresh output retries only those errors, with a short
-# backoff for about 2 s, and then fails with the first error. This script always uses
-# the 2000 ms default; tests shorten it with -TimeoutMilliseconds or $PSDefaultParameterValues.
+# lock (33) violation, or File.Replace cannot remove the replaced file (1175, both files
+# unchanged; its partial outcomes 1176/1177 are not retried). A rename of fresh output
+# retries only those errors, with a short backoff for about 2 s, and then fails with the
+# first error. This script always uses the 2000 ms default; tests shorten it with
+# -TimeoutMilliseconds or $PSDefaultParameterValues.
 function Invoke-FreshRename {
     [CmdletBinding()]
     param([Parameter(Mandatory)][scriptblock]$Rename, [int]$TimeoutMilliseconds = 2000)
@@ -27,7 +29,7 @@ function Invoke-FreshRename {
             for ($failure = $_.Exception; $failure -and -not $holdCode; $failure = $failure.InnerException) {
                 if ((($failure.HResult -shr 16) -band 0x1FFF) -eq 7) { $holdCode = $failure.HResult -band 0xFFFF }
             }
-            if ($holdCode -notin @(5, 32, 33)) { throw }
+            if ($holdCode -notin @(5, 32, 33, 1175)) { throw }
             if (-not $firstHold) { $firstHold = $_; $holdWatch = [Diagnostics.Stopwatch]::StartNew() }
             $holdLeft = $TimeoutMilliseconds - $holdWatch.ElapsedMilliseconds
             if ($holdLeft -le 0) { throw $firstHold }

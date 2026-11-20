@@ -97,11 +97,14 @@ accept Cargo's paths however they spell the checkout, under the same rule.
 
 On Windows, endpoint protection briefly holds files that were just written. While it
 does, renaming them or a folder above them fails with access denied (5) or a sharing
-(32) or lock (33) violation. The build, packaging and registration scripts therefore
-retry the renames of their own fresh output (CEF and FFmpeg downloads and stages, the
-FFmpeg receipt, the thumbnail and HTML package swaps, the filesystem package files and
-the runtime registration records) for about 2 s with a short backoff, and then fail
-with the first error. Other errors, other platforms and deletions are never retried.
+(32) or lock (33) violation, and File.Replace, which writes the runtime registration
+records, can report that it could not remove the replaced record (1175), leaving both
+files unchanged. The build, packaging and registration scripts therefore retry the
+renames of their own fresh output (CEF and FFmpeg downloads and stages, the FFmpeg
+receipt, the thumbnail and HTML package swaps, the filesystem package files and the
+runtime registration records) for about 2 s with a short backoff, and then fail with
+the first error. Other errors, including File.Replace's partial outcomes (1176, 1177),
+other platforms and deletions are never retried.
 The thumbnail and HTML package swaps use one directory rename, which leaves nothing
 behind when it is refused.
 

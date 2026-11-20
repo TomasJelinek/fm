@@ -38,6 +38,8 @@ BASELINE_OPTIONS = (
 )
 # Windows errors while endpoint protection holds a file that was just written: access
 # denied (5) renaming a folder above it, and sharing (32) or lock (33) violations.
+# os.replace (MoveFileEx) never reports 1175, File.Replace's code for a replaced file it
+# cannot remove (see Invoke-FreshRename in the PowerShell build scripts).
 FRESH_FILE_HOLDS = (5, 32, 33) if os.name == 'nt' else ()
 
 

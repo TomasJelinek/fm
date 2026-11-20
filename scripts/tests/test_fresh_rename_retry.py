@@ -2,11 +2,13 @@
 
 Endpoint protection briefly holds files that were just written; while it does, Windows
 refuses to rename them or a folder above them (access denied, 5) or reports a sharing
-(32) or lock (33) violation. Each language has one small helper per script: Python's
-replace_fresh and PowerShell's Invoke-FreshRename. Every copy is exercised here, with a
-pinned 2 s default that the scripts never change and shorter budgets for real holds;
-the scripts' own tests check that their renames use it (one per language waits the
-real 2 s: the CEF SDK and thumbnail package swaps).
+(32) or lock (33) violation; File.Replace reports a replaced file that it cannot remove as
+1175, which the PowerShell helpers retry too (not its partial outcomes 1176 or 1177). Each
+language has one small helper per script: Python's replace_fresh and PowerShell's
+Invoke-FreshRename. Every copy is exercised here, with a pinned 2 s default that the
+scripts never change and shorter budgets for real holds; the scripts' own tests check that
+their renames use it (one per language waits the real 2 s: the CEF SDK and thumbnail
+package swaps).
 """
 import ast
 import importlib.util
@@ -184,18 +186,30 @@ $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language
     $node.Name -eq 'Invoke-FreshRename' }, $true)
 if (-not $definition) { throw "Invoke-FreshRename is missing: $Script" }
 . ([scriptblock]::Create($definition.Extent.Text))
-# The budget this script relies on, and its calls: none of them may pass another one.
+# The budget and the retried codes this script relies on, and its calls: none of them may
+# pass another budget.
 $budget = @($definition.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'TimeoutMilliseconds' })
+$retried = $definition.Body.Find({ param($node) $node -is [Management.Automation.Language.ArrayExpressionAst] }, $true)
 $calls = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and
     $node.GetCommandName() -eq 'Invoke-FreshRename' }, $true))
 ''' + POWERSHELL_HOLD + r'''
-function Measure-Rename([scriptblock]$Rename, [int]$Budget = 0) {
+function Get-Code($Exception) {
+    for ($failure = $Exception; $failure; $failure = $failure.InnerException) {
+        if ((($failure.HResult -shr 16) -band 0x1FFF) -eq 7) { return $failure.HResult -band 0xFFFF }
+    }
+    return $Exception.HResult -band 0xFFFF
+}
+function Measure-Rename([scriptblock]$Operation, [int]$Budget = 0) {
+    # Counts the attempts and keeps each failed attempt's Windows error code.
     $script:attempts = 0
+    $script:codes = @()
+    $counted = { $script:attempts++; try { & $Operation } catch { $script:codes += Get-Code $_.Exception; throw } }
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $code = 0
-    try { if ($Budget) { Invoke-FreshRename $Rename -TimeoutMilliseconds $Budget } else { Invoke-FreshRename $Rename } }
-    catch { $code = $_.Exception.HResult; if ($_.Exception.InnerException) { $code = $_.Exception.InnerException.HResult } }
-    [ordered]@{ attempts = $script:attempts; milliseconds = $watch.ElapsedMilliseconds; code = $code -band 0xFFFF }
+    try { if ($Budget) { Invoke-FreshRename $counted -TimeoutMilliseconds $Budget } else { Invoke-FreshRename $counted } }
+    catch { $code = Get-Code $_.Exception }
+    [ordered]@{ attempts = $script:attempts; milliseconds = $watch.ElapsedMilliseconds; code = $code
+        codes = @($script:codes | Sort-Object -Unique) }
 }
 function New-Stage([string]$Name) {
     $stage = Join-Path $Root $Name
@@ -204,53 +218,64 @@ function New-Stage([string]$Name) {
     return $stage
 }
 $results = [ordered]@{ budget = $budget[0].DefaultValue.Value
+    retried = @($retried.SubExpression.Statements[0].PipelineElements[0].Expression.Elements | ForEach-Object Value)
     calls = $calls.Count; arguments = @($calls | ForEach-Object { $_.CommandElements.Count - 1 } | Sort-Object -Unique) }
 # The files that fresh ones replace are written first, so that they are not fresh themselves.
 [IO.File]::WriteAllText((Join-Path $Root 'installed.txt'), 'installed')
-foreach ($try in 1..3) { [IO.File]::WriteAllText((Join-Path $Root "record $try.txt"), 'old record') }
+[IO.File]::WriteAllText((Join-Path $Root 'record.txt'), 'old record')
+[IO.File]::WriteAllText((Join-Path $Root 'unremovable.txt'), 'old record')
 # First calls compile; warm up so that each short hold meets the rename it is meant for.
 $warm = New-Stage 'warm'
-$null = Measure-Rename { $script:attempts++; [IO.Directory]::Move($warm, (Join-Path $Root 'warm moved')) }
+$null = Measure-Rename { [IO.Directory]::Move($warm, (Join-Path $Root 'warm moved')) }
 # A folder is renamed while a file inside it is held, as the package swaps do.
 $stage = New-Stage 'folder'
 Start-FreshHold (Join-Path $stage 'fresh.txt') 150 $true
-$results.folder = Measure-Rename { $script:attempts++; [IO.Directory]::Move($stage, (Join-Path $Root 'folder moved')) }
+$results.folder = Measure-Rename { [IO.Directory]::Move($stage, (Join-Path $Root 'folder moved')) }
 $results.folder.moved = Test-Path -LiteralPath (Join-Path $Root 'folder moved/fresh.txt')
-# A held file replaces an installed one, as the filesystem package and registration do.
+# A held fresh file replaces an installed one, as the filesystem package does.
 $stage = New-Stage 'file'
 Start-FreshHold (Join-Path $stage 'fresh.txt') 150 $false
 $results.file = Measure-Rename {
-    $script:attempts++; Move-Item -LiteralPath (Join-Path $stage 'fresh.txt') -Destination (Join-Path $Root 'installed.txt') -Force
+    Move-Item -LiteralPath (Join-Path $stage 'fresh.txt') -Destination (Join-Path $Root 'installed.txt') -Force
 }
 $results.file.moved = [IO.File]::ReadAllText((Join-Path $Root 'installed.txt')) -eq 'fresh output'
-# When something outside this test also holds the replaced file, File.Replace reports that it
-# cannot remove it (1175), which the helper rightly does not retry; as for other uncontrolled
-# holds (TEST-04), only that case is run again, on fresh files.
-foreach ($try in 1..3) {
-    $stage = New-Stage "replace $try"
-    $record = Join-Path $Root "record $try.txt"
-    Start-FreshHold (Join-Path $stage 'fresh.txt') 150 $false
-    $results.replace = Measure-Rename {
-        $script:attempts++; [IO.File]::Replace((Join-Path $stage 'fresh.txt'), $record, [NullString]::Value)
-    }
-    $results.replace.tries = $try
-    $results.replace.moved = [IO.File]::ReadAllText($record) -eq 'fresh output'
-    if ($results.replace.code -ne 1175) { break }
+# A fresh record replaces one that is held without delete sharing, as registration does
+# (File.Replace reports 32 for it, not 1175).
+$stage = New-Stage 'replaced'
+Start-FreshHold (Join-Path $Root 'record.txt') 150 $false
+$results.replaced = Measure-Rename {
+    [IO.File]::Replace((Join-Path $stage 'fresh.txt'), (Join-Path $Root 'record.txt'), [NullString]::Value)
 }
+$results.replaced.moved = [IO.File]::ReadAllText((Join-Path $Root 'record.txt')) -eq 'fresh output'
+# File.Replace reports 1175 when it cannot remove the replaced file, keeping both files.
+# No hold that a test can take yields it (endpoint protection's does, now and then), so the
+# rename reports it for 150 ms and then replaces the record.
+$stage = New-Stage 'unremovable'
+$unremovableHold = [Diagnostics.Stopwatch]::StartNew()
+$results.unremovable = Measure-Rename {
+    if ($unremovableHold.ElapsedMilliseconds -lt 150) {
+        throw [IO.IOException]::new('fixture: replaced file not removed', -2147023721)
+    }
+    [IO.File]::Replace((Join-Path $stage 'fresh.txt'), (Join-Path $Root 'unremovable.txt'), [NullString]::Value)
+}
+$results.unremovable.moved = [IO.File]::ReadAllText((Join-Path $Root 'unremovable.txt')) -eq 'fresh output'
 # A hold far longer than a 100 ms budget: the rename's first error is raised. The hold
 # ends with this process, so its length costs no time.
 $stage = New-Stage 'long'
 Start-FreshHold (Join-Path $stage 'fresh.txt') 2000 $true
-$results.long = Measure-Rename { $script:attempts++; [IO.Directory]::Move($stage, (Join-Path $Root 'long moved')) } 100
+$results.long = Measure-Rename { [IO.Directory]::Move($stage, (Join-Path $Root 'long moved')) } 100
 $results.long.moved = Test-Path -LiteralPath (Join-Path $Root 'long moved')
-$results.missing = Measure-Rename { $script:attempts++; Move-Item -LiteralPath (Join-Path $Root 'absent') -Destination (Join-Path $Root 'x') }
-$results.other = Measure-Rename { $script:attempts++; throw [IO.IOException]::new('fixture: not found', -2147024894) }
+$results.missing = Measure-Rename { Move-Item -LiteralPath (Join-Path $Root 'absent') -Destination (Join-Path $Root 'x') }
+$results.other = Measure-Rename { throw [IO.IOException]::new('fixture: not found', -2147024894) }
 $results.first = Measure-Rename {
-    $script:attempts++
     $code = if ($script:attempts -eq 1) { -2147024864 } else { -2147024863 }  # 32 first, then 33
     throw [IO.IOException]::new('fixture hold', $code)
 } 100
-$results | ConvertTo-Json -Compress
+# File.Replace's partial outcomes (1176, 1177) must not be retried.
+$results.partial = @(foreach ($partialHResult in @(-2147023720, -2147023719)) {
+    Measure-Rename { throw [IO.IOException]::new('fixture partial replace', $partialHResult) } 100
+})
+$results | ConvertTo-Json -Compress -Depth 4
 '''
 
 
@@ -282,12 +307,16 @@ class PowerShellFreshRename(unittest.TestCase):
                 self.assertEqual(process.returncode, 0, stdout + stderr)
                 results = json.loads(stdout.strip().splitlines()[-1])
                 self.assertEqual(results["budget"], 2000, "The scripts' retry budget changed")
+                self.assertEqual(results["retried"], [5, 32, 33, 1175], "The retried codes changed")
                 self.assertGreater(results["calls"], 0)
                 self.assertEqual(results["arguments"], [1], "A call passes its own retry budget")
-                for name in ("folder", "file", "replace"):
+                # Each hold is waited out; the codes are what Windows reported meanwhile (the
+                # 1175 is scripted: no hold that a test can take yields it).
+                for name, code in (("folder", 5), ("file", 32), ("replaced", 32), ("unremovable", 1175)):
                     self.assertEqual(results[name]["code"], 0, results)
                     self.assertTrue(results[name]["moved"], results)
                     self.assertGreater(results[name]["attempts"], 1, "The hold was not exercised")
+                    self.assertIn(code, results[name]["codes"], results)
                 self.assertIn(results["long"]["code"], (5, 32), results)
                 self.assertFalse(results["long"]["moved"], results)
                 self.assertGreater(results["long"]["attempts"], 1, results)
@@ -298,6 +327,8 @@ class PowerShellFreshRename(unittest.TestCase):
                 self.assertEqual(results["other"]["code"], 2, results)
                 self.assertEqual(results["first"]["code"], 32, "The first error must be raised")
                 self.assertGreater(results["first"]["attempts"], 1, results)
+                self.assertEqual([(run["code"], run["attempts"]) for run in results["partial"]],
+                                 [(1176, 1), (1177, 1)], "A partial replace was retried")
 
 
 if __name__ == "__main__":
