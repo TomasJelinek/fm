@@ -340,21 +340,39 @@ fn a_narrow_panel_shows_short_names_whole_and_drops_time_and_date_first() {
     }
 }
 
+/// Long names cannot fit a narrow panel, but the metadata gives way first: Time, then
+/// the date, then Size, as far as each fits after the name's room, which keeps a short
+/// name whole. The fonts decide what fits: with Segoe UI on Windows, the date still
+/// does at desktop density, beside a long name cut to that room.
 #[test]
 fn a_narrow_panel_with_long_names_drops_metadata_before_cutting_them() {
     let names: Vec<String> = (0..12)
         .map(|index| format!("a fairly long file name number {index:02} with several words.txt"))
         .collect();
+    // Listed first, so that it stays in view at touch density too.
+    let short = "1-notes.txt";
+    let listed: Vec<String> = std::iter::once(short.to_owned())
+        .chain(names.iter().cloned())
+        .collect();
     let mut panel = Panel::new(UserPreferences::default());
-    let entries = files(&panel.path, &names);
+    let entries = files(&panel.path, &listed);
     panel.list(entries, 0);
     for appearance in APPEARANCES {
         panel.appearance = appearance;
         narrow(&mut panel);
-        let list_width = panel.test.window.get_left_list_width();
-        // The metadata has degraded: the time and the date are hidden.
+        let list_right =
+            panel.test.window.get_left_list_left() + panel.test.window.get_left_list_width();
+        // The metadata has degraded: the time is hidden, and the date never shows
+        // without Size.
         assert!(heading(&panel.test, "Sort by Modified time").is_none());
-        assert!(heading(&panel.test, "Sort by Modified").is_none());
+        let size = heading(&panel.test, "Sort by Size");
+        if let Some(date) = heading(&panel.test, "Sort by Modified") {
+            assert!(
+                size.is_some(),
+                "{appearance:?}: the date never shows without Size"
+            );
+            assert!(right_edge(&date) <= list_right + 0.5);
+        }
         let item = shown(&panel.test, &names[0])
             .pop()
             .expect("the first long name is shown");
@@ -363,13 +381,19 @@ fn a_narrow_panel_with_long_names_drops_metadata_before_cutting_them() {
             given < natural,
             "the long name cannot fit the minimum width"
         );
+        // The name keeps its room: a short name is whole, and the long one has as much.
+        let short_item = shown(&panel.test, short)
+            .pop()
+            .unwrap_or_else(|| panic!("{appearance:?}: {short} is shown"));
+        let (short_natural, _) = widths(&panel.test, &short_item);
         assert!(
-            given >= list_width * 0.33,
-            "{appearance:?}: the name keeps most of the row ({given} of {list_width})"
+            whole(&panel.test, &short_item) && given + 0.5 >= short_natural,
+            "{appearance:?}: the metadata leaves the names {given} px, {short} needs \
+             {short_natural}"
         );
-        if let Some(size) = heading(&panel.test, "Sort by Size") {
+        if let Some(size) = &size {
             assert!(
-                left_edge(&size) >= left_edge(&item) + given,
+                left_edge(size) >= left_edge(&item) + given,
                 "Size starts after the name"
             );
         }
