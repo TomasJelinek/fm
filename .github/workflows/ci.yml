@@ -594,8 +594,10 @@ jobs:
         run: python -B scripts/ci-workspace-tests.py run midnight-image-viewer-host test:native --ignored --test-threads=1
       - name: Restricted PDF process pagination, source validation and cancellation
         run: python -B scripts/ci-workspace-tests.py run midnight-image-viewer-host test:pdf_native --ignored --test-threads=1
+      # Listing archives of millions of members is a manual measurement with archives that
+      # the archive plugin's measure_index_memory generates (TEST_EXECUTION.md).
       - name: Restricted archive worker listing, source validation and cancellation
-        run: python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:worker --ignored --test-threads=1
+        run: python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:worker --ignored --test-threads=1 --skip real_sandboxed_worker_lists_archives_of_millions_of_members
       - name: Installed archive worker streaming, all formats, cooperative cancellation and package discovery
         shell: pwsh
         run: |

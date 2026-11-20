@@ -673,7 +673,9 @@ try {
         Variables = @{ Selection = @('midnight-image-viewer-host', 'test:pdf_native', '--ignored', '--test-threads=1') } }
     Add-Step @{ Id = 'archive-worker-ignored'; Job = 'check'; Title = 'Restricted archive worker listing'
         Needs = @('test-install', 'archive'); Body = $ignoredBody
-        Variables = @{ Selection = @('midnight-filesystem-host', 'test:worker', '--ignored', '--test-threads=1') } }
+        # As in CI: listing archives of millions of members is a manual measurement.
+        Variables = @{ Selection = @('midnight-filesystem-host', 'test:worker', '--ignored', '--test-threads=1',
+                '--skip', 'real_sandboxed_worker_lists_archives_of_millions_of_members') } }
     Add-Step @{ Id = 'archive-streaming-ignored'; Job = 'check'; Title = 'Installed archive worker streaming and discovery'
         Needs = @('test-install', 'archive'); Body = {
         $env:ARCHIVE_CAPTURE_INSTALLATION = $env:HOST_TEST_INSTALL_ROOT

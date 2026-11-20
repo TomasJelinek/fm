@@ -378,7 +378,12 @@ built archive worker from a [private installation root](#private-plugin-installa
 `test:streaming_worker` and the library's `captured_source_tests::` use the package
 installed at `ARCHIVE_CAPTURE_INSTALLATION/filesystems/archive`; `test:discovery_kinds`
 creates its packages below `HOST_TEST_INSTALL_ROOT`. CI's `check` job runs all of them
-with one root for all three variables. To run them locally:
+with one root for all three variables, except the manual measurement
+`real_sandboxed_worker_lists_archives_of_millions_of_members` in `test:worker`. That
+test lists the archives that the archive plugin's `measure_index_memory` keeps
+(`MIDNIGHT_ARCHIVE_MEMORY_KEEP`; see the plugin's README), named in
+`MIDNIGHT_ARCHIVE_LARGE` with `MIDNIGHT_ARCHIVE_LARGE_MEMBERS` members each. To run
+them locally:
 
 1. Test, build and package the worker with a released worker SDK, for example
    `plugins/midnight-fs-archive/scripts/build.ps1 -SdkConfig <registry.toml> -BuildRoot _build/archive-ci -OutputDirectory _build/archive-ci/package/archive -Test -Offline`
@@ -400,7 +405,8 @@ with one root for all three variables. To run them locally:
    executable, and `MIDNIGHT_ARCHIVE_FIXTURES` and `MIDNIGHT_ARCHIVE_TEST_ZIP` to the
    fixtures. Then run `cargo test -p midnight-filesystem-host` with `--test worker`,
    `--test streaming_worker`, `--test discovery_kinds` and `--lib captured_source_tests::`,
-   each followed by `-- --ignored --test-threads=1`.
+   each followed by `-- --ignored --test-threads=1`. Without the generated archives, add
+   `--skip real_sandboxed_worker_lists_archives_of_millions_of_members` to `--test worker`.
 
 ### Windows Copy/Move qualification volume
 
