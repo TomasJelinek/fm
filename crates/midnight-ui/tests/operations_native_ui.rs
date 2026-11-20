@@ -480,10 +480,12 @@ fn real_f2_rename_shows_the_new_name_and_holds_panel_input_until_then() {
     let cursor = usize::try_from(h.cursor(PaneId::Left)).unwrap();
     assert_eq!(rows[cursor].name, "renamed-05.bin");
     assert!(h.left.join("renamed-05.bin").exists());
-    ui::key(&h.ui.window, Key::DownArrow);
+    // The new name can be the last row: Windows collation sorts "část 文档 🦀.txt"
+    // with "c", before the files. The folders always leave a row above it.
+    ui::key(&h.ui.window, Key::UpArrow);
     assert_eq!(
         usize::try_from(h.cursor(PaneId::Left)).unwrap(),
-        cursor + 1,
+        cursor - 1,
         "input is accepted again"
     );
     h.assert_sentinel();
