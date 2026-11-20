@@ -189,27 +189,37 @@ fn a_path_through_a_folder_others_can_write_to_is_refused_as_the_installer_refus
     }
     let bash = bash();
     // A sticky folder anyone can write to, as /tmp: another user could create the
-    // installation's path once it is gone. A group-writable one: the group could replace it.
+    // installation's path once it is gone. A group-writable one: the group could replace it,
+    // unless that group is its owner's private group (user private groups, as CI runners
+    // and Debian or Ubuntu desktops have), which both accept; see
+    // `only_a_private_group_may_share_its_owners_write_access` for both cases.
     for (name, mode) in [("sticky", 0o1777), ("group", 0o775)] {
         let shared = base.join(name);
         fs::create_dir(&shared).unwrap();
         fs::set_permissions(&shared, fs::Permissions::from_mode(mode)).unwrap();
+        let owner = fs::metadata(&shared).unwrap();
+        let refused = !only_its_owner_writes(mode, owner.uid(), owner.gid(), &Accounts::read());
         let installation = shared.join("me");
         let executable = viewer(&installation);
-        let refused = profile_for(&executable).unwrap_err().to_string();
-        assert!(
-            refused.contains(&format!("can write to {}", shared.display())),
-            "{refused}"
-        );
+        match profile_for(&executable) {
+            Err(error) => assert!(
+                refused
+                    && error
+                        .to_string()
+                        .contains(&format!("can write to {}", shared.display())),
+                "{name}: {error}"
+            ),
+            Ok(_) => assert!(!refused, "{name}: accepted"),
+        }
         // Also the folders below the installation on the way to the viewer.
         let inner = base.join(format!("{name}-inner"));
-        let executable = viewer(&inner);
+        let inner_executable = viewer(&inner);
         fs::set_permissions(
-            executable.parent().unwrap(),
+            inner_executable.parent().unwrap(),
             fs::Permissions::from_mode(mode),
         )
         .unwrap();
-        assert!(profile_for(&executable).is_err(), "{name}");
+        assert_eq!(profile_for(&inner_executable).is_err(), refused, "{name}");
         // A checkout's builds: its _build folder.
         let checkout_root = base.join(format!("{name}-checkout"));
         let built = checkout(&checkout_root, "debug");
@@ -218,13 +228,59 @@ fn a_path_through_a_folder_others_can_write_to_is_refused_as_the_installer_refus
             fs::Permissions::from_mode(mode),
         )
         .unwrap();
-        assert!(profile_for(&built).is_err(), "{name}");
+        assert_eq!(profile_for(&built).is_err(), refused, "{name}");
+        // The installer decides each path as the application does.
         if let Some(bash) = bash {
-            for refused in [&installation, &inner, &checkout_root] {
-                assert_eq!(printed(bash, refused), None, "{}", refused.display());
+            for (folder, viewer) in [
+                (&installation, &executable),
+                (&inner, &inner_executable),
+                (&checkout_root, &built),
+            ] {
+                assert_eq!(
+                    printed(bash, folder),
+                    profile_for(viewer).ok().map(|profile| profile.text),
+                    "{}",
+                    folder.display()
+                );
             }
         }
     }
+}
+
+#[test]
+fn only_a_private_group_may_share_its_owners_write_access() {
+    let passwd = b"root:x:0:0::/root:/bin/sh\n\
+        alice:x:1000:1000::/home/alice:/bin/sh\n\
+        bob:x:1001:100::/home/bob:/bin/sh\n\
+        carol:x:1002:1002::/home/carol:/bin/sh\n\
+        dave:x:1003:1002::/home/dave:/bin/sh\n";
+    let accounts = Accounts {
+        passwd: passwd.to_vec(),
+        group: b"root:x:0:\nalice:x:1000:\nusers:x:100:bob\ncarol:x:1002:\n".to_vec(),
+    };
+    // Alice's own group, named like her and listing nobody else, is private.
+    assert!(accounts.private_group(1000, 1000));
+    assert!(only_its_owner_writes(0o40775, 1000, 1000, &accounts));
+    // A shared group, a group that is also another user's primary group, or a group
+    // other than the owner's primary group is not.
+    assert!(!only_its_owner_writes(0o40775, 1001, 100, &accounts));
+    assert!(!accounts.private_group(1002, 1002));
+    assert!(!accounts.private_group(1000, 1002));
+    // Write access for others is never accepted, and owner-only folders always are.
+    assert!(!only_its_owner_writes(0o41777, 1000, 1000, &accounts));
+    assert!(!only_its_owner_writes(0o40757, 1000, 1000, &accounts));
+    assert!(only_its_owner_writes(0o40755, 1001, 100, &accounts));
+    // A member listed besides the owner, or accounts that include a directory service.
+    let listed = Accounts {
+        passwd: passwd.to_vec(),
+        group: b"alice:x:1000:alice,eve\n".to_vec(),
+    };
+    assert!(!listed.private_group(1000, 1000));
+    let included = Accounts {
+        passwd: [passwd.as_slice(), b"+::::::\n"].concat(),
+        group: accounts.group.clone(),
+    };
+    assert!(!included.private_group(1000, 1000));
 }
 
 #[test]
