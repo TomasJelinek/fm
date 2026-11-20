@@ -309,6 +309,8 @@ impl Presenter {
         self.preferences.edited.editor = true;
         let mut values = self.preferences.values.clone();
         values.editor = editor.clone();
+        // As in the saved file, a chosen editor replaces one kept from another system.
+        values.drop_replaced_foreign_editor();
         self.update_preferences(values, send);
         if self.preferences.values.editor == editor {
             self.editor.draft = None;

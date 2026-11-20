@@ -135,22 +135,87 @@ impl From<UserCommand> for StoredUserCommand {
         }
     }
 }
+impl StoredUserCommand {
+    /// The other system's program or icon path, if this command has one.
+    fn foreign(&self) -> io::Result<Option<super::native_path::Foreign>> {
+        if let Invocation::Program { executable, .. } = &self.invocation
+            && let Some(foreign) = executable.foreign()?
+        {
+            return Ok(Some(foreign));
+        }
+        Ok(self
+            .icon
+            .as_ref()
+            .map(NativePath::foreign)
+            .transpose()?
+            .flatten())
+    }
+
+    /// Keep this record verbatim after validating everything except its foreign paths.
+    fn into_foreign(
+        mut self,
+        position: usize,
+        (system, location): super::native_path::Foreign,
+    ) -> io::Result<ForeignSetting> {
+        let stored = serde_json::to_string(&self).map_err(invalid)?.into();
+        if let Invocation::Program { executable, .. } = &mut self.invocation {
+            *executable = executable.validation_copy()?;
+        }
+        self.icon = self
+            .icon
+            .as_ref()
+            .map(NativePath::validation_copy)
+            .transpose()?;
+        let command = self.into_command()?;
+        Ok(ForeignSetting {
+            kind: ForeignSettingKind::UserCommand {
+                position,
+                id: command.id,
+                name: command.name,
+            },
+            system,
+            location,
+            stored,
+        })
+    }
+}
+
+/// Commands whose paths belong to another system are kept inactive, in order.
 pub(super) fn decode(
     version: u32,
     commands: Option<Vec<StoredUserCommand>>,
-) -> io::Result<Vec<UserCommand>> {
-    let commands = match (version, commands) {
-        (1..=16, None) => return Ok(Vec::new()),
+) -> io::Result<(Vec<UserCommand>, Vec<ForeignSetting>)> {
+    let stored = match (version, commands) {
+        (1..=16, None) => return Ok((Vec::new(), Vec::new())),
         (17..=super::CURRENT_PREFERENCES_VERSION, Some(commands))
             if commands.len() <= MAX_USER_COMMANDS =>
         {
             commands
         }
         _ => return Err(invalid("missing, unexpected or excessive Custom Commands")),
+    };
+    let (mut commands, mut foreign) = (Vec::new(), Vec::new());
+    for (position, command) in stored.into_iter().enumerate() {
+        match command.foreign()? {
+            Some(found) => foreign.push(command.into_foreign(position, found)?),
+            None => commands.push(command.into_command()?),
+        }
     }
-    .into_iter()
-    .map(StoredUserCommand::into_command)
-    .collect::<io::Result<Vec<_>>>()?;
     validate_user_commands(&commands).map_err(invalid)?;
+    Ok((commands, foreign))
+}
+
+/// Return kept commands to their stored positions, around the native ones.
+pub(super) fn merge(
+    mut commands: Vec<StoredUserCommand>,
+    foreign: &[ForeignSetting],
+) -> io::Result<Vec<StoredUserCommand>> {
+    for (position, stored) in super::foreign::positioned(foreign, |kind| match kind {
+        ForeignSettingKind::UserCommand { position, .. } => Some(*position),
+        _ => None,
+    }) {
+        let command = serde_json::from_str(stored).map_err(invalid)?;
+        commands.insert(position.min(commands.len()), command);
+    }
     Ok(commands)
 }

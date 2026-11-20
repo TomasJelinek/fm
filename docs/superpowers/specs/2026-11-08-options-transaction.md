@@ -59,6 +59,11 @@ running session, restoring tabs through the startup restoration path. Cancel
 discards both parts, and Reset discards the staged session part. `restore_fields`
 and `restore_session_fields` classify every preference exhaustively. OK and Reset
 wait while an import is being read; a result from a closed session never stages.
+Entries whose paths belong to another operating system follow the same split:
+inactive hot paths (`foreign_hot_paths`) are session state staged with the hot
+paths, while kept editors, commands, comparators and the output file
+(`foreign_settings`) are Options-owned, preview in Options › General, can be
+removed there as an Options edit, and survive Reset like custom commands.
 
 Explicit maintenance actions such as clearing thumbnail cache are immediate
 actions, not settings edits; label their behavior accordingly. Custom Command

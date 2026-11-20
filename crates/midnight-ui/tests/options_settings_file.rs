@@ -181,7 +181,13 @@ impl Harness {
         assert!(self.view().get_importing());
         self.event(Event::PreferencesImported {
             request,
-            result: result.map(Box::new),
+            result: result.map(|preferences| {
+                Box::new(ImportedPreferences {
+                    preferences,
+                    skipped_tabs: 0,
+                    removed_bindings: 0,
+                })
+            }),
         });
     }
 
@@ -429,4 +435,100 @@ fn export_and_import_leave_a_footer_without_room_and_ok_stays_in_view() {
         command,
         Command::PickPath { input, .. } if input.kind == PathPickerKind::SettingsSave
     )));
+}
+
+/// An absolute path written by the other operating system.
+fn other(name: &str) -> String {
+    match PathSystem::CURRENT.other() {
+        PathSystem::Unix => format!("/home/tom/{name}"),
+        PathSystem::Windows => format!("C:\\Users\\tom\\{name}"),
+    }
+}
+
+fn kept(kind: ForeignSettingKind, location: &str) -> ForeignSetting {
+    ForeignSetting {
+        kind,
+        system: PathSystem::CURRENT.other(),
+        location: other(location),
+        stored: "{}".into(),
+    }
+}
+
+#[test]
+fn settings_kept_from_another_system_are_listed_inactive_and_removed_as_an_options_edit() {
+    use slint::Model;
+    let preferences = UserPreferences {
+        foreign_settings: vec![
+            kept(ForeignSettingKind::Editor, "code"),
+            kept(
+                ForeignSettingKind::UserCommand {
+                    position: 0,
+                    id: UserCommandId::new("custom-1").unwrap(),
+                    name: "Sestavit".into(),
+                },
+                "make",
+            ),
+        ]
+        .into(),
+        foreign_hot_paths: vec![ForeignHotPath {
+            id: BookmarkId(9),
+            slot: Some(4),
+            system: PathSystem::CURRENT.other(),
+            location: other("projekty 文档"),
+            stored: "{}".into(),
+        }],
+        ..current()
+    };
+    let mut h = Harness::with(preferences);
+    h.ui.resize(1100, 1600);
+    h.ui.window.set_options_topic_index(0);
+    h.ui.draw();
+    let system = PathSystem::CURRENT.other().name();
+    assert_eq!(
+        h.view().get_kept_title().as_str(),
+        format!("Kept from {system}")
+    );
+    assert_eq!(h.view().get_kept_rows().row_count(), 2);
+    let editor = ui::popup_item(&h.ui.window, "Editor", AccessibleRole::Text);
+    assert!(
+        ui::text_values(editor)
+            .iter()
+            .any(|text| text.contains(&other("code")))
+    );
+    // The kept list ends the long General page: its buttons act without scrolling.
+    let remove = |h: &mut Harness, label: &str| {
+        ui::popup_item(&h.ui.window, label, AccessibleRole::Button)
+            .accessible_action(&AccessibilityAction::Default);
+        h.ui.draw();
+    };
+    remove(&mut h, "Remove Editor");
+    assert_eq!(h.view().get_kept_rows().row_count(), 1);
+    assert!(Harness::saves(&h.take()).is_empty(), "a preview until OK");
+    h.click("Cancel");
+    h.ui.window.invoke_show_options();
+    h.ui.draw();
+    assert_eq!(h.view().get_kept_rows().row_count(), 2, "Cancel keeps it");
+    // The Hot Paths manager lists the inactive hot path with the reason.
+    let rows = h.ui.window.get_bookmarks();
+    let row = (0..rows.row_count())
+        .filter_map(|index| rows.row_data(index))
+        .find(|row| row.identity == "9")
+        .unwrap();
+    assert_eq!(row.slot, 4);
+    assert_eq!(
+        row.note.as_str(),
+        format!(
+            "{system} path, not available on {}",
+            PathSystem::CURRENT.name()
+        )
+    );
+    remove(&mut h, "Remove Custom command “Sestavit”");
+    h.click("OK");
+    let saves = Harness::saves(&h.take());
+    let (_, saved) = saves.last().unwrap();
+    assert_eq!(
+        *saved.foreign_settings,
+        [kept(ForeignSettingKind::Editor, "code")]
+    );
+    assert_eq!(saved.foreign_hot_paths.len(), 1);
 }

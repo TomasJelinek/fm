@@ -21,6 +21,7 @@ fn embedded_hotpaths_manager_preserves_identity_selection_and_numbered_shortcuts
         path: "D:\\文档\\work".into(),
         path_tail: "\\work".into(),
         slot: 1,
+        note: Default::default(),
     }])));
     let events = Rc::new(RefCell::new(Vec::<String>::new()));
     let out = events.clone();
@@ -124,6 +125,7 @@ fn embedded_hotpaths_rows_with_a_common_parent_keep_their_last_folders_in_view()
                 path: format!("{parent}{leaf}").into(),
                 path_tail: format!("/{leaf}").into(),
                 slot: 0,
+                note: Default::default(),
             })
             .collect::<Vec<_>>(),
     )));

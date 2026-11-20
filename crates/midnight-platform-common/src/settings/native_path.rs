@@ -1,5 +1,8 @@
 //! Per-OS settings never reinterpret another system's native path encoding.
 //! Unicode paths stay readable JSON strings; malformed Unicode uses exact hex.
+//! A path in the other system's syntax or encoding is recognized as foreign and
+//! only described; it is never converted into a native path.
+use midnight_core::PathSystem;
 use serde::{Deserialize, Serialize};
 use std::{io, path::PathBuf};
 
@@ -12,18 +15,98 @@ use unix as platform;
 #[cfg(windows)]
 use windows as platform;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(super) enum NativePath {
     Unicode(String),
     Encoded(EncodedPath),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct EncodedPath {
     encoding: String,
     hex: String,
+}
+
+/// A stored path of another system and its display text.
+pub(super) type Foreign = (PathSystem, String);
+
+impl NativePath {
+    /// The other system and display text when this path belongs to it.
+    /// Malformed foreign hex is invalid data, as it would be on its own system.
+    pub(super) fn foreign(&self) -> io::Result<Option<Foreign>> {
+        match self {
+            Self::Unicode(text) => {
+                Ok(PathSystem::foreign(text).map(|system| (system, text.clone())))
+            }
+            Self::Encoded(encoded) => encoded.foreign(),
+        }
+    }
+
+    /// A native absolute stand-in, used only to validate the rest of a record that
+    /// keeps a foreign path. The converted record is always discarded.
+    pub(super) fn stand_in() -> Self {
+        Self::Unicode(match PathSystem::CURRENT {
+            PathSystem::Windows => "C:\\".into(),
+            PathSystem::Unix => "/".into(),
+        })
+    }
+
+    /// Replace a foreign path by [`Self::stand_in`] for validation.
+    pub(super) fn validation_copy(&self) -> io::Result<Self> {
+        Ok(match self.foreign()? {
+            Some(_) => Self::stand_in(),
+            None => self.clone(),
+        })
+    }
+}
+
+impl EncodedPath {
+    fn foreign(&self) -> io::Result<Option<Foreign>> {
+        let system = match self.encoding.as_str() {
+            "windows-utf16" => PathSystem::Windows,
+            "unix-bytes" => PathSystem::Unix,
+            _ => return Ok(None),
+        };
+        if system == PathSystem::CURRENT {
+            return Ok(None);
+        }
+        let digits = self.hex.as_bytes();
+        // Display only: replacement characters mark what the text cannot show.
+        let display = match system {
+            PathSystem::Windows if digits.len().is_multiple_of(4) => {
+                let units = digits
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|unit| {
+                        unit.iter()
+                            .try_fold(0u16, |value, digit| Ok(value << 4 | nibble(*digit)?))
+                    })
+                    .collect::<io::Result<Vec<u16>>>()?;
+                String::from_utf16_lossy(&units)
+            }
+            PathSystem::Unix if digits.len().is_multiple_of(2) => {
+                let bytes = digits
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|byte| Ok((nibble(byte[0])? << 4 | nibble(byte[1])?) as u8))
+                    .collect::<io::Result<Vec<u8>>>()?;
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
+            _ => {
+                return Err(invalid(
+                    "foreign native path has incomplete hexadecimal units",
+                ));
+            }
+        };
+        if display.is_empty() || display.contains('\0') {
+            return Err(invalid("foreign native path is empty or contains NUL"));
+        }
+        Ok(Some((system, display)))
+    }
 }
 
 impl NativePath {

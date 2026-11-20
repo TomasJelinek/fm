@@ -406,11 +406,13 @@ impl Presenter {
                     }
                 }
                 let local_generation = self.preferences.bookmark_generation;
+                // Inactive hot paths of another system share the identity space.
                 let mut generation = local_generation.max(
                     loaded
                         .bookmarks
                         .iter()
                         .map(|bookmark| bookmark.id.0)
+                        .chain(loaded.foreign_hot_paths.iter().map(|path| path.id.0))
                         .max()
                         .unwrap_or(0),
                 );
@@ -425,7 +427,9 @@ impl Presenter {
                     let remapped = loaded
                         .bookmarks
                         .iter()
-                        .filter(|bookmark| bookmark.id.0 <= local_generation)
+                        .map(|bookmark| bookmark.id)
+                        .chain(loaded.foreign_hot_paths.iter().map(|path| path.id))
+                        .filter(|id| id.0 <= local_generation)
                         .count() as u64;
                     if generation.checked_add(remapped).is_none() {
                         let message = "Bookmark identities are exhausted. Saved bookmarks \
@@ -438,13 +442,23 @@ impl Presenter {
                         self.retired.push(Box::new(loaded));
                         return;
                     }
-                    for bookmark in &mut loaded.bookmarks {
-                        if bookmark.id.0 <= local_generation {
+                    let saved = loaded
+                        .bookmarks
+                        .iter_mut()
+                        .map(|bookmark| (&mut bookmark.id, &mut bookmark.slot))
+                        .chain(
+                            loaded
+                                .foreign_hot_paths
+                                .iter_mut()
+                                .map(|path| (&mut path.id, &mut path.slot)),
+                        );
+                    for (id, slot) in saved {
+                        if id.0 <= local_generation {
                             generation += 1; // The bounded remap count was checked above.
-                            bookmark.id = BookmarkId(generation);
+                            *id = BookmarkId(generation);
                         }
-                        if bookmark.slot.is_some_and(|slot| slots.contains(&slot)) {
-                            bookmark.slot = None;
+                        if slot.is_some_and(|slot| slots.contains(&slot)) {
+                            *slot = None;
                         }
                     }
                     loaded.bookmarks.append(&mut local.bookmarks);
@@ -452,6 +466,9 @@ impl Presenter {
                 if loaded.deduplicate_bookmarks() {
                     self.preferences.unsaved = true;
                 }
+                // An editor or output file chosen before loading replaces a kept one.
+                loaded.drop_replaced_foreign_editor();
+                loaded.drop_replaced_foreign_output();
                 self.preferences.bookmark_generation = generation;
                 if let Err(error) = self.keyboard.sync(&loaded.shortcuts, &loaded.user_commands) {
                     loaded.shortcuts = self.preferences.values.shortcuts.clone();

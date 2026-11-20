@@ -1,9 +1,36 @@
 //! Durable native/archive/Network hot paths. Persistence uses the existing settings worker.
+//! Hot paths of another operating system stay inactive: they keep their identity and
+//! numbered slot, opening one only explains why, and they can be removed.
 use super::*;
 
 impl Presenter {
     pub fn bookmarks(&self) -> &[Bookmark] {
         &self.preferences.values.bookmarks
+    }
+
+    /// Inactive hot paths whose locations belong to another operating system.
+    pub fn foreign_hot_paths(&self) -> &[ForeignHotPath] {
+        &self.preferences.values.foreign_hot_paths
+    }
+
+    fn slot_taken(&self, slot: u8) -> bool {
+        self.bookmarks()
+            .iter()
+            .map(|bookmark| bookmark.slot)
+            .chain(self.foreign_hot_paths().iter().map(|path| path.slot))
+            .any(|taken| taken == Some(slot))
+    }
+
+    fn report_foreign_hot_path(&mut self, path: &ForeignHotPath) {
+        let (system, current) = (path.system.name(), PathSystem::CURRENT.name());
+        self.desktop.inform(
+            "Hot Path not available",
+            format!(
+                "{}\n\nThis {system} path is kept for {system} and is not available on \
+                 {current}. Remove it in Manage Hot Paths when you no longer need it.",
+                path.location
+            ),
+        );
     }
 
     /// Save the displayed typed location, never parse the visible path text.
@@ -103,7 +130,7 @@ impl Presenter {
                 true
             };
         }
-        if self.bookmarks().len() >= MAX_BOOKMARKS {
+        if self.bookmarks().len() + self.foreign_hot_paths().len() >= MAX_BOOKMARKS {
             self.desktop.report(
                 "Bookmark limit reached",
                 format!("Up to {MAX_BOOKMARKS} bookmarks can be saved."),
@@ -114,6 +141,7 @@ impl Presenter {
             .bookmarks()
             .iter()
             .map(|bookmark| bookmark.id.0)
+            .chain(self.foreign_hot_paths().iter().map(|path| path.id.0))
             .max()
             .unwrap_or(0)
             .max(self.preferences.bookmark_generation)
@@ -128,9 +156,7 @@ impl Presenter {
             id,
             name,
             path,
-            slot: slot.or_else(|| {
-                (1..=10).find(|slot| !self.bookmarks().iter().any(|b| b.slot == Some(*slot)))
-            }),
+            slot: slot.or_else(|| (1..=10).find(|slot| !self.slot_taken(*slot))),
         };
         if let Err(error) = bookmark.validate() {
             self.desktop.report("Cannot save bookmark", error.into());
@@ -138,9 +164,19 @@ impl Presenter {
         }
         let mut preferences = self.preferences.values.clone();
         if let Some(slot) = bookmark.slot {
-            for previous in &mut preferences.bookmarks {
-                if previous.slot == Some(slot) {
-                    previous.slot = None;
+            let slots = preferences
+                .bookmarks
+                .iter_mut()
+                .map(|previous| &mut previous.slot)
+                .chain(
+                    preferences
+                        .foreign_hot_paths
+                        .iter_mut()
+                        .map(|path| &mut path.slot),
+                );
+            for previous in slots {
+                if *previous == Some(slot) {
+                    *previous = None;
                 }
             }
         }
@@ -157,7 +193,16 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
         let Some(bookmark) = self.bookmarks().iter().find(|bookmark| bookmark.id == id) else {
-            return false;
+            let Some(path) = self
+                .foreign_hot_paths()
+                .iter()
+                .find(|path| path.id == id)
+                .cloned()
+            else {
+                return false;
+            };
+            self.report_foreign_hot_path(&path);
+            return true;
         };
         if let Some(address) = bookmark.network.clone() {
             self.open_network_address(pane, bookmark.path.clone(), address, send)
@@ -170,14 +215,21 @@ impl Presenter {
 
     pub fn remove_bookmark(&mut self, id: BookmarkId, send: &dyn Fn(Command) -> bool) -> bool {
         let mut preferences = self.preferences.values.clone();
-        let Some(index) = preferences
+        if let Some(index) = preferences
             .bookmarks
             .iter()
             .position(|bookmark| bookmark.id == id)
-        else {
+        {
+            preferences.bookmarks.remove(index);
+        } else if let Some(index) = preferences
+            .foreign_hot_paths
+            .iter()
+            .position(|path| path.id == id)
+        {
+            preferences.foreign_hot_paths.remove(index);
+        } else {
             return false;
-        };
-        preferences.bookmarks.remove(index);
+        }
         self.update_preferences(preferences, send);
         true
     }
@@ -219,25 +271,33 @@ impl Presenter {
             return false;
         }
         let mut preferences = self.preferences.values.clone();
-        let Some(index) = preferences
+        // Active and inactive hot paths share the ten numbered slots.
+        let mut entries: Vec<_> = preferences
             .bookmarks
-            .iter()
-            .position(|bookmark| bookmark.id == id)
-        else {
+            .iter_mut()
+            .map(|bookmark| (bookmark.id, &mut bookmark.slot))
+            .chain(
+                preferences
+                    .foreign_hot_paths
+                    .iter_mut()
+                    .map(|path| (path.id, &mut path.slot)),
+            )
+            .collect();
+        let Some(index) = entries.iter().position(|(entry, _)| *entry == id) else {
             return false;
         };
-        let previous_slot = preferences.bookmarks[index].slot;
+        let previous_slot = *entries[index].1;
         if previous_slot == slot {
             return true;
         }
         if let Some(slot) = slot {
-            for bookmark in &mut preferences.bookmarks {
-                if bookmark.slot == Some(slot) {
-                    bookmark.slot = previous_slot;
+            for (_, taken) in &mut entries {
+                if **taken == Some(slot) {
+                    **taken = previous_slot;
                 }
             }
         }
-        preferences.bookmarks[index].slot = slot;
+        *entries[index].1 = slot;
         self.update_preferences(preferences, send);
         true
     }
@@ -279,14 +339,18 @@ impl Presenter {
         slot: u8,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        let Some(bookmark) = self
+        let id = self
             .bookmarks()
             .iter()
             .find(|bookmark| bookmark.slot == Some(slot))
-        else {
-            return false;
-        };
-        self.open_bookmark(pane, bookmark.id, send)
+            .map(|bookmark| bookmark.id)
+            .or_else(|| {
+                self.foreign_hot_paths()
+                    .iter()
+                    .find(|path| path.slot == Some(slot))
+                    .map(|path| path.id)
+            });
+        id.is_some_and(|id| self.open_bookmark(pane, id, send))
     }
 }
 #[cfg(test)]

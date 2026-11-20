@@ -286,7 +286,18 @@ impl Presenter {
                 .fail("Save or discard the current draft before adding a command.");
             return;
         }
-        if self.preferences.values.user_commands.len() == MAX_USER_COMMANDS {
+        // Commands kept from another system keep their identities and count too.
+        let kept: Vec<_> = self
+            .preferences
+            .values
+            .foreign_settings
+            .iter()
+            .filter_map(|setting| match &setting.kind {
+                ForeignSettingKind::UserCommand { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        if self.preferences.values.user_commands.len() + kept.len() >= MAX_USER_COMMANDS {
             self.user_command_settings
                 .fail("At most 128 Custom Commands can be configured.");
             return;
@@ -302,12 +313,13 @@ impl Presenter {
             let Ok(id) = UserCommandId::new(format!("custom-{next}")) else {
                 continue;
             };
-            if self
-                .preferences
-                .values
-                .user_commands
-                .iter()
-                .any(|command| command.id == id)
+            if kept.contains(&id)
+                || self
+                    .preferences
+                    .values
+                    .user_commands
+                    .iter()
+                    .any(|command| command.id == id)
             {
                 continue;
             }

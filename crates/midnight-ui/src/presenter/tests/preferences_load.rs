@@ -113,6 +113,8 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
             shell: ShellFlavor::Cmd,
         }],
         bookmarks: vec![stored_bookmark(9, Some(1))],
+        foreign_hot_paths: Vec::new(),
+        foreign_settings: Arc::default(),
         tabs: Default::default(),
         panel_view_modes: Default::default(),
         thumbnails_enabled: true,

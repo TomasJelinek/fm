@@ -1,9 +1,18 @@
 //! Options footer Export/Import configuration bindings: input and presentation only.
 //! Native choosers, file access and validation run in backend services.
-use crate::{MainWindow, Presenter, SettingsFileView};
-use midnight_core::Command;
+use crate::{KeptSettingRow, MainWindow, Presenter, SettingsFileView};
+use midnight_core::{Command, PathSystem};
 use slint::ComponentHandle;
 use std::{cell::RefCell, rc::Rc};
+
+/// Why a kept entry of another system does nothing here.
+pub(crate) fn unavailable(system: PathSystem) -> String {
+    format!(
+        "{} path, not available on {}",
+        system.name(),
+        PathSystem::CURRENT.name()
+    )
+}
 
 pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     let view = window.global::<SettingsFileView>();
@@ -16,6 +25,31 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     }
     view.set_error(state.error);
     view.set_replace_pending(state.replace_pending());
+    let kept = &p.preferences.values.foreign_settings;
+    if let Some(setting) = kept.first() {
+        let (system, current) = (setting.system.name(), PathSystem::CURRENT.name());
+        let title = format!("Kept from {system}").into();
+        if view.get_kept_title() != title {
+            view.set_kept_title(title);
+            view.set_kept_hint(
+                format!(
+                    "These settings use {system} paths, which {current} cannot use. They stay \
+                     inactive here, are saved and exported unchanged, and work again on {system}."
+                )
+                .into(),
+            );
+        }
+    }
+    let rows = kept
+        .iter()
+        .map(|setting| KeptSettingRow {
+            label: crate::shown_text(&setting.description()),
+            location: crate::shown_text(&setting.location),
+        })
+        .collect();
+    crate::update_model(view.get_kept_rows(), rows, |model| {
+        view.set_kept_rows(model)
+    });
 }
 
 pub(crate) fn install(
@@ -48,6 +82,17 @@ pub(crate) fn install(
             view.on_import_file(choose);
         }
     }
+    let weak = window.as_weak();
+    let p = state.clone();
+    let sender = send.clone();
+    view.on_remove_kept(move |index, location| {
+        let (Some(w), Ok(index)) = (weak.upgrade(), usize::try_from(index)) else {
+            return;
+        };
+        p.borrow_mut()
+            .remove_foreign_setting(index, &location, sender.as_ref());
+        crate::refresh(&w, &p.borrow());
+    });
     let weak = window.as_weak();
     let p = state.clone();
     view.on_replace(move || {

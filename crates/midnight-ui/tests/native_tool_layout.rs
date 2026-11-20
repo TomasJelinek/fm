@@ -297,6 +297,7 @@ fn hot_paths_host() -> form::Host {
             path: "/very/long/文档/👩🏽‍💻/project".into(),
             path_tail: "/project".into(),
             slot: 1,
+            note: Default::default(),
         },
     ])));
     presentation.set_action_icons(midnight_ui::ActionIcons {

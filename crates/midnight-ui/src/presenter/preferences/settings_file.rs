@@ -47,7 +47,7 @@ enum Step {
     },
     Importing(DesktopRequestId),
     /// Validated by the backend; the next flush stages it.
-    Imported(Box<UserPreferences>),
+    Imported(Box<ImportedPreferences>),
 }
 
 impl State {
@@ -124,6 +124,79 @@ fn sentence(text: &str) -> String {
         text.to_owned()
     } else {
         format!("{text}.")
+    }
+}
+
+fn counted(count: usize, one: &str, many: &str) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(format!("1 {one}")),
+        _ => Some(format!("{count} {many}")),
+    }
+}
+
+/// What a file from another system keeps inactive or leaves out, as sentences.
+fn other_system_summary(
+    message: &mut String,
+    imported: &UserPreferences,
+    skipped_tabs: usize,
+    removed_bindings: usize,
+) {
+    let system = PathSystem::CURRENT.other().name();
+    let settings = &imported.foreign_settings;
+    let kinds = |test: fn(&ForeignSettingKind) -> bool| {
+        settings
+            .iter()
+            .filter(|setting| test(&setting.kind))
+            .count()
+    };
+    let mut kept: Vec<String> = [
+        counted(imported.foreign_hot_paths.len(), "hot path", "hot paths"),
+        counted(
+            kinds(|kind| matches!(kind, ForeignSettingKind::UserCommand { .. })),
+            "custom command",
+            "custom commands",
+        ),
+        counted(
+            kinds(|kind| matches!(kind, ForeignSettingKind::EditorRule { .. })),
+            "editor rule",
+            "editor rules",
+        ),
+        counted(
+            kinds(|kind| matches!(kind, ForeignSettingKind::FileComparator { .. })),
+            "comparator rule",
+            "comparator rules",
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if kinds(|kind| *kind == ForeignSettingKind::Editor) > 0 {
+        kept.push("the editor".into());
+    }
+    if kinds(|kind| *kind == ForeignSettingKind::FileListOutput) > 0 {
+        kept.push("the Make File List output file".into());
+    }
+    if let Some(last) = kept.pop() {
+        let list = if kept.is_empty() {
+            last
+        } else {
+            format!("{} and {last}", kept.join(", "))
+        };
+        message.push_str(&format!(
+            " Kept inactive because they use {system} paths: {list}."
+        ));
+    }
+    if let Some(tabs) = counted(skipped_tabs, "tab", "tabs") {
+        let folders = if skipped_tabs == 1 {
+            format!("a {system} folder")
+        } else {
+            format!("{system} folders")
+        };
+        message.push_str(&format!(" Not opened: {tabs} at {folders}."));
+    }
+    if let Some(bindings) = counted(removed_bindings, "key binding", "key bindings") {
+        message.push_str(&format!(" Removed: {bindings} of those commands."));
     }
 }
 
@@ -381,7 +454,7 @@ impl Presenter {
     pub(in crate::presenter) fn settings_imported(
         &mut self,
         request: DesktopRequestId,
-        result: Result<Box<UserPreferences>, FsError>,
+        result: Result<Box<ImportedPreferences>, FsError>,
     ) {
         let state = &mut self.preferences.settings_file;
         let matches = state.pending.as_ref().is_some_and(
@@ -421,9 +494,14 @@ impl Presenter {
     fn stage_settings_import(
         &mut self,
         path: &Path,
-        mut imported: UserPreferences,
+        imported: ImportedPreferences,
         send: &dyn Fn(Command) -> bool,
     ) {
+        let ImportedPreferences {
+            preferences: mut imported,
+            skipped_tabs,
+            removed_bindings,
+        } = imported;
         let name = file_name(path);
         let refuse = |p: &mut Self, reason: &str, imported: UserPreferences| {
             p.settings_file_failed(format!(
@@ -432,16 +510,18 @@ impl Presenter {
             ));
             p.retired.push(Box::new(imported));
         };
-        // Imported hot paths get fresh identities, so a removed bookmark's late
-        // callback can never act on one of them.
+        // Imported hot paths, active or not, get fresh identities, so a removed
+        // bookmark's late callback can never act on one of them.
         let first = self
             .bookmarks()
             .iter()
             .map(|bookmark| bookmark.id.0)
+            .chain(self.foreign_hot_paths().iter().map(|path| path.id.0))
             .max()
             .unwrap_or(0)
             .max(self.preferences.bookmark_generation);
-        let Some(last) = first.checked_add(imported.bookmarks.len() as u64) else {
+        let count = imported.bookmarks.len() + imported.foreign_hot_paths.len();
+        let Some(last) = first.checked_add(count as u64) else {
             refuse(
                 self,
                 "Hot path identities are exhausted; restart first.",
@@ -449,8 +529,18 @@ impl Presenter {
             );
             return;
         };
-        for (offset, bookmark) in imported.bookmarks.iter_mut().enumerate() {
-            bookmark.id = BookmarkId(first + 1 + offset as u64);
+        let ids = imported
+            .bookmarks
+            .iter_mut()
+            .map(|bookmark| &mut bookmark.id)
+            .chain(
+                imported
+                    .foreign_hot_paths
+                    .iter_mut()
+                    .map(|path| &mut path.id),
+            );
+        for (offset, id) in ids.enumerate() {
+            *id = BookmarkId(first + 1 + offset as u64);
         }
         // Validate key bindings before anything changes; the preview reuses them.
         if let Err(reason) = self
@@ -466,17 +556,17 @@ impl Presenter {
         self.preferences.options.error_topic = None;
         self.preferences.bookmark_generation = last;
         self.update_preferences(values, send);
+        let mut message = format!("Imported {name}.");
+        other_system_summary(&mut message, &imported, skipped_tabs, removed_bindings);
+        message.push_str(
+            " OK saves these settings and applies its tabs, hot paths and window placement; \
+             Cancel keeps your current settings.",
+        );
         let state = &mut self.preferences.settings_file;
         if let Some(previous) = state.staged.replace(Box::new(imported)) {
             self.retired.push(previous);
         }
-        state.show(
-            format!(
-                "Imported {name}. OK saves these settings and applies its tabs, hot paths \
-                 and window placement; Cancel keeps your current settings."
-            ),
-            false,
-        );
+        state.show(message, false);
     }
 
     /// OK's save succeeded: the committed import's session state takes effect.
@@ -495,6 +585,33 @@ impl Presenter {
             self.search_filter_changed();
         }
         self.retired.push(staged);
+    }
+
+    /// Options › General: remove one inactive setting of another system. Like other
+    /// Options edits it is a preview: OK saves the removal, Cancel keeps the setting.
+    /// `shown` is the displayed location, which guards against a stale row.
+    pub(crate) fn remove_foreign_setting(
+        &mut self,
+        index: usize,
+        shown: &str,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let options = &self.preferences.options;
+        if !options.open || options.accepting || options.saving || !self.window_geometry_ready() {
+            return;
+        }
+        let kept = &self.preferences.values.foreign_settings;
+        if kept
+            .get(index)
+            .is_none_or(|setting| crate::shown_text(&setting.location) != shown)
+        {
+            return;
+        }
+        let mut values = self.preferences.values.clone();
+        let mut settings = (*values.foreign_settings).clone();
+        settings.remove(index);
+        values.foreign_settings = settings.into();
+        self.update_preferences(values, send);
     }
 
     /// The application moves its main window to a committed imported placement.

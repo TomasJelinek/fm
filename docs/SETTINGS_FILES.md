@@ -76,7 +76,8 @@ A file is refused, with the reason shown above the footer, when:
 - it is larger than 4 MiB, or is not an ordinary file.
 
 A refused file changes nothing, including unfinished page edits. An import never
-applies part of a file.
+applies part of a file; only paths of another operating system are handled as
+described in [Settings from another operating system](#settings-from-another-operating-system).
 
 An accepted file is previewed like other Options edits:
 
@@ -100,10 +101,39 @@ Files from older versions of Midnight Explorer are accepted. Settings they do no
 contain get their default values, exactly as when this version reads an older
 settings file.
 
-Paths are stored in each operating system's own form, and settings that require an
-absolute path, such as tabs and hot paths, refuse a path from the other system. A
-Windows file with such paths therefore cannot be imported on Linux, or the reverse;
-the import is refused instead of being applied without those settings.
+## Settings from another operating system
+
+A settings file exported on Linux can be imported on Windows, and the reverse.
+Paths are stored in each system's own form, and Midnight Explorer never turns a
+path of one system into a path of the other. On Windows, `/home/tom` would
+otherwise mean that folder on the current drive. Instead:
+
+- **Hot paths** of the other system are kept but inactive. Manage Hot Paths and the
+  hot path list show them marked, for example "Linux path, not available on
+  Windows". Choosing one, or pressing its numbered shortcut, only explains this.
+  An inactive hot path keeps its number until you give the number to another hot
+  path, and you can remove it.
+- **Tabs** at the other system's folders are not opened. A panel whose saved tabs
+  are all such folders keeps its current tabs.
+- **The editor, editor rules, custom commands, comparator rules and the Make File
+  List output file** that use the other system's programs or folders are kept
+  inactive. Options › General lists them under "Kept from Linux" or "Kept from
+  Windows", where you can remove them. Removing is an Options edit: OK saves it,
+  and Cancel keeps them.
+- While they are inactive, Midnight Explorer behaves as if they were absent. F4
+  uses the next matching editor rule or the default editor, file comparison uses
+  the next matching comparator rule, and those custom commands are not in the
+  toolbar or menus. Choosing your own editor, or an output file in Make File
+  List, replaces the kept one and removes it from the list; a settings file holds
+  only one of each.
+- **Key bindings** of kept custom commands are removed, because they would refer
+  to commands that cannot run here.
+- Kept entries are saved and exported unchanged. When the file returns to its own
+  system, they work again there, in their original positions in their lists.
+
+The import result line says what was kept and what was left out. For example:
+"Kept inactive because they use Linux paths: 2 hot paths, 1 custom command and
+the editor. Not opened: 1 tab at a Linux folder."
 
 ## File format
 
@@ -120,11 +150,18 @@ settings file: `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, o
 - The other top-level fields belong to that schema version. A field that the
   version does not define is an error, not ignored.
 - Native paths are stored losslessly. A path that is valid Unicode is a JSON string.
-  Other paths use an object with the encoding name and the exact bytes in
-  hexadecimal.
+  Other paths use an object with the encoding name (`windows-utf16` or
+  `unix-bytes`) and the exact bytes in hexadecimal.
+- A path belongs to the other system when its text is absolute only in that
+  system's syntax (a Linux path begins with `/`; a Windows path has a drive letter
+  or begins with `\\`), or when its encoding names the other system. Such records
+  are kept exactly as stored.
 - A leading UTF-8 byte order mark, as some text editors add, is ignored.
 
 Developers: the codec is `midnight_platform_common::settings`
 (`encode_settings_file` / `decode_settings_file`). The backend service is
 `midnight-engine`'s `preferences_file` module, and the Options staging is the
-presenter's `preferences::settings_file` module.
+presenter's `preferences::settings_file` module. Entries of another system are
+`UserPreferences::foreign_hot_paths` and `foreign_settings`
+(`midnight_core::foreign_settings`); their stored records are interpreted only by
+the settings codec.

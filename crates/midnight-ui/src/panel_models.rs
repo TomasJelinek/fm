@@ -14,26 +14,39 @@ fn bookmark_tooltip(presenter: &Presenter, bookmark: &midnight_core::Bookmark) -
 }
 
 pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
-    let mut bookmarks = presenter.bookmarks().iter().collect::<Vec<_>>();
-    bookmarks.sort_by_key(|bookmark| bookmark.slot.unwrap_or(11));
-    bookmarks
-        .into_iter()
-        .map(|bookmark| NavigationChoiceRow {
-            identity: format!(
-                "bookmark:{}:{}",
-                presenter.preferences.revision.0, bookmark.id.0
+    // Inactive hot paths of another system are listed too; choosing one explains why
+    // it cannot open.
+    let mut entries = presenter
+        .bookmarks()
+        .iter()
+        .map(|bookmark| {
+            let tooltip = bookmark_tooltip(presenter, bookmark);
+            (bookmark.slot, bookmark.id, bookmark.display_text(), tooltip)
+        })
+        .chain(presenter.foreign_hot_paths().iter().map(|path| {
+            let note = crate::settings_file_presentation::unavailable(path.system);
+            let text = format!("{} — {}", path.location, path.system.name());
+            (
+                path.slot,
+                path.id,
+                text,
+                format!("Hot Path\n{}\n{note}", path.location),
             )
-            .into(),
-            label: shown_text(&bookmark.slot.map_or_else(
-                || bookmark.display_text(),
-                |slot| format!("{}  {}", slot % 10, bookmark.display_text()),
-            )),
-            compact_label: bookmark
-                .slot
+        }))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(slot, ..)| slot.unwrap_or(11));
+    entries
+        .into_iter()
+        .map(|(slot, id, text, tooltip)| NavigationChoiceRow {
+            identity: format!("bookmark:{}:{}", presenter.preferences.revision.0, id.0).into(),
+            label: shown_text(
+                &slot.map_or_else(|| text.clone(), |slot| format!("{}  {text}", slot % 10)),
+            ),
+            compact_label: slot
                 .map(|slot| (slot % 10).to_string())
                 .unwrap_or_default()
                 .into(),
-            tooltip: shown_text(&bookmark_tooltip(presenter, bookmark)),
+            tooltip: shown_text(&tooltip),
             icon: presenter
                 .desktop
                 .image(&IconKey::action(ActionIcon::Bookmarks), IconPlace::Location),

@@ -118,20 +118,23 @@ fn whole_settings_roundtrip_in_the_native_settings_serialization() {
     let text = std::str::from_utf8(&bytes).unwrap();
     assert!(text.starts_with("{\n  \""), "{text}");
     assert!(text.contains("Projekty 文档") && text.ends_with("}\n"));
-    assert_eq!(decode_settings_file(&bytes).unwrap(), preferences);
+    assert_eq!(
+        decode_settings_file(&bytes).unwrap().preferences,
+        preferences
+    );
     let defaults = UserPreferences::default();
     let bytes = encode_settings_file(defaults.clone()).unwrap();
-    assert_eq!(decode_settings_file(&bytes).unwrap(), defaults);
+    assert_eq!(decode_settings_file(&bytes).unwrap().preferences, defaults);
 }
 
 #[test]
 fn byte_order_mark_is_ignored_and_older_schemas_migrate_like_saved_settings() {
     let mut bytes = UTF8_BOM.to_vec();
     bytes.extend(encode_settings_file(rich()).unwrap());
-    assert_eq!(decode_settings_file(&bytes).unwrap(), rich());
+    assert_eq!(decode_settings_file(&bytes).unwrap().preferences, rich());
     let legacy = br#"{"version": 1, "theme": "dark", "density": "touch"}"#;
     assert_eq!(
-        decode_settings_file(legacy).unwrap(),
+        decode_settings_file(legacy).unwrap().preferences,
         UserPreferences {
             theme: PreferenceTheme::Dark,
             density: UiDensity::Touch,
@@ -223,7 +226,7 @@ fn refuses_unknown_fields_and_invalid_values_with_the_offending_name() {
 fn refuses_oversized_files_before_parsing() {
     let mut bytes = encode_settings_file(rich()).unwrap();
     bytes.resize(MAX_PREFERENCES_BYTES, b' ');
-    assert_eq!(decode_settings_file(&bytes).unwrap(), rich());
+    assert_eq!(decode_settings_file(&bytes).unwrap().preferences, rich());
     bytes.push(b' ');
     assert!(message(&bytes).contains("larger than the 4 MiB settings limit"));
 }

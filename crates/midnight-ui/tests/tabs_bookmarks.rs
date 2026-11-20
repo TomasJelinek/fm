@@ -124,6 +124,7 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         path: "D:\\文档\\work".into(),
         path_tail: "\\work".into(),
         slot: 1,
+        note: Default::default(),
     }])));
     window.set_left_path("D:\\文档".into());
     window.set_left_locations(ModelRc::new(VecModel::from(vec![

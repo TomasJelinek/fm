@@ -347,7 +347,7 @@ fn import_file(
     path: &Path,
     service: &dyn TransferService,
     cancel: &Cancellation,
-) -> Result<UserPreferences, FsError> {
+) -> Result<ImportedPreferences, FsError> {
     const OPERATION: &str = "import settings";
     let (parent, name) = split(path, OPERATION)?;
     let directory = with_io(path, OPERATION, cancel, || {

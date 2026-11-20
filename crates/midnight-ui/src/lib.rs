@@ -613,8 +613,21 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
                     path_tail: path_tail(&path),
                     path,
                     slot: i32::from(bookmark.slot.unwrap_or(0)),
+                    note: SharedString::new(),
                 }
             })
+            // Inactive hot paths of another system can be renumbered or removed.
+            .chain(presenter.foreign_hot_paths().iter().map(|hot_path| {
+                let path = shown_text(&hot_path.location);
+                BookmarkRow {
+                    identity: hot_path.id.0.to_string().into(),
+                    label: path.clone(),
+                    path_tail: path_tail(&path),
+                    path,
+                    slot: i32::from(hot_path.slot.unwrap_or(0)),
+                    note: shown_text(&settings_file_presentation::unavailable(hot_path.system)),
+                }
+            }))
             .collect(),
         |model| window.set_bookmarks(model),
     );

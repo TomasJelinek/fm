@@ -1,9 +1,11 @@
 //! Export/Import configuration files. An exchange file is one complete settings
 //! document in exactly the native settings-file serialization: a JSON object whose
 //! `version` names its schema. Import accepts every schema this build can load and
-//! migrates older ones like a saved settings file; it never applies part of a file.
+//! migrates older ones like a saved settings file. A file from another operating
+//! system keeps that system's hot paths, editors, commands, comparators and output
+//! file inactive and leaves out its tabs; the result reports both.
 use super::{CURRENT_PREFERENCES_VERSION, MAX_PREFERENCES_BYTES, invalid};
-use midnight_core::UserPreferences;
+use midnight_core::{ImportedPreferences, UserPreferences};
 use std::io;
 
 /// The newest settings schema this build reads and writes.
@@ -22,21 +24,21 @@ pub fn encode_settings_file(preferences: UserPreferences) -> io::Result<Vec<u8>>
 /// versions, unknown fields and invalid values with a readable `InvalidData` error.
 /// An accepted file is also encoded once, so saving it cannot fail on its contents.
 /// A leading UTF-8 byte order mark from a text editor is ignored.
-pub fn decode_settings_file(bytes: &[u8]) -> io::Result<UserPreferences> {
+pub fn decode_settings_file(bytes: &[u8]) -> io::Result<ImportedPreferences> {
     if bytes.len() > MAX_PREFERENCES_BYTES {
         return Err(invalid("The file is larger than the 4 MiB settings limit."));
     }
     let bytes = bytes.strip_prefix(UTF8_BOM).unwrap_or(bytes);
     check_version(bytes)?;
-    let preferences = super::decode_preferences(bytes)
+    let imported = super::decode_preferences_impl(bytes, true)
         .map_err(|error| invalid(format!("The settings are invalid: {}", concise(&error))))?;
-    super::encode_preferences_impl(preferences.clone()).map_err(|error| {
+    super::encode_preferences_impl(imported.preferences.clone()).map_err(|error| {
         invalid(format!(
             "The settings cannot be saved by this version: {}",
             concise(&error)
         ))
     })?;
-    Ok(preferences)
+    Ok(imported)
 }
 
 /// Identify the document and its schema before the strict decoder reports details:

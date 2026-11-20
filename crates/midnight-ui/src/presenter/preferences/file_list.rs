@@ -18,9 +18,12 @@ impl Presenter {
         let revision = self.preferences.revision;
         if let Some(baseline) = &mut self.preferences.options.baseline {
             baseline.file_list = file_list.clone();
+            // The chosen output file replaces a kept one even if Options is cancelled.
+            baseline.drop_replaced_foreign_output();
         }
         let mut values = self.preferences.values.clone();
         values.file_list = file_list;
+        values.drop_replaced_foreign_output();
         self.update_preferences(values, send);
         // Changing only destination/append can be hidden by the newly committed
         // Options baseline. It still requires its own asynchronous settings save.

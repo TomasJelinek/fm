@@ -20,6 +20,7 @@ mod exchange;
 pub use exchange::{SETTINGS_FILE_VERSION, decode_settings_file, encode_settings_file};
 mod file_comparators;
 mod file_list;
+mod foreign;
 mod thumbnailer_associations;
 mod user_commands;
 mod viewer_associations;
@@ -308,7 +309,7 @@ struct StoredPaneTabs {
     networks: std::collections::BTreeMap<usize, StoredNetworkAddress>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredNetworkAddress {
     version: u32,
@@ -339,7 +340,7 @@ impl StoredNetworkAddress {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredArchiveAddress {
     version: u32,
@@ -429,17 +430,22 @@ fn invalid(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::
 }
 
 pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
-    decode_preferences_impl(bytes, true)
+    decode_preferences_impl(bytes, true).map(|decoded| decoded.preferences)
 }
 
 /// Decode bounded settings for the serialized acceptance worker. That worker
 /// must compile changed comparator rules before publishing or acknowledging them.
 /// All structural/raw validation and existing unrelated validation still run here.
 pub fn decode_preferences_for_acceptance(bytes: &[u8]) -> io::Result<UserPreferences> {
-    decode_preferences_impl(bytes, false)
+    decode_preferences_impl(bytes, false).map(|decoded| decoded.preferences)
 }
 
-fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Result<UserPreferences> {
+/// Settings of another system are kept inactive or, for tabs, left out; the
+/// result says how many tabs and command key bindings were left out.
+fn decode_preferences_impl(
+    bytes: &[u8],
+    compile_comparators: bool,
+) -> io::Result<midnight_core::ImportedPreferences> {
     if bytes.len() > MAX_PREFERENCES_BYTES {
         return Err(invalid("preferences exceed 4 MiB"));
     }
@@ -584,18 +590,24 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
         ),
         _ => return Err(invalid("font preferences require version 2")),
     };
+    // Hot paths of another system are kept inactive as their stored records.
+    let mut foreign_hot_paths = Vec::new();
     let bookmarks = match (stored.version, stored.bookmarks) {
         (1 | 2, None) => Vec::new(),
-        (3..=CURRENT_PREFERENCES_VERSION, Some(bookmarks)) => bookmarks
-            .into_iter()
-            .map(|bookmark| {
+        (3..=CURRENT_PREFERENCES_VERSION, Some(bookmarks)) => {
+            let mut native = Vec::new();
+            for bookmark in bookmarks {
                 if stored.version < 29 && bookmark.network.is_some() {
                     return Err(invalid("Network bookmarks require preferences version 29"));
                 }
                 if stored.version < 19 && bookmark.archive.is_some() {
                     return Err(invalid("archive bookmarks require preferences version 19"));
                 }
-                Ok(Bookmark {
+                if let Some(foreign) = foreign::hot_path(&bookmark)? {
+                    foreign_hot_paths.push(foreign);
+                    continue;
+                }
+                native.push(Bookmark {
                     network: bookmark
                         .network
                         .map(StoredNetworkAddress::into_address)
@@ -608,9 +620,10 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
                         .map(StoredArchiveAddress::into_address)
                         .transpose()?,
                     slot: bookmark.slot,
-                })
-            })
-            .collect::<io::Result<Vec<_>>>()?,
+                });
+            }
+            native
+        }
         (3..=CURRENT_PREFERENCES_VERSION, None) => return Err(invalid("missing bookmarks")),
         _ => return Err(invalid("bookmarks require preferences version 3")),
     };
@@ -621,6 +634,11 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
     for bookmark in &bookmarks {
         bookmark.validate().map_err(invalid)?;
         if !ids.insert(bookmark.id) || bookmark.slot.is_some_and(|slot| !slots.insert(slot)) {
+            return Err(invalid("bookmark identities and slots must be unique"));
+        }
+    }
+    for path in &foreign_hot_paths {
+        if !ids.insert(path.id) || path.slot.is_some_and(|slot| !slots.insert(slot)) {
             return Err(invalid("bookmark identities and slots must be unique"));
         }
     }
@@ -675,13 +693,17 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
             ));
         }
     };
+    // Tabs at another system's folders are not opened; the import reports them.
+    let mut skipped_tabs = 0;
     let tabs = match (stored.version, stored.tabs) {
         (1..=5, None) => Default::default(),
         (6..=CURRENT_PREFERENCES_VERSION, Some(tabs)) => {
-            let convert = |tabs: StoredPaneTabs| -> io::Result<PaneTabPreferences> {
+            let mut convert = |tabs: StoredPaneTabs| -> io::Result<PaneTabPreferences> {
                 if stored.version < 24 && !tabs.networks.is_empty() {
                     return Err(invalid("Network tabs require preferences version 24"));
                 }
+                let (tabs, skipped) = foreign::split_tabs(tabs)?;
+                skipped_tabs += skipped;
                 Ok(PaneTabPreferences {
                     networks: tabs
                         .networks
@@ -745,13 +767,21 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
         (8..=CURRENT_PREFERENCES_VERSION, None) => return Err(invalid("missing panel filters")),
         _ => return Err(invalid("panel filters require preferences version 8")),
     };
+    // Editors, commands, comparators and an output file of another system are kept
+    // inactive, in this order, as their stored records.
+    let mut foreign_settings = Vec::new();
     let editor = match (stored.version, stored.editor) {
         (1..=8, None) => Default::default(),
-        (9..=CURRENT_PREFERENCES_VERSION, Some(editor)) => midnight_core::EditorPreferences {
-            executable: editor.executable.map(NativePath::into_path).transpose()?,
-            arguments: editor.arguments,
-            rules: editor_rules::decode(stored.version, editor.rules)?,
-        },
+        (9..=CURRENT_PREFERENCES_VERSION, Some(mut editor)) => {
+            foreign_settings.extend(foreign::take_editor_program(&mut editor)?);
+            let (rules, foreign_rules) = editor_rules::decode(stored.version, editor.rules)?;
+            foreign_settings.extend(foreign_rules);
+            midnight_core::EditorPreferences {
+                executable: editor.executable.map(NativePath::into_path).transpose()?,
+                arguments: editor.arguments,
+                rules,
+            }
+        }
         (9..=CURRENT_PREFERENCES_VERSION, None) => {
             return Err(invalid("missing editor preferences"));
         }
@@ -762,7 +792,27 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
         (15..=CURRENT_PREFERENCES_VERSION, Some(geometry)) => Some(geometry.into()),
         _ => return Err(invalid("missing or unexpected window geometry")),
     };
+    let (file_list, foreign_output) = file_list::decode(stored.version, stored.file_list)?;
+    let (user_commands, foreign_commands) =
+        user_commands::decode(stored.version, stored.user_commands)?;
+    let (file_comparators, foreign_comparators) =
+        file_comparators::decode(stored.version, stored.file_comparators)?;
+    // Bindings of commands kept from another system would name no command here.
+    let mut shortcuts = shortcuts;
+    let bound = shortcuts.len();
+    for setting in &foreign_commands {
+        if let midnight_core::ForeignSettingKind::UserCommand { id, .. } = &setting.kind {
+            let action = id.action();
+            shortcuts.retain(|binding| binding.action != action);
+        }
+    }
+    let removed_bindings = bound - shortcuts.len();
+    foreign_settings.extend(foreign_commands);
+    foreign_settings.extend(foreign_comparators);
+    foreign_settings.extend(foreign_output);
     let mut preferences = UserPreferences {
+        foreign_hot_paths,
+        foreign_settings: foreign_settings.into(),
         disk_io_concurrency: match (stored.version, stored.disk_io_concurrency) {
             (1..=31, None) => DiskIoConcurrency::Automatic,
             (31..=CURRENT_PREFERENCES_VERSION, Some(StoredDiskIoConcurrency::Automatic {})) => {
@@ -786,12 +836,12 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
                 ));
             }
         },
-        file_list: file_list::decode(stored.version, stored.file_list)?,
+        file_list,
         viewer_associations: viewer_associations::decode(
             stored.version,
             stored.viewer_associations,
         )?,
-        user_commands: user_commands::decode(stored.version, stored.user_commands)?.into(),
+        user_commands: user_commands.into(),
         checksum_algorithms: checksums::decode(stored.version, stored.checksum_algorithms)?,
         window_geometry,
         panel_split_basis_points: match (stored.version, stored.panel_split_basis_points) {
@@ -850,7 +900,7 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
             }
             _ => return Err(invalid("missing or unexpected viewer preferences")),
         },
-        file_comparators: file_comparators::decode(stored.version, stored.file_comparators)?,
+        file_comparators,
         editor,
         theme,
         density,
@@ -902,7 +952,11 @@ fn decode_preferences_impl(bytes: &[u8], compile_comparators: bool) -> io::Resul
     if compile_comparators {
         crate::comparator_rules::validate(&preferences.file_comparators).map_err(invalid)?;
     }
-    Ok(preferences)
+    Ok(midnight_core::ImportedPreferences {
+        preferences,
+        skipped_tabs,
+        removed_bindings,
+    })
 }
 
 pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
@@ -936,15 +990,31 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     {
         crate::filter::CompiledPanelFilter::new(filter).map_err(|error| invalid(error.message))?;
     }
+    // Settings of another system return exactly as stored, at their positions.
+    let foreign_settings = preferences.foreign_settings.clone();
+    let kept = |kind: fn(&midnight_core::ForeignSettingKind) -> bool| {
+        foreign_settings.iter().any(|setting| kind(&setting.kind))
+    };
+    use midnight_core::ForeignSettingKind as Kept;
+    let foreign_rules = kept(|kind| matches!(kind, Kept::EditorRule { .. }));
+    let foreign_commands = kept(|kind| matches!(kind, Kept::UserCommand { .. }));
+    let foreign_comparators = kept(|kind| matches!(kind, Kept::FileComparator { .. }));
+    let foreign_output = kept(|kind| matches!(kind, Kept::FileListOutput));
+    let foreign_bookmarks = foreign::stored_hot_paths(&preferences.foreign_hot_paths)?;
+    let foreign_editor =
+        foreign::editor_program(preferences.editor.executable.is_some(), &foreign_settings)?;
     // An explicit empty list must survive restart; omitted legacy rules mean presets.
     let network_bookmarks = preferences
         .bookmarks
         .iter()
-        .any(|bookmark| bookmark.network.is_some());
+        .any(|bookmark| bookmark.network.is_some())
+        || foreign_bookmarks
+            .iter()
+            .any(|bookmark| bookmark.network.is_some());
     let disk_choices = preferences.disk_io_concurrency != DiskIoConcurrency::Automatic;
     let archive_preview_choices = !preferences.thumbnails_archives;
     let glyph_choices = preferences.glyph_fitting != midnight_core::GlyphFitting::default();
-    let comparator_choices = !preferences.file_comparators.rules.is_empty();
+    let comparator_choices = !preferences.file_comparators.rules.is_empty() || foreign_comparators;
     let thumbnailer_choices = !preferences.thumbnailer_associations.overrides.is_empty();
     let hidden_choices = !preferences.show_hidden_files;
     let mask_choices =
@@ -958,12 +1028,14 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         || archive_preview_choices
         || comparator_fields
         || !preferences.editor.rules.is_empty()
+        || foreign_rules
         || !preferences.panel_filter_history.is_empty();
     let verification_choices =
         rule_choices || network_bookmarks || !preferences.copy_checksum_verification;
     let association_choices = verification_choices
         || *preferences.viewer_associations != midnight_core::ViewerAssociations::default();
     let file_list_choices = association_choices
+        || foreign_output
         || preferences.file_list != midnight_core::FileListPreferences::default();
     let thumbnail_choices =
         file_list_choices || preferences.thumbnail_size != midnight_core::DEFAULT_THUMBNAIL_SIZE;
@@ -984,7 +1056,10 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let archive_bookmarks = preferences
         .bookmarks
         .iter()
-        .any(|bookmark| bookmark.archive.is_some());
+        .any(|bookmark| bookmark.archive.is_some())
+        || foreign_bookmarks
+            .iter()
+            .any(|bookmark| bookmark.archive.is_some());
     let typed_archive_choices = !preferences.archive_custom_extensions.is_empty()
         || preferences
             .tabs
@@ -996,12 +1071,17 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
                     .iter()
                     .filter_map(|bookmark| bookmark.archive.as_ref()),
             )
+            .any(|address| address.format.is_some())
+        || foreign_bookmarks
+            .iter()
+            .filter_map(|bookmark| bookmark.archive.as_ref())
             .any(|address| address.format.is_some());
     let command_choices = viewer_choices
         || expression_choices
         || archive_bookmarks
         || typed_archive_choices
-        || !preferences.user_commands.is_empty();
+        || !preferences.user_commands.is_empty()
+        || foreign_commands;
     let checksum_choices =
         preferences.checksum_algorithms != midnight_core::ChecksumAlgorithms::default();
     let color_choices = command_choices
@@ -1017,7 +1097,11 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
             pattern: preferences.mask_selection.pattern.clone(),
             folders: preferences.mask_selection.folders,
         }),
-        file_comparators: comparator_fields.then(|| preferences.file_comparators.into()),
+        file_comparators: comparator_fields
+            .then(|| {
+                file_comparators::merge(preferences.file_comparators.into(), &foreign_settings)
+            })
+            .transpose()?,
         thumbnailer_associations: thumbnailer_choices.then(|| {
             thumbnailer_associations::StoredAssociations(
                 preferences.thumbnailer_associations.overrides.clone(),
@@ -1032,17 +1116,20 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
             .then_some(preferences.copy_checksum_verification),
         viewer_associations: association_choices
             .then(|| preferences.viewer_associations.as_ref().into()),
-        file_list: file_list_choices.then(|| preferences.file_list.into()),
+        file_list: file_list_choices
+            .then(|| file_list::merge(preferences.file_list.into(), &foreign_settings))
+            .transpose()?,
         thumbnail_size: thumbnail_choices.then_some(preferences.thumbnail_size),
         glyph_fitting: glyph_choices.then(|| preferences.glyph_fitting.name().to_owned()),
-        user_commands: command_choices.then(|| {
-            preferences
-                .user_commands
-                .iter()
-                .cloned()
-                .map(StoredUserCommand::from)
-                .collect()
-        }),
+        user_commands: command_choices
+            .then(|| {
+                let native = preferences.user_commands.iter().cloned();
+                user_commands::merge(
+                    native.map(StoredUserCommand::from).collect(),
+                    &foreign_settings,
+                )
+            })
+            .transpose()?,
         checksum_algorithms: (checksum_choices || command_choices)
             .then(|| checksums::encode(preferences.checksum_algorithms)),
         window_geometry: preferences.window_geometry.map(StoredWindowGeometry::from),
@@ -1130,17 +1217,24 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
                 .then_some(preferences.thumbnails_archives),
         }),
         disabled_viewer_plugins: Some(preferences.disabled_viewer_plugins),
-        editor: Some(StoredEditor {
-            rules: rule_choices.then(|| {
-                preferences
-                    .editor
-                    .rules
-                    .into_iter()
-                    .map(Into::into)
-                    .collect()
-            }),
-            executable: preferences.editor.executable.map(NativePath::from_path),
-            arguments: preferences.editor.arguments,
+        editor: Some({
+            let (executable, arguments) = match foreign_editor {
+                Some((executable, arguments)) => (Some(executable), arguments),
+                None => (
+                    preferences.editor.executable.map(NativePath::from_path),
+                    preferences.editor.arguments,
+                ),
+            };
+            StoredEditor {
+                rules: rule_choices
+                    .then(|| {
+                        let native = preferences.editor.rules.into_iter().map(Into::into);
+                        editor_rules::merge(native.collect(), &foreign_settings)
+                    })
+                    .transpose()?,
+                executable,
+                arguments,
+            }
         }),
         panel_filters: Some(preferences.panel_filters.map(StoredPanelFilter::from)),
         panel_filter_history: rule_choices.then(|| {
@@ -1222,6 +1316,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
                     network: bookmark.network.map(StoredNetworkAddress::from_address),
                     slot: bookmark.slot,
                 })
+                .chain(foreign_bookmarks)
                 .collect(),
         ),
         font_family: Some(preferences.font_family),
@@ -1286,7 +1381,7 @@ fn read_sized_preferences_impl(
     reader
         .take(MAX_PREFERENCES_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
-    decode_preferences_impl(&bytes, compile_comparators)
+    decode_preferences_impl(&bytes, compile_comparators).map(|decoded| decoded.preferences)
 }
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);

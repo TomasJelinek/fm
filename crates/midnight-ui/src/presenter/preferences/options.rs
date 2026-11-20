@@ -61,6 +61,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
         .clone_from(&from.archive_association_overrides);
     to.archive_custom_extensions
         .clone_from(&from.archive_custom_extensions);
+    to.foreign_settings.clone_from(&from.foreign_settings);
 }
 
 /// The settings outside Options, which an imported settings file replaces only once
@@ -96,6 +97,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         shortcuts: _,
         filename_colors: _,
         show_hidden_files: _,
+        foreign_settings: _,
         // Options owns the output choice; the session owns history and path.
         file_list,
         checksum_algorithms,
@@ -104,6 +106,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         viewer,
         windows_shell,
         bookmarks,
+        foreign_hot_paths,
         tabs,
         panel_view_modes,
         panel_filters,
@@ -124,6 +127,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
     to.viewer.clone_from(viewer);
     to.windows_shell = *windows_shell;
     to.bookmarks.clone_from(bookmarks);
+    to.foreign_hot_paths.clone_from(foreign_hot_paths);
     // A panel without saved tabs keeps its current tabs.
     for (current, saved) in to.tabs.iter_mut().zip(tabs) {
         if !saved.paths.is_empty() {
@@ -216,6 +220,8 @@ impl Presenter {
         let defaults = UserPreferences {
             command_history: self.preferences.values.command_history.clone(),
             user_commands: self.preferences.values.user_commands.clone(),
+            // Kept settings of another system are user content, like custom commands.
+            foreign_settings: self.preferences.values.foreign_settings.clone(),
             ..UserPreferences::default()
         };
         let mut values = self.preferences.values.clone();

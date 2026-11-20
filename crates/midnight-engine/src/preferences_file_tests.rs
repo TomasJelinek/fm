@@ -56,7 +56,11 @@ fn export_and_import_roundtrip_unicode_settings_through_native_files() {
     assert_eq!(fs::read(&destination).unwrap(), bytes.as_ref());
     assert_eq!(
         import_file(&destination, &service, &cancel).unwrap(),
-        expected
+        ImportedPreferences {
+            preferences: expected,
+            skipped_tabs: 0,
+            removed_bindings: 0,
+        }
     );
     // Only the published file remains: no staging residue beside it.
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
@@ -199,7 +203,7 @@ async fn controller_reports_exports_and_validated_imports_by_request() {
         panic!("expected an import result");
     };
     assert_eq!(request, DesktopRequestId(8));
-    assert_eq!(*result.unwrap(), expected);
+    assert_eq!(result.unwrap().preferences, expected);
     tasks.join_next().await.unwrap().unwrap();
     files.import(DesktopRequestId(9), "relative.json".into(), &mut tasks);
     let Event::PreferencesImported { request, result } = next(&mut events).await else {

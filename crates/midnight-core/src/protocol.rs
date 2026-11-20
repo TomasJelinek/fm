@@ -607,7 +607,7 @@ pub enum Event {
     },
     PreferencesImported {
         request: DesktopRequestId,
-        result: Result<Box<UserPreferences>, FsError>,
+        result: Result<Box<crate::ImportedPreferences>, FsError>,
     },
     DirectoryChanged {
         pane: PaneId,

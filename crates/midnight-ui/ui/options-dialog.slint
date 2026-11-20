@@ -13,7 +13,7 @@ import { ArchiveOptions, ArchiveOptionsView } from "archive-options.slint";
 import { ArgumentEditing } from "argument-editor.slint";
 import { ColorOptions, ColorOptionsView } from "color-options.slint";
 import { UserCommandOptions, UserCommandSettingsView } from "user-command-options.slint";
-import { SettingsFileButton, SettingsFileFeedback, SettingsFileView } from "settings-file-options.slint";
+import { KeptSettingsList, SettingsFileButton, SettingsFileFeedback, SettingsFileView } from "settings-file-options.slint";
 import { DialogHeader, PopupFocus } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -443,6 +443,7 @@ export component OptionsBody inherits Rectangle {
                         }
                     }
                 }
+                if SettingsFileView.kept-rows.length > 0 : KeptSettingsList { }
             }
             if root.topic-index == 1 : VerticalLayout {
                 spacing: 10px; alignment: start;

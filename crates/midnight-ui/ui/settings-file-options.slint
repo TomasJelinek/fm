@@ -3,10 +3,21 @@ import { Tip } from "controls.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { FallbackIcons } from "action-icons.slint";
 
+// One setting kept from another operating system: what it is and its path there.
+export struct KeptSettingRow {
+    label: string,
+    location: string,
+}
+
 // Export/Import configuration in Options: in the footer where they fit, otherwise at
 // the end of the General page. The presenter owns this state; choosing files,
 // reading, writing and validation happen on backend workers.
 export global SettingsFileView {
+    // Settings whose paths belong to another operating system, inactive here.
+    in property <string> kept-title;
+    in property <string> kept-hint;
+    in property <[KeptSettingRow]> kept-rows;
+    callback remove-kept(int, string);
     // A chooser or settings-file transfer is outstanding; no second one may start.
     in property <bool> busy;
     // An import is being read or staged; OK and Reset wait for it.
@@ -61,5 +72,37 @@ export component SettingsFileFeedback inherits HorizontalLayout {
         text: "Keep"; min-height: Theme.control-height;
         hint: "Keep the existing file and do not export.";
         clicked => { SettingsFileView.keep(); }
+    }
+}
+
+// Options › General: inactive settings from another operating system. Removing one
+// is an Options edit: OK saves it, Cancel keeps the setting.
+export component KeptSettingsList inherits VerticalLayout {
+    spacing: 8px;
+    Rectangle { height: 1px; background: Theme.frame; }
+    Text {
+        text: SettingsFileView.kept-title;
+        color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
+    }
+    Text {
+        text: SettingsFileView.kept-hint;
+        color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    for row[index] in SettingsFileView.kept-rows : HorizontalLayout {
+        spacing: 8px;
+        Text {
+            accessible-label: row.label; accessible-value: row.location;
+            text: row.label + ": " + row.location;
+            min-width: 0px; horizontal-stretch: 1;
+            overflow: elide; vertical-alignment: center;
+            color: Theme.text; font-size: Theme.font-size;
+            Tip { text: row.label + "\n" + row.location; }
+        }
+        HintedActionButton {
+            accessible-label: "Remove " + row.label;
+            text: "Remove"; min-height: Theme.control-height;
+            hint: "Remove this inactive setting. OK saves the removal; Cancel keeps it.";
+            clicked => { SettingsFileView.remove-kept(index, row.location); }
+        }
     }
 }

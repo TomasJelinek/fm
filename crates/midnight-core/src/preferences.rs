@@ -365,6 +365,12 @@ pub struct UserPreferences {
     pub panel_filter_history: Vec<crate::PanelFilter>,
     /// Accepted edits replace this bounded shared collection atomically.
     pub filename_colors: Arc<Vec<crate::FilenameColorRule>>,
+    /// Inactive Hot Paths whose locations belong to another operating system.
+    /// They share identities, numbered slots and the limit with `bookmarks`.
+    pub foreign_hot_paths: Vec<crate::ForeignHotPath>,
+    /// Editors, custom commands, comparators and an output file whose paths belong
+    /// to another operating system; kept inactive and exported unchanged.
+    pub foreign_settings: Arc<Vec<crate::ForeignSetting>>,
 }
 
 pub const MAX_PANEL_FILTER_HISTORY: usize = 100;
@@ -421,6 +427,8 @@ impl Default for UserPreferences {
             panel_filters: Default::default(),
             panel_filter_history: Vec::new(),
             filename_colors: crate::default_filename_colors().into(),
+            foreign_hot_paths: Vec::new(),
+            foreign_settings: Arc::default(),
         }
     }
 }
@@ -570,6 +578,8 @@ impl UserPreferences {
             // Report the bound before the pairwise location checks below.
             message = Some("At most 64 bookmarks can be saved.");
         } else if let Err(error) = validate_bookmarks(&self.bookmarks) {
+            message = Some(error);
+        } else if let Err(error) = crate::foreign_settings::validate_foreign(self) {
             message = Some(error);
         }
         match message {

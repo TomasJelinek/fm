@@ -21,6 +21,17 @@ pub struct PreferencesExportRequest {
     pub overwrite: bool,
 }
 
+/// A completely validated settings file, and what it brought from another system.
+/// Its `foreign_hot_paths` and `foreign_settings` hold the entries it keeps inactive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportedPreferences {
+    pub preferences: UserPreferences,
+    /// Tabs whose folders belong to another system; they are not opened.
+    pub skipped_tabs: usize,
+    /// Key bindings of custom commands kept from another system; they are removed.
+    pub removed_bindings: usize,
+}
+
 /// A published export whose bytes were read back and verified.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreferencesExportReceipt {

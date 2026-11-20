@@ -5,6 +5,42 @@ fn native(name: &str) -> PathBuf {
     std::env::temp_dir().join(name)
 }
 
+/// A validated file without entries of another system.
+fn summary(preferences: UserPreferences) -> Box<ImportedPreferences> {
+    Box::new(ImportedPreferences {
+        preferences,
+        skipped_tabs: 0,
+        removed_bindings: 0,
+    })
+}
+
+/// An absolute path written by the other operating system.
+fn other(name: &str) -> String {
+    match PathSystem::CURRENT.other() {
+        PathSystem::Unix => format!("/home/tom/{name}"),
+        PathSystem::Windows => format!("C:\\Users\\tom\\{name}"),
+    }
+}
+
+fn inactive_hot_path(id: u64, slot: Option<u8>) -> ForeignHotPath {
+    ForeignHotPath {
+        id: BookmarkId(id),
+        slot,
+        system: PathSystem::CURRENT.other(),
+        location: other("projekty 文档"),
+        stored: "{}".into(),
+    }
+}
+
+fn kept(kind: ForeignSettingKind, location: &str) -> ForeignSetting {
+    ForeignSetting {
+        kind,
+        system: PathSystem::CURRENT.other(),
+        location: other(location),
+        stored: "{}".into(),
+    }
+}
+
 fn bookmark(id: u64, name: &str, slot: Option<u8>) -> Bookmark {
     Bookmark {
         id: BookmarkId(id),
@@ -189,7 +225,7 @@ impl Harness {
         assert!(self.p.preferences.settings_file.importing());
         self.event(Event::PreferencesImported {
             request,
-            result: Ok(Box::new(preferences)),
+            result: Ok(summary(preferences)),
         });
     }
 
@@ -334,7 +370,7 @@ fn refused_and_late_imports_change_nothing() {
     h.p.begin_options();
     h.event(Event::PreferencesImported {
         request,
-        result: Ok(Box::new(imported())),
+        result: Ok(summary(imported())),
     });
     assert_eq!(h.p.preferences.values, current());
     assert!(h.p.preferences.settings_file.staged.is_none());
@@ -438,11 +474,214 @@ fn ok_and_reset_wait_for_a_pending_import_and_reset_drops_a_staged_one() {
     assert!(h.p.preferences.options.open);
     h.event(Event::PreferencesImported {
         request,
-        result: Ok(Box::new(imported())),
+        result: Ok(summary(imported())),
     });
     assert!(h.p.preferences.settings_file.staged.is_some());
     h.p.reset_options(&sender(&h.sent));
     assert!(h.p.preferences.settings_file.staged.is_none());
     assert_eq!(h.p.preferences.values.theme, PreferenceTheme::default());
     assert_eq!(h.p.preferences.values.bookmarks, current().bookmarks);
+}
+
+fn with_kept(foreign_hot_paths: Vec<ForeignHotPath>, foreign: Vec<ForeignSetting>) -> Presenter {
+    let mut p = Presenter::new(native("left"), native("right"));
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(
+        AcceptedPreferences {
+            preferences: UserPreferences {
+                foreign_hot_paths,
+                foreign_settings: foreign.into(),
+                ..current()
+            },
+            comparators: FileComparatorSnapshot::default(),
+        },
+    ))));
+    p
+}
+
+#[test]
+fn inactive_hot_paths_explain_themselves_share_slots_and_can_be_removed() {
+    let mut p = with_kept(vec![inactive_hot_path(8, Some(2))], Vec::new());
+    let sent = RefCell::new(Vec::new());
+    assert!(p.jump_bookmark(PaneId::Left, 2, &sender(&sent)));
+    let (title, body) = p.desktop.notice.clone().unwrap();
+    assert_eq!(title, "Hot Path not available");
+    assert!(body.contains(&other("projekty 文档")), "{body}");
+    assert!(body.contains(PathSystem::CURRENT.other().name()));
+    assert!(p.open_bookmark(PaneId::Left, BookmarkId(8), &sender(&sent)));
+    assert!(sent.borrow().is_empty(), "nothing navigates or saves");
+    // Numbered slots are shared: taking slot 2 hands slot 1 to the inactive path.
+    assert!(p.set_bookmark_slot(BookmarkId(7), Some(2), &sender(&sent)));
+    assert_eq!(p.bookmarks()[0].slot, Some(2));
+    assert_eq!(p.foreign_hot_paths()[0].slot, Some(1));
+    // A new hot path gets a fresh identity and the first slot nobody holds.
+    assert!(p.add_bookmark_location(bookmark(1, "nový", None), &sender(&sent)));
+    assert_eq!(p.bookmarks()[1].id, BookmarkId(9));
+    assert_eq!(p.bookmarks()[1].slot, Some(3));
+    assert!(p.remove_bookmark(BookmarkId(8), &sender(&sent)));
+    assert!(p.foreign_hot_paths().is_empty());
+    let saved = sent
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::SavePreferences { preferences, .. } => Some(preferences.clone()),
+            _ => None,
+        });
+    assert!(saved.unwrap().foreign_hot_paths.is_empty());
+}
+
+#[test]
+fn an_import_reports_what_the_other_system_keeps_and_leaves_out() {
+    let mut h = Harness::new();
+    let request = h.choose(false, &native("linux.json"));
+    let preferences = UserPreferences {
+        foreign_hot_paths: vec![inactive_hot_path(1, Some(5))],
+        foreign_settings: vec![
+            kept(ForeignSettingKind::Editor, "code"),
+            kept(
+                ForeignSettingKind::UserCommand {
+                    position: 0,
+                    id: UserCommandId::new("custom-1").unwrap(),
+                    name: "Build".into(),
+                },
+                "make",
+            ),
+        ]
+        .into(),
+        ..imported()
+    };
+    h.event(Event::PreferencesImported {
+        request,
+        result: Ok(Box::new(ImportedPreferences {
+            preferences,
+            skipped_tabs: 2,
+            removed_bindings: 1,
+        })),
+    });
+    let system = PathSystem::CURRENT.other().name();
+    let message = h.p.preferences.settings_file.message.clone();
+    for expected in [
+        format!(
+            "Kept inactive because they use {system} paths: 1 hot path, 1 custom command and the editor."
+        ),
+        format!("Not opened: 2 tabs at {system} folders."),
+        "Removed: 1 key binding of those commands.".into(),
+    ] {
+        assert!(message.contains(&expected), "{message}");
+    }
+    // Kept settings preview with the Options pages; the inactive hot path waits for OK.
+    assert_eq!(h.p.preferences.values.foreign_settings.len(), 2);
+    assert!(h.p.foreign_hot_paths().is_empty());
+    h.p.accept_options(&sender(&h.sent));
+    let (revision, saved) = h.saves()[0].clone();
+    assert_eq!(saved.foreign_settings.len(), 2);
+    // Fresh identity after the native hot paths of the file and of the session.
+    assert_eq!(saved.foreign_hot_paths[0].id, BookmarkId(9));
+    assert_eq!(saved.bookmarks[0].id, BookmarkId(8));
+    h.event(Event::PreferencesSaved {
+        revision,
+        result: Ok(FileComparatorSnapshot::default()),
+    });
+    assert_eq!(h.p.foreign_hot_paths(), saved.foreign_hot_paths);
+}
+
+#[test]
+fn removing_a_kept_setting_is_an_options_preview_that_cancel_restores() {
+    let editor = kept(ForeignSettingKind::Editor, "code");
+    let command = kept(
+        ForeignSettingKind::UserCommand {
+            position: 1,
+            id: UserCommandId::new("custom-1").unwrap(),
+            name: "Build".into(),
+        },
+        "make",
+    );
+    let mut p = with_kept(Vec::new(), vec![editor.clone(), command.clone()]);
+    let sent = RefCell::new(Vec::new());
+    p.begin_options();
+    let shown = crate::shown_text(&editor.location).to_string();
+    p.remove_foreign_setting(1, &shown, &sender(&sent));
+    assert_eq!(p.preferences.values.foreign_settings.len(), 2, "stale row");
+    p.remove_foreign_setting(0, &shown, &sender(&sent));
+    assert_eq!(
+        *p.preferences.values.foreign_settings,
+        std::slice::from_ref(&command)
+    );
+    assert!(sent.borrow().is_empty(), "a preview until OK");
+    p.cancel_options(&sender(&sent));
+    assert_eq!(*p.preferences.values.foreign_settings, [editor, command]);
+    // Reset to defaults keeps them, like custom commands.
+    p.begin_options();
+    p.reset_options(&sender(&sent));
+    assert_eq!(p.preferences.values.foreign_settings.len(), 2);
+}
+
+#[test]
+fn a_chosen_editor_or_output_file_replaces_the_kept_one() {
+    let editor = kept(ForeignSettingKind::Editor, "code");
+    let output = kept(ForeignSettingKind::FileListOutput, "seznam.txt");
+    let mut p = with_kept(Vec::new(), vec![editor.clone(), output.clone()]);
+    let sent = RefCell::new(Vec::new());
+    p.begin_options();
+    let exe = std::env::current_exe().unwrap();
+    p.edit_editor_draft(exe.to_string_lossy().into_owned(), false);
+    p.save_editor_draft(&sender(&sent));
+    assert_eq!(p.preferences.values.editor.executable, Some(exe));
+    assert_eq!(
+        *p.preferences.values.foreign_settings,
+        std::slice::from_ref(&output)
+    );
+    // The editor is an Options edit: Cancel brings the kept one back.
+    p.cancel_options(&sender(&sent));
+    assert_eq!(p.preferences.values.editor.executable, None);
+    assert_eq!(
+        *p.preferences.values.foreign_settings,
+        [editor.clone(), output]
+    );
+    // A Make File List output file is a session choice that Cancel keeps.
+    p.begin_options();
+    let file_list = FileListPreferences {
+        path: Some(native("seznam.txt")),
+        ..FileListPreferences::default()
+    };
+    p.save_file_list_preferences(file_list, &sender(&sent));
+    assert_eq!(
+        *p.preferences.values.foreign_settings,
+        std::slice::from_ref(&editor)
+    );
+    p.cancel_options(&sender(&sent));
+    assert_eq!(
+        *p.preferences.values.foreign_settings,
+        std::slice::from_ref(&editor)
+    );
+    let saved = sent
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::SavePreferences { preferences, .. } => Some(preferences.clone()),
+            _ => None,
+        });
+    assert_eq!(*saved.unwrap().foreign_settings, [editor]);
+}
+
+#[test]
+fn new_custom_commands_skip_identities_kept_from_another_system() {
+    let mut p = with_kept(
+        Vec::new(),
+        vec![kept(
+            ForeignSettingKind::UserCommand {
+                position: 0,
+                id: UserCommandId::new("custom-1").unwrap(),
+                name: "Build".into(),
+            },
+            "make",
+        )],
+    );
+    p.begin_options();
+    p.new_user_command_setting();
+    assert_eq!(
+        p.user_command_settings.selected,
+        Some(UserCommandId::new("custom-2").unwrap())
+    );
 }

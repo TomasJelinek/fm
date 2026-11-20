@@ -27,6 +27,8 @@ export struct BookmarkRow {
     // The end of `path` that a shortened label keeps: its last component.
     path-tail: string,
     slot: int,
+    // Nonempty for an inactive hot path of another operating system.
+    note: string,
 }
 
 export struct LocationRow {
