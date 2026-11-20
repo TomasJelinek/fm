@@ -70,7 +70,8 @@ glyph coverage).
 The console ends with one line per scenario (`PASS`, `WARN`, `FAIL`, `SKIP`,
 `TIMEOUT`, `NOT RUN`), its duration and headline, the counts, the report path and
 `Result: PASS|FAIL`. Only the five newest run folders are kept; older ones are deleted
-when a run starts.
+when a run starts. Checkouts that share one `_build` (parallel worktrees using a
+common target directory) share this pruning; pass `--run-dir` to keep a run elsewhere.
 
 ## How it is kept out of normal runs
 

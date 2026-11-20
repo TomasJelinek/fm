@@ -134,10 +134,15 @@ fn is_run_name(name: &str) -> bool {
 }
 
 /// Keep the newest [`KEPT_RUNS`] run directories next to `current` (including it).
+/// Only the default location `_build/acceptance` is pruned: a run placed elsewhere
+/// with `--run-dir` never deletes its siblings.
 pub fn prune_old_runs(current: &Path) {
     let Some(parent) = current.parent() else {
         return;
     };
+    if !parent.ends_with("_build/acceptance") {
+        return;
+    }
     let mut runs: Vec<PathBuf> = fs::read_dir(parent)
         .into_iter()
         .flatten()

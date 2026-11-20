@@ -39,6 +39,7 @@ were linked) and run inside the build image from `crates/midnight-acceptance`:
 | --- | --- | --- |
 | `20261120-002743` | all scenarios, `--scale smoke` | 8 passed, `ui_review` WARN (16 flags in 186 screenshots, 31 captures × 6 combinations), 364.6 s, `Result: PASS` |
 | `20261120-003405` | the eight functional scenarios, full scale | 8 passed in 71.1 s, `Result: PASS`; the fixture (45 MB) was removed afterwards |
+| `20261120-061627` | the eight functional scenarios after rebasing onto `5b344754`, smoke scale | 8 passed in 72.3 s, `Result: PASS` |
 
 Per scenario at full scale: `startup` 1.2 s, `navigation` 38.4 s (every top-level
 folder, six sub-folders and the 12-level chain, each listing compared with the disk),
@@ -50,6 +51,30 @@ timer created outside the runtime context, a missing scratch folder, and a revie
 compared popup controls with the main window beneath them (2,728 flags, now 16).
 `tree_expand_all` exposed that inline-tree expansion waits for the visible-row sampling
 production's thumbnail pulse performs; the harness now does it every frame.
+
+### End to end: `./build.sh --acceptance` with the Docker backend
+
+1. `./build.sh --acceptance` on this host (no GUI development packages, so `auto`
+   selected Docker) created the build image for the current setup scripts
+   (`midnight-explorer-build:b04c4862ae9f…`, 1.69 GB; the image other sessions used,
+   `9049146550…`, predates the 2026-11-17 setup changes and lacks `gpg`, `cmake` and
+   `ninja`) and started the in-container chain. To share the target directory this run
+   had linked the worktree's `_build` to the common one; the HTML viewer step then
+   refused the linked output path ("Generated HTML output must not traverse links", a
+   deliberate check), so the run stopped with status 2 after the app, filesystem,
+   viewer, image and PDF packages. Not a product fault: a checkout's own `_build`
+   (the normal case) is a plain directory.
+2. The identical in-container command that `scripts/build-docker.sh` composes
+   (`sh /workspace/build.sh debug --acceptance` with `FM_BUILD_BACKEND=native`, in that
+   image, the shared `_build` mounted directly, plus `CARGO_INCREMENTAL=0`): every build
+   step passed (native and network filesystems, basic/source/Markdown/image/PDF/HTML
+   viewers, thumbnailers including FFmpeg, archive filesystem), then
+   `scripts/acceptance.sh` built the suite (`Finished test profile … in 12m 15s`) and ran
+   it at full scale: 8 passed, `ui_review` WARN with 16 flags in 186 screenshots,
+   372.7 s, `Result: PASS`; `exit 0 after 2844 s` (most of it waiting for the shared
+   Cargo lock). Run folder `_build/acceptance/20261120-083023`. That `build-docker.sh`
+   forwards `--acceptance` to this command is covered by
+   `test_acceptance_uses_the_docker_backend`.
 
 ### Changed application code
 
