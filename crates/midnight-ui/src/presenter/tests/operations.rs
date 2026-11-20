@@ -772,7 +772,8 @@ fn completed_copy_move_and_delete_refresh_at_once_and_hold_input_until_shown() {
             renamed_to: None,
         })))
     };
-    let cases: Vec<(&str, Box<dyn Fn(bool) -> Event>)> = vec![
+    type MakeEvent<'a> = Box<dyn Fn(bool) -> Event + 'a>;
+    let cases: Vec<(&str, MakeEvent<'_>)> = vec![
         (
             "copy",
             Box::new(|done| {
