@@ -63,9 +63,10 @@ fn local_calendar_offset_is_the_difference_between_local_fields_and_the_instant(
         "the fraction counts from the floored second, as the fields do"
     );
     assert_eq!(summer.nanosecond, 0);
+    // Windows SystemTime counts 100 ns ticks, so the fraction is one it can hold.
     assert_eq!(
-        LocalCalendarTime::nanosecond_of(instant + Duration::from_nanos(789)),
-        789
+        LocalCalendarTime::nanosecond_of(instant + Duration::from_nanos(789_100)),
+        789_100
     );
     for (year, month, day, hour) in [(2026, 2, 29, 0), (2026, 13, 1, 0), (2026, 1, 1, 24)] {
         assert!(
