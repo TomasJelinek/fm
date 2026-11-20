@@ -190,12 +190,15 @@ fn cancelled_shared_archive_reads_retain_both_real_worker_slots_until_they_drain
     ));
     assert!(ready.try_recv().is_err());
     gate.release();
-    let mut old = [
+    // Each slot frees when its own cancelled read drains, so work 3 may start in the
+    // first freed slot and drain before the other cancelled read reports.
+    let mut drains = [
+        drained.recv_timeout(Duration::from_secs(3)).unwrap(),
         drained.recv_timeout(Duration::from_secs(3)).unwrap(),
         drained.recv_timeout(Duration::from_secs(3)).unwrap(),
     ];
-    old.sort_unstable();
-    assert_eq!(old, [(1, true), (2, true)]);
+    drains.sort_unstable();
+    assert_eq!(drains, [(1, true), (2, true), (3, false)]);
     assert_eq!(started.recv_timeout(Duration::from_secs(3)).unwrap(), 3);
     let result = ready.recv_timeout(Duration::from_secs(3)).unwrap();
     assert_eq!((result.generation, result.token), (2, 3));
