@@ -1375,9 +1375,14 @@ fn installed_source_correction_advances_the_line_window_before_acknowledging() {
         );
         assert_eq!(negative.maximum_position, baseline_high);
         assert!(negative.maximum_position < TARGET);
+        // The window's cameras end short of the target, so the exhausted correction
+        // settles at its nearest edge (`settle_at_nearest_edge`) and acknowledges
+        // there instead of reporting the position unavailable.
         assert_eq!(negative.frame.generation, negative.generation);
-        assert_eq!(negative.frame.position_sequence[0], 0);
-        assert_eq!(negative.unavailable, vec![(negative.generation, SEQUENCE)]);
+        assert_eq!(negative.frame.position_sequence[0], SEQUENCE);
+        assert!(negative.unavailable.is_empty());
+        assert_eq!(negative.actual_position, negative.maximum_position);
+        assert_eq!(negative.frame.position, negative.actual_position);
         assert!(!negative.pending && negative.viewport.is_none());
     });
 

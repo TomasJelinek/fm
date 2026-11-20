@@ -16,26 +16,24 @@ fn private_spool_handle_is_not_inheritable() {
     assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
 }
 
+// `finish` does not flush, so only a write reaches the OS here; a failed flush is
+// covered by `failed_flush_cannot_be_retried_into_a_readable_spool`.
 #[test]
-fn actual_write_and_flush_access_errors_permanently_poison_the_spool() {
+fn actual_write_access_error_permanently_poisons_the_spool() {
     let temporary = tempfile::tempdir().unwrap();
     let root = PrivateSpoolDirectory::open(&temporary.path().join("private")).unwrap();
     let read_only = temporary.path().join("read-only");
     std::fs::write(&read_only, b"untouched").unwrap();
-    for flush in [false, true] {
-        let mut spool = root.create().unwrap();
-        let original = std::mem::replace(&mut spool.file, File::open(&read_only).unwrap());
-        let error = if flush {
-            spool.finish().unwrap_err()
-        } else {
-            spool.append(0, b"data").unwrap_err()
-        };
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        spool.file = original;
-        assert!(spool.append(0, b"retry").is_err());
-        assert!(spool.finish().is_err());
-        assert!(spool.read_at(0, &mut [0; 1]).is_err());
-    }
+    let mut spool = root.create().unwrap();
+    let original = std::mem::replace(&mut spool.file, File::open(&read_only).unwrap());
+    assert_eq!(
+        spool.append(0, b"data").unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    spool.file = original;
+    assert!(spool.append(0, b"retry").is_err());
+    assert!(spool.finish().is_err());
+    assert!(spool.read_at(0, &mut [0; 1]).is_err());
     assert_eq!(std::fs::read(read_only).unwrap(), b"untouched");
 }
 
