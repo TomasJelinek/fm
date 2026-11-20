@@ -68,6 +68,14 @@ without stopping at a failure) passed at `9e4e2040` except the two footer tests 
 on Windows (902 and 1,415, Clippy and rustfmt clean) and on Linux in WSL (897 and
 1,418).
 
+CI run 44795512430 at `806e6b55`, which predates the 60 s operation test waits, hung
+in a Windows engine test until it was cancelled. Run 44804002194 at `aea14ce0`
+failed in the two CI-only tests that `f26f7c72` fixes. Run 44814555541 at
+`f26f7c72` passed every step on Windows and Linux before the archive worker step
+and failed there only in the manual test that `e862517b` skips. CI run 44819849685
+at `632c12ab`, which contains every item above, passed all 26 jobs on Windows and
+Linux, with every check step of each platform run.
+
 Not established:
 
 - the Linux settings-file picker filter (`*.json`), which is compiled but exercised
