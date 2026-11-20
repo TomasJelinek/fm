@@ -1,10 +1,11 @@
-# Active work and requirements evidence — 19 November 2026
+# Active work and requirements evidence — 20 November 2026
 
 <a id="active-work-and-requirements-evidence--13-november-2026"></a>
 <a id="active-work-and-requirements-evidence--15-november-2026"></a>
 <a id="active-work-and-requirements-evidence--16-november-2026"></a>
 <a id="active-work-and-requirements-evidence--17-november-2026"></a>
 <a id="active-work-and-requirements-evidence--18-november-2026"></a>
+<a id="active-work-and-requirements-evidence--19-november-2026"></a>
 
 This is the current implementation/acceptance ledger alongside
 [Feature status](FEATURE_STATUS.md) and the preserved
@@ -19,6 +20,60 @@ code or a green subset into complete qualification.
 **ACTIVE — explicitly resumed by the user on 15 November 2026:** implement all
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
+
+### Integration — 20 November 2026
+
+`main` integrates the commits of 19 and 20 November and implements the four
+decisions of 20 November. Each change below was reviewed against its source and
+verified on Windows as stated. CI run 44708841616 at `3fcfb3d3`, which contains the
+first two items, passed every job on Windows and Linux; CI for the later commits had
+not finished when this was written.
+
+- CI follow-ups: rustfmt on the panel selection bridge (`2e562958`) and a named
+  closure type for Clippy in an operation test (`c2ea6035`). CI run 44706184619 at
+  `c2ea6035` then failed only in
+  `operations_native_ui::real_f2_rename_shows_the_new_name_and_holds_panel_input_until_then`
+  (cursor 19, expected 20): Windows collation sorts "část 文档 🦀.txt" with "c", so the
+  renamed file is the fixture's last row and Down cannot move. The test checks with
+  Up instead (`56372c05`); all 9 native operation UI tests pass on Windows.
+- Docs: 508 places in 35 documents ran a word into the number after it ("at most100
+  distinct strings"); `9759d391` splits them (whitespace only, `git diff -w` is
+  empty).
+- COMPARE-02, decision "re-check content" (`0f8d68f8`): a text comparison source
+  whose revision moved only in its change time is adopted after a complete fresh
+  read reproduces the retained text byte for byte; whole-input verification restarts
+  on the new pair. Images and every other change still report "Compared file
+  changed". The three comparator UI tests that timed out after 30 s each that
+  morning passed 17 of 17 three times in about 2 s.
+- Copy timing, decision "accept unchanged selection" (`35b5bb26`): Copy accepts any
+  frame painted, or retained surface published, since the selection last changed, so
+  a Ctrl+C between a find and its position refinement copies the match; a frame from
+  before the change still copies nothing. The engine tests' `copy_from` retry helper
+  is gone. `c3de5577` also lets Copy in the non-retained fallback mode (very long
+  lines) copy the page selection after a find; before, it copied nothing.
+- BUILD-02, decision "unify now" (`2d7daf46`): one link rule for package inputs
+  (links above the caller-named root accepted, links and `..` below it refused) and
+  outputs (below the checkout's own `_build`, no link from `_build` down). BUILD-03
+  lists the scripts that still apply the old rule.
+- TEST-04, decision "bounded retry in tests" (`1ee00535`): the two platform tests
+  rerun on a brand-new fixture and the shortcut test retries its own operations and
+  the installations expected to succeed, for about 2 s on errors 5, 32 and 33.
+  `19d9e3f8` fixes the shortcut installer's cleanup: a staged shortcut that could
+  not be removed left the Desktop and installation pins open and replaced the
+  original error.
+- New, VIEW-05: endpoint protection moves a fresh file's ChangeTime 1–2 s after it
+  is written, so a viewer reading it then shows "Content read failed";
+  `real_plugins_render_search_copy_cycle_modes_and_reject_changed_files` failed so
+  in 6 of 7 local runs (3 of 3 without the copy change). It needs an Architect
+  decision.
+
+Not established:
+
+- Live endpoint-protection drift and holds: none occurred during these runs (fresh
+  small files got no stream, no hold was seen after 10:04), so COMPARE-02 and
+  TEST-04 are verified with injected revisions and scripted holds.
+- A real build from a linked checkout (BUILD-03 still refuses it) and the manual
+  native CEF Office/HTML and qualified Source acceptance tests.
 
 ### Post-merge validation integrated — 19 November 2026
 
@@ -61,9 +116,8 @@ Not established:
 - The AppContainer profile race could not be reproduced where the profile already
   exists; the fix is defensive and one CI run has passed since.
 - The manual native CEF Office/HTML and qualified Source acceptance tests.
-- Copying in the instant between a find and its position refinement names a retired
-  frame and copies nothing; whether copying an unchanged selection should outlive
-  such a refinement is a viewer engine design decision.
+- Copying in the instant between a find and its position refinement named a retired
+  frame and copied nothing; decided and implemented on 20 November (above).
 
 ### Post-merge validation — 19 November 2026
 
