@@ -26,8 +26,12 @@ comes first; role work still requires scoped acceptance and exclusive ownership.
 `main` integrates the commits of 19 and 20 November and implements the four
 decisions of 20 November. Each change below was reviewed against its source and
 verified on Windows as stated. CI run 44708841616 at `3fcfb3d3`, which contains the
-first two items, passed every job on Windows and Linux; CI for the later commits had
-not finished when this was written.
+first two items, passed every job on Windows and Linux. CI run 44715333960 at
+`1ee00535` (the four decisions) passed 25 of 26 jobs, the Linux checks and both
+release builds included; the Windows check failed only in
+`icons::tests::unassociated_document_art_is_identified_for_semantic_fallbacks`,
+which ran its native stock-icon lookup outside the guard that serializes the
+module's native icon tests; `22818fc1` adds the guard.
 
 - CI follow-ups: rustfmt on the panel selection bridge (`2e562958`) and a named
   closure type for Clippy in an operation test (`c2ea6035`). CI run 44706184619 at
@@ -62,10 +66,18 @@ not finished when this was written.
   not be removed left the Desktop and installation pins open and replaced the
   original error.
 - New, VIEW-05: endpoint protection moves a fresh file's ChangeTime 1–2 s after it
-  is written, so a viewer reading it then shows "Content read failed";
-  `real_plugins_render_search_copy_cycle_modes_and_reject_changed_files` failed so
-  in 6 of 7 local runs (3 of 3 without the copy change). It needs an Architect
-  decision.
+  is written, and native live-validated revisions include ChangeTime. A viewer
+  reading the file then shows "Content read failed"
+  (`real_plugins_render_search_copy_cycle_modes_and_reject_changed_files` failed so
+  in 6 of 7 local runs, 3 of 3 without the copy change), and a transfer revalidating
+  a consented fresh target fails with "consented destination changed" (a user
+  command process test, once in a loaded full run). It needs an Architect decision.
+- Test speed (Windows, per-test timing of every workspace test executable): 238.8 s
+  of executable wall time for 7,136 timed tests, against 238.5 s on 18 November with
+  1,034 fewer tests and 295.4 s that morning. The comparator UI target fell from
+  51.5 s with three 30 s timeouts to 24.0 s with none. The slowest test is the 5.7 s
+  independent SHA-256 corpus check; the 5.0 s busy-folder test watches a changing
+  folder for 3 s of real time against the production one-second watch cooldown.
 
 Not established:
 
