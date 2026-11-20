@@ -8,8 +8,8 @@ import { DialogTabs } from "dialog-tabs.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { FallbackIcons, ActionButton } from "action-icons.slint";
 import { ChecksumAlgorithmMenu, ChecksumDraft } from "checksum-controls.slint";
-import { ChecksumResults, ChecksumDisplayRow } from "checksum-results.slint";
-export { ChecksumDisplayRow, ChecksumDraft }
+import { ChecksumResults, ChecksumDisplayRow, ChecksumColumnWidths } from "checksum-results.slint";
+export { ChecksumDisplayRow, ChecksumDraft, ChecksumColumnWidths }
 
 export component ChecksumWindow inherits ToolWindow {
     callback close-session();
@@ -57,6 +57,8 @@ export component ChecksumWindow inherits ToolWindow {
     in-out property <ChecksumDraft> draft;
     in-out property <int> output-algorithm;
     in-out property <int> selected-row: -1;
+    // Result column widths for this window's session.
+    in-out property <ChecksumColumnWidths> column-widths <=> results.widths;
     // Calculate, Verify file. The draft survives page switches.
     in-out property <int> page;
     changed page => {

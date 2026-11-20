@@ -263,8 +263,11 @@ older compatible encoding. Later schema 17 includes this field when storing
 Custom Commands. Every new window starts with SHA-256 alone, whatever that field
 holds: the algorithm set is chosen per window and a run no longer writes it back.
 The field stays readable for compatibility and travels unchanged through settings
-export and import. Recursion is off for every new window. Additional window geometry/column persistence remains a follow-up; the
-current result layout is responsive and does not expose adjustable columns.
+export and import. Recursion is off for every new window. The result columns (File / folder, Bytes read, Status
+and the shown checksum) resize by dragging the separator after each header, as in
+Find; the window keeps the widths for its session, and showing another algorithm
+fits its checksum column again. Persisting window geometry and column widths
+remains a follow-up.
 
 Reference behavior was checked against Salamander's
 `src/plugins/checksum/dialogs.cpp` (`InitList`, `SaveSizes`, `GetSaveFileName`,

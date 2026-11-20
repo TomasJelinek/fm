@@ -594,3 +594,95 @@ fn checksum_actions_keep_320_by_200_layout_in_every_theme_and_density() {
     }
     window.hide().unwrap();
 }
+
+/// Drag the left button horizontally by `dx` from `from`, in four moves.
+fn drag(
+    native: &slint::platform::software_renderer::MinimalSoftwareWindow,
+    from: slint::LogicalPosition,
+    dx: f32,
+) {
+    use slint::platform::PointerEventButton;
+    let window = native.window();
+    window.dispatch_event(WindowEvent::PointerMoved { position: from });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position: from,
+        button: PointerEventButton::Left,
+    });
+    let mut to = from;
+    for step in 1..=4 {
+        to = slint::LogicalPosition::new(from.x + dx * step as f32 / 4.0, from.y);
+        window.dispatch_event(WindowEvent::PointerMoved { position: to });
+    }
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position: to,
+        button: PointerEventButton::Left,
+    });
+}
+
+#[test]
+fn result_columns_resize_by_dragging_their_header_separators() {
+    use i_slint_core::items::AccessibleRole;
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    let window = ChecksumWindow::new().unwrap();
+    window.set_output_available(slint::ModelRc::new(slint::VecModel::from(vec![
+        true, false, false, false, false,
+    ])));
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    draw(&native, 1000, 620, "checksum-columns");
+    let edges = |item: &i_slint_core::item_tree::ItemRc| {
+        let rect = item.geometry();
+        let origin = item.map_to_native_window(rect.origin);
+        (origin.x, origin.y, origin.x + rect.width(), rect.height())
+    };
+    // Header cells share the header row's vertical centre.
+    let middle = |item: &i_slint_core::item_tree::ItemRc| {
+        let (_, top, _, height) = edges(item);
+        top + height / 2.0
+    };
+    let status_y =
+        || middle(&modeless::accessible_item(&native, AccessibleRole::Text, "Status").unwrap());
+    // The header cell of a column: the hash title also names the algorithm menu's box.
+    let header = |title: &str| {
+        modeless::accessible_items(&native, AccessibleRole::Text, title)
+            .into_iter()
+            .find(|item| (middle(item) - status_y()).abs() < 1.0)
+            .unwrap_or_else(|| panic!("no {title} header"))
+    };
+    for title in ["File / folder", "Bytes read", "Status", "SHA-256"] {
+        let (_, _, right, _) = edges(&header(title));
+        let before = header(title).geometry().width();
+        let next = (title != "SHA-256").then(|| edges(&header("SHA-256")).0);
+        drag(
+            &native,
+            slint::LogicalPosition::new(right + 5.0, status_y()),
+            40.0,
+        );
+        draw(&native, 1000, 620, "checksum-columns-dragged");
+        assert!(
+            (header(title).geometry().width() - before - 40.0).abs() <= 1.0,
+            "{title} widens with the drag"
+        );
+        if let Some(next) = next {
+            assert!(
+                (edges(&header("SHA-256")).0 - next - 40.0).abs() <= 1.0,
+                "later columns follow {title}"
+            );
+        }
+    }
+    let widths = window.get_column_widths();
+    assert!(widths.hash > 0.0, "the dragged checksum width is kept");
+    // Showing another algorithm fits its digest again.
+    window.set_output_available(slint::ModelRc::new(slint::VecModel::from(vec![
+        true, true, false, false, false,
+    ])));
+    window.set_output_algorithm(1);
+    draw(&native, 1000, 620, "checksum-columns-sha512");
+    assert_eq!(window.get_column_widths().hash, 0.0);
+    assert_eq!(
+        window.get_column_widths().name,
+        widths.name,
+        "other widths stay"
+    );
+}

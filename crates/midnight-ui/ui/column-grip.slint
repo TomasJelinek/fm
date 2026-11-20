@@ -1,0 +1,38 @@
+import { Theme } from "theme.slint";
+import { Tip } from "controls.slint";
+
+// The 10px drag separator after a table's header column (Find results, Checksums).
+// Rows only pad their cells: a grip per row cell would be about 20 items per row
+// for nothing.
+export component ColumnGrip inherits Rectangle {
+    in property <bool> active;
+    in property <length> start-width;
+    in property <string> title;
+    callback resize(length);
+    width: 10px;
+    accessible-role: none;
+    Rectangle {
+        visible: root.active;
+        x: (parent.width - self.width) / 2; y: 4px; width: 1px; height: max(0px, parent.height - 8px);
+        background: grip.has-hover || grip.pressed ? Theme.active-frame : Theme.frame;
+    }
+    grip := TouchArea {
+        enabled: root.active;
+        mouse-cursor: col-resize;
+        private property <length> pressed-at;
+        private property <length> pressed-width;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.pressed-at = self.absolute-position.x + self.mouse-x;
+                self.pressed-width = root.start-width;
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.resize(max(Theme.small-font * 3, self.pressed-width
+                    + (self.absolute-position.x + self.mouse-x - self.pressed-at)));
+            }
+        }
+    }
+    Tip { text: root.active ? "Drag to resize the " + root.title + " column" : ""; }
+}

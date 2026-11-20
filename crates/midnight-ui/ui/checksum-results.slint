@@ -3,6 +3,7 @@ import { ListView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { ColumnGrip } from "column-grip.slint";
 
 export struct ChecksumDisplayRow {
     token: string, name: string, path: string, status: string, bytes: string,
@@ -10,49 +11,86 @@ export struct ChecksumDisplayRow {
     calculated: bool, verified: bool, error: bool,
 }
 
+// Column widths; a header separator drag changes one. The window keeps them for its
+// session. A hash width of 0px follows the shown algorithm's digest length.
+export struct ChecksumColumnWidths {
+    name: length, bytes: length, status: length, hash: length,
+}
+
+// Each column is followed by a 10px separator in the header and 10px of padding in
+// the rows, so the header and the rows line up.
 component Columns inherits HorizontalLayout {
     in property <ChecksumDisplayRow> entry;
     in property <[bool]> algorithms;
     in property <int> output-algorithm;
-    in property <length> hash-width;
+    in property <ChecksumColumnWidths> widths;
     in property <bool> header;
     in property <bool> compact;
-    padding-left: 8px; padding-right: 8px; spacing: 12px;
-    VerticalLayout {
-        width: Theme.small-font * 16; spacing: 0px; alignment: center;
-        Text { text: root.header ? "File / folder" : root.entry.name;
-            color: root.entry.error ? Theme.error-text : Theme.text;
-            font-size: Theme.small-font; font-weight: root.header ? 600 : 400; overflow: elide; }
-        if !root.header && !root.compact: PathText { text: root.entry.path; foreground: Theme.secondary-text;
-            font-size: Theme.small-font; }
-    }
-    Text { text: root.header ? "Bytes read" : root.entry.bytes; width: Theme.small-font * 8;
-        color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide;
-        horizontal-alignment: right; vertical-alignment: center; }
+    callback resize(int, length);
+    padding-left: 8px; padding-right: 8px; spacing: 0px; alignment: start;
     HorizontalLayout {
-        width: Theme.small-font * 11; spacing: 5px; cross-axis-alignment: center;
-        if !root.header && (root.entry.verified || root.entry.error): Image {
-            width: min(16px, Theme.small-font + 4px); height: self.width;
-            source: root.entry.error ? @image-url("icons/close.svg") : @image-url("icons/check.svg");
-            colorize: root.entry.error ? (Theme.light ? #b91c1c : #ff8a8a)
-                : (Theme.light ? #167d3f : #6ee7a1);
-            image-fit: contain;
-            accessible-label: (root.entry.error ? "Failed: " : "Passed: ") + root.entry.name;
+        padding-right: root.header ? 0px : 10px;
+        VerticalLayout {
+            width: root.widths.name; spacing: 0px; alignment: center;
+            Text { text: root.header ? "File / folder" : root.entry.name;
+                color: root.entry.error ? Theme.error-text : Theme.text;
+                font-size: Theme.small-font; font-weight: root.header ? 600 : 400; overflow: elide; }
+            if !root.header && !root.compact: PathText { text: root.entry.path; foreground: Theme.secondary-text;
+                font-size: Theme.small-font; }
         }
-        Text { text: root.header ? "Status" : root.entry.status;
-            min-width: 0px; horizontal-stretch: 1;
-            color: root.entry.error ? Theme.error-text : Theme.secondary-text;
-            font-size: Theme.small-font; vertical-alignment: center; overflow: elide; }
+        if root.header: ColumnGrip {
+            active: true; start-width: root.widths.name; title: "File / folder";
+            resize(width) => { root.resize(0, width); }
+        }
     }
-    if root.algorithms[root.output-algorithm]: Rectangle {
-        width: root.hash-width;
-        Text {
-            x: 0px; y: 0px; width: parent.width; height: parent.height;
-            text: root.header ? ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm]
-                : [root.entry.sha256, root.entry.sha512, root.entry.md5, root.entry.sha1, root.entry.crc32][root.output-algorithm];
-            color: Theme.text; font-size: Theme.small-font;
-            font-family: root.header ? Theme.font-family : "monospace";
-            vertical-alignment: center; overflow: elide;
+    HorizontalLayout {
+        padding-right: root.header ? 0px : 10px;
+        Text { text: root.header ? "Bytes read" : root.entry.bytes; width: root.widths.bytes;
+            color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide;
+            horizontal-alignment: right; vertical-alignment: center; }
+        if root.header: ColumnGrip {
+            active: true; start-width: root.widths.bytes; title: "Bytes read";
+            resize(width) => { root.resize(1, width); }
+        }
+    }
+    HorizontalLayout {
+        padding-right: root.header ? 0px : 10px;
+        HorizontalLayout {
+            width: root.widths.status; spacing: 5px; cross-axis-alignment: center;
+            if !root.header && (root.entry.verified || root.entry.error): Image {
+                width: min(16px, Theme.small-font + 4px); height: self.width;
+                source: root.entry.error ? @image-url("icons/close.svg") : @image-url("icons/check.svg");
+                colorize: root.entry.error ? (Theme.light ? #b91c1c : #ff8a8a)
+                    : (Theme.light ? #167d3f : #6ee7a1);
+                image-fit: contain;
+                accessible-label: (root.entry.error ? "Failed: " : "Passed: ") + root.entry.name;
+            }
+            Text { text: root.header ? "Status" : root.entry.status;
+                min-width: 0px; horizontal-stretch: 1;
+                color: root.entry.error ? Theme.error-text : Theme.secondary-text;
+                font-size: Theme.small-font; vertical-alignment: center; overflow: elide; }
+        }
+        if root.header: ColumnGrip {
+            active: true; start-width: root.widths.status; title: "Status";
+            resize(width) => { root.resize(2, width); }
+        }
+    }
+    if root.algorithms[root.output-algorithm]: HorizontalLayout {
+        padding-right: root.header ? 0px : 10px;
+        Rectangle {
+            width: root.widths.hash;
+            Text {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: root.header ? ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm]
+                    : [root.entry.sha256, root.entry.sha512, root.entry.md5, root.entry.sha1, root.entry.crc32][root.output-algorithm];
+                color: Theme.text; font-size: Theme.small-font;
+                font-family: root.header ? Theme.font-family : "monospace";
+                vertical-alignment: center; overflow: elide;
+            }
+        }
+        if root.header: ColumnGrip {
+            active: true; start-width: root.widths.hash; title: "checksum";
+            resize(width) => { root.resize(3, width); }
         }
     }
 }
@@ -75,9 +113,29 @@ export component ChecksumResults inherits FocusScope {
     hash-metrics := Text { visible: false; text: "00000000"; font-family: "monospace"; font-size: Theme.small-font; }
     private property <length> hash-width: hash-metrics.preferred-width
         * (root.output-algorithm == 1 ? 16 : root.output-algorithm == 0 ? 8 : root.output-algorithm == 2 ? 4 : root.output-algorithm == 3 ? 5 : 1) + 8px;
-    private property <length> table-width: Theme.small-font * 35 + 16px + 24px
-        + (root.algorithms[root.output-algorithm] ? root.hash-width + 12px : 0px);
-    changed output-algorithm => { list.content-x = 0px; }
+    // Defaults follow the font until a header separator is dragged.
+    in-out property <ChecksumColumnWidths> widths: {
+        name: Theme.small-font * 16, bytes: Theme.small-font * 8, status: Theme.small-font * 11, hash: 0px,
+    };
+    private property <ChecksumColumnWidths> shown-widths: {
+        name: root.widths.name, bytes: root.widths.bytes, status: root.widths.status,
+        hash: root.widths.hash > 0px ? root.widths.hash : root.hash-width,
+    };
+    function resize-column(index: int, width: length) {
+        if index == 0 { root.widths.name = width; }
+        else if index == 1 { root.widths.bytes = width; }
+        else if index == 2 { root.widths.status = width; }
+        else if index == 3 { root.widths.hash = width; }
+    }
+    // Row padding plus each column and its 10px separator.
+    private property <length> table-width: 16px + root.shown-widths.name + root.shown-widths.bytes
+        + root.shown-widths.status + 30px
+        + (root.algorithms[root.output-algorithm] ? root.shown-widths.hash + 10px : 0px);
+    // Another algorithm's digest has another length: its column fits it again.
+    changed output-algorithm => {
+        list.content-x = 0px;
+        if root.widths.hash > 0px { root.widths.hash = 0px; }
+    }
     private property <string> menu-token;
     private property <length> menu-x;
     private property <length> menu-y;
@@ -129,7 +187,8 @@ export component ChecksumResults inherits FocusScope {
         height: root.header-height; visible: root.header-height > 0px; clip: true; background: Theme.header;
         Columns { x: list.content-x; width: list.content-width; height: parent.height;
             algorithms: root.algorithms; output-algorithm: root.output-algorithm;
-            hash-width: root.hash-width; header: true; }
+            widths: root.shown-widths; header: true;
+            resize(index, width) => { root.resize-column(index, width); } }
     }
     list := ListView {
         y: root.header-height; width: parent.width; height: max(0px, parent.height - self.y);
@@ -149,7 +208,7 @@ export component ChecksumResults inherits FocusScope {
             accessible-item-index: index;
             accessible-action-default => { root.select-row(index); }
             Columns { entry: row; algorithms: root.algorithms;
-                output-algorithm: root.output-algorithm; hash-width: root.hash-width; compact: root.compact-rows; }
+                output-algorithm: root.output-algorithm; widths: root.shown-widths; compact: root.compact-rows; }
             TouchArea {
                 private property <string> pressed-token;
                 pointer-event(event) => {
