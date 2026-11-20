@@ -138,6 +138,14 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
         return;
     }
     if let Some(record) = ctx.windows.borrow().record.clone() {
+        if matches!(record.key, Key::Operation(_)) {
+            // An open confirmation can change its question (New empty file over an
+            // existing name becomes Replace file); show the current one.
+            let window = main.global::<OperationPresentation>();
+            window.set_title_text(main.get_operation_title());
+            window.set_confirm_text(main.get_operation_title());
+            window.set_dangerous(main.get_operation_dangerous());
+        }
         update_warning(&record, main);
         return;
     }
@@ -296,9 +304,19 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
             if !record.key.current(&p) {
                 return;
             }
-            *record.error.borrow_mut() = {
-                p.confirm_operation(&id.0.to_string(), value.to_string(), ctx.send.as_ref());
+            // The dialog also stays open when the presenter asks before replacing an
+            // existing file; only a refused send means the queue is busy.
+            let refused = Cell::new(false);
+            let send = |command: Command| {
+                let sent = (ctx.send)(command);
+                refused.set(refused.get() || !sent);
+                sent
+            };
+            p.confirm_operation(&id.0.to_string(), value.to_string(), &send);
+            *record.error.borrow_mut() = if refused.get() {
                 "The operation queue is busy. Try again.".into()
+            } else {
+                String::new()
             };
             !record.key.current(&p)
         }
