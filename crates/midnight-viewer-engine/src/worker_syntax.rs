@@ -645,6 +645,8 @@ impl Worker {
         self.page = Some(page);
         self.shaped = Some(shaped);
         self.origin = origin;
+        // The callers keep the same source range selected, so this is no selection
+        // change: Copy may still name frames that showed it.
         self.selection = selection;
         self.raster.source_refreshed(previous_origin, origin);
         if self.selection.is_some() {

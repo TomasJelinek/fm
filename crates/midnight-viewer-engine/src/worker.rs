@@ -608,6 +608,8 @@ impl Worker {
         self.continuation = None;
         self.motion = RelativeMotion::default();
         self.frames.invalidate();
+        // Nothing the previous file or mode showed can be copied any more.
+        self.frames.selection_changed();
         // Start capture while the previous session retires.
         self.request_capture();
         match self.retire_video() {
@@ -1068,7 +1070,7 @@ impl Worker {
                     } else {
                         index
                     };
-                    self.selection = Some((start, index));
+                    self.set_selection(Some((start, index)));
                     self.cancel_raster_rebase();
                     if self.raster.enabled {
                         self.capture_raster_selection();
@@ -1079,7 +1081,8 @@ impl Worker {
             ViewerInput::SelectPage { frame } if self.frames.accepts(frame) => {
                 if let Some(page) = &self.shaped {
                     // Same rows as the retained path: what the window shows of the page.
-                    self.selection = Some(visible_rows(page, self.origin[1], self.geometry));
+                    let rows = visible_rows(page, self.origin[1], self.geometry);
+                    self.set_selection(Some(rows));
                     self.cancel_raster_rebase();
                     if self.raster.enabled {
                         self.capture_raster_selection();
@@ -1087,7 +1090,7 @@ impl Worker {
                     self.dirty = true;
                 }
             }
-            ViewerInput::Copy { frame } if self.frames.accepts(frame) => {
+            ViewerInput::Copy { frame } if self.frames.accepts_copy(frame) => {
                 self.cancel_raster_rebase();
                 if self.copy_raster_selection(output) {
                     return;
@@ -1735,6 +1738,10 @@ impl Worker {
         resolved_position: Option<(Option<ViewerScrollMap>, f32)>,
         output: &Mailbox,
     ) {
+        // The new page derives its selection from the find result or the retained
+        // selection's source range. Copy keeps accepting frames of the previous page
+        // only if this one selects the same source.
+        let shown = self.selected();
         let continuing_layout = self.continuation.is_some();
         let raster_continuing = self.raster.continuing.take();
         let same_raster_context = !matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
@@ -1817,12 +1824,30 @@ impl Worker {
             continuing_layout,
             output,
         );
+        if !self.selected().same(shown) {
+            self.frames.selection_changed();
+        }
         self.dirty = true;
         if self.status != SEARCHING
             || (self.search_request.is_none() && self.search_cursor.waiting.is_none())
         {
             self.status.clear();
         }
+    }
+
+    /// Replace the selection on the shown page. A different one cannot be copied by
+    /// naming a frame or retained surface that showed the previous one.
+    fn set_selection(&mut self, selection: Option<(usize, usize)>) {
+        if selection != self.selection {
+            self.selection = selection;
+            self.frames.selection_changed();
+        }
+    }
+
+    /// The selection's source range on the shown page.
+    fn selected(&self) -> crate::interaction::Selected {
+        let anchors = self.page.as_ref().map_or(&[][..], |page| &page.anchors[..]);
+        crate::interaction::Selected::on(anchors, self.selection)
     }
 
     fn apply_horizontal_position(&mut self) {
@@ -1904,6 +1929,9 @@ impl Worker {
         };
         scroll_trace::end("paint", started);
         let revision = self.frames.painted()?;
+        if let Some(info) = &raster_info {
+            self.frames.painted_surface(info.surface.0);
+        }
         // BOM bytes and hidden Markdown delimiters do not create a scrollable
         // remainder when the plugin reports that the entire file is present.
         let (start, end) = if !page.before && !page.after {

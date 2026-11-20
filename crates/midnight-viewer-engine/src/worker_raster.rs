@@ -217,7 +217,17 @@ impl Worker {
         if self.raster_rebase_blocks(surface, &input) {
             return;
         }
-        if !self.retained_active() || surface.0 != self.raster.surface {
+        if !self.retained_active() {
+            return;
+        }
+        if surface.0 != self.raster.surface {
+            // Copy has no coordinates: a replaced surface that already showed the
+            // current selection still copies it. Every other input needs this surface.
+            if matches!(input, ViewerRasterInput::Copy)
+                && self.frames.accepts_surface_copy(surface.0)
+            {
+                self.copy_raster_selection(output);
+            }
             return;
         }
         match input {
@@ -267,7 +277,7 @@ impl Worker {
                     } else {
                         index
                     };
-                    self.selection = Some((start, index));
+                    self.set_selection(Some((start, index)));
                     self.capture_raster_selection();
                     self.raster.invalidate();
                     self.dirty = true;
@@ -280,7 +290,8 @@ impl Worker {
                 self.raster.rebase_ack = None;
                 if let Some(page) = &self.shaped {
                     // Added guard rows are not part of the page the user can see.
-                    self.selection = Some(visible_rows(page, self.origin[1], self.geometry));
+                    let rows = visible_rows(page, self.origin[1], self.geometry);
+                    self.set_selection(Some(rows));
                     self.capture_raster_selection();
                     self.raster.invalidate();
                     self.dirty = true;

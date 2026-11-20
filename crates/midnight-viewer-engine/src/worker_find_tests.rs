@@ -508,6 +508,214 @@ fn painted_match_is_centered_and_keeps_the_real_indented_x_position() {
     );
 }
 
+fn painted(worker: &mut Worker, output: &Mailbox) -> ViewerFrame {
+    worker.paint(output).unwrap();
+    output
+        .take()
+        .into_iter()
+        .find_map(|event| match event {
+            ViewerOutput::Frame(frame) => Some(*frame),
+            _ => None,
+        })
+        .expect("a painted frame")
+}
+
+fn copied(worker: &mut Worker, output: &Mailbox, copy: ViewerInput) -> Option<String> {
+    worker.input(copy, output);
+    output.take().into_iter().find_map(|event| match event {
+        ViewerOutput::CopyText(text) => Some(text),
+        _ => None,
+    })
+}
+
+/// A scrollbar position refined within the loaded page: the camera moves, the page
+/// and its selection stay.
+fn refine(worker: &mut Worker, output: &Mailbox, shown: &ViewerFrame, sequence: u64, at: f64) {
+    worker.input(
+        ViewerInput::Position {
+            generation: shown.generation,
+            sequence,
+            horizontal: false,
+            position: at,
+        },
+        output,
+    );
+    assert_eq!(
+        worker.positions.acknowledged[0], sequence,
+        "a loaded position"
+    );
+}
+
+/// A fully loaded page with a match 40 rows down.
+fn match_page(worker: &mut Worker, output: &Mailbox) -> String {
+    worker.geometry.width = 600;
+    let text = format!(
+        "{}    α😀 target value\n{}",
+        "row\n".repeat(40),
+        "row\n".repeat(40)
+    );
+    worker.length = text.len() as u64;
+    assert!(worker.set_page(page(&text, 0), output));
+    text
+}
+
+fn find_target(worker: &mut Worker, output: &Mailbox, text: &str) {
+    worker.search_cursor.configure(Request {
+        query: "target".into(),
+        sensitive: true,
+        backwards: false,
+        whole_words: true,
+    });
+    worker.found_match(range(text, "target", 0), output);
+    assert!(worker.selection.is_some());
+}
+
+#[test]
+fn find_copy_outlives_a_later_refinement_but_not_a_later_selection() {
+    let (mut worker, output) = worker();
+    let text = match_page(&mut worker, &output);
+    let before = painted(&mut worker, &output);
+    find_target(&mut worker, &output, &text);
+    let found = painted(&mut worker, &output);
+    refine(&mut worker, &output, &found, 1, 0.0);
+    let refined = painted(&mut worker, &output);
+    assert!(
+        !worker.frames.accepts(found.revision),
+        "the refinement retired the coordinates of the find frame"
+    );
+    let copy = |frame: &ViewerFrame| ViewerInput::Copy {
+        frame: frame.revision,
+    };
+    assert_eq!(
+        copied(&mut worker, &output, copy(&found)).as_deref(),
+        Some("target")
+    );
+    assert_eq!(
+        copied(&mut worker, &output, copy(&before)),
+        None,
+        "that frame showed no match"
+    );
+
+    // Ctrl+A names the shown frame, which can copy the rows before showing them.
+    worker.input(
+        ViewerInput::SelectPage {
+            frame: refined.revision,
+        },
+        &output,
+    );
+    let rows = copied(&mut worker, &output, copy(&refined)).unwrap();
+    assert!(rows.starts_with("row\n") && !rows.contains("target"));
+    assert_eq!(
+        copied(&mut worker, &output, copy(&found)),
+        None,
+        "it showed the match, not the rows"
+    );
+    let selected = painted(&mut worker, &output);
+    refine(&mut worker, &output, &selected, 2, 1.0);
+    painted(&mut worker, &output);
+    assert_eq!(
+        copied(&mut worker, &output, copy(&selected)).as_deref(),
+        Some(rows.as_str())
+    );
+    assert_eq!(
+        copied(&mut worker, &output, copy(&refined)),
+        None,
+        "once its camera moved, only frames that showed the rows copy them"
+    );
+}
+
+#[test]
+fn retained_find_copy_names_a_replaced_surface_that_showed_the_match() {
+    let (mut worker, output) = worker();
+    worker.input(ViewerInput::RetainedRaster(true), &output);
+    let text = match_page(&mut worker, &output);
+    // Retained frames share a bounded snapshot budget: keep identities, not pixels.
+    let surface = |frame: ViewerFrame| frame.raster.expect("a retained frame").surface;
+    let copy = |surface| ViewerInput::Raster {
+        surface,
+        input: ViewerRasterInput::Copy,
+    };
+    let before = surface(painted(&mut worker, &output));
+    find_target(&mut worker, &output, &text);
+    let found = painted(&mut worker, &output);
+    refine(&mut worker, &output, &found, 1, 0.0);
+    let found = surface(found);
+    let refined = painted(&mut worker, &output);
+    let info = refined.raster.clone().unwrap();
+    assert_ne!(info.surface, found, "the refinement replaced the surface");
+    assert_eq!(
+        copied(&mut worker, &output, copy(found)).as_deref(),
+        Some("target")
+    );
+    assert_eq!(
+        copied(&mut worker, &output, copy(before)),
+        None,
+        "that surface showed no match"
+    );
+
+    worker.input(
+        ViewerInput::Raster {
+            surface: info.surface,
+            input: ViewerRasterInput::SelectPage {
+                pixel_id: info.pixel_id,
+                origin: info.origin,
+            },
+        },
+        &output,
+    );
+    drop(info);
+    let rows = copied(&mut worker, &output, copy(surface(refined))).unwrap();
+    assert!(rows.starts_with("row\n") && !rows.contains("target"));
+    assert_eq!(
+        copied(&mut worker, &output, copy(found)),
+        None,
+        "it showed the match, not the rows"
+    );
+    let selected = painted(&mut worker, &output);
+    refine(&mut worker, &output, &selected, 2, 1.0);
+    let selected = surface(selected);
+    let moved = surface(painted(&mut worker, &output));
+    assert_ne!(moved, selected);
+    assert_eq!(
+        copied(&mut worker, &output, copy(moved)).as_deref(),
+        Some(rows.as_str())
+    );
+    assert_eq!(
+        copied(&mut worker, &output, copy(selected)),
+        None,
+        "an earlier frame of that surface showed the match"
+    );
+}
+
+#[test]
+fn a_page_that_selects_the_same_source_keeps_earlier_find_frames_copyable() {
+    let (mut worker, output) = worker();
+    let text = match_page(&mut worker, &output);
+    find_target(&mut worker, &output, &text);
+    let found = painted(&mut worker, &output);
+    // A reloaded page that starts one row before the match still selects its source.
+    let reloaded = 4 * 39;
+    assert!(worker.set_page(page(&text[reloaded..], reloaded as u64), &output));
+    assert_ne!(worker.selection, None);
+    painted(&mut worker, &output);
+    assert!(!worker.frames.accepts(found.revision));
+    assert_eq!(
+        copied(
+            &mut worker,
+            &output,
+            ViewerInput::Copy {
+                frame: found.revision
+            }
+        )
+        .as_deref(),
+        Some("target")
+    );
+    // A page without the match selects nothing: earlier frames showed something else.
+    assert!(worker.set_page(page(&text[..reloaded], 0), &output));
+    assert_eq!(worker.selection, None);
+    assert!(!worker.frames.accepts_copy(found.revision));
+}
+
 #[test]
 fn synthetic_or_ambiguous_word_anchors_fall_back_without_claiming_a_local_match() {
     let request = Request {

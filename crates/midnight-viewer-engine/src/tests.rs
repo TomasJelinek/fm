@@ -111,30 +111,13 @@ fn copied(session: &WindowSession) -> String {
     .expect("copied text")
 }
 
-/// Copies the selection that `shown` displays. A later frame, such as a position
-/// refinement after a find, retires the input of earlier frames; a refused copy is
-/// then sent again for the newest frame, which displays the same selection.
-#[track_caller]
-fn copy_from(session: &WindowSession, shown: &ViewerFrame) -> String {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut revision = shown.revision;
-    loop {
-        assert!(session.send(ViewerInput::Copy { frame: revision }));
-        let mut newest = revision;
-        let copied = await_output(session, Duration::from_millis(250), |output| match output {
-            ViewerOutput::CopyText(text) => Some(text),
-            ViewerOutput::Frame(frame) => {
-                newest = newest.max(frame.revision);
-                None
-            }
-            _ => None,
-        });
-        if let Some(text) = copied {
-            return text;
-        }
-        assert!(Instant::now() < deadline, "copied text");
-        revision = newest;
-    }
+/// The frame paints a selection highlight in the test appearance.
+fn shows_selection(frame: &ViewerFrame) -> bool {
+    frame
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .contains(&appearance().selection)
 }
 
 #[test]
@@ -660,11 +643,18 @@ fn native_whole_word_find_exhausts_substrings_and_keeps_real_row_prefix() {
             case_sensitive: false,
             whole_words: true
         }));
+        // A frame from before this find, such as a repaint after "No further match",
+        // also lacks "Searching"; only the find result shows a selection. Later
+        // frames that keep that selection do not retire its Copy.
         let found = frame(&session, |frame| {
             frame.accessible_text.contains("    α😀 target value")
                 && !frame.status.contains("Searching")
+                && shows_selection(frame)
         });
-        assert_eq!(copy_from(&session, &found), "target");
+        assert!(session.send(ViewerInput::Copy {
+            frame: found.revision
+        }));
+        assert_eq!(copied(&session), "target");
         session.close();
     }
 }

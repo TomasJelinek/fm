@@ -29,6 +29,9 @@ impl Retained {
 }
 
 impl Worker {
+    /// Shows the retained selection's source range on the current page. The retained
+    /// selection itself is unchanged, so Copy may still name frames that showed it;
+    /// `publish_page` compares the selection of the page it replaces.
     fn restore_rebase_selection(&mut self) {
         if let (Some(page), Some([start, end])) = (&self.page, self.raster.selected_source) {
             self.selection = page

@@ -62,6 +62,10 @@ fn source_search_reports_global_scalar_position_and_preserves_copy_after_prefere
             && frame.pixels != found.pixels
     });
     assert_eq!(plain.accessible_text, found.accessible_text);
-    assert_eq!(copy_from(&session, &plain), "row 02001");
+    // Col 13 is the selected match's end; a later restyle keeps that selection.
+    assert!(session.send(ViewerInput::Copy {
+        frame: plain.revision
+    }));
+    assert_eq!(copied(&session), "row 02001");
     session.close();
 }

@@ -29,7 +29,7 @@ impl Worker {
             .is_none_or(|request| request.query.is_empty())
         {
             self.found = None;
-            self.selection = None;
+            self.set_selection(None);
             self.reset_raster_context();
             self.frames.invalidate();
             self.status.clear();
@@ -127,7 +127,7 @@ impl Worker {
             }
             self.search_cursor.accept(source.offset);
             self.found = Some(source);
-            self.selection = Some(selection);
+            self.set_selection(Some(selection));
             self.center_find();
             self.clamp_origin();
             self.reset_raster_context();
