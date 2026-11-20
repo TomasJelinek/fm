@@ -8,6 +8,8 @@ export struct MetadataTimeDraft { mode: int, date: string, time: string, offset:
 export struct MetadataTimeValue { date: string, time: string, offset: string }
 export struct MetadataTimeStep { text: string, start: int, end: int, valid: bool }
 export struct MetadataMonthView { title: string, year: int, month: int, leading: int, days: int, day: int, valid: bool }
+// The worker-captured edit pattern, e.g. "%m/%d/%Y %I:%M:%S %p", and its AM/PM markers.
+export struct MetadataEditFormat { pattern: string, am: string, pm: string }
 
 // Pure field logic lives in Rust (metadata_time.rs). Field: 0 date, 1 time, 2 offset.
 export global MetadataTimeCodec {
@@ -16,10 +18,11 @@ export global MetadataTimeCodec {
     in property <MetadataTimeValue> modified-default;
     in property <MetadataTimeValue> accessed-default;
     in property <MetadataTimeValue> now-default;
-    // The system's numeric date order, e.g. "%d.%m.%Y": dates may be typed in it too.
-    in property <string> date-format;
-    // How a date can be typed, with examples; ends with a period.
+    // The system's date and clock forms: dates and times may be typed in them too.
+    in property <MetadataEditFormat> edit-format;
+    // How a date and a time can be typed, with examples; each ends with a period.
     in property <string> date-forms: "year-month-day, e.g. 2026-11-24.";
+    in property <string> time-forms: "hours:minutes:seconds, e.g. 14:30:00.";
     // Step the part under a byte cursor; an unparsable text becomes the fallback.
     pure callback step(string, int, int, int, string) -> MetadataTimeStep;
     pure callback step-part(string, int, int, int, string) -> MetadataTimeStep;
@@ -251,7 +254,8 @@ component DateField inherits HorizontalLayout {
     }
 }
 
-// Time field with an hour/minute/second picker. Left/Right choose, Up/Down change.
+// Time field with an hour/minute/second picker, plus AM/PM for a time typed on the
+// system's 12-hour clock. Left/Right choose a column, Up/Down change it.
 component TimeField inherits HorizontalLayout {
     in property <string> label;
     in property <bool> enabled;
@@ -261,6 +265,9 @@ component TimeField inherits HorizontalLayout {
     callback edited();
     private property <int> part;
     private property <[string]> values: MetadataTimeCodec.parts(root.text, 1, root.fallback);
+    // A fourth part is the AM/PM marker of the system's 12-hour clock.
+    private property <int> columns: root.values.length > 3 ? 4 : 3;
+    private property <[string]> names: root.columns > 3 ? ["Hour", "Minute", "Second", "AM/PM"] : ["Hour", "Minute", "Second"];
     private property <length> column: max(44px, Theme.font-size * 3.4);
     spacing: 2px;
     function open() { root.part = 0; popup.show(); }
@@ -268,7 +275,7 @@ component TimeField inherits HorizontalLayout {
         field: 1; label: root.label + " time"; enabled: root.enabled;
         text <=> root.text; placeholder: root.placeholder; fallback: root.fallback;
         min-width: Theme.font-size * 5; horizontal-stretch: 2;
-        hint: "24-hour hours:minutes:seconds, e.g. 14:30:00. Up/Down change the part under the cursor; Alt+Down opens the picker.";
+        hint: "Type 24-hour " + MetadataTimeCodec.time-forms + " Up/Down change the part under the cursor; Alt+Down opens the picker.";
         edited => { root.edited(); }
         open-picker => { root.open(); }
     }
@@ -276,7 +283,7 @@ component TimeField inherits HorizontalLayout {
         label: root.label + ": choose time"; enabled: root.enabled; clock: true;
         activate => { root.open(); }
         popup := PopupWindow {
-            private property <length> frame-width: root.column * 3 + 16px;
+            private property <length> frame-width: root.column * root.columns + 16px;
             private property <length> frame-height: Theme.control-height * 4 + 24px;
             private property <bool> above: TooltipPlacement.surface-height - anchor.absolute-position.y - anchor.height < self.frame-height + 8px
                 && anchor.absolute-position.y > self.frame-height + 8px;
@@ -290,7 +297,7 @@ component TimeField inherits HorizontalLayout {
                 keys := FocusScope {
                     key-pressed(event) => {
                         if event.text == Key.LeftArrow { root.part = max(0, root.part - 1); return accept; }
-                        if event.text == Key.RightArrow { root.part = min(2, root.part + 1); return accept; }
+                        if event.text == Key.RightArrow { root.part = min(root.columns - 1, root.part + 1); return accept; }
                         if event.text == Key.UpArrow { field.step-part(root.part, 1); return accept; }
                         if event.text == Key.DownArrow { field.step-part(root.part, -1); return accept; }
                         if event.text == Key.PageUp { field.step-part(root.part, 10); return accept; }
@@ -301,7 +308,7 @@ component TimeField inherits HorizontalLayout {
                         accept
                     }
                 }
-                for name[index] in ["Hour", "Minute", "Second"] : Rectangle {
+                for name[index] in root.names : Rectangle {
                     x: 8px + root.column * index; y: 8px; width: root.column; height: parent.height - 16px;
                     border-radius: 3px;
                     border-width: index == root.part ? 1px : 0px; border-color: Theme.active-frame;

@@ -126,7 +126,7 @@ pub struct MetadataPreview {
     pub patch: MetadataPatch,
     /// Worker-captured locale text; absent entries retain an explicit UTC fallback.
     pub localized_times: std::collections::HashMap<SystemTime, crate::LocalizedDateTime>,
-    /// Worker-captured numeric edit format; editors accept dates in its date order.
+    /// Worker-captured numeric edit format; editors accept dates and times in its forms.
     pub time_input_format: Option<crate::DateTimeInputFormat>,
     /// Worker-captured starting values for the time editors.
     pub time_defaults: MetadataTimeDefaults,

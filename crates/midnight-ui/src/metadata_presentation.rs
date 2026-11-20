@@ -100,8 +100,8 @@ pub(super) fn bind(
         p.dirty_metadata(token.as_str());
     });
     callback!(on_preview_metadata, |p, s, token, draft| {
-        let locale = locale_date(p.metadata.preview.as_deref());
-        let patch = metadata_input::patch(&draft, locale.as_ref());
+        let forms = system_forms(p.metadata.preview.as_deref());
+        let patch = metadata_input::patch(&draft, &forms);
         p.preview_metadata(token.as_str(), patch, s);
     });
     callback!(on_confirm_metadata, |p, s, token, revision, policy| {
@@ -226,14 +226,19 @@ fn selection_summary(preview: &MetadataPreview) -> String {
     lines.join("\n")
 }
 
-/// The system date order from the worker-captured edit format, if it has one.
-fn locale_date(preview: Option<&MetadataPreview>) -> Option<metadata_time::LocaleDate> {
-    metadata_time::LocaleDate::from_pattern(&preview?.time_input_format.as_ref()?.pattern)
+/// The system's date and time forms from the worker-captured edit format, if any.
+fn system_forms(preview: Option<&MetadataPreview>) -> metadata_time::SystemForms {
+    preview
+        .and_then(|preview| preview.time_input_format.as_ref())
+        .map(|format| {
+            metadata_time::SystemForms::new(&format.pattern, [&format.am_pm[0], &format.am_pm[1]])
+        })
+        .unwrap_or_default()
 }
 
 /// Starting values for the time fields: each field's shared current value, else now.
-/// Without worker-local values, now is shown in UTC with an explicit +00:00. Dates
-/// start as year-month-day; the system date order is accepted as well.
+/// Without worker-local values, now is shown in UTC with an explicit +00:00. Values
+/// start as year-month-day and 24-hour times; the system's forms are accepted too.
 fn set_time_defaults(window: &MainWindow, preview: Option<&MetadataPreview>) {
     let defaults = preview
         .map(|preview| preview.time_defaults)
@@ -255,73 +260,69 @@ fn set_time_defaults(window: &MainWindow, preview: Option<&MetadataPreview>) {
     codec.set_modified_default(value(defaults.modified));
     codec.set_accessed_default(value(defaults.accessed));
     codec.set_now_default(value(None));
-    let locale = locale_date(preview);
-    codec.set_date_format(
-        locale
-            .as_ref()
-            .map(metadata_time::LocaleDate::pattern)
-            .unwrap_or_default()
-            .into(),
-    );
-    codec.set_date_forms(metadata_time::date_forms(locale.as_ref()).into());
+    let format = preview.and_then(|preview| preview.time_input_format.as_ref());
+    codec.set_edit_format(format.map_or_else(MetadataEditFormat::default, |format| {
+        MetadataEditFormat {
+            pattern: format.pattern.as_str().into(),
+            am: format.am_pm[0].as_str().into(),
+            pm: format.am_pm[1].as_str().into(),
+        }
+    }));
+    let forms = system_forms(preview);
+    codec.set_date_forms(metadata_time::date_forms(&forms).into());
+    codec.set_time_forms(metadata_time::time_forms(&forms).into());
 }
 
 fn install_time_codec(window: &MainWindow) {
     use metadata_time::Field;
     let codec = window.global::<MetadataTimeCodec>();
-    // The system date order published by `set_time_defaults` with the starting values.
-    let locale = {
+    // The system forms published by `set_time_defaults` with the starting values.
+    let forms = {
         let window = window.as_weak();
         move || {
-            let format = window
-                .upgrade()?
-                .global::<MetadataTimeCodec>()
-                .get_date_format();
-            metadata_time::LocaleDate::from_pattern(&format)
+            let Some(window) = window.upgrade() else {
+                return metadata_time::SystemForms::default();
+            };
+            let format = window.global::<MetadataTimeCodec>().get_edit_format();
+            metadata_time::SystemForms::new(&format.pattern, [&format.am, &format.pm])
         }
     };
     codec.on_step({
-        let locale = locale.clone();
+        let forms = forms.clone();
         move |text, field, cursor, delta, fallback| {
             let Some(field) = Field::from_index(field) else {
                 return MetadataTimeStep::default();
             };
-            let part = metadata_time::part_at(&text, usize::try_from(cursor).unwrap_or_default());
-            let locale = locale();
+            let forms = forms();
+            let cursor = usize::try_from(cursor).unwrap_or_default();
+            let part = metadata_time::part_under(&text, field, cursor, &forms);
             step_result(metadata_time::step(
-                &text,
-                field,
-                part,
-                delta,
-                &fallback,
-                locale.as_ref(),
+                &text, field, part, delta, &fallback, &forms,
             ))
         }
     });
     codec.on_step_part({
-        let locale = locale.clone();
+        let forms = forms.clone();
         move |text, field, part, delta, fallback| {
             let Some(field) = Field::from_index(field) else {
                 return MetadataTimeStep::default();
             };
             let part = usize::try_from(part).unwrap_or_default();
-            let locale = locale();
             step_result(metadata_time::step(
                 &text,
                 field,
                 part,
                 delta,
                 &fallback,
-                locale.as_ref(),
+                &forms(),
             ))
         }
     });
     codec.on_parts({
-        let locale = locale.clone();
+        let forms = forms.clone();
         move |text, field, fallback| {
-            let locale = locale();
             let parts = Field::from_index(field)
-                .map(|field| metadata_time::parts(&text, field, &fallback, locale.as_ref()))
+                .map(|field| metadata_time::parts(&text, field, &fallback, &forms()))
                 .unwrap_or_default();
             ModelRc::new(VecModel::from(
                 parts
@@ -332,9 +333,9 @@ fn install_time_codec(window: &MainWindow) {
         }
     });
     codec.on_month({
-        let locale = locale.clone();
+        let forms = forms.clone();
         move |cursor, fallback| {
-            metadata_time::month_view(&cursor, &fallback, locale().as_ref())
+            metadata_time::month_view(&cursor, &fallback, &forms())
                 .map(|view| MetadataMonthView {
                     title: view.title.into(),
                     year: view.year,
@@ -348,15 +349,15 @@ fn install_time_codec(window: &MainWindow) {
         }
     });
     codec.on_shift({
-        let locale = locale.clone();
+        let forms = forms.clone();
         move |cursor, fallback, days, months| {
-            metadata_time::shift(&cursor, &fallback, days, months, locale().as_ref())
+            metadata_time::shift(&cursor, &fallback, days, months, &forms())
                 .unwrap_or_else(|| cursor.to_string())
                 .into()
         }
     });
     codec.on_restyle(move |date, like| {
-        metadata_time::restyle(&date, &like, locale().as_ref()).map_or(date, SharedString::from)
+        metadata_time::restyle(&date, &like, &forms()).map_or(date, SharedString::from)
     });
     codec.on_compose(|year, month, day| {
         metadata_time::compose(year, month, day)

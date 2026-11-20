@@ -25,7 +25,7 @@ struct Editor {
     id: OperationId,
     root: PathBuf,
     /// The worker-captured system date and time edit format, if any.
-    format: Option<&'static str>,
+    format: Option<DateTimeInputFormat>,
 }
 
 fn calendar(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> LocalCalendarTime {
@@ -45,7 +45,7 @@ impl Editor {
         Self::open_with(None)
     }
 
-    fn open_with(format: Option<&'static str>) -> Self {
+    fn open_with(format: Option<DateTimeInputFormat>) -> Self {
         let test = ui::TestUi::new();
         let root = std::env::temp_dir();
         let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
@@ -123,10 +123,7 @@ impl Editor {
             revision,
             patch,
             localized_times: Default::default(),
-            time_input_format: self.format.map(|pattern| DateTimeInputFormat {
-                pattern: pattern.into(),
-                am_pm: [String::new(), String::new()],
-            }),
+            time_input_format: self.format.clone(),
             time_defaults: MetadataTimeDefaults {
                 now: Some(calendar(2026, 11, 19, 10, 0, 0)),
                 modified: Some(calendar(2026, 1, 2, 3, 4, 5)),
@@ -231,6 +228,13 @@ impl Editor {
     }
 }
 
+fn format(pattern: &str, am_pm: [&str; 2]) -> DateTimeInputFormat {
+    DateTimeInputFormat {
+        pattern: pattern.into(),
+        am_pm: am_pm.map(String::from),
+    }
+}
+
 fn at(seconds: u64) -> TimeEdit {
     TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(seconds))
 }
@@ -296,7 +300,7 @@ fn calendar_and_time_picker_start_from_the_files_time_and_keep_the_dialog_open()
 
 #[test]
 fn a_date_typed_in_the_system_order_keeps_that_order_through_arrows_and_the_calendar() {
-    let mut editor = Editor::open_with(Some("%d.%m.%Y %H:%M:%S"));
+    let mut editor = Editor::open_with(Some(format("%d.%m.%Y %H:%M:%S", ["", ""])));
     editor.click("Times", AccessibleRole::Button);
     let hint = editor.description("Modified date");
     assert!(
@@ -316,4 +320,50 @@ fn a_date_typed_in_the_system_order_keeps_that_order_through_arrows_and_the_cale
     let patch = editor.review_and_apply();
     // 2026-12-25 03:04:05 +01:00
     assert_eq!(patch.modified, at(1_798_164_245));
+}
+
+#[test]
+fn a_time_typed_on_the_system_12_hour_clock_keeps_it_through_arrows_and_the_picker() {
+    let mut editor = Editor::open_with(Some(format("%m/%d/%Y %I:%M:%S %p", ["AM", "PM"])));
+    editor.click("Times", AccessibleRole::Button);
+    let hint = editor.description("Modified time");
+    assert!(
+        hint.contains("14:30:00") && hint.contains("02:30:00 PM"),
+        "{hint}"
+    );
+    editor.type_into("Modified time", "2:30 pm");
+    assert_eq!(editor.value("Modified date"), "2026-01-02");
+    // The cursor is right after the marker, so Up switches it.
+    editor.key(Key::UpArrow);
+    assert_eq!(editor.value("Modified time"), "02:30:00 AM");
+    editor.click("Modified: choose time", AccessibleRole::Button);
+    render::snapshot(&editor.test, "metadata-times-clock-12h");
+    let shown = editor.texts();
+    assert!(
+        shown.iter().any(|text| text == "AM") && !shown.iter().any(|text| text == "PM"),
+        "{shown:?}"
+    );
+    // The fourth column switches AM and PM; then the hour column steps the hour.
+    for key in [
+        Key::RightArrow,
+        Key::RightArrow,
+        Key::RightArrow,
+        Key::UpArrow,
+    ] {
+        editor.key(key);
+    }
+    assert!(editor.texts().iter().any(|text| text == "PM"));
+    for key in [
+        Key::LeftArrow,
+        Key::LeftArrow,
+        Key::LeftArrow,
+        Key::UpArrow,
+        Key::Return,
+    ] {
+        editor.key(key);
+    }
+    assert_eq!(editor.value("Modified time"), "03:30:00 PM");
+    let patch = editor.review_and_apply();
+    // 2026-01-02 15:30:00 +01:00
+    assert_eq!(patch.modified, at(1_767_364_200));
 }

@@ -905,12 +905,13 @@ editor scope and shortcuts reserved for later stages.
   item, or counts the items, and mentions taken names or unsupported items only
   when there are any. Each timestamp on the Times page has separate Date
   (year-month-day, or the system's numeric date order such as 24.11.2026),
-  Time (24-hour) and UTC offset fields that start from the item's current time
-  in the native timezone (or the current time when the items differ). Type
-  freely, press Up/Down to change the part under the cursor, or use the calendar
-  and time pickers (Alt+Down from a field); a date keeps the form it was typed
-  in. The offset is used
-  exactly as shown; Now uses the moment of review. A change that completes without
+  Time (24-hour, or the system's clock such as 02:30:00 PM) and UTC offset
+  fields that start from the item's current time in the native timezone (or the
+  current time when the items differ). Type freely, press Up/Down to change the
+  part under the cursor, or use the calendar and time pickers (Alt+Down from a
+  field; on a 12-hour clock the time picker has an AM/PM column). A date or time
+  keeps the form it was typed in. The offset is used exactly as shown; Now uses
+  the moment of review. A change that completes without
   problems closes without a summary; only failures, skips or cancellation report.
 - Click the blank area after the top breadcrumb to enter a custom path; Enter
   navigates and Escape cancels. Breadcrumb navigation/copy gestures remain available.

@@ -2,16 +2,16 @@
 use crate::{MetadataDraft, MetadataTimeDraft, metadata_time};
 use midnight_core::*;
 
-/// The reviewed patch of a draft. Dates may be typed in the system order `locale`.
+/// The reviewed patch of a draft. Dates and times may be typed in the system's forms.
 pub(crate) fn patch(
     draft: &MetadataDraft,
-    locale: Option<&metadata_time::LocaleDate>,
+    forms: &metadata_time::SystemForms,
 ) -> Result<MetadataPatch, String> {
     let mut edit = MetadataPatch {
         compressed: state(draft.compressed)?,
-        created: timestamp("Created", &draft.created, locale)?,
-        modified: timestamp("Modified", &draft.modified, locale)?,
-        accessed: timestamp("Accessed", &draft.accessed, locale)?,
+        created: timestamp("Created", &draft.created, forms)?,
+        modified: timestamp("Modified", &draft.modified, forms)?,
+        accessed: timestamp("Accessed", &draft.accessed, forms)?,
         recursive: draft.recursive,
         ..Default::default()
     };
@@ -67,12 +67,12 @@ fn state(value: i32) -> Result<Option<bool>, String> {
 fn timestamp(
     label: &str,
     time: &MetadataTimeDraft,
-    locale: Option<&metadata_time::LocaleDate>,
+    forms: &metadata_time::SystemForms,
 ) -> Result<TimeEdit, String> {
     match time.mode {
         0 => Ok(TimeEdit::Keep),
         2 => Ok(TimeEdit::Now),
-        1 => metadata_time::instant(label, &time.date, &time.time, &time.offset, locale)
+        1 => metadata_time::instant(label, &time.date, &time.time, &time.offset, forms)
             .map(TimeEdit::Set),
         _ => Err("Choose a timestamp action.".into()),
     }
@@ -85,13 +85,17 @@ mod tests {
 
     #[test]
     fn opening_attributes_has_no_edits_and_case_has_explicit_opt_in() {
-        assert!(patch(&MetadataDraft::default(), None).unwrap().is_empty());
+        assert!(
+            patch(&MetadataDraft::default(), &plain())
+                .unwrap()
+                .is_empty()
+        );
         let draft = MetadataDraft {
             case_enabled: true,
             ..Default::default()
         };
         assert_eq!(
-            patch(&draft, None).unwrap().case,
+            patch(&draft, &plain()).unwrap().case,
             Some(CaseChange::default())
         );
     }
@@ -105,7 +109,7 @@ mod tests {
             compressed: 2,
             ..Default::default()
         };
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft, &plain()).unwrap();
         assert_eq!(
             edit.windows_mask,
             EDIT_READ_ONLY | EDIT_HIDDEN | EDIT_ARCHIVE
@@ -122,14 +126,14 @@ mod tests {
             unix_mode: "640".into(),
             ..Default::default()
         };
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft, &plain()).unwrap();
         assert_eq!((edit.unix_mask, edit.unix_value), (0o777, 0o640));
         draft.unix_mode = "2750".into();
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft, &plain()).unwrap();
         assert_eq!((edit.unix_mask, edit.unix_value), (0o7777, 0o2750));
         for invalid in ["", "75", "888", "10000", "-755", "0x755"] {
             draft.unix_mode = invalid.into();
-            assert!(patch(&draft, None).is_err(), "{invalid}");
+            assert!(patch(&draft, &plain()).is_err(), "{invalid}");
         }
     }
 
@@ -140,16 +144,16 @@ mod tests {
             unix_value: 0o020,
             ..Default::default()
         };
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft, &plain()).unwrap();
         assert_eq!((edit.unix_mask, edit.unix_value), (0o220, 0o020));
         draft.unix_edit = true;
         draft.unix_mode = "755".into();
-        assert!(patch(&draft, None).is_err());
+        assert!(patch(&draft, &plain()).is_err());
         draft.unix_edit = false;
         for (mask, value) in [(-1, 0), (0o10000, 0), (0, 1), (0o7777, -1)] {
             draft.unix_mask = mask;
             draft.unix_value = value;
-            assert!(patch(&draft, None).is_err());
+            assert!(patch(&draft, &plain()).is_err());
         }
     }
 
@@ -170,7 +174,7 @@ mod tests {
             accessed: time(2, "", "", ""),
             ..Default::default()
         };
-        let edit = patch(&draft, None).unwrap();
+        let edit = patch(&draft, &plain()).unwrap();
         assert_eq!(
             edit.modified,
             TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(1_793_964_615))
@@ -183,16 +187,16 @@ mod tests {
         // Unchecked fields keep their native value whatever their text says.
         draft.modified.mode = 0;
         draft.modified.date = "not a date".into();
-        assert_eq!(patch(&draft, None).unwrap().modified, TimeEdit::Keep);
+        assert_eq!(patch(&draft, &plain()).unwrap().modified, TimeEdit::Keep);
         draft.modified.mode = 1;
         assert!(
-            patch(&draft, None)
+            patch(&draft, &plain())
                 .unwrap_err()
                 .starts_with("Modified date:")
         );
         draft.modified = time(1, "2026-10-25", "02:30:00", "");
         assert!(
-            patch(&draft, None).unwrap_err().contains("UTC offset"),
+            patch(&draft, &plain()).unwrap_err().contains("UTC offset"),
             "there is no guessed local offset"
         );
     }
@@ -223,22 +227,27 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(patch(&draft, None).is_err());
+            assert!(patch(&draft, &plain()).is_err());
         }
     }
 
     #[test]
-    fn a_date_typed_in_the_system_order_becomes_the_same_patch() {
-        let german = metadata_time::LocaleDate::from_pattern("%d.%m.%Y %H:%M:%S").unwrap();
+    fn dates_and_times_typed_in_the_system_forms_become_the_same_patch() {
+        let us = metadata_time::SystemForms::new("%m/%d/%Y %I:%M:%S %p", ["AM", "PM"]);
         let draft = MetadataDraft {
-            modified: time(1, "6.11.2026", "12:30:15", "+01:00"),
+            modified: time(1, "11/6/2026", "12:30:15 pm", "+01:00"),
             created: time(1, "2026-11-06", "12:30:15", "+01:00"),
             ..Default::default()
         };
-        let edit = patch(&draft, Some(&german)).unwrap();
+        let edit = patch(&draft, &us).unwrap();
         let expected = TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(1_793_964_615));
         assert_eq!((edit.modified, edit.created), (expected, expected));
-        let error = patch(&draft, None).unwrap_err();
+        let error = patch(&draft, &plain()).unwrap_err();
         assert!(error.starts_with("Modified date:"), "{error}");
+    }
+
+    /// No system forms: year-month-day and the 24-hour clock only.
+    fn plain() -> metadata_time::SystemForms {
+        metadata_time::SystemForms::default()
     }
 }
