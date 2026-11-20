@@ -168,14 +168,15 @@ async fn recursion_is_explicit_and_partial_manifests_require_exact_acknowledgeme
         vec![directory.clone()],
     );
     controller.start(request.clone()).unwrap();
-    let skipped = loop {
+    let own = loop {
         if let ChecksumUpdate::Finished(run) = controller.next().await.unwrap().update {
             break run;
         }
     };
-    assert_eq!(skipped.rows.len(), 1);
-    assert_eq!(skipped.rows[0].state, ChecksumRowState::Skipped);
-    assert!(skipped.rows[0].digests.is_empty());
+    // A selected folder contributes its own files without Include subfolders.
+    assert_eq!(own.rows.len(), 1);
+    assert_eq!(own.rows[0].path, directory.join("empty.txt"));
+    assert_eq!(own.rows[0].state, ChecksumRowState::Calculated);
     let mut recursive = request;
     recursive.generation = ChecksumGeneration(2);
     recursive.recursive = true;

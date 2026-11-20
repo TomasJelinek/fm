@@ -26,7 +26,10 @@ finds it from the selection bitset and the displayed rows, looking at no more
 selected rows than one calculation could hold (16,384), never by scanning the
 folder's index. Neither action automatically verifies a manifest or follows its
 entries.
-Folders can be selected and recursion explicitly enabled. Provider/archive content
+A selected folder contributes its own files; Include subfolders adds the levels
+below it, whose folders are otherwise left out without rows. Links and special
+entries are skipped. Verification names files only, so a folder in a manifest
+entry's place stays a skipped entry. Provider/archive content
 is not silently interpreted as a native pathname.
 
 In an adopted inline tree, Ctrl+F8 instead submits `TreeChecksumRequest` with the

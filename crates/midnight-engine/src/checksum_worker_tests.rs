@@ -819,3 +819,111 @@ fn verification_reads_without_listing() {
                 || matches!(update, ChecksumUpdate::Progress(progress) if progress.listing))
     );
 }
+
+/// A folder holding `top.txt` and a subfolder `sub` holding `deep.txt`.
+struct Nested(Provider);
+struct Dir {
+    entry: TransferEntry,
+    children: Vec<Box<dyn TransferSource>>,
+}
+impl TransferSource for Dir {
+    fn entry(&self) -> &TransferEntry {
+        &self.entry
+    }
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+        Err(failure(
+            &self.entry.item.path,
+            io::ErrorKind::Unsupported,
+            "a directory",
+        ))
+    }
+    fn next_child(&mut self, _: &Cancellation) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        Ok(self.children.pop())
+    }
+}
+fn dir(path: &Path, object: u8, children: Vec<Box<dyn TransferSource>>) -> Box<dyn TransferSource> {
+    Box::new(Dir {
+        entry: TransferEntry {
+            item: MutationItem {
+                path: path.to_owned(),
+                kind: EntryKind::Directory,
+                metadata: EntryMetadata::default(),
+            },
+            identity: TransferIdentity {
+                device: 1,
+                object: [object; 16],
+            },
+        },
+        children,
+    })
+}
+impl TransferService for Nested {
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        let top = self
+            .0
+            .prepare_transfer_source(&path.join("top.txt"), cancel)?;
+        let sub = path.join("sub");
+        let deep = self
+            .0
+            .prepare_transfer_source(&sub.join("deep.txt"), cancel)?;
+        // Children are taken from the end: top.txt first, then sub.
+        Ok(dir(path, 3, vec![dir(&sub, 4, vec![deep]), top]))
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.0.prepare_transfer_destination(path, cancel)
+    }
+}
+
+#[test]
+fn a_selected_folder_contributes_its_own_files_and_include_subfolders_the_rest() {
+    for recursive in [false, true] {
+        let mut request = request();
+        request.recursive = recursive;
+        let root = request.targets[0].path.clone();
+        let run = calculate(
+            request,
+            &Nested(Provider::new(b"abc")),
+            &UNCLASSIFIED,
+            &Cancellation::default(),
+            ChecksumRetention::new(()),
+            |_| true,
+        );
+        let rows: Vec<_> = run
+            .rows
+            .iter()
+            .map(|row| (row.path.clone(), row.state))
+            .collect();
+        let mut wanted = vec![(root.join("top.txt"), ChecksumRowState::Calculated)];
+        if recursive {
+            wanted.push((
+                root.join("sub").join("deep.txt"),
+                ChecksumRowState::Calculated,
+            ));
+        }
+        // Without Include subfolders the subfolder is left out, not reported.
+        assert_eq!(rows, wanted, "recursive: {recursive}");
+        assert_eq!(run.summary.completion, ChecksumCompletion::Completed);
+    }
+    // Verification names files: a folder in its place is still skipped.
+    let run = calculate_for_verification(
+        request(),
+        &Nested(Provider::new(b"abc")),
+        &UNCLASSIFIED,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        |_| true,
+    );
+    assert_eq!(run.rows.len(), 1);
+    assert_eq!(run.rows[0].state, ChecksumRowState::Skipped);
+}

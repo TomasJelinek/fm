@@ -105,11 +105,15 @@ struct Settings {
     /// List every file before reading any, so the window shows them all with the
     /// run's total. Verification already knows its files from the manifest.
     listing: bool,
+    /// A selected folder contributes its own files even without recursion.
+    /// Verification names files only: a folder there stays a skipped entry.
+    folders: bool,
 }
 const CALCULATION: Settings = Settings {
     exportable: true,
     revalidation: REVALIDATION_INTERVAL,
     listing: true,
+    folders: true,
 };
 /// Progress, listed files and finished rows reach the window this often.
 const UPDATE_INTERVAL: Duration = Duration::from_millis(100);
@@ -209,6 +213,7 @@ pub(super) fn calculate_for_verification(
     let settings = Settings {
         exportable: false,
         listing: false,
+        folders: false,
         ..CALCULATION
     };
     run(request, service, storage, cancel, retention, settings, emit)
@@ -526,7 +531,12 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                 }
                 match entry.item.kind {
                     EntryKind::File => self.file(source),
-                    EntryKind::Directory if self.request.recursive => {
+                    // A selected folder contributes its own files; Include subfolders
+                    // adds the levels below, whose folders are otherwise left out.
+                    EntryKind::Directory if !self.request.recursive && self.settings.folders
+                        && !stack.is_empty() => {}
+                    EntryKind::Directory if self.request.recursive
+                        || (self.settings.folders && stack.is_empty()) => {
                         if stack.len() >= self.request.limits.max_depth { self.budget(ChecksumBudget::Depth); break; }
                         if !self.directories.insert(entry.identity) { continue; }
                         if let Err(error) = with_io(self.admission, self.cancel,&entry.item.path, || source.revalidate(self.cancel)) {
