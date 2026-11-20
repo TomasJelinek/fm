@@ -378,16 +378,18 @@ fn folder_notice_hides_reports_and_requires_an_explicit_authorization_action() {
 
 /// A long folder path wraps over several lines. The folder box takes the height the
 /// dialog has to spare instead of the message above it, so the whole path shows
-/// rather than being cut after a line and a half.
+/// rather than being cut after a line and a half. The lines are counted in the
+/// dialog's font: the installed fonts decide how wide the path is.
 #[test]
 fn folder_notice_shows_a_long_wrapped_path_completely() {
     let host = notice_host();
     host.apply_preferences(0, 0, "Segoe UI", 14, 18);
     let notice = host.main.global::<NoticePresentation>();
-    let path = "/tmp/systemd-private-0f9c22d1e76d40e0859e8a47aa72dada-fwupd.service-UcD0RO/tmp/a-folder-with-a-rather-long-name/and-one-more-level-below-it";
+    let message = "Permission denied (os error 13)";
+    let path = "/tmp/systemd-private-0f9c22d1e76d40e0859e8a47aa72dada-fwupd.service-UcD0RO/tmp/a-folder-with-a-rather-long-name/and-one-more-level-below-it/and-a-last-folder-whose-name-takes-the-path-onto-another-line";
     notice.set_title("Folder listing error".into());
     notice.set_error(true);
-    notice.set_body("Permission denied (os error 13)".into());
+    notice.set_body(message.into());
     notice.set_folder_path(path.into());
     notice.set_details("Observed issues: 1".into());
     notice.set_can_authorize(false);
@@ -395,9 +397,15 @@ fn folder_notice_shows_a_long_wrapped_path_completely() {
     notice.set_token("long-path".into());
     host.draw(1000, 700, "folder-notice-long-path");
     let text = host.visible_item(AccessibleRole::Text, path);
+    // The message above is a single line in the same font; three lines of it can be a
+    // pixel less than three times its rounded height.
+    let line = host
+        .visible_item(AccessibleRole::Text, message)
+        .geometry()
+        .height();
     assert!(
-        text.geometry().height() > 40.0,
-        "the path wraps over several lines: {:?}",
+        text.geometry().height() > 2.5 * line,
+        "the path wraps over at least three {line} px lines: {:?}",
         text.geometry()
     );
     form::assert_unclipped(&text, "the folder path");
