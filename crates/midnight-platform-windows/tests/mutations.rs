@@ -162,14 +162,16 @@ fn replaced_source_is_rejected_for_rename_and_permanent_delete() {
     let item = prepare(&source);
     fs::rename(&source, temp.path().join("moved")).unwrap();
     fs::write(&source, b"replacement").unwrap();
-    assert!(
-        item.rename(OsStr::new("renamed"), &Cancellation::default())
-            .is_err()
-    );
-    assert!(
-        item.delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {})
-            .is_err()
-    );
+    let renamed = item
+        .rename(OsStr::new("renamed"), &Cancellation::default())
+        .unwrap_err();
+    let deleted = item
+        .delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {})
+        .unwrap_err();
+    // Final, as on Linux: retrying would only check the replacement again, so a
+    // Delete reports it instead of offering Retry.
+    assert_eq!(renamed.kind, io::ErrorKind::InvalidInput, "{renamed:?}");
+    assert_eq!(deleted.kind, io::ErrorKind::InvalidInput, "{deleted:?}");
     assert_eq!(fs::read(&source).unwrap(), b"replacement");
     assert_eq!(fs::read(temp.path().join("moved")).unwrap(), b"original");
 }

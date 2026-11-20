@@ -405,12 +405,15 @@ fn invalid(path: &Path, message: &str) -> FsError {
         io::Error::new(io::ErrorKind::InvalidInput, message),
     )
 }
+/// The captured entry or its parent is no longer the object at its name. Like Linux's
+/// "the selected entry changed", this is final (`InvalidInput`): Retry would only repeat
+/// the identity check against the replacement, so a Delete does not offer it.
 fn changed(path: &Path) -> FsError {
     failure(
         "revalidate mutation",
         path,
         io::Error::new(
-            io::ErrorKind::NotFound,
+            io::ErrorKind::InvalidInput,
             "the selected entry or its parent has been replaced",
         ),
     )

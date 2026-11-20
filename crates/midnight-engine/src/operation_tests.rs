@@ -287,6 +287,10 @@ impl PreparedMutation for FakeTarget {
     }
 }
 
+/// The longest a test waits for one job to finish, in real time: a guard against a job
+/// that waits forever, never a performance bound.
+const JOB_DEADLINE: Duration = Duration::from_secs(60);
+
 struct Harness {
     controller: Controller,
     calls: Arc<Calls>,
@@ -411,12 +415,23 @@ impl Harness {
             }
         }
     }
+    /// The terminal progress. It answers no decision: a job that asks one (a Delete
+    /// failure) waits for it, and its progress heartbeats would keep `next` from timing
+    /// out, so the whole wait has a deadline and names the unanswered decision.
     async fn finished(&mut self) -> Arc<OperationProgress> {
+        let deadline = std::time::Instant::now() + JOB_DEADLINE;
+        let mut unanswered = None;
         loop {
-            if let OperationEvent::Progress(progress) = self.next().await
-                && progress.state.is_terminal()
-            {
-                return progress;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the operation did not finish; unanswered decision: {unanswered:?}"
+            );
+            match self.next().await {
+                OperationEvent::Progress(progress) if progress.state.is_terminal() => {
+                    return progress;
+                }
+                OperationEvent::DeleteFailure(failure) => unanswered = Some(failure),
+                _ => {}
             }
         }
     }
@@ -426,8 +441,13 @@ impl Harness {
         &mut self,
         choice: CopyChoice,
     ) -> (Arc<OperationProgress>, Vec<Arc<DeleteFailure>>) {
+        let deadline = std::time::Instant::now() + JOB_DEADLINE;
         let mut asked = Vec::new();
         loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the operation did not finish after answering {asked:?}"
+            );
             match self.next().await {
                 OperationEvent::Progress(progress) if progress.state.is_terminal() => {
                     return (progress, asked);
