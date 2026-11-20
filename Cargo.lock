@@ -2772,6 +2772,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "midnight-acceptance"
+version = "0.2.0"
+dependencies = [
+ "i-slint-core",
+ "midnight-core",
+ "midnight-engine",
+ "midnight-platform",
+ "midnight-ui",
+ "slint",
+ "tokio",
+]
+
+[[package]]
 name = "midnight-compare-engine"
 version = "0.2.0"
 dependencies = [

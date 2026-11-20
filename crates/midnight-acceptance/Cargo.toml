@@ -1,0 +1,47 @@
+[package]
+name = "midnight-acceptance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+# The opt-in end-to-end acceptance suite (docs/developer/ACCEPTANCE.md). Nothing here
+# runs in `cargo test --workspace`, CI or `./build.sh --validate`: the only test target
+# requires the `acceptance` feature, which no other package enables, and every
+# dependency is optional behind it, so a normal workspace build compiles an empty
+# library and leaves every other package's features unchanged.
+autotests = false
+autobenches = false
+autoexamples = false
+
+[lib]
+test = false
+doctest = false
+
+[features]
+acceptance = [
+    "dep:midnight-core",
+    "dep:midnight-engine",
+    "dep:midnight-platform",
+    "dep:midnight-ui",
+    "dep:slint",
+    "dep:i-slint-core",
+    "dep:tokio",
+]
+
+[dependencies]
+midnight-core = { workspace = true, optional = true }
+midnight-engine = { workspace = true, optional = true }
+midnight-platform = { workspace = true, optional = true }
+midnight-ui = { workspace = true, optional = true }
+slint = { workspace = true, optional = true }
+# The exact version and features midnight-ui already uses, for item-tree inspection.
+i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"], optional = true }
+tokio = { workspace = true, optional = true }
+
+# `harness = false`: tests/acceptance.rs has its own main that runs the scenarios one
+# at a time and prints the summary (see docs/developer/ACCEPTANCE.md).
+[[test]]
+name = "acceptance"
+path = "tests/acceptance.rs"
+harness = false
+required-features = ["acceptance"]

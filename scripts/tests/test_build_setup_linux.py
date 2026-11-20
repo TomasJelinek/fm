@@ -147,9 +147,78 @@ class LinuxBuildSetupTests(unittest.TestCase):
                     self.assertEqual(self.calls(), "")
                     self.assertFalse((self.root / "_build").exists())
 
+    def acceptance_stub(self):
+        (self.root / "scripts/acceptance.sh").write_text(
+            '#!/bin/sh\nprintf "acceptance [%s]\\n" "$*" >> "$BUILD_SETUP_LOG"\nexit "${ACCEPTANCE_EXIT:-0}"\n',
+            encoding="utf-8")
+
+    def test_acceptance_dry_run_prints_the_suite_command_after_the_build_plan(self):
+        shutil.copyfile(ROOT / "scripts/acceptance.sh", self.root / "scripts/acceptance.sh")
+        result = self.run_script("build.sh", "--acceptance", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [line for line in result.stdout.splitlines() if line.startswith("Command:")]
+        self.assertEqual(commands[-3:], [
+            "Command: [bash] [scripts/build-archive-filesystem.sh] [debug]",
+            "Command: [bash] [scripts/acceptance.sh] [debug]",
+            "Command: [cargo] [test] [--workspace] [--locked] [--features] "
+            "[midnight-acceptance/acceptance] [--test] [acceptance] [--]"])
+        self.assertEqual(self.calls(), "")
+        self.assertFalse((self.root / "_build").exists())
+
+    def test_acceptance_runs_after_every_build_step(self):
+        self.acceptance_stub()
+        result = self.run_script("build.sh", "release", "--acceptance")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls().splitlines()
+        self.assertEqual(calls[-2:], ["archive-filesystem [release]", "acceptance [release]"])
+        self.environment["ACCEPTANCE_EXIT"] = "1"
+        self.assertEqual(self.run_script("build.sh", "--acceptance").returncode, 1)
+
+    def test_validate_and_acceptance_both_run_and_the_first_failure_decides(self):
+        self.acceptance_stub()
+        (self.root / "scripts/validate.sh").write_text(
+            '#!/bin/sh\nprintf "validate [%s]\\n" "$*" >> "$BUILD_SETUP_LOG"\nexit "${VALIDATE_EXIT:-0}"\n',
+            encoding="utf-8")
+        self.environment["VALIDATE_EXIT"] = "1"
+        result = self.run_script("build.sh", "--validate", "--acceptance")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.calls().splitlines()[-2:], ["validate [debug]", "acceptance [debug]"])
+
+    def test_acceptance_uses_the_docker_backend(self):
+        shutil.copyfile(ROOT / "scripts/build-docker.sh", self.root / "scripts/build-docker.sh")
+        for name in ("docker-install-deps.sh", "install-rust-toolchain.sh"):
+            shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
+        shutil.copyfile(ROOT / "rust-toolchain.toml", self.root / "rust-toolchain.toml")
+        self.environment["FM_BUILD_BACKEND"] = "docker"
+        result = self.run_script("build.sh", "--acceptance", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = [line for line in result.stdout.splitlines() if "[run]" in line]
+        self.assertEqual(len(run), 1, result.stdout)
+        self.assertTrue(run[0].endswith("[sh] [/workspace/build.sh] [debug] [--acceptance]"), run[0])
+        self.assertEqual(self.calls(), "")
+
+    def test_acceptance_script_rejects_invalid_arguments(self):
+        shutil.copyfile(ROOT / "scripts/acceptance.sh", self.root / "scripts/acceptance.sh")
+        for arguments in (("release", "debug"), ("--only",), ("--only", ""), ("--only", "a,-x"),
+                          ("--scale", "huge"), ("--unknown",)):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), *arguments],
+                                        cwd=self.root.parent, env=self.environment, text=True,
+                                        capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(self.calls(), "")
+        result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), "--dry-run",
+                                 "--only", "startup,ui_review", "--scale", "smoke", "--strict-review"],
+                                cwd=self.root.parent, env=self.environment, text=True,
+                                capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[--] [startup] [ui_review] [--scale] [smoke] [--strict-review]", result.stdout)
+        self.assertEqual(self.calls(), "")
+
     def test_invalid_or_conflicting_arguments_stop_before_any_tool(self):
         for arguments in (("release", "debug"), ("clean", "--install-deps"),
                           ("clean", "--validate"), ("--validate", "--validate"),
+                          ("clean", "--acceptance"), ("--acceptance", "--acceptance"),
                           ("--unknown",), ("release", "extra")):
             with self.subTest(arguments=arguments):
                 result = self.run_script("build.sh", *arguments)

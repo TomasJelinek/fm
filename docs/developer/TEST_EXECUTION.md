@@ -113,6 +113,16 @@ inputs exist. Validation does not run inside `build.sh`'s Docker backend: the bu
 image has no Xvfb, mounts the source read-only and has not been qualified for the
 tests, so `build.sh --validate` refuses Docker.
 
+## Acceptance suite
+
+The opt-in end-to-end acceptance suite is not part of validation or CI.
+`./build.sh --acceptance` (native or Docker backend) runs `scripts/acceptance.sh` after
+its build steps; the suite drives the real application with synthetic input against a
+generated fixture tree and writes an HTML report below `_build/acceptance/`. Its only
+test target requires the `acceptance` feature of `crates/midnight-acceptance`, so
+`cargo test --workspace` and `scripts/ci-workspace-tests.py` never build or run it.
+See [the acceptance suite](ACCEPTANCE.md).
+
 ## Targeted test execution
 
 Use `scripts/run-targeted-tests.py` for independent **headless Rust libtest** targets that have already been built. It does not change CI coverage, compile code, discover executables by glob, or delete build artifacts. Native dialogs, desktop input, renderer pacing and profiling are unsupported: run their dedicated tools serially, with compilers and other test processes idle. For example, `scripts/probe-keyboard-search.ps1` drives the release `native_keyboard_search` example with real Windows keyboard input on a desktop session (see its [verification record](../verification/2026-11-07-keyboard-native-input.md)). Idle event-loop wakeups are measured the same way: `MIDNIGHT_IDLE_WAKEUP_PROBE=<warmup_s>:<seconds>[:thumbnails]` makes `me` use in-memory default preferences, count winit wakeups by cause after the warmup and print one `idle_wakeups=` line to stderr before it quits. Only the preferences are isolated: the probe uses the plugins installed next to `me` and the real preview cache, so set `LOCALAPPDATA` (Windows) or `XDG_CACHE_HOME` (Linux) to a scratch directory for the run. Run one probe at a time with the pointer outside the window (see the [idle wakeup record](../verification/2026-11-18-ui-idle-wakeups.md)).

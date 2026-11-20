@@ -131,7 +131,8 @@ argument (debug), `debug`, or `release`, run a locked build of `midnight-explore
 and return failures to the caller. Both also accept `--validate`, which then runs
 every test that CI runs for the platform ([full validation](#full-validation)).
 Linux `build.sh` also supports `clean`,
-`--dry-run` and explicit `--install-deps`. It selects native or Docker builds and
+`--dry-run`, explicit `--install-deps` and `--acceptance`, which then runs the opt-in
+end-to-end [acceptance suite](docs/developer/ACCEPTANCE.md). It selects native or Docker builds and
 can bootstrap Rust; see the Linux instructions below. `build.bat` expects its
 prerequisites to be installed already. Application builds through the helpers also build the
 platform's independent native and Network Neighborhood
@@ -460,7 +461,7 @@ not recognized yet; install a listed terminal, for example
 To install Rust manually, use the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.
 The Linux helper accepts
-`./build.sh [debug|release|clean] [--install-deps] [--dry-run] [--validate]`:
+`./build.sh [debug|release|clean] [--install-deps] [--dry-run] [--validate] [--acceptance]`:
 
 ```sh
 ./build.sh
@@ -469,6 +470,7 @@ The Linux helper accepts
 ./build.sh --dry-run
 ./build.sh --validate
 ./build.sh release --validate --dry-run
+./build.sh --acceptance
 FM_BUILD_BACKEND=native ./build.sh debug --install-deps --dry-run
 FM_BUILD_BACKEND=native ./build.sh debug --install-deps
 ```
@@ -485,6 +487,11 @@ with `FM_BUILD_BACKEND=docker`, or when `auto` would select Docker, `build.sh`
 refuses `--validate` with exit status 2 before building, because the Docker build
 image has no X11 test display (Xvfb), mounts the source read-only and has not been
 qualified for the tests. `clean` cannot be combined with `--validate`.
+`--acceptance` runs `scripts/acceptance.sh` after the last build step, with either
+backend (the suite renders with Slint's software renderer and needs no display); see
+[the acceptance suite](docs/developer/ACCEPTANCE.md). It never runs as part of
+`cargo test`, CI or `--validate`. With `--validate --acceptance` both run, and the
+first failure decides the exit status. `clean` cannot be combined with it either.
 
 Build only the host with Cargo (install the native provider/viewers separately as
 described above):

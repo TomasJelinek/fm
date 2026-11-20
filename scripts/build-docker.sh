@@ -2,7 +2,7 @@
 set -eu
 
 usage() {
-    printf '%s\n' 'Usage: sh scripts/build-docker.sh [debug|release] [--dry-run]'
+    printf '%s\n' 'Usage: sh scripts/build-docker.sh [debug|release] [--acceptance] [--dry-run]'
 }
 
 print_command() {
@@ -14,6 +14,7 @@ print_command() {
 build_profile=debug
 profile_chosen=0
 dry_run=0
+acceptance=0
 for argument in "$@"; do
     case "$argument" in
         debug|release)
@@ -22,6 +23,10 @@ for argument in "$@"; do
             profile_chosen=1
             ;;
         --dry-run) dry_run=1 ;;
+        --acceptance)
+            if [ "$acceptance" = 1 ]; then usage >&2; exit 2; fi
+            acceptance=1
+            ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -114,6 +119,7 @@ if [ -n "${FM_DOCKER_DNS:-}" ]; then
     set -- "$@" --dns "$FM_DOCKER_DNS"
 fi
 set -- "$@" "$build_image" sh /workspace/build.sh "$build_profile"
+if [ "$acceptance" = 1 ]; then set -- "$@" --acceptance; fi
 if [ "$dry_run" = 1 ]; then
     print_command "$@"
     exit 0

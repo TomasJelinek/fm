@@ -2,11 +2,12 @@
 set -eu
 
 usage() {
-    printf '%s\n' 'Usage: ./build.sh [debug|release|clean] [--install-deps] [--dry-run] [--validate]'
+    printf '%s\n' 'Usage: ./build.sh [debug|release|clean] [--install-deps] [--dry-run] [--validate] [--acceptance]'
     printf '%s\n' 'FM_BUILD_BACKEND selects auto, native or docker. Missing native Rust is bootstrapped with rustup.'
     printf '%s\n' 'Host packages are installed only with --install-deps, which selects the native backend.'
     printf '%s\n' 'Clean removes repository _build output, preserving .tools and the legacy _build/docker cache.'
     printf '%s\n' '--validate then runs scripts/validate.sh: the tests that CI runs on Linux (native backend only).'
+    printf '%s\n' '--acceptance then runs scripts/acceptance.sh: the opt-in end-to-end acceptance suite (native or Docker).'
 }
 
 print_command() {
@@ -50,6 +51,7 @@ profile_chosen=0
 install_deps=0
 dry_run=0
 validate=0
+acceptance=0
 for argument in "$@"; do
     case "$argument" in
         debug|release|clean)
@@ -63,11 +65,16 @@ for argument in "$@"; do
             if [ "$validate" = 1 ]; then usage >&2; exit 2; fi
             validate=1
             ;;
+        --acceptance)
+            if [ "$acceptance" = 1 ]; then usage >&2; exit 2; fi
+            acceptance=1
+            ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
-if [ "$build_profile" = clean ] && { [ "$install_deps" = 1 ] || [ "$validate" = 1 ]; }; then
+if [ "$build_profile" = clean ] &&
+    { [ "$install_deps" = 1 ] || [ "$validate" = 1 ] || [ "$acceptance" = 1 ]; }; then
     usage >&2
     exit 2
 fi
@@ -117,8 +124,12 @@ if [ "$build_backend" = docker ]; then
         fi
         exit 2
     fi
-    if [ "$dry_run" = 1 ]; then exec sh scripts/build-docker.sh "$build_profile" --dry-run; fi
-    exec sh scripts/build-docker.sh "$build_profile"
+    # The acceptance suite renders with Slint's software renderer and needs no display,
+    # so the container runs the whole chain, acceptance included.
+    set -- "$build_profile"
+    if [ "$acceptance" = 1 ]; then set -- "$@" --acceptance; fi
+    if [ "$dry_run" = 1 ]; then exec sh scripts/build-docker.sh "$@" --dry-run; fi
+    exec sh scripts/build-docker.sh "$@"
 fi
 
 if [ "$dry_run" = 1 ]; then
@@ -137,7 +148,12 @@ if [ "$dry_run" = 1 ]; then
     print_command bash scripts/build-archive-filesystem.sh "$build_profile"
     if [ "$validate" = 1 ]; then
         print_command bash scripts/validate.sh "$build_profile"
-        exec bash scripts/validate.sh "$build_profile" --dry-run
+        if [ "$acceptance" = 0 ]; then exec bash scripts/validate.sh "$build_profile" --dry-run; fi
+        bash scripts/validate.sh "$build_profile" --dry-run
+    fi
+    if [ "$acceptance" = 1 ]; then
+        print_command bash scripts/acceptance.sh "$build_profile"
+        exec bash scripts/acceptance.sh "$build_profile" --dry-run
     fi
     exit 0
 fi
@@ -192,6 +208,16 @@ bash scripts/build-native-filesystem.sh "$build_profile"
 bash scripts/build-network-filesystem.sh "$build_profile"
 bash scripts/build-viewers.sh "$build_profile"
 bash scripts/build-default-thumbnailers.sh "$build_profile"
-if [ "$validate" = 0 ]; then exec bash scripts/build-archive-filesystem.sh "$build_profile"; fi
+if [ "$validate" = 0 ] && [ "$acceptance" = 0 ]; then
+    exec bash scripts/build-archive-filesystem.sh "$build_profile"
+fi
 bash scripts/build-archive-filesystem.sh "$build_profile"
-exec bash scripts/validate.sh "$build_profile"
+if [ "$acceptance" = 0 ]; then exec bash scripts/validate.sh "$build_profile"; fi
+if [ "$validate" = 0 ]; then exec bash scripts/acceptance.sh "$build_profile"; fi
+# Both: acceptance runs even when validation failed; the first failure decides the status.
+validation_status=0
+bash scripts/validate.sh "$build_profile" || validation_status=$?
+acceptance_status=0
+bash scripts/acceptance.sh "$build_profile" || acceptance_status=$?
+if [ "$validation_status" != 0 ]; then exit "$validation_status"; fi
+exit "$acceptance_status"
