@@ -474,7 +474,7 @@ export component FindWindow inherits ToolWindow {
                 // glyph and 28px of padding, 8px apart); in a narrower window it would sit
                 // half outside the scroller. The status line opens the details, whose
                 // Copy is always shown.
-                if !root.show-details && find-footer.action-room
+                if !root.show-details && find-footer.inline-room
                     >= find-footer.measured-width + 6 * (Theme.icon-size + 28px) + 5 * 8px:
                     FindActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
             }

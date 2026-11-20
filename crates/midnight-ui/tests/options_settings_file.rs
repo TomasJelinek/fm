@@ -532,3 +532,111 @@ fn settings_kept_from_another_system_are_listed_inactive_and_removed_as_an_optio
     );
     assert_eq!(saved.foreign_hot_paths.len(), 1);
 }
+
+/// Window bounds of a footer button of the open Options dialog.
+fn footer_button(h: &Harness, label: &str) -> (f32, f32, f32, f32) {
+    bounds(&ui::popup_item(&h.ui.window, label, AccessibleRole::Button))
+}
+
+#[test]
+fn ok_and_cancel_share_one_row_while_the_footer_actions_fit_beside_cancel() {
+    let mut h = Harness::new();
+    // Narrower than the footer's former fixed 440 px stacking width, with room for
+    // Reset, OK and Cancel in one row.
+    h.ui.resize(420, 600);
+    let (ok, cancel) = (footer_button(&h, "OK"), footer_button(&h, "Cancel"));
+    assert_eq!(
+        ok.1, cancel.1,
+        "OK {ok:?} and Cancel {cancel:?} share one row"
+    );
+    assert!(ok.2 <= cancel.0, "OK {ok:?} sits left of Cancel {cancel:?}");
+}
+
+#[test]
+fn ok_and_cancel_stay_whole_and_apart_with_a_large_font_at_the_narrowest_width() {
+    // Whether or not Cancel needs a row of its own, OK and Cancel stay whole, in view
+    // and apart.
+    let mut h = Harness::with(UserPreferences {
+        desktop_font_size: 32,
+        touch_font_size: 32,
+        ..current()
+    });
+    h.ui.resize(320, 600);
+    let (ok, cancel) = (footer_button(&h, "OK"), footer_button(&h, "Cancel"));
+    for (label, (left, top, right, bottom)) in [("OK", ok), ("Cancel", cancel)] {
+        assert!(
+            left >= 0.0 && top >= 0.0 && right <= 320.0 && bottom <= 600.0,
+            "{label} {:?} in view",
+            (left, top, right, bottom)
+        );
+    }
+    assert!(
+        ok.2 <= cancel.0 || ok.3 <= cancel.1,
+        "OK {ok:?} beside or above Cancel {cancel:?}, never over it"
+    );
+}
+
+#[test]
+fn the_kept_list_scrolls_fully_into_view_at_the_end_of_the_general_page() {
+    use i_slint_core::items::Flickable;
+    let preferences = UserPreferences {
+        foreign_settings: vec![
+            kept(ForeignSettingKind::Editor, "code"),
+            kept(
+                ForeignSettingKind::UserCommand {
+                    position: 0,
+                    id: UserCommandId::new("custom-1").unwrap(),
+                    name: "Sestavit".into(),
+                },
+                "make",
+            ),
+        ]
+        .into(),
+        ..current()
+    };
+    let mut h = Harness::with(preferences);
+    // An ordinary window, shorter than the General page with its kept list.
+    h.ui.resize(940, 660);
+    h.ui.window.set_options_topic_index(0);
+    h.ui.draw();
+    let label = "Remove Custom command “Sestavit”";
+    // The last kept row's Remove button, the page's scroll view and its bounds.
+    let page = |h: &Harness| {
+        let item = ui::popup_item(&h.ui.window, label, AccessibleRole::Button);
+        let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+        loop {
+            let ancestor = parent.expect("the General page scrolls");
+            if ancestor.downcast::<Flickable>().is_some() {
+                return (bounds(&item), bounds(&ancestor), ancestor);
+            }
+            parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+        }
+    };
+    let (_, view, _) = page(&h);
+    // Scroll as far as the page goes.
+    for _ in 0..12 {
+        h.ui.window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(
+                    (view.0 + view.2) / 2.0,
+                    (view.1 + view.3) / 2.0,
+                ),
+                delta_x: 0.0,
+                delta_y: -400.0,
+            });
+        h.ui.draw();
+    }
+    let (remove, view, flickable) = page(&h);
+    let offset = flickable
+        .downcast::<Flickable>()
+        .unwrap()
+        .as_pin_ref()
+        .content_y()
+        .get();
+    assert!(offset < 0.0, "the General page scrolled: {offset}");
+    assert!(
+        remove.1 >= view.1 - 1.0 && remove.3 <= view.3 + 1.0,
+        "{label} {remove:?} is wholly inside the page {view:?}"
+    );
+}

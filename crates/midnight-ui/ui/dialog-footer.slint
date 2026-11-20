@@ -4,8 +4,9 @@ import { HintedActionButton } from "hinted-inputs.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { FallbackIcons } from "action-icons.slint";
 
-// Actions use spare width and scroll when necessary. Dismiss remains reachable;
-// a narrow, tall dialog puts it on a second row instead of squeezing controls.
+// Actions use spare width and scroll when necessary. Dismiss remains reachable; a
+// tall dialog whose actions do not fit beside it puts it on a second row instead of
+// squeezing controls.
 export component DialogFooter inherits Rectangle {
     // Aliases, not copies: the footer is inlined into every dialog, so each
     // forwarded property would be one more generated binding per dialog.
@@ -17,10 +18,11 @@ export component DialogFooter inherits Rectangle {
     in property <bool> compact-height;
     in property <bool> compact-controls;
     in property <bool> fill-actions;
-    // The width the actions have beside (or above) the dismiss button, and the width of
-    // `measure-text` in the action font: a dialog may leave out an optional action that
-    // would not fit, so that no button sits half outside the scroller.
-    out property <length> action-room: action-scroll.width;
+    // The width beside the dismiss button on one row, and the width of `measure-text`
+    // in the action font. A dialog leaves out an optional action that would not fit
+    // there, so that no button sits half outside the scroller and the footer never
+    // takes a second row for an optional action. Neither depends on that row.
+    out property <length> inline-room: max(0px, root.width - max(80px, dismiss-button.preferred-width) - 8px);
     in property <string> measure-text;
     out property <length> measured-width: measure.preferred-width;
     callback dismiss <=> dismiss-button.clicked;
@@ -29,7 +31,9 @@ export component DialogFooter inherits Rectangle {
         visible: false; text: root.measure-text;
         font-family: Theme.effective-font-family; font-size: Theme.font-size;
     }
-    private property <bool> stacked: root.width < 440px && !root.compact-height;
+    // Only when the actions at their natural width do not fit beside the dismiss
+    // button; a short dialog keeps one row and scrolls its actions instead.
+    private property <bool> stacked: !root.compact-height && actions.preferred-width > root.inline-room;
     private property <length> control-height: max(Theme.control-height,
         dismiss-button.preferred-height, actions.preferred-height);
     private property <bool> overflowing: actions.min-width > action-scroll.width;

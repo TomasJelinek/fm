@@ -87,6 +87,9 @@ export component KeptSettingsList inherits VerticalLayout {
     Text {
         text: SettingsFileView.kept-hint;
         color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+        // Every wrapped line counts in the General page's scroll extent, so its last
+        // row can be scrolled fully into view.
+        min-height: self.preferred-height; vertical-stretch: 0;
     }
     for row[index] in SettingsFileView.kept-rows : HorizontalLayout {
         spacing: 8px;

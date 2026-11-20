@@ -143,14 +143,16 @@ export component OptionsBody inherits Rectangle {
     private property <bool> footer-ready: root.preferences-ready && !root.options-busy
         && !root.page-busy && ColorOptionsView.picker-field < 0;
     // Export and Import sit beside Reset where they fit with their labels, or with
-    // icons only, and otherwise at the end of the General page. OK must stay in view:
-    // Slint drops the focus of a control clipped out of view, and the next key, Escape
-    // included, then reaches no handler. A button is padding, icon, gap and caption.
-    private property <length> footer-base: reset-button.min-width + save-button.min-width + 4 * 8px;
+    // icons only, and otherwise at the end of the General page. They are measured
+    // against the room beside Cancel, so they leave before the footer would give Cancel
+    // a row of its own. OK must stay in view: Slint drops the focus of a control
+    // clipped out of view, and the next key, Escape included, then reaches no handler.
+    // A button is padding, icon, gap and caption.
+    private property <length> footer-base: reset-button.preferred-width + save-button.preferred-width + 4 * 8px;
     private property <bool> settings-file-labels: !root.narrow
-        && footer.action-room >= root.footer-base + 2 * (Theme.icon-size + 28px) + footer.measured-width;
+        && footer.inline-room >= root.footer-base + 2 * (Theme.icon-size + 28px) + footer.measured-width;
     private property <bool> settings-file-fits: root.settings-file-labels
-        || footer.action-room >= root.footer-base + 2 * (Theme.icon-size + 24px);
+        || footer.inline-room >= root.footer-base + 2 * (Theme.icon-size + 24px);
     // Follows settings-file-fits. A focused Export or Import hands the focus to OK
     // before it moves, instead of losing it with the button.
     private property <bool> settings-file-in-footer: true;
@@ -379,6 +381,8 @@ export component OptionsBody inherits Rectangle {
                 if !root.copy-checksum-verification : Text {
                     text: "Quick verification: size + first/middle/last 64 KiB. Bytes between samples are not checked.";
                     color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+                    // Every wrapped line counts in the page's scroll extent.
+                    min-height: self.preferred-height; vertical-stretch: 0;
                 }
                 Rectangle { height: 1px; background: Theme.frame; }
                 Text { text: "Disk operations"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
