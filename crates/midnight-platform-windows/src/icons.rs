@@ -533,6 +533,9 @@ mod tests {
 
     #[test]
     fn unassociated_document_art_is_identified_for_semantic_fallbacks() {
+        // Without the guard, a concurrent cold stock-icon call can fail and leave the
+        // Shell's default document unidentified (seen once in CI on 20 November).
+        let _qualification = native_qualification();
         let mut key = IconKey::file();
         key.extension = Some("midnight-unassociated-icon-fixture-7cb49".into());
         if let Some(pixels) = WindowsFileSystem::new(None).load_icon(&key).unwrap() {
