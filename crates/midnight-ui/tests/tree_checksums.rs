@@ -94,13 +94,10 @@ fn exercise(pane: PaneId, folders: bool) {
     );
     modeless::draw(&child, 1000, 720, "tree-checksums-result");
     if folders {
-        assert!(
-            first
-                .rows
-                .iter()
-                .any(|row| row.path == fixture.root.join("folder/small")
-                    && row.state == ChecksumRowState::Skipped)
-        );
+        // A selected folder contributes its own files without Include subfolders.
+        assert!(first.rows.iter().any(|row| row.path
+            == fixture.root.join("folder/small/payload.bin")
+            && row.state == ChecksumRowState::Calculated));
         modeless::click(&child, "Checksum algorithms");
         modeless::draw(&child, 1000, 720, "tree-checksums-options");
         let recursive = modeless::accessible_popup_item(
