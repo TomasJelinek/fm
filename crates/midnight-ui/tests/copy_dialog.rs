@@ -9,7 +9,7 @@ use crate::support::ui;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ParentItemTraversalMode},
-    items::{AccessibleRole, Flickable, TextInput},
+    items::{AccessibleRole, Clip, Flickable, TextInput},
     window::WindowInner,
 };
 use midnight_core::*;
@@ -90,6 +90,23 @@ fn accessible_item(
 ) -> Option<i_slint_core::item_tree::ItemRc> {
     modeless::accessible_popup_item(window, role, label)
         .or_else(|| modeless::accessible_item(window, role, label))
+}
+
+/// No `visible: false` ancestor hides `item`. Unlike `ItemRc::is_visible`, a control
+/// that only lies outside a scrolled view counts as shown.
+fn not_hidden(item: &ItemRc) -> bool {
+    let mut current = Some(item.clone());
+    while let Some(item) = current {
+        // Slint lowers `visible` to a visibility clip that clips while hidden.
+        if item.downcast::<Clip>().is_some_and(|clip| {
+            let clip = clip.as_pin_ref();
+            clip.is_visibility_clip() && clip.clip()
+        }) {
+            return false;
+        }
+        current = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    true
 }
 
 fn draft_child(windows: &NativeWindows) -> Rc<MinimalSoftwareWindow> {
@@ -613,8 +630,10 @@ fn destination_editor(
     )
     .expect("Copy and Move both expose the wait option");
     let shown = link_option::shown(moving);
-    let links = accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL)
-        .filter(|item| item.is_visible());
+    // The 320×200 Move dialog scrolls its options: a shown link option can lie below
+    // the view until the keyboard reaches it.
+    let links =
+        accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL).filter(not_hidden);
     assert_eq!(links.is_some(), shown, "the link option's presence");
     if let Some(links) = &links {
         assert_eq!(
@@ -693,8 +712,8 @@ fn destination_editor(
         "false",
         "every new draft must start unchecked",
     );
-    let links = accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL)
-        .filter(|item| item.is_visible());
+    let links =
+        accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL).filter(not_hidden);
     assert_eq!(links.is_some(), shown);
     if let Some(links) = &links {
         assert_eq!(
