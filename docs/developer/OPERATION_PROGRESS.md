@@ -108,8 +108,11 @@ application delivery remain pending.
     with Retry and Cancel only (no Retry when retrying cannot help). One of several
     selected native items that fails alone (its path is the error's) also offers Skip
     and Skip all: `Preparation::skip_root` plans the job again without it, it counts
-    as skipped and as one error, and the others are copied. A preparation failure
-    after recorded cleanup residuals still ends the job.
+    as skipped and as one error, and the others are copied. A job that requires the
+    exact modified time offers no such Skip: its preflight refuses folders, links and
+    virtual roots without a downgrade (`MetadataTransferRequest`), so leaving one out
+    would turn that refusal into a partial transfer. A preparation failure after
+    recorded cleanup residuals still ends the job.
   - A folder that fails itself (above): its listing cannot resume where it stopped,
     so there is no Retry and Skip leaves out the rest of that folder.
   - Ordinary cross-volume Move children that cannot be prepared for Move (special

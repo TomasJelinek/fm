@@ -1459,8 +1459,9 @@ Move source is rechecked by identity, size and modified time, so permission chan
 Linux platform tests only. Windows and archive sources still report a child that
 cannot be opened as a failure of its folder. One of several selected items that
 cannot be prepared (for example a folder nobody may read) offers Skip and Skip all
-besides Retry, and the other items are copied; captured tree and archive sources
-and a single item keep Retry and Cancel only. Ordinary cross-volume Move children
+besides Retry, and the other items are copied; captured tree and archive sources,
+a single item and a job that requires the exact modified time keep Retry and Cancel
+only. Ordinary cross-volume Move children
 that cannot be prepared and halts after an uncertain commit or cleanup remain as
 recorded in [the Copy/Move audit](developer/OPERATION_PROGRESS.md).
 The 11 November retry correction retains one owned pre-copy stage across Move

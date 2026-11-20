@@ -163,6 +163,63 @@ async fn required_modified_time_mixed_batch_is_refused_before_any_publication_or
         assert_eq!(done.source_names_staged, 0);
         assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
         assert!(source.exists());
+        // Both roots stay where they were chosen (`parent` is the fixture's private
+        // `.midnight-recovery-…` folder, so their paths name it).
+        assert!(folder.is_dir());
+        harness.close().await;
+    }
+}
+
+/// Required metadata qualifies its whole selection before anything is copied: a root
+/// that cannot be prepared refuses the request with Retry or Cancel, never Skip, which
+/// would copy the other roots without it.
+#[tokio::test]
+async fn required_modified_time_preparation_failure_offers_no_skip() {
+    let (_temp, parent) = protected_fixture();
+    let source = parent.join("source");
+    let missing = parent.join("missing");
+    let destination = parent.join("destination");
+    fs::write(&source, b"original").unwrap();
+    fs::create_dir(&destination).unwrap();
+    for intent in [TransferIntent::Copy, TransferIntent::Move] {
+        let mut harness = Harness::native();
+        harness
+            .controller
+            .enqueue_metadata(MetadataTransferRequest {
+                input: MetadataTransferInput::Paths(request(
+                    1,
+                    &[source.clone(), missing.clone()],
+                    &destination,
+                )),
+                intent,
+                metadata: TransferMetadataPolicy::RequireModifiedTime,
+            })
+            .await;
+        let failure = loop {
+            match harness.next().await {
+                CopyEvent::Failure(failure) => break failure,
+                CopyEvent::Progress(progress) => {
+                    assert!(!progress.state.is_terminal(), "{progress:?}");
+                }
+                _ => {}
+            }
+        };
+        assert_eq!(failure.stage, CopyErrorStage::Preparing, "{failure:?}");
+        assert_eq!(failure.source.as_deref(), Some(missing.as_path()));
+        assert!(failure.can_retry && !failure.can_skip, "{failure:?}");
+        harness
+            .controller
+            .decide(CopyDecision {
+                id: failure.id,
+                version: failure.version,
+                choice: CopyChoice::Cancel,
+            })
+            .await;
+        let done = harness.terminal(1).await;
+        assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+        assert_eq!(done.files_completed, 0);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        assert_eq!(fs::read(&source).unwrap(), b"original");
         harness.close().await;
     }
 }

@@ -89,7 +89,8 @@ keeps the pending decision available from Jobs. On Linux, a file or folder insid
 copied folder that cannot be opened (for example one you may not read) pauses on its
 own: Retry opens it again, and Skip leaves out only that item while the rest of the
 folder is still copied. Likewise, one of several selected items that cannot be
-prepared offers Skip, and the other selected items are still copied. A Move on one
+prepared offers Skip, and the other selected items are still copied, unless the job
+requires the exact modified time: that refuses the whole selection instead. A Move on one
 volume of a folder you own works even when the
 folder is write-protected (Linux needs the folder itself writable to move it into
 another folder): it gets owner write permission only while it is renamed and keeps
