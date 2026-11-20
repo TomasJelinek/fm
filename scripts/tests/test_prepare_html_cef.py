@@ -235,12 +235,13 @@ class PrepareHtmlCef(unittest.TestCase):
 
     def held_extraction(self, seconds):
         """Extract as usual, then keep a fresh file of the new stage open for `seconds`."""
-        extract, timers = self.cef.extract_flat, []
+        extract, holds = self.cef.extract_flat, []
 
         def extract_and_hold(archive, output, pin, platform_name):
             extract(archive, output, pin, platform_name)
-            timers.append(hold(output / "LICENSE.txt", seconds))
-        self.addCleanup(lambda: [timer.join() for timer in timers])
+            holds.append(hold(output / "LICENSE.txt", seconds))
+        # Released at the end of the test; a longer hold needs no waiting.
+        self.addCleanup(lambda: [held.release() for held in holds])
         return mock.patch.object(self.cef, "extract_flat", extract_and_hold)
 
     @unittest.skipUnless(os.name == "nt", "Windows refuses to rename a folder above a held file")

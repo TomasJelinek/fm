@@ -275,6 +275,29 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return result.returncode, result.stdout + result.stderr, calls
 
+    def run_driver(self, checkout, prelude, applications):
+        """Run the checkout's wrapper for each application directory in one PowerShell process.
+
+        Returns, per run, its error message ('' on success) and the number of Cargo calls
+        logged so far, and the process output.
+        """
+        def literal(path):
+            return "'" + str(path).replace("'", "''") + "'"
+        runs = "".join(f"try {{ & {literal(checkout / 'scripts/build-html-viewer.ps1')} -SdkConfig "
+                       f"{literal(self.config)} -AppDirectory {literal(application)} | Out-Null; $message = '' }}\n"
+                       "catch { $message = $_.Exception.Message }\n"
+                       "$runs += ,@($message, @(Get-Content -LiteralPath $env:HTML_TEST_LOG -ErrorAction Ignore).Count)\n"
+                       for application in applications)
+        driver = self.owner / "driver.ps1"
+        driver.write_text(prelude + "$runs = @()\n" + runs + "ConvertTo-Json -InputObject $runs -Compress\n",
+                          encoding="utf-8-sig")
+        self.log.unlink(missing_ok=True)
+        result = subprocess.run([shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                 "-File", str(driver)], cwd=checkout, env=self.environment, capture_output=True,
+                                text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout.strip().splitlines()[-1]), result.stdout + result.stderr
+
     def assert_package(self, library):
         self.assertEqual((self.package / "midnight-viewer-html.exe").read_bytes(), self.bootstrap)
         self.assertEqual((self.package / "midnight-viewer-html.dll").read_bytes(), library)
@@ -324,22 +347,27 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         linked = self.owner / "linked"
         _winapi.CreateJunction(str(self.root.parent), str(linked))
         checkout = linked / "checkout"
-        code, output, _ = self.build(checkout)
-        self.assertEqual(code, 0, output)
-        self.assert_package(self.library.read_bytes())
         outside = self.owner / "outside"
         outside.mkdir()
+        (self.root / "_build").mkdir(exist_ok=True)
         _winapi.CreateJunction(str(outside), str(self.root / "_build/redirect"))
         _winapi.CreateJunction(str(self.root), str(self.root / "_build/loop"))
-        for application in (checkout / "_build/redirect/debug", checkout / "_build/loop/_build/debug"):
+        # One PowerShell process runs the refusals first, none of which may reach Cargo,
+        # and then the build through the linked checkout.
+        cases = {checkout / "_build/redirect/debug": "must not traverse reparse points",
+                 checkout / "_build/loop/_build/debug": "must not traverse reparse points",
+                 checkout / "debug": "must be under _build",
+                 checkout / "_build/debug": ""}
+        runs, output = self.run_driver(checkout, "", list(cases))
+        for (application, expected), (message, calls) in zip(cases.items(), runs, strict=True):
             with self.subTest(application=application):
-                code, output, calls = self.build(checkout, application)
-                self.assertNotEqual(code, 0)
-                self.assertIn("must not traverse reparse points", output)
-                self.assertEqual(calls, [], "A refused destination reached Cargo")
-        code, output, _ = self.build(checkout, checkout / "debug")
-        self.assertNotEqual(code, 0)
-        self.assertIn("must be under _build", output)
+                if expected:
+                    self.assertIn(expected, message)
+                    self.assertEqual(calls, 0, "A refused destination reached Cargo")
+                else:
+                    self.assertEqual(message, "", output)
+                    self.assertGreater(calls, 0)
+        self.assert_package(self.library.read_bytes())
         self.assertEqual(list(outside.iterdir()), [])
 
     def hold_new_package(self, milliseconds, share_delete):
@@ -350,29 +378,32 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         """
         packager = self.root / "plugins/midnight-viewer-html/scripts/package-windows.ps1"
         with packager.open("a", encoding="utf-8") as stream:
-            stream.write(POWERSHELL_HOLD + "[MidnightFreshHold]::Hold((Join-Path $package 'runtime-files.json'), "
-                         f"{milliseconds}, ${str(share_delete).lower()})\n")
+            stream.write(POWERSHELL_HOLD + "Start-FreshHold (Join-Path $package 'runtime-files.json') "
+                         f"{milliseconds} ${str(share_delete).lower()}\n")
+
+    def install_previous_package(self):
+        """A package of an earlier build, which the rebuild moves aside before publishing."""
+        self.package.mkdir(parents=True)
+        (self.package / "previous-module").write_text("previous package\n")
 
     def test_brief_hold_of_the_new_package_is_waited_out(self):
-        code, output, _ = self.build()
-        self.assertEqual(code, 0, output)
-        self.library.write_bytes(unsigned_pe(True, b"second build"))
+        self.install_previous_package()
         self.hold_new_package(300, share_delete=False)
         code, output, _ = self.build()
         self.assertEqual(code, 0, output)
         self.assert_package(self.library.read_bytes())
+        self.assertFalse((self.package / "previous-module").exists())
         self.assertEqual(list(self.package.parent.parent.glob(".html-build.*")), [])
 
-    def test_hold_beyond_two_seconds_fails_and_restores_the_previous_package(self):
-        code, output, _ = self.build()
-        self.assertEqual(code, 0, output)
-        previous = self.library.read_bytes()
-        self.library.write_bytes(unsigned_pe(True, b"second build"))
-        self.hold_new_package(2600, share_delete=True)
-        code, output, _ = self.build()
-        self.assertNotEqual(code, 0)
-        self.assertIn("denied", output)
-        self.assert_package(previous)
+    def test_hold_beyond_the_retry_budget_fails_and_restores_the_previous_package(self):
+        # The thumbnail swap waits out the real 2 s budget end to end; here a caller-side
+        # default of 100 ms (the scripts never pass one) meets a 300 ms hold.
+        self.install_previous_package()
+        self.hold_new_package(300, share_delete=True)
+        budget = "$PSDefaultParameterValues['Invoke-FreshRename:TimeoutMilliseconds'] = 100\n"
+        ((message, _),), output = self.run_driver(self.root, budget, [self.root / "_build/debug"])
+        self.assertIn("denied", message, output)
+        self.assertEqual([path.name for path in self.package.iterdir()], ["previous-module"])
         self.assertEqual(list(self.package.parent.parent.glob(".html-build.*")), [])
 
     def test_dependency_notices_below_a_non_ascii_path_survive_a_legacy_console_code_page(self):

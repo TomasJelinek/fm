@@ -269,9 +269,15 @@ try {
     $nextHash = (Get-FileHash -LiteralPath $sourceExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
     $oldPointer = [IO.File]::ReadAllText($pointer.Path)
     $lock = [IO.File]::Open($pointer.Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    # The lock outlasts the publication's retry; a 100 ms budget keeps that wait short
+    # (the deployment itself always uses the 2 s default).
+    $PSDefaultParameterValues['Invoke-FreshRename:TimeoutMilliseconds'] = 100
     try {
         Refuses { & $deploy -SourceDirectory $source -Destination "$testRoot/pointer-locked" -RegisterRuntime -RegistrationDirectory $registry } 'locked pointer publication'
-    } finally { $lock.Dispose() }
+    } finally {
+        $null = $PSDefaultParameterValues.Remove('Invoke-FreshRename:TimeoutMilliseconds')
+        $lock.Dispose()
+    }
     if ([IO.File]::ReadAllText($pointer.Path) -cne $oldPointer) { throw 'Failed publication changed old pointer' }
     if (-not (Test-Path -LiteralPath (Join-Path $registry "$nextHash.toml") -PathType Leaf)) {
         throw 'Pointer publication was attempted before the new legacy record'

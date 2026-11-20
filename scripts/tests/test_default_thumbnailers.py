@@ -365,29 +365,44 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         self.environment.pop("CARGO_TARGET_DIR", None)
         self.destination = self.fixture / "_build/app/thumbnailers"
 
-    def build(self, checkout=None, destination=None, build_root=None, *, status=0, prelude=""):
-        """Run the checkout's script, named as given; inputs are named through the same path."""
+    # The pinned FFmpeg source digest is checked elsewhere; only the swap is tested.
+    FIXED_HASH = ("function Get-FileHash([string]$LiteralPath, [string]$Algorithm) {\n"
+                  "    [pscustomobject]@{ Hash = '8C3850283EB25FA026482078A04051E0BE17347B09EF81A0849BEC15A96E002E' }\n"
+                  "}\n")
+
+    def invocation(self, checkout, destination=None, build_root=None):
+        """The checkout's script, named as given; inputs are named through the same path."""
         def literal(path):
             return "'" + str(path).replace("'", "''") + "'"
-        checkout = checkout or self.fixture
-        # The pinned FFmpeg source digest is checked elsewhere; only the swap is tested.
+        return (f"& {literal(checkout / 'scripts/build-thumbnailers.ps1')} -ApiConfig {literal(checkout / 'registry.toml')} "
+                f"-Destination {literal(destination or self.destination)} "
+                f"-BuildRoot {literal(build_root or checkout / '_build/targets')} "
+                f"-NoticesRoot {literal(checkout / 'notices')} -FfmpegPrefix {literal(checkout / 'ffmpeg')} "
+                f"-FfmpegSourceArchive {literal(checkout / 'ffmpeg-9.0.2.tar.xz')} -LibclangPath {literal(checkout)} "
+                "-Profile debug")
+
+    def run_driver(self, checkout, text):
         driver = checkout / "driver.ps1"
-        driver.write_text(
-            prelude +
-            "function Get-FileHash([string]$LiteralPath, [string]$Algorithm) {\n"
-            "    [pscustomobject]@{ Hash = '8C3850283EB25FA026482078A04051E0BE17347B09EF81A0849BEC15A96E002E' }\n"
-            "}\n"
-            f"& {literal(checkout / 'scripts/build-thumbnailers.ps1')} -ApiConfig {literal(checkout / 'registry.toml')} "
-            f"-Destination {literal(destination or self.destination)} "
-            f"-BuildRoot {literal(build_root or checkout / '_build/targets')} "
-            f"-NoticesRoot {literal(checkout / 'notices')} -FfmpegPrefix {literal(checkout / 'ffmpeg')} "
-            f"-FfmpegSourceArchive {literal(checkout / 'ffmpeg-9.0.2.tar.xz')} -LibclangPath {literal(checkout)} "
-            "-Profile debug\n", encoding="utf-8-sig")
-        result = subprocess.run([shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                                 "-File", str(driver)], env=self.environment, capture_output=True, text=True,
-                                timeout=120)
+        driver.write_text(text, encoding="utf-8-sig")
+        return subprocess.run([shutil.which("pwsh") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                               "-File", str(driver)], env=self.environment, capture_output=True, text=True,
+                              timeout=120)
+
+    def build(self, checkout=None, destination=None, build_root=None, *, status=0, prelude=""):
+        checkout = checkout or self.fixture
+        result = self.run_driver(checkout, prelude + self.FIXED_HASH
+                                 + self.invocation(checkout, destination, build_root) + "\n")
         self.assertEqual(result.returncode, status, result.stdout + result.stderr)
         return result.stdout + result.stderr
+
+    def runs(self, checkout, cases):
+        """Each (destination, build root) case's error message ('' when it built), in one process."""
+        calls = "".join(f"    try {{ {self.invocation(checkout, destination, build_root)} | Out-Null; '' }}\n"
+                        "    catch { $_.Exception.Message }\n" for destination, build_root in cases)
+        result = self.run_driver(checkout, self.FIXED_HASH + "$messages = @(\n" + calls + ")\n"
+                                 "ConvertTo-Json -InputObject $messages -Compress\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout.strip().splitlines()[-1])
 
     def assert_current_package(self):
         self.assertFalse((self.destination / "avcodec-62.dll").exists())
@@ -432,21 +447,27 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         linked = self.owner / "linked"
         _winapi.CreateJunction(str(self.fixture.parent), str(linked))
         checkout = linked / "checkout"
-        self.build(checkout, checkout / "_build/app/thumbnailers")
-        self.assert_current_package()
         outside = self.owner / "outside"
         outside.mkdir()
         (outside / "keep").write_text("user data\n")
+        (self.fixture / "_build").mkdir()
         _winapi.CreateJunction(str(outside), str(self.fixture / "_build/redirect"))
         _winapi.CreateJunction(str(self.fixture), str(self.fixture / "_build/loop"))
         build = checkout / "_build"
-        for destination, build_root in ((build / "redirect/thumbnailers", None),
-                                        (build / "app/thumbnailers", build / "redirect/targets"),
-                                        (build / "loop/_build/app/thumbnailers", None)):
-            with self.subTest(destination=destination, build_root=build_root):
-                output = self.build(checkout, destination, build_root, status=1)
-                self.assertIn("must not traverse reparse points", output)
-        self.assertIn("must be under _build", self.build(checkout, checkout / "app/thumbnailers", status=1))
+        # One PowerShell process runs the refusals, each before anything is built, and then
+        # the build through the linked checkout.
+        cases = {(build / "redirect/thumbnailers", None): "must not traverse reparse points",
+                 (build / "app/thumbnailers", build / "redirect/targets"): "must not traverse reparse points",
+                 (build / "loop/_build/app/thumbnailers", None): "must not traverse reparse points",
+                 (checkout / "app/thumbnailers", None): "must be under _build",
+                 (build / "app/thumbnailers", None): ""}
+        for (case, expected), message in zip(cases.items(), self.runs(checkout, list(cases)), strict=True):
+            with self.subTest(destination=case[0], build_root=case[1]):
+                if expected:
+                    self.assertIn(expected, message)
+                else:
+                    self.assertEqual(message, "")
+        self.assert_current_package()
         self.assertEqual([path.name for path in outside.iterdir()], ["keep"])
         self.assertFalse((checkout / "app").exists())
 
@@ -462,7 +483,7 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
             "    Microsoft.PowerShell.Security\\Set-Acl -LiteralPath $LiteralPath -AclObject $AclObject\n"
             "    if ((Split-Path -Leaf $LiteralPath) -eq 'midnight-video-playback.exe') {\n"
             "        $held = Join-Path (Split-Path -Parent $LiteralPath) 'midnight-thumbnail-image.json'\n"
-            f"        [MidnightFreshHold]::Hold($held, {milliseconds}, ${str(share_delete).lower()})\n"
+            f"        Start-FreshHold $held {milliseconds} ${str(share_delete).lower()}\n"
             "    }\n"
             "}\n")
 
@@ -474,6 +495,8 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         self.assertEqual(list(self.destination.parent.glob(".thumbnailers-build.*")), [])
 
     def test_hold_beyond_two_seconds_fails_and_restores_the_previous_package(self):
+        # PowerShell's one end-to-end case of the real 2 s budget; the other scripts' tests
+        # use shorter holds or budgets.
         self.destination.mkdir(parents=True)
         (self.destination / "avcodec-63.dll").write_bytes(b"previous library")
         output = self.build(prelude=self.held_package(2600, share_delete=True), status=1)

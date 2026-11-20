@@ -138,7 +138,7 @@ class NativeFilesystemBuildWindows(unittest.TestCase):
             "    Microsoft.PowerShell.Management\\Copy-Item @args\n"
             "    $destination = [string]$args[[array]::IndexOf($args, '-Destination') + 1]\n"
             "    if ($destination.EndsWith('.dll') -and (Split-Path -Leaf (Split-Path -Parent $destination)) -like '.*-stage.*') {\n"
-            "        [MidnightFreshHold]::Hold($destination, 300, $false)\n"
+            "        Start-FreshHold $destination 300 $false\n"
             "    }\n"
             "}\n"
             f"& '{self.script}' -AppDirectory '{self.application}'\n", encoding="utf-8-sig")
