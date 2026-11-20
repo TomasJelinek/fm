@@ -730,7 +730,8 @@ fn the_sky_scenes_stay_clear_of_the_title_icon_and_crescent() {
     let image =
         |about: &About, label: &str| ui::popup_item(about.window(), label, AccessibleRole::Image);
     let mut satellite = Vec::new();
-    for second in [1_u64, 4, 7, 10, 13, 16, 19, 22] {
+    // Eight moments across the sky's 144 s loop, every 18 s from 6 s.
+    for second in [6_u64, 24, 42, 60, 78, 96, 114, 132] {
         ui::advance(
             &about.clock,
             Duration::from_secs(second).saturating_sub(about.clock.get()),

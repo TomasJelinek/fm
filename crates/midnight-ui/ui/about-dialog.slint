@@ -223,7 +223,7 @@ component Sky inherits Rectangle {
     in property <image> logo;
     in property <string> version;
     callback dragged(length, length);
-    // 0..1 over the whole 24 s loop: slow drift that wraps without a jump.
+    // 0..1 over the whole 144 s loop: slow drift that wraps without a jump.
     private property <float> drift: root.phase / 18.8496;
     private property <bool> compact: root.height < 170px;
     // Wide enough for the extra scenes to keep clear of the shooting stars.
@@ -326,7 +326,7 @@ component Sky inherits Rectangle {
     // A satellite crosses once per loop, high above Cassiopeia and the halo, its
     // light blinking, and fades into the Earth's shadow before the crescent.
     satellite := Rectangle {
-        // 0..1 while it crosses, from 40 % to 85 % of the loop: 10.8 s.
+        // 0..1 while it crosses, from 40 % to 85 % of the loop: 64.8 s.
         private property <float> s: Math.clamp((root.drift - 0.4) / 0.45, 0, 1);
         private property <float> shown: Math.min(1, Math.min(self.s, 1 - self.s) * 8);
         visible: root.roomy;
@@ -347,7 +347,7 @@ component Sky inherits Rectangle {
     // Three shooting stars at staggered moments of the loop. Each flies head first
     // along its own streak, the tail fading behind it, and burns out quickly.
     for k in 3 : Path {
-        // 0..1 during a 1.2 s flight, from 10 % to 25 % of each 8 s cycle.
+        // 0..1 during a 7.2 s flight, from 10 % to 25 % of each 48 s cycle.
         private property <float> t: Math.clamp((Math.mod(root.phase / 6.2832 + k / 3, 1) - 0.1) / 0.15, 0, 1);
         // The head (the left end) travels down and left along the streak's own slope,
         // 30 down for every 64 across, in clear sky: left of the crescent and to either
@@ -361,7 +361,7 @@ component Sky inherits Rectangle {
         opacity: Math.sin(self.t * 3.1416 * 1rad);
     }
     // An owl sits on the left top of the far hill, which hides its feet, against
-    // the sky; it blinks twice in quick succession every twelve seconds.
+    // the sky; it blinks twice in quick succession every 72 seconds.
     owl := Rectangle {
         private property <float> blink: max(
             Math.pow(Math.abs(Math.sin((root.phase / 3 + 0.6) * 1rad)), 480),
@@ -473,7 +473,9 @@ export component AboutDialog inherits Rectangle {
     background: Theme.surface;
     clip: true;
     init => { self.phase = 6.2832 * 3; close-button.focus(); }
-    animate phase { duration: 24s; iteration-count: -1; easing: linear; }
+    // A slow 144 s loop. The phase is computed for every frame drawn, so a slower loop
+    // keeps the frame rate and only moves each scene a smaller step per frame.
+    animate phase { duration: 144s; iteration-count: -1; easing: linear; }
     keys := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
