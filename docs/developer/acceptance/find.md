@@ -203,7 +203,7 @@ that verified it.
 | F-F02 | Cursor keys | `find_feed_panel` | cursor after Down, End, Up, Home, Page Down, Page Up | PASS |
 | F-F03 | Alt+Right and Ctrl+R do nothing in the list | `find_feed_panel` | list unchanged, no notice | PASS |
 | F-F04 | Insert and Space mark; the status counts and sums | `find_feed_panel` | marks, cursor, status | PASS |
-| F-F05 | Ctrl+Shift+A, Ctrl+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I with the keys' panel meaning; keypad * like Ctrl+I | `find_feed_panel` | marks after each key from a known state | PASS (20 November). Since 21 November keypad * works as in a panel (also folders when Select by mask last had Include folders); the scenario's default (Include folders off) still holds; the folders case is not covered |
+| F-F05 | Ctrl+Shift+A, Ctrl+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I with the keys' panel meaning; keypad * like Ctrl+I | `find_feed_panel` | marks after each key from a known state | PASS (20 November). Since 21 November keypad * works as in a panel (also folders when Select by mask last had Include folders); the scenario's default (Include folders off) still holds. The folders case is checked since 21 November (`find_feed.rs`, committed in 4d788480): not run on Linux; PASS on Windows in run 20261121-024756 ([Windows results](windows.md#results)) |
 | F-F06 | Ctrl+click, Shift+click, Alt+Down and Alt+Up | `find_feed_panel` | marks and cursor | PASS |
 | F-F07 | Enter, Ctrl+Page Down and a double click go to a file or open a folder | `find_feed_panel` | panel folder and cursor; list closed | PASS |
 | F-F08 | Backspace, Alt+Left, Ctrl+Backspace, Shift+Backspace and Back to folder leave the list; Ctrl+G navigates away; Tab keeps it | `find_feed_panel` | the folder shown equals the disk | PASS |

@@ -350,11 +350,17 @@ passes on both. The third batch's results come from `job_footer_glyphs`,
 and `minimum_dialogs`, and the `job_presentation` unit test above: 16 of their 20
 tests failed on the earlier source; the other four guard what must stay (captions
 where they fit, the Verify field's label, tooltip, height and keys, the hover looks'
-contrast, the native and archive markers' tooltips). They ran on Windows only: WSL was
-unavailable, so none ran on Linux. The layout tests measure with the platform's own
+contrast, the native and archive markers' tooltips). The third batch's tests ran on
+Windows only (WSL was unavailable), so none of them ran on Linux. The first two
+batches' tests are in the `midnight-ui` `integration` target, which passed in CI's
+Linux check job: `dialog_polish` (10 tests) in runs 44851212423 (`985c8ec0`) and
+44865587302 (`3d42cb1f`), and the second batch's `find_polish` (4), `form_polish`
+(11), `tool_window_polish` (5) and `native_job_windows` `minimum_size` (3) and
+`jobs_actions` (1) in run 44865587302. The layout tests measure with the platform's own
 fonts, and the captions they check wrap, elide or shrink to glyphs by design rather
-than by Windows metrics. The gate has not been run again since any batch, so the
-surfaces above keep their recorded results until it is.
+than by Windows metrics. The gate has not been run again on Linux since any batch
+(the Windows gate runs are in [windows.md](windows.md#results)), so the surfaces
+above keep their recorded results until it is.
 
 ## Runs
 
@@ -369,8 +375,11 @@ children keep their executable), `--scale smoke`, plugins from a complete plugin
 | 20261120-143647 | `ui_polish_jobs` | FAIL: 45 flags (U-D04, U-D13, U-D18; path-label elision fixed since) | 249 s |
 | 20261120-144625 | `ui_polish_dialogs` | FAIL: 115 flags (U-D02–U-D06, U-D10, U-D14–U-D17, U-D21) | 901 s |
 
-Not run yet: `ui_themes`, `ui_polish_viewers`, `options_visual` in its gate form, and
-`ui_matrix_full` (estimated 2.5 h). Expected default gate time after the matrix
+Not run on Linux yet: `ui_themes`, `ui_polish_viewers`, `options_visual` in its gate
+form, and `ui_matrix_full` (estimated 2.5 h). On Windows `ui_themes` and
+`options_visual` passed, `ui_polish_viewers` failed (WIN-9) and `ui_matrix_full`
+reported SKIP (it runs only with `--all-themes`)
+([Windows results](windows.md#results)). Expected default gate time after the matrix
 rebalance and fail-fast waits: about 45 minutes in all (`ui_review` 10–12 min,
 `ui_themes` about 6 min, `ui_polish_dialogs` 15 min, `ui_polish_jobs` 4 min,
 `ui_polish_viewers` 5 min, `ui_polish_checks` 4 min, `options_visual` 2 min).

@@ -85,7 +85,7 @@ live mount. See [system requirements](docs/SYSTEM_REQUIREMENTS.md).
 Copy/Move pauses for supported Retry/Skip/Cancel decisions on I/O errors, including
 an unavailable destination or a full disk. Retry preserves the verification policy captured when the job started;
 Skip All applies only to the same error type and phase in that job. Decide later
-keeps the pending decision available from Jobs. On Linux, a file or folder inside a
+keeps the pending decision available from Jobs. On Linux and Windows, a file or folder inside a
 copied folder that cannot be opened (for example one you may not read) pauses on its
 own: Retry opens it again, and Skip leaves out only that item while the rest of the
 folder is still copied. Likewise, one of several selected items that cannot be

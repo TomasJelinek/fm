@@ -403,7 +403,9 @@ transaction. See the [editor qualification](../verification/2026-11-11-tree-exte
 
 Ctrl+F8 captures the acknowledged occurrence selection, including selected native
 directories inside expanded branches and ordinary root files. Without marks only
-the focused regular native file is used, matching the flat checksum workflow.
+the focused regular native file is used: a folder must be marked. A flat panel
+also takes a focused folder or, on the parent row, the shown folder
+([CHECKSUMS.md](CHECKSUMS.md#calculation-contract)).
 The exact originating pane, projection, selection revision and request are checked
 before the existing independent checksum window opens. Pending selection settles
 before capture; outer queue refusal retains the original intent. Navigation,
@@ -414,8 +416,10 @@ open another window. Parent/context/link/archive/unsupported rows are excluded.
 worker; `StartCapturedChecksums` carries opaque ownership into the ordinary checksum
 actor. Recalculation retains those roots across later panel changes. Native reads,
 provider revalidation and final disposal run on workers, with ownership retained
-through in-flight calls even after cancellation. A nonrecursive first calculation
-reports selected directories as skipped; Options can explicitly enable recursion.
+through in-flight calls even after cancellation. A selected directory contributes
+its own files; the window's Include subfolders (the algorithm dropdown's last row,
+off in every new window) adds the levels below on the next Calculate, whose
+folders are otherwise left out without rows.
 Focused sidecars still prefill the Verify page without starting it. The existing
 algorithm choices, result formatting, native manifest pickers and verified export
 contract remain in [CHECKSUMS.md](CHECKSUMS.md).
@@ -534,9 +538,9 @@ path, member caption or extraction filename is interpreted as a native target.
 Four capture permits are shared with F5/F6, followed by the existing 16-request
 clipboard queue. The common capture admits as many targets as the projection holds
 (10,000 rows) and 16 MiB of newly owned capture data; each consumer keeps its own
-bound: Copy and Move take at most 4,096 native items (archive members are not
-counted), Delete 4,096 pinned roots, checksums and custom commands 4,096 items,
-metadata edits 256, and the clipboard 4 MiB of names. Rejected,
+bound: Copy takes at most 4,096 native items (archive members are not counted)
+and a Move at most 64 roots, Delete 4,096 pinned roots, checksums and custom
+commands 4,096 items, metadata edits 256, and the clipboard 4 MiB of names. Rejected,
 canceled and stale captures are retired on backend workers, including queue
 refusal and pending engine-command destruction during shutdown. The presenter
 keeps one pending clipboard capture and retries outer command-channel pressure

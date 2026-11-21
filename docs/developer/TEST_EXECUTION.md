@@ -122,7 +122,10 @@ its platform-specific code cannot stop compiling unnoticed.
 its build steps, and on Windows `pwsh -File scripts\acceptance.ps1` builds and runs it
 (`build.bat` has no acceptance step); the suite drives the real application with
 synthetic input against a generated fixture tree and writes an HTML report below
-`_build/acceptance/` (on Windows `_build\acceptance-win`). Its only test target
+`_build/acceptance/` on every platform, unless `MIDNIGHT_ACCEPTANCE_RUN_DIR` (or
+`--run-dir` of `scripts\acceptance.ps1` and of the test executable) names another
+absolute folder ([results](ACCEPTANCE.md#results)); the recorded Windows runs chose
+`_build\acceptance-win`. Its only test target
 requires the `acceptance` feature of `crates/midnight-acceptance`, so
 `cargo test --workspace` and `scripts/ci-workspace-tests.py` never build or run it.
 See [the acceptance suite](ACCEPTANCE.md) and its
