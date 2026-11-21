@@ -123,7 +123,7 @@ export component MetadataDialog inherits Rectangle {
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px;
     border-radius: 6px;
     forward-focus: scope;
-    scope := FocusScope {
+    scope := FocusScope { focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.cancel(); return accept; }
             reject

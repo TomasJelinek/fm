@@ -16,6 +16,8 @@ export component HelpWindow inherits DialogWindow {
         x: 0px; y: 0px; width: root.width; height: root.height;
         preferred-width: 0px; preferred-height: 0px;
         topic: root.topic; close-icon: root.close-icon; shortcuts: root.shortcuts;
+        // The window's title bar, Escape and Close close it: no second ×.
+        closable: false;
         close => { root.request-dismiss(); }
     }
 }

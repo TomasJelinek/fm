@@ -1,6 +1,7 @@
 import { ScrollView, HScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { ThemedLineEdit } from "content-controls.slint";
 import { NativeActionImage, FallbackIcons } from "action-icons.slint";
 import { DialogHeader, DialogWindowStyle } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
@@ -39,12 +40,18 @@ export component CopyConflictDialog inherits Rectangle {
     callback later();
     // Hosted only by the native DecisionWindow: the system title bar moves it.
     private property <bool> compact: root.height < 280px;
+    // The name field keeps the stock field's 32 px and the theme's control height; a
+    // decision without an alternate name gives the hidden field no room.
+    private property <length> name-height: !root.allow-alternate-name ? 0px
+        : max(32px, Theme.control-height, Theme.font-size + 12px);
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     forward-focus: scope;
     init => { name.text = root.initial-name; later-button.focus(); }
     changed token => { name.text = root.initial-name; }
     scope := FocusScope {
         forward-focus: later-button;
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.later(); return accept; }
             reject
@@ -104,9 +111,10 @@ export component CopyConflictDialog inherits Rectangle {
                 HintedActionButton { text: "Merge folders"; hint: "Copy into this existing folder. Existing files require a separate conflict decision."; clicked => { root.decide(6, ""); } }
                 HintedActionButton { text: "Merge all folders"; hint: "Merge remaining compatible folder conflicts in this job. This does not authorize replacing files."; clicked => { root.decide(7, ""); } }
             }
-            name := HintedLineEdit {
-                max-height: max(Theme.control-height, self.preferred-height);
-                vertical-stretch: 0;
+            // Themed, so that selected text uses the theme's selection colours.
+            name := ThemedLineEdit {
+                min-height: root.name-height; preferred-height: root.name-height;
+                max-height: root.name-height;
                 visible: root.allow-alternate-name;
                 accessible-label: "Copy under a different name";
                 accepted => { if self.text != "" { root.decide(2, self.text); } }

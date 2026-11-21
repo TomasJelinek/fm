@@ -18,6 +18,8 @@ export component ToolWindow inherits Window {
     scope := FocusScope {
         x: 0px; y: 0px; width: root.width; height: root.height;
         preferred-width: 0px; preferred-height: 0px;
+        // A key router, not a Tab stop; focus-content() still focuses it.
+        focus-on-tab-navigation: false;
         key-pressed(event) => {
             if event.text == Key.Escape { root.request-close(); return accept; }
             reject

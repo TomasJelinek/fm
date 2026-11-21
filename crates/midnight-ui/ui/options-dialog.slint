@@ -219,7 +219,7 @@ export component OptionsBody inherits Rectangle {
         else { root.comparator-focus-after-show = true; }
     }
     forward-focus: option-focus;
-    option-focus := FocusScope {
+    option-focus := FocusScope { focus-on-tab-navigation: false;
     forward-focus: save-button;
     capture-key-pressed(event) => {
         // A focused ComboBox opens its popup on Return (moving focus into it) and

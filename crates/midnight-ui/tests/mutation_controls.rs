@@ -427,8 +427,10 @@ fn replacing_a_file_with_an_empty_one_needs_the_button_not_another_enter() {
         "only the Replace file button replaces"
     );
     assert_eq!(ui.window.get_operation_token(), creation.id.0.to_string());
-    // The button itself, here reached from the keyboard, does.
-    chord_current(&ui, &windows, &[Key::Shift], Key::Tab);
+    // The button itself, here reached from the keyboard past the header's ×, does.
+    for _ in 0..2 {
+        chord_current(&ui, &windows, &[Key::Shift], Key::Tab);
+    }
     key_current(&ui, &windows, Key::Return);
     assert_eq!(confirmed(), [true]);
 }

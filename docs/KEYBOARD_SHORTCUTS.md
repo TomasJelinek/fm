@@ -219,7 +219,11 @@ their standard behavior. The file context menu and drop-down choosers support
 arrows, Enter and Escape. In the F9 User menu and the F10 Main menu, Tab and
 Shift+Tab move between items, Enter or Space activates the focused item and
 Escape closes the menu; Up/Down in the Main menu's category chooser change the
-category. Unclear controls have tooltips and accessible names.
+category. Unclear controls have tooltips and accessible names. In dialogs, Tab and
+Shift+Tab move through the controls, the header's close button (×) included, which
+Enter or Space presses; Escape closes the dialog too, as the ×'s tooltip says. Help,
+Jobs and the job and decision windows leave closing to their title bar, Escape and
+their own buttons, without a ×.
 
 Mouse: left click focuses, Ctrl+left click toggles selection, Shift+left click
 selects an inclusive range, and Ctrl+Shift+left click adds that range. An unmodified

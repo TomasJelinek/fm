@@ -1,6 +1,7 @@
 import { HScrollView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedActionButton, HintedCheckBox } from "hinted-inputs.slint";
+import { ThemedLineEdit } from "content-controls.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -47,6 +48,10 @@ export component OperationDialog inherits Rectangle {
     // The question names the file, so a new warning means a newly armed name.
     changed warning => { root.armed-name = root.dangerous && root.has-name ? name.text : ""; }
     private property <bool> compact: root.height < 280px;
+    // The name field keeps the stock field's 32 px and the theme's control height; a
+    // form without a name gives the hidden field no room.
+    private property <length> name-height: !root.has-name ? 0px
+        : max(32px, Theme.control-height, Theme.font-size + 12px);
     private property <length> regular-row-spacing: root.wait-visible ? 6px : 12px;
     private property <length> row-spacing: root.compact ? 4px : root.regular-row-spacing;
     // What DialogText draws: the compact layout moves the warning into the summary,
@@ -95,6 +100,57 @@ export component OperationDialog inherits Rectangle {
         // Keep keyboard input outside the scrolled content when that edge can
         // be clipped; Slint drops keys before ancestor capture in that case.
         primary-focus.focus();
+    }
+    // The form's own Tab cycle, in the order the controls are shown: 0 the header's
+    // close button, 1 the name, 2 the option, 3 the link option, 4 the wait option,
+    // 5 Cancel and 6 the primary action. Hidden and disabled stops are skipped.
+    pure function stop-available(stop: int) -> bool {
+        return stop == 0 ? header.close-focusable
+            : stop == 1 ? root.has-name
+            : stop == 2 ? root.option-visible && root.option-enabled
+            : stop == 3 ? root.follow-directory-links-visible
+            : stop == 4 ? root.wait-visible
+            : stop == 5 || (stop == 6 && confirm-button.enabled);
+    }
+    // The first stop at or after `start`, or -1. Cancel is always a stop.
+    pure function stop-from(start: int) -> int {
+        return start <= 0 && root.stop-available(0) ? 0
+            : start <= 1 && root.stop-available(1) ? 1
+            : start <= 2 && root.stop-available(2) ? 2
+            : start <= 3 && root.stop-available(3) ? 3
+            : start <= 4 && root.stop-available(4) ? 4
+            : start <= 5 ? 5
+            : start <= 6 && root.stop-available(6) ? 6 : -1;
+    }
+    // The last stop at or before `end`, or -1.
+    pure function stop-until(end: int) -> int {
+        return end >= 6 && root.stop-available(6) ? 6
+            : end >= 5 ? 5
+            : end >= 4 && root.stop-available(4) ? 4
+            : end >= 3 && root.stop-available(3) ? 3
+            : end >= 2 && root.stop-available(2) ? 2
+            : end >= 1 && root.stop-available(1) ? 1
+            : end >= 0 && root.stop-available(0) ? 0 : -1;
+    }
+    pure function focused-stop() -> int {
+        return header.close-has-focus ? 0 : name.has-focus ? 1 : option.has-focus ? 2
+            : follow-links.has-focus ? 3 : wait-option.has-focus ? 4
+            : cancel-button.has-focus ? 5 : primary-focus.has-focus ? 6 : -1;
+    }
+    function focus-stop(stop: int) {
+        if stop == 0 { header.focus-close(); }
+        else if stop == 1 { root.focus-name(); }
+        else if stop == 2 { root.focus-option(); }
+        else if stop == 3 { root.focus-directory-links(); }
+        else if stop == 4 { root.focus-wait(); }
+        else if stop == 6 { root.focus-primary(); }
+        else { cancel-button.focus(); }
+    }
+    // Tab and Shift+Tab move to the next or previous stop and wrap around.
+    function move-focus(forward: bool) {
+        let current = root.focused-stop();
+        let next = forward ? root.stop-from(current + 1) : root.stop-until(current - 1);
+        root.focus-stop(next >= 0 ? next : forward ? root.stop-from(0) : root.stop-until(6));
     }
     // Size the initial presentation from its actual wrapped summary. Resizing
     // remains independent in DialogFrame; editing never recreates the input.
@@ -159,66 +215,14 @@ export component OperationDialog inherits Rectangle {
             // Enter in the name field of an armed replacement waits for the button.
             if event.text == Key.Return && name.has-focus { return accept; }
             if event.text == Key.Tab || event.text == Key.Backtab {
-                if event.modifiers.shift || event.text == Key.Backtab {
-                    if name.has-focus { if confirm-button.enabled { root.focus-primary(); } else { cancel-button.focus(); } }
-                    else if cancel-button.has-focus {
-                        if root.wait-visible { root.focus-wait(); }
-                        else if root.follow-directory-links-visible { root.focus-directory-links(); }
-                        else if root.option-visible && root.option-enabled { root.focus-option(); }
-                        else if root.has-name { root.focus-name(); }
-                        else if confirm-button.enabled { root.focus-primary(); }
-                        else { cancel-button.focus(); }
-                    }
-                    else if wait-option.has-focus {
-                        if root.follow-directory-links-visible { root.focus-directory-links(); }
-                        else if root.option-visible && root.option-enabled { root.focus-option(); }
-                        else if root.has-name { root.focus-name(); }
-                        else if confirm-button.enabled { root.focus-primary(); }
-                        else { cancel-button.focus(); }
-                    }
-                    else if follow-links.has-focus {
-                        if root.option-visible && root.option-enabled { root.focus-option(); }
-                        else if root.has-name { root.focus-name(); }
-                        else if confirm-button.enabled { root.focus-primary(); }
-                        else { cancel-button.focus(); }
-                    }
-                    else if option.has-focus {
-                        if root.has-name { root.focus-name(); }
-                        else if confirm-button.enabled { root.focus-primary(); }
-                        else { cancel-button.focus(); }
-                    }
-                    else { cancel-button.focus(); }
-                } else {
-                    if name.has-focus {
-                        if root.option-visible && root.option-enabled { root.focus-option(); }
-                        else if root.follow-directory-links-visible { root.focus-directory-links(); }
-                        else if root.wait-visible { root.focus-wait(); }
-                        else { cancel-button.focus(); }
-                    }
-                    else if option.has-focus {
-                        if root.follow-directory-links-visible { root.focus-directory-links(); }
-                        else if root.wait-visible { root.focus-wait(); }
-                        else { cancel-button.focus(); }
-                    }
-                    else if follow-links.has-focus {
-                        if root.wait-visible { root.focus-wait(); }
-                        else { cancel-button.focus(); }
-                    }
-                    else if wait-option.has-focus { cancel-button.focus(); }
-                    else if cancel-button.has-focus && confirm-button.enabled { root.focus-primary(); }
-                    else if root.has-name { root.focus-name(); }
-                    else if root.option-visible && root.option-enabled { root.focus-option(); }
-                    else if root.follow-directory-links-visible { root.focus-directory-links(); }
-                    else if root.wait-visible { root.focus-wait(); }
-                    else { cancel-button.focus(); }
-                }
+                root.move-focus(!event.modifiers.shift && event.text != Key.Backtab);
                 return accept;
             }
             reject
         }
         VerticalLayout {
             padding: root.form-padding(root.compact); spacing: root.row-spacing;
-            DialogHeader {
+            header := DialogHeader {
                 title: root.title; native-icon: root.native-icon; fallback-icon: root.fallback-icon;
                 compact: root.compact || root.wait-visible;
                 text-size: Theme.font-size * (root.wait-visible ? 1.0 : 1.2);
@@ -253,9 +257,11 @@ export component OperationDialog inherits Rectangle {
                     if root.has-name && root.input-label != "" && !root.compact : Text {
                         text: root.input-label; color: Theme.text; font-size: Theme.font-size;
                     }
-                    name := HintedLineEdit {
-                        max-height: max(Theme.control-height, self.preferred-height);
-                        vertical-stretch: 0;
+                    // The themed field: its selected text uses the theme's selection
+                    // colours, which the stock LineEdit does not let a host set.
+                    name := ThemedLineEdit {
+                        min-height: root.name-height; preferred-height: root.name-height;
+                        max-height: root.name-height;
                         visible: root.has-name;
                         accessible-label: root.input-label == "" ? root.title : root.input-label;
                         changed has-focus => { if self.has-focus { root.reveal-middle(self.y, self.height); } }

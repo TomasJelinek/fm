@@ -11,6 +11,8 @@ export component HelpBody inherits Rectangle {
     in property <image> close-icon;
     in property <string> shortcuts: ShortcutHints.help();
     in property <bool> input-blocked;
+    // The Help window's own title bar closes it; embedded help draws its own ×.
+    in property <bool> closable: true;
     callback close();
     callback move-dialog(length, length);
     public function begin() { if !root.input-blocked { close-button.focus(); } }
@@ -18,6 +20,8 @@ export component HelpBody inherits Rectangle {
     border-color: Theme.active-frame; border-width: 1px;
     init => { root.begin(); }
     FocusScope {
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         key-pressed(event) => {
             if root.input-blocked { return reject; }
             if event.text == Key.Escape { root.close(); return accept; }
@@ -26,7 +30,7 @@ export component HelpBody inherits Rectangle {
     VerticalLayout {
         padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 13px;
         DialogHeader { title: root.topic == 1 ? "Filtering files" : "Midnight Explorer keyboard help"; compact: root.height < 280px;
-            enabled: !root.input-blocked;
+            enabled: !root.input-blocked; closable: root.closable;
             fallback-icon: FallbackIcons.help;
             close-label: "Close dialog"; close => { if !root.input-blocked { root.close(); } }
             dragged(dx, dy) => { root.move-dialog(dx, dy); } }

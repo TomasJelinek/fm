@@ -756,10 +756,11 @@ fn destination_editor(
         );
     }
     let destination = base.join("another target");
-    // Both directions include every shown checkbox and stay within the modal form.
+    // Both directions include every shown checkbox and the header's close button and
+    // stay within the modal form.
     let inner = i_slint_core::window::WindowInner::from_pub(child.window());
     let editor = inner.focus_item.borrow().upgrade().unwrap();
-    let focusable = if shown { 6 } else { 5 };
+    let focusable = if shown { 7 } else { 6 };
     for reverse in [false, true] {
         for _ in 0..focusable {
             if reverse {

@@ -38,6 +38,13 @@ export component NoticeDialog inherits Rectangle {
         + folder-measure.preferred-height;
     private property <length> action-row-height: max(32px, Theme.control-height, copy-button.preferred-height)
         + (root.narrow ? 14px : 0px);
+    private property <bool> compact: root.height < 280px;
+    // A short dialog has no room for a details box beside the message and the folder
+    // box: shown details follow them in the message's own scrolling text instead, and
+    // the buttons below stay in view.
+    private property <bool> details-inline: root.compact && root.details-expanded && root.details != "";
+    // The details box's natural height; a smaller dialog shrinks it, and it scrolls.
+    private property <length> details-height: max(60px, root.height * 0.42);
     private property <string> authorization-hint: "Your operating system will ask for permission to read this folder.";
     // Shared by the two placements of the offer. A component derived from the button
     // would be a second generated copy of the whole button.
@@ -73,28 +80,34 @@ export component NoticeDialog inherits Rectangle {
         text: "Folder"; font-size: Theme.small-font;
     }
     FocusScope {
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
             reject
         }
         VerticalLayout {
-            padding: root.height < 280px ? 12px : 20px;
-            spacing: root.height < 280px ? 8px : 12px;
+            padding: root.compact ? 12px : 20px;
+            spacing: root.compact ? 8px : 12px;
             header := DialogHeader {
                 title: root.title; foreground: root.error ? Theme.error-text : Theme.strong-text;
                 error: root.error;
                 fallback-icon: FallbackIcons.about;
-                text-size: Theme.font-size * 1.25; compact: root.height < 280px;
+                text-size: Theme.font-size * 1.25; compact: root.compact;
                 close-label: "Close dialog"; close => { root.close(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
-            // With a folder box the message keeps its own height and the box takes the rest.
+            // With a folder box the message keeps its own height and the box takes the rest;
+            // with the details inline, the message text takes it.
             DialogText {
-                text: root.body; min-height: 0px;
+                text: !root.details-inline ? root.body
+                    : root.body + (root.folder-path == "" ? "" : "\n\nFolder: " + root.folder-path)
+                        + "\n\n" + root.details;
+                min-height: 0px;
                 preferred-height: body-measure.preferred-height;
-                vertical-stretch: root.folder-path == "" ? 1 : 0;
+                vertical-stretch: root.folder-path == "" || root.details-inline ? 1 : 0;
             }
-            if root.folder-path != "": Rectangle {
+            if root.folder-path != "" && !root.details-inline: Rectangle {
                 background: Theme.secondary-surface; border-color: Theme.frame;
                 border-width: 1px; border-radius: 3px;
                 min-height: min(root.folder-natural, root.folder-height);
@@ -110,10 +123,13 @@ export component NoticeDialog inherits Rectangle {
                 text: root.authorization-hint;
                 color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
             }
-            if root.details-expanded && root.details != "": Rectangle {
+            if root.details-expanded && root.details != "" && !root.details-inline: Rectangle {
                 background: Theme.secondary-surface; border-color: Theme.frame;
                 border-width: 1px; border-radius: 3px;
-                height: max(60px, root.height * 0.42);
+                // Never taller than its natural height, so the message and folder box keep
+                // the room a tall dialog spares; it gives way before the buttons do.
+                min-height: 0px; preferred-height: root.details-height;
+                max-height: root.details-height; vertical-stretch: 1;
                 VerticalLayout {
                     padding: 8px;
                     DialogText { text: root.details; vertical-stretch: 1; min-height: 0px; }

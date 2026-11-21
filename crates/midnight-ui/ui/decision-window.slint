@@ -33,6 +33,8 @@ export component DecisionWindow inherits DialogWindow {
     preferred-height: max(500px, Theme.font-size * 25);
     FocusScope {
         x: 0px; y: 0px; width: root.width; height: root.height;
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.request-dismiss(); return accept; }
             reject

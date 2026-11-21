@@ -331,8 +331,11 @@ fn scrolling_primary_confirmation_keeps_default_enter_and_escape() {
             1,
             "unfocused proxy must not duplicate the native action"
         );
-        ui::key(&test, Key::Tab);
-        settle(&mut test);
+        // The cycle passes the header's close button and Cancel.
+        for _ in 0..2 {
+            ui::key(&test, Key::Tab);
+            settle(&mut test);
+        }
         assert_focused_primary(&test, title);
         // No pointer click can restore focus before these keys.
         ui::key(&test, Key::Return);

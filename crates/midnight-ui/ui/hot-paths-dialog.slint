@@ -67,6 +67,8 @@ export component HotPathsDialog inherits Rectangle {
         text: root.hint; font-size: Theme.small-font; wrap: word-wrap;
     }
     FocusScope {
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.dismiss(); return accept; }
             reject

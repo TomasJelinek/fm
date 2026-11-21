@@ -30,7 +30,9 @@ separately; this document is not a claim that every item is already released.
 - Every application dialog and auxiliary window is resizable. Lists, preview
   areas and editors use additional space; action buttons remain accessible.
   Narrow layouts stack controls and scroll their content instead of overlapping.
-  Dialogs have a top-right close button with the same behavior as Cancel.
+  Embedded dialogs have a top-right close button with the same behavior as Cancel;
+  its tooltip names Escape. Help, Jobs and the job and decision windows are framed
+  by their own title bar and have none.
   Under the [11 November policy](../superpowers/plans/2026-11-11-dialog-polish-followup.md),
   only modeless working windows require free movement outside the main window.
   Attributes / Times / Case remains embedded. Do not migrate other embedded modal
@@ -63,7 +65,8 @@ separately; this document is not a claim that every item is already released.
 - Copy, Move and Delete use the operation as the primary/default action. A named
   destination receives initial editing focus; a deletion confirmation focuses
   its action button. Enter confirms from the input, option or primary button;
-  focused Cancel and the header close button retain their cancel behavior.
+  focused Cancel and the header close button retain their cancel behavior. Tab and
+  Shift+Tab reach the header close button too, which Enter or Space presses.
   Escape also cancels. An empty named destination remains invalid; opening or
   focusing a dialog never submits it.
 - Dialog dismissal stays reachable at 320 by 200, including large touch fonts.

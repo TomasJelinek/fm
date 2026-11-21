@@ -105,6 +105,8 @@ export component EmbeddedPanelFilter inherits Rectangle {
                 // viewport is larger than the injected, clipped body.
                 x: 0px; y: 0px;
                 width: filter-frame.body-width; height: filter-frame.body-height;
+                // A key filter, not a Tab stop.
+                focus-on-tab-navigation: false;
                 capture-key-pressed(event) => { PanelFilterPresentation.help-token != "" ? accept : reject }
                 capture-key-released(event) => { PanelFilterPresentation.help-token != "" ? accept : reject }
                 form := PanelFilterDialog {

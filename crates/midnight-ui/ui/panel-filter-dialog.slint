@@ -48,6 +48,8 @@ export component PanelFilterDialog inherits Rectangle {
     background: Theme.surface; border-radius: 8px;
     border-width: 1px; border-color: Theme.active-frame;
     FocusScope {
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if root.input-enabled && event.modifiers.alt && event.text == Key.DownArrow {
                 history.open(); return accept;

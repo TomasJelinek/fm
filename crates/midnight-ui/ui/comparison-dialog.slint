@@ -45,6 +45,8 @@ export component CompareDirectoriesDialog inherits Rectangle {
     background: Theme.surface; border-radius: 8px;
     border-width: 1px; border-color: Theme.active-frame;
     FocusScope {
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         key-pressed(event) => {
             if event.text == Key.Escape { root.cancel(); return accept; }
             return reject;

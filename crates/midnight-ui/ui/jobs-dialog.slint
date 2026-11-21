@@ -137,7 +137,7 @@ export component OperationsBody inherits Rectangle {
     }
     background: Theme.surface;
     border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
-    FocusScope {
+    FocusScope { focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
             reject

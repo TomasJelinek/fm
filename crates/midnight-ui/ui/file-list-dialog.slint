@@ -60,6 +60,8 @@ export component FileListDialog inherits Rectangle {
 
     scope := FocusScope {
         width: root.width; height: root.height;
+        // A key router, not a Tab stop; begin() still focuses it while busy.
+        focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.cancel(); return accept; }
             reject

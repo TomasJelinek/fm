@@ -165,8 +165,15 @@ export component DialogHeader inherits Rectangle {
     callback dragged(length, length);
     callback close();
     in property <string> close-label: "Cancel dialog";
+    // The key that does what the close button does, named in its tooltip.
+    in property <string> close-key: "Escape";
     // A window whose own title bar closes it can leave out the header's close button.
     in property <bool> closable: true;
+    // A dialog that runs its own Tab cycle (OperationDialog) includes the close button
+    // through these. It can take the focus only while it is shown and enabled.
+    out property <bool> close-focusable: root.closable && root.enabled;
+    out property <bool> close-has-focus: close-button.has-focus;
+    public function focus-close() { if root.close-focusable { close-button.focus(); } }
     private property <length> close-size: max(root.compact ? 26px : 30px, Theme.font-size + 8px);
     private property <length> close-room: root.closable ? root.close-size + 8px : 0px;
     private property <length> heading-height: max(root.compact ? 28px : 36px, root.text-size + 6px, root.close-size);
@@ -213,11 +220,13 @@ export component DialogHeader inherits Rectangle {
             if self.pressed && self.dragging { root.dragged(self.mouse-x - self.anchor-x, self.mouse-y - self.anchor-y); }
         }
     }
-    if root.closable : CloseButton {
-        enabled: root.enabled;
+    // Hidden instead of conditional, so that focus-close() can reach it.
+    close-button := CloseButton {
+        visible: root.closable;
+        enabled: root.close-focusable;
         x: root.width - self.width; y: (root.heading-height - self.height) / 2;
         width: root.close-size; height: root.close-size;
-        label: root.close-label;
+        label: root.close-label; key: root.close-key;
         clicked => { root.close(); }
     }
     Rectangle { x: 0px; y: root.height - 1px; width: root.width; height: 1px; background: Theme.frame; }

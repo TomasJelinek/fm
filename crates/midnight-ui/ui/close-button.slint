@@ -1,11 +1,15 @@
 import { Theme } from "theme.slint";
 import { ActionGlyph } from "action-icons.slint";
+import { Tip } from "controls.slint";
 
 // Square icon control: text-button padding cannot displace the close glyph.
 export component CloseButton inherits Rectangle {
     in property <string> label: "Cancel dialog";
     in property <string> hint: root.label;
+    // The key that does the same, named in the tooltip: "Cancel dialog (Escape)".
+    in property <string> key;
     in property <bool> enabled: true;
+    out property <bool> has-focus: focus.has-focus;
     callback clicked();
     width: max(26px, Theme.control-height); height: self.width;
     border-radius: 4px;
@@ -38,4 +42,6 @@ export component CloseButton inherits Rectangle {
             clicked => { focus.focus(); root.clicked(); }
         }
     }
+    // The glyph has no caption. Last, so that it sees the pointer before the input area.
+    Tip { text: root.key == "" ? root.hint : root.hint + " (" + root.key + ")"; }
 }

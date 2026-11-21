@@ -476,7 +476,7 @@ export component AboutDialog inherits Rectangle {
     // A slow 144 s loop. The phase is computed for every frame drawn, so a slower loop
     // keeps the frame rate and only moves each scene a smaller step per frame.
     animate phase { duration: 144s; iteration-count: -1; easing: linear; }
-    keys := FocusScope {
+    keys := FocusScope { focus-on-tab-navigation: false;
         key-pressed(event) => {
             if event.text == Key.Escape {
                 if AboutView.detail-open { root.show-list(); } else { root.close(); }

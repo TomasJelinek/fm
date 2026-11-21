@@ -46,7 +46,7 @@ export component JobProgressWindow inherits DialogWindow {
     changed copy-cancel-submitted => {
         if !root.copy-cancel-submitted { footer.focus-dismiss(); }
     }
-    FocusScope {
+    FocusScope { focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.request-dismiss(); return accept; }
             reject
