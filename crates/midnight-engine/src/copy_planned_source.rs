@@ -80,6 +80,21 @@ fn changed(path: &Path) -> FsError {
         "Planned native source changed its original binding, identity or revision.",
     )
 }
+
+/// Whether `current` is still the `planned` root. A file must keep its whole revision. A
+/// folder only its identity, kind and path: its modification time (and a size, where a
+/// platform reports one) changes whenever an entry is added to it or removed from it, as
+/// while a job publishes into the folder this one waits to copy, and what it holds is
+/// checked entry by entry when it is listed.
+fn same_planned(current: &TransferEntry, planned: &TransferEntry) -> bool {
+    if planned.item.kind == EntryKind::Directory {
+        current.identity == planned.identity
+            && current.item.path == planned.item.path
+            && current.item.kind == planned.item.kind
+    } else {
+        same_entry(current, planned)
+    }
+}
 impl State {
     fn lock(&self) -> Result<MutexGuard<'_, Option<Active>>, FsError> {
         self.active
@@ -144,13 +159,13 @@ impl State {
         active.source.revalidate(cancel)?;
         if active.source.native_identity() != Some(self.entry.identity)
             || active.source.native_original_identity() != self.original_identity
-            || !same_entry(active.source.entry(), &self.entry)
+            || !same_planned(active.source.entry(), &self.entry)
         {
             return Err(changed(&self.entry.item.path));
         }
         if let Some(capture) = &active.capture {
             capture.revalidate(cancel)?;
-            if !same_entry(capture.entry(), &self.entry) {
+            if !same_planned(capture.entry(), &self.entry) {
                 return Err(changed(&self.entry.item.path));
             }
         }

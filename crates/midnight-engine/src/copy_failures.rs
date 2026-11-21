@@ -31,6 +31,10 @@ pub(super) struct Committed {
     pub(super) destination: std::path::PathBuf,
     /// A Move entry whose source authority Skip releases.
     pub(super) entry: Option<(EntryRemoval, TransferIdentity)>,
+    /// Whether the entry leaves something in a Move's source tree: its source, a private
+    /// stage or recovery data. Skip then keeps the source folders above it. A removal whose
+    /// durability alone is unconfirmed leaves nothing there.
+    pub(super) leaves_source: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -322,6 +326,7 @@ impl Job {
                                 source: failure.source,
                                 destination: failure.destination,
                                 entry: None,
+                                leaves_source: true,
                             }),
                             Err(error) => self.record(error),
                         }
@@ -338,9 +343,10 @@ impl Job {
     }
 
     /// Skip of an uncertain commit or cleanup: the entry stays as it is, and the job goes
-    /// on with the next one. A Move keeps the folders above it, which can hold its
-    /// recovery data, and releases the entry's source authority; a cleanup that then
-    /// fails is asked about the same way.
+    /// on with the next one. A Move releases the entry's source authority, and keeps the
+    /// folders above it when the entry left something in them (its source, a private stage
+    /// or recovery data), not after a removal whose durability alone is unconfirmed; a
+    /// cleanup that then fails is asked about the same way.
     fn go_on_after_committed(&mut self) {
         let Some(committed) = self.committed.take() else {
             return;
@@ -348,8 +354,10 @@ impl Job {
         let Some(move_work) = self.move_work.as_mut() else {
             return;
         };
-        for frame in &mut self.stack {
-            frame.retain_source = true;
+        if committed.leaves_source {
+            for frame in &mut self.stack {
+                frame.retain_source = true;
+            }
         }
         let Some((removal, identity)) = committed.entry else {
             return;

@@ -296,6 +296,9 @@ impl TransferSource for TaggedSource {
     ) -> Result<(), FsError> {
         self.source.discover(cancel, visit)
     }
+    fn open_for_reading(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.source.open_for_reading(cancel)
+    }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         let count = self.source.read_chunk(buffer, cancel)?;
         if count != 0 && self.source.entry().item.path == self.b {

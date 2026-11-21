@@ -300,8 +300,9 @@ async fn same_named_item_waits_alone_while_the_rest_of_the_copy_proceeds() {
 }
 
 /// Reading a folder that the busy copy is still writing is not interleaved item by item:
-/// that copy waits as a whole, with its reason, and runs once the busy copy is gone (its
-/// planned source folder changed meanwhile, which it reports).
+/// that copy waits as a whole, with its reason, and once the busy copy is gone copies what
+/// the folder then holds. The busy copy changed the folder (its modification time) after
+/// the waiting copy planned it, which a planned folder may: it is still the same folder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reading_the_busy_copys_output_waits_for_it_with_its_reason() {
     let case = Busy::new();
@@ -343,22 +344,22 @@ async fn reading_the_busy_output_waits(case: &Busy, mut h: Harness) {
     h.controller.cancel(OperationId(1));
     assert_eq!(h.terminal(1).await.state, CopyOperationState::Cancelled);
     let done = h.terminal(2).await;
-    match done.state {
-        // Where lookups are not qualified, the waiting copy copies what the folder holds.
-        CopyOperationState::Completed | CopyOperationState::CompletedWithErrors => {}
-        // Elsewhere it planned the folder before the busy copy wrote into it: it reports
-        // the changed folder and refuses it before it creates anything for it.
-        CopyOperationState::Failed => {
-            assert!(
-                done.errors
-                    .iter()
-                    .all(|error| error.message.contains("Planned native source changed")),
-                "{done:?}"
-            );
-            assert!(!destination.join("many").exists(), "{done:?}");
-        }
-        _ => panic!("{done:?}"),
-    }
+    // Whether lookups on this volume are qualified (so the folder was planned and is
+    // checked again when the copy starts) or not.
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    let names = |folder: &Path| {
+        let mut names: Vec<_> = fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        names(&destination.join("many")),
+        names(&case.destination.join("many")),
+        "{done:?}"
+    );
     h.close().await;
 }
 

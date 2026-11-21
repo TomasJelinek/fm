@@ -100,6 +100,9 @@ impl TransferSource for Source {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         self.inner.revalidate(cancel)
     }
+    fn open_for_reading(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.inner.open_for_reading(cancel)
+    }
     fn read_chunk(&mut self, bytes: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         self.inner.read_chunk(bytes, cancel)
     }

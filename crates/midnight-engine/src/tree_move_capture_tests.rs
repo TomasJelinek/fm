@@ -96,7 +96,10 @@ impl MountedFilesystem for Mount {
         })))
     }
 }
-fn fixture(
+/// A tree session over a new folder that lists `file-1` and `file-2`, both selected. Their
+/// targets are those native files there (not created here), or with `mixed` `file-2` is an
+/// archive member.
+pub(crate) fn fixture(
     mixed: bool,
 ) -> (
     tempfile::TempDir,

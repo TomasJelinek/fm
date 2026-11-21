@@ -1786,6 +1786,8 @@ impl Job {
                 .move_work
                 .is_some()
                 .then_some((work.removal, work.entry.identity)),
+            // A Move keeps an entry whose publication or cleanup is uncertain.
+            leaves_source: true,
         }
     }
     fn record(&mut self, error: FsError) {

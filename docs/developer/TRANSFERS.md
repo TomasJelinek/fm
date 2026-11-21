@@ -628,8 +628,10 @@ repeats the complete post-capture proof before removing the source. An uncertain
 end of an entry (a native rename that needs recovery, a stage that cannot be removed
 after the verified source was, an unconfirmed removal durability, a moved directory
 link's original that needs recovery) asks Skip, Skip all errors or Cancel instead,
-never Retry; Skip leaves the entry as it is and keeps its source folders, which can
-hold its recovery data.
+never Retry; Skip leaves the entry as it is and keeps its source folders when it left
+something in them (the source, a private stage, recovery data). After a verified removal
+whose durability alone is unconfirmed, nothing of the entry is left there, and the
+emptied folders are removed as usual.
 Every pre-deletion failure or cancellation after staging attempts a no-replace
 restore to the original name, even when the user cancellation token is set.
 The transient path is `.midnight-move-<random>/<original raw basename>`. A
@@ -850,11 +852,24 @@ source on the same name in the held folder, and refuses another object, a link p
 place, or another revision of a file (`source identity changed`, `source content
 changed`). When the job reaches the item, it opens the source
 (`TransferSource::open_for_reading`) before it creates the item's stage or folder in the
-destination: an item that another program holds without sharing fails (`os error 32`)
-with its Retry question while the destination has nothing of it, and Retry opens it
-again. A cloud placeholder is therefore opened through its filter, and may hydrate, only
-once the job reaches it; a filter that cannot supply it fails that item, not the
+destination, whether the item was selected in a panel or in the tree (the engine's
+wrappers of a Copy source forward the call: the shared and planned roots and the tree's
+leased roots): an item that another program holds without sharing fails (`os error
+32`) with its Retry question while the destination has nothing of it, and Retry opens it
+again. A folder is opened for listing at that point too, before its destination folder
+is created. A cloud placeholder is therefore opened through its filter, and may hydrate,
+only once the job reaches it; a filter that cannot supply it fails that item, not the
 preparation. A directory-link item keeps its guarded capture from preparation on.
+
+Where lookups are qualified, a selected item is planned through its namespace pin
+(`copy_planned_source.rs`) and prepared again when the job starts; it must still be the
+planned item, or the job reports "Planned native source changed". A file must keep its
+whole revision; a folder only its identity, kind and path, since its modification time
+(and a size, where a platform reports one) changes whenever an entry is added to it or
+removed from it, as when the job it waited for publishes into it. What the folder holds
+is checked entry by entry when it is listed. Before 21 November a waiting Copy of a
+folder that the busy job wrote into ended Failed on such volumes and copied it where
+lookups are unqualified.
 
 While a job copies, discovers or moves a folder, and while it follows a directory link into
 a target folder, it holds that folder with read and write sharing: the folder's own name

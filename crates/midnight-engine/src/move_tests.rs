@@ -3,6 +3,8 @@ use super::*;
 use std::ffi::OsStr;
 #[path = "move_child_failure_tests.rs"]
 pub(super) mod child_failures;
+#[path = "move_committed_skip_tests.rs"]
+mod committed_skip;
 #[path = "move_cross_device_fixture.rs"]
 mod cross_device;
 #[path = "move_directory_tests.rs"]

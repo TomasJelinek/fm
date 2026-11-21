@@ -709,7 +709,7 @@ impl MoveWork {
         capture.revalidate(&job.cancel)?;
         let outcome = capture.remove_original(&job.cancel)?;
         self.link_captures.remove(&original);
-        let (recovery, failure) = match outcome {
+        let (recovery, failure, kept) = match outcome {
             TransferDirectoryLinkRemoval::Removed {
                 state,
                 durability_confirmed,
@@ -723,13 +723,15 @@ impl MoveWork {
                     job.progress.source_removal_durability_unconfirmed += 1;
                 }
                 self.record_parents(job, &entry.item.path);
-                (recovery, error)
+                (recovery, error, false)
             }
             TransferDirectoryLinkRemoval::RecoveryRequired { recovery, error } => {
                 self.record_parents(job, &entry.item.path);
-                (recovery, Some(error))
+                (recovery, Some(error), true)
             }
         };
+        // What stays in the source tree: the link, or a stage left with recovery data.
+        let leaves_source = kept || !recovery.is_empty();
         for item in recovery {
             let matched = item.identity == Some(original);
             record_source(job, entry.item.path.clone(), item, matched);
@@ -747,6 +749,7 @@ impl MoveWork {
                 source: Some(entry.item.path.clone()),
                 destination,
                 entry: None,
+                leaves_source,
             });
         }
         Ok(())
@@ -1055,6 +1058,9 @@ impl MoveWork {
                         source: Some(source),
                         destination,
                         entry: None,
+                        // A stage that could not be removed stays in the source's folder; an
+                        // unconfirmed durability leaves nothing there.
+                        leaves_source: stage == CopyErrorStage::Cleanup,
                     });
                 }
             }

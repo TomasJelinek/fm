@@ -655,6 +655,9 @@ impl TransferSource for LeasedSource {
     fn seek_for_validation(&mut self, offset: u64, cancel: &Cancellation) -> Result<u64, FsError> {
         self.source.seek_for_validation(offset, cancel)
     }
+    fn open_for_reading(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.source.open_for_reading(cancel)
+    }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         self.source.read_chunk(buffer, cancel)
     }
@@ -923,7 +926,7 @@ impl TransferMoveStageCleanup for LeasedCleanup {
 
 #[cfg(test)]
 #[path = "tree_move_capture_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "tree_copy_taint_tests.rs"]

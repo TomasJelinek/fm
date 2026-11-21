@@ -952,3 +952,7 @@ async fn captured_preserve_without_move_authority_or_with_required_time_never_st
         h.close().await;
     }
 }
+
+#[cfg(windows)]
+#[path = "tree_copy_windows_tests.rs"]
+mod windows;

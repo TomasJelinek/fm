@@ -172,8 +172,12 @@ application delivery remain pending.
     the error and its recovery facts at once and then asks whether to go on, with
     Skip, Skip all errors and Cancel only (`failures::Context::Committed`): never
     Retry, which could replay the commit. Skip leaves the entry as it is (it is not
-    counted as skipped: its error is), keeps the folders above it in a Move (they can
-    hold its recovery data) and goes on with the next entry. This covers a publication
+    counted as skipped: its error is) and goes on with the next entry. In a Move it
+    keeps the source folders above the entry when the entry leaves something in them
+    (its source, a private stage, recovery data), which a later removal of those folders
+    would fail on; after a verified removal whose durability alone is unconfirmed (the
+    source and its stage are gone, the copy verified) the emptied folders are removed as
+    usual. This covers a publication
     that needs recovery or whose durability is unconfirmed (stage Putting the item in
     place; files, and links in a Copy; the source stays, a Move keeps it), a link stage
     that cannot be cleaned up after its publication, a native Move rename that needs
