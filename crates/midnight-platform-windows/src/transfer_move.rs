@@ -81,12 +81,13 @@ fn open_root_location<'a>(
     let name = path
         .file_name()
         .ok_or_else(|| invalid(path, "source needs a basename"))?;
-    // This attribute-only handle pins the parent's identity (its file ID cannot be
-    // reused while open), not its name: such opens do not take part in share-access
-    // checks, so another process can still rename the parent. Every mutation therefore
-    // works handle-relatively and revalidates the path binding first; a reported path
-    // can name the location from that last revalidation. Recovery-only rights and DACL
-    // checks are deferred until a cross-volume proof path actually needs staging.
+    // This metadata handle pins the parent's identity (its file ID cannot be reused while
+    // open). Traverse access does take part in share-access checks, so while it is held
+    // the parent cannot be renamed or removed (nor while the source below it is open,
+    // whatever the sharing). Every mutation still works handle-relatively and revalidates
+    // the path binding first; a reported path can name the location from that last
+    // revalidation. Recovery-only rights and DACL checks are deferred until a
+    // cross-volume proof path actually needs staging.
     let parent_file = Arc::new(
         OpenOptions::new()
             .access_mode(FILE_READ_ATTRIBUTES | FILE_TRAVERSE)

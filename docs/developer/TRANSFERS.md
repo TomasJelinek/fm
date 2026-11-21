@@ -127,8 +127,11 @@ providers without native change times.
 
 A same-length rewrite that restores the modification time differs from the pinned
 revision only in its change time, so these Copy and Move checks no longer detect it.
-On Windows, an open Copy or Move source handle denies write sharing; Linux Move
-removal keeps its read lease; a replaced conflict target stays in recovery.
+On Windows, a Copy source denies write sharing from its first read on (before that,
+while its job waits, a write is detected only through these fields; see
+[Windows sharing](#windows-sharing-while-a-job-waits-and-runs)) and a Move source from
+its preparation; Linux Move removal keeps its read lease; a replaced conflict target
+stays in recovery.
 Directory-link stubs keep exact revisions.
 
 ## Conflict policies
@@ -626,6 +629,64 @@ concurrently running tests, so the mode cannot be per test. Every default `--lib
 also reruns `transfer::namespace::tests::` in a child process forced into the mode the
 build volume does not provide
 (`parent::tests::namespace_tests_pass_in_the_other_lookup_mode_too`).
+
+## Windows sharing while a job waits and runs
+
+A job prepares its selected items, to plan its namespace claims, before admission grants
+it, and keeps what it prepared while it waits for granted jobs that may still change those
+items and the folders around them. Windows checks the sharing of every open handle
+(measured on NTFS, Windows 11, 2026-11-21):
+
+- While any handle on a folder denies write sharing, every rename into that folder fails
+  with `ERROR_SHARING_VIOLATION` (32): another job publishing a copied file, a recovery
+  rename, a program saving by rename (`MoveFileEx`), even a rename within the folder,
+  because a rename opens its target folder for writing. Creating and deleting entries in
+  the folder are not refused.
+- While a handle denies delete sharing, its entry cannot be renamed or removed.
+- Handles with only attribute access (`FILE_READ_ATTRIBUTES`, `SYNCHRONIZE`) take no part
+  in these checks; traverse and listing access do.
+- Whatever the sharing, a folder cannot be renamed while any entry below it, at any depth,
+  is open (`ERROR_ACCESS_DENIED`, 5).
+
+So a prepared Copy item holds no handle of its own until the job first lists, discovers or
+reads it or pins its modified time (`transfer_source_root.rs`): only its folder's
+attribute handle, which shares everything, and the identity, kind, metadata and file
+revision it observed through an attribute-only handle. That first use opens the guarded
+source on the same name in the held folder, and refuses another object, a link put in its
+place, or another revision of a file (`source identity changed`, `source content
+changed`). A cloud placeholder is therefore opened through its filter, and may hydrate,
+only once the job reads it; a filter that cannot supply it fails that read, not the
+preparation. A directory-link item keeps its guarded capture from preparation on.
+
+While a job copies, discovers or moves a folder, and while it follows a directory link into
+a target folder, it holds that folder with read and write sharing: the folder's own name
+stays fixed (delete sharing is denied), and other jobs and programs can still create,
+delete and rename entries in it. Denying write sharing would not freeze the listing anyway,
+since creation and deletion stay allowed; each child is checked against the listing and
+guarded by its own handle. A file being read and verified still denies write and delete
+sharing until it is done, so its content and name cannot change, and a program that
+already writes it makes its open fail (`os error 32`) instead.
+
+Before this, a Copy waiting to read a busy job's output held that folder with read-only
+sharing while it was prepared, so the busy job failed to publish its next file there (CI run
+44841450903, `reading_the_busy_copys_output_waits_for_it_with_its_reason`); where lookups
+are unqualified (8.3 names enabled) the waiting Copy kept that handle for its whole wait.
+`transfer::source::sharing_tests` and
+`immediate_start::the_busy_copy_publishes_into_output_that_a_waiting_copy_prepared` cover
+it.
+
+Still open: a prepared Move item takes its guard at once (DELETE access, delete sharing
+denied on the item, and traverse access with delete sharing denied on its folder). Other
+jobs can publish into a moved folder, but a granted job that renames or removes that item
+or its folder meanwhile fails with a sharing violation; where two Moves meet there,
+whichever opens second fails instead of waiting. And the handles that every waiting job
+keeps on the folders of its items (its namespace pins and each prepared item's folder,
+all sharing everything) still make a granted Move of an enclosing folder fail with
+`ERROR_ACCESS_DENIED` after its one-second retry.
+
+Linux has no sharing modes: the descriptors a waiting job keeps refuse no change of
+another job, and there too a job only opens and inspects its items before the grant
+(discovery and reading start after it).
 
 ## Linux namespace pins
 

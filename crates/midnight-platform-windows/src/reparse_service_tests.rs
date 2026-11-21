@@ -82,12 +82,15 @@ fn non_surrogate_reparse_entries_are_ordinary_files_and_directories() {
     let error = content.read_chunk(&mut [0; 64], &cancel).unwrap_err();
     assert!(error.message.contains(&filtered), "{error:?}");
 
-    // Copy classifies the file as ordinary and opens its content through the filter.
-    let error = service
-        .prepare_transfer_source(&file, &cancel)
-        .err()
-        .expect("no filter owns the fixture tag");
+    // Copy classifies the file as ordinary and opens its content through the filter, once
+    // the job first reads it (a prepared item holds no handle before that).
+    let mut copied = service.prepare_transfer_source(&file, &cancel).unwrap();
+    assert_eq!(copied.entry().item.kind, EntryKind::File);
+    let error = copied
+        .read_chunk(&mut [0; 64], &cancel)
+        .expect_err("no filter owns the fixture tag");
     assert!(error.message.contains(&filtered), "{error:?}");
+    drop(copied);
 
     // Metadata of a filter-backed file is editable like any ordinary file.
     let prepared = service.prepare(&file, &cancel).unwrap();

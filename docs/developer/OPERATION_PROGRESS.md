@@ -283,7 +283,13 @@ back, so these waits cannot form a cycle). A job is refused as a whole only when
 footprint is unknown (opaque), when one of its sources overlaps what a granted job
 changes (its in-progress output may be visible), or behind an older waiting job that
 shares an item; it then waits for a grant, completion or quarantine and revalidates
-at least once per second, holding no disk slot. Because grants no longer re-probe
+at least once per second, holding no disk slot. What it prepared and keeps meanwhile
+must not refuse the granted jobs' changes: on Windows a prepared Copy item holds no
+handle of its own before its first use, and transfers hold folders with write sharing,
+so the busy job can still publish into a folder the waiting job will read (a prepared
+Move item still holds its guard, see
+[Windows sharing](TRANSFERS.md#windows-sharing-while-a-job-waits-and-runs)).
+Because grants no longer re-probe
 peers, a turn that did not announce every binding it affected refreshes every pin of
 its job when it finishes. All
 namespace changes (stage creation, publication, directory creation, removal) of all

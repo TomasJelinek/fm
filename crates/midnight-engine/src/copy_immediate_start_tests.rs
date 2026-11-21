@@ -305,7 +305,29 @@ async fn same_named_item_waits_alone_while_the_rest_of_the_copy_proceeds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reading_the_busy_copys_output_waits_for_it_with_its_reason() {
     let case = Busy::new();
-    let mut h = case.harness(4);
+    let h = case.harness(4);
+    reading_the_busy_output_waits(&case, h).await;
+}
+
+/// The copy that waits to read the busy copy's output prepares that folder before it is
+/// admitted (and keeps what it prepared while it waits, where lookups are not qualified).
+/// Here the busy copy publishes into the folder while that prepared source exists, on
+/// every run instead of only when the timing happens to overlap: nothing that preparation
+/// holds may refuse it (Windows refuses a rename into a folder while any handle on that
+/// folder denies write sharing).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_busy_copy_publishes_into_output_that_a_waiting_copy_prepared() {
+    let case = Busy::new();
+    let service = Arc::new(PublishedMeanwhile {
+        paced: Paced(midnight_platform::LocalFileSystem::new(None)),
+        output: case.destination.join("many"),
+        armed: std::sync::atomic::AtomicBool::new(true),
+    });
+    let h = Harness::with_slots(Some(service), 4);
+    reading_the_busy_output_waits(&case, h).await;
+}
+
+async fn reading_the_busy_output_waits(case: &Busy, mut h: Harness) {
     case.start(&mut h).await;
     let destination = case.folder("copy of output");
     h.controller
@@ -458,6 +480,66 @@ impl TransferService for Paced {
         self.0
             .prepare_transfer_destination(path, cancel)
             .map(PacedDirectory::wrap)
+    }
+}
+
+/// `Paced`, except that the first preparation of `output` as a source holds that prepared
+/// source until the busy copy has published two more files into `output` (or for five
+/// seconds: a refused publication fails the busy copy, which `drain` reports).
+struct PublishedMeanwhile {
+    paced: Paced,
+    output: PathBuf,
+    armed: std::sync::atomic::AtomicBool,
+}
+// Every native owner below is the local provider's own, destroyed synchronously.
+impl midnight_core::AuditedSynchronousTransferService for PublishedMeanwhile {}
+impl TransferService for PublishedMeanwhile {
+    fn prepare_checksum_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.paced.prepare_checksum_directory(path, cancel)
+    }
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.prepare_transfer_source_with_links(path, CopyLinkPolicy::Reject, cancel)
+    }
+    fn prepare_transfer_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        let source = self
+            .paced
+            .prepare_transfer_source_with_links(path, links, cancel)?;
+        if path == self.output && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let published = || {
+                fs::read_dir(path).map_or(0, |entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .filter(|entry| !entry.file_name().to_string_lossy().starts_with(".me-"))
+                        .count()
+                })
+            };
+            let wanted = published() + 2;
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while published() < wanted && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        Ok(source)
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.paced.prepare_transfer_destination(path, cancel)
     }
 }
 

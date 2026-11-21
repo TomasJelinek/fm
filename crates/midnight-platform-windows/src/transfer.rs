@@ -186,13 +186,8 @@ impl TransferService for crate::WindowsFileSystem {
             .file_name()
             .ok_or_else(|| invalid(path, "source needs a basename"))?;
         let parent = Arc::new(native::open_parent(parent_path).map_err(|e| error(path, e))?);
-        Ok(Box::new(source::Source::open_with_links(
-            parent,
-            parent_path.to_owned(),
-            name,
-            links,
-            cancel,
-        )?))
+        // Prepared before the job is admitted: no guard on the item until it is used.
+        source::root::prepare(parent, parent_path.to_owned(), name, links, cancel)
     }
     fn prepare_transfer_destination(
         &self,

@@ -104,10 +104,12 @@ impl Binding {
             checked(cancel, path)?;
             let resolved = target::resolve(&parent, &proof.representation, path, cancel)?;
             let target_identity = identity(&resolved, path)?;
+            // Held like any folder of the source: its name is kept and other jobs, which
+            // may write there (it can lie outside every claim), still publish into it.
             let pinned = native::reopen(
                 &resolved,
                 FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
             )
             .map_err(|e| error(path, e))?;
             target::ordinary_directory(&pinned, path)?;

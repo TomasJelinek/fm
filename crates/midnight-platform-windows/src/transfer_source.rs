@@ -11,6 +11,9 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
 };
 
+#[path = "transfer_source_root.rs"]
+pub(super) mod root;
+
 pub(super) struct Source {
     entry: TransferEntry,
     native: Native,
@@ -616,11 +619,13 @@ impl Source {
             return Ok(());
         }
         if self.entry.item.kind == EntryKind::Directory {
+            // Shares the original handle's DELETE access and, as every folder handle of a
+            // transfer does, writing (see `held_sharing`).
             let held = native::open_relative(
                 &self.parent,
                 &self.name,
                 FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_DELETE,
+                held_sharing(EntryKind::Directory) | FILE_SHARE_DELETE,
                 FILE_OPEN,
                 FILE_DIRECTORY_FILE,
             )
@@ -703,9 +708,23 @@ fn open_ordinary(
             Access::Copy(_) => FILE_READ_DATA | directory_access,
             Access::Discover(_) => directory_access,
         };
-    // Denying write and delete sharing prevents mixing ordinary concurrent writes.
-    native::open_relative(parent, name, access, FILE_SHARE_READ, FILE_OPEN, options)
+    native::open_relative(parent, name, access, held_sharing(kind), FILE_OPEN, options)
         .map_err(|e| error(path, e))
+}
+
+/// The sharing of a source handle that guards an entry while it is transferred. A file
+/// denies write and delete sharing: its content and name cannot change while it is read
+/// and verified. A folder denies only delete sharing, which keeps its name. Windows
+/// refuses every rename into a folder (another job publishing a copied file, a program
+/// saving by rename) while any handle on it denies write sharing, and that would not
+/// freeze its listing anyway: creating and deleting entries is never refused by sharing.
+/// Each child is checked against the listing and guarded by its own handle instead.
+fn held_sharing(kind: EntryKind) -> u32 {
+    if kind == EntryKind::Directory {
+        FILE_SHARE_READ | FILE_SHARE_WRITE
+    } else {
+        FILE_SHARE_READ
+    }
 }
 
 fn contains_identity(mut ancestor: Option<&Ancestor>, id: TransferIdentity) -> bool {
@@ -730,7 +749,7 @@ fn revalidate_parent<'a>(
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
     if has_followed_link(ancestor) {
-        // These ordinary directory handles remain pinned with deny-write/delete sharing.
+        // These ordinary directory handles remain pinned with deny-delete sharing.
         // Revalidate redirecting links against their own held parents instead of resolving
         // a raw path through the redirects again.
         while let Some(directory) = ancestor {
@@ -765,7 +784,8 @@ impl DiscoveryFrame {
         let mut parent = source.child_parent();
         // Start a new kernel enumeration. A duplicate of the Copy handle would share
         // its enumeration position and could skip entries when the actual Copy starts.
-        let share = FILE_SHARE_READ
+        // Discovery runs while other jobs may publish into the folders it lists.
+        let share = held_sharing(EntryKind::Directory)
             | if matches!(source.access, Access::Move(_)) {
                 FILE_SHARE_DELETE
             } else {
@@ -834,3 +854,6 @@ impl Source {
 #[cfg(test)]
 #[path = "transfer_source_child_tests.rs"]
 mod child_tests;
+#[cfg(test)]
+#[path = "transfer_source_sharing_tests.rs"]
+mod sharing_tests;

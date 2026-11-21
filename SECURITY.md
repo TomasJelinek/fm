@@ -823,9 +823,11 @@ see [recursive Move evidence](docs/verification/2026-11-08-recursive-move.md).
    modification and change times and evade metadata revalidation. Copy and Move
    also accept a pinned source, conflict target or Move capture whose change time
    alone moved (VIEW-05), so a same-length rewrite that restores the modification
-   time goes undetected by them; an open Windows source handle denies write
-   sharing, Linux Move removal keeps its read lease and a replaced target stays in
-   recovery. User commands, checksums and Rename keep the change time. The digest
+   time goes undetected by them; a Windows source file's handle denies write sharing
+   from its first read on (while a Copy waits for admission it holds no handle on its
+   selected items, and a change before that read is only detected through identity,
+   size and times), Linux Move removal keeps its read lease and a replaced target
+   stays in recovery. User commands, checksums and Rename keep the change time. The digest
    proves the destination matches the source byte stream that was read, not the
    source's later contents. Report what was
    actually verified, never an unsupported stronger guarantee.
