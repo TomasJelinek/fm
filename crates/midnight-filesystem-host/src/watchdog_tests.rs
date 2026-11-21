@@ -50,16 +50,21 @@ fn idle_supervisor_blocks_until_teardown_or_an_armed_exchange_expires() {
 
 #[test]
 fn later_requests_report_why_the_worker_was_stopped() {
-    // Idle-progress expiry is a failure that names the deadline, not a cancellation.
+    // Idle-progress expiry is a failure that names the deadline, not a cancellation. It
+    // is not retryable: only opening the archive again starts a worker.
     let expired = Supervision::new(Some(Watch {
         deadline: Instant::now(),
         cancel: None,
     }));
     expired.wait_for_stop_or_expiry();
     let error = expired.stopped_error();
-    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert!(
         error.to_string().contains("no progress for 20 seconds"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("open the archive again"),
         "{error}"
     );
     // Only the hard cancellation of startup, by the caller that owns the mount, is one.
@@ -81,8 +86,12 @@ fn later_requests_report_why_the_worker_was_stopped() {
     failed.request_stop(Stop::Closed);
     failed.wait_for_stop_or_expiry();
     let error = failed.stopped_error();
-    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert!(error.to_string().contains("(invalid data)"), "{error}");
+    assert!(
+        error.to_string().contains("open the archive again"),
+        "{error}"
+    );
     let closed = Supervision::new(None);
     closed.request_stop(Stop::Closed);
     assert_eq!(closed.stopped_error().kind(), io::ErrorKind::Other);

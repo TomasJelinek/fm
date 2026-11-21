@@ -276,9 +276,21 @@ the plugin opens on the archive's path reports another identity, length or
 modification time, fails as `InvalidData` (`Mount::source_failure` in the filesystem
 host, from `CapturedFile::changed_since_capture`), and the copy offers Skip, Skip all
 and Cancel but no Retry, as for a changed native source. Other source failures, such as
-an unreachable network file, still offer Retry. It succeeds once the file is back when
-the revalidation between chunks failed; when the failure stopped the worker during an
-exchange, each Retry of that member fails again until the archive is opened again.
+an unreachable network file, still offer Retry, which succeeds once the file is back
+when the revalidation between chunks failed: the mount survives that failure.
+
+A failure inside an exchange with the archive worker (a source read the host could not
+complete, a member the worker could not read, a protocol violation) stops that
+worker, and so does the 20-second idle watchdog. The mount then never serves another
+request: each one fails with "Archive worker was stopped after a failed request (…);
+open the archive again" or "Archive worker made no progress for 20 seconds and was
+stopped; open the archive again", as `InvalidData` since 21 November (`STOPPED` in the
+filesystem host's `session.rs`; before, `Other` and `TimedOut`, which Copy offered to
+retry), so the question offers Skip, Skip all and Cancel only. The failure that
+stopped the worker keeps its own kind and message, such as a full spool volume's, so
+its own question can still offer Retry once; that Retry then reports the stopped
+worker. Not done: a Retry that opens the archive again for the copy (ARCH-08 in the
+[backlog](../IMPLEMENTATION_BACKLOG.md)).
 
 ## Conflict policies
 

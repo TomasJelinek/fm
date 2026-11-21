@@ -732,12 +732,14 @@ fn cooperative_watchdog_stop_during_cancel_acknowledgement_keeps_mount_failed() 
     assert!(fixture.mount.supervision.stop.load(Ordering::Acquire));
     fixture.source.cancelled.store(false, Ordering::Release);
     let error = fixture.mount.list(1, &Cancellation::default()).unwrap_err();
-    // Later requests are told that the watchdog ended the worker, not "cancelled".
+    // Later requests are told that the watchdog ended the worker, not "cancelled", and
+    // are not retryable.
     assert_eq!(
         error.kind,
-        io::ErrorKind::TimedOut,
+        io::ErrorKind::InvalidData,
         "a racing watchdog stop must not leave a usable mount: {error}"
     );
+    assert!(error.message.contains("no progress"), "{error}");
 }
 
 #[test]
@@ -812,14 +814,15 @@ fn listing_then_next(pages: Vec<(Vec<api::Node>, bool)>) -> Vec<Message> {
     replies
 }
 /// A protocol violation ends the worker: later requests fail without an exchange, as
-/// after any other failed exchange, and report that failure instead of a cancellation.
+/// after any other failed exchange, and report that failure instead of a cancellation,
+/// as not retryable.
 fn assert_worker_ended(fixture: &Fixture, context: &str) {
     assert!(
         fixture.mount.supervision.stopped(),
         "{context}: the violating worker kept serving the mount"
     );
     let error = fixture.mount.list(1, &Cancellation::default()).unwrap_err();
-    assert_eq!(error.kind, io::ErrorKind::Other, "{context}: {error}");
+    assert_eq!(error.kind, io::ErrorKind::InvalidData, "{context}: {error}");
     assert!(
         error.message.contains("stopped after a failed request"),
         "{context}: {error}"
@@ -1074,4 +1077,59 @@ fn a_folder_beyond_the_former_listing_limits_lists_completely_across_pages() {
             );
         }
     }
+}
+
+fn staged_read(request: u64) -> Vec<Message> {
+    vec![
+        begin(request),
+        append(request, 1),
+        seal(request, 1),
+        ready(request, 1),
+    ]
+}
+
+/// A source that fails inside an exchange (here its revalidation, as for an unreachable
+/// file) stops the worker. That failure keeps its own kind, but every later request
+/// through the mount reports the stopped worker as not retryable, so a Copy offers Skip
+/// and Cancel instead of a Retry that could never succeed, and says to open it again.
+#[test]
+fn requests_after_a_failure_that_stopped_the_worker_are_not_retryable() {
+    let fixture = Fixture::new(Protocol::V3, staged_read(1));
+    fixture
+        .source
+        .change_on_validation
+        .store(1, Ordering::SeqCst);
+    let failure = fixture.read().unwrap_err();
+    assert_eq!(failure.kind, io::ErrorKind::Other, "{failure}");
+    assert!(fixture.mount.supervision.stopped());
+    let later = fixture.read().unwrap_err();
+    assert_eq!(later.kind, io::ErrorKind::InvalidData, "{later}");
+    assert!(
+        later.message.contains("fixture source changed")
+            && later.message.contains("open the archive again"),
+        "{later}"
+    );
+    assert!(
+        !fixture
+            .sent()
+            .iter()
+            .any(|message| matches!(message, Message::Read { .. })),
+        "a stopped worker received a request"
+    );
+}
+
+/// The same failure outside an exchange, in a revalidation between requests (Copy
+/// revalidates before every chunk), leaves the worker running: it stays retryable, and
+/// the mount reads on once the source is back.
+#[test]
+fn a_failure_the_worker_survives_stays_retryable() {
+    let fixture = Fixture::new(Protocol::V3, staged_read(1));
+    fixture
+        .source
+        .change_on_validation
+        .store(1, Ordering::SeqCst);
+    let failure = fixture.mount.validate().unwrap_err();
+    assert_eq!(failure.kind, io::ErrorKind::Other, "{failure}");
+    assert!(!fixture.mount.supervision.stopped());
+    assert_eq!(fixture.read().unwrap(), b"data");
 }

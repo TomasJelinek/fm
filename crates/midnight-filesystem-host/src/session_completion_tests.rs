@@ -159,8 +159,9 @@ fn verify_completion(
     if cancelled {
         assert_eq!(error.kind, io::ErrorKind::Interrupted);
     } else {
-        // A stopped worker is reported by its cause, not as a cancellation.
-        assert_eq!(error.kind, io::ErrorKind::TimedOut, "{error}");
+        // A stopped worker is reported by its cause, not as a cancellation, and is
+        // not retryable.
+        assert_eq!(error.kind, io::ErrorKind::InvalidData, "{error}");
         assert!(error.message.contains("no progress"), "{error}");
     }
     if protocol == Protocol::V2 && !cached && !listing && stop_on == 2 {

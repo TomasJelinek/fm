@@ -186,7 +186,9 @@ is tracked in the [current extension](superpowers/specs/2026-11-07-panel-viewer-
 
 A failed listing in an archive panel can mean that the archive's worker was
 stopped, for example by its 20-second idle watchdog while a viewer read a member;
-every later request through that session fails too. The panel then never lists
+every later request through that session fails too. A Copy out of that archive then
+offers Skip, Skip all and Cancel, not Retry, for its remaining members: open the
+archive again and copy the rest anew. The panel then never lists
 through that session again: it opens the archive once more at the requested folder
 (Backspace, Enter on `..`, Refresh, sorting or a re-listed tree), and if that fails
 as well it returns to the native folder that contains the archive, with the archive

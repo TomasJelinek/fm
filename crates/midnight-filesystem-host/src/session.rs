@@ -29,6 +29,11 @@ static SEARCH_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 /// opens one archive at a time and releases it before the next.
 const MAX_SEARCH_ACTIVE: usize = 2;
 const DEADLINE: Duration = Duration::from_secs(20);
+/// The kind of every request through a mount whose worker was stopped after a failed
+/// request or by its watchdog: a kind that callers do not retry (Copy offers Skip, Skip
+/// all and Cancel), since only opening the archive again starts a worker. The request
+/// whose failure stopped the worker keeps its own kind, such as a full spool volume's.
+const STOPPED: io::ErrorKind = io::ErrorKind::InvalidData;
 /// A hard request token has no wake signal; the supervisor observes it this often
 /// while such an exchange is active. Idle mounts and token-free exchanges never poll.
 const CANCEL_POLL: Duration = Duration::from_millis(10);
@@ -125,19 +130,25 @@ impl Supervision {
     }
     /// The error of a request that finds the worker stopped. It names the cause: a
     /// stopped worker is a failure, not a cancellation, unless startup was cancelled.
+    /// A worker stopped after a failed request or by its watchdog never serves this
+    /// mount again, so that error is `STOPPED`, which callers (Copy) do not retry; it
+    /// says to open the archive again.
     fn stopped_error(&self) -> io::Error {
         match self.cause.get() {
             Some(Stop::Cancelled) => io::ErrorKind::Interrupted.into(),
             Some(Stop::Expired) => io::Error::new(
-                io::ErrorKind::TimedOut,
+                STOPPED,
                 format!(
                     "Archive worker made no progress for {} seconds and was stopped; open the archive again",
                     DEADLINE.as_secs()
                 ),
             ),
-            Some(Stop::Failed(reason)) => io::Error::other(format!(
-                "Archive worker was stopped after a failed request ({reason}); open the archive again"
-            )),
+            Some(Stop::Failed(reason)) => io::Error::new(
+                STOPPED,
+                format!(
+                    "Archive worker was stopped after a failed request ({reason}); open the archive again"
+                ),
+            ),
             Some(Stop::Closed) | None => io::Error::other("Archive session is closed"),
         }
     }

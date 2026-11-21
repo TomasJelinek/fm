@@ -265,7 +265,10 @@ still owns the whole mount, is hard-cancellable. Mount teardown, protocol
 violations and the idle watchdog always terminate the worker. Deadlines apply to
 blocking pipe reads as well as decoding. A request in flight when the worker ends,
 and every later request of that mount, reports why it ended: the failed exchange
-with its failure, or idle-deadline expiry as a timeout. A worker that ends by itself
+with its failure, or idle-deadline expiry. That report says to open the archive again
+and has the kind `InvalidData`, which Copy does not offer to retry (until 21 November
+`Other`, and a timeout for the watchdog); the request whose own exchange failed
+reports that failure with its own kind. A worker that ends by itself
 (its pipe closes mid-request) is reported as having ended unexpectedly, for example
 because the archive needs more than the worker's memory. Only a request's own
 cancellation, including a cancelled startup, is reported as interrupted, and a
