@@ -228,7 +228,7 @@ impl Controller {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Tests confirm without replacing.
+    #[cfg(test)] // Tests confirm without replacing.
     pub(crate) async fn confirm(&self, id: OperationId, name: Option<String>) {
         self.confirm_with(id, name, false).await;
     }

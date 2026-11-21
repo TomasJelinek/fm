@@ -347,7 +347,7 @@ impl Job {
             self.rename_locale = locale;
         }
     }
-    #[cfg_attr(not(test), allow(dead_code))] // Tests confirm without replacing.
+    #[cfg(test)] // Tests confirm without replacing.
     pub(super) fn confirm(&mut self, name: Option<String>) -> Result<(), FsError> {
         self.confirm_with(name, false, None)
     }

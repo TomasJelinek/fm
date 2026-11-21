@@ -36,17 +36,35 @@ fn page_reads(mode: u16, width: usize) -> (usize, usize) {
 
 /// A refill near the shown page's edge read every row around the camera again, in ranges
 /// of at most 8 KiB: ten reads per PageDown over 500-byte rows. It now reads the new rows
-/// only, in one range or a few, and no more ranges or bytes over short rows either.
-#[test]
-fn page_keys_read_only_the_rows_past_the_shown_page() {
-    for mode in [viewer::MODE_TEXT, viewer::MODE_SOURCE] {
-        let (reads, bytes) = page_reads(mode, 60);
-        assert!(reads <= 16, "60-byte rows: {reads} reads");
-        assert!(bytes <= 40 * 1024, "60-byte rows: {bytes} bytes read");
-        let (reads, bytes) = page_reads(mode, 500);
-        assert!(reads <= 40, "500-byte rows: {reads} reads");
-        assert!(bytes <= 300 * 1024, "500-byte rows: {bytes} bytes read");
+/// only, in one range or a few, and no more ranges or bytes over short rows either. One
+/// test per mode, so that they run in parallel.
+mod page_keys_read_only_the_rows_past_the_shown_page {
+    use super::*;
+
+    #[test]
+    fn text() {
+        reads_only_the_rows_past_the_shown_page(viewer::MODE_TEXT);
     }
+
+    #[test]
+    fn source() {
+        reads_only_the_rows_past_the_shown_page(viewer::MODE_SOURCE);
+    }
+}
+
+fn reads_only_the_rows_past_the_shown_page(mode: u16) {
+    let (reads, bytes) = page_reads(mode, 60);
+    assert!(reads <= 16, "mode {mode}, 60-byte rows: {reads} reads");
+    assert!(
+        bytes <= 40 * 1024,
+        "mode {mode}, 60-byte rows: {bytes} bytes read"
+    );
+    let (reads, bytes) = page_reads(mode, 500);
+    assert!(reads <= 40, "mode {mode}, 500-byte rows: {reads} reads");
+    assert!(
+        bytes <= 300 * 1024,
+        "mode {mode}, 500-byte rows: {bytes} bytes read"
+    );
 }
 
 /// The worker showing `source` from `start` to `end`, with requests admitted from `first`.

@@ -106,7 +106,9 @@ fn path_components_and_the_edit_area_stay_inside_the_bar_at_every_width() {
     test.window
         .set_left_path_parts(ModelRc::new(VecModel::from(rows)));
     let mut findings = Vec::new();
-    for (scheme, density, font) in [(2, 0, 12), (0, 0, 12), (1, 1, 15)] {
+    // Themes choose colours only (ui/theme.slint): the bar's geometry follows the density
+    // and the font size, so Light covers every desktop theme and Dark Touch every touch one.
+    for (scheme, density, font) in [(2, 0, 12), (1, 1, 15)] {
         test.window.invoke_apply_fonts("".into(), font, font);
         test.window.invoke_apply_preferences(scheme, density);
         // Left panel widths from a quarter of the path to well past its whole width.

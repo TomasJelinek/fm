@@ -33,8 +33,8 @@ pub(crate) struct ChecksumState {
 
 pub(crate) struct ChecksumSession {
     pub revision: u64,
-    /// The captured panel's folder; only tests read it now that the window shows no details.
-    #[allow(dead_code)]
+    /// The captured panel's folder; Copy as a checksum file names files relative to it
+    /// when the suggested checksum file has no folder.
     pub directory: PathBuf,
     pub files: SelectedFiles,
     pub tree_sources: Option<Arc<dyn CapturedChecksumFiles>>,

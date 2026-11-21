@@ -1,14 +1,16 @@
-//! A second transfer starts beside a running one that copies thousands of small files.
+//! A second transfer starts beside a running one that copies hundreds of small files.
 //! Admission never waits for the busy copy; only an overlapping item waits (with its
 //! reason), and one disk slot is shared step by step instead of job by job.
 use super::*;
 use std::ffi::OsStr;
 
-/// Enough small files that the busy copy outlasts every observation below.
-const FILES: usize = 3000;
+/// Enough small files that the busy copy outlasts every observation below: with `PACE`,
+/// at least six seconds even on fast storage. Few files keep the fixture cheap to create
+/// and remove; the pace, not their number, makes the copy last.
+const FILES: usize = 600;
 /// Each staged file takes at least this long, so the busy copy keeps publishing for
 /// seconds even on fast storage. The pause is outside any namespace change.
-const PACE: Duration = Duration::from_millis(2);
+const PACE: Duration = Duration::from_millis(10);
 /// Files the busy copy publishes before the second job is submitted.
 const PUBLISHED: u64 = 20;
 /// Upper bounds for the second job; a broken scheduler waits for the busy copy instead.

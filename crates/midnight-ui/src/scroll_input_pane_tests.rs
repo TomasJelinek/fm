@@ -36,10 +36,18 @@ struct Harness {
     auxiliary: RefCell<NativeScroll>,
     kinetic_shown: Cell<bool>,
     pixels: RefCell<Vec<slint::Rgb8Pixel>>,
+    /// Frames are software-rendered into `pixels`; otherwise they only lay the window
+    /// out, for tests that read geometry alone.
+    render: bool,
 }
 
 impl Harness {
     fn draw(&self) {
+        if !self.render {
+            // What a frame instantiates (lazy repeaters and conditionals), unrendered.
+            WindowInner::from_pub(self.window.window()).ensure_tree_instantiated();
+            return;
+        }
         let mut pixels = self.pixels.borrow_mut();
         self.native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1340);
@@ -159,7 +167,18 @@ impl Harness {
     }
 }
 
+/// The panels in a 1340×820 window whose frames are software-rendered.
 fn harness() -> Harness {
+    harness_with(true)
+}
+
+/// [`harness`] whose frames only lay the window out: for tests that check scroll offsets,
+/// not pixels.
+fn layout_harness() -> Harness {
+    harness_with(false)
+}
+
+fn harness_with(render: bool) -> Harness {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     let time = Rc::new(Cell::new(Duration::ZERO));
     slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
@@ -208,6 +227,7 @@ fn harness() -> Harness {
         auxiliary,
         kinetic_shown: Cell::new(false),
         pixels: RefCell::new(vec![slint::Rgb8Pixel::default(); 1340 * 820]),
+        render,
     };
     h.draw();
     h
@@ -345,7 +365,7 @@ fn real_file_panes_keep_fractional_wheel_positions_during_model_refresh() {
 
 #[test]
 fn file_panel_scrollbar_wheel_releases_explicit_cursor_reveal_and_keeps_panel_policy() {
-    let h = harness();
+    let h = layout_harness();
     for (pane, side) in [(PaneId::Left, 0), (PaneId::Right, 1)] {
         let last = h.window.get_left_rows().row_count() - 1;
         h.presenter

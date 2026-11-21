@@ -100,70 +100,104 @@ fn problems(source: String, mode: u16, wrap: bool, landing: Option<f64>) -> Vec<
     problems
 }
 
-/// Every gesture over `source` moves its whole distance in Text and Source, wrapped or not.
-fn keeps_travel(name: &str, source: &str, landing: Option<f64>) {
-    let mut report = Vec::new();
-    for mode in [viewer::MODE_TEXT, viewer::MODE_SOURCE] {
-        for wrap in [false, true] {
-            for problem in problems(source.to_owned(), mode, wrap, landing) {
-                report.push(format!("mode {mode} wrap {wrap}: {problem}"));
-            }
+/// Every gesture over `source` moves its whole distance in `mode`, wrapped or not.
+fn keeps_travel(name: &str, source: &str, mode: u16, wrap: bool, landing: Option<f64>) {
+    let report = problems(source.to_owned(), mode, wrap, landing);
+    assert!(
+        report.is_empty(),
+        "{name}, mode {mode} wrap {wrap}: {report:#?}"
+    );
+}
+
+/// The tests of a travel check in Text and Source, wrapped or not: four tests, so that the
+/// views run in parallel; a module-name filter still selects all four.
+macro_rules! travel_in_every_view {
+    ($name:literal, $source:expr, $landing:expr) => {
+        use super::*;
+
+        #[test]
+        fn text() {
+            keeps_travel($name, &$source, viewer::MODE_TEXT, false, $landing);
         }
-    }
-    assert!(report.is_empty(), "{name}: {report:#?}");
+
+        #[test]
+        fn text_wrapped() {
+            keeps_travel($name, &$source, viewer::MODE_TEXT, true, $landing);
+        }
+
+        #[test]
+        fn source() {
+            keeps_travel($name, &$source, viewer::MODE_SOURCE, false, $landing);
+        }
+
+        #[test]
+        fn source_wrapped() {
+            keeps_travel($name, &$source, viewer::MODE_SOURCE, true, $landing);
+        }
+    };
 }
 
 /// Text pages of the basic viewer's 8 KiB ranges reached 73,584 bytes, past what one layout
 /// then placed right: the caret of each backward refill's last row fell a row low, and
 /// every PageUp stopped three rows (49 px) short.
-#[test]
-fn rows_of_1200_bytes_keep_every_gesture_s_travel() {
-    keeps_travel("1200-byte rows", &rows(1_500_000 / 1200, 1200), Some(0.002));
+mod rows_of_1200_bytes_keep_every_gesture_s_travel {
+    travel_in_every_view!("1200-byte rows", rows(1_500_000 / 1200, 1200), Some(0.002));
 }
 
 /// 27 rows filled a page of 64 KiB, fewer than the window shows: the page left the
 /// retained camera, whose relative scrolling clamped each step to the next page's top.
 /// PageDown moved 27 rows (443 px) in Source and 3 in Text, and an arrow key one row.
-#[test]
-fn rows_of_2400_bytes_keep_every_gesture_s_travel() {
-    keeps_travel("2400-byte rows", &rows(1_500_000 / 2400, 2400), Some(0.002));
+mod rows_of_2400_bytes_keep_every_gesture_s_travel {
+    travel_in_every_view!("2400-byte rows", rows(1_500_000 / 2400, 2400), Some(0.002));
 }
 
 /// A page of 120 KiB holds 51 rows of 2400 bytes, more than the window's 44. With pages of
 /// 64 KiB (27 rows), 245 to 489 of the window's 720 pixels stayed blank below the page's
 /// rows at rest. The camera may still pass a page's rows until the next refill
-/// (`viewport::camera_span`): at rest, by less than a tenth of the window.
-#[test]
-fn rows_of_2400_bytes_fill_the_window_at_rest() {
+/// (`viewport::camera_span`): at rest, by less than a tenth of the window. One test per
+/// mode, so that they run in parallel.
+mod rows_of_2400_bytes_fill_the_window_at_rest {
+    use super::*;
+
+    #[test]
+    fn text() {
+        fills_the_window_at_rest(viewer::MODE_TEXT);
+    }
+
+    #[test]
+    fn source() {
+        fills_the_window_at_rest(viewer::MODE_SOURCE);
+    }
+}
+
+fn fills_the_window_at_rest(mode: u16) {
     let source = rows(1_500_000 / 2400, 2400);
     let screen = f64::from(SIZE.height);
-    for mode in [viewer::MODE_TEXT, viewer::MODE_SOURCE] {
-        let mut engine = Engine::open(source.clone(), mode, SIZE, 1);
-        let mut window = Window::default();
-        rest(&mut engine, &mut window);
-        window.seek(&mut engine, 0.5);
-        assert!(
-            settle(&mut engine, &mut window),
-            "mode {mode}: the position rests"
-        );
-        let mut blank = vec![blank_below_rows(&engine)];
-        for (inputs, repeat) in [
-            (vec![(screen, true)], 4),
-            (vec![(NOTCH, false); 5], 4),
-            (vec![(ARROW, true); 20], 1),
-            (vec![(-screen, true)], 4),
-        ] {
-            for _ in 0..repeat {
-                let moved = try_gesture(&mut engine, &mut window, &inputs, false);
-                assert!(moved.is_some(), "mode {mode}: a gesture rests");
-                blank.push(blank_below_rows(&engine));
-            }
+    let mut engine = Engine::open(source, mode, SIZE, 1);
+    let mut window = Window::default();
+    rest(&mut engine, &mut window);
+    window.seek(&mut engine, 0.5);
+    assert!(
+        settle(&mut engine, &mut window),
+        "mode {mode}: the position rests"
+    );
+    let mut blank = vec![blank_below_rows(&engine)];
+    for (inputs, repeat) in [
+        (vec![(screen, true)], 4),
+        (vec![(NOTCH, false); 5], 4),
+        (vec![(ARROW, true); 20], 1),
+        (vec![(-screen, true)], 4),
+    ] {
+        for _ in 0..repeat {
+            let moved = try_gesture(&mut engine, &mut window, &inputs, false);
+            assert!(moved.is_some(), "mode {mode}: a gesture rests");
+            blank.push(blank_below_rows(&engine));
         }
-        assert!(
-            blank.iter().all(|pixels| *pixels < screen / 10.0),
-            "mode {mode}: blank pixels below the rows at rest {blank:?}"
-        );
     }
+    assert!(
+        blank.iter().all(|pixels| *pixels < screen / 10.0),
+        "mode {mode}: blank pixels below the rows at rest {blank:?}"
+    );
 }
 
 /// Pixels of the window below the shown page's rows while the file goes on.
@@ -182,9 +216,8 @@ fn blank_below_rows(engine: &Engine) -> f64 {
 /// Eight rows filled a page of 64 KiB, and PageDown moved at most those eight (131 px), in
 /// Text one row or none; a page of 120 KiB holds fifteen. A Source position lands on a
 /// whole row (`source_minimum_origin`): two rows are 0.4 % of this file.
-#[test]
-fn rows_of_8000_bytes_keep_every_gesture_s_travel() {
-    keeps_travel("8000-byte rows", &rows(4_000_000 / 8000, 8000), Some(0.004));
+mod rows_of_8000_bytes_keep_every_gesture_s_travel {
+    travel_in_every_view!("8000-byte rows", rows(4_000_000 / 8000, 8000), Some(0.004));
 }
 
 /// Short rows whose pages end by their line budget meet rows that no page holds a window
@@ -192,9 +225,13 @@ fn rows_of_8000_bytes_keep_every_gesture_s_travel() {
 /// A scrollbar position here lands within the one correction read its estimate of the
 /// rows' density allows (`refine_position`), up to 1.6 % from the released thumb, as it
 /// did before; only its acknowledgement is checked.
-#[test]
-fn rows_mixing_short_and_very_long_ones_keep_every_gesture_s_travel() {
-    let source = mixed(
+mod rows_mixing_short_and_very_long_ones_keep_every_gesture_s_travel {
+    travel_in_every_view!("mixed rows", mixed_rows(), None);
+}
+
+/// Rows of 60 to 8000 bytes in blocks, 1.5 MB.
+fn mixed_rows() -> String {
+    mixed(
         &[
             (120, 60),
             (30, 2400),
@@ -205,6 +242,5 @@ fn rows_mixing_short_and_very_long_ones_keep_every_gesture_s_travel() {
             (80, 250),
         ],
         1_500_000,
-    );
-    keeps_travel("mixed rows", &source, None);
+    )
 }

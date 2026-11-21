@@ -15,36 +15,10 @@ struct Harness {
     windows: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
 }
 
-/// The shared software windows, plus a record of every URL Slint asks to open.
-struct UrlRecorder {
-    windows: Windows,
-    opened: Rc<RefCell<Vec<String>>>,
-}
-impl slint::platform::Platform for UrlRecorder {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-        slint::platform::Platform::create_window_adapter(&self.windows)
-    }
-    fn open_url(&self, url: &str) -> Result<(), slint::PlatformError> {
-        self.opened.borrow_mut().push(url.to_owned());
-        Ok(())
-    }
-}
-
 impl Harness {
     fn new() -> Self {
         let windows = Rc::new(RefCell::new(Vec::new()));
         Self::with_platform(Box::new(Windows(windows.clone())), windows)
-    }
-
-    #[allow(dead_code)]
-    fn recording_urls() -> (Self, Rc<RefCell<Vec<String>>>) {
-        let windows = Rc::new(RefCell::new(Vec::new()));
-        let opened = Rc::new(RefCell::new(Vec::new()));
-        let platform = UrlRecorder {
-            windows: Windows(windows.clone()),
-            opened: opened.clone(),
-        };
-        (Self::with_platform(Box::new(platform), windows), opened)
     }
 
     fn with_platform(

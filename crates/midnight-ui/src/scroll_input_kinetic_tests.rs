@@ -66,7 +66,7 @@ fn kinetic(h: &Harness) -> bool {
 
 #[test]
 fn phased_touchpad_flick_coasts_once_with_decaying_steps_then_settles() {
-    let h = harness();
+    let h = layout_harness();
     let at = pointer_at_left_list(&h);
     flick(&h, at, -20.0);
     let released = h.offset(0);
@@ -110,7 +110,7 @@ fn phased_touchpad_flick_coasts_once_with_decaying_steps_then_settles() {
 
 #[test]
 fn x11_fractional_line_stream_follows_the_finger_then_coasts() {
-    let h = harness();
+    let h = layout_harness();
     pointer_at_left_list(&h);
     for _ in 0..6 {
         wait(&h, SAMPLE);
@@ -135,7 +135,7 @@ fn x11_fractional_line_stream_follows_the_finger_then_coasts() {
 
 #[test]
 fn x11_high_resolution_wheel_detent_glides_one_notch_without_momentum() {
-    let h = harness();
+    let h = layout_harness();
     pointer_at_left_list(&h);
     // libinput reports one detent of a high-resolution wheel as 8 x 15/120 line.
     for _ in 0..8 {
@@ -153,7 +153,7 @@ fn x11_high_resolution_wheel_detent_glides_one_notch_without_momentum() {
 
 #[test]
 fn a_click_stops_momentum_at_once() {
-    let h = harness();
+    let h = layout_harness();
     let at = pointer_at_left_list(&h);
     flick(&h, at, -20.0);
     h.advance(3);
@@ -176,7 +176,7 @@ fn a_click_stops_momentum_at_once() {
 
 #[test]
 fn momentum_against_the_top_stops_without_overshoot() {
-    let h = harness();
+    let h = layout_harness();
     let at = pointer_at_left_list(&h);
     flick(&h, at, 20.0);
     assert_eq!(h.offset(0), 0.0);
@@ -191,7 +191,7 @@ fn momentum_against_the_top_stops_without_overshoot() {
 
 #[test]
 fn a_flick_outside_scrollable_lists_has_no_momentum() {
-    let h = harness();
+    let h = layout_harness();
     // The toolbar row above the panels: no list scrolls there.
     let at = pointer_at(&h, h.window.get_left_list_left() + 100.0, 4.0);
     flick(&h, at, -20.0);
