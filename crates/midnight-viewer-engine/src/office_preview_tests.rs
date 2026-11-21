@@ -959,3 +959,53 @@ fn office_xlsx_prepares_first_real_cell_before_any_resource_navigation() {
     catalog.release_on_worker().unwrap();
     release(prepared);
 }
+
+#[test]
+fn office_family_suffixes_select_their_format() {
+    for (name, expected) in [
+        ("report.DOCX", OfficeFormat::Docx),
+        ("macros.docm", OfficeFormat::Docx),
+        ("letter.dotx", OfficeFormat::Docx),
+        ("letter.dotm", OfficeFormat::Docx),
+        ("deck.pptx", OfficeFormat::Pptx),
+        ("deck.pptm", OfficeFormat::Pptx),
+        ("show.ppsx", OfficeFormat::Pptx),
+        ("show.ppsm", OfficeFormat::Pptx),
+        ("theme.potx", OfficeFormat::Pptx),
+        ("theme.potm", OfficeFormat::Pptx),
+        ("book.xlsx", OfficeFormat::Xlsx),
+        ("book.xlsm", OfficeFormat::Xlsx),
+        ("book.xltx", OfficeFormat::Xlsx),
+        ("book.associated", OfficeFormat::Xlsx),
+        ("text.odt", OfficeFormat::Odt),
+        ("text.ott", OfficeFormat::Odt),
+        ("table.ods", OfficeFormat::Ods),
+        ("table.ots", OfficeFormat::Ods),
+        ("slides.odp", OfficeFormat::Odp),
+        ("slides.otp", OfficeFormat::Odp),
+    ] {
+        assert_eq!(format(Path::new(name)), expected, "{name}");
+    }
+}
+
+#[test]
+fn office_open_refusal_status_names_the_document_and_a_plain_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("protected.pptx");
+    let mut bytes = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+    bytes.resize(4096, 0);
+    std::fs::write(&path, bytes).unwrap();
+    let parent = CapturedFile::capture(&path).unwrap();
+    let error = match prepare(parent, format(&path), Cancellation::default()) {
+        Err(error) => error,
+        Ok(prepared) => {
+            release(prepared);
+            panic!("a compound file prepared as a presentation");
+        }
+    };
+    assert_eq!(
+        error,
+        "This presentation is password-protected or saved in the older binary Office format \
+         (.doc, .xls or .ppt), which the preview cannot open."
+    );
+}

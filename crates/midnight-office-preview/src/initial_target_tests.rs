@@ -174,7 +174,7 @@ fn only_absent_family_contents_fall_back_to_catalog() {
 }
 
 #[test]
-fn unsupported_initial_contents_surface_without_catalog_fallback() {
+fn object_only_initial_contents_render_a_notice_without_catalog_fallback() {
     let mut session = open(
         docx(
             "<different:p><different:r><different:drawing/></different:r></different:p>",
@@ -184,17 +184,20 @@ fn unsupported_initial_contents_surface_without_catalog_fallback() {
     );
     let target = session.initial_target();
     assert!(matches!(target, OfficeTarget::DocumentWindow { .. }));
-    assert!(matches!(
-        session.render(target, &Cancellation::default()),
-        Err(OfficeError::Unsupported(_))
-    ));
+    let page = session.render(target, &Cancellation::default()).unwrap();
+    assert_eq!(page.target, target);
+    assert!(
+        String::from_utf8(page.bytes.to_vec())
+            .unwrap()
+            .contains(OBJECTS_ONLY)
+    );
     assert_eq!(session.initial_target(), target);
     assert_eq!(
         session
             .render(OfficeTarget::Catalog, &Cancellation::default())
             .unwrap()
             .generation,
-        1
+        2
     );
 }
 

@@ -265,11 +265,7 @@ impl Collector {
         if self.window.next.is_none() && self.selected() {
             self.window.omitted |= self.pending_omitted;
         }
-        if self.window.omitted && !self.window.blocks.iter().any(Block::has_text) {
-            return Err(OfficeError::Unsupported(
-                "window contains only unsupported objects",
-            ));
-        }
+        // A window of only objects renders a notice; it is never an empty window.
         Ok(self.window)
     }
 }
@@ -334,11 +330,21 @@ pub(crate) fn render(
         html.link(with_block(next), "Next contents")?;
     }
     html.raw("</nav>")?;
-    if window.omitted {
-        html.raw("<p>Some drawings, objects or unsupported layout contents are omitted.</p>")?;
-    }
-    if !window.blocks.iter().any(Block::has_text) {
-        html.raw("<p>Empty content window.</p>")?;
+    let text = window.blocks.iter().any(Block::has_text);
+    match (window.omitted, text, target) {
+        (true, false, OfficeTarget::SlideWindow { .. }) => html.raw(
+            "<p>This slide contains only pictures, charts or other objects that the preview \
+             does not show.</p>",
+        )?,
+        (true, false, _) => html.raw(
+            "<p>This part of the document contains only pictures, charts or other objects \
+             that the preview does not show.</p>",
+        )?,
+        (true, true, _) => {
+            html.raw("<p>Some drawings, objects or unsupported layout contents are omitted.</p>")?
+        }
+        (false, false, _) => html.raw("<p>Empty content window.</p>")?,
+        (false, true, _) => (),
     }
     let mut table = false;
     for block in &window.blocks {

@@ -10,10 +10,7 @@ pub(crate) struct Pptx {
 }
 impl Pptx {
     pub fn load(package: &mut Package) -> Result<Self, OfficeError> {
-        let part = crate::workbook::office_part(
-            package,
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
-        )?;
+        let part = crate::workbook::office_part(package, crate::workbook::PRESENTATION)?;
         let (directory, file) = part.rsplit_once('/').unwrap_or(("", &part));
         let relation_path = if directory.is_empty() {
             format!("_rels/{file}.rels")
@@ -32,7 +29,7 @@ impl Pptx {
             match xml.next()? {
                 Token::Start(element) => {
                     if stack.is_empty() && !element.is(Namespace::Presentation, "presentation") {
-                        return Err(OfficeError::Unsupported("not a PPTX presentation"));
+                        return Err(OfficeError::Malformed("presentation root"));
                     }
                     if element.is(Namespace::Presentation, "sldIdLst") {
                         if list_seen || stack.len() != 1 {
@@ -70,14 +67,14 @@ impl Pptx {
                             .find(|relation| relation.id == id)
                             .ok_or(OfficeError::Malformed("missing slide relationship"))?;
                         if !crate::workbook::kind(&relationship.kind, "slide") {
-                            return Err(OfficeError::Unsupported(
-                                "non-slide presentation relationship",
+                            return Err(OfficeError::Malformed(
+                                "slide list names a non-slide relationship",
                             ));
                         }
                         let target = relationship
                             .target
                             .as_ref()
-                            .ok_or(OfficeError::Unsupported("external slide"))?;
+                            .ok_or(OfficeError::Malformed("external slide"))?;
                         slides.push(SlideDescriptor {
                             id: SlideId(slides.len() as u16),
                             name: format!("Slide {}", slides.len() + 1),

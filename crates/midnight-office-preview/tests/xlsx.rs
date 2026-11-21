@@ -142,6 +142,7 @@ fn source_reads_stop_on_pre_cancel_and_wrong_package_families_are_rejected() {
         Err(OfficeError::Cancelled)
     ));
     assert_eq!(captured.calls.load(Ordering::Relaxed), 0);
+    // Another family's package is "damaged or not a valid file" of the asked format.
     for format in [
         OfficeFormat::Docx,
         OfficeFormat::Pptx,
@@ -150,15 +151,10 @@ fn source_reads_stop_on_pre_cancel_and_wrong_package_families_are_rejected() {
         OfficeFormat::Odp,
     ] {
         let result = OfficeSession::open(captured.clone(), format, &Cancellation::default());
-        match format {
-            OfficeFormat::Docx | OfficeFormat::Pptx => {
-                assert!(matches!(result, Err(OfficeError::Unsupported(_))))
-            }
-            OfficeFormat::Odt | OfficeFormat::Ods | OfficeFormat::Odp => {
-                assert!(matches!(result, Err(OfficeError::Malformed(_))))
-            }
-            OfficeFormat::Xlsx => unreachable!(),
-        }
+        assert!(
+            matches!(result, Err(OfficeError::Malformed(_))),
+            "{format:?}"
+        );
     }
 }
 
@@ -234,18 +230,15 @@ fn empty_sheet_and_unsupported_drawing_are_distinguishable() {
         "<worksheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'><sheetData/></worksheet>",
         SHARED,
     ));
-    assert!(html(&mut empty, OfficeTarget::SheetFirst { sheet: SheetId(0) }).contains("Empty"));
+    let page = html(&mut empty, OfficeTarget::SheetFirst { sheet: SheetId(0) });
+    assert!(page.contains("Empty") && !page.contains("are not shown"));
+    // A sheet whose only content is a chart says so instead of failing.
     let mut drawing = open(package(
         "<worksheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'><sheetData/><drawing/></worksheet>",
         SHARED,
     ));
-    assert!(matches!(
-        drawing.render(
-            OfficeTarget::SheetFirst { sheet: SheetId(0) },
-            &Cancellation::default()
-        ),
-        Err(OfficeError::Unsupported(_))
-    ));
+    let page = html(&mut drawing, OfficeTarget::SheetFirst { sheet: SheetId(0) });
+    assert!(page.contains("Empty cell range") && page.contains("are not shown"));
 }
 
 fn rewrite(bytes: Vec<u8>, edit: impl Fn(&str, String) -> String, stored: bool) -> Vec<u8> {
@@ -441,13 +434,19 @@ fn zip_extras_comments_encryption_and_links_have_explicit_states() {
         .windows(4)
         .position(|bytes| bytes == b"PK\x01\x02")
         .unwrap();
-    for field in [30usize, 32] {
+    // A one-byte extra field is no record; a one-byte comment misaligns the next record.
+    for (field, reason) in [
+        (30usize, "ZIP extra field ends inside a record header"),
+        (32, "central record signature"),
+    ] {
         let mut bytes = original.clone();
         bytes[central + field] = 1;
-        assert!(matches!(
-            OfficeSession::open(source(bytes), OfficeFormat::Xlsx, &Cancellation::default()),
-            Err(OfficeError::Unsupported(_))
-        ));
+        let error =
+            OfficeSession::open(source(bytes), OfficeFormat::Xlsx, &Cancellation::default());
+        assert!(
+            matches!(error, Err(OfficeError::Malformed(detail)) if detail == reason),
+            "{reason}"
+        );
     }
     let mut bytes = original.clone();
     bytes[central + 8] |= 1;

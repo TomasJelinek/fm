@@ -81,12 +81,12 @@ struct Document {
     spreadsheet: bool,
 }
 impl Document {
+    /// Checks the document, body and spreadsheet structure. Scripts, styles and
+    /// spreadsheet-level settings (validations, ranges, forms, tracked changes and
+    /// other writers' markup) are never read, so they are not refused either.
     fn enter(&mut self, element: &Element, stack: &Stack) -> Result<(), OfficeError> {
         if stack.is_empty() && !element.is(Namespace::OdfOffice, "document-content") {
-            return Err(OfficeError::Unsupported("not an ODF contents document"));
-        }
-        if element.is(Namespace::OdfOffice, "scripts") {
-            return Err(OfficeError::Unsupported("ODF scripts"));
+            return Err(OfficeError::Malformed("ODF content root"));
         }
         if element.is(Namespace::OdfOffice, "body") {
             if self.body
@@ -103,25 +103,6 @@ impl Document {
                 return Err(OfficeError::Malformed("ODS spreadsheet structure"));
             }
             self.spreadsheet = true;
-        }
-        if parent(stack, Namespace::OdfOffice, "spreadsheet")
-            && !(element.ns == Namespace::OdfTable
-                && matches!(
-                    element.name.as_str(),
-                    "table"
-                        | "calculation-settings"
-                        | "content-validations"
-                        | "label-ranges"
-                        | "database-ranges"
-                        | "data-pilot-tables"
-                        | "consolidation"
-                        | "dde-links"
-                        | "named-expressions"
-                ))
-        {
-            return Err(OfficeError::Unsupported(
-                "ODS spreadsheet child outside contents subset",
-            ));
         }
         Ok(())
     }
@@ -239,8 +220,8 @@ fn cached_value(element: &Element) -> Result<Option<Cow<'_, str>>, OfficeError> 
         Some("date") => "date-value",
         Some("time") => "time-value",
         Some("boolean") => return office("boolean-value").map(boolean).transpose(),
-        Some("void") => return Ok(None),
-        Some(_) => return Err(OfficeError::Unsupported("ODS stored value type")),
+        // Another type has no stored value the preview knows; its paragraphs show it.
+        Some(_) => return Ok(None),
         None => {
             if let Some(value) = office("boolean-value") {
                 return boolean(value).map(Some);
@@ -279,6 +260,7 @@ pub(crate) fn window(package: &mut Package, target: OfficeTarget) -> Result<Wind
     let mut cells = Vec::new();
     let mut next = None;
     let mut text_bytes = 0usize;
+    let mut omitted = false;
     loop {
         work.check()?;
         match xml.next()? {
@@ -291,8 +273,10 @@ pub(crate) fn window(package: &mut Package, target: OfficeTarget) -> Result<Wind
                     table_index += 1;
                 } else if active.is_some() && skipped.is_none() {
                     match (element.ns, element.name.as_str()) {
+                        // A table inside a cell or a shape is not part of this grid.
                         (Namespace::OdfTable, "table") => {
-                            return Err(OfficeError::Unsupported("nested ODS table"));
+                            omitted = true;
+                            skipped = Some(stack.len());
                         }
                         (Namespace::OdfTable, "table-row") => {
                             if row.is_some() || !row_parent(&stack) {
@@ -386,14 +370,22 @@ pub(crate) fn window(package: &mut Package, target: OfficeTarget) -> Result<Wind
                             // Stored values remain readable; data sources are never activated.
                             skipped = Some(stack.len());
                         }
-                        (Namespace::OdfDraw, _) => {
-                            return Err(OfficeError::Unsupported("ODS drawing or embedded object"));
+                        // Shapes, charts, pictures and comments are not shown.
+                        (Namespace::OdfDraw, _)
+                        | (Namespace::OdfTable, "shapes")
+                        | (Namespace::OdfOffice, "annotation") => {
+                            omitted = true;
+                            skipped = Some(stack.len());
                         }
-                        _ => {
-                            return Err(OfficeError::Unsupported(
-                                "ODS element outside contents subset",
-                            ));
+                        // Other markup in a cell could hold text: never cell text, and
+                        // the page says that something is not shown.
+                        _ if pending.is_some() => {
+                            omitted = true;
+                            skipped = Some(stack.len());
                         }
+                        // Forms, conditional formats, protection and other sheet-level
+                        // markup hold no cell contents.
+                        _ => skipped = Some(stack.len()),
                     }
                 }
                 stack.push((element.ns, element.name));
@@ -511,6 +503,7 @@ pub(crate) fn window(package: &mut Package, target: OfficeTarget) -> Result<Wind
         column,
         cells,
         next,
+        omitted,
     })
 }
 

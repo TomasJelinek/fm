@@ -1246,6 +1246,23 @@ fields and conservative physical-device classifications.
   bounded source length, page count, viewport and process memory/CPU. The host
   brokers read-only source bytes; PDF scripts, external resources and automatic
   link execution are disabled. A malformed page cannot select executable code.
+- The built-in Office contents preview parses captured DOCX/XLSX/PPTX/ODT/ODS/ODP
+  bytes on viewer backend workers into bounded inert HTML: no scripts, macros (VBA
+  projects and ODF `Basic/`/`Scripts/` libraries are never read), formula
+  evaluation, external links or resources. Before `zip` builds its index, a
+  preflight checks every central record and local header: extra fields must be exact
+  record sequences (unused records such as Office's 0xA220 padding are skipped,
+  ZIP64 values are resolved, a Unicode path record naming another part is refused);
+  local and central names, flags, methods, CRCs and sizes must agree; members must
+  not overlap, checked before each header's variable part is read; names are unique
+  and safe, with no symbolic links; an archive comment cannot hide another
+  directory. `zip` then indexes a canonical directory without extra fields or
+  comments. Encryption, OLE compound files, compression other than stored or
+  Deflate, split and ZIP64 archives, DTDs and non-UTF-8 XML are refused. Limits: a
+  256 MiB file, 10,000 parts, an 8 MiB central directory, 4 GiB per part, 256 MiB of
+  reads and unpacked data per page, and XML tokens of 64 KiB nested at most 128
+  deep. Markup the preview does not read is skipped and never shown as document
+  text ([package rules](docs/developer/VIEWER_PREFERENCES.md#office-packages-what-opens-and-what-is-refused)).
 - File comparison captures native regular-file identities. Both text inputs
   have byte/line/deadline limits; image inputs use the restricted image broker.
   A text source whose revision moved only in its change time is accepted after a

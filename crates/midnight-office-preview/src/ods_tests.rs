@@ -170,11 +170,20 @@ fn ods_repeat_overflow_and_unsupported_only_drawing_are_explicit() {
         r#"<g:table g:name="Bad"><g:table-row g:number-rows-repeated="1048577"/></g:table>"#,
         r#"<g:table g:name="Bad"><g:table-row><g:table-cell g:number-columns-repeated="16385"/></g:table-row></g:table>"#,
         r#"<g:table g:name="Bad"><g:table-row><g:table-cell g:number-columns-repeated="0"/></g:table-row></g:table>"#,
-        r#"<g:table g:name="Drawing"><d:frame><d:image/></d:frame></g:table>"#,
     ] {
         let (mut package, _) = open(body);
         assert!(window_target(&mut package, 0).is_err());
     }
+    // A sheet with only a picture says so rather than failing or looking empty.
+    let (mut package, ods) =
+        open(r#"<g:table g:name="Drawing"><d:frame><d:image/></d:frame></g:table>"#);
+    let (window, html) = render(
+        &mut package,
+        &ods,
+        OfficeTarget::SheetFirst { sheet: SheetId(0) },
+    );
+    assert!(window.cells.is_empty());
+    assert!(html.contains("Empty cell range") && html.contains("are not shown"));
 }
 
 #[test]
@@ -256,13 +265,18 @@ fn ods_empty_range_differs_from_unsupported_drawing_and_unknown_namespace() {
         OfficeTarget::SheetFirst { sheet: SheetId(0) },
     );
     assert!(window.cells.is_empty() && html.contains("Empty cell range"));
-    let (mut package, _) = open(
+    assert!(!html.contains("are not shown"));
+    // Text in an unknown namespace never becomes cell text; the page says it is hidden.
+    let (mut package, ods) = open(
         r#"<g:table g:name="Other"><g:table-row><g:table-cell><q:p xmlns:q="urn:not-odf">Pretend cell</q:p></g:table-cell></g:table-row></g:table>"#,
     );
-    assert!(matches!(
-        window_target(&mut package, 0),
-        Err(OfficeError::Unsupported(_))
-    ));
+    let (window, html) = render(
+        &mut package,
+        &ods,
+        OfficeTarget::SheetFirst { sheet: SheetId(0) },
+    );
+    assert!(window.cells.is_empty());
+    assert!(!html.contains("Pretend cell") && html.contains("are not shown"));
 }
 
 #[test]
@@ -318,13 +332,15 @@ fn ods_grouped_rows_keep_paragraph_order_and_external_link_text_inert() {
 
 #[test]
 fn ods_wrong_body_structure_and_lookalike_namespaces_are_rejected() {
-    for body in [
-        r#"<g:table g:name="First"/></o:spreadsheet></o:body><o:body><o:spreadsheet><g:table g:name="Second"/>"#,
-        r#"<q:table xmlns:q="urn:not-odf" q:name="Pretend"/>"#,
-    ] {
-        let mut package = Package::open(source(body, false), &Cancellation::default()).unwrap();
-        assert!(Ods::load(&mut package).is_err());
-    }
+    let body = r#"<g:table g:name="First"/></o:spreadsheet></o:body><o:body><o:spreadsheet><g:table g:name="Second"/>"#;
+    let mut package = Package::open(source(body, false), &Cancellation::default()).unwrap();
+    assert!(Ods::load(&mut package).is_err());
+    // A lookalike table is another writer's element, never a sheet.
+    let body = r#"<q:table xmlns:q="urn:not-odf" q:name="Pretend"/><g:table g:name="Real"/>"#;
+    let mut package = Package::open(source(body, false), &Cancellation::default()).unwrap();
+    let ods = Ods::load(&mut package).unwrap();
+    let names: Vec<_> = ods.catalog.sheets.iter().map(|sheet| &sheet.name).collect();
+    assert_eq!(names, ["Real"]);
 }
 
 #[test]

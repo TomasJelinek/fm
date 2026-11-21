@@ -4,6 +4,13 @@ use quick_xml::{NsReader, events::Event, name::ResolveResult};
 use std::io::{self, BufRead, BufReader, Read};
 
 const TOKEN: usize = 64 * 1024;
+const UTF16_OR_BINARY: &str =
+    "contains XML in UTF-16 or binary form, which the preview cannot read";
+const DOCUMENT_TYPE: &str =
+    "contains an XML document type definition (DTD), which the preview refuses for safety";
+const ENCODING: &str =
+    "declares an XML text encoding other than UTF-8, which the preview cannot read";
+const INSTRUCTION: &str = "contains XML processing instructions, which the preview does not read";
 
 #[cfg(test)]
 #[path = "xml_guard_tests.rs"]
@@ -32,13 +39,11 @@ impl<R: Read> Guard<R> {
             }
             if self.token.len() == TOKEN {
                 return Err(io::Error::other(OfficeError::LimitExceeded(
-                    "XML token before parser allocation",
+                    crate::model::TOKEN_LIMIT,
                 )));
             }
             if byte == 0 || (self.token.is_empty() && (byte == 0xff || byte == 0xfe)) {
-                return Err(io::Error::other(OfficeError::Unsupported(
-                    "UTF-16 or binary XML",
-                )));
+                return Err(io::Error::other(OfficeError::Unsupported(UTF16_OR_BINARY)));
             }
             if byte < 0x20 && !b"\t\r\n".contains(&byte) {
                 return Err(io::Error::other(OfficeError::Malformed(
@@ -65,9 +70,7 @@ impl<R: Read> Guard<R> {
                     || self.token.starts_with(b"<!--")
                     || self.token.starts_with(b"<![CDATA[");
                 if !prefix_ok {
-                    return Err(io::Error::other(OfficeError::Unsupported(
-                        "DTD/entity declarations",
-                    )));
+                    return Err(io::Error::other(OfficeError::Unsupported(DOCUMENT_TYPE)));
                 }
                 if (self.token.starts_with(b"<!--") && self.token.ends_with(b"-->"))
                     || (self.token.starts_with(b"<![CDATA[") && self.token.ends_with(b"]]>"))
@@ -419,12 +422,12 @@ impl<R: Read> Xml<R> {
                         if !encoding.eq_ignore_ascii_case(b"utf-8")
                             && !encoding.eq_ignore_ascii_case(b"us-ascii")
                         {
-                            return Err(OfficeError::Unsupported("XML encoding (UTF-8 only)"));
+                            return Err(OfficeError::Unsupported(ENCODING));
                         }
                     }
                 }
-                Event::DocType(_) => return Err(OfficeError::Unsupported("DTD")),
-                Event::PI(_) => return Err(OfficeError::Unsupported("XML processing instruction")),
+                Event::DocType(_) => return Err(OfficeError::Unsupported(DOCUMENT_TYPE)),
+                Event::PI(_) => return Err(OfficeError::Unsupported(INSTRUCTION)),
                 Event::Eof => {
                     if self.depth != 0 || self.roots != 1 {
                         return Err(OfficeError::Malformed("incomplete XML"));

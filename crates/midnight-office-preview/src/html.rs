@@ -200,11 +200,8 @@ pub(crate) fn catalog(catalog: &OfficeCatalog) -> Result<Vec<u8>, OfficeError> {
     html.finish()
 }
 
-pub(crate) fn sheet(
-    catalog: &OfficeCatalog,
-    sheet: SheetId,
-    window: &Window,
-) -> Result<Vec<u8>, OfficeError> {
+/// The sheet's name and its Sheets navigation; "First cells" only for worksheets.
+fn sheet_page(catalog: &OfficeCatalog, sheet: SheetId, cells: bool) -> Result<Html, OfficeError> {
     let position = usize::from(sheet.0);
     let descriptor = catalog
         .sheets
@@ -216,7 +213,9 @@ pub(crate) fn sheet(
     html.text(&descriptor.name)?;
     html.raw("</h1><nav aria-label=\"Sheets\">")?;
     html.link(OfficeTarget::Catalog, "All sheets")?;
-    html.link(OfficeTarget::SheetFirst { sheet }, "First cells")?;
+    if cells {
+        html.link(OfficeTarget::SheetFirst { sheet }, "First cells")?;
+    }
     if let Some(previous) = position
         .checked_sub(1)
         .and_then(|index| catalog.sheets.get(index))
@@ -229,7 +228,30 @@ pub(crate) fn sheet(
     if let Some(next) = catalog.sheets.get(position + 1) {
         html.link(OfficeTarget::SheetFirst { sheet: next.id }, "Next sheet")?;
     }
-    html.raw("</nav><nav aria-label=\"Cell windows\">")?;
+    html.raw("</nav>")?;
+    Ok(html)
+}
+
+/// A chart, dialog, macro or external sheet: its place in the workbook and what it is.
+pub(crate) fn unshown_sheet(
+    catalog: &OfficeCatalog,
+    sheet: SheetId,
+    reason: &str,
+) -> Result<Vec<u8>, OfficeError> {
+    let mut html = sheet_page(catalog, sheet, false)?;
+    html.raw("<p>")?;
+    html.text(&format!("This sheet {reason}."))?;
+    html.raw("</p>")?;
+    html.finish()
+}
+
+pub(crate) fn sheet(
+    catalog: &OfficeCatalog,
+    sheet: SheetId,
+    window: &Window,
+) -> Result<Vec<u8>, OfficeError> {
+    let mut html = sheet_page(catalog, sheet, true)?;
+    html.raw("<nav aria-label=\"Cell windows\">")?;
     let row = window.row;
     let column = window.column;
     if row > 1 {
@@ -287,6 +309,11 @@ pub(crate) fn sheet(
         column_label((column + 31).min(16_384))
     ))?;
     html.raw(". Empty rows are omitted.</p>")?;
+    if window.omitted {
+        html.raw(
+            "<p>Some charts, pictures, comments or other contents of this sheet are not shown.</p>",
+        )?;
+    }
     if window.cells.is_empty() {
         html.raw("<p>Empty cell range.</p>")?;
         return html.finish();

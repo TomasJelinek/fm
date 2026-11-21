@@ -138,27 +138,24 @@ fn odt_prefixes_lists_spaces_and_tables_keep_reading_order() {
     assert!(html.find("First   item").unwrap() < html.find("A &amp; B").unwrap());
 }
 
+const OBJECTS_ONLY: &str = "contains only pictures, charts or other objects that the preview does \
+     not show";
+
 #[test]
 fn empty_and_object_only_documents_are_not_confused() {
     let mut empty = open(docx("", false), OfficeFormat::Docx);
-    assert!(render(&mut empty, 0).contains("Empty"));
-    let mut unsupported = open(
+    let page = render(&mut empty, 0);
+    assert!(page.contains("Empty") && !page.contains(OBJECTS_ONLY));
+    let mut objects = open(
         docx(
             "<different:p><different:r><different:drawing/></different:r></different:p>",
             false,
         ),
         OfficeFormat::Docx,
     );
-    assert!(matches!(
-        unsupported.render(
-            OfficeTarget::DocumentWindow {
-                document: DocumentId(0),
-                block: 0
-            },
-            &Cancellation::default()
-        ),
-        Err(OfficeError::Unsupported(_))
-    ));
+    let page = render(&mut objects, 0);
+    assert!(page.contains(&format!("This part of the document {OBJECTS_ONLY}.")));
+    assert!(!page.contains("Empty content window"));
 }
 
 #[test]
@@ -278,7 +275,7 @@ fn odp_page_order_and_named_slides_preserve_text_tables_and_empty_state() {
 }
 
 #[test]
-fn slide_text_windows_continue_and_image_only_slide_is_unsupported() {
+fn slide_text_windows_continue_and_image_only_slide_has_a_notice() {
     let paragraphs = (0..70)
         .map(|i| format!("<a:p><a:r><a:t>Line-{i:03}</a:t></a:r></a:p>"))
         .collect::<String>();
@@ -294,16 +291,9 @@ fn slide_text_windows_continue_and_image_only_slide_is_unsupported() {
     assert!(first.contains("Line-063") && !first.contains("Line-064"));
     assert!(first.contains("/office/v1/slide/0/block/64.html"));
     assert!(slide(&mut session, 0, 64).contains("Line-069"));
-    assert!(matches!(
-        session.render(
-            OfficeTarget::SlideWindow {
-                slide: SlideId(1),
-                block: 0
-            },
-            &Cancellation::default()
-        ),
-        Err(OfficeError::Unsupported(_))
-    ));
+    let picture = slide(&mut session, 1, 0);
+    assert!(picture.contains(&format!("This slide {OBJECTS_ONLY}.")));
+    assert!(!picture.contains("Empty content window"));
 }
 
 #[test]
@@ -431,16 +421,8 @@ fn window_past_actual_content_is_empty_even_when_earlier_objects_were_unsupporte
 fn table_newlines_do_not_disguise_unsupported_only_objects_as_readable_contents() {
     let body = "<different:tbl><different:tr><different:tc><different:p><different:r><different:drawing/></different:r></different:p></different:tc></different:tr></different:tbl>";
     let mut session = open(docx(body, false), OfficeFormat::Docx);
-    assert!(matches!(
-        session.render(
-            OfficeTarget::DocumentWindow {
-                document: DocumentId(0),
-                block: 0
-            },
-            &Cancellation::default()
-        ),
-        Err(OfficeError::Unsupported(_))
-    ));
+    let page = render(&mut session, 0);
+    assert!(page.contains(OBJECTS_ONLY) && !page.contains("Empty content window"));
 }
 
 #[test]
@@ -587,10 +569,10 @@ fn repeated_odf_rows_keep_omissions_for_the_requested_intersection() {
         ] {
             let mut session = open(source, format);
             let result = session.render(target, &Cancellation::default());
+            let page = String::from_utf8(result.unwrap().bytes.to_vec()).unwrap();
             if text.is_empty() {
-                assert!(matches!(result, Err(OfficeError::Unsupported(_))));
+                assert!(page.contains(OBJECTS_ONLY) && !page.contains("Empty content window"));
             } else {
-                let page = String::from_utf8(result.unwrap().bytes.to_vec()).unwrap();
                 assert_eq!(page.matches(text).count(), 64);
                 assert!(page.contains("unsupported layout contents are omitted"));
                 assert!(page.contains("/block/564.html"));

@@ -1,7 +1,7 @@
 use crate::{
     OfficeError, OfficeTarget,
+    model::WINDOW_TEXT_LIMIT,
     package::Package,
-    workbook::Workbook,
     xml::{Namespace, Token},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +20,8 @@ pub(crate) struct Window {
     pub column: u16,
     pub cells: Vec<Cell>,
     pub next: Option<(u32, u16)>,
+    /// The sheet holds charts, pictures, comments or other contents not shown here.
+    pub omitted: bool,
 }
 struct Pending {
     row: u32,
@@ -61,22 +63,29 @@ impl Text {
     }
 }
 
+/// Cells of one worksheet window. Only worksheet/sheetData/row/c and the cell's
+/// value, formula and inline text are read; views, formatting, print settings and
+/// extension lists are skipped whole. Objects anchored on the sheet and unknown
+/// markup in the cell path are skipped too, and the page says so.
 pub(crate) fn load(
     package: &mut Package,
-    workbook: &Workbook,
+    part: &str,
+    shared: Option<&str>,
     target: OfficeTarget,
 ) -> Result<Window, OfficeError> {
-    let (sheet, mut anchor) = match target {
-        OfficeTarget::SheetFirst { sheet } => (sheet, None),
-        OfficeTarget::SheetWindow { sheet, row, column } => (sheet, Some((row, column))),
+    let mut anchor = match target {
+        OfficeTarget::SheetFirst { .. } => None,
+        OfficeTarget::SheetWindow { row, column, .. } => Some((row, column)),
         _ => return Err(OfficeError::InvalidTarget),
     };
-    let mut xml = package.xml(&workbook.parts[usize::from(sheet.0)])?;
+    let mut xml = package.xml(part)?;
     let mut cells = Vec::new();
     let mut selected_ids = BTreeMap::new();
     let mut next = None;
     let mut pending: Option<Pending> = None;
     let mut stack: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
+    let mut omitted = false;
     let mut previous = None;
     let mut row_number = None;
     let mut text_bytes = 0usize;
@@ -84,25 +93,26 @@ pub(crate) fn load(
     loop {
         match xml.next()? {
             Token::Start(element) => {
-                if stack.is_empty() && !element.is(Namespace::Sheet, "worksheet") {
-                    return Err(OfficeError::Unsupported("not a worksheet"));
+                if skipped > 0 {
+                    skipped += 1;
+                    continue;
                 }
-                if element.ns != Namespace::Sheet || !supported_element(&element.name) {
-                    return Err(OfficeError::Unsupported(
-                        "worksheet element outside contents subset",
-                    ));
-                }
-                match element.name.as_str() {
-                    "sheetData" => {
-                        if sheet_data || stack.as_slice() != ["worksheet"] {
+                let Some(parent) = stack.last().map(String::as_str) else {
+                    if !element.is(Namespace::Sheet, "worksheet") {
+                        return Err(OfficeError::Malformed("worksheet root"));
+                    }
+                    stack.push(element.name);
+                    continue;
+                };
+                let name = (element.ns == Namespace::Sheet).then_some(element.name.as_str());
+                match (parent, name) {
+                    ("worksheet", Some("sheetData")) => {
+                        if sheet_data {
                             return Err(OfficeError::Malformed("worksheet sheetData structure"));
                         }
                         sheet_data = true;
                     }
-                    "row" => {
-                        if stack.last().map(String::as_str) != Some("sheetData") {
-                            return Err(OfficeError::Malformed("worksheet row structure"));
-                        }
+                    ("sheetData", Some("row")) => {
                         row_number = element
                             .attr("r")
                             .map(|r| {
@@ -114,8 +124,8 @@ pub(crate) fn load(
                             return Err(OfficeError::Malformed("row outside worksheet"));
                         }
                     }
-                    "c" => {
-                        if pending.is_some() || stack.last().map(String::as_str) != Some("row") {
+                    ("row", Some("c")) => {
+                        if pending.is_some() {
                             return Err(OfficeError::Malformed("worksheet cell structure"));
                         }
                         let (row, column) = coordinate(element.required("r")?)?;
@@ -129,7 +139,7 @@ pub(crate) fn load(
                         previous = Some((row, column));
                         let kind = element.attr("t").unwrap_or("n");
                         if !["n", "s", "str", "inlineStr", "b", "e", "d"].contains(&kind) {
-                            return Err(OfficeError::Unsupported("cell value type"));
+                            return Err(OfficeError::Malformed("cell value type"));
                         }
                         let selected = anchor.is_none_or(|(r, c)| inside(row, column, r, c));
                         pending = Some(Pending {
@@ -145,13 +155,10 @@ pub(crate) fn load(
                             has_inline: false,
                         });
                     }
-                    "v" | "f" | "is" => {
+                    ("c", Some("v" | "f" | "is")) => {
                         let cell = pending
                             .as_mut()
                             .ok_or(OfficeError::Malformed("cell value outside cell"))?;
-                        if stack.last().map(String::as_str) != Some("c") {
-                            return Err(OfficeError::Malformed("nested cell value"));
-                        }
                         let seen = match element.name.as_str() {
                             "v" => &mut cell.has_value,
                             "f" => &mut cell.has_formula,
@@ -162,19 +169,50 @@ pub(crate) fn load(
                         }
                         *seen = true;
                     }
-                    "t" if pending.is_none()
-                        || !matches!(
-                            stack.last().map(String::as_str),
-                            Some("is" | "r" | "rPh")
-                        ) =>
-                    {
-                        return Err(OfficeError::Malformed("inline text structure"));
+                    ("is" | "r", Some("t")) | ("is", Some("r")) => (),
+                    // Run formatting, phonetic runs (never cell text) and extensions.
+                    ("row" | "c" | "is" | "r", Some("extLst"))
+                    | ("is" | "r", Some("rPr" | "rPh" | "phoneticPr")) => {
+                        skipped = 1;
+                        continue;
                     }
-                    _ => (),
+                    // Charts, pictures, comments, form controls and OLE objects.
+                    (
+                        "worksheet",
+                        Some(
+                            "drawing" | "legacyDrawing" | "legacyDrawingHF" | "picture"
+                            | "oleObjects" | "controls",
+                        ),
+                    ) => {
+                        omitted = true;
+                        skipped = 1;
+                        continue;
+                    }
+                    // Excel wraps form controls and OLE objects in compatibility markup.
+                    ("worksheet", None) if element.name == "AlternateContent" => {
+                        omitted = true;
+                        skipped = 1;
+                        continue;
+                    }
+                    // Views, formatting, protection, filters, print settings, tables and
+                    // extension lists hold no cell contents.
+                    ("worksheet", _) => {
+                        skipped = 1;
+                        continue;
+                    }
+                    // Unknown markup in the cell path is never read as cell text.
+                    _ => {
+                        omitted = true;
+                        skipped = 1;
+                        continue;
+                    }
                 }
                 stack.push(element.name);
             }
             Token::Text(text) => {
+                if skipped > 0 {
+                    continue;
+                }
                 if let Some(cell) = pending.as_mut() {
                     // Outside-window values only need a bounded populated marker.
                     let value = if cell.selected {
@@ -187,14 +225,16 @@ pub(crate) fn load(
                     match stack.last().map(String::as_str) {
                         Some("v") => cell.value.push(value),
                         Some("f") => cell.formula.push(value),
-                        Some("t") if !stack.iter().any(|name| name == "rPh") => {
-                            cell.inline.push(value)
-                        }
+                        Some("t") => cell.inline.push(value),
                         _ => (),
                     }
                 }
             }
             Token::End(ns, name) => {
+                if skipped > 0 {
+                    skipped -= 1;
+                    continue;
+                }
                 if ns == Namespace::Sheet && name == "c" {
                     let cell = pending.take().ok_or(OfficeError::Malformed("cell end"))?;
                     let populated = !cell.value.text.is_empty()
@@ -246,7 +286,7 @@ pub(crate) fn load(
                             };
                             text_bytes += text.len();
                             if text_bytes > WINDOW_BYTES {
-                                return Err(OfficeError::LimitExceeded("window text"));
+                                return Err(OfficeError::LimitExceeded(WINDOW_TEXT_LIMIT));
                             }
                             cells.push(Cell {
                                 row: cell.row,
@@ -273,10 +313,7 @@ pub(crate) fn load(
     }
     drop(xml);
     if !selected_ids.is_empty() {
-        let part = workbook
-            .shared_strings
-            .as_deref()
-            .ok_or(OfficeError::Malformed("missing shared-string table"))?;
+        let part = shared.ok_or(OfficeError::Malformed("missing shared-string table"))?;
         let needed: BTreeSet<u32> = selected_ids.values().copied().collect();
         let strings = shared_strings(package, part, &needed)?;
         for (cell, id) in selected_ids {
@@ -285,7 +322,7 @@ pub(crate) fn load(
                 .ok_or(OfficeError::Malformed("shared-string ID outside table"))?;
             text_bytes += value.len();
             if text_bytes > WINDOW_BYTES {
-                return Err(OfficeError::LimitExceeded("window text"));
+                return Err(OfficeError::LimitExceeded(WINDOW_TEXT_LIMIT));
             }
             cells[cell].text = value.clone();
         }
@@ -296,6 +333,7 @@ pub(crate) fn load(
         column,
         cells,
         next,
+        omitted,
     })
 }
 
@@ -305,7 +343,10 @@ fn shared_strings(
     needed: &BTreeSet<u32>,
 ) -> Result<BTreeMap<u32, String>, OfficeError> {
     let mut xml = package.xml(part)?;
+    // Only sst/si with its text and runs is read; formatting, phonetic runs,
+    // extension lists and other writers' markup are skipped whole.
     let mut stack: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
     let mut index = 0u32;
     let mut current = Text::default();
     let mut strings = BTreeMap::new();
@@ -313,55 +354,36 @@ fn shared_strings(
     loop {
         match xml.next()? {
             Token::Start(element) => {
-                if stack.is_empty() && !element.is(Namespace::Sheet, "sst") {
-                    return Err(OfficeError::Malformed("shared-string table root"));
+                if skipped > 0 {
+                    skipped += 1;
+                    continue;
                 }
-                if element.ns != Namespace::Sheet
-                    || ![
-                        "sst",
-                        "si",
-                        "t",
-                        "r",
-                        "rPr",
-                        "rFont",
-                        "charset",
-                        "family",
-                        "b",
-                        "i",
-                        "strike",
-                        "outline",
-                        "shadow",
-                        "condense",
-                        "extend",
-                        "color",
-                        "sz",
-                        "u",
-                        "vertAlign",
-                        "scheme",
-                        "rPh",
-                        "phoneticPr",
-                    ]
-                    .contains(&element.name.as_str())
-                {
-                    return Err(OfficeError::Unsupported("shared-string element"));
-                }
-                if element.name == "si" {
-                    if stack.as_slice() != ["sst"] {
-                        return Err(OfficeError::Malformed("shared-string structure"));
+                let name = (element.ns == Namespace::Sheet).then_some(element.name.as_str());
+                match (stack.last().map(String::as_str), name) {
+                    (None, Some("sst")) => (),
+                    (None, _) => return Err(OfficeError::Malformed("shared-string table root")),
+                    (Some("sst"), Some("si")) => current = Text::default(),
+                    (Some("si"), Some("t" | "r")) | (Some("r"), Some("t")) => (),
+                    _ => {
+                        skipped = 1;
+                        continue;
                     }
-                    current = Text::default();
                 }
                 stack.push(element.name);
             }
             Token::Text(text) => {
-                if needed.contains(&index)
+                if skipped == 0
+                    && needed.contains(&index)
                     && stack.last().map(String::as_str) == Some("t")
-                    && !stack.iter().any(|name| name == "rPh")
                 {
                     current.push(&text);
                 }
             }
             Token::End(_, name) => {
+                if skipped > 0 {
+                    skipped -= 1;
+                    continue;
+                }
                 stack.pop();
                 if name == "si" {
                     if needed.contains(&index) {
@@ -417,104 +439,4 @@ fn coordinate(value: &str) -> Result<(u32, u16), OfficeError> {
         return Err(OfficeError::Malformed("cell outside XLSX coordinates"));
     }
     Ok((row, column))
-}
-
-fn supported_element(name: &str) -> bool {
-    [
-        "worksheet",
-        "sheetPr",
-        "tabColor",
-        "outlinePr",
-        "pageSetUpPr",
-        "dimension",
-        "sheetViews",
-        "sheetView",
-        "pane",
-        "selection",
-        "sheetFormatPr",
-        "cols",
-        "col",
-        "sheetData",
-        "row",
-        "c",
-        "v",
-        "f",
-        "is",
-        "t",
-        "r",
-        "rPr",
-        "rFont",
-        "charset",
-        "family",
-        "b",
-        "i",
-        "strike",
-        "outline",
-        "shadow",
-        "condense",
-        "extend",
-        "color",
-        "sz",
-        "u",
-        "vertAlign",
-        "scheme",
-        "rPh",
-        "phoneticPr",
-        "sheetCalcPr",
-        "sheetProtection",
-        "protectedRanges",
-        "protectedRange",
-        "scenarios",
-        "scenario",
-        "inputCells",
-        "autoFilter",
-        "filterColumn",
-        "filters",
-        "filter",
-        "dateGroupItem",
-        "customFilters",
-        "customFilter",
-        "dynamicFilter",
-        "colorFilter",
-        "iconFilter",
-        "top10",
-        "sortState",
-        "sortCondition",
-        "dataConsolidate",
-        "dataRefs",
-        "dataRef",
-        "mergeCells",
-        "mergeCell",
-        "conditionalFormatting",
-        "cfRule",
-        "formula",
-        "colorScale",
-        "cfvo",
-        "dataBar",
-        "iconSet",
-        "dataValidations",
-        "dataValidation",
-        "formula1",
-        "formula2",
-        "hyperlinks",
-        "hyperlink",
-        "printOptions",
-        "pageMargins",
-        "pageSetup",
-        "headerFooter",
-        "oddHeader",
-        "oddFooter",
-        "evenHeader",
-        "evenFooter",
-        "firstHeader",
-        "firstFooter",
-        "rowBreaks",
-        "colBreaks",
-        "brk",
-        "ignoredErrors",
-        "ignoredError",
-        "tableParts",
-        "tablePart",
-    ]
-    .contains(&name)
 }

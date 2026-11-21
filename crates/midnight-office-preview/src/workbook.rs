@@ -1,13 +1,22 @@
+//! SpreadsheetML workbook catalog, and the OOXML package entry shared by DOCX, XLSX
+//! and PPTX: package relationships, content types and the main part.
 use crate::{
     OfficeCatalog, OfficeError, OfficeFormat, SheetDescriptor, SheetId,
     package::{Package, relationship_target},
-    xml::{Namespace, Token},
+    xml::{Element, Namespace, Token},
 };
 use std::collections::BTreeSet;
 
+/// What a catalog sheet holds: worksheet cells, or a sheet the preview only names.
+pub(crate) enum SheetPart {
+    Cells(String),
+    /// Completes "This sheet …" on the sheet's page.
+    Unshown(&'static str),
+}
+
 pub(crate) struct Workbook {
     pub catalog: OfficeCatalog,
-    pub parts: Vec<String>,
+    pub parts: Vec<SheetPart>,
     pub shared_strings: Option<String>,
 }
 pub(crate) struct Relationship {
@@ -16,12 +25,40 @@ pub(crate) struct Relationship {
     pub target: Option<String>,
 }
 
+/// Main-part content types per family: document, template and macro-enabled
+/// variants, and shows for presentations. The preview never reads a VBA project.
+pub(crate) const WORDPROCESSING: &[&str] = &[
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+    "application/vnd.ms-word.document.macroEnabled.main+xml",
+    "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+];
+pub(crate) const SPREADSHEET: &[&str] = &[
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml",
+    "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+    "application/vnd.ms-excel.template.macroEnabled.main+xml",
+];
+pub(crate) const PRESENTATION: &[&str] = &[
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+    "application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml",
+    "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
+    "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml",
+    "application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml",
+    "application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
+];
+const BINARY_WORKBOOK: &str = "application/vnd.ms-excel.sheet.binary.macroEnabled.main";
+const XLSB: &str = "is a binary Excel workbook (.xlsb), which the preview cannot open";
+
+const CHART_SHEET: &str = "is a chart, which the preview does not show";
+const DIALOG_SHEET: &str = "is a dialog sheet, which the preview does not show";
+const MACRO_SHEET: &str = "is a macro sheet, which the preview does not show";
+const EXTERNAL_SHEET: &str = "is stored outside this workbook, which the preview does not open";
+const OTHER_SHEET: &str = "is a kind of sheet that the preview does not show";
+
 impl Workbook {
     pub fn load(package: &mut Package) -> Result<Self, OfficeError> {
-        let workbook_part = office_part(
-            package,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
-        )?;
+        let workbook_part = office_part(package, SPREADSHEET)?;
         let workbook = workbook_part.as_str();
         let (directory, file) = workbook.rsplit_once('/').unwrap_or(("", workbook));
         let relation_path = if directory.is_empty() {
@@ -40,69 +77,57 @@ impl Workbook {
         let mut parts = Vec::new();
         let mut ids = BTreeSet::new();
         let mut sheet_ids = BTreeSet::new();
-        let mut stack = Vec::new();
+        // Only workbook/sheets/sheet is read. Views, names, calculation settings,
+        // extension lists and other writers' markup are skipped whole.
+        let mut depth = 0usize;
+        let mut skipped = 0usize;
         let mut sheets_seen = false;
         loop {
             match xml.next()? {
                 Token::Start(element) => {
-                    if stack.is_empty() && !element.is(Namespace::Sheet, "workbook") {
-                        return Err(OfficeError::Unsupported("not an XLSX workbook"));
+                    if skipped > 0 {
+                        skipped += 1;
+                        continue;
                     }
-                    if element.ns != Namespace::Sheet || !supported_element(&element.name) {
-                        return Err(OfficeError::Unsupported("workbook extension namespace"));
-                    }
-                    if element.name == "sheets" {
-                        if sheets_seen || stack.as_slice() != ["workbook"] {
-                            return Err(OfficeError::Malformed("workbook sheets structure"));
+                    match depth {
+                        0 if !element.is(Namespace::Sheet, "workbook") => {
+                            return Err(OfficeError::Malformed("workbook root"));
                         }
-                        sheets_seen = true;
-                    }
-                    if element.name == "sheet" {
-                        if stack.last().map(String::as_str) != Some("sheets") {
+                        0 => (),
+                        1 if element.is(Namespace::Sheet, "sheets") => {
+                            if sheets_seen {
+                                return Err(OfficeError::Malformed("workbook sheets structure"));
+                            }
+                            sheets_seen = true;
+                        }
+                        1 if element.is(Namespace::Sheet, "sheet") => {
                             return Err(OfficeError::Malformed("sheet outside sheets"));
                         }
-                        if sheets.len() >= 1024 {
-                            return Err(OfficeError::LimitExceeded("sheet descriptors"));
+                        2 if element.is(Namespace::Sheet, "sheet") => {
+                            if sheets.len() >= 1024 {
+                                return Err(OfficeError::LimitExceeded("sheet descriptors"));
+                            }
+                            let (name, relationship) =
+                                sheet(&element, &relations, &mut ids, &mut sheet_ids)?;
+                            sheets.push(SheetDescriptor {
+                                id: SheetId(sheets.len() as u16),
+                                name: name.to_owned(),
+                            });
+                            parts.push(sheet_part(relationship));
                         }
-                        let name = element.required("name")?;
-                        if name.len() > 1024 {
-                            return Err(OfficeError::LimitExceeded("sheet name"));
+                        _ => {
+                            skipped = 1;
+                            continue;
                         }
-                        let id = element
-                            .attr_ns(Namespace::Relationships, "id")
-                            .ok_or(OfficeError::Malformed("sheet relationship ID"))?;
-                        let sheet_id = element.required("sheetId")?;
-                        if id.len() > 1024
-                            || sheet_id.len() > 10
-                            || !sheet_id.bytes().all(|c| c.is_ascii_digit())
-                            || sheet_id.parse::<u32>().ok().is_none_or(|value| value == 0)
-                        {
-                            return Err(OfficeError::Malformed("sheet identifier bounds"));
-                        }
-                        if !ids.insert(id.to_owned()) || !sheet_ids.insert(sheet_id.to_owned()) {
-                            return Err(OfficeError::Malformed("duplicate sheet identifier"));
-                        }
-                        let relationship = relations
-                            .iter()
-                            .find(|r| r.id == id)
-                            .ok_or(OfficeError::Malformed("missing worksheet relationship"))?;
-                        if !kind(&relationship.kind, "worksheet") {
-                            return Err(OfficeError::Unsupported("non-worksheet sheet"));
-                        }
-                        let target = relationship
-                            .target
-                            .as_ref()
-                            .ok_or(OfficeError::Unsupported("external worksheet"))?;
-                        sheets.push(SheetDescriptor {
-                            id: SheetId(sheets.len() as u16),
-                            name: name.to_owned(),
-                        });
-                        parts.push(target.clone());
                     }
-                    stack.push(element.name);
+                    depth += 1;
                 }
                 Token::End(_, _) => {
-                    stack.pop();
+                    if skipped > 0 {
+                        skipped -= 1;
+                    } else {
+                        depth -= 1;
+                    }
                 }
                 Token::Eof => break,
                 Token::Text(_) => (),
@@ -112,7 +137,11 @@ impl Workbook {
             return Err(OfficeError::Malformed("workbook has no sheets element"));
         }
         drop(xml);
-        for part in parts.iter().chain(shared_strings.iter()) {
+        let cells = parts.iter().filter_map(|part| match part {
+            SheetPart::Cells(part) => Some(part),
+            SheetPart::Unshown(_) => None,
+        });
+        for part in cells.chain(shared_strings.iter()) {
             if !package.contains(part) {
                 return Err(OfficeError::Malformed("missing workbook member"));
             }
@@ -130,38 +159,54 @@ impl Workbook {
     }
 }
 
-fn supported_element(name: &str) -> bool {
-    [
-        "workbook",
-        "fileVersion",
-        "fileSharing",
-        "workbookPr",
-        "workbookProtection",
-        "bookViews",
-        "workbookView",
-        "sheets",
-        "sheet",
-        "functionGroups",
-        "functionGroup",
-        "externalReferences",
-        "externalReference",
-        "definedNames",
-        "definedName",
-        "calcPr",
-        "oleSize",
-        "customWorkbookViews",
-        "customWorkbookView",
-        "pivotCaches",
-        "pivotCache",
-        "smartTagPr",
-        "smartTagTypes",
-        "smartTagType",
-        "webPublishing",
-        "fileRecoveryPr",
-        "webPublishObjects",
-        "webPublishObject",
-    ]
-    .contains(&name)
+/// Checks one `sheet` descriptor; returns its name and relationship.
+fn sheet<'a, 'e>(
+    element: &'e Element,
+    relations: &'a [Relationship],
+    ids: &mut BTreeSet<String>,
+    sheet_ids: &mut BTreeSet<String>,
+) -> Result<(&'e str, &'a Relationship), OfficeError> {
+    let name = element.required("name")?;
+    if name.len() > 1024 {
+        return Err(OfficeError::LimitExceeded("sheet name"));
+    }
+    let id = element
+        .attr_ns(Namespace::Relationships, "id")
+        .ok_or(OfficeError::Malformed("sheet relationship ID"))?;
+    let sheet_id = element.required("sheetId")?;
+    if id.len() > 1024
+        || sheet_id.len() > 10
+        || !sheet_id.bytes().all(|c| c.is_ascii_digit())
+        || sheet_id.parse::<u32>().ok().is_none_or(|value| value == 0)
+    {
+        return Err(OfficeError::Malformed("sheet identifier bounds"));
+    }
+    if !ids.insert(id.to_owned()) || !sheet_ids.insert(sheet_id.to_owned()) {
+        return Err(OfficeError::Malformed("duplicate sheet identifier"));
+    }
+    let relationship = relations
+        .iter()
+        .find(|r| r.id == id)
+        .ok_or(OfficeError::Malformed("missing worksheet relationship"))?;
+    Ok((name, relationship))
+}
+
+/// Worksheets show their cells; chart, dialog, macro and external sheets keep their
+/// place in the catalog, and their page says what they are.
+fn sheet_part(relationship: &Relationship) -> SheetPart {
+    let relation = relationship.kind.as_str();
+    match &relationship.target {
+        None => SheetPart::Unshown(EXTERNAL_SHEET),
+        Some(target) if kind(relation, "worksheet") => SheetPart::Cells(target.clone()),
+        Some(_) if kind(relation, "chartsheet") => SheetPart::Unshown(CHART_SHEET),
+        Some(_) if kind(relation, "dialogsheet") => SheetPart::Unshown(DIALOG_SHEET),
+        Some(_)
+            if relation.ends_with("/xlMacrosheet") || relation.ends_with("/xlIntlMacrosheet") =>
+        {
+            SheetPart::Unshown(MACRO_SHEET)
+        }
+        Some(_) => SheetPart::Unshown(OTHER_SHEET),
+    }
 }
 
 pub(crate) fn kind(value: &str, suffix: &str) -> bool {
@@ -231,7 +276,9 @@ pub(crate) fn relationships(
     Ok(result)
 }
 
-pub(crate) fn office_part(package: &mut Package, expected: &str) -> Result<String, OfficeError> {
+/// The main part named by the package's officeDocument relationship, after checking
+/// that its content type belongs to `family`.
+pub(crate) fn office_part(package: &mut Package, family: &[&str]) -> Result<String, OfficeError> {
     let root = relationships(package, "_rels/.rels", "")?;
     let mut office = root
         .iter()
@@ -239,22 +286,25 @@ pub(crate) fn office_part(package: &mut Package, expected: &str) -> Result<Strin
     let part = office
         .next()
         .and_then(|relation| relation.target.as_deref())
-        .ok_or(OfficeError::Unsupported(
-            "missing internal Office document relationship",
-        ))?;
+        .ok_or(OfficeError::Malformed("no internal main-part relationship"))?;
     if office.next().is_some() {
         return Err(OfficeError::Malformed("ambiguous Office document"));
     }
-    content_type(package, part, expected)?;
+    content_type(package, part, family)?;
     if !package.contains(part) {
         return Err(OfficeError::Malformed("missing Office main member"));
     }
     Ok(part.to_owned())
 }
 
-fn content_type(package: &mut Package, workbook: &str, expected: &str) -> Result<(), OfficeError> {
+/// The main part's content type is its Override, or else the Default for its
+/// extension (Open Packaging Conventions; names and extensions ignore ASCII case).
+/// Other parts' types, such as embedded macro-enabled workbooks, are not refused.
+fn content_type(package: &mut Package, main: &str, family: &[&str]) -> Result<(), OfficeError> {
     let mut xml = package.xml("[Content_Types].xml")?;
-    let mut found = false;
+    let extension = main.rsplit_once('.').map(|(_, extension)| extension);
+    let mut overridden = None;
+    let mut default = None;
     let mut names = BTreeSet::new();
     let mut retained = 0;
     let mut depth = 0;
@@ -269,9 +319,6 @@ fn content_type(package: &mut Package, workbook: &str, expected: &str) -> Result
                     return Err(OfficeError::Malformed("content type structure"));
                 }
                 let content = element.required("ContentType")?;
-                if content.contains("macroEnabled") || content.contains("vbaProject") {
-                    return Err(OfficeError::Unsupported("macro-enabled Office package"));
-                }
                 let key = match element.name.as_str() {
                     "Override" => element.required("PartName")?,
                     "Default" => element.required("Extension")?,
@@ -284,11 +331,16 @@ fn content_type(package: &mut Package, workbook: &str, expected: &str) -> Result
                 if !names.insert(key.to_owned()) {
                     return Err(OfficeError::Malformed("duplicate content type"));
                 }
-                if element.name == "Override" && key.strip_prefix('/') == Some(workbook) {
-                    if content != expected {
-                        return Err(OfficeError::Unsupported("main document content type"));
-                    }
-                    found = true;
+                if element.name == "Override"
+                    && key
+                        .strip_prefix('/')
+                        .is_some_and(|name| name.eq_ignore_ascii_case(main))
+                {
+                    overridden = Some(content.to_owned());
+                } else if element.name == "Default"
+                    && extension.is_some_and(|extension| extension.eq_ignore_ascii_case(key))
+                {
+                    default = Some(content.to_owned());
                 }
             }
             Token::End(_, _) => depth -= 1,
@@ -296,8 +348,12 @@ fn content_type(package: &mut Package, workbook: &str, expected: &str) -> Result
             Token::Text(_) => (),
         }
     }
-    if !found {
-        return Err(OfficeError::Unsupported("Office main content type missing"));
+    match overridden.or(default) {
+        Some(content) if family.contains(&content.as_str()) => Ok(()),
+        Some(content) if content == BINARY_WORKBOOK => Err(OfficeError::Unsupported(XLSB)),
+        Some(_) => Err(OfficeError::Malformed(
+            "main part content type of another format",
+        )),
+        None => Err(OfficeError::Malformed("main part without a content type")),
     }
-    Ok(())
 }

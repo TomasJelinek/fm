@@ -18,7 +18,7 @@ impl Odp {
             match xml.next()? {
                 Token::Start(element) => {
                     if stack.is_empty() && !element.is(Namespace::OdfOffice, "document-content") {
-                        return Err(OfficeError::Unsupported("not an ODF contents document"));
+                        return Err(OfficeError::Malformed("ODF content root"));
                     }
                     if element.is(Namespace::OdfOffice, "presentation") {
                         if body_seen

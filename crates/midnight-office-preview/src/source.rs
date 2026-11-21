@@ -56,9 +56,7 @@ impl Work {
             let previous = self.used.load(Ordering::Relaxed);
             let count = (size as u64).min(MAX_WORK.saturating_sub(previous));
             if count == 0 && size != 0 {
-                return Err(OfficeError::LimitExceeded(
-                    "generation delivered/decompressed bytes",
-                ));
+                return Err(OfficeError::LimitExceeded(crate::model::WORK_LIMIT));
             }
             if self
                 .used

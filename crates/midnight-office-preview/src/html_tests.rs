@@ -110,6 +110,7 @@ fn max_empty_sheet_keeps_full_heading_and_bounded_fixed_navigation() {
             column: 16_000,
             cells: Vec::new(),
             next: Some((1_048_576, 16_384)),
+            omitted: false,
         };
         let bytes = sheet(&value, SheetId(selected), &window).unwrap();
         assert!(bytes.len() < 16 * 1024, "navigation exhausted its frame");
@@ -226,6 +227,7 @@ fn short_catalog_names_remain_complete_and_selected_name_is_unshortened() {
             column: 1,
             cells: Vec::new(),
             next: None,
+            omitted: false,
         },
     )
     .unwrap();
@@ -295,6 +297,7 @@ fn sheet_body_escape_overflow_remains_typed_without_partial_html() {
             column: 1,
             cells,
             next: None,
+            omitted: false,
         },
     );
     assert!(matches!(
@@ -343,8 +346,9 @@ fn document_slide_metadata_frame_fits_existing_body_reserve() {
         assert!(bytes.len() < 16 * 1024);
         let html = std::str::from_utf8(&bytes).unwrap();
         assert!(html.contains(&format!("<h1>{}</h1>", "&quot;".repeat(1024))));
-        assert!(html.contains("Empty content window."));
-        assert!(html.contains("unsupported layout contents are omitted"));
+        // Objects without text are named as such, never shown as an empty window.
+        assert!(html.contains("contains only pictures, charts or other objects"));
+        assert!(!html.contains("Empty content window."));
         assert!(links(html).len() <= 5);
     }
 }

@@ -233,3 +233,102 @@ may show a stored formula result or inert formula text. Find searches only the
 currently generated page, not the complete workbook or document. See
 [Viewer protocol](VIEWER_PROTOCOL.md) and the [current checkpoint](../ACTIVE_WORK.md#current-checkpoint)
 for implementation and qualification boundaries.
+
+### Office packages: what opens and what is refused
+
+Since 21 November 2026 the preview opens packages saved by Microsoft Office. Office
+pads the local headers of its first parts with a 0xA220 "growth hint" extra field
+(520 bytes on `[Content_Types].xml` and `_rels/.rels`, 264 on some others), which
+the first implementation slice (XLSX came first) refused as "local ZIP extras in
+first slice". "First slice" named that delivery phase; it was never a read bound.
+
+**Container.** `midnight-office-preview` checks the ZIP container itself before
+`zip` indexes it ([preflight.rs](../../crates/midnight-office-preview/src/preflight.rs)):
+
+- The end record is the last one whose comment reaches the end of the file. An
+  archive comment is skipped, unless it contains ZIP record signatures that could
+  pass for a second directory.
+- Every central record and its local header must agree on name, flags, compression
+  method, CRC and sizes (or the data descriptor's values). Members lie before the
+  central directory and never overlap. Each member's range is checked before its
+  name and extra field are read, so all names and extra fields read together are
+  at most the file's size; beyond them a member costs its 30-byte header and at most
+  24 bytes of data descriptor.
+- An extra field must be an exact sequence of (ID, size, data) records: a cut
+  record header, a record longer than its field or a trailing byte is a damaged
+  file. Records the preview does not use are skipped: 0xA220 growth hints, 0x5455
+  and 0x000A times, 0x7875 Unix IDs, 0xCAFE, 0xD935 and 0xA11E alignment, and every
+  unknown ID. 0x0001 ZIP64 supplies each 0xFFFFFFFF size or offset and a 0xFFFF disk
+  number, in APPNOTE order; a local ZIP64 record holds both sizes and makes the
+  data descriptor's sizes eight bytes. A repeated ZIP64 record or a missing value is
+  a damaged file. A current 0x7075 Unicode path record that names a different part
+  is refused; a stale one (CRC of another name) is skipped. Entry comments are
+  skipped.
+- `zip` indexes a canonical copy of the central directory: resolved 32-bit sizes
+  and offsets, the validated name, no extra fields and no comments. Its own
+  extra-field reading, which rejects NTFS records of another length, fails stale
+  Unicode path records and renames a member after a current one, never applies, and
+  it retains no extra field or comment for the index memory reservation.
+- Limits are unchanged: a 256 MiB file, 10,000 parts, an 8 MiB central directory
+  (extra fields and comments count), 4,096-byte names and 1 MiB of names, a
+  16 MiB index reservation and 256 MiB of reads and unpacked data per page. A part
+  whose ZIP64 size exceeds 4 GiB is refused. The preflight reads at most the last
+  65,557 bytes for the end record, the central directory, and each member's header,
+  name, extra field and data descriptor.
+
+**Library decision.** `zip` 8.6.0 (already a dependency) keeps member lookup and
+Deflate decoding; no other ZIP library is in `Cargo.lock`. It cannot replace the
+preflight under the same limits: it allocates its index from the end record's
+counts, searches for another end record after a central-directory error, never
+compares local and central headers or detects overlapping or duplicate members, and
+its extra-field parser is crate-private and differs from the rules above (see the
+canonical copy). Local extra fields it only skips. No dependency or feature changed.
+
+**Contents.** Only the parts and elements that carry text and stored values are
+read; other writers' markup is skipped whole and never shown as document text.
+
+- XLSX reads `workbook/sheets/sheet`, worksheet `sheetData` cells and shared
+  strings. Views, names, calculation settings, compatibility (`mc:`) and revision
+  markup, extension lists, formatting, filters, tables and print settings are
+  skipped. Charts, pictures, comments, form controls and OLE objects are skipped and
+  the sheet page says "Some charts, pictures, comments or other contents of this
+  sheet are not shown." Chart, dialog, macro and external sheets keep their place
+  in the catalog; their page says what they are, for example "This sheet is a
+  chart, which the preview does not show."
+- DOCX, PPTX, ODT and ODP pages with only pictures or objects say "This slide
+  contains only pictures, charts or other objects that the preview does not show."
+  (or "This part of the document …") instead of failing. Extension lists (creation
+  IDs), slide backgrounds, transitions and timing, and LibreOffice's form, field and
+  change-tracking declarations no longer claim omitted objects.
+- ODS skips scripts, forms, conditional formats and other sheet-level markup;
+  shapes, charts, pictures and comments are skipped with the sheet notice. A cell
+  value type the preview does not know shows the cell's paragraphs.
+- Template, macro-enabled and (for presentations) show main parts open in their
+  family; the main part's content type may also come from the Default for its
+  extension. VBA projects and ODF `Basic/` and `Scripts/` libraries are never read
+  or run, and a document that embeds a macro-enabled workbook is not refused. The
+  viewer chooses the family by suffix (`docm`, `dotx`, `dotm`; `pptm`, `ppsx`,
+  `ppsm`, `potx`, `potm`; `ott`, `ots`, `otp`), for files a user associates with the
+  preview; the default associations still list only `docx`, `xlsx`, `pptx`, `odt`,
+  `ods` and `odp`.
+
+**Refusals.** The status line shows `OfficeError::message(format)`, which names the
+kind of document and a reason in plain words; `OfficeError::details()` keeps the
+internal reason for Copy details and diagnostics. The viewer window has no Copy
+details action yet, so the details are not shown in the application.
+
+| Case | Status line (for a presentation) |
+| --- | --- |
+| ZIP or ODF encryption | This presentation is password-protected, so the preview cannot open it. |
+| OLE compound file | … is password-protected or saved in the older binary Office format (.doc, .xls or .ppt), which the preview cannot open. |
+| Compression other than stored or Deflate | … uses a compression method other than Deflate, which the preview cannot read. |
+| Unknown ZIP general-purpose flags | … uses ZIP storage options that the preview does not support. |
+| Split archive | … is part of a ZIP archive split into several files, which the preview cannot open. |
+| ZIP64 end records | … is stored in the ZIP64 format for very large archives, which the preview cannot open. |
+| Comment with ZIP record signatures | … hides a second archive directory in its ZIP comment, so the preview does not open it. |
+| Non-UTF-8 or unflagged non-ASCII part names | … names its parts in a legacy character encoding instead of UTF-8, which the preview does not support. |
+| Binary workbook main part | This workbook is a binary Excel workbook (.xlsb), which the preview cannot open. |
+| XML in UTF-16 or binary form; another declared encoding | … contains XML in UTF-16 or binary form … / … declares an XML text encoding other than UTF-8 … |
+| DTD; processing instruction | … contains an XML document type definition (DTD), which the preview refuses for safety. / … contains XML processing instructions … |
+| Damaged or wrong-format package (malformed extra field, header mismatch, overlap, another family's main part) | This presentation is damaged or is not a valid PowerPoint (.pptx) file, so the preview cannot show it. |
+| A limit | for example: This presentation is larger than 256 MiB, more than the preview opens. |

@@ -6,11 +6,16 @@ use crate::{
     xml::{Element, Namespace, Token},
 };
 
+/// Checks the media type of an ODF package of `kind` or its template, and the
+/// manifest. Macro libraries (Basic/, Scripts/) and scripts are never read or run.
 pub(crate) fn load(package: &mut Package, kind: &str) -> Result<(), OfficeError> {
-    let expected = format!("application/vnd.oasis.opendocument.{kind}");
-    if package.read_small("mimetype", 256)? != expected.as_bytes() {
-        return Err(OfficeError::Unsupported("ODF media type"));
-    }
+    let document = format!("application/vnd.oasis.opendocument.{kind}");
+    let template = format!("{document}-template");
+    let mimetype = package.read_small("mimetype", 256)?;
+    let expected = [&document, &template]
+        .into_iter()
+        .find(|media| mimetype == media.as_bytes())
+        .ok_or(OfficeError::Malformed("ODF media type of another format"))?;
     let mut xml = package.xml("META-INF/manifest.xml")?;
     let mut root = false;
     let mut content = false;
@@ -44,19 +49,16 @@ pub(crate) fn load(package: &mut Package, kind: &str) -> Result<(), OfficeError>
                         return Err(OfficeError::Malformed("duplicate ODF manifest entry"));
                     }
                     if path == "/" {
-                        if media != expected {
-                            return Err(OfficeError::Unsupported("ODF root media type"));
+                        if media != expected.as_str() {
+                            return Err(OfficeError::Malformed("ODF root media type"));
                         }
                         root = true;
                     }
                     if path == "content.xml" {
                         if media != "text/xml" {
-                            return Err(OfficeError::Unsupported("ODF content media type"));
+                            return Err(OfficeError::Malformed("ODF content media type"));
                         }
                         content = true;
-                    }
-                    if path.starts_with("Basic/") || path.starts_with("Scripts/") {
-                        return Err(OfficeError::Unsupported("ODF scripts"));
                     }
                 }
             }
@@ -149,7 +151,7 @@ pub(crate) fn window(package: &mut Package, start: u32) -> Result<Window, Office
         match xml.next()? {
             Token::Start(element) => {
                 if stack.is_empty() && !element.is(Namespace::OdfOffice, "document-content") {
-                    return Err(OfficeError::Unsupported("not an ODF contents document"));
+                    return Err(OfficeError::Malformed("ODF content root"));
                 }
                 if element.is(Namespace::OdfOffice, "text") {
                     if body_seen
@@ -248,6 +250,17 @@ pub(crate) fn window(package: &mut Package, start: u32) -> Result<Window, Office
                             | "table-columns"
                             | "table-header-columns",
                         ) => (),
+                        // Form, field and change-tracking declarations that LibreOffice
+                        // writes into every document: no visible contents.
+                        (Namespace::OdfOffice, "forms")
+                        | (
+                            Namespace::OdfText,
+                            "sequence-decls"
+                            | "variable-decls"
+                            | "user-field-decls"
+                            | "dde-connection-decls"
+                            | "tracked-changes",
+                        ) => skip = Some(stack.len()),
                         _ => {
                             output.omit();
                             skip = Some(stack.len());

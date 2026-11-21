@@ -7,10 +7,7 @@ use crate::{
 };
 
 pub(crate) fn load(package: &mut Package) -> Result<String, OfficeError> {
-    crate::workbook::office_part(
-        package,
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
-    )
+    crate::workbook::office_part(package, crate::workbook::WORDPROCESSING)
 }
 
 pub(crate) fn window(package: &mut Package, part: &str, start: u32) -> Result<Window, OfficeError> {
@@ -30,7 +27,7 @@ pub(crate) fn window(package: &mut Package, part: &str, start: u32) -> Result<Wi
         match xml.next()? {
             Token::Start(element) => {
                 if stack.is_empty() && !element.is(Namespace::Word, "document") {
-                    return Err(OfficeError::Unsupported("not a DOCX document"));
+                    return Err(OfficeError::Malformed("document root"));
                 }
                 if skip.is_none() && in_body {
                     match (element.ns, element.name.as_str()) {

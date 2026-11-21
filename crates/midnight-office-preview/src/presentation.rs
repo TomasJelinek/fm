@@ -51,7 +51,7 @@ pub(crate) fn scan<R: Read>(
                         element.is(Namespace::Presentation, "sld")
                     };
                     if !valid {
-                        return Err(OfficeError::Unsupported("slide document root"));
+                        return Err(OfficeError::Malformed("slide root"));
                     }
                     if !odf {
                         active = Some(0);
@@ -69,7 +69,10 @@ pub(crate) fn scan<R: Read>(
                     pages += 1;
                 }
                 if active.is_some() && skip.is_none() {
-                    if element.ns == text_ns && element.name == "p" {
+                    if !odf && layout_only(&element, stack.len()) {
+                        // Not content: skipped without an "omitted" notice.
+                        skip = Some(stack.len());
+                    } else if element.ns == text_ns && element.name == "p" {
                         if paragraph.is_some() {
                             return Err(OfficeError::Malformed("nested slide paragraph"));
                         }
@@ -236,6 +239,16 @@ pub(crate) fn scan<R: Read>(
     }
     output.finish()
 }
+
+/// PresentationML markup that carries no slide content: extension lists (creation
+/// IDs and the like), the background, and every child of `sld` except `cSld`, such
+/// as the color map, transitions and timing, including their compatibility wrappers.
+fn layout_only(element: &crate::xml::Element, depth: usize) -> bool {
+    (element.name == "extLst" && matches!(element.ns, Namespace::Presentation | Namespace::Drawing))
+        || element.is(Namespace::Presentation, "bg")
+        || (depth == 1 && !element.is(Namespace::Presentation, "cSld"))
+}
+
 fn unsupported(ns: Namespace, name: &str, odf: bool) -> bool {
     if odf {
         (ns == Namespace::OdfDraw

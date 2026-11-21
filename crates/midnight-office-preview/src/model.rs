@@ -170,27 +170,93 @@ pub struct ImmutableHtml {
     pub generation: u64,
 }
 
+/// Why a package or page cannot be previewed. [`OfficeError::message`] is the
+/// sentence a user is shown; [`OfficeError::details`] keeps the internal reason.
 #[derive(Debug)]
 pub enum OfficeError {
     Cancelled,
+    /// ZIP or ODF password protection.
     Encrypted,
+    /// Something the preview deliberately does not open. The text is plain language
+    /// that completes a sentence about the document ("This presentation …").
     Unsupported(&'static str),
+    /// A damaged or nonconforming package. The text is diagnostic detail only.
     Malformed(&'static str),
+    /// One of the fixed preview limits. The text names the limit for diagnostics.
     LimitExceeded(&'static str),
     InvalidTarget,
     Source(io::Error),
 }
-impl fmt::Display for OfficeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+
+/// Limit names that [`OfficeError::message`] explains in plain language.
+pub(crate) const CONTAINER_LIMIT: &str = "encoded container";
+pub(crate) const PART_COUNT_LIMIT: &str = "package entries";
+pub(crate) const WORK_LIMIT: &str = "generation delivered/decompressed bytes";
+pub(crate) const TOKEN_LIMIT: &str = "XML token before parser allocation";
+pub(crate) const WINDOW_TEXT_LIMIT: &str = "window text";
+
+impl OfficeError {
+    /// One sentence for the viewer's status line, naming the kind of document and
+    /// the reason without internal terms.
+    pub fn message(&self, format: OfficeFormat) -> String {
+        sentence(self, Some(format))
+    }
+
+    /// The internal reason, for Copy details and diagnostics.
+    pub fn details(&self) -> String {
         match self {
-            Self::Cancelled => f.write_str("Office preview cancelled"),
-            Self::Encrypted => f.write_str("Encrypted Office package is unsupported"),
-            Self::Unsupported(reason) => write!(f, "Unsupported Office content: {reason}"),
-            Self::Malformed(reason) => write!(f, "Malformed Office package: {reason}"),
-            Self::LimitExceeded(reason) => write!(f, "Office preview limit exceeded: {reason}"),
-            Self::InvalidTarget => f.write_str("Invalid Office preview target"),
-            Self::Source(error) => write!(f, "Office source read failed: {error}"),
+            Self::Cancelled => "Office preview cancelled".into(),
+            Self::Encrypted => "Encrypted Office package".into(),
+            Self::Unsupported(reason) => format!("Unsupported Office content: {reason}"),
+            Self::Malformed(reason) => format!("Malformed Office package: {reason}"),
+            Self::LimitExceeded(reason) => format!("Office preview limit exceeded: {reason}"),
+            Self::InvalidTarget => "Invalid Office preview target".into(),
+            Self::Source(error) => format!("Office source read failed: {error}"),
         }
+    }
+}
+
+fn sentence(error: &OfficeError, format: Option<OfficeFormat>) -> String {
+    let (subject, kind) = match format {
+        None => ("This file", "Office"),
+        Some(OfficeFormat::Docx) => ("This document", "Word (.docx)"),
+        Some(OfficeFormat::Xlsx) => ("This workbook", "Excel (.xlsx)"),
+        Some(OfficeFormat::Pptx) => ("This presentation", "PowerPoint (.pptx)"),
+        Some(OfficeFormat::Odt) => ("This document", "OpenDocument text (.odt)"),
+        Some(OfficeFormat::Ods) => ("This spreadsheet", "OpenDocument spreadsheet (.ods)"),
+        Some(OfficeFormat::Odp) => ("This presentation", "OpenDocument presentation (.odp)"),
+    };
+    match error {
+        OfficeError::Cancelled => "The Office preview was cancelled.".into(),
+        OfficeError::Encrypted => {
+            format!("{subject} is password-protected, so the preview cannot open it.")
+        }
+        OfficeError::Unsupported(reason) => format!("{subject} {reason}."),
+        OfficeError::Malformed(_) => format!(
+            "{subject} is damaged or is not a valid {kind} file, so the preview cannot show it."
+        ),
+        OfficeError::LimitExceeded(limit) => {
+            let reason = match *limit {
+                CONTAINER_LIMIT => "is larger than 256 MiB, more than the preview opens",
+                PART_COUNT_LIMIT => "has more than 10,000 parts, more than the preview opens",
+                WORK_LIMIT => "needs more than 256 MiB of unpacked data for this page",
+                TOKEN_LIMIT => "contains one text or markup item larger than 64 KiB",
+                WINDOW_TEXT_LIMIT | "ODS window text" | "ODS row text" | "HTML resource" => {
+                    "has more text on this page than the preview shows at once"
+                }
+                _ => "is larger or more complex than the preview's limits allow",
+            };
+            format!("{subject} {reason}.")
+        }
+        OfficeError::InvalidTarget => "The requested preview page does not exist.".into(),
+        OfficeError::Source(error) => format!("{subject} could not be read: {error}"),
+    }
+}
+
+impl fmt::Display for OfficeError {
+    /// The status-line sentence without a document kind ("This file …").
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&sentence(self, None))
     }
 }
 impl std::error::Error for OfficeError {}

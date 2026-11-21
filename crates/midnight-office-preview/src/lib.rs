@@ -1,5 +1,7 @@
 //! Bounded backend-only Office contents previews from captured positional bytes.
 //! No formula evaluation, path opening, document links or unread-tail integrity claims.
+#[cfg(test)]
+mod compatibility_tests;
 mod document;
 mod docx;
 #[cfg(test)]
@@ -14,6 +16,9 @@ mod ods;
 mod odt;
 mod package;
 mod pptx;
+mod preflight;
+#[cfg(test)]
+mod preflight_tests;
 mod presentation;
 mod sheet;
 mod source;
@@ -139,10 +144,20 @@ impl OfficeSession {
             (
                 FormatState::Xlsx(workbook),
                 OfficeTarget::SheetFirst { sheet } | OfficeTarget::SheetWindow { sheet, .. },
-            ) => {
-                let window = sheet::load(&mut self.package, workbook, target)?;
-                html::sheet(&workbook.catalog, sheet, &window)?
-            }
+            ) => match workbook
+                .parts
+                .get(usize::from(sheet.0))
+                .ok_or(OfficeError::InvalidTarget)?
+            {
+                crate::workbook::SheetPart::Cells(part) => {
+                    let shared = workbook.shared_strings.as_deref();
+                    let window = sheet::load(&mut self.package, part, shared, target)?;
+                    html::sheet(&workbook.catalog, sheet, &window)?
+                }
+                crate::workbook::SheetPart::Unshown(reason) => {
+                    html::unshown_sheet(&workbook.catalog, sheet, reason)?
+                }
+            },
             (
                 FormatState::Ods(workbook),
                 OfficeTarget::SheetFirst { sheet } | OfficeTarget::SheetWindow { sheet, .. },

@@ -24,9 +24,9 @@ pub(crate) struct Prepared {
     pub resources: Arc<dyn Resources>,
 }
 
-/// Known suffixes retain explicit unsupported-format errors from the service.
-/// A user-supplied association may give an XLSX package a different suffix; the
-/// initial XLSX service still validates that package rather than trusting its name.
+/// Template, macro-enabled and show suffixes select their family, for files a user
+/// associates with the preview; the service still validates each package's main
+/// part rather than trusting its name. Any other suffix is read as a workbook.
 pub(crate) fn format(path: &Path) -> OfficeFormat {
     match path
         .extension()
@@ -35,11 +35,11 @@ pub(crate) fn format(path: &Path) -> OfficeFormat {
         .to_ascii_lowercase()
         .as_str()
     {
-        "docx" => OfficeFormat::Docx,
-        "pptx" => OfficeFormat::Pptx,
-        "odt" => OfficeFormat::Odt,
-        "ods" => OfficeFormat::Ods,
-        "odp" => OfficeFormat::Odp,
+        "docx" | "docm" | "dotx" | "dotm" => OfficeFormat::Docx,
+        "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" => OfficeFormat::Pptx,
+        "odt" | "ott" => OfficeFormat::Odt,
+        "ods" | "ots" => OfficeFormat::Ods,
+        "odp" | "otp" => OfficeFormat::Odp,
         _ => OfficeFormat::Xlsx,
     }
 }
@@ -54,7 +54,10 @@ pub(crate) fn prepare(
     let opened = (|| {
         parent.get().validate(&lifetime).map_err(text)?;
         let source = Arc::new(CapturedReader(parent.get().clone()));
-        let opened = OfficeSession::open(source, format, &lifetime).map_err(text);
+        // The status line names the document and a plain reason; details() keeps
+        // the internal one.
+        let opened =
+            OfficeSession::open(source, format, &lifetime).map_err(|error| error.message(format));
         parent.get().validate(&lifetime).map_err(text)?;
         opened
     })();
@@ -91,7 +94,8 @@ impl ExternalGeneration for OfficeSession {
         target: OfficeTarget,
         cancel: &Cancellation,
     ) -> Result<ImmutableHtml, String> {
-        OfficeSession::render(self, target, cancel).map_err(text)
+        let format = self.catalog().format;
+        OfficeSession::render(self, target, cancel).map_err(|error| error.message(format))
     }
 }
 
