@@ -10,8 +10,9 @@ on:
 permissions:
   contents: read
 
-# A newer push supersedes an unfinished run of the same branch or pull request;
-# every main commit keeps its own complete run.
+# A newer push supersedes an unfinished run of the same branch or pull request. A
+# started main run always completes, but main runs one at a time and GitHub keeps only
+# the newest waiting run: a main push that arrives while another waits replaces it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}

@@ -341,7 +341,8 @@ filesystem_step() {
     cp -- "$plugin_root/$manifest" "$package/plugin.toml"
     for name in README.md THIRD-PARTY.md; do cp -- "$plugin_root/$name" "$package/"; done
 }
-# Mirrors .github/actions/private-test-installation with the packages this run built.
+# Mirrors .github/actions/private-test-installation and plugin-packages with the
+# packages this run built.
 step_test_install() {
     local viewer_packages="$out/viewer-packages" filesystem_packages="$out/filesystem-packages"
     local test_root entry id source destination name

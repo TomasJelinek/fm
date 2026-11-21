@@ -341,7 +341,8 @@ try {
     }
 
     function Install-TestPackages {
-        # Mirrors .github/actions/private-test-installation with the packages built above.
+        # Mirrors .github/actions/private-test-installation and plugin-packages with the
+        # packages built above.
         $viewerPackages = Join-Path $Out 'viewer-packages'
         $filesystemPackages = Join-Path $Out 'filesystem-packages'
         Reset-ValidationDirectory $viewerPackages
