@@ -239,17 +239,27 @@ fn legacy_modes_and_unqualified_links_refuse_native_projection() {
 }
 
 #[test]
-fn a_link_target_across_a_mount_boundary_is_refused() {
+fn a_projected_link_to_a_system_filesystem_is_refused() {
     let fixture = fixture();
-    let alias = fixture.path().join("external mount");
+    let alias = fixture.path().join("to proc");
     symlink("/proc", &alias).unwrap();
 
-    let result = LinuxFileSystem::new(None).prepare_transfer_source_with_links(
-        &alias,
+    let filesystem = LinuxFileSystem::new(None);
+    for policy in [
         CopyLinkPolicy::FollowDirectoryContents,
-        &Cancellation::default(),
-    );
-    assert!(matches!(result, Err(failure) if failure.kind == io::ErrorKind::Unsupported));
+        CopyLinkPolicy::EmptyDirectories,
+    ] {
+        let refused = filesystem
+            .prepare_transfer_source_with_links(&alias, policy, &Cancellation::default())
+            .err()
+            .expect("a link to /proc is never projected");
+        assert_eq!(refused.kind, io::ErrorKind::Unsupported, "{policy:?}");
+        assert!(
+            refused.message.contains("system filesystem (proc)"),
+            "{}",
+            refused.message
+        );
+    }
 }
 
 #[test]
@@ -334,23 +344,68 @@ fn follow_links_keeps_links_it_cannot_follow_as_links_with_a_reason() {
     assert!(note("to-file").is_empty() && note("plain.txt").is_empty());
 }
 
+/// Links into the kernel's own filesystems, by a path or through a magic link, stay
+/// links whose note names why; a selected one too.
 #[test]
-fn follow_links_keeps_a_link_to_another_mount_as_a_link() {
+fn follow_links_keeps_links_into_system_filesystems_as_links_with_a_note() {
     let fixture = fixture();
-    let alias = fixture.path().join("external mount");
-    symlink("/proc", &alias).unwrap();
-    let source = LinuxFileSystem::new(None)
+    let folder = fixture.path().join("folder");
+    fs::create_dir(&folder).unwrap();
+    let mut links = vec![
+        ("to-proc", "/proc", "system filesystem (proc)"),
+        (
+            "to-environ",
+            "/proc/self/environ",
+            "system filesystem (proc)",
+        ),
+        ("to-cwd", "/proc/self/cwd", "through a link of /proc"),
+    ];
+    if Path::new("/sys/kernel").is_dir() {
+        links.push(("to-sys", "/sys/kernel", "system filesystem (sysfs)"));
+    } else {
+        eprintln!("SKIP the sysfs link: /sys is not mounted here");
+    }
+    for (name, target, _) in &links {
+        symlink(target, folder.join(name)).unwrap();
+    }
+    let cancel = Cancellation::default();
+    let filesystem = LinuxFileSystem::new(None);
+    let mut source = filesystem
+        .prepare_transfer_source_with_links(&folder, CopyLinkPolicy::FollowLinks, &cancel)
+        .unwrap();
+    let mut discovered = Vec::new();
+    source
+        .discover(&cancel, &mut |item| discovered.push(item.kind))
+        .unwrap();
+    assert_eq!(discovered.len(), links.len() + 1, "{discovered:?}");
+    let mut notes = Vec::new();
+    while let Some(child) = source.next_child(&cancel).unwrap() {
+        assert_eq!(child.entry().item.kind, EntryKind::Symlink);
+        assert!(child.link_representation(&cancel).is_ok());
+        let name = child.entry().item.path.file_name().unwrap().to_owned();
+        notes.push((name, child.link_not_followed().unwrap_or_default()));
+    }
+    assert_eq!(notes.len(), links.len());
+    for (name, _, reason) in links {
+        let note = notes
+            .iter()
+            .find(|(child, _)| child == name)
+            .map(|(_, note)| note.as_str())
+            .unwrap_or_default();
+        assert!(note.contains(reason), "{name}: {note}");
+    }
+    let selected = filesystem
         .prepare_transfer_source_with_links(
-            &alias,
+            &folder.join("to-proc"),
             CopyLinkPolicy::FollowLinks,
-            &Cancellation::default(),
+            &cancel,
         )
         .unwrap();
-    assert_eq!(source.entry().item.kind, EntryKind::Symlink);
+    assert_eq!(selected.entry().item.kind, EntryKind::Symlink);
     assert!(
-        source
+        selected
             .link_not_followed()
-            .is_some_and(|note| note.contains("another filesystem"))
+            .is_some_and(|note| note.contains("system filesystem (proc)"))
     );
 }
 

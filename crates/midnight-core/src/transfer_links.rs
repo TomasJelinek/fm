@@ -17,15 +17,20 @@ pub enum CopyLinkPolicy {
     /// on one volume; across volumes the link is recreated, then the original removed).
     Preserve,
     /// Materialize each qualified directory link as a directory with verified contents.
+    /// A qualified target may lie on another filesystem than the link (each platform
+    /// qualifies it; see TRANSFERS.md), but never on a system filesystem such as
+    /// Linux's /proc.
     FollowDirectoryContents,
     /// Materialize each qualified directory link as an empty ordinary directory.
     EmptyDirectories,
     /// Copy only: copy what each link points to. A directory link is followed as
     /// with `FollowDirectoryContents` (cycles are refused the same way) and a link to
-    /// a regular file is copied as that file's content. A link that cannot be
-    /// followed (dangling, unreadable, pointing to a special file, or back to an
-    /// active ancestor) is recreated as a link, as `Preserve` does, and the
-    /// source reports why through `TransferSource::link_not_followed`.
+    /// a regular file is copied as that file's content, also where the target lies
+    /// on another filesystem than the link. A link that cannot be followed
+    /// (dangling, unreadable, pointing to a special file, into a system filesystem
+    /// such as /proc, or back to an active ancestor) is recreated as a link, as
+    /// `Preserve` does, and the source reports why through
+    /// `TransferSource::link_not_followed`.
     FollowLinks,
 }
 

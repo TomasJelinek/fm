@@ -637,13 +637,22 @@ Copy supports files and ordinary directories; special files are rejected.
 Links (Linux; Windows keeps its directory-link options and recreates no link). A link
 is transferred from its exact `readlink` bytes, never by resolving or rebasing its
 target: Copy without following recreates every link, Move moves the link itself, and
-Copy that follows links opens a target only under the directory-link rules (no mount
-crossing, no magic links, no link back to a folder on the current path, at most 128 links
-followed inside one another, a target this process can read and list) and recreates any
-link it cannot follow, with the reason. An absolute link text on a mount other than `/`
-is followed within the link's own mount: each name is opened alone and not followed, a
-mount point or `..` above the mount's root ends the walk, at most 40 links are read, and
-the mount's lineage is checked first. Copy has no fixed depth limit for ordinary folders
+Copy that follows links opens a target only under the directory-link rules (no magic
+links; no target on one of the kernel's interface filesystems, by `statfs` type: proc,
+sysfs, devpts, cgroup, cgroup2, debugfs, tracefs, securityfs, apparmorfs, pstore, bpf,
+configfs, fusectl, mqueue, autofs, efivarfs, binfmt_misc, selinuxfs, smackfs, nsfs,
+resctrl, binderfs, nfsd and rpc_pipefs, so no process state such as
+/proc/self/environ is copied and no automount point is mounted by a link; no link back
+to a folder on the current path, by device and inode across filesystems; at most 128
+links followed inside one another; a target this process can read and list) and
+recreates any link it cannot follow, with the reason. A target on another filesystem,
+local, network or FUSE, is followed as if its folder were selected. A text that stays
+on its folder's mount is resolved within it (an absolute one name by name from the
+mount's root: a mount point or `..` above the mount's root ends the walk, at most 40
+links are read, and the mount's lineage is checked first); a text that leaves the mount
+is resolved by the kernel across mount points without magic links, and the folders
+below that link are revalidated by resolving the link again from its held folder to the
+same device and inode. Copy has no fixed depth limit for ordinary folders
 (Move stops at 128); instead every folder a transfer (or its metadata discovery) works
 inside is one level of a budget shared by all transfers of the process: a quarter of the
 open-file limit at three descriptors per level, between 32 and 4,096 levels. A folder

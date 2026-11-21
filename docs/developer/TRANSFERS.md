@@ -786,42 +786,83 @@ revision and text through the held parent; an in-place change fails. Discovery c
 a leaf without following it.
 
 `FollowLinks` (Copy only) follows a directory link exactly as `FollowDirectoryContents`
-does, under the same mount, link-depth and ancestry rules, and presents a link to a
-regular file as that file: its content is copied and verified like any file, and the
+does, under the same filesystem, link-depth and ancestry rules, and presents a link to
+a regular file as that file: its content is copied and verified like any file, and the
 binding of the link and its target is revalidated, with the file's revision, before
 each use.
 
-Both follow a link only to a target on the link's own mount. The link's text is
-resolved as the kernel resolves it, but never across a mount point (nor by `..` above
-the mount's root) and never through a magic link. The kernel does that itself under
-`RESOLVE_NO_XDEV`, except when the link is on another mount than the root's and its
-text, or a link met on the way, is absolute: the way from `/` back into the link's
-mount crosses mount points, which `RESOLVE_NO_XDEV` refuses. Such a text is resolved
-one name at a time within the mount, an absolute text from the mount's root when it
-lies under the mount's path, with at most 40 links on the way (`MountAnchor::walk`);
-the folders below a followed link are revalidated the same way. So with `/home` on its
-own filesystem, a link there to `/home/user/folder` is followed, and one to
-`/media/stick/folder` or `/proc` is not. Only links followed inside one another count
-against the budget of 128: Copy has no fixed depth limit for ordinary folders under
-any policy (Move keeps its own limit of 128 folders; on Linux the folders that
-transfers hold open count against a [descriptor budget](#folders-held-open-on-linux)),
-and `Preserve` and `EmptyDirectories` keep no ancestry at all. Recursive totals (discovery) still stop
-after 128 nested folders, as without a link policy; the job then copies without them.
+Both follow a link to a target on any filesystem but the kernel's own (below), on the
+link's mount or another. The link's text is resolved as the kernel resolves it, never
+through a magic link (such as `/proc/self/fd/0`). A text that stays on the mount of the
+link's folder is resolved within it, as before: a relative one by the kernel under
+`RESOLVE_NO_XDEV`, and an absolute one, or one that meets an absolute link on another
+mount than the root's, one name at a time from the mount's root when it lies under the
+mount's path, with at most 40 links on the way (`MountAnchor::walk`). An absolute text
+is never left to the kernel there: given an absolute path, it starts at `/` under
+`RESOLVE_NO_XDEV` from whatever mount the folder is on. The folders below such a link
+are revalidated from the same anchor as the link's folder, the root of that mount. A
+text that leaves the mount (a mount point on the way, `..` above the mount's root, an
+absolute text outside the mount's path, or any absolute text below a link that already
+left its mount) is resolved by the kernel across mount points under
+`RESOLVE_NO_MAGICLINKS` alone, and that link becomes the anchor of the folders below it
+(`Binding::reopen_below`): revalidating one resolves the link again from its held
+folder, requires the same target (device and inode), and opens the folders below it
+from there without leaving the target's mount. So with `/home` on its own filesystem, a
+link there to `/home/user/folder` is followed within its mount, links to
+`/media/stick/folder`, `/dev/shm/folder` or `/mnt/nas/share` across mounts, and one to
+`/proc` or `/sys/kernel` not at all.
+
+A target is never followed onto one of the kernel's interface filesystems, which its
+`statfs` type (`f_type`, linux/magic.h) names: proc, sysfs, devpts, cgroup and cgroup2,
+debugfs, tracefs, securityfs, apparmorfs, pstore, bpf, configfs, fusectl, mqueue,
+autofs, efivarfs, binfmt_misc, selinuxfs, smackfs, nsfs, resctrl, binderfs, nfsd and
+rpc_pipefs (`SYSTEM_FILESYSTEMS` in `transfer_directory_links.rs`). Their files describe
+the system and the copying process itself (`/proc/self/environ` is this process's
+environment), a read can wait for ever (tracefs's `trace_pipe`) or change state, and
+following a link to an automount point would mount it. The target is first located
+with `O_PATH` and not as a folder, which mounts nothing, so an automount point that is
+not mounted yet is seen as autofs and kept; the folder that is followed is then bound
+as a folder and its type checked again. This is a deny list rather than an allow list
+because a link only chooses which folder Copy reads, not what kind of filesystem: Copy
+reads any filesystem the user selects directly, and an allow list would refuse data
+filesystems it does not name (ZFS, bcachefs, VirtualBox shared folders, cluster and
+future filesystems). A new kernel interface filesystem missing from the list would be
+followed, still reading only regular files with this process's permissions and never a
+special file. devtmpfs reports the type of tmpfs and is not told apart: it holds device
+nodes, which Copy never opens, and links, which follow these same rules. Network
+filesystems (NFS, SMB, 9p such as WSL's `/mnt/c`) and FUSE are followed: they hold the
+user's files, which Copy reads when they are selected directly too, and their device
+and inode numbers identify a folder for the cycle check as on a local filesystem. An
+unresponsive server or FUSE daemon can delay the job as when its folder is selected
+(cancellation takes effect when the call returns), and automount points along the way
+of a link's text are mounted as when the link is opened.
+
+Only links followed inside one another count against the budget of 128, wherever they
+lead: Copy has no fixed depth limit for ordinary folders under any policy (Move keeps
+its own limit of 128 folders; on Linux the folders that transfers hold open, a followed
+one on another filesystem too, count against a
+[descriptor budget](#folders-held-open-on-linux)), and `Preserve` and
+`EmptyDirectories` keep no ancestry at all. A followed link back to a folder on the
+current path is a cycle, compared by device and inode across filesystems. Recursive
+totals (discovery) still stop after 128 nested folders, as without a link policy; the
+job then copies without them.
 
 A link that `FollowLinks` cannot follow is a leaf recreated as with `Preserve`, and
 `TransferSource::link_not_followed` gives the reason, which the job records as a note
 (`CopyProgress::notes`, first 16, with an exact `note_count`) shown in Jobs details:
-a missing target, a loop of links, an unreadable target, a target on another
-filesystem than the link (the policy never crosses mounts), a special file, or a
-directory that is an active ancestor (the cycle detection of `FollowDirectoryContents`,
-which there is an error). A target is unreadable when the user cannot read the file,
-or cannot list or enter the folder: opening it as a path needs neither, so this is
-checked (`faccessat` with the effective IDs) before the link is followed, and such a
-link is kept rather than failing when it is copied. A link whose text the kernel cannot
-resolve within the mount (an absolute one, say) is also kept when its folder's mount
-cannot be qualified for the walk, for example a folder whose path leads through
-another link rather than along the mount's own path. Notes are not errors; the job
-still completes.
+a missing target, a loop of links (for a text resolved across mounts or in a folder of
+/proc, also a magic link, which ends the resolution the same way), an unreadable target,
+a target on a system filesystem (named in the note) or an automount point that is not
+mounted, a special file, or a directory that is an active ancestor.
+`FollowDirectoryContents` refuses such a cycle as an error, and it and
+`EmptyDirectories` refuse a target on a system filesystem as an error. A
+target is unreadable when the user cannot read the file, or cannot list or enter the
+folder: opening it as a path needs neither, so this is checked (`faccessat` with the
+effective IDs, on the target the link was bound to) before the link is followed, and
+such a link is kept rather than failing when it is copied. A link whose text needs the
+walk within its folder's mount (an absolute one, say) is also kept when that mount
+cannot be qualified, for example a folder whose path leads through another link rather
+than along the mount's own path. Notes are not errors; the job still completes.
 
 Copy recreates a link (engine `LinkCopy`): admission (`TransferDirectory::admit_link`),
 a private stage, sync, an independent readback that must equal the source text, a
@@ -858,7 +899,22 @@ Windows (not compiled on Linux hosts) keeps its directory-link policies: the sou
 refuses `Preserve` and `FollowLinks` and its destinations stage no links
 (`link_replacement` is false), because recreating a symbolic link needs
 `CreateSymbolicLinkW` with a privilege or Developer Mode and junctions need their own
-qualification. The UI therefore sends it the existing directory-link policies.
+qualification. The UI therefore sends it the existing directory-link policies. Its
+`FollowDirectoryContents` already follows a junction or directory symbolic link to a
+folder on another local volume, as the Linux rule now does: an absolute target
+(`\??\D:\...`) is walked from that drive's own volume root, which `QueryDosDeviceW`
+must map to a `\Device\HarddiskVolumeN` opened through `\\?\GLOBALROOT`, with every
+component an ordinary folder on that volume; a relative target is walked from its
+link's folder, never above its volume's root (`transfer_source_link_target.rs`). The
+cycle check compares volume serial number and file ID, so it holds across volumes
+(`transfer::source::volume_tests`, run with `NATIVE_MOVE_OTHER_VOLUME_ROOT`). Windows
+still refuses, as errors since it keeps no link leaves: a remote target (a UNC path or
+a mapped network drive), a volume mounted in a folder (its target is a volume GUID,
+`\??\Volume{...}\`; like a mount point below a selected folder on Linux, Copy does not
+enter it), and a reparse point anywhere on a target's way (a junction, a symbolic link
+or a mounted folder). Linux follows a link to a network filesystem and resolves links
+and mount points on a target's way; on Windows each of these needs its own
+qualification first.
 
 ## Folders held open on Linux
 

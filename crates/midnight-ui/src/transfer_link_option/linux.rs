@@ -4,7 +4,7 @@ use midnight_core::{CopyLinkPolicy, TransferIntent};
 pub(crate) const LABEL: &str = "Follow links";
 /// Both states, as `CopyLinkPolicy::FollowLinks` and `Preserve` behave on Linux
 /// (transfer_directory_links.rs in midnight-platform-linux).
-pub(crate) const HINT: &str = "Checked: copy what each link points to, a file's content or a folder with everything in it, where that is possible. A link that cannot be followed (its target is missing or unreadable, a device, pipe or socket, a loop of links, on another filesystem, or a folder that contains the link) is copied as a link, and the job details say why.\nUnchecked: copy each link itself, as a link with exactly the same target text, without copying what it points to.\nMove always moves links as links.";
+pub(crate) const HINT: &str = "Checked: copy what each link points to, a file's content or a folder with everything in it, also on another filesystem, where that is possible. A link that cannot be followed (its target is missing or unreadable, a device, pipe or socket, a loop of links, on a system filesystem such as /proc, or a folder that contains the link) is copied as a link, and the job details say why.\nUnchecked: copy each link itself, as a link with exactly the same target text, without copying what it points to.\nMove always moves links as links.";
 
 /// Move moves links themselves, so only Copy offers the option.
 pub(crate) fn visible(intent: TransferIntent) -> bool {

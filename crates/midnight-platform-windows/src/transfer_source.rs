@@ -857,3 +857,6 @@ mod child_tests;
 #[cfg(test)]
 #[path = "transfer_source_sharing_tests.rs"]
 mod sharing_tests;
+#[cfg(test)]
+#[path = "transfer_source_volume_tests.rs"]
+mod volume_tests;

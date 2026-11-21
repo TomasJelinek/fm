@@ -27,6 +27,43 @@ const PATH_DIRECTORY: OFlags = OFlags::PATH.union(OFlags::DIRECTORY).union(OFlag
 const PATH_ANY: OFlags = OFlags::PATH.union(OFlags::CLOEXEC);
 const PATH_LINK: OFlags = OFlags::PATH.union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
 const LINK_RESOLVE: ResolveFlags = ResolveFlags::NO_MAGICLINKS.union(ResolveFlags::NO_XDEV);
+/// A link's text that leaves the mount of its folder: resolved as the kernel resolves
+/// it, across mount points, but never through a magic link.
+const ACROSS_RESOLVE: ResolveFlags = ResolveFlags::NO_MAGICLINKS;
+/// The kernel's interface filesystems by `statfs` f_type (linux/magic.h), which no
+/// followed link leads into: their files describe the system and the copying process
+/// itself (/proc/self/environ is this process's environment), a read can wait for ever
+/// (tracefs's trace_pipe) or change state, and an automount point (autofs) would be
+/// mounted. Every other filesystem holds files that Copy also reads when they are
+/// selected directly: local ones, network ones (NFS, SMB, 9p) and FUSE. devtmpfs
+/// reports tmpfs's type: it holds device nodes, which Copy never opens, and links,
+/// which follow these same rules.
+const SYSTEM_FILESYSTEMS: [(u32, &str); 24] = [
+    (0x9fa0, "proc"),
+    (0x6265_6572, "sysfs"),
+    (0x1cd1, "devpts"),
+    (0x0027_e0eb, "cgroup"),
+    (0x6367_7270, "cgroup2"),
+    (0x6462_6720, "debugfs"),
+    (0x7472_6163, "tracefs"),
+    (0x7363_6673, "securityfs"),
+    (0x5a3c_69f0, "apparmorfs"),
+    (0x6165_676c, "pstore"),
+    (0xcafe_4a11, "bpf"),
+    (0x6265_6570, "configfs"),
+    (0x6573_5543, "fusectl"),
+    (0x1980_0202, "mqueue"),
+    (0x0187, "autofs"),
+    (0xde5e_81e4, "efivarfs"),
+    (0x4249_4e4d, "binfmt_misc"),
+    (0xf97c_ff8c, "selinuxfs"),
+    (0x4341_5d53, "smackfs"),
+    (0x6e73_6673, "nsfs"),
+    (0x0765_5821, "resctrl"),
+    (0x6c6f_6f70, "binderfs"),
+    (0x6e66_7364, "nfsd"),
+    (0x6759_6969, "rpc_pipefs"),
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DirectoryLinkMode {
@@ -37,7 +74,8 @@ pub(super) enum DirectoryLinkMode {
     /// Every link is a leaf kept as a link; no target is opened.
     Preserve,
     /// Directory and regular-file links are followed; a link that cannot be
-    /// followed (dangling, unreadable, special, another mount or a cycle) is a leaf.
+    /// followed (dangling, unreadable, special, on a system filesystem or a cycle)
+    /// is a leaf.
     FollowLinks,
 }
 
@@ -138,12 +176,10 @@ impl Traversal {
         false
     }
 
-    /// The captured mount of the innermost followed link, which the links met
-    /// below it share: a followed target never leaves its link's mount.
-    fn mount(&self) -> Option<Arc<MountAnchor>> {
-        self.links
-            .as_ref()
-            .and_then(|binding| binding.original.mount.clone())
+    /// The anchor of the folders below the innermost followed link, which a link
+    /// met there shares as the anchor of its own folder (`Binding::below`).
+    fn anchor(&self) -> Option<Anchor> {
+        self.links.as_ref().and_then(Binding::below)
     }
 
     /// Records a folder the traversal enters. Only a traversal that follows
@@ -191,10 +227,8 @@ impl Traversal {
         parent_path: &Path,
         logical_path: &Path,
     ) -> Result<Option<File>, FsError> {
-        self.links
-            .as_ref()
-            .and_then(|binding| binding.original.mount.as_ref())
-            .map(|mount| mount.reopen(parent_path, logical_path))
+        self.anchor()
+            .map(|anchor| anchor.reopen(parent_path, logical_path))
             .transpose()
     }
 }
@@ -254,15 +288,13 @@ pub(super) fn probe(
                     cancel,
                 )?,
                 DirectoryLinkMode::Follow | DirectoryLinkMode::Empty => {
-                    Followed::Binding(Arc::new(Binding::capture(
+                    Followed::Binding(Arc::new(project(
                         parent,
                         parent_path,
                         name,
-                        file.clone(),
-                        snapshot.clone(),
-                        traversal.links.clone(),
-                        None,
-                        TargetKind::Directory,
+                        &file,
+                        &snapshot,
+                        traversal,
                         cancel,
                     )?))
                 }
@@ -310,9 +342,10 @@ enum Followed {
     Not(Option<String>),
 }
 
-/// FollowLinks: follow a directory or regular-file target on the link's own
-/// mount that this process can read; any other target keeps the link as a leaf.
-/// Errors reading the link itself, races and cancellation stay errors.
+/// FollowLinks: follow a directory or regular-file target that this process can
+/// read, on any filesystem but the kernel's own (`SYSTEM_FILESYSTEMS`); any other
+/// target keeps the link as a leaf. Errors reading the link itself, races and
+/// cancellation stay errors.
 fn follow(
     parent: &Arc<File>,
     parent_path: &Path,
@@ -325,34 +358,39 @@ fn follow(
     let path = &snapshot.item.path;
     checked(cancel, path)?;
     let payload = read_payload(stub, path)?;
-    let mut mount = traversal.mount();
-    let resolved = resolve_link_text(parent, &payload, false, path, false, || {
-        let anchor = match mount.take() {
-            Some(anchor) => anchor,
-            None => Arc::new(MountAnchor::capture(parent, parent_path, cancel)?),
-        };
-        Ok(mount.insert(anchor).clone())
-    });
-    let target = match resolved {
-        Ok(Ok(target)) => target,
-        Ok(Err(failure)) => return Ok(Followed::Not(Some(unfollowed_reason(failure)))),
-        // Only an absolute text needs the folder's mount qualified; one that
+    let located = match locate(parent, parent_path, &payload, traversal, path, cancel) {
+        Ok(Ok(located)) => located,
+        // A magic link of /proc ends a resolution as a loop does. One can be met
+        // across mounts, or within the mount of a folder in /proc.
+        Ok(Err((Errno::LOOP, reach)))
+            if reach == Reach::Across || system_filesystem(parent, path)? == Some("proc") =>
+        {
+            return Ok(Followed::Not(Some(
+                "it points into a loop of links, or through a link of /proc to a process's \
+                 open file or folder, which Copy never follows"
+                    .into(),
+            )));
+        }
+        Ok(Err((failure, _))) => return Ok(Followed::Not(Some(unfollowed_reason(failure)))),
+        // Only a text the kernel does not resolve within the folder's mount (an
+        // absolute one, say) needs that mount qualified to be walked; one that
         // cannot be (such as a folder reached through a link) keeps the link.
         Err(failure) if failure.kind != io::ErrorKind::Interrupted => {
             return Ok(Followed::Not(Some(format!(
-                "its target's filesystem cannot be checked ({})",
+                "the mount of its folder cannot be checked ({})",
                 failure.message
             ))));
         }
         Err(failure) => return Err(failure),
     };
-    let metadata = target.metadata().map_err(|failure| error(path, failure))?;
+    if let Some(filesystem) = system_filesystem(&located.target, path)? {
+        return Ok(Followed::Not(Some(system_reason(filesystem))));
+    }
+    let metadata = located
+        .target
+        .metadata()
+        .map_err(|failure| error(path, failure))?;
     let kind = if metadata.is_dir() {
-        if traversal.is_active_ancestor(identity_of(&metadata)) {
-            return Ok(Followed::Not(Some(
-                "it points to a folder that contains it, so following it would never end".into(),
-            )));
-        }
         TargetKind::Directory
     } else if metadata.is_file() {
         TargetKind::File
@@ -361,12 +399,60 @@ fn follow(
             "it points to a special file (a device, pipe or socket)".into(),
         )));
     };
-    // The O_PATH open needed only search permission on the way; copying needs
+    // The binding resolves the link again (a folder as a folder) and checks it
+    // reaches the same target; the checks below are of what it holds.
+    let binding = Binding::capture(
+        parent,
+        parent_path,
+        name,
+        stub.clone(),
+        snapshot.clone(),
+        traversal.links.clone(),
+        located.mount,
+        kind,
+        cancel,
+    )?;
+    if kind == TargetKind::Directory && traversal.is_active_ancestor(binding.target_identity) {
+        return Ok(Followed::Not(Some(
+            "it points to a folder that contains it, so following it would never end".into(),
+        )));
+    }
+    // The O_PATH opens needed only search permission on the way; copying needs
     // to read the file, or to list and enter the folder.
-    if let Err(reason) = readable(&target, kind) {
+    if let Err(reason) = readable(&binding.target, kind) {
         return Ok(Followed::Not(Some(reason)));
     }
-    // The binding resolves the link again and checks it reaches the same target.
+    Ok(Followed::Binding(Arc::new(binding)))
+}
+
+/// FollowDirectoryContents and EmptyDirectories: a directory link is projected
+/// when it leads to a folder that FollowLinks would follow, and is an error
+/// otherwise.
+fn project(
+    parent: &Arc<File>,
+    parent_path: &Path,
+    name: &OsStr,
+    stub: &Arc<File>,
+    snapshot: &TransferEntry,
+    traversal: &Traversal,
+    cancel: &Cancellation,
+) -> Result<Binding, FsError> {
+    let path = &snapshot.item.path;
+    checked(cancel, path)?;
+    let payload = read_payload(stub, path)?;
+    let located = locate(parent, parent_path, &payload, traversal, path, cancel)?
+        .map_err(|(failure, _)| error(path, failure.into()))?;
+    if let Some(filesystem) = system_filesystem(&located.target, path)? {
+        return Err(on_system_filesystem(path, filesystem));
+    }
+    if !located
+        .target
+        .metadata()
+        .map_err(|failure| error(path, failure))?
+        .is_dir()
+    {
+        return Err(unsupported(path, "link target is not a directory"));
+    }
     Binding::capture(
         parent,
         parent_path,
@@ -374,36 +460,133 @@ fn follow(
         stub.clone(),
         snapshot.clone(),
         traversal.links.clone(),
-        mount,
-        kind,
+        located.mount,
+        TargetKind::Directory,
         cancel,
     )
-    .map(|binding| Followed::Binding(Arc::new(binding)))
+}
+
+/// Where a link's text leads from its folder (`locate`).
+struct Located {
+    /// The target, opened with O_PATH alone: not as a folder, so an automount
+    /// point it names is not mounted.
+    target: File,
+    /// The mount of the outermost followed link's folder, when walking the text
+    /// within it needed that mount captured.
+    mount: Option<Arc<MountAnchor>>,
+}
+
+/// Where a link's `text` leads from `parent`, the link's folder: within the
+/// folder's mount when the text stays there (`resolve_link_text`), otherwise as
+/// the kernel resolves it across mount points, never through a magic link. The
+/// inner error tells why the text leads nowhere and whether it was resolved
+/// across mounts; the outer one is a failure to qualify the folder's mount.
+fn locate(
+    parent: &File,
+    parent_path: &Path,
+    text: &OsStr,
+    traversal: &Traversal,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<Result<Located, (Errno, Reach)>, FsError> {
+    let anchor = traversal.anchor();
+    let mut captured = None;
+    let within = resolve_link_text(parent, text, false, path, false, || match &anchor {
+        Some(anchor) => Ok(anchor.mount()),
+        None => {
+            let mount = Arc::new(MountAnchor::capture(parent, parent_path, cancel)?);
+            captured = Some(mount.clone());
+            Ok(Some(mount))
+        }
+    })?;
+    let target = match within {
+        Ok(target) => target,
+        Err(Errno::XDEV) => match resolve_across(parent, text, false) {
+            Ok(target) => target,
+            Err(failure) => return Ok(Err((failure, Reach::Across))),
+        },
+        Err(failure) => return Ok(Err((failure, Reach::Within))),
+    };
+    Ok(Ok(Located {
+        target,
+        mount: captured,
+    }))
 }
 
 /// Opens (O_PATH, following links) what a link's `text` names from `parent`,
 /// the link's folder, without leaving the folder's mount. The kernel does it
-/// under RESOLVE_NO_XDEV when it can; it cannot when the folder is not on the
-/// root's mount and the text, or a link on the way, is absolute (the way from
-/// `/` back into the folder's mount crosses mount points), so then the text is
-/// walked within the mount
-/// (`MountAnchor::walk`, with `lineage_checked`), whose anchor `mount`
-/// supplies. The inner error tells why the text does not resolve within the
-/// mount.
+/// under RESOLVE_NO_XDEV when it can. It cannot when the text is absolute: given
+/// an absolute path, the kernel starts at `/` whatever mount `parent` is on (it
+/// refuses only a jump to `/` met on the way, from another mount than the root's),
+/// and an absolute link on the way of a folder that is not on the root's mount
+/// crosses mount points back into it. Then the text is walked within the mount
+/// (`MountAnchor::walk`, with `lineage_checked`), whose anchor `mount` supplies;
+/// below a link followed to another mount there is none, and such a text leaves
+/// the mount as far as the traversal can tell. The inner error tells why the
+/// text does not resolve within the mount (EXDEV: it leaves the mount).
 fn resolve_link_text(
     parent: &File,
     text: &OsStr,
     directory: bool,
     path: &Path,
     lineage_checked: bool,
-    mount: impl FnOnce() -> Result<Arc<MountAnchor>, FsError>,
+    mount: impl FnOnce() -> Result<Option<Arc<MountAnchor>>, FsError>,
 ) -> Result<Result<File, Errno>, FsError> {
     let flags = if directory { PATH_DIRECTORY } else { PATH_ANY };
-    match openat2(parent, text, flags, Mode::empty(), LINK_RESOLVE) {
-        Ok(target) => Ok(Ok(File::from(target))),
-        Err(Errno::XDEV) => mount()?.walk(parent, text, directory, path, lineage_checked),
-        Err(failure) => Ok(Err(failure)),
+    let resolved = if Path::new(text).has_root() {
+        Err(Errno::XDEV)
+    } else {
+        openat2(parent, text, flags, Mode::empty(), LINK_RESOLVE).map(File::from)
+    };
+    match resolved {
+        Err(Errno::XDEV) => match mount()? {
+            Some(mount) => mount.walk(parent, text, directory, path, lineage_checked),
+            None => Ok(Err(Errno::XDEV)),
+        },
+        resolved => Ok(resolved),
     }
+}
+
+/// Opens (O_PATH) what a link's `text` names from `parent` as the kernel resolves
+/// it, across mount points, but never through a magic link.
+fn resolve_across(parent: &File, text: &OsStr, directory: bool) -> Result<File, Errno> {
+    let flags = if directory { PATH_DIRECTORY } else { PATH_ANY };
+    openat2(parent, text, flags, Mode::empty(), ACROSS_RESOLVE).map(File::from)
+}
+
+/// The name of the kernel interface filesystem (`SYSTEM_FILESYSTEMS`) that a
+/// link's target lies on, or None for a filesystem that holds files.
+fn system_filesystem(target: &File, path: &Path) -> Result<Option<&'static str>, FsError> {
+    // The magic numbers are 32 bits wide; `f_type` is signed on most targets.
+    let magic = fstatfs(target)
+        .map_err(|failure| error(path, failure.into()))?
+        .f_type as u32;
+    Ok(SYSTEM_FILESYSTEMS
+        .iter()
+        .find(|(known, _)| *known == magic)
+        .map(|(_, name)| *name))
+}
+
+/// Why FollowLinks keeps a link to a target on a system filesystem, for the job details.
+fn system_reason(filesystem: &str) -> String {
+    if filesystem == "autofs" {
+        "it points to an automount point that is not mounted (autofs), which Copy does \
+         not mount"
+            .into()
+    } else {
+        format!(
+            "its target is on a system filesystem ({filesystem}), which Copy never follows \
+             a link into"
+        )
+    }
+}
+
+/// A projected directory link whose target lies on a system filesystem.
+fn on_system_filesystem(path: &Path, filesystem: &str) -> FsError {
+    unsupported(
+        path,
+        &format!("the link target is on a system filesystem ({filesystem})"),
+    )
 }
 
 /// Whether this process may read a followed target, checked on the held target with
@@ -441,7 +624,6 @@ fn unfollowed_reason(failure: Errno) -> String {
         Errno::NOENT | Errno::NOTDIR => "its target does not exist".into(),
         Errno::LOOP => "it points to itself or into a loop of links".into(),
         Errno::ACCESS | Errno::PERM => "its target cannot be read (permission denied)".into(),
-        Errno::XDEV => "its target is on another filesystem, which Copy does not enter".into(),
         failure => format!("its target cannot be opened ({})", io::Error::from(failure)),
     }
 }
@@ -453,11 +635,54 @@ enum TargetKind {
     File,
 }
 
+/// How a followed link reaches its target from its folder.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Reach {
+    /// Within the folder's mount: the folders below the target are opened again
+    /// from the anchor of the link's folder, as that folder is.
+    Within,
+    /// By a way that leaves the folder's mount, to a target on another mount (or
+    /// back on the same one): the link itself anchors the folders below it.
+    Across,
+}
+
+/// Where a folder on the logical path of a traversal that follows links is opened
+/// again, to check that the path still leads to it.
+#[derive(Clone)]
+enum Anchor {
+    /// The pinned root of a captured mount: a logical path below the mount's path
+    /// is resolved from it without leaving the mount (`MountAnchor::reopen`).
+    Mount(Arc<MountAnchor>),
+    /// A link followed across mounts: a logical path at or below the link is the
+    /// link, resolved again to the same target, and the folders below that
+    /// (`Binding::reopen_below`).
+    Link(Arc<Binding>),
+}
+
+impl Anchor {
+    fn reopen(&self, parent_path: &Path, logical_path: &Path) -> Result<File, FsError> {
+        match self {
+            Self::Mount(mount) => mount.reopen(parent_path, logical_path),
+            Self::Link(binding) => binding.reopen_below(parent_path, logical_path),
+        }
+    }
+
+    /// The mount whose root an absolute link text is walked from: none below a
+    /// link followed across mounts.
+    fn mount(&self) -> Option<Arc<MountAnchor>> {
+        match self {
+            Self::Mount(mount) => Some(mount.clone()),
+            Self::Link(_) => None,
+        }
+    }
+}
+
 pub(super) struct Binding {
     original: Arc<OriginalLink>,
     target: Arc<File>,
     target_identity: TransferIdentity,
     target_kind: TargetKind,
+    reach: Reach,
     previous: Option<Arc<Self>>,
 }
 
@@ -466,9 +691,11 @@ pub(super) struct OriginalLink {
     parent: Arc<File>,
     parent_path: PathBuf,
     parent_identity: TransferIdentity,
-    /// The captured mount of a followed link's parent; None for a link leaf, whose
-    /// parent is checked by its source like any other entry.
-    mount: Option<Arc<MountAnchor>>,
+    /// Where a followed link's folder is opened again: the captured mount of the
+    /// outermost followed link's folder, shared below links followed within it, or
+    /// the nearest link followed across mounts above it. None for a link leaf,
+    /// whose folder is checked by its source like any other entry's.
+    anchor: Option<Anchor>,
     name: OsString,
     stub: Arc<File>,
     entry: TransferEntry,
@@ -477,7 +704,7 @@ pub(super) struct OriginalLink {
 }
 
 impl Binding {
-    /// `mount` is the anchor of the link's folder when the caller has it.
+    /// `mount` is the captured mount of the link's folder when the caller has it.
     #[allow(clippy::too_many_arguments)]
     fn capture(
         parent: &Arc<File>,
@@ -491,13 +718,12 @@ impl Binding {
         cancel: &Cancellation,
     ) -> Result<Self, FsError> {
         checked(cancel, &snapshot.item.path)?;
-        let mount = match mount.or_else(|| {
-            previous
-                .as_ref()
-                .and_then(|binding| binding.original.mount.clone())
-        }) {
-            Some(mount) => mount,
-            None => Arc::new(MountAnchor::capture(parent, parent_path, cancel)?),
+        let anchor = match mount
+            .map(Anchor::Mount)
+            .or_else(|| previous.as_ref().and_then(Self::below))
+        {
+            Some(anchor) => anchor,
+            None => Anchor::Mount(Arc::new(MountAnchor::capture(parent, parent_path, cancel)?)),
         };
         let original = Arc::new(OriginalLink::capture(
             parent,
@@ -505,26 +731,70 @@ impl Binding {
             name,
             stub,
             snapshot,
-            mount,
+            anchor,
         )?);
         // Resolve the captured payload exactly and independently check the alias
-        // belongs to the same target through NO_MAGICLINKS.
-        let target = Arc::new(open_target(
-            &original,
-            &original.payload,
-            target_kind,
-            false,
-        )?);
+        // belongs to the same target through NO_MAGICLINKS. A folder is opened as a
+        // folder, which mounts an automount point of its own filesystem (an NFS
+        // submount); the target's filesystem is checked on what is held.
+        let (target, reach) = open_target(&original, &original.payload, target_kind, false, None)?;
         let path = &original.entry.item.path;
+        if let Some(filesystem) = system_filesystem(&target, path)? {
+            return Err(on_system_filesystem(path, filesystem));
+        }
         let binding = Self {
             target_identity: identity(&target, path)?,
             original,
-            target,
+            target: Arc::new(target),
             target_kind,
+            reach,
             previous,
         };
         binding.revalidate_here(cancel)?;
         Ok(binding)
+    }
+
+    /// The anchor of the folders below this link, which a link met there shares as
+    /// the anchor of its own folder: this link itself when it was followed across
+    /// mounts, otherwise the anchor of its own folder, whose mount it stays on.
+    fn below(self: &Arc<Self>) -> Option<Anchor> {
+        match self.reach {
+            Reach::Across => Some(Anchor::Link(self.clone())),
+            Reach::Within => self.original.anchor.clone(),
+        }
+    }
+
+    /// Opens again the folder at `parent_path`, which is this link's logical path
+    /// or lies below it, for a link followed across mounts: the link, resolved
+    /// again from its held folder, must still lead to its target, and the rest of
+    /// the path is resolved from there without leaving the target's mount. Only
+    /// links followed within that mount are met on the way.
+    fn reopen_below(&self, parent_path: &Path, logical_path: &Path) -> Result<File, FsError> {
+        let relative = parent_path
+            .strip_prefix(&self.original.entry.item.path)
+            .map_err(|_| invalid(logical_path, "directory link parent left its followed link"))?;
+        let (target, _) = open_target(
+            &self.original,
+            &self.original.name,
+            self.target_kind,
+            true,
+            Some(Reach::Across),
+        )?;
+        if identity(&target, logical_path)? != self.target_identity {
+            return Err(invalid(logical_path, "link target identity changed"));
+        }
+        if relative.as_os_str().is_empty() {
+            return Ok(target);
+        }
+        openat2(
+            &target,
+            relative,
+            PATH_DIRECTORY,
+            Mode::empty(),
+            LINK_RESOLVE,
+        )
+        .map(File::from)
+        .map_err(|failure| error(logical_path, failure.into()))
     }
 
     pub(super) fn original_identity(&self) -> TransferIdentity {
@@ -545,9 +815,15 @@ impl Binding {
     fn revalidate_here(&self, cancel: &Cancellation) -> Result<(), FsError> {
         self.original.revalidate(cancel)?;
         let path = &self.original.entry.item.path;
-        // Through the link's name: the link as it is now. Revalidating its
-        // folder checked the mount's lineage just now.
-        let target = open_target(&self.original, &self.original.name, self.target_kind, true)?;
+        // Through the link's name: the link as it is now, reached as it was
+        // followed. Revalidating its folder checked the mount's lineage just now.
+        let (target, _) = open_target(
+            &self.original,
+            &self.original.name,
+            self.target_kind,
+            true,
+            Some(self.reach),
+        )?;
         if identity(&target, path)? != self.target_identity {
             return Err(invalid(path, "link target identity changed"));
         }
@@ -562,7 +838,7 @@ impl OriginalLink {
         name: &OsStr,
         stub: Arc<File>,
         mut entry: TransferEntry,
-        mount: Arc<MountAnchor>,
+        anchor: Anchor,
     ) -> Result<Self, FsError> {
         let revision = Revision::of(&stub, &entry.item.path)?;
         let payload = read_payload(&stub, &entry.item.path)?;
@@ -571,7 +847,7 @@ impl OriginalLink {
             parent: parent.clone(),
             parent_path: parent_path.to_owned(),
             parent_identity: identity(parent, parent_path)?,
-            mount: Some(mount),
+            anchor: Some(anchor),
             name: name.to_owned(),
             stub,
             entry,
@@ -601,7 +877,7 @@ impl OriginalLink {
             parent: parent.clone(),
             parent_path: parent_path.to_owned(),
             parent_identity: identity(parent, parent_path)?,
-            mount: None,
+            anchor: None,
             name: name.to_owned(),
             stub,
             entry,
@@ -638,9 +914,15 @@ impl OriginalLink {
                 "directory link mutation parent differs from its capture",
             ));
         }
-        self.mount
-            .clone()
-            .ok_or_else(|| invalid(path, "a preserved link has no captured mount"))
+        match &self.anchor {
+            Some(Anchor::Mount(mount)) => Ok(mount.clone()),
+            // Move never works below a followed link.
+            Some(Anchor::Link(_)) => Err(invalid(
+                path,
+                "a link below a link followed to another mount has no captured mount",
+            )),
+            None => Err(invalid(path, "a preserved link has no captured mount")),
+        }
     }
 
     pub(super) fn qualify_removal(&self) -> Result<(), FsError> {
@@ -694,8 +976,8 @@ impl OriginalLink {
     fn revalidate_parent(&self, cancel: &Cancellation) -> Result<(), FsError> {
         let path = &self.entry.item.path;
         checked(cancel, path)?;
-        let visible_parent = match &self.mount {
-            Some(mount) => mount.reopen(&self.parent_path, path)?,
+        let visible_parent = match &self.anchor {
+            Some(anchor) => anchor.reopen(&self.parent_path, path)?,
             None => File::from(
                 openat(CWD, &self.parent_path, DIRECTORY, Mode::empty())
                     .map_err(|failure| error(path, failure.into()))?,
@@ -769,34 +1051,46 @@ fn read_payload(stub: &File, path: &Path) -> Result<OsString, FsError> {
         .map_err(|failure| error(path, failure.into()))
 }
 
-/// Opens the target of a followed link from the link's folder, within its mount:
-/// `text` is the captured payload, or the link's name, which follows the link.
+/// Opens the target of a followed link from the link's folder: `text` is the
+/// captured payload, or the link's name, which follows the link. A text that stays
+/// on the folder's mount is resolved within it (`resolve_link_text`), any other
+/// across mount points (`resolve_across`). `reach` is that of a binding checked
+/// again: a link followed within its mount must still stay there, and one followed
+/// across mounts is resolved across them again.
 fn open_target(
     original: &OriginalLink,
     text: &OsStr,
     kind: TargetKind,
     lineage_checked: bool,
-) -> Result<File, FsError> {
+    reach: Option<Reach>,
+) -> Result<(File, Reach), FsError> {
     let path = &original.entry.item.path;
-    let resolved = resolve_link_text(
-        &original.parent,
-        text,
-        kind == TargetKind::Directory,
-        path,
-        lineage_checked,
-        || {
-            original
-                .mount
-                .clone()
-                .ok_or_else(|| invalid(path, "a followed link has no captured mount"))
-        },
-    )?;
-    let target = match resolved {
-        Ok(target) => target,
+    let directory = kind == TargetKind::Directory;
+    let within = if reach == Some(Reach::Across) {
+        Err(Errno::XDEV)
+    } else {
+        resolve_link_text(
+            &original.parent,
+            text,
+            directory,
+            path,
+            lineage_checked,
+            || Ok(original.anchor.as_ref().and_then(Anchor::mount)),
+        )?
+    };
+    let resolved = match within {
+        Ok(target) => Ok((target, Reach::Within)),
+        Err(Errno::XDEV) if reach != Some(Reach::Within) => {
+            resolve_across(&original.parent, text, directory).map(|target| (target, Reach::Across))
+        }
+        Err(failure) => Err(failure),
+    };
+    let (target, reach) = match resolved {
+        Ok(resolved) => resolved,
         Err(Errno::XDEV) => {
             return Err(unsupported(
                 path,
-                "directory link target crosses a mount boundary",
+                "directory link target left the mount it was followed within",
             ));
         }
         Err(Errno::NOTDIR) => {
@@ -812,7 +1106,7 @@ fn open_target(
     {
         return Err(invalid(path, "link target is no longer a regular file"));
     }
-    Ok(target)
+    Ok((target, reach))
 }
 
 pub(super) struct MountAnchor {
@@ -1228,3 +1522,7 @@ fn discover_at(
 #[cfg(test)]
 #[path = "transfer_directory_link_walk_tests.rs"]
 mod walk_tests;
+
+#[cfg(test)]
+#[path = "transfer_directory_link_filesystem_tests.rs"]
+mod filesystem_tests;
