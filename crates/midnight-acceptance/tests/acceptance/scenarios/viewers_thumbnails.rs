@@ -8,7 +8,7 @@
 use crate::{
     Context,
     app::{self, App, Config},
-    input, inspect, panel, viewers_stage,
+    files_support as files, input, inspect, panel, viewers_stage,
     viewers_support::{self as support, Canvas, Failures, generated},
 };
 use i_slint_core::items::AccessibleRole;
@@ -107,6 +107,18 @@ fn notices(app: &App) -> Vec<String> {
     support::plugins(app)
         .map(|plugins| plugins.thumbnail_log.borrow().notices.clone())
         .unwrap_or_default()
+}
+
+/// A notice shown while thumbnails load fails the check named by `during`; it is then
+/// closed, since it takes the keyboard from the panel, so the remaining checks still run.
+fn close_notice(app: &mut App, failures: &Failures, during: &str) {
+    if let Some((title, body)) = app.notice() {
+        failures.check(
+            &format!("no notice during {during}"),
+            Err(format!("{title}: {body}")),
+        );
+        files::dismiss_all(app);
+    }
 }
 
 /// Watch the visible tiles frame by frame until every one shows its colour (or the
@@ -358,6 +370,8 @@ fn run(context: &mut Context) -> Result<(), String> {
         },
     );
 
+    close_notice(&mut app, &failures, "the thumbs/ grid");
+
     // Every image format, broken images, the documents folder.
     for folder in ["images", "docs"] {
         // Thumbnails can arrive while the folder is entered: count from before.
@@ -419,6 +433,7 @@ fn run(context: &mut Context) -> Result<(), String> {
             }
             failures.check("PDF first page", page.map(|_| ()));
         }
+        close_notice(&mut app, &failures, &format!("{folder}/"));
     }
     input::chord(app.slint(), &[Key::Alt], "3");
     app.settle();
@@ -427,6 +442,7 @@ fn run(context: &mut Context) -> Result<(), String> {
         "BMP, ICO and TIFF thumbnails",
         extra_formats(&mut app, context),
     );
+    close_notice(&mut app, &failures, "the BMP, ICO and TIFF thumbnails");
     failures.skip(
         "AVIF thumbnails",
         "no AVIF encoder in this suite or on this machine to make a fixture",

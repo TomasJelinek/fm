@@ -6,7 +6,7 @@
 use crate::{
     Context,
     app::{self, App, Config},
-    files_support::{self as support, Choice, Pending, TransferSpec, compare_trees, tree_facts},
+    files_support::{self as support, Choice, TransferSpec, compare_trees, tree_facts},
     inspect, panel,
     scenarios::transfers::copy_tree,
     tools_support::{self as tools, Tool},
@@ -18,8 +18,6 @@ use std::{fs, path::Path, time::Duration};
 
 const LEFT: PaneId = PaneId::Left;
 const SIZE: (u32, u32) = (760, 560);
-/// Announced job-window behavior that may not be implemented yet.
-const WAIT_OFF: &str = "a job whose Wait for other operations is off starts at once";
 /// The size of the file paused in the middle of its copy.
 const LARGE: u64 = 1 << 30;
 
@@ -205,7 +203,6 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     let faulty_target = support::scratch(context, "t-faulty")?;
     let mut app = App::start(Config::new(&source, &targets[0]));
     let mut failures = Vec::new();
-    let mut pending = Pending::default();
     let mut seen_texts: Vec<String> = Vec::new();
 
     // The dialog offers the queueing option, unchecked by default.
@@ -278,19 +275,14 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     let second_done = job2
         .as_ref()
         .is_some_and(|job| job.state == CopyOperationState::Completed);
-    pending.check(
-        "Wait off: a second job runs at once beside a paused one",
-        WAIT_OFF,
-        if second_done {
-            Ok(())
-        } else {
-            Err(format!(
-                "after 20 s job 2 is {:?} waiting for {:?}",
-                job2.as_ref().map(|job| job.state),
-                job2.as_ref().and_then(|job| job.wait_reason)
-            ))
-        },
-    );
+    if !second_done {
+        failures.push(format!(
+            "Wait off: a second job runs at once beside a paused one: after 20 s job 2 is \
+             {:?} waiting for {:?}",
+            job2.as_ref().map(|job| job.state),
+            job2.as_ref().and_then(|job| job.wait_reason)
+        ));
+    }
     let job1 = support::job(&app, first);
     if job1
         .as_ref()
@@ -333,17 +325,8 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
         "job 3 (waiting) is {:?}",
         job3.map(|job| (job.state, job.wait_reason, job.files_completed))
     );
-    if second_done {
-        if !waits {
-            failures.push(format!("{observed}; it should wait for the paused job 1"));
-        }
-    } else {
-        // Job 2 still waits too (pending above), which changes what job 3 waits for.
-        pending.check(
-            "Wait on: a third job waits for the earlier jobs",
-            WAIT_OFF,
-            if waits { Ok(()) } else { Err(observed) },
-        );
+    if !waits {
+        failures.push(format!("{observed}; it should wait for the paused job 1"));
     }
     match new_window(&mut app, "Copy", before) {
         Err(error) => failures.push(error),
@@ -782,5 +765,5 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
         ));
     }
     app.shutdown()?;
-    support::report_with(context, &failures, &pending)
+    support::report(&failures)
 }

@@ -213,7 +213,7 @@ pub fn clip_rect(item: &ItemRc) -> Option<Rect> {
 }
 
 /// Whether a scroll view whose content is wider than itself holds `item`.
-fn in_sideways_scroll(item: &ItemRc) -> bool {
+pub fn in_sideways_scroll(item: &ItemRc) -> bool {
     let mut current = item.parent_item(ParentItemTraversalMode::StopAtPopups);
     while let Some(ancestor) = current {
         if let Some(flickable) = ancestor.downcast::<Flickable>()
@@ -356,7 +356,11 @@ fn check_root(root: &ItemRc, width: f32, height: f32, findings: &mut Vec<Finding
                     && let Some(preferred) = preferred_width(child)
                 {
                     let available = rect(child).2.min(*w);
-                    if preferred > available + 1.0 {
+                    // A caption whose own box holds it, cut at the edge of a view that
+                    // scrolls sideways (a table's last column heading), is scrolled out
+                    // of view, not squeezed: as for labels above.
+                    let scrolled = rect(child).2 + 1.0 >= preferred && in_sideways_scroll(child);
+                    if preferred > available + 1.0 && !scrolled {
                         let short: String = text.chars().take(48).collect();
                         findings.push(Finding {
                             kind: "text does not fit its button",

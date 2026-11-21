@@ -377,22 +377,28 @@ fn compact(
     let w = window.window();
     app::layout_tool(window, find::SIZE.0, find::SIZE.1);
     find::fill(app, window, BASE)?;
-    layout_clean(app, context, window, size, name)?;
+    // A layout finding is reported with the compact checks below, not instead of them.
+    let mut problems = Vec::new();
+    if let Err(problem) = layout_clean(app, context, window, size, name) {
+        problems.push(problem);
+    }
     // The label may be scrolled out of the short query area: look at every text.
     let labels = all_texts(window);
     if !labels.iter().any(|text| text == "Query") || labels.iter().any(|text| text == "File name") {
-        return Err(format!(
+        problems.push(format!(
             "a compact window does not call the field Query: {labels:?}"
         ));
+        return Err(problems.join("\n"));
     }
     // An idle status: in the query area with large text, under the results otherwise.
     let text = find::run(app, window)?;
     app.settle();
     let (under, above) = status_places(window)?;
     if (under, above) != (!large_text, large_text) {
-        return Err(format!(
+        problems.push(format!(
             "compact, large text {large_text}: after {text:?} a status under the results {under}, above them {above}"
         ));
+        return Err(problems.join("\n"));
     }
     // Shown there, not only placed there: the user sees how the search ended.
     let _ = app::render(window);
@@ -402,7 +408,6 @@ fn compact(
         &format!("{name}-idle"),
         "A compact window after a search",
     );
-    let mut problems = Vec::new();
     if !inspect::labels(w, AccessibleRole::Button)
         .iter()
         .any(|label| find::is_status(label))

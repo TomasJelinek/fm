@@ -191,6 +191,28 @@ fn key_dialog(
     Ok(Target::Main)
 }
 
+/// A job that has just finished, for the Jobs window to list: F7 creates a folder in the
+/// restored scratch folder. The Clear buttons are clicked last, each on a fresh opening,
+/// and when every earlier job ended without errors, Clear finished without errors
+/// empties the list, so Clear all finished after it would have nothing left to clear.
+fn finished_job(app: &mut App) -> Result<(), String> {
+    static MADE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let name = format!(
+        "finished job {}",
+        MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    key_dialog(app, "alpha.bin", &[], Key::F7, "Create directory", |app| {
+        !app.window.get_operation_token().is_empty()
+    })?;
+    input::chord(app.slint(), &[Key::Control], "a");
+    input::type_text(app.slint(), &name);
+    input::key(app.slint(), Key::Return);
+    app.until("the Create directory job to finish", move |app| {
+        app.window.get_operation_token().is_empty() && app.names(LEFT).contains(&name)
+    });
+    Ok(())
+}
+
 fn tool_open(_: &App, target: &Target) -> bool {
     match target {
         Target::Tool(window) => window.window().is_visible(),
@@ -519,6 +541,7 @@ const SPECS: &[Spec] = &[
     Spec {
         name: "jobs",
         open: |app| {
+            finished_job(app)?;
             let before = app.tool_windows().len();
             app.window.invoke_show_operations();
             new_tool(app, "Jobs", before)

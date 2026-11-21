@@ -5,179 +5,272 @@ found and what Windows cannot cover. How the runner and the harness differ on Wi
 is described in [ACCEPTANCE.md](../ACCEPTANCE.md) ("Windows" under "Running it"); the
 area records list the checks themselves.
 
-Status: **PASS** (every check held in the run named), **FAIL** (a product bug, named by
-its finding below or by the area record's open item, or a result this environment
-cannot attribute, said so), **PENDING** (only checks of announced behavior failed, as
-on Linux), **SKIP** (Windows or this environment cannot provide what the scenario
+Status: **PASS** (every check held in the run named), **WARN** (every check held; the
+UI review flagged something, a warning unless `--strict-review`), **FAIL** (a product
+bug, named by its finding below), **PENDING** (only checks of announced behavior failed,
+as on Linux), **SKIP** (Windows or this environment cannot provide what the scenario
 needs; the reason is given), **NOT RUN** (not run on Windows with the current harness).
 
 ## How it ran
 
 Windows 11 Enterprise (10.0.26200), Czech regional settings (dates `21.11.2026`,
 decimal comma, Czech collation, where "ch" sorts after "h"), the checkout on drive D:
-and the private installation on C:, smoke scale, debug test build. The test executable
-was built from the shared working tree on 21 November between about 03:00 and 06:00
-local time (HEAD up to 3d42cb1f plus the roles' uncommitted changes of the moment), so
-a run tests the product source of its build; the harness changed between the runs, and
-each scenario is listed with the newest run that ran it. Two or three runs and other
-roles' builds shared the machine (20 logical processors), which slows the debug
-build's timed steps.
+and the private installation on C:, debug test build, on 21 November between 15:18 and
+20:30 local time.
 
-Plugins: the packages `scripts\validate.ps1` left in `_build\validate`
-(`--validation-packages`): the Basic, Image, Markdown, PDF and Source viewers built on
-20 November between 10:37 and 10:43, the native Windows filesystem built on 19 November
-and the archive filesystem built on 20 November at 23:17. The viewers predate d9cafd45
-(20 November 16:52), which changed them, so viewer checks of behavior that landed since
-then cannot pass with them; those failures are marked "not attributable". There is no
-HTML viewer and no thumbnailer package.
+- Source: commit 3f6fff8a (main when the run started; CI green on Windows and Linux).
+  The whole-suite run's test executable was built at 15:43 from the clean worktree with
+  one harness change (`viewers_stage::installed_packages`) and ran under the runner's
+  thumbnailer staging fix (see "Harness defects").
+  From 16:12 other roles edited product sources in the shared worktree and later
+  commits landed (e9f51bff, 2b901122 and after; not tested here), so every rerun's
+  executable was built from a `git archive` export of 3f6fff8a with only harness changes
+  applied, in its own target directory: the fixes below, and for the last run
+  (`20261121-192806`) also the Linux harness fixes of 21 November and the pending marks
+  removed.
+- Packages: one `build.bat debug` at 3f6fff8a (15:18–15:38, 1,178 s, offline, before any
+  other role's edit): the Basic, Source, Markdown, Image, PDF and HTML viewers, the native
+  Windows and archive filesystems, and the image and video thumbnailers (an FFmpeg 9.0.2
+  MSVC prefix and its checksum-verified source archive prepared on this machine earlier,
+  libclang 18.1.1, the verified CEF SDK under `_build\html-viewer`; nothing downloaded).
+  Its deployment step's runtime validation (`package-release.py validate-runtime`) found
+  6 viewers, 3 filesystems and 2 thumbnailers; the native filesystem package was current
+  from 19 November (no source change since). The runner staged them from `_build\debug`
+  (network providers left out).
+- Commands: `pwsh -File scripts\acceptance.ps1 --scale smoke --offline --run-dir
+  <checkout>\_build\acceptance-win2` (the whole suite, run `20261121-144422`, 6,966 s);
+  reruns with `--test-binary <export build> --only <scenarios>` (`20261121-164408`,
+  `20261121-170053`, `20261121-173345`, and `20261121-192806` with `--keep-fixture`);
+  and `--scale full` for the transfer, archive and viewer scenarios (`20261121-175553`).
+- Load: the Linux suite ran in WSL meanwhile (its VM held 10–16 GB), and other roles'
+  Cargo builds (a release build, workspace test builds) ran for most of the afternoon:
+  30–90 % CPU, which slows the debug build's timed steps (WIN-8's copy rate followed it).
 
-```text
-pwsh -File scripts\acceptance.ps1 --test-binary <copy of acceptance-*.exe> --validation-packages
-     --scale smoke --run-dir <checkout>\_build\acceptance-win --only <scenarios>
-```
-
-Run folders are below `_build\acceptance-win\` (named in UTC; a staged scenario's own
+Run folders are below `_build\acceptance-win2\` (named in UTC; a staged scenario's own
 run is in its `work\<scenario>\staged\run\` folder, its screenshots are copied to the
-outer run's `shots\`).
+outer run's `shots\`; fixtures and scratch folders of finished runs were deleted, their
+reports and screenshots kept). The previous Windows runs (`_build\acceptance-win\`,
+`20261121-015653` to `20261121-051501`) used the packages `scripts\validate.ps1` had
+left, which predated d9cafd45 and held no HTML viewer and no thumbnailer; their results
+are superseded.
 
 ## Results
 
 | Scenario | Area | Status | Run |
 | --- | --- | --- | --- |
-| `startup` | panels | PASS | `20261121-043913` |
-| `startup_paths` | panels | PASS (a private profile: `USERPROFILE` and `LOCALAPPDATA`) | `20261121-043913` |
-| `navigation` | panels | PASS | `20261121-043913` |
-| `copy_move_delete` | transfers | PASS | `20261121-043913` |
-| `create_rename` | operations | PASS | `20261121-043913` |
-| `tree_expand_all` | tree | PASS | `20261121-043913` |
-| `folder_sizes` | tree | PASS | `20261121-043913` |
-| `find_by_mask` | find | PASS | `20261121-043913` |
-| `checksums` | checksums | PASS | `20261121-043913` |
-| `files_copy_kinds` | transfers | PASS | `20261121-043913` |
-| `files_move_kinds` | transfers | PASS | `20261121-043913` |
-| `files_conflicts` | transfers | PASS | `20261121-043913` |
-| `files_links` | transfers | PASS (directory junctions: dangling, to a folder, to itself) | `20261121-043913` |
-| `files_delete` | operations | PASS (F8 cancelled, the Recycle Bin not read; a read-only-attribute folder with contents deleted by Shift+F8) | `20261121-022248` |
-| `files_rename` | operations | PASS | `20261121-043913` |
-| `files_create` | operations | PASS | `20261121-043913` |
-| `files_attributes` | operations | PASS (Hidden, Archive and Read-only set and cleared; times to 100 ns) | `20261121-024756` |
-| `files_selection` | selection | PASS | `20261121-043913` |
-| `files_sorting` | panels | PASS | `20261121-024756` |
-| `files_filter_search` | panels | PASS (dot-names with the hidden attribute) | `20261121-022248` |
-| `files_navigation` | panels | PASS | `20261121-043913` |
-| `files_tabs` | panels | PASS | `20261121-022248` |
-| `files_hot_paths` | panels | PASS | `20261121-043913` |
-| `files_file_list` | panels | PASS | `20261121-043913` |
-| `files_tree_ops` | tree | PASS | `20261121-043913` |
-| `files_busy_folder` | panels | PASS | `20261121-043913` |
-| `files_copy_options` | transfers | PASS | `20261121-043913` |
-| `files_transfer_jobs` | jobs | FAIL: WIN-1 (Details shows no progress of the current file while paused: the engine reports it, the line is below the visible part of the window; fixed in source since, not re-run) | `20261121-024756` |
-| `files_transfer_errors` | transfers | PENDING: the two announced behaviors pending on Linux too (a Move out of a write-protected folder offers no Skip; Skip of an unreadable selected folder while the transfer is prepared); the cross-volume Copy and Move ran to the private installation's drive | `20261121-024756` |
-| `files_clipboard_drag` | transfers | PASS | `20261121-022248` |
-| `files_archive_transfers` | transfers | PASS (staged) | `20261121-022248` |
-| `files_trash` | operations | SKIP: Windows recycles into the account's own Recycle Bin, one per volume, which no variable redirects to a private folder | `20261121-022248` |
-| `tools_compare_dirs` | compare | PASS (its unreadable-metadata part noted as not run: no Windows equivalent) | `20261121-022908` |
-| `tools_find_criteria` | find | PASS (`attributes has readonly` finds only the read-only file, `attributes has hidden` nothing) | `20261121-022908` |
-| `tools_find_folders_help` | find | PASS | `20261121-022908` |
-| `tools_find_results` | find | PASS | `20261121-022908` |
-| `find_query_syntax` | find | PASS | `20261121-040741` |
-| `find_roots_windows` | find | PASS | `20261121-022908` |
-| `find_result_actions` | find | PASS (the harmless editor is the `cp.exe` stand-in) | `20261121-022908` |
-| `find_feed_panel` | find | PASS (keypad * as Ctrl+I, and as Ctrl+Shift+I after Select by mask with Include folders) | `20261121-024756` |
-| `find_budgets` | find | PASS | `20261121-022908` |
-| `find_layout` | find | FAIL: WIN-7 (FIND-COMPACT-STATUS-HIDDEN, the find record's F-L04); every other check held | `20261121-042048` |
-| `find_archives` | find | PASS (staged) | `20261121-024756` |
-| `find_viewers` | find | PASS (staged) | `20261121-022908` |
-| `tools_checksum_algorithms` | checksums | PASS | `20261121-024756` |
-| `tools_checksum_manifests` | checksums | PASS (pages Calculate and Verify) | `20261121-024756` |
-| `tools_checksum_large_stop` | checksums | PASS | `20261121-024756` |
-| `tools_folder_sizes` | tree | PASS (directory junctions; Ctrl+G into one) | `20261121-043913` |
-| `tools_jobs_copy` | jobs | PASS | `20261121-024756` |
-| `tools_help_drive_info` | tools | PASS | `20261121-024756` |
-| `tools_main_menu` | tools | PASS | `20261121-024756` |
-| `ui_review` | ui | FAIL: 46 flags, as in run 20261121-031212. At 320×200 (Blue Desktop, Dark Touch) About does not close and the dialogs after it cannot open (14 steps), with the cut-off, clipped and zero-size texts of About, Hot Paths and a notice's Details: the open minimum-size finding U-D08 (ui-polish record); the command line's working folder (WIN-2, 15 flags) and the path bar's Edit folder path (WIN-3, 2 flags) | `20261121-045727` |
-| `viewers_files` | viewers | FAIL, not attributable to the current source: the ten failed checks (CSS, Makefile, GNUmakefile, rules.mk and rules.mak not in Source mode; CSV and TSV not shown as tables; truncated and zero-byte PNG refused without the decoder's reason) are behaviour that landed in d9cafd45 (20 November 16:52), after the validation packages were built (10:43). 17 slow-open review flags of the debug build under load (staged) | `20261121-035050` |
-| `viewers_controls` | viewers | PASS (staged) | `20261121-035050` |
-| `viewers_compare` | viewers | PASS (staged) | `20261121-035050` |
-| `viewers_thumbnails` | viewers | SKIP: the validation packages hold no thumbnailers | `20261121-035050` |
-| `viewers_archives` | viewers | FAIL: WIN-8 (the copy-out of 100,001 files from flat.tar ran out of its 600 s budget); every other check held (staged) | `20261121-035050` |
-| `viewers_scroll` | viewers | FAIL, not attributable (stale Source viewer package, debug build under load): Rust source only: five wheel notches and twenty Down presses in a row moved 256 px (300 and 560 expected) while one notch, one Down (28 px) and PageDown (712 px) moved as expected; 45 of 47 checks held (staged) | `20261121-035050` |
-| `viewers_selection` | viewers | FAIL, not attributable (stale Source viewer package): selected Rust source text below 4.5:1 in GruvboxDark, CatppuccinLatte, RosePineDawn and GraphiteContrast; CatppuccinLatte's CSV selection shows no text; Blue, Dark and Light hold (staged) | `20261121-035050` |
-| `viewers_presentation` | viewers | PASS (staged; the HTML zoom, policy and Find case skipped: no HTML viewer package) | `20261121-045833` |
-| `viewers_combinations` | viewers | PASS (staged) | `20261121-035050` |
-| `options_general` | options | PASS | `20261121-032203` |
-| `options_appearance` | options | PASS | `20261121-032203` |
-| `options_custom_commands` | options | PASS (the `sh.exe` stand-in; the preview shows arguments Debug-escaped) | `20261121-042048` |
-| `options_keyboard` | options | PASS | `20261121-032203` |
-| `options_colors` | options | PASS | `20261121-032203` |
-| `options_archives` | options | PASS | `20261121-032203` |
-| `options_editors` | options | PASS (the `cp.exe` stand-in) | `20261121-032203` |
-| `options_comparators` | options | PASS | `20261121-032203` |
-| `options_previews_plugins` | options | PASS | `20261121-032203` |
-| `options_hot_paths` | options | PASS | `20261121-032203` |
-| `options_visual` | options | PASS (with the UI role's swatch tooltip, uncommitted then and committed since in 93e7f43a: WIN-4 resolved) | `20261121-040741` |
-| `ui_polish_checks` | ui | PASS (with the final gate: every red case flagged, its corrected twin clean) | `20261121-051501` |
-| `ui_themes` | ui | PASS | `20261121-031212` |
-| `ui_matrix_full` | ui | SKIP: runs with `--all-themes` only | `20261121-031212` |
-| `ui_polish_dialogs` | ui | FAIL: WIN-2 only (1 flag: the command line's working folder overlapping its start overlay in the main window); every dialog's Tab, Escape, Enter, buttons, hover and tooltips held (staged) | `20261121-045655` |
-| `ui_polish_jobs` | ui | PASS | `20261121-051501` |
-| `ui_polish_viewers` | ui | FAIL: WIN-9 (Zoom image out and Zoom image in, − and +, without tooltip) | `20261121-035050` |
-| `shortcuts_catalog` | keyboard | PASS (198 keys) | `20261121-040741` |
-| `panels_dialogs` | panels | PASS (Ctrl+F2 sets Read-only where Linux types octal 600) | `20261121-043911` |
-| `panels_notices` | panels | PASS (Copy details starts with the title, the reason and the folder) | `20261121-042110` |
-| `panels_times` | panels | PASS | `20261121-042110` |
-| `panels_view_sort` | panels | PASS | `20261121-042110` |
-| `panels_paths` | panels | PASS (the drive menu; Attributes in the details strip) | `20261121-043911` |
-| `panels_tabs` | panels | PENDING: the harness's own pending check of tabs restored after a restart (as on Linux) | `20261121-042110` |
-| `panels_search_filter` | panels | PASS | `20261121-042110` |
-| `panels_tree_keys` | tree | PASS | `20261121-042110` |
-| `panels_selection_more` | selection | PASS | `20261121-042110` |
-| `panels_hot_digits` | panels | PASS | `20261121-042110` |
-| `panels_busy_ops` | panels | PASS (Ctrl+F2 sets Read-only on the two marked files) | `20261121-044947` |
-| `panels_file_list` | panels | PASS | `20261121-042110` |
-| `panels_root_keys` | panels | PASS | `20261121-042110` |
-| `about_box` | tools | PASS | `20261121-035053` |
-| `shortcuts_footer` | keyboard | PASS | `20261121-035053` |
-| `tools_user_menu` | tools | PASS | `20261121-035053` |
-| `tools_notices_jobs` | tools | PASS (Copy details starts with the title, the reason and the folder) | `20261121-040741` |
-| `shortcuts_hints` | keyboard | PASS | `20261121-035053` |
-| `options_buttons` | options | PASS | `20261121-032203` |
-| `options_themes` | options | PASS | `20261121-032203` |
-| `journeys_find_to_checksums` | journeys | PASS ("1 archive member not shown", finding J-1 fixed) | `20261121-043913` |
-| `journeys_archive_roundtrip` | journeys | PASS | `20261121-032850` |
-| `journeys_filtered_conflicts` | journeys | PASS (the recovery folder, without a hidden attribute, listed while hidden files are hidden) | `20261121-043911` |
-| `journeys_concurrent_jobs` | journeys | PASS (the delete waits queued until the paused copy ends, as designed; WIN-5 withdrawn) | `20261121-042048` |
-| `journeys_options_restart` | journeys | PASS (staged) | `20261121-032203` |
-| `journeys_links_readonly` | journeys | SKIP: Linux link and mode semantics (see below) | `20261121-032850` |
-| `journeys_keyboard_only` | journeys | PASS (Ctrl+U swaps the panels' places, each keeping its folder) | `20261121-042048` |
-| `journeys_pointer_only` | journeys | FAIL: WIN-6 (the drag's Move "Completed with warnings"; fixed in source since, not re-run); the pending quick drop could not be tested: the drag took 683 ms (staged) | `20261121-043911` |
+| `startup` | panels | PASS | `20261121-144422` |
+| `startup_paths` | panels | PASS (a private profile: `USERPROFILE` and `LOCALAPPDATA`) | `20261121-144422` |
+| `navigation` | panels | PASS | `20261121-144422` |
+| `copy_move_delete` | transfers | PASS; full scale PASS | `20261121-144422`; `20261121-175553` |
+| `create_rename` | operations | PASS | `20261121-144422` |
+| `tree_expand_all` | tree | PASS | `20261121-144422` |
+| `folder_sizes` | tree | PASS | `20261121-144422` |
+| `find_by_mask` | find | PASS | `20261121-144422` |
+| `checksums` | checksums | PASS | `20261121-144422` |
+| `files_copy_kinds` | transfers | PASS; full scale PASS | `20261121-144422`; `20261121-175553` |
+| `files_move_kinds` | transfers | PASS; full scale PASS | `20261121-144422`; `20261121-175553` |
+| `files_conflicts` | transfers | PASS; full scale PASS | `20261121-144422`; `20261121-175553` |
+| `files_links` | transfers | PASS (directory junctions: dangling, to a folder, to itself); full scale PASS | `20261121-144422`; `20261121-175553` |
+| `files_delete` | operations | PASS (F8 cancelled, the Recycle Bin not read; a read-only-attribute folder with contents deleted by Shift+F8) | `20261121-144422` |
+| `files_rename` | operations | PASS | `20261121-144422` |
+| `files_create` | operations | PASS | `20261121-144422` |
+| `files_attributes` | operations | PASS (Hidden, Archive and Read-only set and cleared; times to 100 ns) | `20261121-144422` |
+| `files_selection` | selection | PASS | `20261121-144422` |
+| `files_sorting` | panels | PASS | `20261121-144422` |
+| `files_filter_search` | panels | PASS (dot-names with the hidden attribute) | `20261121-144422` |
+| `files_navigation` | panels | PASS | `20261121-144422` |
+| `files_tabs` | panels | PASS | `20261121-144422` |
+| `files_hot_paths` | panels | PASS | `20261121-144422` |
+| `files_file_list` | panels | PASS | `20261121-144422` |
+| `files_tree_ops` | tree | PASS | `20261121-144422` |
+| `files_busy_folder` | panels | PASS | `20261121-144422` |
+| `files_copy_options` | transfers | PASS; full scale PASS | `20261121-144422`; `20261121-175553` |
+| `files_transfer_jobs` | jobs | PASS (WIN-1 resolved); full scale PASS; PASS with Wait off a strict check (T-J01) | `20261121-192806` (also `20261121-144422`); `20261121-175553` |
+| `files_transfer_errors` | transfers | PENDING on one announced behavior, pending on Linux too: a Move out of a write-protected folder offers Retry, Cancel job and Decide later, no Skip (T-E06); T-J15, T-E05 and T-E10 held as strict checks; the cross-volume Copy and Move ran to the private installation's drive (C:), where the Move failed and kept its source ("Move needs a protected source parent"), an outcome the check accepts. With the harness of 3f6fff8a (`20261121-144422`, full scale `20261121-175553`) also T-E10 was pending: the harness read the question's buttons before the decision was up | `20261121-192806` |
+| `files_clipboard_drag` | transfers | PASS; full scale PASS | `20261121-144422`; `20261121-175553` |
+| `files_archive_transfers` | transfers | PASS (staged); full scale PASS | `20261121-144422`; `20261121-175553` |
+| `files_trash` | operations | SKIP: Windows recycles into the account's own Recycle Bin, one per volume, which no variable redirects to a private folder | `20261121-144422` |
+| `tools_compare_dirs` | compare | PASS (its unreadable-metadata part noted as not run: no Windows equivalent) | `20261121-144422` |
+| `tools_find_criteria` | find | PASS | `20261121-144422` |
+| `tools_find_folders_help` | find | PASS | `20261121-144422` |
+| `tools_find_results` | find | PASS | `20261121-144422` |
+| `find_query_syntax` | find | PASS | `20261121-144422` |
+| `find_roots_windows` | find | PASS | `20261121-144422` |
+| `find_result_actions` | find | PASS (the harmless editor is the `cp.exe` stand-in) | `20261121-144422` |
+| `find_feed_panel` | find | PASS | `20261121-144422` |
+| `find_budgets` | find | PASS | `20261121-144422` |
+| `find_layout` | find | FAIL: WIN-10 (the compact Touch window's status line overlaps Fewer options and Feed to panel by 11 px); every other check held, WIN-7's status check among them | `20261121-170053` (also `20261121-144422`) |
+| `find_archives` | find | PASS (staged); full scale PASS | `20261121-144422`; `20261121-175553` |
+| `find_viewers` | find | PASS (staged) | `20261121-144422` |
+| `tools_checksum_algorithms` | checksums | PASS | `20261121-144422` |
+| `tools_checksum_manifests` | checksums | PASS (pages Calculate and Verify) | `20261121-144422` |
+| `tools_checksum_large_stop` | checksums | PASS | `20261121-144422` |
+| `tools_folder_sizes` | tree | PASS (directory junctions; Ctrl+G into one) | `20261121-144422` |
+| `tools_jobs_copy` | jobs | PASS; full scale PASS | `20261121-144422`; `20261121-175553` |
+| `tools_help_drive_info` | tools | PASS | `20261121-144422` |
+| `tools_main_menu` | tools | PASS | `20261121-144422` |
+| `ui_review` | ui | PASS (260 screenshots, no flag: WIN-2, WIN-3 and the earlier minimum-size flags are gone; the one flag of `20261121-144422`, Find's "Path" heading at 320×200, was a harness defect, fixed) | `20261121-173345` |
+| `viewers_files` | viewers | WARN (staged): every check held, the HTML cases included; 6 slow-open flags of the debug build (`page.html` 3.8 s, `report.pdf` 3.6 s, `plain.htm` 905 ms, `plain.txt` 654 ms, `page.xhtml` 572 ms, `broken.html` 553 ms); full scale WARN (15 slow-open flags) | `20261121-144422`; `20261121-175553` |
+| `viewers_controls` | viewers | PASS (staged); full scale PASS | `20261121-144422`; `20261121-175553` |
+| `viewers_compare` | viewers | PASS (staged); full scale PASS | `20261121-144422`; `20261121-175553` |
+| `viewers_thumbnails` | viewers | FAIL: WIN-11, in two of three runs (staged; the image formats, the PDF's first page, BMP, ICO and TIFF held; AVIF skipped: no encoder for a fixture); full scale PASS | `20261121-170053` (also `20261121-144422`); `20261121-175553` |
+| `viewers_archives` | viewers | FAIL: WIN-8, every other check held (staged); 7-Zip, `.tar.zst`/`.tzst`/`.zst` and the deflated ZIP skipped: no `7z`, `zstd` or `zip` program on this machine; full scale FAIL: WIN-8 only | `20261121-170053` (also `20261121-164408`, `20261121-144422`); `20261121-175553` |
+| `viewers_scroll` | viewers | PASS (staged; HTML wheel travel and kinetic coasting skipped: the harness delivers no native wheel events or touchpad phases); full scale PASS | `20261121-144422`; `20261121-175553` |
+| `viewers_selection` | viewers | WARN (staged): selected text reaches 4.5:1 in every theme once the probe's defect was fixed; one flag: PaperContrast's unselected Rust source shows a colour #b3bdcf at 1.87:1 against #fdfefe (below 3:1, a warning); full scale WARN (the same flag) | `20261121-170053`; `20261121-175553` |
+| `viewers_presentation` | viewers | PASS (staged; the HTML zoom, policy and Find cases ran); full scale PASS | `20261121-144422`; `20261121-175553` |
+| `viewers_combinations` | viewers | PASS (staged); full scale PASS | `20261121-144422`; `20261121-175553` |
+| `options_general` | options | PASS | `20261121-144422` |
+| `options_appearance` | options | PASS | `20261121-144422` |
+| `options_custom_commands` | options | PASS (the `sh.exe` stand-in; the preview shows arguments Debug-escaped) | `20261121-144422` |
+| `options_keyboard` | options | PASS | `20261121-144422` |
+| `options_colors` | options | PASS | `20261121-144422` |
+| `options_archives` | options | PASS | `20261121-144422` |
+| `options_editors` | options | PASS (the `cp.exe` stand-in) | `20261121-144422` |
+| `options_comparators` | options | PASS | `20261121-144422` |
+| `options_previews_plugins` | options | PASS | `20261121-144422` |
+| `options_hot_paths` | options | PASS | `20261121-144422` |
+| `options_visual` | options | PASS (WIN-4 resolved) | `20261121-144422` |
+| `ui_polish_checks` | ui | PASS (every red case flagged, its corrected twin clean) | `20261121-144422` |
+| `ui_themes` | ui | PASS | `20261121-144422` |
+| `ui_matrix_full` | ui | SKIP: runs with `--all-themes` only | `20261121-144422` |
+| `ui_polish_dialogs` | ui | PASS (staged; WIN-2 resolved; the one flag of `20261121-144422`, Jobs' Clear all finished with nothing left to clear, was a harness defect, fixed) | `20261121-170053` |
+| `ui_polish_jobs` | ui | PASS | `20261121-144422` |
+| `ui_polish_viewers` | ui | PASS (WIN-9 resolved) | `20261121-144422` |
+| `shortcuts_catalog` | keyboard | PASS | `20261121-144422` |
+| `panels_dialogs` | panels | PASS (Ctrl+F2 sets Read-only where Linux types octal 600) | `20261121-144422` |
+| `panels_notices` | panels | PASS (Copy details starts with the title, the reason and the folder) | `20261121-144422` |
+| `panels_times` | panels | PASS | `20261121-144422` |
+| `panels_view_sort` | panels | PASS | `20261121-144422` |
+| `panels_paths` | panels | PASS (the drive menu; Attributes in the details strip) | `20261121-144422` |
+| `panels_tabs` | panels | PENDING: the harness's own pending check of tabs restored after a restart (as on Linux) | `20261121-144422` |
+| `panels_search_filter` | panels | PASS | `20261121-144422` |
+| `panels_tree_keys` | tree | PASS | `20261121-144422` |
+| `panels_selection_more` | selection | PASS | `20261121-144422` |
+| `panels_hot_digits` | panels | PASS | `20261121-144422` |
+| `panels_busy_ops` | panels | PASS (Ctrl+F2 sets Read-only on the two marked files) | `20261121-144422` |
+| `panels_file_list` | panels | PASS | `20261121-144422` |
+| `panels_root_keys` | panels | PASS (staged) | `20261121-144422` |
+| `about_box` | tools | PASS | `20261121-144422` |
+| `shortcuts_footer` | keyboard | PASS | `20261121-144422` |
+| `tools_user_menu` | tools | PASS | `20261121-144422` |
+| `tools_notices_jobs` | tools | PASS (Copy details starts with the title, the reason and the folder) | `20261121-144422` |
+| `shortcuts_hints` | keyboard | PASS | `20261121-144422` |
+| `options_buttons` | options | PASS | `20261121-144422` |
+| `options_themes` | options | PASS | `20261121-144422` |
+| `journeys_find_to_checksums` | journeys | PASS | `20261121-144422` |
+| `journeys_archive_roundtrip` | journeys | PASS; full scale PASS | `20261121-144422`; `20261121-175553` |
+| `journeys_filtered_conflicts` | journeys | PASS (the recovery folder, without a hidden attribute, listed while hidden files are hidden) | `20261121-144422` |
+| `journeys_concurrent_jobs` | journeys | PASS (the delete waits queued until the paused copy ends, as designed; the copy that does not wait completes beside the paused one, a strict check) | `20261121-192806` (also `20261121-144422`) |
+| `journeys_options_restart` | journeys | PASS (staged) | `20261121-144422` |
+| `journeys_links_readonly` | journeys | SKIP: Linux link and mode semantics (see below) | `20261121-144422` |
+| `journeys_keyboard_only` | journeys | PASS (Ctrl+U swaps the panels' places, each keeping its folder) | `20261121-144422` |
+| `journeys_pointer_only` | journeys | PENDING: only the quick drop could not be tested (the synthetic drag was released after 612 ms; the pending check needs a drop within 400 ms); WIN-6 resolved: the drag's Move ends Completed | `20261121-144422` |
+
+Totals of the whole-suite run `20261121-144422`: 94 passed, 1 warned, 3 pending, 3 skipped,
+6 failed of 107 in 6,966 s. With the reruns: 96 PASS, 2 WARN, 3 FAIL (WIN-8, WIN-10,
+WIN-11), 3 PENDING, 3 SKIP. Durations of the reruns: `20261121-164408` 733 s (one
+scenario), `20261121-170053` 3,154 s (six), `20261121-173345` 352 s (one),
+`20261121-192806` 102 s (three: 2 PASS, 1 PENDING); `20261121-175553` 4,713 s (22
+scenarios at full scale: 18 PASS, 2 WARN, 1 PENDING, 1 FAIL).
 
 ## Findings
 
-Product findings seen on Windows (the area records hold the Linux ones).
+Product findings seen on Windows (the area records hold the Linux ones). The verdicts
+of 21 November afternoon come first in each row; the rest is the finding's history.
 
 | Finding | What happens | Scenario › check | Evidence |
 | --- | --- | --- | --- |
-| WIN-1 | Not an engine defect; fixed in source, not yet re-run: a Copy paused in the middle of a 1 GiB file shows no progress of the current file under Details: no "Current file written: X / Y bytes" line, although the job window says "Paused · copying" with 257,687,552 bytes copied. On Linux the line is there (transfers record T-J11). The paused job does report it. The window's "Bytes: 245,8 MiB of 1,0 GiB" is the presenter's completed bytes plus `CopyProgress.current_file_copied` (no file completed, so all 257,687,552 bytes are the current file's), which the copy worker (`copy_worker.rs`, `store_progress`) derives from the same work item as `current_file_size`, and the file's own bar after Resume ("90%") needs that size. An engine test pauses a Copy in the middle of a file on Windows and gets both (`a_copy_paused_in_the_middle_of_a_file_reports_its_size_and_progress`, `copy_pause_tests.rs`); so did a probe through the panel-selection path with a sparse 1 GiB file. The line was out of view: with Details open the details box takes 38–45% of the 760×560 window, the progress area above it scrolls (its scroll bar shows in the screenshot, at the top), and with Windows' fonts the line, then the next item after the file's name in `job-progress-window.slint`, lay below its visible part (reproduced at 760×560: the line from y 298, the visible part to y 293), so the harness's visible texts missed it. Fixed in source on 21 November: under Details a Copy or Move shows the line and its bar above the speed chart, after the time remaining, so they are in view without scrolling at the window's preferred size in Blue Desktop (12, 14, 16 px), Dark Touch (15, 18 px) and with the 32 px touch font, and at the run's 760×560 (`native_job_windows::details_file_progress`, which fails on the earlier source); Delete windows, which have no current file, and the verification view are unchanged. | `files_transfer_jobs` › Details shows the current file's progress | `20261121-024756\shots\files_transfer_jobs\progress-details.png` (also `20261121-022248`) |
-| WIN-2 | The command line's prompt with a working folder longer than it can show (here about 120 characters) is flagged as overlapping text: the full path, scrolled to its end (`full-cwd` in `main.slint`), lies under the start-of-path overlay; at 320×200 Touch the full path is also flagged as elided to nothing. Seen at Dark Touch 960×600, HighContrastDark Touch 1340×820, both minimum sizes and the interactive gate's main window (Blue Desktop 1340×820). Either the overlay design needs a gate exemption with its reason, or the scrolled text must be clipped where the overlay starts. Fixed in source on 21 November: the strip is clipped where the start overlay ends (`command_path_overlay`). | `ui_review`, `ui_polish_dialogs` › overlapping text, label elided to nothing | `20261121-045727\shots\ui_review\HighContrastDark-Touch-Normal-x1-main.png` (also `20261121-031212`); `20261121-045655\shots\ui_polish_dialogs\dialogs-main.png` |
-| WIN-3 | At Light Desktop 1600×1000 the path bar's "Edit folder path" button reaches 6 px outside the path bar's clipping container, which does not scroll (a long path, about 120 characters). Fixed in source on 21 November: the path bar keeps a pixel per drawn component in reserve (`path_bar_fit`). | `ui_review` › content cut off without scrolling | `20261121-045727\shots\ui_review\Light-Desktop-Large-x1-main.png` (also `20261121-031212`) |
-| WIN-4 | Resolved: Options › Colors' swatch buttons "Choose Foreground" and "Choose Background" showed no text and had no tooltip (run `20261121-032203`); the UI role's tooltip change (committed since in 93e7f43a) was in the build of run `20261121-040741`, where `options_visual` passed. | `options_visual` › icon-only button without tooltip | `20261121-032203\shots\options_visual\Light-Desktop-1340x820-colors.png` |
-| WIN-5 | Withdrawn: not a product bug. A permanent delete of a folder beside a paused copy stays "Queued" until the copy ends, as designed: a Delete holds the whole namespace and every transfer keeps its namespace share until it ends, paused or not (`OPERATION_PROGRESS.md`, "Admission policy and waits"). The journey expected otherwise; it now checks the designed order and passed in run `20261121-042048`. | `journeys_concurrent_jobs` | `20261121-032850\shots\journeys_concurrent_jobs\jobs.png` |
-| WIN-6 | Fixed in source, not yet re-run: every same-volume Move on Windows ended "Completed with warnings" with an attention mark in Jobs, and its window stayed open with "Source changes the system could not confirm as saved to disk: 1". The Windows native Move always reported `durability_confirmed: false` (`midnight-platform-windows/src/transfer_native_move.rs`), which counts `source_removal_durability_unconfirmed` (`move_native.rs`) and gives the job a closure receipt (`copy_delivery.rs`, `closure`) and so the warning state (`job_presentation.rs`). Decision: a Move reports a change as unconfirmed only when a step it takes to save it fails, never merely because the platform has none. A native rename now flushes its destination and source folders, and a replacement's recovery folder, through new handles that may add entries to them (`transfer_folder_flush.rs`; Windows refuses a folder flush through the Move's read-only pins); a filesystem that does not flush folders counts as confirmed, a failed flush or a folder that cannot be opened for one as unconfirmed ([Move durability on Windows](../TRANSFERS.md#move-durability-on-windows)). Cost on NTFS (NVMe): 0.14 ms of a 0.6 ms native Move call. Tests: the engine's `same_volume_move_of_a_file_and_a_folder_ends_completed_without_warnings` and the platform's `transfer_move_durability_tests.rs` and `transfer_folder_flush_tests.rs`. Source removals by delete disposition (a cross-volume Move's files, a folder a Move emptied, including the folder a same-volume merge emptied, and a directory link's original) still warned, with the note that Windows accepted them: Windows takes such a name out of its folder only when the handle that set the disposition closes, which happened after the removal was reported. Fixed in source on 21 November, not yet re-run: the engine confirms such a removal once it has dropped the source, capture and finalizer holding that handle (a directory link's capture closes its own), by finding the name gone from the folder that held it, through the retained handle, and flushing that folder (`TransferDurabilityConfirmation`); confirmed, it counts as unlinked and durable, so the Move ends Completed. A Move also flushes the folders of its native renames together, each folder once, before it removes a folder and when it ends, instead of once per rename (review of 2597a6d8), and a replacement's recovery folder after the rename's namespace turn. Cost on NTFS (NVMe, debug build): 0.16–0.18 ms to confirm each removed file; 64 renames from one folder to another need 2 flushes instead of 128 (28–34 ms instead of 41–52 ms). Tests: the engine's `a_verified_move_of_a_file_and_a_folder_confirms_every_removal`, `same_volume_move_merging_a_folder_ends_completed_without_warnings`, `cross_volume_move_of_a_file_and_a_folder_ends_completed_without_warnings` (ignored without `NATIVE_MOVE_OTHER_VOLUME_ROOT`; passed from D: to a folder on C:) and `move_removal_confirmation_tests.rs`, and the platform's removal and round tests in `transfer_move_durability_tests.rs` and `transfer_folder_flush_tests.rs`. Still warning, and then true: a removal whose name stays (another handle on the deleting object is open) or whose folder cannot be flushed, and a rename or removal whose folder cannot be flushed. | `journeys_pointer_only` › Jobs lists the move as completed | `20261121-043911\shots\journeys_pointer_only\move-outcome.png`, `jobs.png`; `20261121-042048\shots\ui_polish_dialogs\dialogs-jobs.png` |
-| WIN-7 | FIND-COMPACT-STATUS-HIDDEN (the find record's F-L04, also on Linux): a Find window under 360 px high with text over 20 px puts the idle status into the query area, as FIND.md says, but at the end of the query form, scrolled out of the short query area's view: after the search the user sees no "Completed · 46 found · 46 examined". The status line (`find-window.slint`, `!root.inline-status`) is the last child of the scrolled `query-form`. Fixed in source on 21 November: the status is pinned to the query area's last line (`find_compact_status`). | `find_layout` › Touch compact: a status line in view after the search | `20261121-042048\shots\find_layout\touch-700x340-idle.png` |
-| WIN-8 | F5 of the folder of 100,001 files out of `flat.tar` copied about 59,000 files in its 600 s budget (about 100 files per second); the pending copy of a 100,001-member selection likewise ran out of time. Debug test build on a shared machine. Measured on 21 November without windows (the `EnqueueArchiveCopy` command with the installed archive worker and native provider, default Copy options, D:): release 97–132 files/s (median 931 s for 100,001 files, 3 runs during other builds), debug 64–105. Not the per-file flush (0.2 ms) or the SHA-256 readback: 82–85 % of the CPU was kernel time in the Windows namespace pins, which checked the destination folder's whole ancestry 11 times per copied file and opened every ancestor each time (121 opens). Fixed in source on 21 November (`transfer_namespace_parent.rs`, `transfer_namespace.rs`): as on Linux, a refresh batch checks each ancestor once, and a change's checks and announcement up to its native operation are one batch, so a file takes 4 checks (44 opens). Release 133–183 files/s (median 562 s for 100,001 files; one run under full CPU load took 755 s) and 238–396 files/s on 20,001 files; debug 142–186 on 20,001; a 20,001-member selection 201 → 280 files/s. The remaining per-file cost is mostly Defender and Defender for Endpoint (a create 0.33 ms, a rename 0.5 ms, an archive source check 0.08 ms); the scenario has not been run again. | `viewers_archives` › F5 of the folder of 100,001 files out of flat.tar | `20261121-035050`, the scenario's report (`work\viewers_archives\staged\run\20261121-035618\index.html`) |
-| WIN-9 | The image viewer's zoom buttons "Zoom image out" (−) and "Zoom image in" (+) have no tooltip (Dark Desktop and Light Touch): `crates/midnight-viewer-ui/ui/viewer.slint`, the two `ActionButton`s without a hint. Fixed in source on 21 November: they, and the HTML viewer's same two buttons, show "Zoom image out (Ctrl+-)" and the like (`ui_polish::zoom_buttons_name_their_action_and_key_in_a_tooltip`); the gate has not been run again. | `ui_polish_viewers` › icon-only button without tooltip | `20261121-035050\shots\ui_polish_viewers\Dark-Desktop-viewer-image.png`, `Light-Touch-viewer-image.png` |
+| WIN-1 | **Resolved** (`20261121-144422`, PASS; full scale PASS): with Details open at 760×560 the paused copy of the 1 GiB file shows "Current file written: 245 366 784 / 1 073 741 824 bytes" and its bar, in view. History: not an engine defect: a Copy paused in the middle of a 1 GiB file showed no progress of the current file under Details, although the job window said "Paused · copying" with 257,687,552 bytes copied. The paused job did report it (`CopyProgress.current_file_copied`, `copy_worker.rs` `store_progress`; engine test `a_copy_paused_in_the_middle_of_a_file_reports_its_size_and_progress`). The line was out of view: with Details open the details box takes 38–45% of the 760×560 window, and with Windows' fonts the line, then the next item after the file's name in `job-progress-window.slint`, lay below the scrolled progress area's visible part. Fixed in source on 21 November: under Details a Copy or Move shows the line and its bar above the speed chart, after the time remaining (`native_job_windows::details_file_progress`). | `files_transfer_jobs` › Details shows the current file's progress | `20261121-144422\shots\files_transfer_jobs\progress-details.png`; before: `_build\acceptance-win\20261121-024756\shots\files_transfer_jobs\progress-details.png` |
+| WIN-2 | **Resolved** (`20261121-144422`, `20261121-173345`): no overlapping-text or elided flag of the command line's working folder in `ui_review`'s 260 screenshots or in `ui_polish_dialogs`' main window. History: the prompt's working folder, longer than it can show (about 120 characters), lay under the start-of-path overlay (`full-cwd` in `main.slint`), flagged as overlapping text, and at 320×200 Touch as elided to nothing. Fixed in source on 21 November: the strip is clipped where the start overlay ends (`command_path_overlay`). | `ui_review`, `ui_polish_dialogs` › overlapping text, label elided to nothing | `20261121-173345\shots\ui_review\HighContrastDark-Touch-Normal-x1-main.png`; before: `_build\acceptance-win\20261121-045727\shots\ui_review\HighContrastDark-Touch-Normal-x1-main.png` |
+| WIN-3 | **Resolved** (`20261121-144422`, `20261121-173345`): no cut-off flag at Light Desktop 1600×1000. History: the path bar's "Edit folder path" button reached 6 px outside the path bar's clipping container with a path of about 120 characters. Fixed in source on 21 November: the path bar keeps a pixel per drawn component in reserve (`path_bar_fit`). | `ui_review` › content cut off without scrolling | `20261121-173345\shots\ui_review\Light-Desktop-Large-x1-main.png` |
+| WIN-4 | Resolved (unchanged; `options_visual` PASS again in `20261121-144422`): Options › Colors' swatch buttons "Choose Foreground" and "Choose Background" had no tooltip (93e7f43a). | `options_visual` › icon-only button without tooltip | `20261121-144422\shots\options_visual\` |
+| WIN-5 | Withdrawn (unchanged; `journeys_concurrent_jobs` PASS in `20261121-144422`): a permanent delete beside a paused copy stays "Queued" until the copy ends, as designed (`OPERATION_PROGRESS.md`, "Admission policy and waits"). | `journeys_concurrent_jobs` | `20261121-144422\shots\journeys_concurrent_jobs\` |
+| WIN-6 | **Resolved** (`20261121-144422`): the drag's same-volume Move ends "Completed" (1 renamed) in Jobs; the Copy with Replace · keep original stays "Completed with warnings", as designed. History: every same-volume Move ended "Completed with warnings" with "Source changes the system could not confirm as saved to disk: 1", because the Windows native Move reported `durability_confirmed: false` (`transfer_native_move.rs`) and source removals by delete disposition were reported before the handle that set the disposition closed. Fixed in source on 21 November: native renames flush their folders through new handles (`transfer_folder_flush.rs`), removals are confirmed once the handles are dropped by finding the name gone and flushing its folder (`TransferDurabilityConfirmation`), and a Move flushes the folders of its renames together ([Move durability on Windows](../TRANSFERS.md#move-durability-on-windows)). | `journeys_pointer_only` › Jobs lists the move as completed | `20261121-144422\shots\journeys_pointer_only\jobs.png`; before: `_build\acceptance-win\20261121-043911\shots\journeys_pointer_only\move-outcome.png` |
+| WIN-7 | **Resolved as reported** (`20261121-170053`): after the search the compact Touch window (700×340, 24 px text) shows "Completed · 46 found · 46 examined" on the query area's last line, in view. The fix overlaps the form: WIN-10. History: FIND-COMPACT-STATUS-HIDDEN (the find record's F-L04): the idle status in the query area was the last child of the scrolled `query-form` (`find-window.slint`) and scrolled out of view. Fixed in source on 21 November: the status is pinned to the query area's last line (`find_compact_status`). | `find_layout` › Touch compact: a status line in view after the search | `20261121-170053\shots\find_layout\touch-700x340-idle.png` |
+| WIN-8 | **Still failing**: F5 of the folder of 100,001 files out of `flat.tar` copied 69,896 files in its 600 s budget (116 files/s; `20261121-164408`, 30–50 % CPU from other builds) and 52,343 (87 files/s; `20261121-170053`, about 55 % CPU), where about 59,000 (about 100 files/s) arrived before the fix; cancelled at the budget, the job ended Cancelled within 1.3 s (`20261121-170053`). The pending copy of a 100,001-member selection: 37,905 files in 609 s (62 files/s), and its Cancel took 117 s to end it. At full scale 41,986 files (70 files/s; `20261121-175553`, other builds running) and the selection 33,482; the selection's Cancel again took 114 s, while the folder copy's ended within about a second each time. Debug test build. History: measured on 21 November without windows (the `EnqueueArchiveCopy` command, D:): release 97–132 files/s, debug 64–105; 82–85 % of the CPU was kernel time in the Windows namespace pins, which checked the destination folder's whole ancestry 11 times per copied file. Fixed in source on 21 November (cd2f821a: `transfer_namespace_parent.rs`, `transfer_namespace.rs`): a refresh batch checks each ancestor once, so a file takes 4 checks; measured then: release 133–183 files/s (median 562 s for 100,001 files), debug 142–186 on 20,001 files. The remaining per-file cost is mostly Defender and Defender for Endpoint (a create 0.33 ms, a rename 0.5 ms). In the suite the debug build stays far from 167 files/s on this machine: the budget, or the per-file cost under endpoint protection, needs a decision. | `viewers_archives` › F5 of the folder of 100,001 files out of flat.tar | the staged reports `20261121-164408\work\viewers_archives\staged\run\20261121-164409\index.html` and `20261121-170053\work\viewers_archives\staged\run\*\index.html` |
+| WIN-9 | **Resolved** (`ui_polish_viewers` PASS, `20261121-144422`): the image viewer's zoom buttons have their tooltips. History: "Zoom image out" (−) and "Zoom image in" (+) had no tooltip (`midnight-viewer-ui/ui/viewer.slint`); fixed on 21 November (`ui_polish::zoom_buttons_name_their_action_and_key_in_a_tooltip`). | `ui_polish_viewers` › icon-only button without tooltip | `20261121-144422\shots\ui_polish_viewers\` |
+| WIN-10 | New, from the WIN-7 fix: a Find window under 360 px high with text over 20 px (Touch with 24 px text at 700×340) keeps the idle status on the query area's last line, but the query form's last row overlaps it by 11 px: "Fewer options" and "Feed to panel" overlap the status line "Ready · 0 found · 0 examined" (198×11 and 193×11 px), the status text is drawn over the buttons' lower edge, and the form begins about 14 px below the area's top. Cause, in the source: `find-window.slint` gives the query area's `query-scroll` ScrollView `height: parent.height - root.query-status-height` but no `y`, and the Slint compiler centres an element with a fixed height and no `y` in a parent that is not a layout (`y: (parent.height - self.height) / 2`): the scroll view sits half the status band lower and its bottom reaches half the band less 3 px (11 px at the 28 px band of 21 px small text) into the status line at `y: parent.height - self.height`. `y: 0px` on `query-scroll` would end the form above the line. The WIN-7 test (`find_compact_status`) checks that the status line and the mask field are in view, not that they are clear of other controls. Pixel rows of the screenshot: the area's first text at y 19 (the area starts at y 4), Fewer options y 85–126, the status text y 121–141. | `find_layout` › Touch compact (the review's overlapping controls) | `20261121-144422\shots\find_layout\touch-700x340.png`; after the search `20261121-170053\shots\find_layout\touch-700x340-idle.png` |
+| WIN-11 | New: thumbnails of files that Microsoft Defender for Endpoint's data loss prevention has just tagged. In `viewers_thumbnails` a modal "Previews" notice, "Could not store or read preview cache: Captured native content changed.", came up while `thumbs/` was shown as thumbnails and took the keyboard, so Backspace did nothing for 60 s (run `20261121-144422`); in the rerun no notice came, but three of the nine visible tiles (`tile-03` to `tile-05`) had no thumbnail after 45 s, and after End and Home six of the nine were shown at once, all nine after 1.5 s (`20261121-170053`). The full-scale run passed every check (`20261121-175553`): it depends on when the tagging lands. Every fixture file of both runs carries a 302-byte alternate data stream `sec.endpointdlp`, which the DLP writes after a file is created while setting its write time back, so only the file's ChangeTime moves (as 1f8dcac5 found for archives). The application captures a thumbnail's source with `InstalledProvider::capture`, that is `RevisionPolicy::Exact` (`midnight-explorer/src/native_content.rs`, `factory`, used by `thumbnail_content.rs`), while viewers, Copy and Move sources and archives accept a ChangeTime-only move (VIEW-05: `factory_with_resources`, `ARCHIVE_REVISIONS`). The thumbnail cache revalidates the capture when it stores a frame and on every hit (`midnight-thumbnail-host/src/cache.rs`, `Key::validate`); the native plugin's `validate` (`midnight-filesystem-native-windows/src/content.rs`) then fails with "Captured native content changed.", the service reports the first such cache failure as that notice (`service.rs`), and a tile whose work failed stays empty until the view changes. The harness's thumbnail pulse mirrors the application's capture (`viewers_support.rs`) and must follow a change there. | `viewers_thumbnails` › every visible tile, cached thumbnails after Home (the notice: the step after it timed out) | the run summary of `20261121-144422`; `20261121-170053\work\viewers_thumbnails\staged\run\20261121-170531\index.html`; `Get-Item -Stream *` on the fixtures' `thumbs\*` |
 
-Also seen: a Jobs row counts in the plural whatever the number ("1 files · 0 skipped ·
-0 errors", `job_presentation.rs`, the summary's format string; the row of a Copy of one
-file in `20261121-042048\shots\ui_polish_dialogs\dialogs-jobs.png`), the way finding
-J-1 was for archive members. Fixed in source on 21 November: Jobs rows, a transfer's
-detail counts and a Delete's details count one in the singular ("1 file", "1 error").
+Also seen before and resolved: a Jobs row counted in the plural whatever the number
+("1 files · 0 skipped · 0 errors"). Fixed in source on 21 November; in `20261121-144422`
+the rows read "1 file · 0 skipped · 0 errors"
+(`20261121-144422\shots\ui_polish_dialogs\dialogs-jobs.png`).
 
 ## Harness defects found on Windows
 
-Fixed in the acceptance crate; those marked "all platforms" made the scenario fail on
-Linux too.
+Fixed in the acceptance crate or the Windows runner; those marked "all platforms" made
+the scenario fail, or could have, on Linux too.
+
+Found on 21 November afternoon (in the worktree, not yet committed):
+
+- `scripts/acceptance.ps1` (Windows only): staged only the folders of each package
+  source, but thumbnail providers are installed flat, as the thumbnail host discovers
+  them (each provider's `<name>.json` and executable, the FFmpeg libraries they share and
+  `notices\`), so `packages\thumbnailers` held only `notices\` and no provider. The
+  thumbnailers folder is now copied whole and its providers are named by their manifests
+  ("Plugin packages (thumbnailers): midnight-thumbnail-image, midnight-thumbnail-video").
+  The copy also loses the explicit read-and-execute grant that `deploy-private.ps1` gives
+  the restricted workers' AppContainer on the FFmpeg libraries and the playback helper
+  (`avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, `swscale-10.dll`,
+  `swresample-7.dll`, `midnight-video-playback.exe`), without which the video worker
+  cannot load FFmpeg (found by the video role; the scenarios of 3f6fff8a open no video):
+  the runner grants it again when the video thumbnailer is staged, with the SID computed
+  as `deploy-private.ps1` computes it (never `DeriveAppContainerSidFromAppContainerName`,
+  which a packaged PowerShell answers with a child AppContainer), and stages hard-link
+  the granted files. `scripts/tests/test_acceptance_windows.py` models the flat layout
+  and checks the grant on exactly those files (its 6 tests pass).
+- `viewers_stage::installed_packages` (all platforms): counted folders as thumbnailer
+  packages, so `notices/` alone made a stage without a provider count one; it counts
+  the providers' manifests now.
+- `find_layout` (all platforms): a layout finding in the compact window returned before
+  the compact checks, so WIN-7's status check never ran; the finding is now reported
+  with them.
+- `viewers_archives` (all platforms): a copy over its budget was left running beside the
+  next check, still writing into its folder; it is now cancelled from its progress window
+  (laid out first, Cancel operation and the confirmation) and the failure says how many
+  files had arrived and at what rate. F5 on a 100,001-member selection that is still
+  resolving ("Selection still loading") is pressed again, as a user would.
+- `viewers_thumbnails` (all platforms): a notice while thumbnails load took the keyboard,
+  and the scenario waited 60 s for a panel that could not move; the notice now fails a
+  check of its own and is closed, so the remaining checks run.
+- `viewers_selection` (all platforms): the selected-text contrast probe took the
+  gutter's line numbers beside the selection (their anti-aliased edges come near the
+  selection's colour) and edge colours that the 1.5° direction rule split from their
+  glyph colour for selected text: GruvboxDark #867f6b 2.21:1, CatppuccinLatte #a979f0
+  1.72:1, RosePineDawn #bd9ead 2.35:1 and GraphiteContrast #cb834e 2.35:1, where the
+  screenshots' cores reach #e7ebf0 4.52:1, #e1e5ec 4.51:1 and #a94700 4.51:1 (the
+  viewers record's S4, S5 and X8, refuted in source). `viewers_probe::selected_glyph_cores`
+  counts only runs between pixels the selection painted and lets an edge colour join any
+  stronger colour of a group it blends towards.
+- The UI gate (all platforms): Jobs' Clear all finished, clicked after Clear finished
+  without errors, had nothing left to clear once every earlier job had ended without
+  errors (WIN-6's fix removed the Move warning that used to stay); the Jobs surface now
+  has a job that finished just before each opening. And the button-text rule (the gate's
+  and the review's) flagged a caption whose own box holds it but which is cut at the edge
+  of a table that scrolls sideways, or of a header kept in step with one (Find's "Path"
+  heading at 320×200: 20 of 23 px); the elision rule's exemption for such text applies to
+  it now.
+- `fixtures::allow_read` (Windows only): a write-protected folder that the application
+  moved (`files_transfer_errors`: a Move keeps its mode) kept entries that deny their own
+  deletion under paths the process never recorded, so the kept run folder could not be
+  deleted; the folder's entries on disk are cleared too now. Seen in both kept runs that
+  ran the scenario (`20261121-144422`, `20261121-175553`: `move-dest\locked\inside.txt`
+  kept a `(DENY)(DE)` entry of this account; cleared by hand); with the fix, the work
+  folder of `20261121-192806` held no deny entry and was deleted whole.
+- Pending marks whose behavior the Linux run of 21 November confirmed are strict checks
+  now (all platforms): Wait off runs at once beside a paused job (T-J01,
+  `files_transfer_jobs`, and the same step of `journeys_concurrent_jobs`), the framed
+  decision window without a × of its own (T-J15), the rest of a tree copied after Skip
+  of an unreadable folder (T-E05) and Skip of an unreadable selected folder while the
+  transfer is prepared (T-E10) in `files_transfer_errors`, and T-R10 to T-R13 in
+  `files_trash` (Linux only: Windows skips the scenario). A Move out of a
+  write-protected folder (T-E06) stays pending. On Windows, with the Linux harness fixes
+  of 21 November (`files_errors.rs` waits for the decision before reading its buttons),
+  `files_transfer_jobs` and `journeys_concurrent_jobs` passed and `files_transfer_errors`
+  was pending on T-E06 alone (`20261121-192806`).
+
+Found in the earlier Windows runs and fixed since:
 
 - `journeys_concurrent_jobs` (all platforms): expected the delete to complete beside the
   paused copy; it now expects the designed wait (WIN-5).
@@ -211,18 +304,53 @@ Linux too.
 
 ## Linux reruns needed
 
-The harness changes of this Windows work that apply to every platform have not run on
-Linux yet, and its Unix code was first compiled by CI (which lints the suite on both
-platforms). These scenarios need a Linux run before their Linux records change:
-`journeys_concurrent_jobs`, `journeys_keyboard_only`, `journeys_filtered_conflicts`,
-`journeys_pointer_only`; `panels_busy_ops` (W-03), `panels_dialogs`, `panels_paths`;
-`find_layout` (it should now report F-L04 on Linux too), `find_feed_panel`,
-`find_query_syntax` and the other find scenarios; `viewers_presentation`,
-`viewers_selection`, `viewers_combinations`; `options_custom_commands`,
-`files_transfer_jobs`, `tools_notices_jobs`, `panels_notices`; and every UI gate
-scenario (`ui_review`, `ui_themes`, `ui_polish_checks`, `ui_polish_dialogs`,
-`ui_polish_jobs`, `ui_polish_viewers`, `options_visual`, `ui_matrix_full`).
-`scripts/acceptance.sh` and its Linux runner tests are unchanged.
+Linux ran the whole suite with the harness of 3f6fff8a on 21 November (WSL 2, Ubuntu
+24.04 on ext4, smoke scale, debug test build, every plugin package built from that
+commit: run `20261121-144246`, 107 scenarios in 6,778 s; reruns `20261121-164146` and
+`20261121-170455` with the Linux harness fixes, now committed; reports in
+`_build/acceptance-linux/<run>/`; results in the area records). Of the scenarios this
+section listed:
+
+- Passed on Linux: `journeys_concurrent_jobs`, `journeys_keyboard_only`,
+  `journeys_filtered_conflicts`; `panels_busy_ops` (W-03), `panels_dialogs`,
+  `panels_paths`; `find_feed_panel`, `find_query_syntax` and every other Find scenario
+  but `find_layout`; `viewers_combinations`; `options_custom_commands`,
+  `files_transfer_jobs`, `tools_notices_jobs`, `panels_notices`; `ui_themes`,
+  `ui_polish_checks`, `ui_polish_viewers`, `options_visual`; and, with the Linux harness
+  fixes, `ui_polish_dialogs`.
+- `journeys_pointer_only`: PENDING with the fixes (every check held; the quick drop
+  could not be observed, the synthetic drag took 482 and 603 ms). Without them it
+  failed on its own Trash check, a harness defect.
+- `find_layout`: FAIL, the product finding in the fix of WIN-7 that Windows reports as
+  WIN-10 (FIND-COMPACT-STATUS-OVERLAP in the find record): at Touch 700×340 the pinned
+  status line overlaps the scrolled query form's last row by 11 px; the scenario stopped
+  there (the Windows harness now reports the finding with the compact checks).
+- `ui_review`: FAIL, 3 flags with the fixes, all at 320×200: U-D22 in the UI polish
+  record (Checksums' "Save…" and Find's View half outside the footer's scroller) and
+  the Find results' "Path" heading cut where the table scrolls sideways (the gate defect
+  that the Windows harness fix of 21 November exempts, see "Harness defects"). None of
+  U-D01–U-D21, WIN-2, WIN-3 or WIN-9 recurred.
+- `viewers_presentation`: FAIL on its HTML case only (the WSL distribution lacks the
+  HTML viewer's NSS/NSPR and ALSA libraries); `viewers_selection`: FAIL on the probe's
+  reading of antialiased pixels (RosePineDawn and GraphiteContrast, 2.35:1), as on
+  Windows before the probe's fix.
+- `ui_polish_jobs`: FAIL in the first run on a harness race (Slint panicked when the
+  harness used the long copy's window after the short smoke-scale copy had ended and
+  closed it); PASS on the rerun, which reached the cancel question in neither look.
+- `ui_matrix_full`: SKIP (`--all-themes` only); not run on either platform.
+
+Still needed on Linux: `ui_matrix_full`; the HTML cases on a machine with the HTML
+viewer's libraries; and the scenarios whose harness the Windows run of 21 November
+changed since 3f6fff8a, once those changes are committed: `find_layout`,
+`viewers_archives`, `viewers_selection` (the probe in `viewers_probe.rs`),
+`viewers_thumbnails` (and its SKIP decision in `viewers_stage.rs`), `ui_polish_dialogs`
+(`ui_dialogs.rs`), and the button-text exemption of `ui_gate.rs` and `inspect.rs`, which
+every UI gate and layout review applies (`ui_review` first); and the strict checks that
+replaced pending marks Linux confirmed (`files_transfer_jobs`, `files_transfer_errors`,
+`files_trash`, `journeys_concurrent_jobs`), whose `files_trash` part Windows cannot run.
+Their Unix code was compiled only on Windows (CI lints the suite on both platforms); the
+`fixtures.rs` change is Windows only. `scripts/acceptance.sh` and its Linux runner tests
+are unchanged.
 
 ## Not covered on Windows
 
@@ -236,11 +364,13 @@ scenario (`ui_review`, `ui_themes`, `ui_polish_checks`, `ui_polish_dialogs`,
   notes" job window state of `ui_polish_jobs` are noted as not available.
 - A listable folder whose entries cannot be reached (mode 0444 on a folder):
   `tools_compare_dirs` notes its unreadable-metadata part as not run.
-- The HTML viewer and the thumbnailers (the validation packages hold neither): the HTML
-  cases report themselves skipped, `viewers_thumbnails` reports `SKIP`.
-- The viewer checks of behavior newer than the validation packages (see "How it ran");
-  `viewers_files`, `viewers_scroll` and `viewers_selection` need a run with packages
-  built from the current source.
-- `ui_matrix_full` (`--all-themes`), and the full scale.
+- Archive formats whose tools this machine lacks: 7-Zip (`7z`, `7za`, `7zr`), zstd and
+  `zip`: `viewers_archives` skips `bundle.7z`, `outer.7z` (and the 7-Zip ⊃ tar.gz ⊃ ZIP
+  nesting), `.tar.zst`, `.tzst`, `note.txt.zst` and the deflated ZIP.
+- HTML wheel travel and kinetic (touchpad) coasting in `viewers_scroll`: the harness
+  delivers no native window events.
+- AVIF thumbnails (no encoder to make a fixture).
+- `ui_matrix_full` (`--all-themes`); the full scale for every scenario but the transfer,
+  archive and viewer ones listed above.
 - A drop within 400 ms of the press (`journeys_pointer_only`, pending on Linux too): the
-  synthetic drag took 683 ms on this loaded machine, so the check could not observe it.
+  synthetic drag took 612 ms on this loaded machine, so the check could not observe it.

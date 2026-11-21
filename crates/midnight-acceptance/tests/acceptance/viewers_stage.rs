@@ -107,9 +107,12 @@ fn staged(
     }
 }
 
-/// Package folders of `kind` (`viewers`, `thumbnailers`, …) beside this executable: in
-/// a staged child, what its stage holds.
+/// Packages of `kind` (`viewers`, `thumbnailers`, …) beside this executable: in a staged
+/// child, what its stage holds. Viewers and filesystems are one folder per package;
+/// thumbnail providers are installed flat, as the thumbnail host discovers them, one
+/// manifest (`<name>.json`) each beside the libraries they share and `notices/`.
 pub fn installed_packages(kind: &str) -> usize {
+    let manifests = kind == "thumbnailers";
     std::env::current_exe()
         .ok()
         .and_then(|executable| executable.parent().map(|folder| folder.join(kind)))
@@ -117,7 +120,20 @@ pub fn installed_packages(kind: &str) -> usize {
         .map(|entries| {
             entries
                 .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                .filter(|entry| {
+                    let Ok(file_type) = entry.file_type() else {
+                        return false;
+                    };
+                    if manifests {
+                        file_type.is_file()
+                            && entry
+                                .path()
+                                .extension()
+                                .is_some_and(|extension| extension == "json")
+                    } else {
+                        file_type.is_dir()
+                    }
+                })
                 .count()
         })
         .unwrap_or(0)

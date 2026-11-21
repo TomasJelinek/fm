@@ -24,9 +24,6 @@ use std::{
 
 const LEFT: PaneId = PaneId::Left;
 const SIZE: (u32, u32) = (760, 560);
-/// Announced error handling that may not be implemented yet.
-const CONTINUE_AFTER_SKIP: &str = "Copy/Move continues with the rest of a folder after Skip";
-const SKIP_ROOT: &str = "skippable Copy/Move failures while a transfer is prepared";
 /// The system's own words for a refused access, as the job windows show them.
 const DENIED: &str = if cfg!(windows) {
     "Access is denied"
@@ -36,6 +33,7 @@ const DENIED: &str = if cfg!(windows) {
 /// Whether `links-ok` holds a dangling link: Unix only (Windows links need a privilege
 /// or Developer Mode, and Windows copies never recreate links).
 const LINK_NOTE: bool = cfg!(unix);
+/// Announced error handling that may not be implemented yet.
 const MOVE_PROMPT: &str =
     "a Move out of a write-protected folder asks, as Delete does outside the deleted tree";
 
@@ -292,15 +290,11 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
         }
     }
     let corner = support::header_close_buttons(&window);
-    pending.check(
-        "the framed decision window has no × of its own",
-        "the decision window's internal × is being removed",
-        if corner.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("its header has {corner:?}"))
-        },
-    );
+    if !corner.is_empty() {
+        failures.push(format!(
+            "the framed decision window has a × of its own: its header has {corner:?}"
+        ));
+    }
     app.screenshot_window(
         context,
         &window,
@@ -447,18 +441,13 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
         .into_iter()
         .filter(|wanted| !copied.contains_key(*wanted))
         .collect();
-    pending.check(
-        "after Skip of an unreadable folder the rest of the tree is copied",
-        CONTINUE_AFTER_SKIP,
-        if missing.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "not copied: {missing:?}; the copy holds {:?}",
-                copied.keys().collect::<Vec<_>>()
-            ))
-        },
-    );
+    if !missing.is_empty() {
+        failures.push(format!(
+            "after Skip of an unreadable folder the rest of the tree is copied: not copied: \
+             {missing:?}; the copy holds {:?}",
+            copied.keys().collect::<Vec<_>>()
+        ));
+    }
     if decisions.len() != 1 || done.skipped == 0 || copied.contains_key("zz/hidden.txt") {
         failures.push(format!(
             "the unreadable folder: {} question(s), {:?}, skipped {}",
@@ -689,22 +678,24 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
     };
     let (done, _) = settle(&mut app, start, &answers)?;
     let copied = skip_root_dest.join("one.txt").is_file();
-    pending.check(
-        "Skip of a selected folder that cannot be read copies the rest of the selection",
-        SKIP_ROOT,
-        match &offered {
-            None => Err(format!("no question; the job ended {:?}", done.state)),
-            Some(labels) if !skippable => Err(format!(
-                "the question offers {labels:?}; Cancel job ended it {:?}",
-                done.state
-            )),
-            Some(_) if !copied => Err(format!(
-                "after Skip the job ended {:?} without one.txt",
-                done.state
-            )),
-            Some(_) => Ok(()),
-        },
-    );
+    let skip_root = match &offered {
+        None => Err(format!("no question; the job ended {:?}", done.state)),
+        Some(labels) if !skippable => Err(format!(
+            "the question offers {labels:?}; Cancel job ended it {:?}",
+            done.state
+        )),
+        Some(_) if !copied => Err(format!(
+            "after Skip the job ended {:?} without one.txt",
+            done.state
+        )),
+        Some(_) => Ok(()),
+    };
+    if let Err(error) = skip_root {
+        failures.push(format!(
+            "Skip of a selected folder that cannot be read copies the rest of the selection: \
+             {error}"
+        ));
+    }
     support::dismiss_all(&mut app);
     close_job_windows(&mut app);
 

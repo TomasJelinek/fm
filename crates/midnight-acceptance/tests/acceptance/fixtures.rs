@@ -1043,11 +1043,32 @@ pub fn allow_read(path: &Path) -> Result<(), String> {
             .filter(|entry| entry.parent() == Some(path))
             .cloned()
             .collect();
+        // A write-protected folder that the application moved (a Move keeps its mode)
+        // holds entries that deny their own deletion under paths this process never
+        // recorded: with none recorded here, the folder's entries on disk are cleared,
+        // or the kept run folder could not be deleted.
+        let unrecorded: Vec<PathBuf> = if children.is_empty()
+            && fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+        {
+            fs::read_dir(path)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .collect()
+        } else {
+            Vec::new()
+        };
         for child in children {
             if fs::symlink_metadata(&child).is_ok() {
                 icacls(&child, &["/remove:d".into(), format!("*{sid}")])?;
             }
             denied.remove(&child);
+        }
+        drop(denied);
+        for child in unrecorded {
+            // Best effort: an entry without a deny entry of this account is unchanged.
+            let _ = icacls(&child, &["/remove:d".into(), format!("*{sid}")]);
         }
         Ok(())
     }

@@ -538,7 +538,37 @@ pub fn glyph_colours(
 /// the background and read lower, however often they occur. Groups under `minimum`
 /// pixels are left out. Returns (core colour, pixels of its group), most pixels first.
 pub fn glyph_cores(canvas: &Canvas, background: [u8; 3], minimum: usize) -> Vec<([u8; 3], usize)> {
-    let mut glyphs: Vec<([u8; 3], usize)> = glyph_groups(canvas, background)
+    cores(glyph_groups(canvas, background), background, minimum)
+}
+
+/// [`glyph_cores`] of the text a selection covers: the runs on `selection` in `after`
+/// that count lie between pixels the selection painted (they differ from `before`), so
+/// text beside the selection whose own anti-aliased edges come near its colour (line
+/// numbers in the gutter) is not taken for selected text; and an edge colour joins the
+/// group of any stronger colour of the group it blends towards, not only the colour
+/// that started the group, so a glyph's edges never stand for a group of their own.
+pub fn selected_glyph_cores(
+    after: &Canvas,
+    before: &Canvas,
+    selection: [u8; 3],
+    minimum: usize,
+) -> Vec<([u8; 3], usize)> {
+    let painted = |x: usize, y: usize| before.at(x, y) != after.at(x, y);
+    cores(
+        grouped_glyph_runs(after, selection, &painted, true),
+        selection,
+        minimum,
+    )
+}
+
+/// Each group's colour of the highest contrast against `background`; groups under
+/// `minimum` pixels are left out. Most pixels first.
+fn cores(
+    groups: Vec<Vec<([u8; 3], usize, f32)>>,
+    background: [u8; 3],
+    minimum: usize,
+) -> Vec<([u8; 3], usize)> {
+    let mut glyphs: Vec<([u8; 3], usize)> = groups
         .into_iter()
         .filter_map(|members| {
             let total: usize = members.iter().map(|(_, count, _)| count).sum();
@@ -556,6 +586,19 @@ pub fn glyph_cores(canvas: &Canvas, background: [u8; 3], minimum: usize) -> Vec<
 /// one direction from it: each group's members (colour, times seen, distance from the
 /// background), farthest first.
 fn glyph_groups(canvas: &Canvas, background: [u8; 3]) -> Vec<Vec<([u8; 3], usize, f32)>> {
+    grouped_glyph_runs(canvas, background, &|_, _| true, false)
+}
+
+/// [`glyph_groups`] where only background pixels for which `bound(x, y)` holds end a
+/// run of glyph pixels, and where, with `any_member`, a colour joins a group whose
+/// direction matches that of any of its members (each stronger than the colour), not
+/// only that of the colour that started it.
+fn grouped_glyph_runs(
+    canvas: &Canvas,
+    background: [u8; 3],
+    bound: &dyn Fn(usize, usize) -> bool,
+    any_member: bool,
+) -> Vec<Vec<([u8; 3], usize, f32)>> {
     const NEAR: f32 = 10.0;
     const LONGEST_RUN: usize = 16;
     let mut counts: HashMap<[u8; 3], usize> = HashMap::new();
@@ -571,7 +614,12 @@ fn glyph_groups(canvas: &Canvas, background: [u8; 3]) -> Vec<Vec<([u8; 3], usize
                 x += 1;
             }
             // Bounded by the background on both sides: text on this background.
-            if start > 0 && x < canvas.width && x - start <= LONGEST_RUN {
+            if start > 0
+                && x < canvas.width
+                && x - start <= LONGEST_RUN
+                && bound(start - 1, y)
+                && bound(x, y)
+            {
                 for column in start..x {
                     *counts.entry(canvas.at(column, y)).or_default() += 1;
                 }
@@ -608,7 +656,8 @@ fn glyph_groups(canvas: &Canvas, background: [u8; 3]) -> Vec<Vec<([u8; 3], usize
         .first()
         .map_or(0.0, |(colour, _)| distance(*colour, background));
     struct Group {
-        direction: [f32; 3],
+        /// The direction of each member, the first one's first.
+        directions: Vec<[f32; 3]>,
         members: Vec<([u8; 3], usize, f32)>,
     }
     let mut groups: Vec<Group> = Vec::new();
@@ -619,17 +668,28 @@ fn glyph_groups(canvas: &Canvas, background: [u8; 3]) -> Vec<Vec<([u8; 3], usize
             .atan()
             .max(1.5_f32.to_radians())
             .cos();
-        match groups.iter_mut().find(|group| {
+        let shares = |direction: &[f32; 3]| {
             towards
                 .iter()
-                .zip(group.direction.iter())
+                .zip(direction.iter())
                 .map(|(a, b)| a * b)
                 .sum::<f32>()
                 > allowed
+        };
+        match groups.iter_mut().find(|group| {
+            let compared = if any_member {
+                &group.directions[..]
+            } else {
+                &group.directions[..1]
+            };
+            compared.iter().any(shares)
         }) {
-            Some(group) => group.members.push((colour, count, reach)),
+            Some(group) => {
+                group.members.push((colour, count, reach));
+                group.directions.push(towards);
+            }
             None if reach >= strongest / 4.0 => groups.push(Group {
-                direction: towards,
+                directions: vec![towards],
                 members: vec![(colour, count, reach)],
             }),
             None => {}

@@ -20,14 +20,14 @@
 //! files. Formats whose compressor this machine lacks are skipped with that reason.
 use crate::{
     Context,
-    app::{App, Config},
-    encode, files_support as files, input, panel, viewers_stage,
+    app::{self, App, Config},
+    encode, files_support as files, input, inspect, panel, tools_support as tools, viewers_stage,
     viewers_support::{self as support, Failures, clip, generated, millis},
 };
 use midnight_core::{CopyOperationState, PaneId};
 use slint::{
     ComponentHandle,
-    platform::{Key, WindowEvent},
+    platform::{Key, WindowAdapter, WindowEvent},
 };
 use std::{
     collections::BTreeSet,
@@ -901,6 +901,7 @@ fn flat_copy(
     }
     let start = app.copies.len();
     let started = Instant::now();
+    let mut pressed = started;
     input::key(app.slint(), Key::F5);
     // The Copy dialog, or a refusal.
     loop {
@@ -909,6 +910,15 @@ fn flat_copy(
             break;
         }
         if let Some((title, body)) = app.notice() {
+            // Ctrl+A of 100,001 members resolves the selection in the background; F5
+            // before it has is refused with this reason, and a user presses F5 again.
+            if title == "Selection still loading" && started.elapsed() < BIG_LIMIT {
+                files::dismiss_all(app);
+                app.idle(Duration::from_millis(500));
+                input::key(app.slint(), Key::F5);
+                pressed = Instant::now();
+                continue;
+            }
             app.screenshot(
                 context,
                 "flat-copy-refused",
@@ -916,7 +926,7 @@ fn flat_copy(
             );
             return Err(format!("F5 was refused: {title}: {body}"));
         }
-        if started.elapsed() >= LIST_LIMIT {
+        if pressed.elapsed() >= LIST_LIMIT {
             return Err("F5 opened neither the Copy dialog nor a notice".into());
         }
         app.idle(Duration::from_millis(20));
@@ -942,8 +952,35 @@ fn flat_copy(
             ));
         }
         if copied.elapsed() >= FLAT_COPY_BUDGET {
+            // How far it got, then the job is cancelled as a user would cancel it, so it
+            // neither runs on beside the next check nor keeps writing into its folder.
+            let count = std::fs::read_dir(&arrived)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| {
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            name.len() == 10
+                                && name.ends_with(".txt")
+                                && name[..6].bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            let elapsed = copied.elapsed();
+            let ended = cancel_copy(app, start);
+            if selection {
+                for index in 0..100_001 {
+                    let _ = std::fs::remove_file(arrived.join(format!("{index:06}.txt")));
+                }
+            } else {
+                let _ = std::fs::remove_dir_all(&arrived);
+            }
             return Err(format!(
-                "the copy of 100,001 files took longer than {FLAT_COPY_BUDGET:?}"
+                "the copy of 100,001 files took longer than {FLAT_COPY_BUDGET:?}: {count} \
+                 files had arrived after {} ({:.0} files/s); {ended}",
+                millis(elapsed),
+                count as f64 / elapsed.as_secs_f64()
             ));
         }
         app.idle(Duration::from_millis(100));
@@ -999,6 +1036,73 @@ fn flat_copy(
         ));
     }
     back_to(app, home, if selection { 2 } else { 1 }, "flat.tar")
+}
+
+/// Cancel the copy that started at `start` (over its budget) from its progress window,
+/// Cancel operation and the confirmation, as a user would, and wait until it ends.
+/// Returns how it ended.
+fn cancel_copy(app: &mut App, start: usize) -> String {
+    let ended = |app: &App| {
+        app.copies[start..]
+            .iter()
+            .find(|progress| progress.state.is_terminal())
+            .map(|progress| progress.state)
+    };
+    let Some(window) = app
+        .tool_windows()
+        .into_iter()
+        .rev()
+        .find(|window| tools::title(window) == "Copy")
+    else {
+        return format!(
+            "it was not cancelled: no Copy window (tool windows {:?})",
+            tools::tool_titles(app)
+        );
+    };
+    // A tool window has its size once laid out, as the jobs scenarios lay theirs out.
+    app::layout_tool(&window, 760, 560);
+    app.settle();
+    if let Err(error) = tools::click_last(window.window(), "Cancel operation") {
+        return format!("it was not cancelled: {error}");
+    }
+    // The question comes at a safe checkpoint.
+    let asked = Instant::now();
+    loop {
+        app.settle();
+        if ended(app).is_some() {
+            break;
+        }
+        if inspect::visible_texts(window.window())
+            .iter()
+            .any(|text| text == "Cancel this operation?")
+        {
+            if let Err(error) = tools::click_last(window.window(), "Cancel operation") {
+                return format!("Cancel operation asked, the answer failed: {error}");
+            }
+            break;
+        }
+        if asked.elapsed() >= Duration::from_secs(60) {
+            return format!(
+                "Cancel operation asked nothing within 60 s (window: {:?})",
+                inspect::visible_texts(window.window())
+            );
+        }
+        app.idle(Duration::from_millis(50));
+    }
+    let cancelled = Instant::now();
+    loop {
+        app.settle();
+        if let Some(state) = ended(app) {
+            return format!(
+                "cancelled, it ended {state:?} after {}",
+                millis(cancelled.elapsed())
+            );
+        }
+        if cancelled.elapsed() >= Duration::from_secs(120) {
+            return "it did not end within 120 s of Cancel operation".to_owned();
+        }
+        app.idle(Duration::from_millis(100));
+    }
 }
 
 /// A raw compressed stream lists one member with the payload.

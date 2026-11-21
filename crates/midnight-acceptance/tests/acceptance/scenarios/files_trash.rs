@@ -5,12 +5,11 @@
 //! write-protected cases. A write-protected folder inside the deleted tree is deleted
 //! (owner write is added for it); an entry of a write-protected folder outside the
 //! deleted tree is refused with a Retry/Skip/Skip all/Cancel question, and Retry works
-//! once the folder is writable. The last cases wait for announced behavior and are
-//! reported as pending while it is missing.
+//! once the folder is writable.
 use crate::{
     Context,
     app::{App, Config},
-    files_support::{self as support, DeleteEnd, Pending, Timings, facts, io_error, tree_facts},
+    files_support::{self as support, DeleteEnd, Timings, facts, io_error, tree_facts},
     input, inspect, panel, tools_support as tools, viewers_stage,
 };
 use i_slint_core::items::AccessibleRole;
@@ -24,10 +23,6 @@ use std::{
 
 pub const TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const LEFT: PaneId = PaneId::Left;
-const OWNER_WRITE: &str =
-    "Delete adds owner write permission to write-protected folders inside the deleted tree";
-const DELETE_PROMPT: &str =
-    "Delete failures ask Retry/Skip/Skip all/Cancel and continue after Skip";
 
 pub fn trash(context: &mut Context) -> Result<(), String> {
     if cfg!(windows) {
@@ -197,7 +192,6 @@ fn run(context: &mut Context) -> Result<(), String> {
     chmod(&ro_parent, 0o555)?;
     let mut app = App::start(Config::new(&root, &context.work));
     let mut failures = Vec::new();
-    let mut pending = Pending::default();
     let mut timings = Timings::default();
 
     // A file: in the Trash with its bytes and a well-formed .trashinfo.
@@ -346,11 +340,11 @@ fn run(context: &mut Context) -> Result<(), String> {
             Err(format!("asked instead: {text}"))
         }
     };
-    pending.check(
-        "F8 of a write-protected folder with contents",
-        OWNER_WRITE,
-        result,
-    );
+    if let Err(error) = result {
+        failures.push(format!(
+            "F8 of a write-protected folder with contents: {error}"
+        ));
+    }
     support::dismiss_all(&mut app);
     panel::leave(&mut app, LEFT)?;
 
@@ -400,11 +394,11 @@ fn run(context: &mut Context) -> Result<(), String> {
             ))
         }
     };
-    pending.check(
-        "F8 of a file in a write-protected folder asks, and Retry works",
-        DELETE_PROMPT,
-        result,
-    );
+    if let Err(error) = result {
+        failures.push(format!(
+            "F8 of a file in a write-protected folder asks, and Retry works: {error}"
+        ));
+    }
     support::dismiss_all(&mut app);
 
     // Two such files: Skip all keeps both and ends the job.
@@ -456,11 +450,11 @@ fn run(context: &mut Context) -> Result<(), String> {
     if !ro_parent.join("b.txt").is_file() || !ro_parent.join("c.txt").is_file() {
         failures.push("a refused delete in a write-protected folder removed a file".into());
     }
-    pending.check(
-        "F8 of two files in a write-protected folder: Skip all keeps both",
-        DELETE_PROMPT,
-        result,
-    );
+    if let Err(error) = result {
+        failures.push(format!(
+            "F8 of two files in a write-protected folder: Skip all keeps both: {error}"
+        ));
+    }
     support::dismiss_all(&mut app);
     panel::leave(&mut app, LEFT)?;
 
@@ -515,11 +509,11 @@ fn run(context: &mut Context) -> Result<(), String> {
             Err(format!("asked: {text}"))
         }
     };
-    pending.check(
-        "Shift+F8 of a tree with a write-protected folder deletes it whole",
-        OWNER_WRITE,
-        result,
-    );
+    if let Err(error) = result {
+        failures.push(format!(
+            "Shift+F8 of a tree with a write-protected folder deletes it whole: {error}"
+        ));
+    }
     support::dismiss_all(&mut app);
     panel::leave(&mut app, LEFT)?;
 
@@ -662,5 +656,5 @@ fn run(context: &mut Context) -> Result<(), String> {
     ));
     context.note(timings.summary());
     app.shutdown()?;
-    support::report_with(context, &failures, &pending)
+    support::report(&failures)
 }

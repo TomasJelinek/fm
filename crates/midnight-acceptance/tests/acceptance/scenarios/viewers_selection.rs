@@ -259,19 +259,21 @@ fn select_page(
         ),
     );
     // The page's own background showing between selected runs (table cells, the gutter
-    // edge) is not text. Each text colour is measured at its glyphs' solid cores: their
-    // anti-aliased edges are blends that read lower than the colour itself.
-    let glyphs: Vec<([u8; 3], usize)> = probe::glyph_cores(&after, selection, GLYPH_PIXELS)
-        .into_iter()
-        .filter(|(colour, _)| {
-            colour
-                .iter()
-                .zip(background)
-                .map(|(a, b)| u32::from(a.abs_diff(b)))
-                .sum::<u32>()
-                > 36
-        })
-        .collect();
+    // edge) is not text, nor is text beside the selection (the gutter's line numbers).
+    // Each text colour is measured at its glyphs' solid cores: their anti-aliased edges
+    // are blends that read lower than the colour itself.
+    let glyphs: Vec<([u8; 3], usize)> =
+        probe::selected_glyph_cores(&after, &before, selection, GLYPH_PIXELS)
+            .into_iter()
+            .filter(|(colour, _)| {
+                colour
+                    .iter()
+                    .zip(background)
+                    .map(|(a, b)| u32::from(a.abs_diff(b)))
+                    .sum::<u32>()
+                    > 36
+            })
+            .collect();
     if glyphs.is_empty() {
         return Err(format!(
             "no text found on the selection colour {}",

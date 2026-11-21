@@ -19,12 +19,24 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PWSH = shutil.which("pwsh")
 LAUNCHER = shutil.which("py")
+# The video worker's FFmpeg libraries and playback helper, which the restricted workers'
+# AppContainer must be granted, as scripts/deploy-private.ps1 grants them.
+VIDEO_FILES = ["avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll",
+               "swresample-7.dll", "midnight-video-playback.exe"]
+# The SID of the top-level AppContainer `MidnightExplorer.RestrictedWorker.v1`
+# (scripts/tests/test_restricted_worker_identity.py checks it against Windows).
+WORKER_SID = "S-1-15-2-210492624-3469538162-618285203-1868907-2672626540-1166629363-1118814998"
+# What the private installation's packages\thumbnailers holds of the stub plugins.
+THUMBNAILERS = sorted(VIDEO_FILES + ["midnight-thumbnail-image.exe", "midnight-thumbnail-image.json",
+                                     "midnight-thumbnail-video.exe", "midnight-thumbnail-video.json",
+                                     "notices"])
 RECORDER = r'''
 import json, os, subprocess, sys
 from pathlib import Path
 packages = Path(os.environ["MIDNIGHT_ACCEPTANCE_PLUGINS"])
 root = Path(os.environ["MIDNIGHT_ACCEPTANCE_STAGE_ROOT"])
 acl = subprocess.run(["icacls", str(root)], capture_output=True, text=True).stdout
+thumbnailers = packages / "thumbnailers"
 record = {
     "packages": str(packages),
     "root": str(root),
@@ -35,6 +47,8 @@ record = {
     "installed": {kind: sorted(p.name for p in (packages / kind).iterdir())
                   for kind in ("viewers", "filesystems", "thumbnailers")},
     "acl": acl,
+    "file_acls": {p.name: subprocess.run(["icacls", str(p)], capture_output=True, text=True).stdout
+                  for p in thumbnailers.iterdir() if p.is_file()},
 }
 Path(os.environ["RECORD"]).write_text(json.dumps(record), encoding="utf-8")
 sys.exit(int(os.environ.get("RECORD_EXIT", "0")))
@@ -81,10 +95,31 @@ class AcceptanceRunnerTests(unittest.TestCase):
     def stub_plugins(self):
         plugins = self.root / "plugins"
         for package in ("viewers/basic", "filesystems/native.windows",
-                        "filesystems/network.windows", "thumbnailers/image"):
+                        "filesystems/network.windows"):
             (plugins / package).mkdir(parents=True)
             (plugins / package / "plugin.toml").write_text("name = 'stub'\n", encoding="utf-8")
+        # Thumbnail providers are installed flat, as build.bat leaves them: manifests and
+        # executables, the FFmpeg libraries they share and notices.
+        thumbnailers = plugins / "thumbnailers"
+        (thumbnailers / "notices" / "midnight-thumbnail-image").mkdir(parents=True)
+        (thumbnailers / "notices" / "midnight-thumbnail-image" / "LICENSE").write_text(
+            "stub\n", encoding="utf-8")
+        for name in THUMBNAILERS:
+            if name != "notices":
+                (thumbnailers / name).write_text("stub\n", encoding="utf-8")
         return plugins
+
+    def assert_worker_grants(self, file_acls):
+        """The video files grant the workers' AppContainer read and execute, an ACE of
+        their own (not inherited); no other file names it."""
+        for name, acl in file_acls.items():
+            with self.subTest(file=name):
+                grants = [line for line in acl.splitlines() if WORKER_SID in line]
+                if name in VIDEO_FILES:
+                    self.assertEqual(len(grants), 1, acl)
+                    self.assertTrue(grants[0].rstrip().endswith(f"{WORKER_SID}:(RX)"), acl)
+                else:
+                    self.assertEqual(grants, [], acl)
 
     def private_profile(self):
         profile = self.root / "profile"
@@ -110,6 +145,12 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("Private installation: " + os.environ["USERPROFILE"]
                                             + "\\MidnightAcceptance-") for line in lines), lines)
         self.assertEqual(set(Path(os.environ["USERPROFILE"]).glob("MidnightAcceptance-*")), before)
+
+    def test_the_worker_sid_is_never_asked_of_windows_in_this_process(self):
+        # In a packaged PowerShell that API returns a child AppContainer of the package.
+        text = (ROOT / "scripts/acceptance.ps1").read_text(encoding="utf-8")
+        self.assertNotIn("DeriveAppContainerSidFromAppContainerName(", text)
+        self.assertIn("function Get-RestrictedWorkerSid", text)
 
     def test_invalid_arguments_stop_with_usage(self):
         for arguments in (("--bogus",), ("debug", "release"), ("--scale", "huge"), ("--scale",),
@@ -150,9 +191,9 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertEqual(seen["arguments"], [])
         self.assertEqual(seen["run_dir"], str(runs))
         self.assertEqual(Path(seen["temp"]), ROOT / "_build" / "tmp")
-        # Network providers are never staged.
+        # Network providers are never staged; the flat thumbnailers folder is copied whole.
         self.assertEqual(seen["installed"], {"viewers": ["basic"], "filesystems": ["native.windows"],
-                                             "thumbnailers": ["image"]})
+                                             "thumbnailers": THUMBNAILERS})
         # Three explicit, not inherited entries: this account, SYSTEM and Administrators.
         entries = [line.strip() for line in seen["acl"].splitlines()[:-2] if line.strip()]
         self.assertEqual(len(entries), 3, seen["acl"])
@@ -160,6 +201,11 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertTrue(any("NT AUTHORITY\\SYSTEM" in entry for entry in entries), seen["acl"])
         self.assertTrue(any("BUILTIN\\Administrators" in entry for entry in entries), seen["acl"])
         self.assertIn("Plugin packages (filesystems): native.windows", result.stdout)
+        # Each manifest names a provider; libraries and notices are not packages.
+        self.assertIn("Plugin packages (thumbnailers): midnight-thumbnail-image, midnight-thumbnail-video",
+                      result.stdout.splitlines())
+        # A copy loses explicit entries: the runner grants the workers' AppContainer again.
+        self.assert_worker_grants(seen["file_acls"])
 
     @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
     def test_in_process_runs_restore_the_session_and_stage_the_packages_again(self):
@@ -206,7 +252,8 @@ class AcceptanceRunnerTests(unittest.TestCase):
             with self.subTest(run=run):
                 seen = json.loads((start / f"record-{run}.json").read_text(encoding="utf-8"))
                 self.assertEqual(seen["installed"], {"viewers": ["basic"], "filesystems": ["native.windows"],
-                                                     "thumbnailers": ["image"]})
+                                                     "thumbnailers": THUMBNAILERS})
+                self.assert_worker_grants(seen["file_acls"])
                 self.assertEqual(Path(seen["root"]).parent, profile)
                 self.assertFalse(Path(seen["root"]).exists(), "the private installation was not removed")
 

@@ -4,8 +4,7 @@
 //! the delete; every result is exact on disk and no notice appears.
 //!
 //! 1. F5 of `many/` (Wait off) to its own folder, paused from its window.
-//! 2. F5 of `small/` (Wait off) to another folder: it completes beside the paused copy
-//!    (pending while a job that does not wait still waits beside a paused one).
+//! 2. F5 of `small/` (Wait off) to another folder: it completes beside the paused copy.
 //! 3. Shift+F8 of `doomed/` (a tree) in the same panel: no question; it waits queued and
 //!    deletes nothing while the copy stays paused. A Delete holds the whole namespace,
 //!    and every transfer keeps its namespace share until it ends, paused or not
@@ -28,7 +27,6 @@ use slint::platform::{Key, WindowAdapter};
 use std::{path::Path, time::Duration};
 
 const LEFT: PaneId = PaneId::Left;
-const WAIT_OFF: &str = "a job whose Wait for other operations is off starts at once";
 
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
@@ -171,9 +169,8 @@ fn steps(
     );
     let second_done =
         files::job(app, two).is_some_and(|job| job.state == CopyOperationState::Completed);
-    journey.pending(
+    journey.check(
         "a copy that does not wait completes beside a paused one",
-        WAIT_OFF,
         if second_done {
             Ok(())
         } else {

@@ -1206,7 +1206,16 @@ fn button_text(nodes: &[Node], issues: &mut Vec<Issue>) {
                 continue;
             }
             let available = nodes[*child].rect.2.min(shown.2);
-            if text.preferred.0 > available + 1.0 && !text.wrap {
+            // A caption whose own box holds it, cut at the edge of a view that scrolls
+            // sideways or of a header kept in step with one (a table's last column
+            // heading), is scrolled out of view, not squeezed (the elision check's rule
+            // for labels, the cut-off check's for headers).
+            let scrolled = nodes[*child].rect.2 + 1.0 >= text.preferred.0
+                && (inspect::in_sideways_scroll(&nodes[*child].item)
+                    || node.flick_owner.is_some_and(|owner| {
+                        scrolls_with_neighbour(nodes, nodes[owner].rect, node.rect)
+                    }));
+            if text.preferred.0 > available + 1.0 && !text.wrap && !scrolled {
                 issues.push(Issue::new(
                     BUTTON_TEXT,
                     format!(
