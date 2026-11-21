@@ -1,6 +1,8 @@
 //! Trusted CEF broker in a kill-on-close job; CEF owns its nested renderer sandbox jobs.
 use super::Browser;
-use crate::platform::{Attributes, check, create_with_inherited, pipe, wait_process};
+use crate::platform::{
+    Attributes, check, create_with_inherited, pipe, suppress_error_dialogs, wait_process,
+};
 use std::{
     fs::OpenOptions,
     io,
@@ -235,6 +237,9 @@ pub(super) fn spawn(
         return Err(error);
     }
     let process = Process { process, job };
+    // Like the workers: a broker that cannot start ends with the loader's status, and CEF's
+    // own processes inherit the broker's error mode. The guard kills the suspended broker.
+    suppress_error_dialogs(&process.process)?;
     // SAFETY: owned primary thread of the suspended broker; the process guard kills on failure.
     if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
         return Err(io::Error::last_os_error());

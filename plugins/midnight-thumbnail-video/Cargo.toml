@@ -7,18 +7,70 @@ publish = false
 
 [workspace]
 
+# `bundled` builds the helpers with the bundled FFmpeg profile. `system` builds the platform
+# helpers, which link no FFmpeg: Media Foundation on Windows; on Linux the distribution's
+# FFmpeg, then GStreamer, loaded at run time. Build them separately, with
+# `--no-default-features --features system[,playback-worker]`.
 [features]
+default = ["bundled"]
+bundled = ["dep:ffmpeg-next"]
 playback-worker = ["dep:midnight-worker-sdk"]
+system = ["dep:windows", "dep:windows-core", "dep:libc"]
+
+[[bin]]
+name = "midnight-thumbnail-video"
+path = "src/main.rs"
+required-features = ["bundled"]
 
 [[bin]]
 name = "midnight-video-playback"
 path = "src/bin/midnight-video-playback.rs"
-required-features = ["playback-worker"]
+required-features = ["bundled", "playback-worker"]
+
+[[bin]]
+name = "midnight-thumbnail-video-system"
+path = "src/bin/midnight-thumbnail-video-system.rs"
+required-features = ["system"]
+
+[[bin]]
+name = "midnight-video-playback-system"
+path = "src/bin/midnight-video-playback-system.rs"
+required-features = ["system", "playback-worker"]
+
+[[test]]
+name = "decode"
+required-features = ["bundled"]
+
+[[test]]
+name = "playback"
+required-features = ["bundled"]
+
+[[test]]
+name = "media_foundation"
+required-features = ["system"]
 
 [dependencies]
 midnight-thumbnail-sdk = { version = "=0.2.0", registry = "midnight" }
 midnight-worker-sdk = { version = "=0.2.0", registry = "midnight", optional = true }
-ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "format", "software-scaling", "software-resampling"] }
+ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "format", "software-scaling", "software-resampling"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+] }
+windows-core = { version = "=0.62.2", optional = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "=0.62.2", features = ["Win32_System_LibraryLoader", "Win32_System_ProcessStatus"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

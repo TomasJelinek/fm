@@ -1,16 +1,57 @@
 //! Killable helper supervision and bounded read-only content brokering. Backend threads only.
 use midnight_plugin_host::CapturedFile;
 use midnight_thumbnail_api::{self as api, Frame, Message, Request};
-use midnight_worker_platform::ExitStatus;
+use midnight_worker_platform::{ExitStatus, UnloadableLibrary, WorkerStopped};
 use std::{
+    fmt,
     io::{self, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
 };
+
+/// A thumbnail helper whose loader could not load a library: no preview of its kind can be
+/// made. The service reports the first one as a notice, so that missing previews have a
+/// reason; the library is named with why (missing, or denied to the helpers' sandbox).
+#[derive(Debug)]
+pub struct HelperCannotStart {
+    pub helper: PathBuf,
+    pub status: ExitStatus,
+    pub library: Option<UnloadableLibrary>,
+}
+
+impl fmt::Display for HelperCannotStart {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = self.helper.file_name().map_or_else(
+            || self.helper.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        match &self.library {
+            Some(library) => write!(formatter, "the thumbnail helper {name} {library}"),
+            None => write!(
+                formatter,
+                "the thumbnail helper {name} could not start: {}",
+                self.status.reason()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HelperCannotStart {}
+
+/// A helper that ended because its loader could not load a library, with that library.
+fn cannot_start(helper: &Path, status: ExitStatus) -> io::Error {
+    io::Error::other(HelperCannotStart {
+        helper: helper.to_owned(),
+        status,
+        library: midnight_worker_platform::unloadable_library(
+            &midnight_worker_platform::worker_libraries(helper),
+        ),
+    })
+}
 
 /// Native and virtual sources implement this host-owned contract; identifiers never become paths.
 pub trait Source: Send + Sync {
@@ -55,6 +96,32 @@ impl Source for CapturedFile {
     }
 }
 
+/// The provider answered that it cannot decode the source (MTH1 `Failed`), as opposed to
+/// failing, timing out or being cancelled.
+#[derive(Debug)]
+pub struct Rejected;
+
+impl fmt::Display for Rejected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Thumbnail decoder rejected the source")
+    }
+}
+
+impl std::error::Error for Rejected {}
+
+/// Whether the provider rejected the source itself.
+pub fn rejected(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<Rejected>().is_some())
+}
+
+/// Memory for one provider process.
+pub const PROVIDER_MEMORY: u64 = 512 * 1024 * 1024;
+/// Memory for a platform video helper, which also maps the system's media frameworks (the
+/// worker SDK's maximum).
+pub const PLATFORM_MEMORY: u64 = 1024 * 1024 * 1024;
+
 /// Supervise one decoder process on a bounded backend worker. A blocked source OS call retains
 /// its worker until it actually returns; killing the decoder does not pretend to cancel that call.
 pub fn decode(
@@ -64,12 +131,25 @@ pub fn decode(
     cancel: &AtomicBool,
     timeout: Duration,
 ) -> io::Result<Frame> {
-    decode_cooperative(
+    decode_in(helper, source, request, cancel, timeout, PROVIDER_MEMORY)
+}
+
+/// [`decode`] with a process memory limit of `memory_bytes`.
+pub fn decode_in(
+    helper: &Path,
+    source: &dyn Source,
+    request: Request,
+    cancel: &AtomicBool,
+    timeout: Duration,
+    memory_bytes: u64,
+) -> io::Result<Frame> {
+    decode_limited(
         helper,
         source,
         request,
         &|| cancel.load(Ordering::Acquire),
         timeout,
+        memory_bytes,
     )
 }
 
@@ -81,6 +161,17 @@ pub fn decode_cooperative(
     request: Request,
     cancelled: &(dyn Fn() -> bool + Sync),
     timeout: Duration,
+) -> io::Result<Frame> {
+    decode_limited(helper, source, request, cancelled, timeout, PROVIDER_MEMORY)
+}
+
+fn decode_limited(
+    helper: &Path,
+    source: &dyn Source,
+    request: Request,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    timeout: Duration,
+    memory_bytes: u64,
 ) -> io::Result<Frame> {
     if cancelled() {
         return Err(cancellation_error());
@@ -94,10 +185,22 @@ pub fn decode_cooperative(
     let worker = midnight_worker_platform::spawn(
         helper,
         midnight_worker_platform::Limits {
-            memory_bytes: 512 * 1024 * 1024,
+            memory_bytes,
             cpu_seconds: 8,
         },
-    )?;
+    )
+    .map_err(|error| {
+        // The startup message found the helper gone.
+        match error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<WorkerStopped>())
+        {
+            Some(&WorkerStopped(status)) if status.library_not_loaded() => {
+                cannot_start(helper, status)
+            }
+            _ => error,
+        }
+    })?;
     let midnight_worker_platform::Worker {
         mut input,
         output,
@@ -158,10 +261,7 @@ pub fn decode_cooperative(
                             return Ok(frame);
                         }
                         Message::Failed => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Unsupported,
-                                "Thumbnail decoder rejected the source",
-                            ));
+                            return Err(io::Error::new(io::ErrorKind::Unsupported, Rejected));
                         }
                         _ => return Err(io::Error::other("Unexpected thumbnail worker response")),
                     }
@@ -194,7 +294,7 @@ pub fn decode_cooperative(
         broker
             .join()
             .map_err(|_| io::Error::other("Thumbnail broker panicked"))?;
-        explain_closed_stream(result, exited)
+        explain_closed_stream(result, exited, helper)
     })?;
     source.validate()?;
     if source.version() != version {
@@ -207,21 +307,27 @@ fn cancellation_error() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "Thumbnail request cancelled")
 }
 
-/// A protocol stream that ended early is reported with the worker's exit: its exit code
-/// or terminating signal (also after the kill above), or a wait that could not confirm
-/// the exit. A clean exit keeps the stream error.
+/// A protocol stream that ended early is reported with the worker's exit: a library its
+/// loader could not load ([`HelperCannotStart`]), or why else it ended (a crash, its exit
+/// code or signal, also after the kill above), or a wait that could not confirm the exit.
+/// A clean exit keeps the stream error.
 fn explain_closed_stream<T>(
     result: io::Result<T>,
     exited: io::Result<ExitStatus>,
+    helper: &Path,
 ) -> io::Result<T> {
     match (result, exited) {
         (Err(error), exited)
             if error.kind() == io::ErrorKind::UnexpectedEof
                 && !matches!(exited, Ok(status) if status.success()) =>
         {
+            if let Ok(status) = exited
+                && status.library_not_loaded()
+            {
+                return Err(cannot_start(helper, status));
+            }
             let exit = match exited {
-                Ok(ExitStatus::Code(code)) => format!("it exited with code 0x{code:08X}"),
-                Ok(ExitStatus::Signal(signal)) => format!("it was terminated by signal {signal}"),
+                Ok(status) => status.reason(),
                 Err(wait) => format!("its exit could not be confirmed: {wait}"),
             };
             Err(io::Error::other(format!(
@@ -235,6 +341,27 @@ fn explain_closed_stream<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_providers_own_rejection_lets_the_platform_helper_try() {
+        let rejected = io::Error::new(io::ErrorKind::Unsupported, Rejected);
+        assert!(super::rejected(&rejected));
+        assert_eq!(
+            rejected.to_string(),
+            "Thumbnail decoder rejected the source"
+        );
+        for other in [
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Thumbnail decoder rejected the source",
+            ),
+            io::Error::new(io::ErrorKind::TimedOut, "Thumbnail decoder timed out"),
+            cancellation_error(),
+        ] {
+            assert!(!super::rejected(&other), "{other}");
+        }
+    }
+
     struct Untouched;
     impl Source for Untouched {
         fn length(&self) -> u64 {
@@ -279,26 +406,29 @@ mod tests {
     #[test]
     fn a_closed_stream_is_explained_by_the_exit_code_signal_or_an_unconfirmed_wait() {
         let explained = |exited| {
-            explain_closed_stream(closed_stream(), Ok(exited))
+            explain_closed_stream(closed_stream(), Ok(exited), Path::new("helper"))
                 .unwrap_err()
                 .to_string()
         };
-        // Windows reports all 32 bits, such as an access violation's NTSTATUS.
-        assert_eq!(
-            explained(ExitStatus::Code(0xC000_0005)),
-            "Thumbnail worker closed its protocol stream; it exited with code 0xC0000005"
-        );
-        assert_eq!(
-            explained(ExitStatus::Code(101)),
-            "Thumbnail worker closed its protocol stream; it exited with code 0x00000065"
-        );
-        // Linux reports the terminating signal instead, such as SIGSEGV.
-        assert_eq!(
-            explained(ExitStatus::Signal(11)),
-            "Thumbnail worker closed its protocol stream; it was terminated by signal 11"
-        );
+        // Windows reports all 32 bits, such as the loader's NTSTATUS for a missing library
+        // or an access violation; Linux reports the terminating signal instead, such as
+        // SIGSEGV. The platform words each status (`ExitStatus::reason`).
+        for status in [
+            ExitStatus::Code(0xC000_0005),
+            ExitStatus::Code(101),
+            ExitStatus::Signal(11),
+        ] {
+            assert_eq!(
+                explained(status),
+                format!(
+                    "Thumbnail worker closed its protocol stream; {}",
+                    status.reason()
+                )
+            );
+        }
         let wait = io::Error::other("wait failed");
-        let error = explain_closed_stream(closed_stream(), Err(wait)).unwrap_err();
+        let error =
+            explain_closed_stream(closed_stream(), Err(wait), Path::new("helper")).unwrap_err();
         assert_eq!(
             error.to_string(),
             "Thumbnail worker closed its protocol stream; its exit could not be confirmed: \
@@ -309,15 +439,65 @@ mod tests {
     #[test]
     fn other_outcomes_are_not_rewritten_by_the_exit() {
         // A clean exit leaves the stream error itself.
-        let error = explain_closed_stream(closed_stream(), Ok(ExitStatus::Code(0))).unwrap_err();
+        let helper = Path::new("helper");
+        let error =
+            explain_closed_stream(closed_stream(), Ok(ExitStatus::Code(0)), helper).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
         // Cancellation keeps its kind: the service uses it to skip the failure backoff.
         let killed = Ok(ExitStatus::Code(1));
-        let cancelled = explain_closed_stream::<()>(Err(cancellation_error()), killed);
+        let cancelled = explain_closed_stream::<()>(Err(cancellation_error()), killed, helper);
         assert_eq!(cancelled.unwrap_err().kind(), io::ErrorKind::Interrupted);
         assert_eq!(
-            explain_closed_stream(Ok(7), Ok(ExitStatus::Signal(9))).unwrap(),
+            explain_closed_stream(Ok(7), Ok(ExitStatus::Signal(9)), helper).unwrap(),
             7
         );
+    }
+
+    #[test]
+    fn a_helper_that_cannot_load_its_libraries_names_the_library_and_why() {
+        // The loader's status: STATUS_DLL_NOT_FOUND on Windows, ld.so's 127 on Linux.
+        let status = if cfg!(windows) {
+            ExitStatus::Code(0xC000_0135)
+        } else {
+            ExitStatus::Code(127)
+        };
+        assert!(status.library_not_loaded());
+        let directory =
+            std::env::temp_dir().join(format!("midnight-thumbnail-helper-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let helper = directory.join("helper.exe");
+        let library = directory.join(if cfg!(windows) {
+            "codec.dll"
+        } else {
+            "libcodec.so.1"
+        });
+        let error = explain_closed_stream::<()>(closed_stream(), Ok(status), &helper).unwrap_err();
+        let failure = error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<HelperCannotStart>())
+            .expect("a helper that cannot start");
+        assert_eq!(failure.library, None);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the thumbnail helper helper.exe could not start: {}",
+                status.reason()
+            )
+        );
+        // A library beside the helper that the helpers may not load is named; on Windows
+        // nothing grants this one to the helpers' sandbox.
+        std::fs::write(&library, b"library").unwrap();
+        let error = explain_closed_stream::<()>(closed_stream(), Ok(status), &helper).unwrap_err();
+        let _ = std::fs::remove_dir_all(&directory);
+        if cfg!(windows) {
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "the thumbnail helper helper.exe could not load its libraries (access \
+                     denied): {}",
+                    library.display()
+                )
+            );
+        }
     }
 }

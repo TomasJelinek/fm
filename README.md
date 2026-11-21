@@ -234,7 +234,16 @@ are build prerequisites; a system FFmpeg installation is not substituted. Window
 thumbnail builds require the approved MSVC FFmpeg prefix/source and libclang:
 set `MIDNIGHT_FFMPEG_PREFIX`, `MIDNIGHT_FFMPEG_SOURCE_ARCHIVE` and `LIBCLANG_PATH`.
 The [video worker guide](plugins/midnight-thumbnail-video/README.md) documents its
-recipe and codec limits. Use `MIDNIGHT_THUMBNAILERS_OFFLINE=1` to require cached
+recipe and codec limits. Windows builds also build the Media Foundation helpers
+(`midnight-thumbnail-video-system.exe`, `midnight-video-playback-system.exe`) from the
+same plugin without FFmpeg; they decode H.264, HEVC, AV1, MPEG-2/4, VC-1/WMV, AAC, MP3
+and Windows Media Audio with Windows' own decoders when the bundled profile has no
+decoder for a video. Linux builds also build `midnight-thumbnail-video-system` and
+`midnight-video-playback-system` without FFmpeg and without an rpath; they load the
+distribution's own FFmpeg (libavcodec 58 to 63), else GStreamer 1.x, at run time and
+decode H.264, HEVC, MPEG-4 Part 2, AAC, MP3 and the other codecs those libraries have.
+Neither is required to run ME; [system requirements](docs/SYSTEM_REQUIREMENTS.md) lists
+the optional packages per distribution. Use `MIDNIGHT_THUMBNAILERS_OFFLINE=1` to require cached
 SDK/dependency/native downloads, or supply `MIDNIGHT_THUMBNAIL_SDK_CONFIG` for an
 existing released worker SDK. Debug is the default for the thumbnail build helpers.
 The [network plugin guide](plugins/midnight-filesystem-network/README.md) describes
@@ -355,7 +364,8 @@ message that names the requirement: an installation that only administrators can
 change (see the authorization helper above). The deployment output also names this
 requirement.
 `-IncludeFilesystems` includes the filesystem packages. Keep `-IncludeThumbnailers`
-to deploy the image/video workers; normal build deployment includes both flags
+to deploy the image/video workers (on Windows with the Media Foundation helpers, which
+deployment requires beside the FFmpeg ones); normal build deployment includes both flags
 and rejects incomplete module installations. To point the desktop shortcut at an
 existing persistent installation without redeploying, run
 `scripts/update-desktop-shortcut.ps1 -InstallationDirectory <installation> -ExpectedExecutableSha256 <sha256>`;
@@ -1075,7 +1085,9 @@ editor scope and shortcuts reserved for later stages.
   Left/Right between cells and Up/Down between grid rows. Page Up/Down moves a
   visible page. Active prefix search retains its existing match navigation.
   Installed thumbnailer plugins provide cached previews for supported image/video
-  formats and the first page of PDFs (password-protected or damaged PDFs keep the
+  formats (also H.264, HEVC and the other formats the system decodes: Media Foundation
+  on Windows, the distribution's FFmpeg or GStreamer on Linux) and the
+  first page of PDFs (password-protected or damaged PDFs keep the
   placeholder); see the [thumbnail design](docs/superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
   **Options → Previews → Allow previews inside archives** is enabled by default,
   including for older saved settings. Turning it off hides archive-member previews

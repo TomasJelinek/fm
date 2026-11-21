@@ -280,7 +280,8 @@ jobs:
 
   # The image thumbnailer has the raster viewers' inputs (the shared decoder with its
   # pinned native dav1d build and the released worker SDK). The HTML viewer and the
-  # video thumbnailer need pinned CEF and FFmpeg inputs that have no cached CI setup yet.
+  # video thumbnailer's bundled helpers need pinned CEF and FFmpeg inputs that have no
+  # cached CI setup yet; the video thumbnailer's platform helpers do not (below).
   thumbnail-image:
     needs: public-worker-sdk
     strategy:
@@ -322,6 +323,60 @@ jobs:
             bash "$plugin/scripts/ci.sh" $sdk $build
           }
           if ($LASTEXITCODE -ne 0) { throw 'Independent image thumbnailer checks failed' }
+
+  # The video thumbnailer's platform helpers link no bundled FFmpeg. On Windows Media
+  # Foundation decodes and Windows' own encoders write the H.264 + AAC fixtures at test
+  # time; on Linux the distribution's FFmpeg and GStreamer, installed here, decode and its
+  # `ffmpeg` command writes the fixtures. Their tests start helpers in the real worker
+  # sandbox, one at a time.
+  thumbnail-video-platform:
+    needs: public-worker-sdk
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /plugins/midnight-thumbnail-video/
+            /rust-toolchain.toml
+            /.github/actions/
+      - uses: ./.github/actions/download-artifacts
+        with:
+          name: released-worker-sdk
+          path: _build/released-sdk
+      - uses: ./.github/actions/rust-setup
+      - name: Distribution FFmpeg and GStreamer (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg gstreamer1.0-libav \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-tools
+      - name: Independently lint and test the platform helpers
+        shell: pwsh
+        env:
+          RUST_TEST_THREADS: "1"
+        run: |
+          if ((Test-Path 'crates') -or (Test-Path 'thumbnail-api')) { throw 'Application or unpublished API source leaked into thumbnailer job' }
+          $temporary = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
+          New-Item -ItemType Directory -Force $temporary | Out-Null
+          $env:TEMP=$temporary; $env:TMP=$temporary; $env:TMPDIR=$temporary
+          $env:CARGO_TARGET_DIR = Join-Path $env:GITHUB_WORKSPACE '_build/thumbnail-video-platform'
+          $sdk = (Resolve-Path '_build/released-sdk/.cargo/registry.toml').Path
+          $manifest = 'plugins/midnight-thumbnail-video/Cargo.toml'
+          $features = @('--no-default-features', '--features', 'system,playback-worker')
+          cargo --config $sdk fetch --manifest-path $manifest --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Video thumbnailer dependency fetch failed' }
+          cargo --config $sdk clippy --manifest-path $manifest @features --all-targets --locked --offline -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Platform helper lints failed' }
+          cargo --config $sdk test --manifest-path $manifest @features --all-targets --locked --offline
+          if ($LASTEXITCODE -ne 0) { throw 'Platform helper tests failed' }
 
   archive-filesystem:
     needs: public-worker-sdk

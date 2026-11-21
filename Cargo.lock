@@ -2789,6 +2789,7 @@ dependencies = [
  "midnight-work-budget",
  "slint",
  "tokio",
+ "windows",
 ]
 
 [[package]]

@@ -465,6 +465,35 @@ removals above, they change only:
 - the `rustix` 1.1.6 `fs` declaration in `midnight-platform-common` described above;
 - the archive plugin's own version (0.2.0), a project-owned package.
 
+On 21 November 2026 the independent video plugin (scope `thumbnail-video`) split
+into the `bundled` feature (the FFmpeg helpers, unchanged) and a `system` feature for
+the platform helpers, which link no FFmpeg. On Windows `system` adds optional,
+Windows-only dependencies on windows 0.62.2 (features `Win32_Foundation`,
+`Win32_Media_MediaFoundation`, `Win32_System_Com`, `Win32_System_Com_StructuredStorage`,
+`Win32_System_SystemServices`, `Win32_System_Threading`, `Win32_System_Variant`; the
+plugin's tests add `Win32_System_LibraryLoader` and `Win32_System_ProcessStatus`) and
+windows-core 0.62.2, for Media Foundation. Its lockfile gains windows,
+windows-core, windows-implement 0.60.2, windows-interface 0.59.3, windows-result
+0.4.1, windows-strings 0.5.1, windows-collections 0.3.2, windows-future 0.3.2,
+windows-numerics 0.3.1, windows-threading 0.2.1 and syn 2.0.119: the versions,
+licences (MIT OR Apache-2.0) and notices the application already ships; libc 0.2.191,
+already in that lockfile, becomes an optional Linux dependency of `system` for the
+Linux platform helpers, which load the distribution's FFmpeg and GStreamer with it at
+run time and add no other crate (the GStreamer bindings are declared by hand; the FFmpeg
+struct offsets are generated from release headers by
+`scripts/generate-ffmpeg-system-layouts.py`, a development-time script that needs only
+Python and a C compiler). The opt-in acceptance crate, which is not shipped, gains an
+optional Windows-only windows 0.62.2 dependency (`Win32_Foundation`,
+`Win32_Media_MediaFoundation`, `Win32_System_Com`) behind its `acceptance` feature to
+write its H.264 test movie, so the application's `Cargo.lock` gains only that edge.
+The plugin's distribution notices (`scripts/thumbnail-notices.py`) now record the
+`system` feature too. No licence, selection or version changes. The generated tables
+(`docs/dependencies/`) were not recaptured for this change: at the next capture these
+packages' rows gain the `thumbnail-video` scope, and `midnight-thumbnail-video` is
+listed as declaring windows, windows-core and libc. Media Foundation and its decoders
+are Windows components, listed with the native runtimes below; nothing of them is
+bundled.
+
 Also on 21 November 2026 `midnight-platform-windows` added the windows 0.62.2
 feature `Win32_UI_Controls` for the Shell's system image lists (`IImageList`
 through `SHGetImageList`), which draw native icons at the size they are shown
@@ -774,6 +803,9 @@ versions, transitive dependencies and graphics drivers vary by installation.
 | libudev | Linux device discovery | LGPL-2.1-or-later ([systemd source](https://raw.githubusercontent.com/systemd/systemd/main/README)) |
 | Vulkan loader | Linux graphics backend | Apache-2.0 with more-permissive exceptions ([license](https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/main/LICENSE.txt)) |
 | Windows system DLLs, UCRT, VC runtime | Windows shell, storage, UI, DirectWrite and graphics | Microsoft platform/runtime terms; not open source merely because the Rust bindings are MIT/Apache |
+| Windows Media Foundation and its decoders, including Microsoft Store codec extensions the user installed (HEVC, AV1, VP9, MPEG-2, Web Media) | Video thumbnails and playback in the Windows platform helpers, for codecs outside the bundled FFmpeg profile | Microsoft licenses them with Windows or the extension; not bundled or redistributed, no codec royalty for the project ([dependency policy](DEPENDENCY_POLICY.md#current-decisions)) |
+| The distribution's FFmpeg: libavformat, libavcodec, libavutil, libswscale, libswresample of one release, libavcodec 58 to 63 (FFmpeg 4 to 9) | Video thumbnails and playback in the Linux platform helpers, for codecs outside the bundled profile; loaded at run time by soname, never linked | The distribution's build and license: LGPL-2.1-or-later, or GPL-2.0-or-later where GPL components are enabled (Ubuntu 24.04's 6.1.1 is); not bundled or redistributed ([dependency policy](DEPENDENCY_POLICY.md#current-decisions)) |
+| The distribution's GStreamer 1.x (core, base, good, bad, ugly, libav) and the listed plugins' libraries | Fallback decoders of the Linux platform helpers when the distribution's FFmpeg is absent or lacks the codec; loaded at run time, never linked | LGPL-2.1-or-later for GStreamer and most plugins; faad, dtsdec and a52dec GPL-2.0-or-later; OpenH264, AOM and dav1d BSD (OpenH264 binaries may carry Cisco's binary license); not bundled or redistributed |
 | Darwin/libSystem | Independent native macOS filesystem package prerequisite; not bundled | Apple platform terms; the libc Rust binding's MIT license does not relicense macOS |
 | Rust standard library/runtime | Application platforms and independent macOS filesystem package | MIT/Apache-2.0 plus component-specific notices; releases include `licenses/rust/COPYRIGHT-library.html` |
 | Unicode case-fold data in viewer packages | Unicode-insensitive search | Unicode-3.0; each package retains `UNICODE-LICENSE.txt` |
@@ -825,8 +857,13 @@ or start with "(c)" and a year, without license templates such as
 The dialog lists one author per line. Notices that ship inside a plugin package are
 named there instead.
 
-Video decoding currently enables VP8/VP9, Theora, FFV1 and raw video with
-Matroska/WebM, AVI and Ogg containers. This is not a promise of MP4/H.264 support.
+The bundled video profile enables VP8/VP9, Theora, FFV1 and raw video with
+Matroska/WebM, AVI and Ogg containers; it is not a promise of MP4/H.264 support. Other
+codecs (H.264, HEVC, AAC and so on) are decoded only by decoders the user's system
+provides, in the separate platform helpers: Media Foundation on Windows, and on Linux
+the distribution's FFmpeg or GStreamer, loaded at run time (native runtime table above).
+The Linux platform helpers ship no further notices: their only crates (the worker and
+thumbnail SDKs and libc) are those the video package's notices already cover.
 The video package retains FFmpeg's corresponding source archive and the exact
 configuration needed to rebuild its shared libraries. `ffmpeg-sys-next` 9.0.1
 declares WTFPL but its published source has no LICENSE file; distribution retains

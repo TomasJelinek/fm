@@ -1,6 +1,9 @@
 //! Host endpoint for the private MMV2 pipe after the launcher verifies worker readiness.
 
-use crate::playback::{MAX_PCM_BLOCK_FRAMES, PCM_CHANNELS};
+use crate::{
+    playback::{MAX_PCM_BLOCK_FRAMES, PCM_CHANNELS},
+    system_decoders::MissingDecoder,
+};
 use std::{
     io,
     num::{NonZeroU16, NonZeroU64},
@@ -11,6 +14,8 @@ use std::{
 const HEADER_BYTES: usize = 12;
 const VIDEO_FIELDS: usize = 32;
 const PCM_FIELDS: usize = 26;
+/// Request and epoch tags, the cause, and for a missing decoder its codec and what was tried.
+const FAILED_FIELDS: usize = 19;
 const PCM_BYTES_PER_FRAME: usize = PCM_CHANNELS * 2;
 const MAX_READ_BYTES: usize = 256 * 1024;
 const MAX_VIDEO_EDGE: u32 = 4_096;
@@ -44,7 +49,10 @@ impl VideoIo<'_> {
             return Err(io::ErrorKind::Interrupted.into());
         }
         if Instant::now() >= self.deadline {
-            return Err(io::ErrorKind::TimedOut.into());
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Reading or decoding the video took too long",
+            ));
         }
         Ok(())
     }
@@ -515,7 +523,8 @@ impl<P: RestrictedVideoPipe, S: VideoSource> Channel<P, S> {
             VIDEO => {
                 (VIDEO_FIELDS + 4..=VIDEO_FIELDS + MAX_VIDEO_PIXELS as usize * 4).contains(&payload)
             }
-            COMPLETED | FAILED => payload == 17,
+            COMPLETED => payload == 17,
+            FAILED => payload == FAILED_FIELDS,
             PCM => (PCM_FIELDS + PCM_BYTES_PER_FRAME
                 ..=PCM_FIELDS + MAX_PCM_BLOCK_FRAMES * PCM_BYTES_PER_FRAME)
                 .contains(&payload),
@@ -536,9 +545,9 @@ impl<P: RestrictedVideoPipe, S: VideoSource> Channel<P, S> {
         loop {
             let header = self.read_header(control)?;
             if header.kind == FAILED {
-                let fields = self.read_fields::<17>(control)?;
+                let fields = self.read_fields::<FAILED_FIELDS>(control)?;
                 check_tag(&fields, request, epoch)?;
-                return Err(self.failure(fields[16]));
+                return Err(self.failure(fields[16], fields[17], fields[18]));
             }
             if self.source_failure.is_some() {
                 return Err(protocol("MMV2 worker did not retire the failed source"));
@@ -604,13 +613,20 @@ impl<P: RestrictedVideoPipe, S: VideoSource> Channel<P, S> {
         Ok(())
     }
 
-    fn failure(&mut self, cause: u8) -> io::Error {
+    fn failure(&mut self, cause: u8, codec: u8, tried: u8) -> io::Error {
         if let Some(error) = self.source_failure.take() {
             return if cause == 1 {
                 error
             } else {
                 protocol("MMV2 worker did not acknowledge the source error")
             };
+        }
+        if cause == 5 {
+            // No decoder the helper could use supports the video; the host words why.
+            return MissingDecoder { codec, tried }.into();
+        }
+        if codec != 0 || tried != 0 {
+            return protocol("MMV2 failure names a codec without a missing decoder");
         }
         match cause {
             1 => io::Error::new(

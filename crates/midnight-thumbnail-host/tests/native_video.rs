@@ -50,3 +50,59 @@ fn actual_sandboxed_video_provider_returns_distinct_sampled_frames() {
     assert_ne!(frames[0], frames[1]);
     assert_ne!(frames[1], frames[2]);
 }
+
+/// The Windows platform helper (Media Foundation) in the real sandbox: AppContainer, job and its
+/// own signed-images-only policy, reading through the broker. The fixtures come from the video
+/// plugin's `write_fixtures_for_the_sandboxed_helper_test`.
+#[test]
+#[ignore = "Run with MIDNIGHT_PLATFORM_VIDEO_TEST_HELPER (midnight-thumbnail-video-system) and MIDNIGHT_PLATFORM_VIDEO_TEST_FIXTURES"]
+fn actual_sandboxed_platform_video_provider_decodes_what_windows_decodes() {
+    let helper = PathBuf::from(
+        std::env::var_os("MIDNIGHT_PLATFORM_VIDEO_TEST_HELPER")
+            .expect("Explicit platform helper required"),
+    );
+    let fixtures = PathBuf::from(
+        std::env::var_os("MIDNIGHT_PLATFORM_VIDEO_TEST_FIXTURES").expect("Fixture folder required"),
+    );
+    let mut decoded = 0;
+    for name in ["h264.mp4", "hevc.mp4"] {
+        let path = fixtures.join(name);
+        if name != "h264.mp4" && !path.exists() {
+            println!("{name}: not written on this system");
+            continue;
+        }
+        let source = Bytes(std::fs::read(&path).unwrap());
+        for frame in [0, 5] {
+            let result = decode(
+                &helper,
+                &source,
+                Request {
+                    id: 11,
+                    source_length: source.length(),
+                    width: 64,
+                    height: 64,
+                    frame,
+                },
+                &AtomicBool::new(false),
+                Duration::from_secs(10),
+            )
+            .unwrap_or_else(|error| panic!("{name} sample {frame}: {error}"));
+            assert_eq!(
+                (result.width, result.height, result.frame),
+                (64, 36, frame),
+                "{name}"
+            );
+            // The left half is magenta until halfway through the movie, then green.
+            let pixel = &result.rgba[(18 * 64 + 16) * 4..][..4];
+            let magenta = pixel[0] > 140 && pixel[1] < 110 && pixel[2] > 140;
+            let green = pixel[0] < 110 && pixel[1] > 140 && pixel[2] < 110;
+            assert!(
+                if frame == 0 { magenta } else { green },
+                "{name} sample {frame}: {pixel:?}"
+            );
+        }
+        println!("{name}: decoded in the sandbox");
+        decoded += 1;
+    }
+    assert!(decoded >= 1);
+}

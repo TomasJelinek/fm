@@ -62,6 +62,16 @@ for name in "${plugins[@]}"; do
         arguments+=(--features playback-worker)
         RUSTFLAGS='-C link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN' cargo "${arguments[@]}"
         cp "$CARGO_TARGET_DIR/$profile/midnight-video-playback" "$package/midnight-video-playback"
+        # The platform helpers load the distribution's FFmpeg or GStreamer at run time. They link
+        # no FFmpeg and get no $ORIGIN rpath (no RUSTFLAGS, and their own target directory),
+        # so they never pick up the bundled libraries beside them.
+        system=(build --manifest-path "$repository/plugins/$name/Cargo.toml" --config "$api_config" --locked --offline
+            --no-default-features --features system,playback-worker)
+        [[ $profile == debug ]] || system+=(--release)
+        env -u RUSTFLAGS CARGO_TARGET_DIR="$build_root/$name-system" cargo "${system[@]}"
+        for helper in midnight-thumbnail-video-system midnight-video-playback-system; do
+            cp "$build_root/$name-system/$profile/$helper" "$package/$helper"
+        done
     else
         env -u PKG_CONFIG_SYSROOT_DIR cargo "${arguments[@]}"
     fi

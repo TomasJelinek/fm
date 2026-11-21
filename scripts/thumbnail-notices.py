@@ -186,7 +186,9 @@ def main(argv=None, *, repository=ROOT):
                    str(repository / "plugins" / plugin / "Cargo.toml"),
                    "--config", str(config), "--format-version", "1", "--locked", "--offline"]
         if plugin == "midnight-thumbnail-video":
-            command.extend(("--features", "playback-worker"))
+            # The bundled helpers and the platform helpers (Media Foundation on Windows) ship
+            # together: record both feature sets.
+            command.extend(("--features", "playback-worker,system"))
         result = subprocess.run(command, cwd=repository, check=True, stdout=subprocess.PIPE,
                                 text=True, encoding="utf-8")
         metadata[plugin] = json.loads(result.stdout)

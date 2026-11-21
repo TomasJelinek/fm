@@ -95,6 +95,7 @@ pub mod viewers_presentation;
 pub mod viewers_scroll;
 pub mod viewers_selection;
 pub mod viewers_thumbnails;
+pub mod viewers_video;
 
 use crate::{Context, Scenario, app};
 use midnight_core::PaneId;
@@ -499,6 +500,13 @@ pub fn all() -> &'static [Scenario] {
                 summary: "Thumbnail view (Alt+5): visible thumbnails appear with their images' colours, no flicker, keyboard and wheel scrolling, cached on scrolling back; every image format and a PDF.",
                 run: viewers_thumbnails::thumbnails,
                 timeout: viewers_thumbnails::TIMEOUT,
+            },
+            Scenario {
+                name: "viewers_video",
+                area: "viewers",
+                summary: "Video through the installed thumbnailers, as an installation runs its helpers: a plain and an NTFS-compressed generated .mp4 each show a thumbnail of their own colour (not the fallback icon), and F3 opens the first frame, seeks forth and back and plays to the end; a helper that cannot start fails with the viewer's sentence, never a system dialog.",
+                run: viewers_video::video,
+                timeout: viewers_video::TIMEOUT,
             },
             Scenario {
                 name: "viewers_archives",

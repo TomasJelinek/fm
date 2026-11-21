@@ -31,7 +31,17 @@ pub fn click(app: &mut App, position: LogicalPosition) {
     app.last_click = Some((std::time::Instant::now(), position));
 }
 
-/// The row's own accessible item (labelled with its name) inside this pane's list.
+/// Whether `label` is the accessible label of the panel row `name`, in any view: the
+/// row's name, followed by its annotations (" · Filesystem compressed", " · Encrypted",
+/// " · Folder link", ...) when it has any. A sibling whose own name continues with
+/// " · " matches too; `select_row` then reports the cursor on the wrong row.
+pub fn is_row_label(label: &str, name: &str) -> bool {
+    label
+        .strip_prefix(name)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(" · "))
+}
+
+/// The row's own accessible item ([`is_row_label`]) inside this pane's list.
 fn row_item(app: &App, pane: PaneId, name: &str) -> Option<LogicalPosition> {
     let (left, width) = match pane {
         PaneId::Left => (
@@ -54,7 +64,7 @@ fn row_item(app: &App, pane: PaneId, name: &str) -> Option<LogicalPosition> {
         };
     inspect::controls(app.slint(), AccessibleRole::ListItem)
         .into_iter()
-        .filter(|(label, _)| label == name)
+        .filter(|(label, _)| is_row_label(label, name))
         .map(|(_, item)| inspect::rect(&item))
         .find(|(x, y, w, h)| {
             let center = (x + w / 2.0, y + h / 2.0);

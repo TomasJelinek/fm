@@ -34,7 +34,7 @@ class InstalledVideoPackage(unittest.TestCase):
                     notice = source / "notices" / executable
                     notice.mkdir(parents=True)
                     (notice / "NOTICE").write_text("Test notice", encoding="utf-8")
-                    version = "ffmpeg-9.0.2-playback-r3" if kind == "video" else "1"
+                    version = "ffmpeg-9.0.2-playback-r4" if kind == "video" else "1"
                     (source / (executable + ".json")).write_text(json.dumps({
                         "protocol": 1, "id": "midnight-" + kind, "version": version,
                         "executable": executable + suffix,
@@ -58,6 +58,19 @@ class InstalledVideoPackage(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "matching worker and shared FFmpeg"):
                     discover()
                 (source / resampler).write_bytes(b"test library")
+                helpers = [source / (name + suffix) for name in
+                           ("midnight-thumbnail-video-system", "midnight-video-playback-system")]
+                if suffix:
+                    # Windows packages always carry the Media Foundation helpers.
+                    with self.assertRaisesRegex(ValueError, "both platform decoder helpers"):
+                        discover()
+                else:
+                    self.assertEqual(len(discover()["providers"]), 2)
+                # The platform helpers come as a pair.
+                helpers[0].write_bytes(b"test executable")
+                with self.assertRaisesRegex(ValueError, "both platform decoder helpers"):
+                    discover()
+                helpers[1].write_bytes(b"test executable")
                 installed = discover()["providers"]
                 self.assertEqual(len(installed), 2)
                 self.assertTrue(any("mp4" in provider["extensions"] for provider in installed))

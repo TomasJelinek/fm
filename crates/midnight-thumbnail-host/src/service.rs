@@ -444,6 +444,8 @@ fn run(
     let mut clearing = false;
     let mut generation = 0;
     let mut cache_error_reported = false;
+    // A helper that cannot load its libraries makes no preview of its kind: say so once.
+    let mut helper_failure_reported = false;
     loop {
         let (seen, view, retries, notifier) = {
             let mut mailbox = shared.lock();
@@ -524,6 +526,18 @@ fn run(
                         Some(format!("Could not store or read preview cache: {error}"));
                 });
                 cache_error_reported = true;
+            }
+            if !helper_failure_reported
+                && !stopped
+                && let Err(error) = &completion.result
+                && let Some(failure) = error
+                    .get_ref()
+                    .and_then(|error| error.downcast_ref::<decode::HelperCannotStart>())
+            {
+                shared.report(|mailbox| {
+                    mailbox.notice = Some(format!("Some previews are unavailable: {failure}"));
+                });
+                helper_failure_reported = true;
             }
             let cancelled =
                 active
@@ -694,19 +708,35 @@ fn render(
     if cancel.load(Ordering::Acquire) {
         return Err(io::ErrorKind::Interrupted.into());
     }
-    let frame = decode::decode(
+    let request = Request {
+        id: work.token,
+        source_length: source.length(),
+        width: edge,
+        height: edge,
+        frame: work.frame,
+    };
+    let timeout = Duration::from_secs(10);
+    let frame = match decode::decode(
         &provider.executable,
         &*source,
-        Request {
-            id: work.token,
-            source_length: source.length(),
-            width: edge,
-            height: edge,
-            frame: work.frame,
-        },
+        request.clone(),
         cancel,
-        Duration::from_secs(10),
-    )?;
+        timeout,
+    ) {
+        // The bundled video profile has no decoder for it: the platform's decoders may.
+        Err(error) if decode::rejected(&error) => match providers::platform_helper(provider) {
+            Some(platform) => decode::decode_in(
+                &platform,
+                &*source,
+                request,
+                cancel,
+                timeout,
+                decode::PLATFORM_MEMORY,
+            )?,
+            None => return Err(error),
+        },
+        result => result?,
+    };
     if cancel.load(Ordering::Acquire) {
         return Err(io::ErrorKind::Interrupted.into());
     }

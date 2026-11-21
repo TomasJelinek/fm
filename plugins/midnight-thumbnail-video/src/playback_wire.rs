@@ -1,7 +1,7 @@
 //! Proposed worker-private MMV2 pipe framing, independent of the public plugin ABI.
 //! Any framing/transport error ends the stream; this codec never resynchronizes.
 use crate::{
-    playback_audio::{AudioTrack, MAX_PCM_FRAMES},
+    media::{AudioTrack, MAX_PCM_FRAMES},
     playback_session::{self, Command, Completion, Event, Request},
 };
 use std::{
@@ -40,10 +40,13 @@ pub enum Outgoing<'a> {
         length: u32,
     },
     Event(&'a Event),
+    /// `codec` and `tried` describe cause 5 (`NoDecoder`) and are zero for other causes.
     Failed {
         request: u64,
         generation: u64,
         cause: u8,
+        codec: u8,
+        tried: u8,
     },
 }
 
@@ -130,7 +133,7 @@ pub fn read_message(input: &mut impl Read) -> io::Result<Option<Incoming>> {
             let generation = tag(&fields, 8)?;
             let width = u32::from_le_bytes(field(&fields, 16)?);
             let height = u32::from_le_bytes(field(&fields, 20)?);
-            crate::output_length(width, height).map_err(|_| malformed())?;
+            crate::media::output_length(width, height).map_err(|_| malformed())?;
             Incoming::Open {
                 source_length,
                 generation,
@@ -245,7 +248,7 @@ pub fn write_message(output: &mut impl Write, message: Outgoing<'_>) -> io::Resu
             generation,
             frame,
         }) => {
-            let length = crate::output_length(frame.width, frame.height)?;
+            let length = crate::media::output_length(frame.width, frame.height)?;
             if frame.presentation_micros < 0 || frame.rgba.len() != length {
                 return Err(invalid_output());
             }
@@ -275,11 +278,13 @@ pub fn write_message(output: &mut impl Write, message: Outgoing<'_>) -> io::Resu
             request,
             generation,
             cause,
+            codec,
+            tried,
         } => {
             metadata[..8].copy_from_slice(&request.to_le_bytes());
             metadata[8..16].copy_from_slice(&generation.to_le_bytes());
-            metadata[16] = cause;
-            (0x85, 17, &[])
+            metadata[16..19].copy_from_slice(&[cause, codec, tried]);
+            (0x85, 19, &[])
         }
     };
     write_parts(output, kind, &metadata[..fields], raw)

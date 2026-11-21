@@ -3,6 +3,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -231,6 +232,15 @@ class ThumbnailerInputTests(unittest.TestCase):
         for name, body in (("sha256sum", "exit 0\n"),  # the pinned digest is checked elsewhere
                            ("cargo", 'mkdir -p "$CARGO_TARGET_DIR/debug"\n'
                                      'name=$(basename "$(dirname "$3")")\n'
+                                     # The platform helpers' build records its RUSTFLAGS, which
+                                     # must carry no $ORIGIN rpath.
+                                     'case " $* " in *" --no-default-features "*)\n'
+                                     '  for helper in midnight-thumbnail-video-system midnight-video-playback-system; do\n'
+                                     '    printf "new %s rustflags=%s\\n" "$helper" "${RUSTFLAGS-}"'
+                                     ' > "$CARGO_TARGET_DIR/debug/$helper"\n'
+                                     '  done\n'
+                                     '  exit 0;;\n'
+                                     'esac\n'
                                      'printf "new %s\\n" "$name" > "$CARGO_TARGET_DIR/debug/$name"\n'
                                      'if [ "$name" = midnight-thumbnail-video ]; then\n'
                                      '  printf "new video playback\\n" > "$CARGO_TARGET_DIR/debug/midnight-video-playback"\n'
@@ -267,6 +277,8 @@ class ThumbnailerInputTests(unittest.TestCase):
             self.assertEqual((destination / "libavcodec.so.63").read_bytes(), b"new libavcodec.so.63")
             self.assertEqual((destination / "midnight-thumbnail-video").read_text(), "new midnight-thumbnail-video\n")
             self.assertEqual((destination / "midnight-video-playback").read_text(), "new video playback\n")
+            for helper in ("midnight-thumbnail-video-system", "midnight-video-playback-system"):
+                self.assertEqual((destination / helper).read_text(), f"new {helper} rustflags=\n")
             self.assertTrue((destination / "libswresample.so.7").is_file())
             self.assertTrue((destination / "notices/midnight-thumbnail-image/dav1d-LICENSE").is_file())
             self.assertTrue((destination / "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz").is_file())
@@ -358,7 +370,10 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
             "output = pathlib.Path(os.environ['CARGO_TARGET_DIR']) / 'debug'\n"
             "output.mkdir(parents=True, exist_ok=True)\n"
             "(output / (name + '.exe')).write_text('new ' + name)\n"
-            "if name == 'midnight-thumbnail-video':\n"
+            "if name == 'midnight-thumbnail-video' and '--no-default-features' in sys.argv:\n"
+            "    for helper in ('midnight-thumbnail-video-system', 'midnight-video-playback-system'):\n"
+            "        (output / (helper + '.exe')).write_text('new ' + helper)\n"
+            "elif name == 'midnight-thumbnail-video':\n"
             "    (output / 'midnight-video-playback.exe').write_text('new video playback')\n")
         (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{tools / "cargo.py"}" %*\n')
         self.environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
@@ -410,9 +425,36 @@ class WindowsThumbnailerSwapTests(unittest.TestCase):
         self.assertEqual((self.destination / "avcodec-63.dll").read_bytes(), unsigned_pe(True, b"new avcodec-63.dll"))
         self.assertEqual((self.destination / "midnight-thumbnail-video.exe").read_text(), "new midnight-thumbnail-video")
         self.assertEqual((self.destination / "midnight-video-playback.exe").read_text(), "new video playback")
+        for helper in ("midnight-thumbnail-video-system", "midnight-video-playback-system"):
+            self.assertEqual((self.destination / (helper + ".exe")).read_text(), "new " + helper)
         self.assertTrue((self.destination / "swresample-7.dll").is_file())
         self.assertTrue((self.destination / "notices/midnight-thumbnail-image/dav1d-LICENSE").is_file())
         self.assertTrue((self.destination / "notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz").is_file())
+
+    # The SID of the AppContainer that the unpackaged application starts the workers in
+    # (crates/midnight-worker-platform pins the same value).
+    WORKER_SID = "S-1-15-2-210492624-3469538162-618285203-1868907-2672626540-1166629363-1118814998"
+
+    def test_the_restricted_workers_are_granted_the_playback_code_and_nothing_else(self):
+        # The workers' loader opens these files as that AppContainer. A grant to any other
+        # SID, such as the child AppContainer that a packaged PowerShell (the Microsoft Store
+        # pwsh) derives for the same name, leaves both video helpers unable to load FFmpeg.
+        self.build()
+        names = self.LIBRARIES + ("midnight-video-playback.exe", "midnight-video-playback-system.exe",
+                                  "midnight-thumbnail-video.exe", "midnight-thumbnail-video-system.exe",
+                                  "midnight-thumbnail-video.json")
+        listing = "".join("(Get-Acl -LiteralPath '{}').Sddl\n".format(
+            str(self.destination / name).replace("'", "''")) for name in names)
+        result = self.run_driver(self.fixture, listing)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        descriptors = result.stdout.strip().splitlines()
+        self.assertEqual(len(descriptors), len(names), result.stdout)
+        for name, descriptor in zip(names, descriptors, strict=True):
+            with self.subTest(name=name):
+                grants = re.findall(r"\(A;([^;]*);([^;]*);;;(S-1-15-2-[0-9-]+)\)", descriptor)
+                granted = name.endswith((".dll", "playback.exe", "playback-system.exe"))
+                expected = [("", "0x1200a9", self.WORKER_SID)] if granted else []
+                self.assertEqual(grants, expected, descriptor)
 
     def test_rebuild_swaps_in_a_fresh_package_and_keeps_a_mapped_library_intact(self):
         (self.destination / "notices/removed-provider").mkdir(parents=True)

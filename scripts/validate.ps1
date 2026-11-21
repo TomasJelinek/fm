@@ -568,6 +568,11 @@ try {
         $env:CARGO_TARGET_DIR = Join-Path $Out 'thumbnail-video-target'
         cargo test --config $WorkerSdk --manifest-path $manifest --all-targets --locked --offline
         if ($LASTEXITCODE -ne 0) { throw 'Video thumbnailer tests failed' }
+        # Again with the platform helpers: Media Foundation decodes and the Sink Writer
+        # encodes their H.264 and AAC fixtures at test time.
+        cargo test --config $WorkerSdk --manifest-path $manifest --all-targets --locked --offline `
+            --features system,playback-worker
+        if ($LASTEXITCODE -ne 0) { throw 'Video thumbnailer platform decoder tests failed' }
     } }
     Add-Step @{ Id = 'html-viewer'; Job = 'not in CI'; Title = 'HTML viewer without native CEF'
         Needs = @('sdk-web-package'); Prerequisite = { Test-HtmlCrates }; Body = {

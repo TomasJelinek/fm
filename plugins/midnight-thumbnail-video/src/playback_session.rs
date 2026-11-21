@@ -1,8 +1,5 @@
 //! Worker-local playback demand. The host owns pacing and the playback clock.
-use crate::{
-    playback::{Cursor, Frame},
-    playback_audio::{Block, MAX_PCM_FRAMES, PcmCursor},
-};
+use crate::media::{AudioTrack, Block, Frame, MAX_PCM_FRAMES, Metadata};
 use std::{fmt, io, num::NonZeroU64};
 
 pub const MAX_PULL_FRAMES: u8 = 4;
@@ -105,50 +102,30 @@ pub trait Transport {
     fn emit(&mut self, event: Event) -> io::Result<()>;
 }
 
-pub fn run(
-    cursor: &mut Cursor<'_>,
-    audio: Option<&mut PcmCursor<'_>>,
-    generation: NonZeroU64,
-    transport: &mut dyn Transport,
-) -> Result<(), Failure> {
-    run_decoder(&mut Streams { cursor, audio }, generation, transport)
-}
-
-trait Decode {
-    fn next(&mut self) -> io::Result<Option<Frame>>;
+/// The decoder contract shared by the bundled FFmpeg profile and the platform decoders
+/// (Media Foundation on Windows; the distribution's FFmpeg, then GStreamer, on Linux). One
+/// worker thread drives it; each call may read the capture through the host broker.
+pub trait PlaybackDecoder {
+    /// Container duration when known and the original, oriented video dimensions
+    /// (quarter turns swap the axes), at most 32 mebipixels.
+    fn metadata(&self) -> Metadata;
+    /// `Qualified` only when `pcm` produces the track.
+    fn audio_track(&self) -> AudioTrack;
+    /// The next presentation frame: oriented straight-alpha sRGB RGBA8 fitted within the
+    /// output bounds, never enlarged; microseconds from the container start, nondecreasing
+    /// until the next seek. Frames before the last seek target are never returned. `None` at
+    /// the end stays until a seek. Any error is terminal.
+    fn next_frame(&mut self) -> io::Result<Option<Frame>>;
+    /// Reposition video and audio; the next frame is the first at or after the target.
     fn seek(&mut self, position_micros: u64) -> io::Result<()>;
-    fn pcm(&mut self, _: u16) -> io::Result<Option<Block>> {
-        Ok(None)
-    }
+    /// Up to `credit` (1 to `MAX_PCM_FRAMES`) 48 kHz stereo frames. `first_frame` counts from
+    /// the last seek target and blocks are contiguous; gaps, and the tail up to the container
+    /// duration, are silence. `None` once the audio and that tail have ended.
+    fn pcm(&mut self, credit: u16) -> io::Result<Option<Block>>;
 }
 
-struct Streams<'video_ref, 'video, 'audio_ref, 'audio> {
-    cursor: &'video_ref mut Cursor<'video>,
-    audio: Option<&'audio_ref mut PcmCursor<'audio>>,
-}
-impl Decode for Streams<'_, '_, '_, '_> {
-    fn next(&mut self) -> io::Result<Option<Frame>> {
-        self.cursor.next_frame()
-    }
-
-    fn seek(&mut self, position_micros: u64) -> io::Result<()> {
-        self.cursor.seek(position_micros)?;
-        if let Some(audio) = &mut self.audio {
-            audio.seek(position_micros)?;
-        }
-        Ok(())
-    }
-
-    fn pcm(&mut self, credit: u16) -> io::Result<Option<Block>> {
-        match &mut self.audio {
-            Some(audio) => audio.next(credit),
-            None => Ok(None),
-        }
-    }
-}
-
-fn run_decoder(
-    decoder: &mut impl Decode,
+pub fn run(
+    decoder: &mut dyn PlaybackDecoder,
     mut current: NonZeroU64,
     transport: &mut dyn Transport,
 ) -> Result<(), Failure> {
@@ -240,14 +217,14 @@ fn run_decoder(
 }
 
 fn pull_video(
-    decoder: &mut impl Decode,
+    decoder: &mut dyn PlaybackDecoder,
     transport: &mut dyn Transport,
     request: NonZeroU64,
     generation: NonZeroU64,
     frames: u8,
 ) -> Result<bool, Failure> {
     for _ in 0..frames {
-        let Some(frame) = decoder.next().map_err(|cause| Failure::Decoder {
+        let Some(frame) = decoder.next_frame().map_err(|cause| Failure::Decoder {
             request,
             generation,
             cause,
@@ -284,8 +261,24 @@ mod tests {
         fail_seek: bool,
     }
 
-    impl Decode for Decoder {
-        fn next(&mut self) -> io::Result<Option<Frame>> {
+    impl PlaybackDecoder for Decoder {
+        fn metadata(&self) -> Metadata {
+            Metadata {
+                duration_micros: None,
+                width: 2,
+                height: 1,
+            }
+        }
+
+        fn audio_track(&self) -> AudioTrack {
+            AudioTrack::Absent
+        }
+
+        fn pcm(&mut self, _: u16) -> io::Result<Option<Block>> {
+            Ok(None)
+        }
+
+        fn next_frame(&mut self) -> io::Result<Option<Frame>> {
             self.reads += 1;
             if self.fail_read == Some(self.reads) {
                 return Err(io::Error::new(
@@ -393,7 +386,7 @@ mod tests {
             .into(),
             ..Pipe::default()
         };
-        run_decoder(&mut decoder, tag(10), &mut pipe).unwrap();
+        run(&mut decoder, tag(10), &mut pipe).unwrap();
         assert_eq!(decoder.seeks, [120_000]);
         assert_eq!(decoder.reads, 5);
         assert_eq!(
@@ -423,9 +416,7 @@ mod tests {
                 ..Pipe::default()
             };
             assert_eq!(
-                run_decoder(&mut decoder, tag(10), &mut pipe)
-                    .unwrap_err()
-                    .kind(),
+                run(&mut decoder, tag(10), &mut pipe).unwrap_err().kind(),
                 io::ErrorKind::InvalidData
             );
             assert_eq!(decoder.reads, 0);
@@ -444,9 +435,7 @@ mod tests {
             ..Pipe::default()
         };
         assert_eq!(
-            run_decoder(&mut decoder, tag(10), &mut pipe)
-                .unwrap_err()
-                .kind(),
+            run(&mut decoder, tag(10), &mut pipe).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
         assert_eq!(decoder.reads, 1);
@@ -474,7 +463,7 @@ mod tests {
             request,
             generation,
             cause,
-        }) = run_decoder(&mut decoder, tag(10), &mut pipe)
+        }) = run(&mut decoder, tag(10), &mut pipe)
         else {
             panic!("decoder failure lost its command identity");
         };
@@ -505,7 +494,7 @@ mod tests {
             request,
             generation,
             cause,
-        }) = run_decoder(&mut decoder, tag(10), &mut pipe)
+        }) = run(&mut decoder, tag(10), &mut pipe)
         else {
             panic!("seek failure lost its command identity");
         };
@@ -525,7 +514,7 @@ mod tests {
             fail_emit: true,
             ..Pipe::default()
         };
-        let Err(Failure::Transport(cause)) = run_decoder(&mut decoder, tag(10), &mut pipe) else {
+        let Err(Failure::Transport(cause)) = run(&mut decoder, tag(10), &mut pipe) else {
             panic!("the session must stop when output cannot be sent");
         };
         assert_eq!(cause.kind(), io::ErrorKind::BrokenPipe);

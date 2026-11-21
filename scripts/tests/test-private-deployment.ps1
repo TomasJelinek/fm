@@ -57,6 +57,39 @@ try {
         }
     }
     if (-not (Get-Acl -LiteralPath $destination).AreAccessRulesProtected) { throw 'Installation DACL is not protected' }
+
+    # The restricted video workers load these files as the AppContainer that the unpackaged
+    # application starts them in. Its SID is fixed (crates/midnight-worker-platform pins it);
+    # a grant to any other SID, such as the child AppContainer that a packaged PowerShell
+    # derives for the same name, leaves the helpers unable to load FFmpeg.
+    $workerSid = 'S-1-15-2-210492624-3469538162-618285203-1868907-2672626540-1166629363-1118814998'
+    $videoCode = @('avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll', 'swresample-7.dll',
+        'midnight-video-playback.exe', 'midnight-video-playback-system.exe')
+    # The thumbnail helpers load nothing the sandbox must read: no grant, like the bundled one.
+    $videoPrograms = @('midnight-thumbnail-video.exe', 'midnight-thumbnail-video-system.exe')
+    $thumbnailers = Join-Path $source 'thumbnailers'
+    New-Item -ItemType Directory -Path $thumbnailers | Out-Null
+    [IO.File]::WriteAllText((Join-Path $thumbnailers 'midnight-thumbnail-video.json'), (@{
+        protocol = 1; id = 'midnight-video'; version = 'ffmpeg-9.0.2-playback-r4'
+        executable = 'midnight-thumbnail-video.exe'; extensions = @('mp4'); video = $true
+    } | ConvertTo-Json))
+    foreach ($file in $videoCode + $videoPrograms) {
+        [IO.File]::WriteAllText((Join-Path $thumbnailers $file), "fixture $file")
+    }
+    & $deploy -SourceDirectory $source -Destination "$testRoot/video" -IncludeThumbnailers | Out-Null
+    foreach ($file in $videoCode + $videoPrograms) {
+        $grants = @([regex]::Matches((Get-Acl -LiteralPath "$testRoot/video/thumbnailers/$file").Sddl,
+            '\(A;([^;]*);([^;]*);;;(S-1-15-2-[0-9-]+)\)') | ForEach-Object { $_.Value })
+        $expected = if ($file -in $videoCode) { @("(A;;0x1200a9;;;$workerSid)") } else { @() }
+        if (($grants -join ',') -cne ($expected -join ',')) {
+            throw "Video code grants differ: $file has '$($grants -join ', ')', expected '$($expected -join ', ')'"
+        }
+    }
+    # A runtime without the Media Foundation helpers is incomplete.
+    Remove-Item -LiteralPath (Join-Path $thumbnailers 'midnight-thumbnail-video-system.exe')
+    Expect-Refusal { & $deploy -SourceDirectory $source -Destination "$testRoot/video-incomplete" -IncludeThumbnailers } 'incomplete video runtime'
+    Remove-Item -LiteralPath $thumbnailers -Recurse
+
     Remove-Item -LiteralPath (Join-Path $source 'midnight-elevated-listing.exe')
     & $deploy -SourceDirectory $source -Destination "$testRoot/without-helper" | Out-Null
     if (-not (Test-Path -LiteralPath "$testRoot/without-helper/me.exe" -PathType Leaf)) {
@@ -87,7 +120,7 @@ try {
     Remove-Item -LiteralPath $library
     Expect-Refusal { & $deploy -SourceDirectory $source -Destination "$testRoot/missing" } 'missing package library'
     if (Test-Path "$testRoot/missing") { throw 'Missing package left an installation' }
-    Write-Output 'Private deployment checks passed: copy/hash, administrator helper omitted, notices, protected ACL, existing target, unsafe ancestor, reparse, missing library.'
+    Write-Output 'Private deployment checks passed: copy/hash, administrator helper omitted, notices, protected ACL, restricted worker library grant, existing target, unsafe ancestor, reparse, missing library.'
 } finally {
     # Both absolute paths are fresh fixtures created above, never a caller-provided directory.
     if ((Split-Path -Parent $testRoot) -ne [IO.Path]::GetFullPath($testParent).TrimEnd('\')) {

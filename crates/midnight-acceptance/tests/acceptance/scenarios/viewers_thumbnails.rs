@@ -503,7 +503,7 @@ const THUMBNAIL_EDGE: f32 = 96.0;
 fn pdf_page(app: &App) -> Result<String, String> {
     let (x, y, width, _) = inspect::controls(app.slint(), AccessibleRole::ListItem)
         .into_iter()
-        .find(|(label, _)| label == PDF)
+        .find(|(label, _)| panel::is_row_label(label, PDF))
         .map(|(_, item)| inspect::rect(&item))
         .ok_or_else(|| format!("{PDF} is not visible in the thumbnail view"))?;
     let edge = THUMBNAIL_EDGE.min(width - 24.0).max(1.0);

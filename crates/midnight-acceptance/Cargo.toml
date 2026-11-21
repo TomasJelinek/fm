@@ -33,6 +33,7 @@ acceptance = [
     "dep:midnight-viewer-engine",
     "dep:midnight-viewer-ui",
     "dep:midnight-work-budget",
+    "dep:windows",
 ]
 
 [dependencies]
@@ -54,6 +55,15 @@ midnight-work-budget = { path = "../midnight-work-budget", features = ["resident
 # The exact version and features midnight-ui already uses, for item-tree inspection.
 i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"], optional = true }
 tokio = { workspace = true, optional = true }
+
+# The video scenario's H.264 + AAC movie, written by Windows' own encoders (Media
+# Foundation's Sink Writer) at test time.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }
 
 # `harness = false`: tests/acceptance.rs has its own main that runs the scenarios one
 # at a time and prints the summary (see docs/developer/ACCEPTANCE.md).

@@ -19,17 +19,18 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PWSH = shutil.which("pwsh")
 LAUNCHER = shutil.which("py")
-# The video worker's FFmpeg libraries and playback helper, which the restricted workers'
-# AppContainer must be granted, as scripts/deploy-private.ps1 grants them.
+# The video worker's FFmpeg libraries and playback helpers (bundled and Media Foundation),
+# which the restricted workers' AppContainer must be granted, as scripts/deploy-private.ps1
+# grants them.
 VIDEO_FILES = ["avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll",
-               "swresample-7.dll", "midnight-video-playback.exe"]
+               "swresample-7.dll", "midnight-video-playback.exe", "midnight-video-playback-system.exe"]
 # The SID of the top-level AppContainer `MidnightExplorer.RestrictedWorker.v1`
 # (scripts/tests/test_restricted_worker_identity.py checks it against Windows).
 WORKER_SID = "S-1-15-2-210492624-3469538162-618285203-1868907-2672626540-1166629363-1118814998"
 # What the private installation's packages\thumbnailers holds of the stub plugins.
 THUMBNAILERS = sorted(VIDEO_FILES + ["midnight-thumbnail-image.exe", "midnight-thumbnail-image.json",
                                      "midnight-thumbnail-video.exe", "midnight-thumbnail-video.json",
-                                     "notices"])
+                                     "midnight-thumbnail-video-system.exe", "notices"])
 RECORDER = r'''
 import json, os, subprocess, sys
 from pathlib import Path

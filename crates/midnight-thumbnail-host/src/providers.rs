@@ -92,6 +92,24 @@ pub(crate) fn discover(executable: &Path) -> io::Result<Vec<Provider>> {
     Ok(providers)
 }
 
+/// The first-party video provider's helper with the platform's decoders (Media Foundation on
+/// Windows; the distribution's FFmpeg, then GStreamer, on Linux), installed beside it. It
+/// decodes what the bundled profile rejects, with the provider's identity, extensions and cache.
+#[cfg(windows)]
+const PLATFORM_VIDEO_HELPER: &str = "midnight-thumbnail-video-system.exe";
+#[cfg(not(windows))]
+const PLATFORM_VIDEO_HELPER: &str = "midnight-thumbnail-video-system";
+
+pub(crate) fn platform_helper(provider: &Provider) -> Option<PathBuf> {
+    if provider.manifest.id != "midnight-video" {
+        return None;
+    }
+    let helper = provider.executable.with_file_name(PLATFORM_VIDEO_HELPER);
+    let installed =
+        fs::symlink_metadata(&helper).is_ok_and(|metadata| metadata.file_type().is_file());
+    (installed && midnight_plugin_host::validate_plugin_path(&helper).is_ok()).then_some(helper)
+}
+
 /// Providers are the trusted catalog in provider-ID order.
 pub(crate) fn select<'a>(
     providers: &'a [Provider],
@@ -129,6 +147,28 @@ fn identifier(value: &str, limit: usize) -> bool {
 mod tests {
     use super::*;
     use midnight_core::ThumbnailerAssociations;
+
+    #[test]
+    fn only_the_first_party_video_provider_has_a_platform_helper_and_only_when_installed() {
+        let folder =
+            std::env::temp_dir().join(format!("midnight-platform-helper-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut video = provider("midnight-video", &["mp4"], true);
+        video.executable = folder.join("midnight-thumbnail-video");
+        // Not installed beside it.
+        assert_eq!(platform_helper(&video), None);
+        // Another provider never gets one, installed or not.
+        std::fs::write(folder.join(PLATFORM_VIDEO_HELPER), b"helper").unwrap();
+        let mut other = provider("other-video", &["mp4"], true);
+        other.executable = folder.join("other-video");
+        assert_eq!(platform_helper(&other), None);
+        // A helper beside the video provider is offered when it passes the installation trust
+        // check; this test folder may not, so only the identity of a found helper is asserted.
+        if let Some(helper) = platform_helper(&video) {
+            assert_eq!(helper, folder.join(PLATFORM_VIDEO_HELPER));
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
 
     fn provider(id: &str, extensions: &[&str], video: bool) -> Provider {
         Provider {

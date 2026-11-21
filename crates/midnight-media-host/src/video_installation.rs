@@ -8,7 +8,7 @@ use std::{
 };
 
 pub const VIDEO_PROVIDER_ID: &str = "midnight.viewer.video";
-pub const VIDEO_RUNTIME_PROFILE: &str = "ffmpeg-9.0.2-playback-r3";
+pub const VIDEO_RUNTIME_PROFILE: &str = "ffmpeg-9.0.2-playback-r4";
 
 const DESCRIPTOR: &str = "midnight-thumbnail-video.json";
 const MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024;
@@ -20,6 +20,12 @@ const WORKER_EXECUTABLE: &str = "midnight-video-playback";
 const THUMBNAIL_EXECUTABLE: &str = "midnight-thumbnail-video.exe";
 #[cfg(not(windows))]
 const THUMBNAIL_EXECUTABLE: &str = "midnight-thumbnail-video";
+/// The platform's decoders (Media Foundation on Windows; the distribution's FFmpeg, then
+/// GStreamer, on Linux) in a helper that loads no bundled FFmpeg.
+#[cfg(windows)]
+const PLATFORM_WORKER_EXECUTABLE: &str = "midnight-video-playback-system.exe";
+#[cfg(not(windows))]
+const PLATFORM_WORKER_EXECUTABLE: &str = "midnight-video-playback-system";
 
 #[cfg(windows)]
 const LIBRARIES: &[&str] = &[
@@ -49,11 +55,22 @@ struct Manifest {
     video: bool,
 }
 
+/// Which installed playback helper decodes a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoWorker {
+    /// The bundled FFmpeg profile, tried first.
+    Bundled,
+    /// The platform's decoders, for a video the bundled profile has no decoder for.
+    Platform,
+}
+
 #[derive(Clone, Debug)]
 pub struct VideoInstallation {
     package: PathBuf,
     manifest: Manifest,
     descriptor_revision: Vec<u8>,
+    /// Whether the platform helper is installed beside the bundled helpers.
+    platform: bool,
 }
 
 impl VideoInstallation {
@@ -72,10 +89,12 @@ impl VideoInstallation {
             .ok_or_else(|| io::Error::other("Application executable has no parent"))?
             .join("thumbnailers");
         let (manifest, descriptor_revision) = inspect(&package)?;
+        let platform = regular(&package.join(PLATFORM_WORKER_EXECUTABLE)).is_ok();
         Ok(Self {
             package,
             manifest,
             descriptor_revision,
+            platform,
         })
     }
 
@@ -83,16 +102,43 @@ impl VideoInstallation {
         &self.manifest.extensions
     }
 
-    pub(super) fn worker(&self) -> PathBuf {
-        self.package.join(WORKER_EXECUTABLE)
+    /// The platform helper, when it is installed.
+    pub fn platform_worker(&self) -> Option<PathBuf> {
+        self.platform
+            .then(|| self.package.join(PLATFORM_WORKER_EXECUTABLE))
+    }
+
+    pub(super) fn worker(&self, which: VideoWorker) -> io::Result<PathBuf> {
+        match which {
+            VideoWorker::Bundled => Ok(self.package.join(WORKER_EXECUTABLE)),
+            VideoWorker::Platform => self.platform_worker().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "The platform video helper is not installed",
+                )
+            }),
+        }
+    }
+
+    /// The shared FFmpeg libraries that the bundled helpers' loader opens beside them. The
+    /// platform helper loads none from its folder.
+    pub(super) fn libraries(&self, which: VideoWorker) -> Vec<PathBuf> {
+        match which {
+            VideoWorker::Bundled => LIBRARIES
+                .iter()
+                .map(|name| self.package.join(name))
+                .collect(),
+            VideoWorker::Platform => Vec::new(),
+        }
     }
 
     pub(super) fn capture(&self) -> io::Result<LaunchPins> {
         let mut owner = LaunchPins {
             installation: self.clone(),
-            pins: Vec::with_capacity(2 + LIBRARIES.len()),
+            pins: Vec::with_capacity(3 + LIBRARIES.len()),
         };
-        for file in program_names() {
+        let platform = self.platform.then_some(PLATFORM_WORKER_EXECUTABLE);
+        for file in program_names().chain(platform) {
             match TrustedExecutablePin::capture(&self.package, &self.package.join(file)) {
                 Ok(pin) => owner.pins.push(pin),
                 Err(error) => {

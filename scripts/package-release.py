@@ -526,17 +526,27 @@ def copy_thumbnail_packages(stage, source, target, *, require_media=False, valid
     playback_name = ("midnight-video-playback.exe" if target.endswith("windows-msvc")
                      else "midnight-video-playback")
     playback = source / worker_executable(playback_name, target)
+    # The platform's decoders (Media Foundation on Windows; the distribution's FFmpeg, then
+    # GStreamer, on Linux) run in two helpers without the bundled FFmpeg. Windows packages
+    # always carry them; on Linux they are optional, but come as a pair.
+    suffix = ".exe" if target.endswith("windows-msvc") else ""
+    platform = [source / worker_executable(name + suffix, target)
+                for name in ("midnight-thumbnail-video-system", "midnight-video-playback-system")]
     has_playback_profile = any(
         provider["id"] == "midnight-video"
-        and provider["version"] == "ffmpeg-9.0.2-playback-r3"
+        and provider["version"] == "ffmpeg-9.0.2-playback-r4"
         for provider in providers)
-    if has_playback_profile or playback in files:
+    if has_playback_profile or playback in files or any(path in files for path in platform):
         resampler = ("swresample-7.dll" if target.endswith("windows-msvc")
                      else "libswresample.so.7")
         if not has_playback_profile or playback not in files or source / resampler not in files:
             raise ValueError("Video playback requires the matching worker and shared FFmpeg profile")
+        installed = [path in files for path in platform]
+        if any(installed) != all(installed) or (suffix and not all(installed)):
+            raise ValueError("Video playback requires both platform decoder helpers")
         ffmpeg += (resampler,)
         executables.add(playback)
+        executables.update(path for path in platform if path in files)
     if (any(provider["id"] == "midnight-video" for provider in providers)
             or any(source / name in files for name in ffmpeg)):
         required = [source / name for name in ffmpeg]

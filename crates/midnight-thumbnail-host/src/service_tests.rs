@@ -664,3 +664,37 @@ fn clearing_waits_for_old_decode_and_only_new_generation_may_repopulate() {
         "No stale frame reached presentation"
     );
 }
+
+#[test]
+fn a_helper_that_cannot_load_its_libraries_is_reported_once() {
+    let root = private_root();
+    let cache = Arc::new(Mutex::new(
+        Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap(),
+    ));
+    let render: Renderer = Arc::new(|_, _, _, _, _| {
+        Err(io::Error::other(crate::decode::HelperCannotStart {
+            helper: PathBuf::from("midnight-thumbnail-video.exe"),
+            status: midnight_worker_platform::ExitStatus::Code(0xC000_0135),
+            library: Some(midnight_worker_platform::UnloadableLibrary {
+                path: PathBuf::from("avcodec-63.dll"),
+                missing: false,
+            }),
+        }))
+    });
+    let (output, _ready) = mpsc::sync_channel(4);
+    let mut backend = Backend::start(output, cache, render);
+    backend.view(1, vec![target(1), target(2)]);
+    backend.wait_processed(2);
+    assert_eq!(
+        backend.shared.lock().notice.take().as_deref(),
+        Some(
+            "Some previews are unavailable: the thumbnail helper midnight-thumbnail-video.exe \
+             could not load its libraries (access denied): avcodec-63.dll"
+        )
+    );
+    // Later previews of the same kind fail the same way without repeating the notice.
+    backend.view(2, vec![target(3)]);
+    backend.wait_processed(3);
+    assert_eq!(backend.shared.lock().notice.take(), None);
+    backend.stop();
+}

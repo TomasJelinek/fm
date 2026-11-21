@@ -1,28 +1,15 @@
 //! A second seek cursor over the same brokered source keeps PCM demand independent
 //! of video queue pressure. Only the qualified built-in Opus decoder is used.
-use crate::{ffmpeg, native};
+pub use crate::media::{AudioTrack, Block, MAX_PCM_FRAMES};
+use crate::{bundled::ffmpeg, native};
 use ffmpeg::{ChannelLayout, codec, format::Sample, frame, media, software};
 use midnight_thumbnail_sdk::ReadSeek;
 use std::io;
 
 const RATE: i128 = 48_000;
 const CHANNELS: usize = 2;
-pub const MAX_PCM_FRAMES: u16 = 4_800;
 const MAX_DECODED_FRAMES: usize = 5_760;
 const PCM: Sample = Sample::I16(ffmpeg::format::sample::Type::Packed);
-
-#[derive(Clone, Copy)]
-#[repr(u8)]
-pub enum AudioTrack {
-    Absent = 0,
-    Qualified = 1,
-    Unqualified = 2,
-}
-
-pub struct Block {
-    pub first_frame: u64,
-    pub samples: Vec<i16>,
-}
 
 pub(crate) fn track(input: &ffmpeg::format::context::Input) -> AudioTrack {
     if opus(input).is_some() {
@@ -269,8 +256,10 @@ impl PcmCursor<'_> {
             .get(..output.samples() * 4)
             .ok_or_else(|| invalid("Opus conversion returned short PCM"))?;
         let samples = bytes
-            .chunks_exact(2)
-            .map(|pair| i16::from_ne_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| i16::from_ne_bytes(*pair))
             .collect();
         let timestamp = input
             .timestamp()

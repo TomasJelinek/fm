@@ -1261,6 +1261,61 @@ fields and conservative physical-device classifications.
   bounded source length, page count, viewport and process memory/CPU. The host
   brokers read-only source bytes; PDF scripts, external resources and automatic
   link execution are disabled. A malformed page cannot select executable code.
+- Video thumbnails and playback use separately installed restricted helpers in the
+  workers' capability-free AppContainer; the host brokers read-only source bytes.
+  Installation grants that AppContainer read and execute on the five shared FFmpeg
+  libraries and the two playback executables only, never a folder or user content; the
+  build and deployment scripts compute its SID from the name instead of asking Windows
+  inside PowerShell, which in a packaged PowerShell names a different AppContainer (see
+  the [worker SDK](docs/developer/WORKER_SDK.md)). Every worker and browser broker
+  starts with critical-error, crash and open-file dialogs off, so a helper that cannot
+  load a library ends with the loader's status instead of waiting on a modal system
+  dialog, and the host names the library and why.
+- On Windows, video that the bundled FFmpeg profile has no decoder for is decoded by
+  Windows' Media Foundation in two separate platform helpers (thumbnail and playback)
+  that run in the same AppContainer and job and link no FFmpeg. Media Foundation sees
+  only a read-only, seekable byte stream over the host-brokered capture, with no URL or
+  path, so no source can reopen the file, follow a reference or reach the network; each
+  read is a positioned broker request that the helper's pipe thread serves. Decoding is
+  software only: no Direct3D manager, no hardware transforms and DXVA disabled, so no GPU
+  driver code loads. Before reading any content, each helper turns on Windows' binary
+  signature policy for Microsoft-signed images only (`SetProcessMitigationPolicy`,
+  `MicrosoftSignedOnly`): Windows' own decoders and Microsoft's Store codec extensions
+  load, an unsigned or third-party decoder or byte-stream handler registered system-wide
+  (a codec pack's) cannot. The helpers convert, scale and rotate decoded pictures
+  themselves, refuse HDR and BT.2020 video like the bundled profile, and send the host
+  only frames, PCM and numeric failure causes; a missing decoder is a codec number that
+  the host words. No capability is added to the AppContainer, and nothing is
+  downloaded or installed when a decoder is missing.
+- On Linux, such video is decoded by the distribution's own FFmpeg (libavcodec 58 to
+  63), else by GStreamer 1.x, in two separate platform helpers that link neither and
+  run under the same worker sandbox as the bundled helpers. The sandbox is unchanged:
+  both families are loaded before the helper enters it, and after that every file
+  open, network access, new process and new thread is denied, so nothing is loaded
+  lazily and no library or plugin folder is readable afterwards. Read rules for what is
+  loaded: the helpers start with a cleared environment and have no RUNPATH, so the
+  system loader resolves a library only through its root-owned cache and default
+  folders, never beside the helpers (where the bundled `libavcodec.so.63` lies) or from
+  `LD_LIBRARY_PATH`; every object then mapped must have a canonical path whose file and
+  folders are owned by root and writable by nobody else, or both families are refused.
+  GStreamer plugins come only from a fixed list, from the folder beside libgstreamer,
+  checked the same way before loading; device and hardware-decoder (VA-API, V4L2,
+  NVIDIA), network, display and capture plugins and the user's plugin folders are never
+  loaded. GStreamer runs without its plugin registry (`GST_REGISTRY_DISABLE`, no
+  `gst-plugin-scanner` process, nothing written into the user's home). A process maps
+  one FFmpeg series: gst-libav is loaded only when no distribution FFmpeg was, and the
+  bundled FFmpeg never shares a process with either family. FFmpeg reads only through a
+  custom AVIO context over the brokered capture with an empty protocol whitelist and a
+  refusing `io_open`; the GStreamer graph has no URL source, is driven on the helper's
+  one thread by pushes of brokered bytes, and seeks through byte seeks the helper serves
+  within the capture. Pictures and colour follow the bundled profile's rules (HDR and
+  BT.2020 refused). Two consequences of the unchanged sandbox are handled before
+  lockdown: GLib's first shared thread pool reads the scheduler settings then (after
+  lockdown it would abort trying to start a thread), and GStreamer buffer pools, which
+  can no longer create their wake-up descriptors, are never waited on by a graph on one
+  thread (their warnings are discarded with stderr). A missing decoder is a codec number
+  and the families tried; the host words it with the distribution's package names and
+  never installs anything.
 - The built-in Office contents preview parses captured DOCX/XLSX/PPTX/ODT/ODS/ODP
   bytes on viewer backend workers into bounded inert HTML: no scripts, macros (VBA
   projects and ODF `Basic/`/`Scripts/` libraries are never read), formula

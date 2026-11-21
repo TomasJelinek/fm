@@ -2,7 +2,14 @@
 //! This cursor owns no clock, audio device, source pathname or process. The eventual host must
 //! supervise the worker with cancellation, wall-clock deadlines and bounded source reads.
 
-use crate::{Video, ffmpeg, native};
+pub use crate::media::{Frame, Metadata, OutputBounds};
+use crate::{
+    bundled::{Video, ffmpeg},
+    media::{AudioTrack, Block},
+    native, playback_audio,
+    playback_audio::PcmCursor,
+    playback_worker::{PlaybackDecoder, Sources},
+};
 use midnight_thumbnail_sdk::ReadSeek;
 use std::{
     cell::RefCell,
@@ -10,32 +17,71 @@ use std::{
     rc::Rc,
 };
 
-/// Aspect-preserving output bound: edges at most 4096 and at most four mebipixels.
-/// Original video is never enlarged. Bounds are validated before opening the source.
-#[derive(Clone, Copy, Debug)]
-pub struct OutputBounds {
-    pub width: u32,
-    pub height: u32,
+/// Open the bundled profile over `sources` for one playback session. The qualified Opus track
+/// decodes through a second cursor, so PCM demand stays independent of the video queue.
+/// Sources whose video this profile cannot decode end in `NoDecoder` before `session` runs.
+pub fn open(
+    sources: &dyn Sources,
+    output: OutputBounds,
+    session: &mut dyn FnMut(&mut dyn PlaybackDecoder) -> io::Result<()>,
+) -> io::Result<()> {
+    let length = sources.length();
+    let mut video = sources.cursor();
+    with_cursor(&mut *video, length, output, |cursor| {
+        let track = cursor.audio_track();
+        if matches!(track, AudioTrack::Qualified) {
+            let mut audio = sources.cursor();
+            let duration = cursor.metadata().duration_micros;
+            playback_audio::with_pcm(&mut *audio, length, duration, |audio| {
+                session(&mut Streams {
+                    cursor,
+                    audio: Some(audio),
+                    track,
+                })
+            })
+        } else {
+            session(&mut Streams {
+                cursor,
+                audio: None,
+                track,
+            })
+        }
+    })
 }
 
-/// One oriented straight-alpha sRGB RGBA8 frame and its presentation time.
-#[derive(Debug)]
-pub struct Frame {
-    /// Microseconds from the container's start time. Pre-target preroll is never returned.
-    pub presentation_micros: i64,
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
+struct Streams<'video_ref, 'video, 'audio_ref, 'audio> {
+    cursor: &'video_ref mut Cursor<'video>,
+    audio: Option<&'audio_ref mut PcmCursor<'audio>>,
+    track: AudioTrack,
 }
 
-/// Container duration when known and the selected video's original, oriented dimensions.
-/// Duration comes from the container, so it may overstate the decodable content. Zero is a
-/// known zero duration; a negative/unknown native duration is `None`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Metadata {
-    pub duration_micros: Option<u64>,
-    pub width: u32,
-    pub height: u32,
+impl PlaybackDecoder for Streams<'_, '_, '_, '_> {
+    fn metadata(&self) -> Metadata {
+        self.cursor.metadata()
+    }
+
+    fn audio_track(&self) -> AudioTrack {
+        self.track
+    }
+
+    fn next_frame(&mut self) -> io::Result<Option<Frame>> {
+        self.cursor.next_frame()
+    }
+
+    fn seek(&mut self, position_micros: u64) -> io::Result<()> {
+        self.cursor.seek(position_micros)?;
+        if let Some(audio) = &mut self.audio {
+            audio.seek(position_micros)?;
+        }
+        Ok(())
+    }
+
+    fn pcm(&mut self, credit: u16) -> io::Result<Option<Block>> {
+        match &mut self.audio {
+            Some(audio) => audio.next(credit),
+            None => Ok(None),
+        }
+    }
 }
 
 /// Open exactly one video stream for the duration of `consume`. The closure keeps the audited
@@ -51,7 +97,7 @@ pub fn with_cursor<T>(
     output: OutputBounds,
     consume: impl FnOnce(&mut Cursor<'_>) -> io::Result<T>,
 ) -> io::Result<T> {
-    crate::output_length(output.width, output.height)?;
+    crate::media::output_length(output.width, output.height)?;
     if source_length > i64::MAX as u64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -63,9 +109,9 @@ pub fn with_cursor<T>(
         source,
         error: read_error.clone(),
     };
-    let result = crate::with_decoder(|| {
+    let result = crate::bundled::with_decoder(|| {
         native::with_input(&mut source, source_length, |input| {
-            let video = crate::open_video(input)?;
+            let video = crate::bundled::open_video(input)?;
             if video.time_base.numerator() <= 0 || video.time_base.denominator() <= 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -144,8 +190,8 @@ pub struct Cursor<'a> {
 }
 
 impl Cursor<'_> {
-    pub fn audio_track(&self) -> crate::playback_audio::AudioTrack {
-        crate::playback_audio::track(self.input)
+    pub fn audio_track(&self) -> AudioTrack {
+        playback_audio::track(self.input)
     }
 
     /// Return container timing and the selected decoder's current original dimensions,
@@ -229,7 +275,7 @@ impl Cursor<'_> {
                     if time < self.minimum_time {
                         continue;
                     }
-                    let pixels = crate::pixels(
+                    let pixels = crate::bundled::pixels(
                         &self.decoded,
                         self.output.width,
                         self.output.height,

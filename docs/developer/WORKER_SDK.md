@@ -46,6 +46,30 @@ is assigned to a Job Object with memory, the selected aggregate CPU policy,
 single-process and kill-on-close
 limits before resuming. Only required system loader environment survives.
 The SDK verifies AppContainer and job restrictions before ready.
+Before it resumes, each worker, and the HTML viewer's browser broker, gets its own
+error mode, that of `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
+SEM_NOOPENFILEERRORBOX)` (`ProcessDefaultHardErrorMode`, set on the suspended
+process). A child would otherwise inherit the application's process error mode,
+which keeps the default; `SetThreadErrorMode` around `CreateProcessW` is not
+inherited. A worker whose loader cannot find or open a library therefore exits with
+`STATUS_DLL_NOT_FOUND` (0xC0000135) instead of waiting on a modal "System Error"
+dialog, and crashes raise no error-reporting dialog. `spawn` and `spawn_with_policy`
+return a `WorkerStopped` error with the exit status when the startup message finds
+the worker gone, and `ExitStatus::reason` words a status for people ("a required
+library is missing or cannot be read (STATUS_DLL_NOT_FOUND, 0xC0000135)"; on Linux
+exit code 127 from the dynamic loader and the crash, abort and sandbox signals). The
+loader reports a library it was denied the same way as a missing one, so after
+`ExitStatus::library_not_loaded` the hosts look for the cause:
+`unloadable_library` returns the first library that is missing or that the workers may
+not load, evaluated on Windows with Authz for this user's token restricted to the
+workers' AppContainer (`AuthzSetAppContainerInformation`), as Windows checks the
+worker; `worker_libraries` lists the libraries beside a helper. The video viewer then
+reports "The video helper could not load its libraries (access denied): <path>" (or
+"…: <path> is missing"), otherwise "The video helper stopped: <reason>" for a helper
+that ended, and "This video could not be read: …" for a failed read of the video
+file. The thumbnail service reports the first helper that cannot load its libraries
+once, as the notice "Some previews are unavailable: the thumbnail helper <name> could
+not load its libraries (access denied): <path>".
 Pipe and `NUL` handles are created non-inheritable. The three child handles become
 inheritable only for the worker's `CreateProcessW` call, under a process-wide
 creation lock (`midnight_worker_platform::lock_process_creation`), and are closed
@@ -74,10 +98,28 @@ its link, which Slint's winit backend would start with the `webbrowser` crate's
 
 The installed FFmpeg workers share ReadAndExecute access for that fixed worker
 SID on `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, `swscale-10.dll`
-and `swresample-7.dll`. Deployment includes a file-specific grant for
-`midnight-video-playback.exe`. Package file and ancestor trust checks still
+and `swresample-7.dll`. Deployment includes file-specific grants for
+`midnight-video-playback.exe` and `midnight-video-playback-system.exe` (the Media
+Foundation playback helper, which loads no FFmpeg); the thumbnail helpers, bundled
+and Media Foundation alike, get none. Package file and ancestor trust checks still
 apply, and media bytes enter the restricted apps through the captured read broker. Private deployment
 does not change checkout or ancestor permissions.
+The workers' loader opens these libraries as that AppContainer (the executables
+themselves are opened by the application), so the grant must name the SID that the
+unpackaged application's workers run with:
+`S-1-15-2-210492624-3469538162-618285203-1868907-2672626540-1166629363-1118814998`.
+`scripts/build-thumbnailers.ps1` and `scripts/deploy-private.ps1` compute it from
+the name (`Get-RestrictedWorkerSid`: SHA-256 of the lowercase name in UTF-16LE). They
+must not ask `DeriveAppContainerSidFromAppContainerName` inside PowerShell: PowerShell
+7 from the Microsoft Store is a packaged app, and there that call returns a child
+AppContainer SID of the PowerShell package
+(`S-1-15-2-3474344596-…-1118814998`). Packages built or deployed that way before
+21 November 2026 grant that SID, and both video helpers then fail to load FFmpeg
+(the loader's access to `avcodec-63.dll` is denied and reported as not found);
+rebuild and redeploy them. `scripts/tests/test_restricted_worker_identity.py` checks
+both scripts' function under PowerShell 7 and Windows PowerShell 5.1 against the
+SID Windows assigns an unpackaged caller, and the build and deployment tests check
+the granted ACEs.
 
 Linux x86-64 and AArch64 startup closes descriptors above stderr, sets
 address-space/file-size/core/descriptor limits and the selected additional CPU
@@ -86,7 +128,15 @@ installs a synchronized seccomp allowlist. Computation, allocation and existing
 pipe operations remain available. Filesystem opens, networking, new processes,
 threads and execution are denied. Libraries must load before SDK lockdown;
 `$ORIGIN` runtime lookup locates packaged FFmpeg libraries without relying on
-`LD_LIBRARY_PATH`. Unsupported platforms fail closed.
+`LD_LIBRARY_PATH`. Unsupported platforms fail closed. The Linux video platform
+helpers follow the same rule with the distribution's libraries: before `enter` they
+load its FFmpeg or GStreamer and the plugins they use, from root-owned system folders
+only, and have no `$ORIGIN` RUNPATH, so they never find the bundled FFmpeg. Two
+library behaviours that the allowlist would otherwise break are settled before
+lockdown: GLib's first shared thread pool reads the scheduler settings (after lockdown
+it would try to start a thread and abort), and GStreamer buffer pools, which cannot
+create their wake-up descriptors later, are never waited on by a graph on one thread.
+The allowlist itself is unchanged.
 
 Native containment fixtures attempt an unrelated private file read and a live
 localhost TCP connection after ready. A deliberately unresponsive helper tests
@@ -169,10 +219,12 @@ installation with no-junction checks and SHA-256 readback. Video distribution
 includes matching LGPL source, licenses and build configuration. Users remain
 able to replace those shared libraries under their license terms.
 
-Initial video support is VP8, VP9, Theora, FFV1 and raw video in Matroska/WebM,
+The bundled video profile is VP8, VP9, Theora, FFV1 and raw video in Matroska/WebM,
 AVI and Ogg. The verified recipe disables GPL, nonfree, networking, protocols,
-external autodetection and unrelated components. Support for every file with
-these extensions is not implied.
+external autodetection and unrelated components. Other codecs depend on the
+platform helpers and on what the user's system installed (see the
+[video worker guide](../../plugins/midnight-thumbnail-video/README.md)); support for
+every file with these extensions is not implied.
 
 See [filesystem API](FILESYSTEM_API.md), [thumbnail design](../superpowers/specs/2026-11-05-panel-views-thumbnails-design.md)
 and [dependency inventory](../THIRD_PARTY.md). The verification ledger records

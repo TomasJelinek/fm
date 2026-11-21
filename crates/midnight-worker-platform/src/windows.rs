@@ -6,6 +6,7 @@
 //! (`std::process::Command`) cannot capture them unless they overlap that single call.
 use crate::{CpuBudget, ExitStatus, ResourcePolicy, Worker};
 use std::{
+    ffi::c_void,
     fs::{File, OpenOptions},
     io,
     os::windows::{
@@ -20,10 +21,237 @@ use windows_sys::Win32::{
     Foundation::*,
     Security::{FreeSid, Isolation::*, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES},
     System::{
-        JobObjects::*, Pipes::CreatePipe, SystemInformation::GetSystemWindowsDirectoryW,
+        Diagnostics::Debug::{
+            SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
+        },
+        JobObjects::*,
+        Pipes::CreatePipe,
+        SystemInformation::GetSystemWindowsDirectoryW,
         Threading::*,
     },
 };
+
+/// The error mode every worker and browser process starts with, as `SetErrorMode` would set
+/// it: no "System Error" dialog when the loader cannot find or load a library (the process
+/// ends with that status instead), no Windows Error Reporting dialog after a crash and no
+/// dialog for a file that cannot be opened.
+const CHILD_ERROR_MODE: u32 =
+    SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX;
+/// `ProcessDefaultHardErrorMode` of the native process information classes.
+const PROCESS_DEFAULT_HARD_ERROR_MODE: u32 = 12;
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtSetInformationProcess(
+        process: HANDLE,
+        class: u32,
+        information: *const c_void,
+        length: u32,
+    ) -> NTSTATUS;
+}
+
+/// Give a suspended child [`CHILD_ERROR_MODE`] before any of its code runs, its loader
+/// included. A child inherits only its parent's process error mode (a `SetThreadErrorMode`
+/// around `CreateProcessW` is not inherited), and the application keeps the default, so a
+/// worker whose loader could not open a library otherwise waited on a modal "System Error"
+/// dialog. The native value stores `SEM_FAILCRITICALERRORS` inverted, as `SetErrorMode`
+/// does: there, bit 0 set means "show critical-error dialogs".
+pub(super) fn suppress_error_dialogs(process: &OwnedHandle) -> io::Result<()> {
+    let native = CHILD_ERROR_MODE ^ SEM_FAILCRITICALERRORS;
+    // SAFETY: a live process handle that CreateProcessW returned with full access; the input
+    // is a valid u32 for the call's duration.
+    let status = unsafe {
+        NtSetInformationProcess(
+            process.as_raw_handle(),
+            PROCESS_DEFAULT_HARD_ERROR_MODE,
+            (&native as *const u32).cast(),
+            size_of::<u32>() as u32,
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::other(format!(
+            "Cannot turn off system error dialogs for a worker process (NTSTATUS 0x{:08X})",
+            status.cast_unsigned()
+        )));
+    }
+    Ok(())
+}
+
+/// The loader's status for a library it could not find, which it also reports when the
+/// worker was denied access to the library it found.
+pub(super) fn library_not_loaded(status: ExitStatus) -> bool {
+    status == ExitStatus::Code(0xC000_0135)
+}
+
+pub(super) fn library_name(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("dll"))
+}
+
+/// Whether the workers' AppContainer may open `path` as a worker's loader opens a library
+/// (read data and execute). Authz evaluates the file's security descriptor for this user's
+/// token restricted to the workers' AppContainer SID, as Windows checks both for the worker.
+pub(super) fn worker_may_load(path: &Path) -> io::Result<bool> {
+    use windows_sys::Win32::{
+        Security::{
+            Authorization::*, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION, TOKEN_QUERY,
+        },
+        Storage::FileSystem::{FILE_EXECUTE, FILE_READ_DATA, SYNCHRONIZE},
+    };
+    struct Owned<T: Copy>(T, unsafe fn(T));
+    impl<T: Copy> Drop for Owned<T> {
+        fn drop(&mut self) {
+            // SAFETY: each guard holds a handle that its successful native call returned.
+            unsafe { (self.1)(self.0) };
+        }
+    }
+    unsafe fn free_local(memory: *mut c_void) {
+        // SAFETY: memory that Windows allocated for this caller with LocalAlloc.
+        unsafe { LocalFree(memory) };
+    }
+    unsafe fn free_context(context: AUTHZ_CLIENT_CONTEXT_HANDLE) {
+        // SAFETY: a context initialized below.
+        unsafe { AuthzFreeContext(context) };
+    }
+    unsafe fn free_manager(manager: AUTHZ_RESOURCE_MANAGER_HANDLE) {
+        // SAFETY: a resource manager initialized below.
+        unsafe { AuthzFreeResourceManager(manager) };
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    if wide[..wide.len() - 1].contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NUL in library path",
+        ));
+    }
+    let sid = worker_profile_sid()?;
+    let mut descriptor = null_mut();
+    // SAFETY: a terminated path; Windows allocates the descriptor, freed by its guard.
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor = Owned(descriptor, free_local);
+    let mut manager = null_mut();
+    // SAFETY: no callbacks or name; the output is writable.
+    check(unsafe {
+        AuthzInitializeResourceManager(
+            AUTHZ_RM_FLAG_NO_AUDIT,
+            None,
+            None,
+            None,
+            null(),
+            &mut manager,
+        )
+    })?;
+    let manager = Owned(manager, free_manager);
+    let mut token = null_mut();
+    // SAFETY: this process's pseudo handle; ownership is acquired only on success.
+    check(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) })?;
+    // SAFETY: a token handle that the call above returned.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut context = null_mut();
+    // SAFETY: a live token and resource manager; a zero identifier and no dynamic groups.
+    check(unsafe {
+        AuthzInitializeContextFromToken(
+            0,
+            token.as_raw_handle(),
+            manager.0,
+            null(),
+            LUID::default(),
+            null(),
+            &mut context,
+        )
+    })?;
+    let context = Owned(context, free_context);
+    // SAFETY: a live context and the workers' AppContainer SID; no capabilities.
+    check(unsafe { AuthzSetAppContainerInformation(context.0, sid.0, 0, null()) })?;
+    let wanted = FILE_READ_DATA | FILE_EXECUTE | SYNCHRONIZE;
+    let request = AUTHZ_ACCESS_REQUEST {
+        DesiredAccess: wanted,
+        ..Default::default()
+    };
+    let (mut granted, mut error) = (0u32, 0u32);
+    let mut reply = AUTHZ_ACCESS_REPLY {
+        ResultListLength: 1,
+        GrantedAccessMask: &mut granted,
+        SaclEvaluationResults: null_mut(),
+        Error: &mut error,
+    };
+    // SAFETY: a live context, request and descriptor; the reply points to two live u32s.
+    check(unsafe {
+        AuthzAccessCheck(
+            0,
+            context.0,
+            &request,
+            null_mut(),
+            descriptor.0,
+            null(),
+            0,
+            &mut reply,
+            null_mut(),
+        )
+    })?;
+    Ok(error == 0 && granted & wanted == wanted)
+}
+
+/// [`ExitStatus::reason`] on Windows: the statuses a worker ends with when its loader cannot
+/// start it, when it crashes or when it runs out of a resource, in words with the status's
+/// name and code; any other exit code as hexadecimal.
+pub(super) fn exit_reason(status: ExitStatus) -> String {
+    let code = match status {
+        ExitStatus::Code(code) => code,
+        ExitStatus::Signal(signal) => return format!("it was terminated by signal {signal}"),
+    };
+    let known = match code {
+        0xC000_0135 => (
+            "a required library is missing or cannot be read",
+            "STATUS_DLL_NOT_FOUND",
+        ),
+        0xC000_0139 => (
+            "a required library does not provide a function it needs",
+            "STATUS_ENTRYPOINT_NOT_FOUND",
+        ),
+        0xC000_0142 => (
+            "a required library could not start",
+            "STATUS_DLL_INIT_FAILED",
+        ),
+        0xC000_007B => (
+            "one of its program files is damaged or for another system",
+            "STATUS_INVALID_IMAGE_FORMAT",
+        ),
+        0xC000_0022 => (
+            "it was denied access to a file it needs",
+            "STATUS_ACCESS_DENIED",
+        ),
+        0xC000_0005 => ("it crashed", "STATUS_ACCESS_VIOLATION"),
+        0xC000_001D => (
+            "it crashed on an unsupported processor instruction",
+            "STATUS_ILLEGAL_INSTRUCTION",
+        ),
+        0xC000_00FD => ("it ran out of stack space", "STATUS_STACK_OVERFLOW"),
+        0xC000_0409 => (
+            "it stopped on an internal error",
+            "STATUS_STACK_BUFFER_OVERRUN",
+        ),
+        0xC000_0017 => ("it ran out of memory", "STATUS_NO_MEMORY"),
+        0xC000_012D => ("it ran out of memory", "STATUS_COMMITMENT_LIMIT"),
+        _ => return format!("it exited with code 0x{code:08X}"),
+    };
+    format!("{} ({}, 0x{code:08X})", known.0, known.1)
+}
 
 pub struct Process {
     pub(super) process: OwnedHandle,
@@ -396,6 +624,9 @@ fn spawn_impl(
         process: process_handle,
         job,
     };
+    // A worker that cannot start (a library it needs is missing) ends with the loader's
+    // status, which the host reports; it never waits on a system dialog.
+    suppress_error_dialogs(&process.process)?;
     #[cfg(test)]
     if let Some(observe) = before_resume {
         observe(&process)?;
@@ -412,6 +643,10 @@ fn spawn_impl(
         process,
     })
 }
+
+#[cfg(test)]
+#[path = "windows_startup_tests.rs"]
+mod startup_tests;
 
 #[cfg(test)]
 mod tests {

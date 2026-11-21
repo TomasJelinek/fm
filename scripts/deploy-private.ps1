@@ -138,6 +138,21 @@ function Assert-RegistrationLocation([string]$Path) {
     Assert-PrivatePath $existing $true
 }
 
+# The SID of the restricted workers' AppContainer, MidnightExplorer.RestrictedWorker.v1, as
+# the unpackaged application gets it: S-1-15-2 and the first 28 bytes of the SHA-256 of the
+# lowercase name in UTF-16LE as seven little-endian numbers. DeriveAppContainerSidFromAppContainerName
+# is not used: inside a packaged PowerShell (the Microsoft Store pwsh) it returns a child
+# AppContainer of that package instead, and a worker cannot load a library granted to that SID.
+# build-thumbnailers.ps1 has the same function; scripts/tests/test_restricted_worker_identity.py
+# checks both against the SID the workers run with.
+function Get-RestrictedWorkerSid {
+    $name = 'MidnightExplorer.RestrictedWorker.v1'.ToLowerInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash([Text.Encoding]::Unicode.GetBytes($name)) } finally { $sha.Dispose() }
+    $parts = foreach ($index in 0..6) { [BitConverter]::ToUInt32($hash, 4 * $index) }
+    [Security.Principal.SecurityIdentifier]::new('S-1-15-2-' + ($parts -join '-'))
+}
+
 function Initialize-LaunchRegistrationType {
     if ('MidnightRuntimeRegistrationV1.LaunchStamp' -as [type]) { return }
     Add-Type -TypeDefinition @'
@@ -673,16 +688,21 @@ foreach ($kind in @('filesystems', 'thumbnailers')) {
     }
 }
 $videoLibraries = @('avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll')
+# Shipped with the video runtime without a grant, like the bundled thumbnail helper.
+$videoPrograms = @()
 $videoManifest = Join-Path $SourceDirectory 'thumbnailers/midnight-thumbnail-video.json'
 $videoPresent = $IncludeThumbnailers -and (Test-Path -LiteralPath $videoManifest -PathType Leaf)
 if ($videoPresent) {
     Assert-PlainPath $videoManifest
     if ((Get-Item -LiteralPath $videoManifest).Length -gt 16384) { throw 'Video manifest exceeds 16 KiB' }
     $videoProfile = Get-Content -LiteralPath $videoManifest -Raw | ConvertFrom-Json
-    if ($videoProfile.id -ceq 'midnight-video' -and $videoProfile.version -ceq 'ffmpeg-9.0.2-playback-r3') {
-        $videoLibraries += @('swresample-7.dll', 'midnight-video-playback.exe')
+    if ($videoProfile.id -ceq 'midnight-video' -and $videoProfile.version -ceq 'ffmpeg-9.0.2-playback-r4') {
+        # The Media Foundation helpers decode what the bundled FFmpeg profile cannot. The
+        # playback helper is granted like the bundled one; neither loads FFmpeg.
+        $videoLibraries += @('swresample-7.dll', 'midnight-video-playback.exe', 'midnight-video-playback-system.exe')
+        $videoPrograms += @('midnight-thumbnail-video-system.exe')
     }
-    foreach ($name in $videoLibraries) {
+    foreach ($name in $videoLibraries + $videoPrograms) {
         if (-not (Test-Path -LiteralPath (Join-Path $SourceDirectory "thumbnailers/$name") -PathType Leaf)) {
             throw "Incomplete video runtime: $name"
         }
@@ -776,23 +796,7 @@ try {
     if ($videoPresent) {
         # Grant the fixed worker identity read/execute on these code files only. No inherited ACE,
         # directory permission, private content access, write permission or network capability.
-        if (-not ('MidnightWorkerDeploymentIdentity' -as [type])) { Add-Type -TypeDefinition @'
-    using System;
-    using System.Runtime.InteropServices;
-    using System.Security.Principal;
-    public static class MidnightWorkerDeploymentIdentity {
-        [DllImport("userenv.dll", CharSet=CharSet.Unicode)] static extern int DeriveAppContainerSidFromAppContainerName(string name, out IntPtr sid);
-        [DllImport("advapi32.dll")] static extern IntPtr FreeSid(IntPtr sid);
-        public static SecurityIdentifier Get() {
-            IntPtr sid;
-            int result=DeriveAppContainerSidFromAppContainerName("MidnightExplorer.RestrictedWorker.v1", out sid);
-            if(result != 0) Marshal.ThrowExceptionForHR(result);
-            try { return new SecurityIdentifier(sid); } finally { FreeSid(sid); }
-        }
-    }
-'@
-        }
-        $workerSid=[MidnightWorkerDeploymentIdentity]::Get()
+        $workerSid=Get-RestrictedWorkerSid
         foreach ($name in $videoLibraries) {
             $path=Join-Path $Destination "thumbnailers/$name"
             $acl=Get-Acl -LiteralPath $path

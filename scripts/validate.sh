@@ -311,6 +311,14 @@ step_thumbnail_video() {
     export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export CARGO_TARGET_DIR="$out/thumbnail-video-target"
     cargo test --config "$worker_sdk" --manifest-path "$manifest" --all-targets --locked --offline
+    # Again as the platform helpers are built: without the bundled FFmpeg (no library path to
+    # it, its own target directory) and one test at a time, because the tests start helpers
+    # that each map one FFmpeg series or enter the real worker sandbox.
+    if [[ -f plugins/midnight-thumbnail-video/src/system/linux/mod.rs ]]; then
+        env -u LD_LIBRARY_PATH -u FFMPEG_DIR RUST_TEST_THREADS=1 CARGO_TARGET_DIR="$out/thumbnail-video-system-target" \
+            cargo test --config "$worker_sdk" --manifest-path "$manifest" --all-targets --locked --offline \
+            --no-default-features --features system,playback-worker
+    fi
 }
 step_html_viewer() {
     local manifest=plugins/midnight-viewer-html/Cargo.toml

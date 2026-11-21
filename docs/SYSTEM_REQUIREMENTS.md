@@ -144,8 +144,42 @@ Standard installations include the independent image and video thumbnailers in
 the executable-adjacent `thumbnailers/` directory. Keep its runtime libraries and
 notices with the helpers. The approved FFmpeg libraries are bundled there; users
 do not need a system FFmpeg or libclang installation to run ME. Compiler, GPG and
-libclang packages are build prerequisites only. The video codec allowlist remains
-limited to VP8/VP9, Theora, FFV1 and raw video; this does not add MP4/H.264 support.
+libclang packages are build prerequisites only. The bundled FFmpeg profile decodes
+VP8/VP9, Theora, FFV1 and raw video (with Opus audio). On Windows, every other video
+plays and gets thumbnails through Windows' own decoders (Media Foundation), in
+platform helpers installed beside the bundled ones: H.264, MPEG-4 Part 2, VC-1 and
+Windows Media Video, Motion JPEG and H.263 with AAC, MP3 or Windows Media Audio, in
+MP4/M4V/MOV/3GP, ASF/WMV, AVI or Matroska files. Some codecs need a free or paid
+Microsoft Store extension: HEVC (HEVC Video Extensions), AV1 (AV1 Video Extension),
+VP9 in MP4 (VP9 Video Extensions) and MPEG-2 (MPEG-2 Video Extension); Windows N and
+KN editions need the Media Feature Pack for any of them. Without the decoder, the
+viewer names the codec and what provides it.
+
+On Linux, every other video plays and gets thumbnails through the distribution's own
+decoders, which the platform helpers load at run time: first the distribution's
+FFmpeg libraries (libavcodec 58 to 63, that is FFmpeg 4 to 9, with libavformat,
+libavutil, libswscale and libswresample of the same release), then GStreamer 1.x and
+its plugins. Neither is required: without them, only the bundled profile's codecs play,
+and the viewer names the codec and the packages that add it. Optional packages, and
+what they add for MP4/M4V/MOV/3GP, Matroska, AVI and Ogg files:
+
+| Distribution | Packages | Adds |
+| --- | --- | --- |
+| Debian, Ubuntu and derivatives | `ffmpeg` (pulls `libavcodecNN`, `libavformatNN`, `libswscaleNN`, `libswresampleNN`) | H.264, HEVC, MPEG-4 Part 2, MPEG-1/2, AV1, VC-1/Windows Media, MJPEG, H.263, ProRes video; AAC, MP3, AC-3, E-AC-3, DTS, Vorbis, FLAC, Windows Media audio |
+| | or `gstreamer1.0-libav` with `gstreamer1.0-plugins-base`, `-good` and `-bad` | The same through GStreamer (used when the FFmpeg libraries are absent); `-bad` adds OpenH264 and libde265 |
+| Fedora, RHEL family | `ffmpeg-libs` from RPM Fusion (the full FFmpeg) | As above; Fedora's own `ffmpeg-free` omits some of these decoders, such as HEVC |
+| | `gstreamer1-plugin-openh264` (Fedora's Cisco OpenH264 repository), `gstreamer1-plugin-libav` | H.264 through OpenH264; others through GStreamer's FFmpeg plugin |
+| openSUSE | `ffmpeg` and `gstreamer-plugins-libav` from Packman | As for Debian; openSUSE's own FFmpeg omits patent-encumbered decoders |
+| Arch and derivatives | `ffmpeg`, or `gst-libav` with `gst-plugins-good` | As for Debian |
+
+The table names what these packages provide; tested so far on Ubuntu 24.04 (FFmpeg
+6.1, GStreamer 1.24): H.264, HEVC and MPEG-4 Part 2 video with AAC and MP3 audio, see
+the [Linux system decoders record](verification/2026-11-21-linux-system-video-decoders.md).
+GStreamer also needs `gst-plugins-base` (typefinding and converters) and
+`gst-plugins-good` (the MP4, Matroska and AVI demuxers). Hardware decoders (VA-API,
+V4L2, NVDEC) are not used: the helpers decode in software inside their sandbox. The
+distribution's packages and their licenses are the user's; the application installs
+nothing.
 
 **All platforms:** a graphical desktop and readable system fonts covering the
 scripts being displayed. **Hardware GPU acceleration is optional.** The preferred

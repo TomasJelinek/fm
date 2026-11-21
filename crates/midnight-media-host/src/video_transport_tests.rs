@@ -128,6 +128,12 @@ fn terminal(stream: &mut Vec<u8>, kind: u8, request: u64, epoch: u64, status: u8
     append_packet(stream, kind, &packet);
 }
 
+fn failed(stream: &mut Vec<u8>, request: u64, epoch: u64, cause: [u8; 3]) {
+    let mut packet = tagged(request, epoch);
+    packet.extend_from_slice(&cause);
+    append_packet(stream, 0x85, &packet);
+}
+
 fn video(stream: &mut Vec<u8>, request: u64, epoch: u64, width: u32, height: u32) {
     let mut payload = tagged(request, epoch);
     payload.extend_from_slice(&27i64.to_le_bytes());
@@ -241,7 +247,7 @@ fn out_of_range_or_replayed_read_retires_without_touching_source() {
 fn read_denial_notifies_exact_read_and_serves_no_more_data() {
     let mut incoming = Vec::new();
     read_request(&mut incoming, 1, 2, 3);
-    terminal(&mut incoming, 0x85, 0, 1, 1);
+    failed(&mut incoming, 0, 1, [1, 0, 0]);
     let (pipe, source, trace) = stream(incoming, true);
     let stop = AtomicBool::new(false);
     let failure = open(pipe, source, control(&stop)).err().unwrap();
@@ -327,4 +333,40 @@ fn a_cancelled_or_closed_transport_retires_once() {
         drop(broker);
         assert_eq!(trace.borrow().retired, 1);
     }
+}
+
+#[test]
+fn a_missing_decoder_at_open_names_its_codec_and_what_the_helper_tried() {
+    let mut incoming = Vec::new();
+    failed(&mut incoming, 0, 1, [5, 2, 1]);
+    let (pipe, source, trace) = stream(incoming, false);
+    let stop = AtomicBool::new(false);
+    let failure = open(pipe, source, control(&stop)).err().unwrap();
+    assert_eq!(failure.kind(), io::ErrorKind::Unsupported);
+    assert_eq!(
+        MissingDecoder::find(&failure),
+        Some(MissingDecoder { codec: 2, tried: 1 })
+    );
+    assert!(failure.to_string().starts_with("This video uses HEVC; "));
+    assert_eq!(trace.borrow().retired, 1);
+}
+
+#[test]
+fn a_codec_on_any_other_failure_or_the_old_failure_length_is_refused() {
+    for packet in [[2, 2, 1], [4, 0, 8]] {
+        let mut incoming = Vec::new();
+        failed(&mut incoming, 0, 1, packet);
+        let (pipe, source, _) = stream(incoming, false);
+        let stop = AtomicBool::new(false);
+        let failure = open(pipe, source, control(&stop)).err().unwrap();
+        assert_eq!(failure.kind(), io::ErrorKind::InvalidData, "{packet:?}");
+        assert_eq!(MissingDecoder::find(&failure), None);
+    }
+    // A helper of the previous profile sends the 17-byte failure.
+    let mut incoming = Vec::new();
+    terminal(&mut incoming, 0x85, 0, 1, 2);
+    let (pipe, source, _) = stream(incoming, false);
+    let stop = AtomicBool::new(false);
+    let failure = open(pipe, source, control(&stop)).err().unwrap();
+    assert_eq!(failure.kind(), io::ErrorKind::InvalidData);
 }

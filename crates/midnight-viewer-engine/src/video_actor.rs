@@ -4,8 +4,9 @@ use midnight_core::{
 };
 use midnight_media_host::{
     CpuBudget, PlaybackEpoch, PlaybackSnapshot, PlaybackState, ResourcePolicy,
-    video_installation::VideoInstallation,
-    video_process::{CapturedVideoSource, VideoProcess},
+    system_decoders::MissingDecoder,
+    video_installation::{VideoInstallation, VideoWorker},
+    video_process::{CapturedVideoSource, VideoProcess, VideoRetirement},
     video_session::{DecoderReply, DecoderRequest, VideoSession},
     video_transport::{
         OutputBounds, SessionGeneration, VideoFrame, VideoIdentity, VideoIo, VideoMetadata,
@@ -472,30 +473,59 @@ fn run(
     let deadline = Instant::now() + STARTUP;
     let mut retirement = None;
     let playback = (|| {
-        let permit = DecoderPermit::acquire(cancel, deadline)?;
-        // The owner and the transport share one consuming capture wrapper.
+        // The owners and the transports share one consuming capture wrapper.
         let source = CapturedVideoSource::new(file, false);
-        let process = VideoProcess::launch(
-            &installation,
-            ResourcePolicy {
-                memory_bytes: 512 * 1024 * 1024,
-                cpu: CpuBudget::NoAdditionalLimit,
-            },
-            cancel.clone(),
-            deadline,
-            (source.clone(), permit),
-        )?;
-        retirement = Some(process.retirement());
-        let mut transport = VideoTransport::open(
-            process,
-            source,
-            session,
-            bounds,
-            VideoIo {
+        let open = |which, retirement: &mut Option<VideoRetirement>| {
+            let permit = DecoderPermit::acquire(cancel, deadline)?;
+            // The platform helper also maps the system's media frameworks.
+            let memory_bytes = match which {
+                VideoWorker::Bundled => 512 * 1024 * 1024,
+                VideoWorker::Platform => 1024 * 1024 * 1024,
+            };
+            let process = VideoProcess::launch(
+                &installation,
+                which,
+                ResourcePolicy {
+                    memory_bytes,
+                    cpu: CpuBudget::NoAdditionalLimit,
+                },
+                cancel.clone(),
                 deadline,
-                cancelled: cancel,
-            },
-        )?;
+                (source.clone(), permit),
+            )?;
+            *retirement = Some(process.retirement());
+            VideoTransport::open(
+                process,
+                source.clone(),
+                session,
+                bounds,
+                VideoIo {
+                    deadline,
+                    cancelled: cancel,
+                },
+            )
+        };
+        let mut transport = match open(VideoWorker::Bundled, &mut retirement) {
+            Ok(transport) => transport,
+            Err(error) => {
+                // The bundled profile has no decoder for this video: the platform's decoders
+                // may. The first helper retires and returns its decoder slot before the second.
+                let Some(bundled) = MissingDecoder::find(&error)
+                    .filter(|_| installation.platform_worker().is_some())
+                else {
+                    return Err(error);
+                };
+                if let Some(finished) = retirement.take() {
+                    finished.wait(deadline)?;
+                }
+                open(VideoWorker::Platform, &mut retirement).map_err(|error| {
+                    match MissingDecoder::find(&error) {
+                        Some(platform) => bundled.then(platform).into(),
+                        None => error,
+                    }
+                })?
+            }
+        };
         publish(Reply::Opened(transport.identity(), transport.metadata()))?;
         while let Ok(request) = incoming.recv() {
             if cancel.load(Ordering::Acquire) {
@@ -524,7 +554,14 @@ fn run(
     })();
     // Transport and both pipe ends have been retired before waiting here.
     // The receipt keeps source and capacity owned until the actual OS result.
-    let retired = retirement.map_or(Ok(()), |finished| finished.wait(Instant::now() + RETIRE));
+    let retired = retirement
+        .as_ref()
+        .map_or(Ok(()), |finished| finished.wait(Instant::now() + RETIRE));
+    // A helper that stopped during playback: its confirmed exit status says why.
+    let playback = match &retirement {
+        Some(finished) => playback.map_err(|error| finished.explain(error)),
+        None => playback,
+    };
     BrokerResult { playback, retired }
 }
 

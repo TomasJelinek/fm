@@ -379,6 +379,29 @@ checks still apply. Text and Source resize keep their distinct newer-generation
 requirement. Image zoom/camera and retained image tiles keep their existing
 presentation paths; this video fitting contract does not change them.
 
+Failures are shown in the media bar and the status line with the backend's sentence,
+never a raw I/O text: "The video helper could not load its libraries (access denied):
+<path>" when the sandboxed helper cannot open an FFmpeg library (one not granted to the
+workers' AppContainer, see the [worker SDK](WORKER_SDK.md)) or "…: <path> is missing",
+"The video helper stopped: <reason>" for a helper that ended, "This video could not be
+read: <reason>" for a failed read of the file, "Reading or decoding the video took too
+long" at the deadline, and "Media format or codec is unsupported" for content that no
+decoder recognises. The bundled FFmpeg profile decodes VP8, VP9, Theora, FFV1, raw video
+and Opus in Matroska/WebM, AVI, Ogg and MP4/MOV. When its helper reports that it has no
+decoder for a video (MMV2 failure cause 5, with the codec's number and the decoders it
+tried), the viewer starts the platform helper on the same capture: on Windows the
+Media Foundation helper, which decodes H.264, HEVC, AV1, MPEG-2/4, VC-1/WMV and Motion
+JPEG with AAC, MP3 or Windows Media Audio, the usual content of `.mp4` and `.wmv`
+files; on Linux the helper that loads the distribution's FFmpeg, else GStreamer. A
+codec that neither has is named with what provides it, for example "This video uses
+HEVC; Windows has no decoder for it installed (HEVC Video Extensions)", on Windows N
+"... (Media Feature Pack)", or on Linux the distribution's packages ("This video uses
+HEVC; install your distribution's FFmpeg libraries (package ffmpeg) or GStreamer's
+gst-libav plugin (package gstreamer1.0-libav) to view it."); the host words these
+sentences from the codec number (`midnight-media-host` `system_decoders`), helpers send
+no text. No helper shows a system dialog: each starts with critical-error and crash
+dialogs off.
+
 Current scoped native verification covers silent synthetic-AVI Play/Pause,
 paused resize, seek, EOF and replay. It does not qualify audio, full codec
 coverage, Linux or performance. See the [media verification checkpoint](../verification/2026-11-19-media-follow-up.md)

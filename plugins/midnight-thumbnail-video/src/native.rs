@@ -1,4 +1,5 @@
 //! Audited native ownership and custom AVIO bridge. No protocol or secondary-file opens are allowed.
+use crate::media::{Codec, NoDecoder, Tried};
 use ffmpeg_next::{self as ffmpeg, ffi};
 use midnight_thumbnail_sdk::ReadSeek;
 use std::{
@@ -140,7 +141,15 @@ pub(super) fn with_input<T>(
             if !context.is_null() {
                 ffi::avformat_free_context(context);
             }
-            return Err(io::Error::other(ffmpeg::Error::from(opened)));
+            return Err(match ffmpeg::Error::from(opened) {
+                // No bundled demuxer recognises the content; a platform decoder may.
+                ffmpeg::Error::InvalidData => NoDecoder {
+                    codec: Codec::Unknown,
+                    tried: Tried::BUNDLED,
+                }
+                .into(),
+                error => io::Error::other(error),
+            });
         }
         let mut input = ffmpeg::format::context::Input::wrap(context);
         let info = ffi::avformat_find_stream_info(input.as_mut_ptr(), ptr::null_mut());

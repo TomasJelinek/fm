@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod playback;
+pub mod system_decoders;
 pub mod video_installation;
 pub mod video_process;
 pub mod video_session;

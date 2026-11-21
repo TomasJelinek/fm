@@ -1,5 +1,5 @@
 use super::*;
-use crate::playback::Frame;
+use crate::media::Frame;
 use crate::playback_session::{Command, Completion, Event};
 use std::io::Cursor;
 
@@ -289,11 +289,29 @@ fn wire_outgoing_metadata_status_and_unknown_duration_match_exact_bytes() {
             request: 0,
             generation: 0,
             cause: 255,
+            codec: 0,
+            tried: 0,
         },
     )
     .unwrap();
     let mut body = numbers(&[0, 0]);
-    body.push(255);
+    body.extend_from_slice(&[255, 0, 0]);
+    assert_eq!(actual, packet(0x85, &body));
+    // A missing decoder names the codec and what the helper tried, never text.
+    actual.clear();
+    write_message(
+        &mut actual,
+        Outgoing::Failed {
+            request: 0,
+            generation: 7,
+            cause: 5,
+            codec: crate::media::Codec::Hevc as u8,
+            tried: crate::media::Tried::MEDIA_FOUNDATION.0,
+        },
+    )
+    .unwrap();
+    let mut body = numbers(&[0, 7]);
+    body.extend_from_slice(&[5, 2, 8]);
     assert_eq!(actual, packet(0x85, &body));
 }
 
@@ -571,7 +589,7 @@ fn pcm_and_video_credits_are_independent_and_bounded() {
         panic!("expected bounded PCM-only demand");
     };
     assert_eq!((frames, pcm_frames), (0, 120));
-    let block = crate::playback_audio::Block {
+    let block = crate::media::Block {
         first_frame: 80,
         samples: vec![1, -2],
     };

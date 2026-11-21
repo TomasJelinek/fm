@@ -76,3 +76,52 @@ must accompany the replaceable shared libraries. `ffmpeg-next` 9.0.0 and
 `ffmpeg-sys-next` 9.0.1 use WTFPL; preserve their pinned declarations and the
 missing-upstream-license provenance recorded in the inventory. No paid decoder
 or license branch is selected. See the [video worker guide](../plugins/midnight-thumbnail-video/README.md).
+
+**Platform video decoders (Windows):** video in codecs outside the bundled FFmpeg
+profile (H.264, HEVC, AV1, MPEG-2 and MPEG-4 video, VC-1/Windows Media, AAC, MP3,
+Windows Media Audio) is decoded by Windows itself, through Media Foundation, in
+separate platform helpers that link no FFmpeg. These decoders are Windows components
+or Microsoft Store extensions (HEVC Video Extensions, AV1 Video Extension, VP9 Video
+Extensions, MPEG-2 Video Extension, Web Media Extensions) that Microsoft licenses to
+the user with Windows or with the extension; HEVC Video Extensions may be a paid Store
+item or come with the PC. Midnight Explorer bundles, redistributes and links none of
+them, adds no patent-encumbered codec of its own and pays no codec royalty, so the
+project and its packages stay royalty-free; a missing decoder is named to the user
+(the extension, or on N/KN editions the Media Feature Pack) and never downloaded or
+installed by the application. The helpers bind Media Foundation with the `windows`
+0.62.2 crate (MIT OR Apache-2.0), already in the inventory. Linux is decided below.
+
+**Platform video decoders (Linux):** decided 21 November 2026 (user decision: "the
+distribution's own FFmpeg, and if not available then GStreamer"). Video in codecs
+outside the bundled profile is decoded by libraries the user's distribution installed,
+which the separate Linux platform helpers load at run time: the distribution's FFmpeg
+(libavcodec 58 to 63), else GStreamer 1.x with a fixed list of its plugins. Midnight
+Explorer bundles, redistributes and links none of them and adds no patent-encumbered
+codec of its own, so its packages stay royalty-free and carry no FFmpeg or GStreamer
+code for this path. They keep their distributions' licenses: FFmpeg LGPL-2.1-or-later,
+or GPL-2.0-or-later where the distribution enables GPL components (Debian's and
+Ubuntu's builds do); GStreamer core and base/good/bad/libav plugins LGPL-2.1-or-later;
+some listed plugins GPL-2.0-or-later (faad, dtsdec, a52dec) and some BSD (OpenH264,
+AOM, dav1d), with OpenH264 binaries under Cisco's binary license where Cisco's build
+is installed. They are combined with the helper only in its process on the user's
+machine, which those licenses permit without conditions on the application's own
+distribution; nothing of them is conveyed with it. Codec patent licensing for these
+decoders lies with the distribution and the user, as for any application using system
+codecs. A missing decoder is named to the user with the distribution's package names
+and is never downloaded or installed by the application. The helpers add no crate:
+libc 0.2.191 (MIT OR Apache-2.0), already in the plugin's lockfile, provides `dlopen`.
+FFmpeg's per-series struct offsets are generated from the releases' public headers at
+development time (`scripts/generate-ffmpeg-system-layouts.py`); the headers are not
+committed, only the resulting numbers. GStreamer's stable 1.x ABI is declared by hand.
+A separate helper executable linked to GStreamer (gstreamer-rs, MIT/Apache-2.0) was
+considered and not chosen: it would need GStreamer's development packages to build,
+add the gstreamer and glib crates with their `-sys` and build-time crates, and still
+need a run-time fallback when GStreamer is absent.
+
+**GPL-built system FFmpeg at run time (owner's decision, 21 November 2026):** the Linux
+platform helper may load a distribution FFmpeg that was built with GPL components (as
+Debian's and Ubuntu's are) at run time, in its own sandboxed helper process. Nothing
+GPL is shipped: no GPL code is bundled, linked at build time or redistributed with the
+application or its packages. Revisit this when the project's own license is chosen;
+if that license is closed-source, switch the helper to LGPL-only FFmpeg builds by
+checking `avcodec_license()` and refusing a GPL build like a missing decoder.

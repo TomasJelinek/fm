@@ -258,7 +258,7 @@ try {
             $text = if ($installed[$kind].Count -gt 0) { $installed[$kind] -join ', ' } else { 'none' }
             Write-Line "Plugin packages ($kind): $text"
         }
-        # The video worker's FFmpeg libraries and playback helper load in the restricted
+        # The video worker's FFmpeg libraries and playback helpers load in the restricted
         # workers' AppContainer only when their ACL grants it, which a copy does not keep:
         # grant exactly what deploy-private.ps1 grants, read and execute for that SID on these
         # files only (no inheritance, no folder, no write). Stages hard-link these files.
@@ -266,7 +266,7 @@ try {
         if (Test-Path -LiteralPath (Join-Path $thumbnailers 'midnight-thumbnail-video.json') -PathType Leaf) {
             $workerSid = Get-RestrictedWorkerSid
             foreach ($name in @('avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll',
-                    'swresample-7.dll', 'midnight-video-playback.exe')) {
+                    'swresample-7.dll', 'midnight-video-playback.exe', 'midnight-video-playback-system.exe')) {
                 $path = Join-Path $thumbnailers $name
                 if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
                 $acl = Get-Acl -LiteralPath $path

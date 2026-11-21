@@ -1,7 +1,7 @@
 {
   "protocol": 1,
   "id": "midnight-video",
-  "version": "ffmpeg-9.0.2-playback-r3",
+  "version": "ffmpeg-9.0.2-playback-r4",
   "executable": "midnight-thumbnail-video",
   "extensions": [
     "webm",
@@ -15,7 +15,9 @@
     "qt",
     "3gp",
     "3g2",
-    "mk3d"
+    "mk3d",
+    "wmv",
+    "asf"
   ],
   "video": true
 }
