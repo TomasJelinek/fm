@@ -102,6 +102,8 @@ fn copy_attention(p: &Presenter, id: OperationId) -> bool {
     p.copies.conflicts.iter().any(|conflict| conflict.id == id)
         || p.copies.failures.iter().any(|failure| failure.id == id)
 }
+/// A change waits for the user: a metadata or Rename conflict, or a Delete failure,
+/// shown or deferred with Decide later. Resolve on the row brings it up.
 fn mutation_attention(p: &Presenter, id: OperationId) -> bool {
     p.operations
         .metadata_conflicts
@@ -111,6 +113,11 @@ fn mutation_attention(p: &Presenter, id: OperationId) -> bool {
             .rename_conflicts
             .iter()
             .any(|conflict| conflict.id == id)
+        || p.operations
+            .delete_decisions
+            .failures
+            .iter()
+            .any(|failure| failure.id == id)
 }
 fn copy_artwork(intent: TransferIntent) -> ActionIcon {
     if intent == TransferIntent::Move {

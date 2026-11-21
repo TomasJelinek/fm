@@ -1053,6 +1053,7 @@ impl EngineServices {
                         Some(Command::CompareDirectories(request)) => comparison.compare(request),
                         Some(Command::CancelComparison(id)) => comparison.cancel(id),
                         Some(Command::ValidatePanelFilter(request)) => filters.validate(request),
+                        Some(Command::ValidateSelectionMask(request)) => filters.validate_mask(request),
                         Some(Command::ValidateFilenameColors(request)) => filename_colors.validate(request),
                         Some(Command::MatchFilenameColors(request)) => filename_colors.matches(request),
                         Some(Command::ClearFilenameColors { pane, id }) => filename_colors.clear(pane, id),

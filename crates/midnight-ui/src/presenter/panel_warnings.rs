@@ -26,6 +26,33 @@ struct NoticeSource {
     content: Arc<dyn GeneratedTextSource>,
 }
 
+/// What Copy details copies of a notice with a retained report: the message the
+/// notice shows, then the report. The clipboard worker reads it; the UI never reads
+/// the report.
+#[derive(Debug)]
+struct NoticeReport {
+    header: String,
+    report: Arc<dyn GeneratedTextSource>,
+}
+
+impl GeneratedTextSource for NoticeReport {
+    fn length(&self) -> u64 {
+        (self.header.len() as u64).saturating_add(self.report.length())
+    }
+
+    fn read_at(&self, offset: u64, output: &mut [u8]) -> std::io::Result<usize> {
+        let header = self.header.as_bytes();
+        match usize::try_from(offset) {
+            Ok(start) if start < header.len() => {
+                let count = (header.len() - start).min(output.len());
+                output[..count].copy_from_slice(&header[start..start + count]);
+                Ok(count)
+            }
+            _ => self.report.read_at(offset - header.len() as u64, output),
+        }
+    }
+}
+
 pub(super) struct PanelError {
     generation: u64,
     text: String,
@@ -383,13 +410,17 @@ impl Presenter {
             self.retired.push(Box::new(result));
             return;
         }
+        // Copy details copies the message before the report.
+        let header = self
+            .notice_report_header()
+            .map_or(0, |header| header.len() as u64);
         let body = match result {
             Ok(preview)
                 if preview.text.len() <= DIAGNOSTIC_PREVIEW_BYTES
                     && preview.total_bytes >= preview.text.len() as u64 =>
             {
                 if preview.truncated {
-                    let copy = if preview.total_bytes <= 4 * 1024 * 1024 {
+                    let copy = if preview.total_bytes.saturating_add(header) <= 4 * 1024 * 1024 {
                         "Copy details copies the complete report."
                     } else {
                         "The complete report exceeds the 4 MiB clipboard limit."
@@ -421,16 +452,41 @@ impl Presenter {
         });
     }
 
-    pub(crate) fn copy_notice_details(&mut self, send: &dyn Fn(Command) -> bool) {
-        let content = self
-            .panel_warnings
+    /// The retained report of the shown notice, if it has one.
+    fn notice_report(&self) -> Option<&Arc<dyn GeneratedTextSource>> {
+        self.panel_warnings
             .notice_source
             .as_ref()
             .filter(|source| {
                 source.generation == self.desktop.notice_generation && self.desktop.notice.is_some()
             })
-            .map(|source| source.content.clone());
-        if let Some(content) = content {
+            .map(|source| &source.content)
+    }
+
+    /// The notice's message as it shows it: title, reason and folder.
+    fn notice_message(&self) -> Option<String> {
+        let (title, body) = self.desktop.notice.as_ref()?;
+        let mut text = format!("{title}\n\n{body}");
+        if !self.desktop.notice_path.is_empty() {
+            text.push_str("\n\nFolder\n");
+            text.push_str(&self.desktop.notice_path);
+        }
+        Some(text)
+    }
+
+    /// What Copy details puts before a retained report: the whole message.
+    fn notice_report_header(&self) -> Option<String> {
+        self.notice_message()
+            .map(|message| format!("{message}\n\nDetails\n"))
+    }
+
+    /// Copy details: the complete message the notice shows, then its diagnostic
+    /// report: the retained one, the full error or the shown details.
+    pub(crate) fn copy_notice_details(&mut self, send: &dyn Fn(Command) -> bool) {
+        if let Some(report) = self.notice_report().cloned() {
+            let header = self.notice_report_header().unwrap_or_default();
+            // The backend reads the report after the message; the UI never reads it.
+            let content: Arc<dyn GeneratedTextSource> = Arc::new(NoticeReport { header, report });
             let request = self.desktop.request();
             if send(Command::CopyGeneratedText {
                 request,
@@ -442,25 +498,22 @@ impl Presenter {
                 self.desktop
                     .report("Clipboard queue busy", "Try copying again.".into());
             }
-        } else if let Some((title, body)) = &self.desktop.notice {
-            if let Some(full) = &self.desktop.notice_copy {
-                self.copy_viewer_text(
-                    format!("{title}\n\nFolder\n{}\n\n{full}", self.desktop.notice_path),
-                    send,
-                );
-                return;
-            }
-            let mut text = format!("{title}\n\n{body}");
-            if !self.desktop.notice_path.is_empty() {
-                text.push_str("\n\nFolder\n");
-                text.push_str(&self.desktop.notice_path);
-            }
-            if !self.desktop.notice_details.is_empty() && self.desktop.notice_details != *body {
-                text.push_str("\n\nDetails\n");
-                text.push_str(&self.desktop.notice_details);
-            }
-            self.copy_viewer_text(text, send);
+            return;
         }
+        let Some(message) = self.notice_message() else {
+            return;
+        };
+        // The full error, or the shown details unless they only repeat the reason.
+        let details = self.desktop.notice_copy.as_deref().or_else(|| {
+            let details = self.desktop.notice_details.as_str();
+            let body = self.desktop.notice.as_ref().map(|(_, body)| body.as_str());
+            (!details.is_empty() && Some(details) != body).then_some(details)
+        });
+        let text = match details {
+            Some(details) => format!("{message}\n\nDetails\n{details}"),
+            None => message,
+        };
+        self.copy_viewer_text(text, send);
     }
 
     pub(crate) fn dismiss_diagnostic_notice(&mut self, generation: i32) {

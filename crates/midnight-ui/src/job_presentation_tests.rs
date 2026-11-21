@@ -1345,3 +1345,145 @@ fn each_transfer_wait_says_why_the_job_waits() {
         "each reason has its own label"
     );
 }
+
+/// A running change of `kind`, as its job's first progress reports it.
+fn running(id: u64, kind: MutationKind) -> Event {
+    Event::Operation(OperationEvent::Progress(Arc::new(OperationProgress {
+        id: OperationId(id),
+        kind,
+        state: OperationState::Running,
+        pause_requested: false,
+        paused: false,
+        total: 2,
+        completed: 0,
+        failed: 0,
+        processed_entries: 0,
+        current_path: None,
+        source_directory: "source".into(),
+        renamed_to: None,
+        message: String::new(),
+        errors: vec![],
+        throughput: Arc::default(),
+        discovery: OperationDiscovery::default(),
+    })))
+}
+
+/// The Delete job `id` cannot remove a locked folder and asks what to do.
+fn delete_failure(id: u64, version: u64) -> Event {
+    Event::Operation(OperationEvent::DeleteFailure(Arc::new(DeleteFailure {
+        id: OperationId(id),
+        version,
+        mode: DeleteMode::Permanent,
+        error: FsError::from_io(
+            "mutate entry",
+            std::path::Path::new("source/locked"),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        ),
+        can_retry: true,
+        can_skip: true,
+    })))
+}
+
+#[test]
+fn a_waiting_delete_failure_marks_its_job_and_resolve_brings_it_up() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.apply(running(41, MutationKind::Delete(DeleteMode::Permanent)));
+    let row = |p: &Presenter| {
+        let mut jobs = rows(p);
+        assert_eq!(jobs.len(), 1);
+        jobs.pop().unwrap()
+    };
+    assert!(!row(&p).attention, "a running Delete needs nothing");
+    p.apply(delete_failure(41, 1));
+    let waiting = row(&p);
+    assert!(waiting.attention, "the waiting question marks the row");
+    assert_eq!(p.active_delete_decision(), Some((OperationId(41), 1)));
+    // Decide later keeps the mark, and the row's Resolve shows the question again.
+    p.defer_copy_decision("delete-error:41:1");
+    assert_eq!(p.active_delete_decision(), None);
+    assert!(row(&p).attention, "a deferred question still waits");
+    p.resolve_copy_decision(&waiting.identity);
+    assert_eq!(p.active_delete_decision(), Some((OperationId(41), 1)));
+    // Answered, the job needs nothing more.
+    p.decide_copy("delete-error:41:1", 0, String::new(), &|command| {
+        matches!(command, Command::DecideDelete(_))
+    });
+    assert!(!row(&p).attention);
+}
+
+#[test]
+fn resolve_brings_up_the_chosen_jobs_question_while_others_wait() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.apply(running(2, MutationKind::Rename));
+    let item = |path: &str| MutationItem {
+        path: path.into(),
+        kind: EntryKind::File,
+        metadata: EntryMetadata::default(),
+    };
+    p.apply(Event::Operation(OperationEvent::RenameConflict(Arc::new(
+        CopyConflict {
+            id: OperationId(2),
+            version: 1,
+            source: item("source/old.txt"),
+            target: item("source/new.txt"),
+            destination: "source/new.txt".into(),
+            can_replace: true,
+            can_merge: false,
+        },
+    ))));
+    p.apply(running(41, MutationKind::Delete(DeleteMode::Permanent)));
+    p.apply(delete_failure(41, 1));
+    // The Rename question is shown first; the Delete one waits for its turn.
+    assert_eq!(p.active_rename_decision(), Some((OperationId(2), 1)));
+    assert_eq!(p.active_delete_decision(), None);
+    let jobs = rows(&p);
+    let delete = jobs.iter().find(|row| row.identity == "41").unwrap();
+    assert!(delete.attention);
+    // Resolve on the Delete job shows its question instead of the Rename one.
+    p.resolve_copy_decision(&delete.identity);
+    assert_eq!(
+        p.active_rename_decision(),
+        None,
+        "the Rename question waits"
+    );
+    assert_eq!(p.active_delete_decision(), Some((OperationId(41), 1)));
+    // Resolve on the Rename job brings it back, and on the Delete job again that one.
+    p.resolve_copy_decision("rename-job:2");
+    assert_eq!(p.active_rename_decision(), Some((OperationId(2), 1)));
+    p.resolve_copy_decision("41");
+    assert_eq!(p.active_rename_decision(), None);
+    assert_eq!(p.active_delete_decision(), Some((OperationId(41), 1)));
+    // Resolve on a waiting Copy job shows its question, not the Delete one chosen before.
+    p.copies.progress.push(Arc::new(CopyProgress::queued(
+        OperationId(9),
+        "right".into(),
+        1,
+        TransferIntent::Copy,
+    )));
+    p.apply(Event::Copy(CopyEvent::Failure(Arc::new(CopyFailure {
+        id: OperationId(9),
+        version: 1,
+        error: FsError::from_io(
+            "write",
+            std::path::Path::new("right/file"),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        ),
+        source: Some("source/file".into()),
+        destination: "right/file".into(),
+        stage: CopyErrorStage::Writing,
+        can_retry: true,
+        can_skip: true,
+    }))));
+    p.resolve_copy_decision("copy-job:9");
+    assert_eq!(p.active_copy_decision(), Some((OperationId(9), 1)));
+    assert_eq!(p.active_rename_decision(), None);
+    assert_eq!(
+        p.active_delete_decision(),
+        None,
+        "the Copy question is shown"
+    );
+    // Once answered, the questions that still wait come back in turn.
+    p.decide_copy("copy-error:9:1", 0, String::new(), &|_| true);
+    assert_eq!(p.active_copy_decision(), None);
+    assert_eq!(p.active_rename_decision(), Some((OperationId(2), 1)));
+}

@@ -73,6 +73,7 @@ impl Presenter {
             return;
         }
         self.operations.rename_selected = None;
+        self.unchoose_delete_decision();
         let key = self
             .copies
             .conflicts

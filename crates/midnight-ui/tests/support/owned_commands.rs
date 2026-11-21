@@ -213,6 +213,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::ResolveMetadataConflict { .. }
             | Command::CancelComparison(_)
             | Command::ValidatePanelFilter(_)
+            | Command::ValidateSelectionMask(_)
             | Command::ValidateFilenameColors(_)
             | Command::ClearFilenameColors { .. }
             | Command::EnqueueCopy(_)

@@ -72,7 +72,7 @@ names where the parts are checked on their own.
 
 | Finding | Product bug | Check | Status |
 | --- | --- | --- | --- |
-| J-1 | The fed list's status counts one omitted archive member in the plural: "1 archive members not shown" (`crates/midnight-ui/src/find_feed.rs`, `status`, formats `" · {} archive members not shown"` for every count). Found by reading the code; the check is written, not run yet. | `journeys_find_to_checksums` › the fed list's count of left-out members is grammatical | NOT YET RUN |
+| J-1 | The fed list's status counts one omitted archive member in the plural: "1 archive members not shown" (`crates/midnight-ui/src/find_feed.rs`, `status`, formats `" · {} archive members not shown"` for every count). Found by reading the code; fixed in source on 21 November ("1 archive member not shown"); the check is written, not run yet. | `journeys_find_to_checksums` › the fed list's count of left-out members is grammatical | NOT YET RUN |
 
 Pending checks written (they report `PENDING` while the behavior is missing):
 

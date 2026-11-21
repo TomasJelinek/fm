@@ -1,5 +1,5 @@
 use midnight_core::{FilterMode, MaskSelection, MaskSelectionPreferences, PanelFilter};
-use midnight_platform_common::filter::CompiledFilter;
+use midnight_platform_common::filter::{CompiledFilter, MASK_TOO_LARGE, validate_selection_mask};
 use std::ffi::OsStr;
 
 fn masks(expression: &str) -> PanelFilter {
@@ -76,11 +76,12 @@ fn invalid_and_excessive_expressions_are_rejected_without_truncation() {
 }
 
 #[test]
-#[ignore = "known gap: a mask of thousands of `?` passes the dialog's check but compiles past the 2 MiB matcher budget; validate select masks on the backend before applying and saving"]
 fn the_select_by_mask_dialog_and_the_mask_compiler_agree_up_to_the_largest_masks() {
-    // The dialog checks a mask's grammar before the selection worker compiles it,
-    // so an accepted mask must compile, also at the size bound, where wildcards
-    // and case variants make the largest matchers.
+    // The dialog applies and remembers a mask only once the backend's check
+    // (`validate_selection_mask`, the dialog's grammar check and the compiler) has
+    // accepted it, so an accepted mask must compile on the selection worker and a
+    // refused one must not, also at the size bound, where wildcards and case
+    // variants make the largest matchers.
     let longest = |unit: &str| unit.repeat(midnight_core::MAX_FILTER_BYTES / unit.len());
     let mut patterns: Vec<String> = [
         "*",
@@ -103,11 +104,7 @@ fn the_select_by_mask_dialog_and_the_mask_compiler_agree_up_to_the_largest_masks
     patterns.push(vec!["?".repeat(63); 64].join(";"));
     patterns.push(vec!["?"; 65].join(";"));
     for pattern in patterns {
-        let accepted = MaskSelectionPreferences {
-            pattern: pattern.clone(),
-            folders: false,
-        }
-        .validate_mask();
+        let accepted = validate_selection_mask(&pattern);
         let mask = MaskSelection {
             pattern,
             select: true,
@@ -133,4 +130,42 @@ fn a_mask_of_thousands_of_stars_compiles_like_one_star() {
     };
     let compiled = CompiledFilter::new(&mask.filter());
     assert!(compiled.is_ok(), "{:?}", compiled.err());
+}
+
+#[test]
+fn the_backend_check_refuses_a_mask_over_the_matcher_budget_with_a_reason() {
+    let large = "?".repeat(midnight_core::MAX_FILTER_BYTES);
+    let choices = MaskSelectionPreferences {
+        pattern: large.clone(),
+        folders: false,
+    };
+    assert_eq!(choices.validate_mask(), Ok(()), "the grammar allows it");
+    assert_eq!(
+        validate_selection_mask(&large),
+        Err(MASK_TOO_LARGE.to_owned()),
+        "its matcher does not fit"
+    );
+    // The dialog's own rules keep their texts.
+    for (pattern, reason) in [
+        (
+            vec!["*.x"; 65].join(";"),
+            "A selection mask may contain at most 64 masks.",
+        ),
+        (
+            "*.txt\n".to_owned(),
+            "A selection mask cannot contain control characters.",
+        ),
+        (
+            "*.txt|".to_owned(),
+            "Add at least one excluded mask after |.",
+        ),
+    ] {
+        assert_eq!(
+            validate_selection_mask(&pattern),
+            Err(reason.to_owned()),
+            "{pattern:?}"
+        );
+    }
+    assert_eq!(validate_selection_mask(&"*".repeat(4096)), Ok(()));
+    assert_eq!(validate_selection_mask("文档*.TXT;é?|draft*"), Ok(()));
 }

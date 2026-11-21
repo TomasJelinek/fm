@@ -322,6 +322,30 @@ fn mask_request(commands: &RefCell<Vec<Command>>) -> (SelectionRequest, MaskSele
         .expect("a mask selection request")
 }
 
+/// The backend accepts the mask of the dialog's last OK (`Command::ValidateSelectionMask`).
+fn accept_mask(
+    p: &mut Presenter,
+    commands: &RefCell<Vec<Command>>,
+    send: &dyn Fn(Command) -> bool,
+) {
+    let request = commands
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|c| match c {
+            Command::ValidateSelectionMask(request) => Some(request.clone()),
+            _ => None,
+        })
+        .expect("OK has the backend check the mask");
+    p.apply_with_sender(
+        Event::SelectionMaskValidated {
+            request,
+            result: Ok(()),
+        },
+        send,
+    );
+}
+
 #[test]
 fn select_by_mask_remembers_its_choices_and_sends_the_shown_view() {
     let (mut p, _) = loaded();
@@ -343,6 +367,7 @@ fn select_by_mask_remembers_its_choices_and_sends_the_shown_view() {
     assert!(commands.borrow().is_empty());
 
     p.submit_mask_selection("*.txt;*.MD|draft*", true, &send);
+    accept_mask(&mut p, &commands, &send);
     assert!(!p.mask_dialog.open);
     let (request, mask) = mask_request(&commands);
     assert_eq!(
@@ -371,6 +396,7 @@ fn select_by_mask_remembers_its_choices_and_sends_the_shown_view() {
     assert!(p.mask_dialog.folders);
     commands.borrow_mut().clear();
     p.submit_mask_selection("*.md", false, &send);
+    accept_mask(&mut p, &commands, &send);
     let (request, mask) = mask_request(&commands);
     assert_eq!(request.pane, PaneId::Right);
     assert!(!mask.select);
@@ -411,6 +437,7 @@ fn an_invalid_mask_keeps_the_dialog_open_with_the_reason_and_is_not_remembered()
 
     // The corrected mask applies, is remembered, and the reason goes.
     p.submit_mask_selection("*.txt|draft*", true, &send);
+    accept_mask(&mut p, &commands, &send);
     assert!(!p.mask_dialog.open);
     assert!(p.mask_dialog.error.is_empty());
     let (_, mask) = mask_request(&commands);

@@ -106,6 +106,25 @@ impl Harness {
         self.sent.take()
     }
 
+    /// The backend's answer to the mask dialog's last OK, which asked it to compile
+    /// the mask (`Command::ValidateSelectionMask`).
+    fn answer_mask_check(&mut self, result: Result<(), &str>) {
+        let request = self
+            .sent
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::ValidateSelectionMask(request) => Some(request.clone()),
+                _ => None,
+            })
+            .expect("OK has the backend check the mask");
+        self.event(Event::SelectionMaskValidated {
+            request,
+            result: result.map_err(str::to_owned),
+        });
+    }
+
     fn told(&self) -> Vec<bool> {
         self.sent
             .borrow()
@@ -156,6 +175,11 @@ fn keypad_plus_and_minus_open_the_mask_dialog_and_enter_marks_matching_files() {
     ui::key(&window, Key::Return);
     h.ui.draw();
     assert!(
+        !choices.get_mask_token().is_empty() && mask_requests(&h.sent.borrow()).is_empty(),
+        "Enter has the backend check the mask first"
+    );
+    h.answer_mask_check(Ok(()));
+    assert!(
         choices.get_mask_token().is_empty(),
         "Enter selects and closes"
     );
@@ -180,6 +204,7 @@ fn keypad_plus_and_minus_open_the_mask_dialog_and_enter_marks_matching_files() {
     ui::click_popup(&window, "Include folders", AccessibleRole::Checkbox);
     ui::click_popup(&window, "OK", AccessibleRole::Button);
     h.ui.draw();
+    h.answer_mask_check(Ok(()));
     assert_eq!(
         mask_requests(&h.take()),
         [(
@@ -224,6 +249,45 @@ fn keypad_plus_and_minus_open_the_mask_dialog_and_enter_marks_matching_files() {
 }
 
 #[test]
+fn a_mask_the_backend_refuses_keeps_the_dialog_open_with_its_reason() {
+    const REASON: &str =
+        "This mask is too large to match names with. Use fewer ? wildcards or shorter masks.";
+    let mut h = Harness::new();
+    let window = h.ui.window.clone_strong();
+    let choices = window.global::<PanelChoices>();
+    window.invoke_focus_files();
+    assert!(window.invoke_physical_shortcut("NumpadAdd".into(), false, false, false, false));
+    h.ui.draw();
+    ui::key(&window, "?");
+    ui::key(&window, Key::Return);
+    h.ui.draw();
+    h.answer_mask_check(Err(REASON));
+    assert!(
+        !choices.get_mask_token().is_empty() && ui::has_popup(&window),
+        "the dialog stays open"
+    );
+    assert_eq!(choices.get_mask_error(), REASON, "and says why");
+    let sent = h.take();
+    assert!(mask_requests(&sent).is_empty(), "nothing is selected");
+    assert!(
+        !sent
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. })),
+        "nor remembered"
+    );
+    // Escape still closes it without selecting anything, and the dialog opens again
+    // with the mask remembered before.
+    ui::key(&window, Key::Escape);
+    h.ui.draw();
+    assert!(choices.get_mask_token().is_empty());
+    assert!(mask_requests(&h.take()).is_empty());
+    window.invoke_focus_files();
+    assert!(window.invoke_physical_shortcut("NumpadAdd".into(), false, false, false, false));
+    h.ui.draw();
+    assert_eq!(choices.get_mask_pattern(), "*");
+}
+
+#[test]
 fn control_equal_and_minus_open_the_mask_dialog_without_a_keypad() {
     let mut h = Harness::new();
     let window = h.ui.window.clone_strong();
@@ -252,6 +316,7 @@ fn control_equal_and_minus_open_the_mask_dialog_without_a_keypad() {
     assert!(choices.get_mask_select());
     ui::key(&window, Key::Return);
     h.ui.draw();
+    h.answer_mask_check(Ok(()));
     assert_eq!(
         mask_requests(&h.take()),
         [(
@@ -302,6 +367,7 @@ fn keypad_star_inverts_with_the_mask_folder_choice_and_number_row_keys_search() 
     ui::click_popup(&window, "Include folders", AccessibleRole::Checkbox);
     ui::click_popup(&window, "OK", AccessibleRole::Button);
     h.ui.draw();
+    h.answer_mask_check(Ok(()));
     h.take();
     window.invoke_focus_files();
     assert!(window.invoke_physical_shortcut("NumpadMultiply".into(), false, false, false, false));

@@ -43,8 +43,11 @@ fn fed() -> (TestUi, Rc<RefCell<Routed>>) {
     (ui, routed)
 }
 
-/// The list's code for Ctrl+I (`find_feed::BULK` + invert).
+/// The list's code for Ctrl+I (`find_feed::BULK` + invert): the files only.
 const INVERT: i32 = 22;
+/// The list's code for keypad * (`find_feed::MASK_INVERT`): the presenter inverts
+/// as a panel does, the folders too when Select by mask includes them.
+const MASK_INVERT: i32 = 12;
 
 #[test]
 fn keypad_and_mask_keys_in_search_results_invert_the_marks_or_say_why_not() {
@@ -61,6 +64,8 @@ fn keypad_and_mask_keys_in_search_results_invert_the_marks_or_say_why_not() {
     ui::chord(&ui.window, &[Key::Control], "=");
     ui::chord(&ui.window, &[Key::Control], "-");
     ui::chord(&ui.window, &[Key::Control], "h");
+    // Ctrl+I inverts the files only, in the list as in a panel.
+    ui::chord(&ui.window, &[Key::Control], "i");
     let routed = routed.borrow();
     let refused: Vec<_> = routed
         .refused
@@ -79,8 +84,9 @@ fn keypad_and_mask_keys_in_search_results_invert_the_marks_or_say_why_not() {
     );
     assert_eq!(
         routed.actions,
-        [(0, INVERT)],
-        "keypad * inverts like Ctrl+I"
+        [(0, MASK_INVERT), (0, INVERT)],
+        "keypad * inverts as in a panel, with Select by mask's folder choice; Ctrl+I \
+         inverts the files"
     );
     assert!(
         routed.folder_selection.is_empty(),

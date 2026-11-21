@@ -174,6 +174,9 @@ pub enum Command {
     CompareDirectories(crate::CompareRequest),
     CancelComparison(crate::CompareId),
     ValidatePanelFilter(crate::FilterValidationRequest),
+    /// Whether a Select/Deselect by mask pattern compiles within the selection
+    /// workers' budget, answered by `Event::SelectionMaskValidated`.
+    ValidateSelectionMask(crate::MaskValidationRequest),
     ValidateFilenameColors(crate::FilenameColorsValidation),
     MatchFilenameColors(crate::FilenameColorsRequest),
     ClearFilenameColors {
@@ -536,6 +539,12 @@ pub enum Event {
         request: crate::FilterValidationRequest,
         result: Result<(), FsError>,
         diagnostic: Option<crate::FilterDiagnostic>,
+    },
+    /// The answer to `Command::ValidateSelectionMask`: the reason the dialog shows
+    /// when the mask cannot be applied.
+    SelectionMaskValidated {
+        request: crate::MaskValidationRequest,
+        result: Result<(), String>,
     },
     FilenameColorsValidated {
         request: crate::FilenameColorsValidation,

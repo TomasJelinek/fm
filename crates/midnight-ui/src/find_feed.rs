@@ -38,6 +38,7 @@ const PREVIOUS_SELECTED: i32 = 8;
 const NEXT_SELECTED: i32 = 9;
 const TOGGLE: i32 = 10;
 const TOGGLE_ADVANCE: i32 = 11;
+const MASK_INVERT: i32 = 12;
 const BULK: i32 = 20;
 const VIEW: i32 = 30;
 const VIEW_BASIC: i32 = 31;
@@ -64,6 +65,7 @@ fn action(code: i32) -> Option<FeedAction> {
         NEXT_SELECTED => FeedAction::Move(FeedMove::NextSelected),
         TOGGLE => FeedAction::Toggle { advance: false },
         TOGGLE_ADVANCE => FeedAction::Toggle { advance: true },
+        MASK_INVERT => FeedAction::MaskInvert,
         code if (BULK..BULK + 6).contains(&code) => FeedAction::Bulk(bulk_operation(code - BULK)?),
         VIEW => FeedAction::View(false),
         VIEW_BASIC => FeedAction::View(true),
@@ -126,8 +128,9 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, key: &FileKey) -> Option<
         // Keypad + and −, Ctrl+= and Ctrl+−: masks select folder entries.
         FileKey::Bulk(6) => return refuse("Select by mask"),
         FileKey::Bulk(7) => return refuse("Deselect by mask"),
-        // Keypad *: inverts the marks, as Ctrl+I does in the list.
-        FileKey::Bulk(8) => BULK + 2,
+        // Keypad *: inverts the marks as in a panel, the folders' too when Select by
+        // mask includes folders (`Presenter::mask_invert_operation`).
+        FileKey::Bulk(8) => MASK_INVERT,
         FileKey::Bulk(operation) => BULK + operation,
         FileKey::Action(0 | 2 | 4) => LEAVE,
         FileKey::Action(5) => return refuse("Show hidden files"),
@@ -345,7 +348,11 @@ fn row(entry: &Entry, selected: bool, presenter: &Presenter) -> FeedRow {
     }
 }
 
-fn status(feed: &crate::presenter::find::feed::FeedPane, presenter: &Presenter) -> String {
+/// The list's status line: marks, their size, the results it cannot show and its keys.
+pub(crate) fn status(
+    feed: &crate::presenter::find::feed::FeedPane,
+    presenter: &Presenter,
+) -> String {
     let locale = &presenter.number_locale;
     let mut text = format!(
         "{} of {} selected",
@@ -364,8 +371,13 @@ fn status(feed: &crate::presenter::find::feed::FeedPane, presenter: &Presenter) 
     }
     if feed.omitted > 0 {
         text.push_str(&format!(
-            " · {} archive members not shown",
-            locale.format_u64(feed.omitted as u64)
+            " · {} {} not shown",
+            locale.format_u64(feed.omitted as u64),
+            if feed.omitted == 1 {
+                "archive member"
+            } else {
+                "archive members"
+            }
         ));
     }
     text.push_str(" · Enter: go to file · Backspace: back to folder");
@@ -395,5 +407,16 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    #[test]
+    fn keypad_star_reaches_the_list_as_the_panels_mask_invert() {
+        assert_eq!(
+            crate::file_keys::semantic("selection.mask-invert", false),
+            Some(FileKey::Bulk(8))
+        );
+        // `dispatch` sends keypad * (`FileKey::Bulk(8)`) as MASK_INVERT, which the
+        // presenter resolves with the folder choice of Select by mask.
+        assert_eq!(action(MASK_INVERT), Some(FeedAction::MaskInvert));
     }
 }

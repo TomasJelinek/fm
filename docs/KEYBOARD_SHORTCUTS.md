@@ -152,7 +152,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+I | Invert file selection in the focused pane; preserve selected and unselected folders, including directory links |
 | Ctrl+Shift+I | Invert top-level files and folders; preserve nested tree marks |
 | Ctrl+= or Num + / Ctrl+− or Num − in files | Select / Deselect files by mask (Ctrl+= and Ctrl+− need no numeric keypad): a small dialog with the mask (the last one, `*` at first) and Include folders. Configurable as `selection.mask-select` / `selection.mask-deselect`; see [selection by mask](#hidden-files-and-selection-by-mask) |
-| Num * in files | Invert files only, or top-level files and folders when Select by mask last had Include folders checked; without a keypad, Ctrl+I and Ctrl+Shift+I invert the same two ways. Configurable as `selection.mask-invert` |
+| Num * in files | Invert files only, or top-level files and folders when Select by mask last had Include folders checked; without a keypad, Ctrl+I and Ctrl+Shift+I invert the same two ways. Search results fed to a panel invert the same way. Configurable as `selection.mask-invert` |
 | Ctrl+H | Show or hide hidden files in both panels (`panel.hidden-files`); also in F10, each panel's View menu and Options → General |
 | Ctrl+C / Ctrl+V in files | Publish selected/focused files to the native clipboard / paste into the captured active folder; a Cut clipboard opens Move confirmation |
 | Ctrl+X in files | Publish a Cut clipboard for captured native files and folders. Paste opens the same Move confirmation as F6 (at most 64 selected items; on Linux a link moves as a link); archive Move is unavailable |

@@ -304,6 +304,56 @@ fn a_mask_dialog_opened_before_the_results_were_fed_leaves_the_folder_alone() {
 }
 
 #[test]
+fn results_fed_while_the_mask_is_checked_leave_the_folder_alone() {
+    let (mut p, id, _) = listed();
+    p.open_mask_selection(PaneId::Left, true);
+    let commands = RefCell::new(Vec::new());
+    p.submit_mask_selection("*.txt", false, &|command| record(&commands, command));
+    let request = commands
+        .into_inner()
+        .into_iter()
+        .find_map(|command| match command {
+            Command::ValidateSelectionMask(request) => Some(request),
+            _ => None,
+        })
+        .expect("OK has the backend check the mask");
+    assert!(p.mask_dialog.open, "the dialog waits for the check");
+    // The Find window feeds the panel before the backend answers.
+    p.feed_find_results(id).unwrap();
+    p.desktop.notice = None;
+    let commands = RefCell::new(Vec::new());
+    p.apply_with_sender(
+        Event::SelectionMaskValidated {
+            request,
+            result: Ok(()),
+        },
+        &|command| record(&commands, command),
+    );
+    let commands = commands.into_inner();
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            Command::Selection(SelectionRequest {
+                action: SelectionAction::Mask(_),
+                ..
+            }) | Command::SavePreferences { .. }
+        )),
+        "the folder under the list is not selected: {commands:?}"
+    );
+    assert_eq!(
+        p.desktop.notice,
+        Some((REFUSED.into(), refusal("Select by mask"))),
+        "the list says why"
+    );
+    assert!(!p.mask_dialog.open, "the dialog closes");
+    assert_eq!(
+        p.preferences.values.mask_selection,
+        MaskSelectionPreferences::default(),
+        "and remembers nothing"
+    );
+}
+
+#[test]
 fn properties_delete_and_the_full_path_under_the_results_use_the_results() {
     let (mut p, id, root) = listed();
     p.feed_find_results(id).unwrap();
@@ -565,6 +615,49 @@ fn bulk_keys_mark_folders_and_files_of_the_results_as_in_a_panel() {
         );
     }
     assert_eq!(marked(&p), ["sub", "a.txt"]);
+}
+
+#[test]
+fn keypad_star_inverts_the_results_with_the_folder_choice_of_select_by_mask() {
+    // From a marked folder and a marked file, as in a panel: without Include folders
+    // keypad * inverts the files only, like Ctrl+I.
+    let mut p = fed_with_folders(&["sub", "a.txt"]);
+    assert!(!p.preferences.values.mask_selection.folders);
+    p.feed_action(PaneId::Left, FeedAction::MaskInvert, &|_| {
+        panic!("keypad * reached the folder under the list")
+    });
+    assert_eq!(marked(&p), ["sub", "b.txt", "c.txt"]);
+    // With Include folders remembered by Select by mask, the folders invert too.
+    let mut p = fed_with_folders(&["sub", "a.txt"]);
+    p.preferences.values.mask_selection.folders = true;
+    p.feed_action(PaneId::Left, FeedAction::MaskInvert, &|_| {
+        panic!("keypad * reached the folder under the list")
+    });
+    assert_eq!(marked(&p), ["other", "b.txt", "c.txt"]);
+    let feed = p.feed(PaneId::Left).unwrap();
+    assert_eq!((feed.selected_count, feed.selected_bytes), (3, 6));
+    assert_eq!(p.panes[0].selected_count(), 0);
+}
+
+#[test]
+fn the_status_line_counts_one_archive_member_in_the_singular() {
+    // Two files, a folder and one archive member, which the list cannot show.
+    let (mut p, id, _) = searched();
+    p.feed_find_results(id).unwrap();
+    let status = crate::find_windows::feed::status(p.feed(PaneId::Left).unwrap(), &p);
+    assert!(
+        status.contains(" · 1 archive member not shown · "),
+        "{status}"
+    );
+    // More than one keep the plural.
+    if let Some(feed) = &mut p.finds.feeds[0] {
+        feed.omitted = 2;
+    }
+    let status = crate::find_windows::feed::status(p.feed(PaneId::Left).unwrap(), &p);
+    assert!(
+        status.contains(" · 2 archive members not shown · "),
+        "{status}"
+    );
 }
 
 #[test]

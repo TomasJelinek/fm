@@ -147,6 +147,9 @@ pub(crate) enum FeedAction {
     /// Ctrl+A marks the files only and Ctrl+I inverts the files, both leaving folders
     /// as a panel does.
     Bulk(SelectionOperation),
+    /// Keypad *: inverts as in a panel (`Presenter::mask_invert_operation`), the
+    /// folders too when Select by mask includes them.
+    MaskInvert,
     View(bool),
     Edit,
     Transfer(TransferIntent),
@@ -346,18 +349,8 @@ impl Presenter {
                 }
                 feed.changed();
             }
-            A::Bulk(operation) => {
-                let feed = self.feed_mut(pane).expect("shown feed");
-                for row in 0..feed.entries.len() {
-                    let directory = matches!(
-                        feed.entries[row].kind,
-                        EntryKind::Directory | EntryKind::DirectoryLink
-                    );
-                    let mark = operation.selects(directory, feed.selected[row]);
-                    feed.set_mark(row, mark);
-                }
-                feed.changed();
-            }
+            A::Bulk(operation) => self.feed_bulk(pane, operation),
+            A::MaskInvert => self.feed_bulk(pane, self.mask_invert_operation()),
             A::View(basic) => self.feed_view(pane, basic),
             A::Edit => self.feed_edit(pane, send),
             A::Transfer(intent) => self.feed_transfer(pane, intent),
@@ -365,6 +358,22 @@ impl Presenter {
             A::Clipboard { cut } => self.feed_clipboard(pane, cut, send),
             A::Properties => self.feed_properties(pane, send),
         }
+    }
+
+    /// Mark or unmark every row as `operation` does in a panel.
+    fn feed_bulk(&mut self, pane: PaneId, operation: SelectionOperation) {
+        let Some(feed) = self.feed_mut(pane) else {
+            return;
+        };
+        for row in 0..feed.entries.len() {
+            let directory = matches!(
+                feed.entries[row].kind,
+                EntryKind::Directory | EntryKind::DirectoryLink
+            );
+            let mark = operation.selects(directory, feed.selected[row]);
+            feed.set_mark(row, mark);
+        }
+        feed.changed();
     }
 
     /// An action the list cannot offer, explained instead of acting on the folder

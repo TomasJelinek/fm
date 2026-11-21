@@ -1,11 +1,40 @@
 //! Bounded worker-side panel/name filter compilation; names are never converted lossily.
 use midnight_core::{
-    Entry, EntryKind, FilterDiagnostic, FilterDiagnosticKind, FilterMasks, FilterMode, PanelFilter,
+    Entry, EntryKind, FilterDiagnostic, FilterDiagnosticKind, FilterMasks, FilterMode,
+    MaskSelection, MaskSelectionPreferences, PanelFilter,
 };
 use regex::{Regex, RegexBuilder};
 use std::ffi::OsStr;
 
 pub(crate) const REGEX_BYTES: usize = 2 * 1024 * 1024;
+
+/// Why Select or Deselect by mask refuses a mask whose matcher would exceed the
+/// selection workers' budget.
+pub const MASK_TOO_LARGE: &str =
+    "This mask is too large to match names with. Use fewer ? wildcards or shorter masks.";
+
+/// Whether Select or Deselect by mask may apply and remember `pattern`: the
+/// dialog's grammar and storage rules (`MaskSelectionPreferences::validate_mask`),
+/// then the matcher the selection workers compile for it (`CompiledFilter` of
+/// `MaskSelection::filter`) within its budget. The error is the reason the dialog
+/// shows. Compiles a regex: call it on a backend worker.
+pub fn validate_selection_mask(pattern: &str) -> Result<(), String> {
+    let choices = MaskSelectionPreferences {
+        pattern: pattern.to_owned(),
+        folders: false,
+    };
+    choices.validate_mask().map_err(str::to_owned)?;
+    let mask = MaskSelection {
+        pattern: choices.pattern,
+        select: true,
+        folders: false,
+    };
+    match FilterPlan::new(&mask.filter())?.compile(REGEX_BYTES) {
+        Ok(_) => Ok(()),
+        Err(PatternError::TooLarge(_)) => Err(MASK_TOO_LARGE.into()),
+        Err(PatternError::Invalid(message)) => Err(message),
+    }
+}
 
 pub struct CompiledFilter {
     include: Option<Regex>,

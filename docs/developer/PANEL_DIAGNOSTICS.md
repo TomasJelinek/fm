@@ -134,8 +134,10 @@ are never decoded or interpreted as a navigation target.
 
 Folder Details uses the original bounded diagnostic lines, omitting the reason
 and native path already displayed above. It does not decode escaped log records;
-ordinary backslashes in paths retain their exact meaning. Copy details retains the
-complete generated report. Other panel diagnostics can load bounded report previews
+ordinary backslashes in paths retain their exact meaning. Copy details copies the
+message the notice shows (its title, the reason and the folder) and then the complete
+generated report, which the clipboard worker reads; the preview's size line counts
+both. Other panel diagnostics can load bounded report previews
 asynchronously; the presenter accepts only the matching request and notice generation. Closing or replacing the
 notice cancels pending presentation and cannot revive it later.
 

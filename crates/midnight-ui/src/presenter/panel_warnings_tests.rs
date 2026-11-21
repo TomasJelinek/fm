@@ -419,6 +419,7 @@ fn full_error_opens_notice_and_copy_retains_full_source_without_ui_reads() {
         "update the same modal"
     );
     assert!(p.take_warning_viewer().is_none());
+    let retained = Arc::strong_count(&content);
     let sent = RefCell::new(None);
     p.copy_notice_details(&|command| {
         *sent.borrow_mut() = Some(command);
@@ -430,7 +431,174 @@ fn full_error_opens_notice_and_copy_retains_full_source_without_ui_reads() {
     else {
         panic!("Copy details must copy the original full report");
     };
-    assert!(Arc::ptr_eq(&captured, &content));
+    // The copied text holds the original report, which only the backend reads.
+    assert_eq!(Arc::strong_count(&content), retained + 1);
+    drop(captured);
+    assert_eq!(Arc::strong_count(&content), retained);
+}
+
+/// A report whose reads are counted; the clipboard worker reads it, the UI must not.
+#[derive(Debug)]
+struct CountedText {
+    text: &'static str,
+    reads: std::sync::atomic::AtomicUsize,
+}
+impl GeneratedTextSource for CountedText {
+    fn length(&self) -> u64 {
+        self.text.len() as u64
+    }
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> io::Result<usize> {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let bytes = self
+            .text
+            .as_bytes()
+            .get(offset as usize..)
+            .unwrap_or_default();
+        let len = bytes.len().min(out.len());
+        out[..len].copy_from_slice(&bytes[..len]);
+        Ok(len)
+    }
+}
+
+/// Read `source` as the clipboard worker does: its length, then chunks until it is full.
+fn read_as_backend(source: &dyn GeneratedTextSource, chunk: usize) -> String {
+    let mut bytes = vec![0; source.length() as usize];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let end = (offset + chunk).min(bytes.len());
+        let count = source
+            .read_at(offset as u64, &mut bytes[offset..end])
+            .unwrap();
+        assert!(count > 0 && count <= end - offset, "a bounded read");
+        offset += count;
+    }
+    String::from_utf8(bytes).unwrap()
+}
+
+#[test]
+fn copy_details_puts_the_message_the_notice_shows_before_the_retained_report() {
+    const REPORT: &str = "Folder listing error\nReport finished\n\nPath: C:/資料/private\nReason: Access denied (os error 5)\n";
+    let (mut p, _, _) = fixture();
+    let report = Arc::new(CountedText {
+        text: REPORT,
+        reads: Default::default(),
+    });
+    let content: Arc<dyn GeneratedTextSource> = report.clone();
+    let diagnostic = TreeDiagnostic::with_details("Access denied", content);
+    p.panes[0].set_tree_error(&diagnostic, "", &mut p.retired);
+    p.inspect_panel_error(PaneId::Left, "Access denied", &|command| {
+        matches!(command, Command::ReadDiagnosticText { .. })
+    });
+    let sent = RefCell::new(None);
+    p.copy_notice_details(&|command| {
+        *sent.borrow_mut() = Some(command);
+        true
+    });
+    let Some(Command::CopyGeneratedText { content, .. }) = sent.into_inner() else {
+        panic!("Copy details copies the retained report");
+    };
+    assert_eq!(
+        report.reads.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "the UI never reads the report"
+    );
+    // The reason the notice shows comes first, then the whole report, also when a
+    // read crosses from the message into the report.
+    let expected = format!("Panel error\n\nAccess denied\n\nDetails\n{REPORT}");
+    for chunk in [1, 7, 4096] {
+        assert_eq!(read_as_backend(content.as_ref(), chunk), expected);
+    }
+}
+
+#[test]
+fn copy_details_of_a_folder_that_cannot_open_includes_the_reason_the_notice_shows() {
+    let root = std::env::temp_dir();
+    let folder = root.join("資料").join("locked");
+    let mut p = Presenter::new(root.clone(), root);
+    let sent = RefCell::new(Vec::new());
+    assert!(p.navigate(PaneId::Left, folder.clone(), None, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let navigation = sent
+        .into_inner()
+        .into_iter()
+        .find_map(|command| match command {
+            Command::Navigate { navigation, .. } | Command::Refresh { navigation, .. } => {
+                Some(navigation)
+            }
+            _ => None,
+        })
+        .expect("a navigation");
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation,
+        error: FsError::from_io(
+            "read_directory",
+            &folder,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Access is denied. (os error 5)",
+            ),
+        ),
+    });
+    assert_eq!(
+        p.desktop.notice,
+        Some((
+            "Cannot open folder".into(),
+            "Access to this folder was denied.".into()
+        ))
+    );
+    let copied = RefCell::new(None);
+    p.copy_notice_details(&|command| {
+        if let Command::CopyText { text, .. } = command {
+            *copied.borrow_mut() = Some(text);
+        }
+        true
+    });
+    let path = folder.to_str().unwrap();
+    // The title, the reason the notice shows and the folder, then the error as the
+    // system reported it, with its path and operation.
+    assert_eq!(
+        copied
+            .into_inner()
+            .expect("Copy details copies the message"),
+        format!(
+            "Cannot open folder\n\nAccess to this folder was denied.\n\nFolder\n{path}\n\n\
+             Details\nAccess is denied. (os error 5)\n\nPath\n{path}\n\nOperation: read_directory"
+        )
+    );
+}
+
+#[test]
+fn the_preview_counts_the_message_that_copy_details_puts_before_the_report() {
+    const CLIPBOARD_BYTES: u64 = 4 * 1024 * 1024;
+    // A report of exactly the clipboard limit no longer fits once the message is
+    // copied before it; a slightly smaller one still does.
+    for (total, fits) in [(CLIPBOARD_BYTES - 64, true), (CLIPBOARD_BYTES, false)] {
+        let (mut p, _, _) = fixture();
+        let (request, _, _) = modal_request(&mut p);
+        p.apply(Event::DiagnosticTextReady {
+            request,
+            result: Ok(DiagnosticTextPreview {
+                text: "bounded preview".into(),
+                total_bytes: total,
+                truncated: true,
+            }),
+        });
+        let details = &p.desktop.notice_details;
+        assert_eq!(
+            details.contains("Copy details copies the complete report."),
+            fits,
+            "{total}: {details}"
+        );
+        assert_eq!(
+            details.contains("The complete report exceeds the 4 MiB clipboard limit."),
+            !fits,
+            "{total}: {details}"
+        );
+    }
 }
 
 #[test]

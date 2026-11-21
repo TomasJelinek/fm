@@ -59,16 +59,28 @@ the final component of their raw path, archive members by their listed caption,
 tree rows by their entry name. Folders and directory links take part only when
 `folders` is set; other marks are kept. Native mask requests need a complete view:
 a request queued while a listing streams fails without changing marks, and so would
-an invalid mask. The dialog sends none: `MaskSelectionPreferences::validate_mask`
-checks the storage bounds and the Masks grammar with `FilterMasks`, the parser the
-filter compiler uses too, and an invalid mask keeps the dialog open with the reason.
-Loading settings checks only the storage
+an invalid mask. The dialog sends none. OK first checks the storage bounds and the
+Masks grammar (`MaskSelectionPreferences::validate_mask`, with `FilterMasks`, the
+parser the filter compiler uses too); a mask that passes is then compiled on a
+backend worker, as the panel filter dialog has its filter checked:
+`Command::ValidateSelectionMask` carries a `MaskValidationRequest` (an identity that
+only grows, across openings too, and the pattern), the engine's filter validation
+controller (`crates/midnight-engine/src/filters.rs`) answers only the latest one
+with `Event::SelectionMaskValidated`, and
+`midnight_platform_common::filter::validate_selection_mask` compiles exactly the
+matcher the selection workers compile, refusing one over its 2 MiB budget (for
+example thousands of `?`) with a reason. The dialog stays open until the answer;
+an invalid or over-budget mask keeps it open with the reason and is neither applied
+nor remembered, and answers to an earlier OK or a closed dialog are dropped.
+Results fed to the panel while the mask is checked refuse the selection and close
+the dialog. Loading settings checks only the storage
 bounds, so a mask an earlier build remembered still loads and the dialog then says
 what is wrong with it. Tree masks reach every selectable shown row, expanded
 descendants included, never context-only ancestors. Keypad * sends `Invert` or
-`InvertAll` following the remembered folder choice. The presenter keeps the dialog
+`InvertAll` following the remembered folder choice, and in search results fed to a
+panel it inverts the list's marks the same way. The presenter keeps the dialog
 draft and saves the last mask and folder choice (`MaskSelectionPreferences`) only
-after its request was accepted.
+after the backend accepted the mask and its selection request was accepted.
 
 ## Verification
 

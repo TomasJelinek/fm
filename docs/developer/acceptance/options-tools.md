@@ -184,7 +184,7 @@ besides the action's own effect fails it.
 | O-J07 | Close and Escape close Jobs | `tools_notices_jobs` | window gone | PASS |
 | O-N01 | A folder notice: title, reason, folder box | `tools_notices_jobs` | texts | PASS |
 | O-N02 | Details expands, Hide details collapses | `tools_notices_jobs` | details text, button caption | PASS |
-| O-N03 | Copy details reaches the clipboard | `tools_notices_jobs` | command sent; "Copied to clipboard" | FAIL: the copied report lacks the reason the notice shows ("Access to this folder was denied."); it holds the title, folder, raw error, path and operation (finding O-5, to be triaged) |
+| O-N03 | Copy details reaches the clipboard | `tools_notices_jobs` | command sent; "Copied to clipboard" | FAIL on 20 November: the copied report lacked the reason the notice shows (finding O-5). Fixed in source on 21 November (Copy details starts with the title, reason and folder); not re-run |
 | O-N04 | Close, Escape and the header's close button close it; no other notice follows | `tools_notices_jobs` | notice token for one second | PASS |
 | O-N05 | A very long folder path: dialog inside the window, Close in view, the path box scrolls to its end | `tools_notices_jobs` | rectangles; wheel scrolling | PASS |
 

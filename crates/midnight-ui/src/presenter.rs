@@ -976,6 +976,7 @@ impl Presenter {
             self.panes[pane.index()].selection_rebase_pending = true;
         }
         self.flush_filters(send);
+        self.flush_mask_selection(send);
         self.flush_filename_colors(send);
         self.flush_options_acceptance(send);
         self.flush_settings_picker(send);
@@ -1155,6 +1156,9 @@ impl Presenter {
             return;
         };
         let Some(event) = self.apply_filter_event(event) else {
+            return;
+        };
+        let Some(event) = self.apply_mask_event(event) else {
             return;
         };
         let Some(event) = self.apply_copy_event(event) else {

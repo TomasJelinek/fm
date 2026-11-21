@@ -94,3 +94,61 @@ async fn latest_filter_intent_supersedes_old_validation_behind_a_full_outbox() {
         "Obsolete IDs must not revive an old draft"
     );
 }
+
+/// Ask `controller` to check a Select by mask pattern and wait for its answer.
+async fn check_mask(
+    controller: &Controller,
+    events: &mut mpsc::Receiver<Event>,
+    id: u64,
+    pattern: String,
+) -> Result<(), String> {
+    controller.validate_mask(MaskValidationRequest { id, pattern });
+    let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let Event::SelectionMaskValidated { request, result } = event else {
+        panic!("Expected a mask check")
+    };
+    assert_eq!(request.id, id);
+    result
+}
+
+#[tokio::test]
+async fn select_masks_are_compiled_on_a_worker_with_their_own_identities() {
+    let (sender, mut events) = mpsc::channel(4);
+    let mut tasks = JoinSet::new();
+    let controller = Controller::new(
+        Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        },
+        &mut tasks,
+    );
+    let valid = check_mask(&controller, &mut events, 1, "*.txt;*.MD|draft*".into()).await;
+    assert_eq!(valid, Ok(()));
+    // Thousands of ? pass the dialog's grammar check but exceed the matcher budget.
+    let large = "?".repeat(midnight_core::MAX_FILTER_BYTES);
+    assert_eq!(
+        check_mask(&controller, &mut events, 2, large).await,
+        Err(midnight_platform_common::filter::MASK_TOO_LARGE.to_owned())
+    );
+    assert_eq!(
+        check_mask(&controller, &mut events, 3, "a|b|c".into()).await,
+        Err("Use at most one | before excluded masks.".to_owned())
+    );
+    // Mask checks never supersede a pane's filter draft, whose identities are its own.
+    controller.validate(request(1, "kind = file"));
+    let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        event,
+        Event::PanelFilterValidated { request, result: Ok(()), .. } if request.id == 1
+    ));
+    drop(controller);
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap();
+    }
+}

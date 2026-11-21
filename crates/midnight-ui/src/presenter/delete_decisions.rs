@@ -22,6 +22,15 @@ fn job_token(token: &str, id: OperationId) -> bool {
     token == id.0.to_string() || token == format!("delete-job:{}", id.0)
 }
 
+/// Failures that wait for an answer and were not put off with Decide later.
+fn pending(decisions: &DeleteDecisions) -> impl Iterator<Item = (OperationId, u64)> + '_ {
+    decisions
+        .failures
+        .iter()
+        .map(|f| (f.id, f.version))
+        .filter(|key| !decisions.deferred.contains(key))
+}
+
 impl Presenter {
     pub(super) fn apply_delete_failure(&mut self, failure: Arc<DeleteFailure>) {
         let decisions = &mut self.operations.delete_decisions;
@@ -51,22 +60,25 @@ impl Presenter {
     /// The Delete failure the shared prompt shows: one chosen with Resolve, otherwise
     /// the first waiting one while no copy or Rename decision is shown.
     pub(crate) fn active_delete_decision(&self) -> Option<(OperationId, u64)> {
+        self.chosen_delete_decision().or_else(|| {
+            (self.active_copy_decision().is_none() && self.active_rename_decision().is_none())
+                .then(|| pending(&self.operations.delete_decisions).next())
+                .flatten()
+        })
+    }
+
+    /// A waiting Delete failure chosen with Resolve: it goes before a Rename decision
+    /// that only waits for its turn (`active_rename_decision`).
+    pub(super) fn chosen_delete_decision(&self) -> Option<(OperationId, u64)> {
         let decisions = &self.operations.delete_decisions;
-        let pending = || {
-            decisions
-                .failures
-                .iter()
-                .map(|f| (f.id, f.version))
-                .filter(|key| !decisions.deferred.contains(key))
-        };
         decisions
             .selected
-            .filter(|key| pending().any(|item| item == *key))
-            .or_else(|| {
-                (self.active_copy_decision().is_none() && self.active_rename_decision().is_none())
-                    .then(|| pending().next())
-                    .flatten()
-            })
+            .filter(|key| pending(decisions).any(|item| item == *key))
+    }
+
+    /// Resolve chose another job's decision, which is then shown instead.
+    pub(super) fn unchoose_delete_decision(&mut self) {
+        self.operations.delete_decisions.selected = None;
     }
 
     pub(crate) fn active_delete_failure(&self) -> Option<&Arc<DeleteFailure>> {
@@ -121,6 +133,8 @@ impl Presenter {
         };
         decisions.deferred.remove(&key);
         decisions.selected = Some(key);
+        // Shown next, also before a Rename decision chosen earlier.
+        self.operations.rename_selected = None;
         true
     }
 

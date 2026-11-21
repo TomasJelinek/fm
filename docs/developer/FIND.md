@@ -360,7 +360,8 @@ leaving the list (Backspace, Back to folder, Alt+Left or the parent and root
 commands) shows it again unchanged. Any navigation of that panel to another location
 (a path, a drive, a bookmark, a tab, history) also leaves the list. The rows are the
 native results in the Find window's sort order; archive members are left out and
-counted in the status line. The list is a snapshot of the results: it is not updated
+counted in the status line ("1 archive member not shown", "2 archive members not
+shown"). The list is a snapshot of the results: it is not updated
 by later file changes.
 
 Keys keep their configured meaning: Up/Down, Page Up/Down, Home/End move; Insert
@@ -391,7 +392,9 @@ Compare files, Compare directories, Select and Deselect by mask, Show hidden fil
 the panel filter, custom commands (from the toolbar, its popup and the F9 menu) and
 Ctrl+Enter (the focused name into the command line); Ctrl+Shift+P inserts the focused
 result's full path. The toolbar and menus refuse these the same way the keys do.
-Keypad * inverts the files like Ctrl+I, keeping folder marks. The hidden rows start
+Keypad * (and its F10 Selection entry) inverts as in a panel: the files only, like
+Ctrl+I, or the folders too when Select by mask last included folders
+(`Presenter::mask_invert_operation`). The hidden rows start
 no drag, and nothing is dropped onto a panel that shows results. After Move
 the list still shows the old locations (their actions report that the file changed
 or is gone); feed the search again to refresh it. At most 4096 items are deleted at

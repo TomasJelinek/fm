@@ -1,6 +1,7 @@
 //! Select, deselect and invert by filename mask (the keypad +, − and * keys).
 //! Masks use the panel filter's Masks grammar (`FilterMasks`), which the dialog
-//! checks; they compile on backend workers.
+//! checks; a backend worker then compiles the mask (`MaskValidationRequest`) before
+//! the dialog applies and remembers it, and selection workers compile it to match.
 use crate::{FilterMasks, FilterMode, MAX_FILTER_BYTES, MaskSyntaxError, PanelFilter};
 
 /// The pattern a new Select/Deselect by mask dialog starts with.
@@ -35,6 +36,17 @@ impl MaskSelection {
     }
 }
 
+/// OK in the Select or Deselect by mask dialog asks a backend worker whether
+/// `pattern` compiles into a matcher within the selection workers' budget, as the
+/// panel filter dialog has its filter checked. The answer
+/// (`Event::SelectionMaskValidated`) carries the request back; only the latest of
+/// increasing `id`s is answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaskValidationRequest {
+    pub id: u64,
+    pub pattern: String,
+}
+
 /// The last mask and folder choice, shared by Select and Deselect by mask and by
 /// the keypad's invert (which inverts folders too when `folders` is set).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,9 +77,10 @@ impl MaskSelectionPreferences {
         }
     }
 
-    /// A mask the dialog may apply and remember: the storage bounds and the panel
-    /// filter's Masks grammar, the rules the selection worker checks before it
-    /// compiles the mask.
+    /// The dialog's own check of a mask: the storage bounds and the panel filter's
+    /// Masks grammar. A mask that passes is then compiled by a backend worker
+    /// (`MaskValidationRequest`), which also refuses a matcher over its size budget;
+    /// only then is it applied and remembered.
     pub fn validate_mask(&self) -> Result<(), &'static str> {
         self.validate()?;
         match FilterMasks::parse(&self.pattern) {

@@ -48,8 +48,8 @@ impl Presenter {
             .rename_selected
             .filter(|key| pending().any(|item| item == *key))
             .or_else(|| {
-                self.active_copy_decision()
-                    .is_none()
+                // A Delete failure chosen with Resolve goes first.
+                (self.active_copy_decision().is_none() && self.chosen_delete_decision().is_none())
                     .then(|| pending().next())
                     .flatten()
             })
