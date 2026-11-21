@@ -958,6 +958,13 @@ pub fn deny_read(path: &Path) -> Result<(), String> {
 /// allows it, so there the folder gets a deny entry on adding files and folders and on
 /// deleting its children (`(WD,AD,DC)`), and each of its present entries one on its own
 /// deletion (`(DE)`).
+#[cfg_attr(
+    unix,
+    expect(
+        dead_code,
+        reason = "only the Windows mode stand-in calls it; Unix scenarios chmod"
+    )
+)]
 pub fn deny_write(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -983,6 +990,13 @@ pub fn deny_write(path: &Path) -> Result<(), String> {
 
 /// Whether this account may not create entries in the folder `path`, as
 /// [`deny_write`] leaves it: no owner write bit on Unix, a refused probe on Windows.
+#[cfg_attr(
+    unix,
+    expect(
+        dead_code,
+        reason = "only Windows checks call it; Unix scenarios read the mode"
+    )
+)]
 pub fn write_protected(path: &Path) -> bool {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return false;
