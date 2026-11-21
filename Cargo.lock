@@ -3170,6 +3170,7 @@ dependencies = [
  "midnight-plugin-host",
  "midnight-ui-input",
  "midnight-viewer-engine",
+ "midnight-viewer-render",
  "midnight-work-budget",
  "png",
  "slint",

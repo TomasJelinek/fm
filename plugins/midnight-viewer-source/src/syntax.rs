@@ -53,6 +53,8 @@ pub enum Language {
     Css,
     Makefile,
     Csv,
+    /// A `.csv` file whose first record is separated by semicolons.
+    CsvSemicolon,
     Tsv,
 }
 
@@ -195,7 +197,11 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "css" => Some(Css),
         // Whole names such as `Makefile` arrive here as their only "extension".
         "mk" | "mak" | "makefile" | "gnumakefile" => Some(Makefile),
-        "csv" => Some(Csv),
+        // Decided once at Open, so every page and checkpoint splits at one delimiter.
+        "csv" => Some(match csv::Dialect::of_csv(prefix) {
+            csv::Dialect::Semicolon => CsvSemicolon,
+            _ => Csv,
+        }),
         "tsv" => Some(Tsv),
         _ => None,
     };
@@ -389,9 +395,10 @@ pub(crate) fn stream(
             };
             Some(consumed)
         }
-        Language::Csv | Language::Tsv => {
+        Language::Csv | Language::CsvSemicolon | Language::Tsv => {
             let dialect = match language {
                 Language::Tsv => csv::Dialect::Tsv,
+                Language::CsvSemicolon => csv::Dialect::Semicolon,
                 _ => csv::Dialect::Csv,
             };
             let mut current = if let Mode::Csv(current) = state.mode {
@@ -553,6 +560,7 @@ fn keyword_list(language: Language) -> &'static str {
         | Language::Css
         | Language::Makefile
         | Language::Csv
+        | Language::CsvSemicolon
         | Language::Tsv => "",
     }
 }

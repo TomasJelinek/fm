@@ -16,6 +16,18 @@ size. An unavailable saved family remains selected until explicitly replaced;
 the renderer uses its usual glyph fallback. Programmatic restoration does not
 save a new edit.
 
+An open Find bar keeps its place in a short window. When the window cannot hold the
+Find bar, this row (or the HTML viewer's Online, JavaScript and zoom row), the status
+and footer rows and one control height of text, the row gives way and the Find bar
+shows **Close**, which closes Find and brings the row back; in plain text **Aa** does
+the same. Find or Ctrl+F opens Find again in its place, and the HTML zoom keys work
+throughout. The decision uses the window size that the viewer applies with its
+compact layout, so the footer, the Find bar and the status line stay inside the
+window at the 320×200 minimum with touch density and in short wider windows with
+32-pixel interface fonts. The Lines box and the other source controls fit 480×320 and
+320×200 windows; acceptance probes that skip transparent layers do not see its native
+check box, an opacity-0 layer over the drawn box, at any window size.
+
 Markdown always wraps to its reading width. GitHub is the default with 1.5 font
 size line spacing, 32-pixel side padding (16 pixels below 768 logical pixels of
 window width) and a maximum 980-pixel reading width.

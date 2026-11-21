@@ -21,6 +21,8 @@ slint-build.workspace = true
 midnight-work-budget = { path = "../midnight-work-budget", features = ["resident-workers"] }
 slint = { workspace = true, features = ["unstable-wgpu-30"] }
 midnight-plugin-host = { path = "../midnight-plugin-host" }
+# tests/selection_contrast.rs paints selected source text exactly as the backend does.
+midnight-viewer-render = { path = "../midnight-viewer-render" }
 tokio.workspace = true
 png = "0.18"
 

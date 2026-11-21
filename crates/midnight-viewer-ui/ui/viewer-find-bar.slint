@@ -12,14 +12,24 @@ export component ViewerFindBar inherits Rectangle {
     in-out property <string> query;
     in-out property <bool> case-sensitive;
     in-out property <bool> whole-words;
-    private property <bool> narrow: root.width < root.font-size * 26 + 230px;
+    // Offered while this bar holds the place of controls that a short window cannot fit.
+    in property <bool> closable;
     private property <length> row-height: max(32px, root.control-height, root.font-size + 14px);
-    preferred-height: root.narrow ? root.row-height * 2 + 4px : root.row-height;
+    private property <bool> narrow: root.narrow-at(root.width);
+    preferred-height: root.rows-height(root.width);
     min-width: 0px; horizontal-stretch: 1; vertical-stretch: 0;
     callback search(bool);
     callback clear-query();
     callback case-changed(bool);
+    callback close();
     public function focus-query() { search-edit.focus(); }
+    // Two rows where the options do not fit beside the search field.
+    pure function narrow-at(width: length) -> bool { width < root.font-size * 26 + 230px }
+    // The bar's height at `width`. The viewer plans its rows with it from the window size,
+    // which does not depend on their layout.
+    public pure function rows-height(width: length) -> length {
+        root.narrow-at(width) ? root.row-height * 2 + 4px : root.row-height
+    }
 
     field := Rectangle {
         x: 0px; y: 0px;
@@ -83,6 +93,13 @@ export component ViewerFindBar inherits Rectangle {
             accessible-label: "Next match";
             Tooltip { text: @markdown("Next match (F3)"); }
             clicked => { root.search(false); }
+        }
+        if root.closable: ActionButton {
+            font-size: root.font-size; control-height: root.control-height;
+            compact: true; fallback-icon: FallbackIcons.close;
+            accessible-label: "Close find";
+            Tooltip { text: @markdown("Close Find to show the controls it covers. Ctrl+F opens it again."); }
+            clicked => { root.close(); }
         }
     }
 }

@@ -12,6 +12,7 @@
 mod keyboard;
 mod position_bar;
 mod preferences;
+mod selection_contrast;
 mod ui_polish;
 mod wrap_control;
 

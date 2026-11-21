@@ -41,7 +41,9 @@ pub(crate) struct RoleSpan {
     pub role: u16,
 }
 
-fn role_color(role: u16, appearance: &ViewerAppearance) -> [u8; 4] {
+/// The color that text and document pages paint a `viewer::STYLE_*` role with in
+/// `appearance`; unknown roles use the foreground.
+pub fn role_color(role: u16, appearance: &ViewerAppearance) -> [u8; 4] {
     let tint = match role {
         viewer::STYLE_KEYWORD | viewer::STYLE_HEADING => appearance.accent,
         viewer::STYLE_STRING => [150, 220, 95, 255],

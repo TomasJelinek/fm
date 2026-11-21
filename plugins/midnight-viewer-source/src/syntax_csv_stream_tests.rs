@@ -109,6 +109,10 @@ const UNICODE: &str = "naïve,日本,😀\n\"é,\"\"ü\"\"\",ß,€\u{301}\n";
 const TSV_RECORDS: &str = "id\tname\tprice, EUR\tqty\tcity\tcountry\tcode\r\n1\tapple\t0,50\t10\tPrague\tCZ\tA1\r\n2\tpear\t0,75\t3\tBrno\tCZ\tB2\r\n";
 const TSV_EMPTY: &str = "a\t\tc\t\n\te\t\t\n\n\t\tg\r\n";
 const TSV_QUOTES: &str = "0\t\"a\tb\"\tc\n1\t\"open\tx\n2\ty\t\"\"z\"\"\n";
+/// A spreadsheet export from a locale whose decimal separator is the comma: semicolons
+/// separate fields, commas are decimal separators and text, and quoted fields may hold
+/// semicolons, doubled quotes and line breaks.
+const SEMICOLON: &str = "Name;Price, EUR;Qty;Note;Date;Code\r\nWidget;1,50;3;\"Red; large\";21.11.2026;A1\r\n\"Gadget, blue\";12,00;1;\"say \"\"hi\"\";\nnext\";;B2\r\n";
 
 #[test]
 fn csv_stream_matches_every_scalar_split_and_single_scalar_turns() {
@@ -131,6 +135,10 @@ fn csv_stream_matches_every_scalar_split_and_single_scalar_turns() {
         (Dialect::Tsv, QUOTED),
         (Dialect::Tsv, MALFORMED),
         (Dialect::Tsv, "x\t\""),
+        (Dialect::Semicolon, SEMICOLON),
+        (Dialect::Semicolon, QUOTED),
+        (Dialect::Semicolon, MALFORMED),
+        (Dialect::Semicolon, "x;\"b\"\""),
     ] {
         let expected = run_with(text, dialect, [text.len()]);
         let boundaries: Vec<_> = text.char_indices().map(|(at, _)| at).skip(1).collect();
@@ -438,6 +446,112 @@ fn tsv_quotes_are_ordinary_text_and_never_join_lines() {
 }
 
 #[test]
+fn semicolon_fields_take_the_role_of_their_column_and_keep_their_commas() {
+    let text = SEMICOLON;
+    let (state, spans) = run_with(text, Dialect::Semicolon, [text.len()]);
+    assert_eq!(state, State::default());
+    assert_eq!(
+        roles(
+            text,
+            &spans,
+            &[
+                "Name",
+                "Price, EUR",
+                "Qty",
+                "Note",
+                "Date",
+                "Code",
+                "Widget",
+                // A decimal comma stays inside its field.
+                "1,50",
+                "3",
+                "Red; large",
+                "21.11.2026",
+                "A1",
+                "Gadget, blue",
+                "12,00",
+                "1",
+                // Doubled quotes, a semicolon and a line break inside quotes.
+                "say \"\"hi\"\";\nnext",
+                "B2",
+            ]
+        ),
+        [
+            STYLE_PLAIN,
+            STYLE_STRING,
+            STYLE_NUMBER,
+            STYLE_FUNCTION,
+            STYLE_TYPE,
+            // The sixth column repeats the first.
+            STYLE_PLAIN,
+            STYLE_PLAIN,
+            STYLE_STRING,
+            STYLE_NUMBER,
+            STYLE_FUNCTION,
+            STYLE_TYPE,
+            STYLE_PLAIN,
+            STYLE_PLAIN,
+            STYLE_STRING,
+            STYLE_NUMBER,
+            STYLE_FUNCTION,
+            STYLE_PLAIN,
+        ]
+    );
+    // Delimiters, record ends and the quotes around quoted fields stay plain; the
+    // semicolons and line breaks inside quotes do not.
+    let quoted: Vec<_> = ["\"Red; large\"", "\"say \"\"hi\"\";\nnext\""]
+        .into_iter()
+        .map(|field| {
+            let open = text.find(field).unwrap();
+            (open, open + field.len() - 1)
+        })
+        .collect();
+    let inside = |at: usize| quoted.iter().any(|&(open, close)| open < at && at < close);
+    let bytes = text.as_bytes();
+    assert_plain(text, &spans, |at| {
+        matches!(bytes[at], b';' | b'\r' | b'\n') && !inside(at)
+    });
+    for &(open, close) in &quoted {
+        assert_eq!(role_at(&spans, open, open + 1), STYLE_PLAIN, "{open}");
+        assert_eq!(role_at(&spans, close, close + 1), STYLE_PLAIN, "{close}");
+    }
+}
+
+#[test]
+fn csv_dialect_follows_the_first_record_and_ties_keep_the_comma() {
+    for (prefix, expected) in [
+        ("", Dialect::Csv),
+        ("name\n", Dialect::Csv),
+        ("a,b,c\n", Dialect::Csv),
+        ("Name;Price;Qty\r\nWidget;1,50;3\r\n", Dialect::Semicolon),
+        // Only the first record decides.
+        ("a,b\n1;2;3;4;5\n6;7;8;9;0\n", Dialect::Csv),
+        ("a;b\n1,5;2,5\n3,5;4,5\n", Dialect::Semicolon),
+        // Equal counts keep the comma; otherwise the larger count wins.
+        ("a;b,c\n", Dialect::Csv),
+        ("Price, EUR;Qty;Note\n", Dialect::Semicolon),
+        ("a,b,c;d;e\n", Dialect::Csv),
+        // Delimiters inside quotes count for neither, doubled quotes included.
+        ("\"a;b;c\",d\n", Dialect::Csv),
+        ("\"a,b,c\";d\n", Dialect::Semicolon),
+        ("\"x \"\";\"\" y\",z\n", Dialect::Csv),
+        // A quoted line break continues the first record.
+        ("\"line\none\";b;c\nx,y,z,w\n", Dialect::Semicolon),
+        // A quote never closed hides the rest of the prefix.
+        ("\"open;a;b,c\nd;e;f\n", Dialect::Csv),
+        // A quote after a field's first byte is literal.
+        ("5\" screen;10;3\n", Dialect::Semicolon),
+        // A spreadsheet's separator line.
+        ("sep=;\na,b,c\n", Dialect::Semicolon),
+        ("sep=,\na;b;c\n", Dialect::Csv),
+        // A bare CR ends the first record too.
+        ("a,b\rc;d;e\n", Dialect::Csv),
+    ] {
+        assert_eq!(Dialect::of_csv(prefix), expected, "{prefix:?}");
+    }
+}
+
+#[test]
 fn eleven_column_records_of_1500_characters_stream_in_small_turns() {
     let features = (0..80)
         .map(|feature| format!("Win32_Feature_{feature:02}"))
@@ -487,6 +601,21 @@ fn csv_stream_consumes_huge_fields_without_a_token_buffer() {
             1,
         ),
         (Dialect::Csv, "a,b", "€".repeat(21_845), Field::Unquoted, 1),
+        // A semicolon field of decimal commas, and a quoted one of semicolons.
+        (
+            Dialect::Semicolon,
+            "a;b;",
+            "1,5".repeat(21_845),
+            Field::Unquoted,
+            2,
+        ),
+        (
+            Dialect::Semicolon,
+            "a;\"",
+            ";\n\"\"".repeat(16_384),
+            Field::Quoted,
+            1,
+        ),
         // A TSV field that starts with a quote is ordinary text of any length.
         (
             Dialect::Tsv,
@@ -581,7 +710,7 @@ fn soup(seed: u64, length: usize) -> String {
 fn csv_random_soup_never_panics_and_is_split_invariant() {
     for seed in 0..64 {
         let text = soup(seed, 600);
-        for dialect in [Dialect::Csv, Dialect::Tsv] {
+        for dialect in [Dialect::Csv, Dialect::Semicolon, Dialect::Tsv] {
             let expected = run_with(&text, dialect, [text.len()]);
             for span in &expected.1 {
                 assert!(
@@ -591,7 +720,7 @@ fn csv_random_soup_never_panics_and_is_split_invariant() {
                 assert!(text.is_char_boundary(span.end as usize));
                 // A TSV field, quotes and all, never holds a tab or a line break.
                 let styled = &text[span.start as usize..span.end as usize];
-                assert!(dialect == Dialect::Csv || !styled.contains(['\t', '\r', '\n']));
+                assert!(dialect != Dialect::Tsv || !styled.contains(['\t', '\r', '\n']));
             }
             let boundaries: Vec<_> = text.char_indices().map(|(at, _)| at).collect();
             let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;

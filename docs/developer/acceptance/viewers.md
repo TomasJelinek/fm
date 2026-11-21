@@ -37,6 +37,26 @@ complete plugin set): `viewers_files`, `viewers_compare`, `viewers_thumbnails`,
 `viewers_combinations` (with small windows) in a third run. Items marked "built, not
 run" were added after the runs: they compile but have no result yet.
 
+Checked in source on 21 November, without a new acceptance run:
+
+- The Source viewer's Lines check box lies inside 480×320 and 320×200 windows, at both
+  densities and fonts of 12 to 32 px (`midnight-viewer-ui` test
+  `ui_polish::source_toolbar_controls_stay_inside_small_windows_and_take_clicks`).
+  `viewers_combinations` › compact reports it outside every window, 1000×720 included,
+  because its visibility probe drops anything under an opacity-0 layer, and a
+  `WrappingCheckBox` keeps its accessible native check box in such a layer over the
+  drawn box (Word wrap too). The probe needs fixing, not the toolbar.
+- With Find open, a short window pushed the viewer's footer outside it (320×200 with
+  touch spacing, 560×200 with 32 px fonts). Since 21 November the rows above the
+  text give way to the Find bar there, and the Find bar's Close find button (or Aa in
+  Text mode) brings them back
+  (`ui_polish::rows_above_the_text_give_way_to_find_in_short_windows_and_come_back`).
+- S4, S5 and X8 are refuted: the ink the renderer draws for selected text keeps at
+  least 4.50:1 against the selection for every theme (26) and syntax role (12, CSV
+  columns included), 312 checks (`selection_contrast::selected_text_of_every_syntax_role_reaches_aa_contrast_in_every_theme`).
+  The low readings were antialiased edge pixels, blends of that ink with the
+  selection: the probe should take the highest-contrast pixel of large glyphs.
+
 ## Opening and routing (F3, Alt+F3)
 
 | ID | Inventory item | Scenario › check | Status |
@@ -99,8 +119,8 @@ run" were added after the runs: they compile but have no result yet.
 | S1 | Ctrl+A selects the page's rows; Ctrl+C copies them (source without line numbers, as a prefix of the file) | `viewers_selection` › each theme and sample | PASS (Rust and CSV in every theme; plain text) |
 | S2 | Markdown copies rendered text, the hex view its hex rows | `viewers_selection` › Markdown, hex view | PASS |
 | S3 | A mouse drag and a Shift+click select runs of the file's text | `viewers_selection` › mouse selection | PASS |
-| S4 | Selected text keeps 4.5:1 contrast against the selection in every theme (Rust source and CSV columns) | `viewers_selection` › every theme | FAIL (to confirm): Rust source in RosePineDawn 2.24:1 (#bb99aa on #985069) and GraphiteContrast 2.07:1 (#d28f5f on #ffdbc4); every other theme ≥ 4.5:1. Evidence: run 20261120-151137, shots/viewers_selection/ |
-| S5 | The same for plain text, Markdown, the hex view, Python, JSON, XML, YAML, CSS and SQL in Blue, Dark and Light | `viewers_selection` › representative themes | FAIL (to confirm): numbers, strings and types of Python, JSON, YAML, CSS and SQL at 3.50–4.45:1 in Blue, Dark and Light (for example Light Python #865f43 on #cccccc 3.50:1). The measurement takes each colour group's most frequent far colour; thin glyphs may still bias it low, so compare with `readable_rgb` before filing |
+| S4 | Selected text keeps 4.5:1 contrast against the selection in every theme (Rust source and CSV columns) | `viewers_selection` › every theme | REFUTED in source on 21 November (see above; the probe read antialiased pixels). Reported: Rust source in RosePineDawn 2.24:1 (#bb99aa on #985069) and GraphiteContrast 2.07:1 (#d28f5f on #ffdbc4); every other theme ≥ 4.5:1. Evidence: run 20261120-151137, shots/viewers_selection/ |
+| S5 | The same for plain text, Markdown, the hex view, Python, JSON, XML, YAML, CSS and SQL in Blue, Dark and Light | `viewers_selection` › representative themes | REFUTED in source on 21 November (see above). Reported: numbers, strings and types of Python, JSON, YAML, CSS and SQL at 3.50–4.45:1 in Blue, Dark and Light (for example Light Python #865f43 on #cccccc 3.50:1). The measurement takes each colour group's most frequent far colour; thin glyphs may still bias it low, so compare with `readable_rgb` before filing |
 | S6 | Unselected syntax colours below 3:1 against the background are flagged for review | `viewers_selection` › flags | PASS (flags only) |
 
 ## Scrolling
@@ -185,7 +205,7 @@ run" were added after the runs: they compile but have no result yet.
 | X5 | A theme previewed in Options recolours an open viewer; Cancel restores it | `viewers_combinations` › a theme previewed in Options | PASS |
 | X6 | A viewer moved to a display of twice the scale shows the same lines twice as tall | `viewers_combinations` › a viewer at twice the scale | PASS |
 | X7 | Viewers on archive members (and inner archives' members) | `viewers_archives` | PASS |
-| X8 | Every theme's selection colours | `viewers_selection` | FAIL (to confirm): RosePineDawn and GraphiteContrast (S4) and syntax tokens in Blue, Dark and Light (S5); every other theme PASS |
+| X8 | Every theme's selection colours | `viewers_selection` | REFUTED in source on 21 November (S4, S5). Reported: RosePineDawn and GraphiteContrast (S4) and syntax tokens in Blue, Dark and Light (S5); every other theme PASS |
 
 ## Not yet written
 

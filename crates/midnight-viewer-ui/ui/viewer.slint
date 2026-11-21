@@ -58,6 +58,9 @@ export component ViewerWindow inherits Window {
     in-out property <color> foreground: #dddddd;
     in-out property <color> background-color: #202020;
     in-out property <color> accent: #8bb7ef;
+    // The applied tool theme's text selection, which document pages paint selected
+    // text on (the application captures it from the same Theme for their palette).
+    out property <color> selection-background: Theme.selection-background;
     in property <float> position;
     in property <float> displayed-position;
     out property <float> vertical-thumb-position: vbar.shown-position;
@@ -118,6 +121,31 @@ export component ViewerWindow inherits Window {
         !root.media-visible && root.image-mode && root.document-page > 0
         && (root.compact || root.width < root.effective-ui-size * 32 + 260px);
     private property <length> status-size: max(11px, root.effective-ui-size - 1px);
+    private property <length> status-row-height: max(18px, root.status-size + 6px);
+    private property <length> layout-padding: root.compact && root.document-layout >= 0 ? 4px : 6px;
+    private property <length> layout-spacing: root.compact && root.document-layout >= 0 ? 2px : 4px;
+    private property <length> tool-row-height: max(32px, root.control-height);
+    // The window's logical size whenever the viewer applies `compact` (0 before then). The
+    // rows are planned from it, not from the window's own size, which depends on them.
+    in property <length> available-width;
+    in property <length> available-height;
+    // Rows of controls between an open Find bar and the text.
+    private property <bool> web-row-requested: !root.media-visible && root.web-mode;
+    private property <bool> typography-requested: !root.media-visible && !root.image-mode
+        && root.font-available && (root.typography-visible || root.markdown-mode || root.source-mode);
+    // A window too short for an open Find bar, those rows, the rows below the text and one
+    // control height of text hides those rows first: the Find bar, the status and the
+    // footer keep their places. The Find bar's Close (and text mode's Aa) brings the rows
+    // back, Find or Ctrl+F opens Find again, and the HTML zoom keys keep working.
+    private property <bool> find-displaces-rows: find-bar.visible
+        && (root.web-row-requested || root.typography-requested)
+        && root.available-height > 0px
+        && root.available-height < 2 * root.layout-padding
+            + find-bar.rows-height(root.available-width - 2 * root.layout-padding)
+            + (root.web-row-requested ? root.tool-row-height + root.layout-spacing : 0px)
+            + (root.typography-requested ? root.tool-row-height + root.layout-spacing : 0px)
+            + 2 * root.control-height + 16px + 3 * root.layout-spacing
+            + (root.compact-status ? root.status-row-height + root.layout-spacing : 0px);
     control-metrics := Button { visible: false; text: "Aa"; }
     in-out property <bool> search-visible;
     in-out property <string> query;
@@ -182,22 +210,24 @@ export component ViewerWindow inherits Window {
             reject
         }
         VerticalLayout {
-            padding: root.compact && root.document-layout >= 0 ? 4px : 6px;
-            spacing: root.compact && root.document-layout >= 0 ? 2px : 4px;
+            padding: root.layout-padding;
+            spacing: root.layout-spacing;
             find-bar := ViewerFindBar {
                 visible: !root.media-visible && root.search-visible && !root.image-mode;
                 height: self.visible ? self.preferred-height : 0px;
                 font-size: root.effective-ui-size; control-height: root.control-height;
                 compact: root.compact; web-mode: root.web-mode;
+                closable: root.find-displaces-rows;
                 query <=> root.query; case-sensitive <=> root.case-sensitive;
                 whole-words <=> root.whole-words;
                 whole-words-available: root.whole-words-available;
                 search(backwards) => { root.search(backwards); }
                 clear-query => { root.clear-search(); }
                 case-changed(value) => { root.change-case-sensitive(value); }
+                close => { root.search-visible = false; content-focus.focus(); }
             }
-            if !root.media-visible && root.web-mode: HorizontalLayout {
-                    spacing: 4px; height: max(32px, root.control-height);
+            if root.web-row-requested && !root.find-displaces-rows: HorizontalLayout {
+                    spacing: 4px; height: root.tool-row-height;
                     WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Online"; checked <=> root.web-network; enabled: root.web-policy-change-allowed; horizontal-stretch: 0;
                         accessible-name: "Allow network for this document only";
                         Tooltip { text: root.web-policy-change-allowed
@@ -220,8 +250,8 @@ export component ViewerWindow inherits Window {
                         accessible-label: "Zoom HTML in";
                         clicked => { root.image-command(2); content-focus.focus(); } }
             }
-            if !root.media-visible && !root.image-mode && root.font-available && (root.typography-visible || root.markdown-mode || root.source-mode): HorizontalLayout {
-                spacing: 6px; height: max(32px, root.control-height);
+            if root.typography-requested && !root.find-displaces-rows: HorizontalLayout {
+                spacing: 6px; height: root.tool-row-height;
                 if root.source-mode: WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height;
                     text: "Lines"; checked <=> root.line-numbers;
                     accessible-name: "Source line numbers";
@@ -402,7 +432,7 @@ export component ViewerWindow inherits Window {
                 seek(session, position) => { root.media-seek(session, position); }
             }
             if root.compact-status : Text {
-                height: max(18px, root.status-size + 6px); text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text;
+                height: root.status-row-height; text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: Theme.text;
                 font-size: root.status-size; overflow: elide; vertical-alignment: center;
             }
             // Keep width-dependent grid placement out of the window's intrinsic sizing.
@@ -520,7 +550,13 @@ export component ViewerWindow inherits Window {
                     if !root.media-visible && !root.image-mode && root.font-available && !root.source-mode && !root.markdown-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
                         text: "Aa"; min-width: 30px; max-width: 38px;
                         accessible-label: "Font and presentation";
-                        clicked => { root.typography-visible = !root.typography-visible; }
+                        clicked => {
+                            // A row that an open Find bar covers comes back instead of turning off.
+                            if !(root.typography-requested && root.find-displaces-rows) {
+                                root.typography-visible = !root.typography-visible;
+                            }
+                            if root.find-displaces-rows { root.search-visible = false; content-focus.focus(); }
+                        }
                     }
                     if !root.media-visible && !root.image-mode: CompactPicker { model: root.modes; current-index: root.mode-index;
                         font-size: root.effective-ui-size; control-height: root.control-height;

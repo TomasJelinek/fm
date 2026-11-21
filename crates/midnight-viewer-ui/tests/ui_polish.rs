@@ -1355,3 +1355,372 @@ fn app_touch_theme_keeps_compact_image_and_document_footer_inside_and_disjoint()
     assert_eq!(fits.get(), 3);
     window.hide().unwrap();
 }
+
+/// The width a text item needs to show all of its text on one line.
+fn text_width(item: &ItemRc) -> f32 {
+    use i_slint_core::{
+        items::{ComplexText, Item, SimpleText},
+        layout::Orientation,
+    };
+    let adapter = item.window_adapter().expect("a shown window");
+    if let Some(text) = item.downcast::<SimpleText>() {
+        return text
+            .as_pin_ref()
+            .layout_info(Orientation::Horizontal, -1.0, &adapter, item)
+            .preferred;
+    }
+    let text = item.downcast::<ComplexText>().expect("a text item");
+    text.as_pin_ref()
+        .layout_info(Orientation::Horizontal, -1.0, &adapter, item)
+        .preferred
+}
+
+/// The Source viewer's controls in a 480 x 320 window, at the 320 x 200 minimum, on both
+/// sides of the compact (500 px) and narrow (680 px) widths and in a short 560 x 200
+/// window, with the layouts the viewer selects for those widths, mouse and touch
+/// density, and small and large interface fonts. Every control lies inside the window,
+/// in its row and beside its neighbours; the Lines caption shows its whole text; a click
+/// on the box and one on the caption each reach the line-number preference. With Find
+/// open as well, a window too short for the Find bar, the typography row and some text
+/// hides that row and offers Close in the Find bar, which brings the row back.
+///
+/// The box's native check box is an opacity-0 layer over the drawn box (WrappingCheckBox),
+/// so a probe that ignores transparent layers misses it at every window size.
+#[test]
+fn source_toolbar_controls_stay_inside_small_windows_and_take_clicks() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    window.set_source_mode(true);
+    window.set_modes(slint::ModelRc::new(slint::VecModel::from(vec![
+        "Text".into(),
+        "Binary".into(),
+        "Source".into(),
+    ])));
+    window.set_mode_index(2);
+    window.set_wrap_available(true);
+    window.set_viewer_font_family("Consolas".into());
+    window.set_status("Ln 12, Col 1  Bytes 0–2048 / 4096".into());
+    let numbers = Rc::new(RefCell::new(Vec::new()));
+    let received = numbers.clone();
+    window.on_change_line_numbers(move |value| received.borrow_mut().push(value));
+    let weak = window.as_weak();
+    window.on_find(move || weak.upgrade().unwrap().invoke_focus_search());
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let mut expected = Vec::new();
+    for (width, height) in [
+        (480u32, 320u32),
+        (320, 200),
+        (499, 320),
+        (500, 320),
+        (679, 400),
+        (680, 400),
+        (560, 200),
+    ] {
+        for (density, font) in [(0, 12), (0, 32), (1, 15), (1, 32)] {
+            window.invoke_apply_tool_theme(0, density, "Segoe UI".into(), font, font);
+            lay_out(&window, width, height);
+            let case = format!("{width}x{height} density {density} font {font}");
+            draw(
+                &native,
+                &window,
+                width,
+                height,
+                &format!("source-toolbar-density{density}-font{font}"),
+            );
+            let (window_width, window_height) = (width as f32, height as f32);
+            for row in [
+                &[
+                    "Source line numbers",
+                    "Lines",
+                    "Viewer font family",
+                    "Viewer font size",
+                ][..],
+                &["Find", "Word wrap", "Viewer mode"],
+            ] {
+                let mut right = 0.0_f32;
+                let mut middle = None;
+                for label in row {
+                    let item = control(&window, label, window_width, window_height);
+                    let rect = item.geometry();
+                    let origin = item.map_to_native_window(rect.origin);
+                    assert!(
+                        item.is_visible() && rect.size.width > 0.0 && rect.size.height > 0.0,
+                        "{label} has no visible area at {case}"
+                    );
+                    assert!(
+                        origin.x >= right - 0.5,
+                        "{label} overlaps the control before it at {case}"
+                    );
+                    right = origin.x + rect.size.width;
+                    let center = origin.y + rect.size.height / 2.0;
+                    let row_center = *middle.get_or_insert(center);
+                    assert!(
+                        (center - row_center).abs() < 3.0,
+                        "{label} leaves its row at {case}"
+                    );
+                }
+            }
+            let caption = control(&window, "Lines", window_width, window_height);
+            assert!(
+                caption.geometry().size.width >= text_width(&caption) - 0.5,
+                "the Lines caption is cut at {case}: {:?}",
+                caption.geometry()
+            );
+            for label in ["Source line numbers", "Lines"] {
+                click_control(
+                    &window,
+                    control(&window, label, window_width, window_height),
+                );
+                expected.push(!expected.last().copied().unwrap_or(true));
+                assert!(
+                    window.get_content_focused(),
+                    "{label} returns the focus to the text at {case}"
+                );
+            }
+            // With Find open too, the typography row gives way where the window cannot also
+            // keep a control height of text, and the Find bar's Close brings it back.
+            window.set_query("needle".into());
+            window.invoke_focus_search();
+            draw(
+                &native,
+                &window,
+                width,
+                height,
+                &format!("source-toolbar-find-density{density}-font{font}"),
+            );
+            let case = format!("{case} with Find open");
+            let covered = !shown(&window, "Source line numbers");
+            assert_eq!(
+                shown(&window, "Close find"),
+                covered,
+                "Close is offered exactly while the row is hidden at {case}"
+            );
+            if width == 320 {
+                assert!(
+                    covered,
+                    "the minimum window keeps text before the row at {case}"
+                );
+            } else if (width, height) == (480, 320) {
+                assert!(!covered, "480 x 320 has room for both at {case}");
+            }
+            let mut labels: Vec<_> = FIND_BAR.into_iter().chain(SOURCE_FOOTER).collect();
+            labels.extend(if covered {
+                &["Close find"][..]
+            } else {
+                &SOURCE_TYPOGRAPHY[..]
+            });
+            assert_inside_and_apart(&window, &labels, window_width, window_height, &case);
+            if covered {
+                click_control(
+                    &window,
+                    control(&window, "Close find", window_width, window_height),
+                );
+                draw(
+                    &native,
+                    &window,
+                    width,
+                    height,
+                    "source-toolbar-find-closed",
+                );
+                assert!(!window.get_search_visible() && window.get_content_focused());
+                let labels: Vec<_> = SOURCE_TYPOGRAPHY.into_iter().chain(SOURCE_FOOTER).collect();
+                assert_inside_and_apart(&window, &labels, window_width, window_height, &case);
+                // Find opens again in the row's place.
+                click_control(
+                    &window,
+                    control(&window, "Find", window_width, window_height),
+                );
+                draw(&native, &window, width, height, "source-toolbar-find-again");
+                assert!(window.get_search_visible() && !shown(&window, "Source line numbers"));
+            }
+            window.set_search_visible(false);
+            window.set_query("".into());
+            window.invoke_focus_content();
+        }
+    }
+    assert_eq!(*numbers.borrow(), expected);
+    window.hide().unwrap();
+}
+
+const FIND_BAR: [&str; 6] = [
+    "Find in file",
+    "Clear find text",
+    "Case sensitive",
+    "Find whole words",
+    "Previous match",
+    "Next match",
+];
+const SOURCE_TYPOGRAPHY: [&str; 4] = [
+    "Source line numbers",
+    "Lines",
+    "Viewer font family",
+    "Viewer font size",
+];
+const SOURCE_FOOTER: [&str; 3] = ["Find", "Word wrap", "Viewer mode"];
+
+/// What the viewer applies for a window of this logical size (lib.rs, apply_window_size).
+fn lay_out(window: &ViewerWindow, width: u32, height: u32) {
+    window.set_compact(width < 500);
+    window.set_narrow_typography(width < 680);
+    window.set_available_width(width as f32);
+    window.set_available_height(height as f32);
+}
+
+/// Whether a control with this label is shown.
+fn shown(window: &ViewerWindow, label: &str) -> bool {
+    find(
+        ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
+        label,
+    )
+    .is_some_and(|item| item.is_visible())
+}
+
+/// Each of `labels` lies inside the window with an area of its own.
+fn assert_inside_and_apart(
+    window: &ViewerWindow,
+    labels: &[&str],
+    width: f32,
+    height: f32,
+    case: &str,
+) {
+    let bounds: Vec<_> = labels
+        .iter()
+        .map(|label| {
+            let item = control(window, label, width, height);
+            let rect = item.geometry();
+            let origin = item.map_to_native_window(rect.origin);
+            assert!(
+                item.is_visible() && rect.size.width > 0.0 && rect.size.height > 0.0,
+                "{label} has no visible area at {case}"
+            );
+            (
+                origin.x,
+                origin.y,
+                origin.x + rect.size.width,
+                origin.y + rect.size.height,
+            )
+        })
+        .collect();
+    for (index, first) in bounds.iter().enumerate() {
+        for (other, second) in bounds.iter().enumerate().skip(index + 1) {
+            assert!(
+                first.2 <= second.0 + 0.5
+                    || second.2 <= first.0 + 0.5
+                    || first.3 <= second.1 + 0.5
+                    || second.3 <= first.1 + 0.5,
+                "{} {first:?} overlaps {} {second:?} at {case}",
+                labels[index],
+                labels[other],
+            );
+        }
+    }
+}
+
+/// Markdown's, Text's and the HTML viewer's rows above the text give way to an open Find
+/// bar in windows too short for both, in compact and wider layouts with large fonts, so
+/// the footer stays inside the window. Close (and Aa in Text mode) brings each row back.
+#[test]
+fn rows_above_the_text_give_way_to_find_in_short_windows_and_come_back() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    let weak = window.as_weak();
+    window.on_find(move || weak.upgrade().unwrap().invoke_focus_search());
+    window.set_modes(slint::ModelRc::new(slint::VecModel::from(vec![
+        "Text".into(),
+        "Markdown".into(),
+        "HTML".into(),
+    ])));
+    window.set_status("Ln 12, Col 1".into());
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let modes: [(&str, &[&str], &[&str], &str); 3] = [
+        (
+            "markdown",
+            &[
+                "Markdown presentation",
+                "Viewer font family",
+                "Viewer font size",
+            ],
+            &["Find", "Word wrap", "Viewer mode"],
+            "Close find",
+        ),
+        (
+            "text",
+            &["Viewer font family", "Viewer font size"],
+            &["Find", "Word wrap", "Font and presentation", "Viewer mode"],
+            "Font and presentation",
+        ),
+        (
+            "html",
+            &[
+                "Allow network for this document only",
+                "Allow scripts to read and transmit this document",
+                "Zoom HTML out",
+                "Zoom HTML in",
+            ],
+            &["Find", "Viewer mode"],
+            "Close find",
+        ),
+    ];
+    for (index, (mode, row, footer, back)) in modes.into_iter().enumerate() {
+        window.set_mode_index(index as i32);
+        window.set_markdown_mode(mode == "markdown");
+        window.set_typography_visible(mode == "text");
+        window.set_web_mode(mode == "html");
+        window.set_font_available(mode != "html");
+        window.set_wrap_available(mode != "html");
+        window.set_web_policy_change_allowed(mode == "html");
+        for (width, height, density, font) in [
+            (320u32, 200u32, 1, 32),
+            (560, 200, 0, 32),
+            (560, 200, 1, 32),
+        ] {
+            window.invoke_apply_tool_theme(0, density, "Segoe UI".into(), font, font);
+            lay_out(&window, width, height);
+            let (window_width, window_height) = (width as f32, height as f32);
+            let case = format!("{mode} at {width}x{height} density {density} font {font}");
+            draw(&native, &window, width, height, &format!("{mode}-short"));
+            let labels: Vec<_> = row.iter().chain(footer).copied().collect();
+            assert_inside_and_apart(&window, &labels, window_width, window_height, &case);
+            window.set_query("needle".into());
+            window.invoke_focus_search();
+            draw(
+                &native,
+                &window,
+                width,
+                height,
+                &format!("{mode}-short-find"),
+            );
+            assert!(
+                !shown(&window, row[0]) && shown(&window, "Close find"),
+                "the row gives way to Find at {case}"
+            );
+            let labels: Vec<_> = FIND_BAR
+                .into_iter()
+                .chain(footer.iter().copied())
+                .chain(["Close find"])
+                .collect();
+            assert_inside_and_apart(&window, &labels, window_width, window_height, &case);
+            click_control(&window, control(&window, back, window_width, window_height));
+            draw(
+                &native,
+                &window,
+                width,
+                height,
+                &format!("{mode}-short-back"),
+            );
+            assert!(!window.get_search_visible(), "{back} closes Find at {case}");
+            let labels: Vec<_> = row.iter().chain(footer).copied().collect();
+            assert_inside_and_apart(&window, &labels, window_width, window_height, &case);
+            window.set_query("".into());
+        }
+    }
+    window.hide().unwrap();
+}

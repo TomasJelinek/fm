@@ -358,12 +358,87 @@ fn a_page_that_starts_inside_a_quoted_csv_field_keeps_its_column() {
 }
 
 #[test]
+fn semicolon_csv_columns_hold_on_the_first_page_and_a_resumed_one() {
+    // A spreadsheet export with decimal commas, a quoted semicolon and a quoted line break.
+    let text = "Name;Price;Qty;Note\nWidget;1,50;7;\"Red; large\nand round\"\nGadget;12,00;9;plain, text\n";
+    let mut host = Host::new(text.as_bytes(), entry);
+    host.submit(
+        abi::REQUEST_OPEN,
+        &Open {
+            reader: 1,
+            revision: 7,
+            length: Some(text.len() as u64),
+            mode: MODE_SOURCE,
+            display_name: "prices.csv".into(),
+        },
+    );
+    assert!(host.finish().iter().any(|e| e.kind == abi::EVENT_OPENED));
+    let first = page_at(&mut host, 0);
+    assert_eq!(first.text, text);
+    for (token, role) in [
+        ("Price", STYLE_STRING),
+        ("Qty", STYLE_NUMBER),
+        ("Note", STYLE_FUNCTION),
+        ("1,50", STYLE_STRING),
+        ("7", STYLE_NUMBER),
+        ("Red; large\nand round", STYLE_FUNCTION),
+        ("12,00", STYLE_STRING),
+        ("9", STYLE_NUMBER),
+        ("plain, text", STYLE_FUNCTION),
+    ] {
+        styled(&first.text, &first.spans, token, role);
+    }
+    for first_column in ["Name", "Widget", "Gadget"] {
+        unstyled(&first.text, &first.spans, first_column);
+    }
+    first.validate().unwrap();
+    // A page that starts inside the quoted note resumes from a checkpoint and splits
+    // at the same delimiter: the dialect was decided once, at Open.
+    let anchor = text.find("and round").unwrap();
+    let page = page_at(&mut host, anchor as u64);
+    assert_eq!(page.text, &text[anchor..]);
+    for (token, role) in [
+        ("and round", STYLE_FUNCTION),
+        ("12,00", STYLE_STRING),
+        ("9", STYLE_NUMBER),
+        ("plain, text", STYLE_FUNCTION),
+    ] {
+        styled(&page.text, &page.spans, token, role);
+    }
+    unstyled(&page.text, &page.spans, "Gadget");
+    page.validate().unwrap();
+
+    // The first record is read after a byte order mark and decides against the decimal
+    // commas of the records after it.
+    let text = "\u{feff}a;b;c\r\n1,5;2,5;3,5\r\n";
+    let page = source_page("export.CSV", text);
+    for (token, role) in [
+        ("b", STYLE_STRING),
+        ("c", STYLE_NUMBER),
+        ("2,5", STYLE_STRING),
+        ("3,5", STYLE_NUMBER),
+    ] {
+        styled(&page.text, &page.spans, token, role);
+    }
+    unstyled(&page.text, &page.spans, "1,5");
+    page.validate().unwrap();
+}
+
+#[test]
 fn csv_and_tsv_extensions_route_to_their_profiles() {
     let csv = syntax::detect("data.csv", "").expect("CSV profile");
     let tsv = syntax::detect("data.tsv", "").expect("TSV profile");
     assert_ne!(csv, tsv);
     assert_eq!(syntax::detect("DATA.CSV", ""), Some(csv));
     assert_eq!(syntax::detect("data.Tsv", ""), Some(tsv));
+    // A `.csv` file's first record selects commas or semicolons; ties keep commas.
+    let semicolons =
+        syntax::detect("prices.csv", "Name;Price\nWidget;1,50\n").expect("semicolon CSV profile");
+    assert!(semicolons != csv && semicolons != tsv);
+    assert_eq!(syntax::detect("data.csv", "a,b\n1;2;3\n"), Some(csv));
+    assert_eq!(syntax::detect("data.csv", "a;b,c\n"), Some(csv));
+    // TSV keeps its tabs, whatever its first line holds.
+    assert_eq!(syntax::detect("data.tsv", "a;b;c\n"), Some(tsv));
     for name in ["data.csv.gz", "data.psv", "data.tab", "data.xlsx"] {
         assert_eq!(syntax::detect(name, ""), None, "{name}");
     }

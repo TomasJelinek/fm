@@ -398,9 +398,7 @@ impl ViewerWindows {
         window.set_case_sensitive(launch.preferences.case_sensitive);
         window.set_wrap_enabled(launch.preferences.wrap);
         let placement = placement.into();
-        let size = placement.logical_size();
-        window.set_compact(size.width < 500.0);
-        window.set_narrow_typography(size.width < 680.0);
+        apply_window_size(&window, placement.logical_size());
         placement.apply(window.window());
         let app_appearance = self.appearance.borrow().clone();
         if let Some(app) = &app_appearance {
@@ -566,11 +564,18 @@ fn window_geometry(window: &ViewerWindow) -> ViewerGeometry {
 
 fn geometry_properties(window: &ViewerWindow) -> f32 {
     let scale = window.window().scale_factor();
-    let width = window.window().size().to_logical(scale).width;
-    window.set_compact(width < 500.0);
-    window.set_narrow_typography(width < 680.0);
+    apply_window_size(window, window.window().size().to_logical(scale));
     window.set_image_pixel_scale(1.0 / scale);
     scale
+}
+
+/// The layout choices that follow the window's logical size: compact and narrow
+/// controls, and the size that plans the rows around an open Find bar.
+fn apply_window_size(window: &ViewerWindow, size: slint::LogicalSize) {
+    window.set_compact(size.width < 500.0);
+    window.set_narrow_typography(size.width < 680.0);
+    window.set_available_width(size.width);
+    window.set_available_height(size.height);
 }
 
 fn layout_geometry(window: &ViewerWindow) -> Option<ViewerGeometry> {

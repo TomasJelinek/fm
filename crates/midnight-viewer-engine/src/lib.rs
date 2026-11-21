@@ -35,6 +35,7 @@ mod office_preview;
 #[cfg(test)]
 mod opening_retirement_tests;
 mod page;
+pub use page::role_color;
 mod palette;
 mod position_ack;
 mod preferences;
