@@ -1,7 +1,7 @@
 //! Handle-relative native access keeps recursion independent of mutable path traversal.
 use super::{cancelled, checked, failure};
 use crate::{directory_records::Cursor, reparse::Native};
-use midnight_core::{Cancellation, FsError};
+use midnight_core::{Cancellation, DeleteEntryFailure, DeleteFailureChoice, FsError};
 use std::{
     ffi::{OsStr, OsString},
     fs::{File, OpenOptions},
@@ -461,25 +461,113 @@ fn remove_confirmed(source: &File) -> io::Result<()> {
     // access, identity pins and no-follow traversal are still required.
     dispose(
         || posix_dispose(source, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE),
-        || {
-            let information = FILE_DISPOSITION_INFO { DeleteFile: true };
-            // SAFETY: source has DELETE access; the fixed-size structure is valid during
-            // this call.
-            native_result(unsafe {
-                SetFileInformationByHandle(
-                    source.as_raw_handle(),
-                    FileDispositionInfo,
-                    (&information as *const FILE_DISPOSITION_INFO).cast(),
-                    size_of::<FILE_DISPOSITION_INFO>() as u32,
-                )
-            })
-        },
-        // The basic class exists on every filesystem, unlike the reparse-tag class.
-        || {
-            crate::reparse::attributes(source)
-                .map(|attributes| attributes & FILE_ATTRIBUTE_READONLY != 0)
-        },
+        || classic_dispose(source),
+        || writable(source),
     )
+}
+
+/// The handle-bound disposition of filesystems without POSIX disposition: the name is
+/// removed once every handle to the entry is closed. It refuses a read-only entry.
+fn classic_dispose(source: &File) -> io::Result<()> {
+    let information = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: source has DELETE access; the fixed-size structure is valid during this call.
+    native_result(unsafe {
+        SetFileInformationByHandle(
+            source.as_raw_handle(),
+            FileDispositionInfo,
+            (&information as *const FILE_DISPOSITION_INFO).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    })
+}
+
+/// Puts back what [`dispose`] changed to delete an entry that stays after all.
+type Restore<'a> = Box<dyn FnOnce() + 'a>;
+
+/// Clears the DOS read-only attribute of the entry `source` itself, for the classic
+/// disposition, which cannot ignore it; returns how to put it back, or `None` when it
+/// was not set. The attribute is changed through a second handle to the same object (an
+/// empty name relative to `source`, never a path), and only that bit changes. An entry
+/// with other names (hard links), which may lie outside the confirmed tree and would
+/// lose the attribute too, is refused instead.
+fn writable(source: &File) -> io::Result<Option<Restore<'static>>> {
+    // The basic class exists on every filesystem, unlike the reparse-tag class.
+    let attributes = crate::reparse::attributes(source)?;
+    if attributes & FILE_ATTRIBUTE_READONLY == 0 {
+        return Ok(None);
+    }
+    if link_count(source)? > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "this filesystem cannot delete a read-only entry without clearing Read-only, and \
+             this file has other names (hard links) that would lose it too; clear Read-only \
+             first",
+        ));
+    }
+    let writer = reopen(
+        source,
+        FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    )
+    .and_then(|writer| {
+        set_attributes(&writer, attributes & !FILE_ATTRIBUTE_READONLY)?;
+        Ok(writer)
+    })
+    .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "this filesystem cannot delete a read-only entry without clearing Read-only, \
+                 which failed: {error}"
+            ),
+        )
+    })?;
+    Ok(Some(Box::new(move || {
+        // Best effort, as Linux restores a folder's mode: the entry stays either way.
+        let _ = set_attributes(&writer, attributes);
+    })))
+}
+
+/// Sets the attributes of `file` through `FileBasicInfo`; the filesystem keeps those it
+/// does not let callers set (directory, reparse point, ...). Zero times stay unchanged.
+fn set_attributes(file: &File, attributes: u32) -> io::Result<()> {
+    let information = FILE_BASIC_INFO {
+        // Zero would leave the attributes unchanged; Normal means none.
+        FileAttributes: if attributes == 0 {
+            FILE_ATTRIBUTE_NORMAL
+        } else {
+            attributes
+        },
+        ..Default::default()
+    };
+    // SAFETY: file has FILE_WRITE_ATTRIBUTES; the fixed-size structure is valid during
+    // this call.
+    native_result(unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&information as *const FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    })
+}
+
+/// The number of names (hard links) of the entry `file`.
+fn link_count(file: &File) -> io::Result<u32> {
+    let mut information = FILE_STANDARD_INFO::default();
+    // SAFETY: file owns a live handle; the writable structure has its exact native size.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStandardInfo,
+            (&mut information as *mut FILE_STANDARD_INFO).cast(),
+            size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(information.NumberOfLinks)
 }
 
 fn posix_dispose(source: &File, flags: FILE_DISPOSITION_INFO_EX_FLAGS) -> io::Result<()> {
@@ -506,122 +594,272 @@ fn native_result(succeeded: i32) -> io::Result<()> {
 }
 
 /// Confirmed permanent deletion. POSIX disposition removes the name immediately while
-/// identity handles stay open. Filesystems without it (FAT32, exFAT, some redirectors)
-/// reject the extended class; they fall back to the classic handle-bound disposition on
-/// the same pinned handle, which removes the name once every handle to the entry is
-/// closed (the caller closes its own right afterwards). The classic class cannot ignore
-/// the DOS read-only attribute, so a read-only entry there is reported instead of
-/// changing its attributes.
-fn dispose(
+/// identity handles stay open, and ignores the DOS read-only attribute without changing
+/// it. Filesystems without it (FAT32, exFAT, some redirectors) reject the extended
+/// class; they fall back to the classic handle-bound disposition on the same pinned
+/// handle, which removes the name once every handle to the entry is closed (the caller
+/// closes its own right afterwards). The classic class cannot ignore Read-only:
+/// `writable` clears it on the entry first ([`writable`]: never on an entry with other
+/// names), and an entry that the classic disposition still refuses gets it back.
+fn dispose<'a>(
     extended: impl FnOnce() -> io::Result<()>,
     classic: impl FnOnce() -> io::Result<()>,
-    read_only: impl FnOnce() -> io::Result<bool>,
+    writable: impl FnOnce() -> io::Result<Option<Restore<'a>>>,
 ) -> io::Result<()> {
-    let error = match extended() {
-        Ok(()) => return Ok(()),
-        Err(error) if unsupported(&error) => error,
-        Err(error) => return Err(error),
-    };
-    if read_only()? {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "this filesystem cannot delete a read-only entry without changing its \
-                 attributes; clear Read-only first ({error})"
-            ),
-        ));
+    match extended() {
+        Err(error) if unsupported(&error) => {}
+        result => return result,
     }
-    classic()
+    let restore = writable()?;
+    let result = classic();
+    if result.is_err()
+        && let Some(restore) = restore
+    {
+        restore();
+    }
+    result
 }
+
+/// Answers a failure. `Err` ends the deletion with that error: a decision that could not
+/// be carried out, or a caller that takes no decisions.
+pub(super) type Decide<'a> =
+    dyn FnMut(DeleteEntryFailure) -> Result<DeleteFailureChoice, FsError> + 'a;
 
 struct Frame {
     file: File,
     enumeration: File,
     path: PathBuf,
     names: Vec<OsString>,
+    /// Skipped entries stay in this folder, so the folder stays too.
+    keeps_skipped: bool,
 }
 
+/// What deleting one entry did.
+enum Visited {
+    /// The entry is gone.
+    Removed,
+    /// A folder, listed: its entries are deleted next.
+    Folder(Frame),
+}
+
+/// An entry whose deletion step failed, with the handle it was opened with.
+struct Refused {
+    file: File,
+    error: FsError,
+}
+
+/// Deletes the confirmed entry `source` (opened for deletion in `parent`, its identity
+/// checked) and, for a folder, everything in it, offering each step that fails to
+/// `decide`: Retry repeats that step, Skip leaves the entry with the folders that contain
+/// it (they are not removed and not offered again), and Cancel ends the deletion.
+/// Returns how many failures were skipped. Nothing is staged, so what is left stays
+/// under its own name, also while a decision waits; the folders above the failed entry
+/// stay open for the deletion meanwhile.
 pub(super) fn delete_tree(
     source: File,
     parent: &File,
     path: PathBuf,
     cancel: &Cancellation,
     progress: &mut dyn FnMut(&Path),
-) -> Result<(), FsError> {
+    decide: &mut Decide<'_>,
+) -> Result<u64, FsError> {
+    let mut walk = Walk {
+        cancel,
+        decide,
+        skipped: 0,
+    };
     let mut stack = Vec::new();
-    if let Some(frame) = visit_delete_entry(source, parent, path, cancel, progress)? {
-        stack.push(frame);
+    // The selected entry keeps its identity-checked handle across a Retry.
+    let mut source = Some(source);
+    while let Some(file) = source.take() {
+        match visit_delete_entry(file, parent, &path, cancel, progress) {
+            Ok(Visited::Removed) => {}
+            Ok(Visited::Folder(frame)) => stack.push(frame),
+            Err(Refused { file, error }) => {
+                if walk.retry(error)? {
+                    source = Some(file);
+                }
+            }
+        }
     }
-    loop {
-        let Some(frame) = stack.last_mut() else {
-            return Ok(());
-        };
-        checked(cancel, &frame.path)?;
-        if let Some(name) = frame.names.pop() {
-            let child_path = frame.path.join(&name);
-            let child = match open_child(&frame.enumeration, &name, true) {
-                Ok(child) => child,
+    walk.run(&mut stack, progress)?;
+    Ok(walk.skipped)
+}
+
+struct Walk<'a, 'b> {
+    cancel: &'a Cancellation,
+    decide: &'a mut Decide<'b>,
+    skipped: u64,
+}
+
+impl Walk<'_, '_> {
+    fn run(
+        &mut self,
+        stack: &mut Vec<Frame>,
+        progress: &mut dyn FnMut(&Path),
+    ) -> Result<(), FsError> {
+        while let Some(frame) = stack.last_mut() {
+            checked(self.cancel, &frame.path)?;
+            let Some(name) = frame.names.pop() else {
+                let frame = stack.pop().expect("nonempty stack");
+                self.close(frame, stack, progress)?;
+                continue;
+            };
+            if let Some(child) = self.entry(frame, &name, progress)? {
+                stack.push(child);
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes the entry `name` of `frame`, or lists it when it is a folder.
+    fn entry(
+        &mut self,
+        frame: &mut Frame,
+        name: &OsStr,
+        progress: &mut dyn FnMut(&Path),
+    ) -> Result<Option<Frame>, FsError> {
+        let path = frame.path.join(name);
+        loop {
+            let error = match open_child(&frame.enumeration, name, true) {
+                Ok(child) => {
+                    match visit_delete_entry(
+                        child,
+                        &frame.enumeration,
+                        &path,
+                        self.cancel,
+                        progress,
+                    ) {
+                        Ok(Visited::Removed) => return Ok(None),
+                        Ok(Visited::Folder(child)) => return Ok(Some(child)),
+                        // The entry's handle closes before the decision: a Retry opens
+                        // it again.
+                        Err(Refused { file, error }) => {
+                            drop(file);
+                            error
+                        }
+                    }
+                }
                 // Another process (a compiler, antivirus, a sync client) removed this
                 // snapshotted child first; the requested end state is already reached.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(failure("open delete child", &child_path, error)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => failure("open delete child", &path, error),
             };
-            if let Some(next) =
-                visit_delete_entry(child, &frame.enumeration, child_path, cancel, progress)?
-            {
-                stack.push(next);
+            if !self.retry(error)? {
+                frame.keeps_skipped = true;
+                return Ok(None);
             }
-        } else {
-            let frame = stack.pop().ok_or_else(|| {
-                failure(
-                    "delete",
-                    Path::new(""),
-                    io::Error::other("missing traversal frame"),
-                )
-            })?;
-            remove_confirmed(&frame.file)
-                .map_err(|e| failure("delete directory", &frame.path, e))?;
-            drop(frame.file);
-            progress(&frame.path);
+        }
+    }
+
+    /// Removes a folder whose entries were all handled, unless it keeps skipped ones.
+    fn close(
+        &mut self,
+        frame: Frame,
+        stack: &mut [Frame],
+        progress: &mut dyn FnMut(&Path),
+    ) -> Result<(), FsError> {
+        if !frame.keeps_skipped {
+            loop {
+                match remove_confirmed(&frame.file) {
+                    Ok(()) => {
+                        drop(frame.file);
+                        progress(&frame.path);
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        if !self.retry(failure("delete directory", &frame.path, error))? {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        // The folder stays, and so does the folder that contains it.
+        if let Some(parent) = stack.last_mut() {
+            parent.keeps_skipped = true;
+        }
+        Ok(())
+    }
+
+    /// Offers `error`: true to try the same step again, false once it was skipped.
+    /// Cancellation and Cancel end the deletion.
+    fn retry(&mut self, error: FsError) -> Result<bool, FsError> {
+        if error.kind == io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+        let path = error.path.clone();
+        match (self.decide)(DeleteEntryFailure {
+            error,
+            can_retry: true,
+        })? {
+            DeleteFailureChoice::Retry => Ok(true),
+            DeleteFailureChoice::Skip => {
+                self.skipped += 1;
+                Ok(false)
+            }
+            DeleteFailureChoice::Cancel => Err(failure("delete", &path, cancelled())),
         }
     }
 }
 
+/// Deletes the entry `file` (named by `path` in `parent`): a file or link at once, a
+/// folder once everything in it is gone (this lists it).
 fn visit_delete_entry(
     file: File,
     parent: &File,
-    path: PathBuf,
+    path: &Path,
     cancel: &Cancellation,
     progress: &mut dyn FnMut(&Path),
-) -> Result<Option<Frame>, FsError> {
-    checked(cancel, &path)?;
-    let native = Native::query(&file).map_err(|e| failure("read delete attributes", &path, e))?;
+) -> Result<Visited, Refused> {
+    if let Err(error) = checked(cancel, path) {
+        return Err(Refused { file, error });
+    }
+    let native = match Native::query(&file) {
+        Ok(native) => native,
+        Err(e) => {
+            let error = failure("read delete attributes", path, e);
+            return Err(Refused { file, error });
+        }
+    };
     // Links are leaves: the no-follow handle removes the link itself, never its target.
     // Cloud placeholder and other non-surrogate reparse directories are recursed.
     if !native.directory() || native.link() {
-        remove_confirmed(&file).map_err(|e| failure("delete", &path, e))?;
+        if let Err(e) = remove_confirmed(&file) {
+            let error = failure("delete", path, e);
+            return Err(Refused { file, error });
+        }
         drop(file);
-        progress(&path);
-        return Ok(None);
+        progress(path);
+        return Ok(Visited::Removed);
     }
-    let name = path.file_name().ok_or_else(|| {
-        failure(
+    let Some(name) = path.file_name() else {
+        let error = failure(
             "enumerate deletion",
-            &path,
+            path,
             io::Error::other("missing directory basename"),
-        )
-    })?;
-    let enumeration = open_enumeration(parent, &file, name)
-        .map_err(|e| failure("open directory for enumeration", &path, e))?;
-    let names =
-        child_names(&enumeration, cancel).map_err(|e| failure("enumerate deletion", &path, e))?;
+        );
+        return Err(Refused { file, error });
+    };
+    let listed = open_enumeration(parent, &file, name)
+        .map_err(|e| failure("open directory for enumeration", path, e))
+        .and_then(|enumeration| {
+            child_names(&enumeration, cancel)
+                .map(|names| (enumeration, names))
+                .map_err(|e| failure("enumerate deletion", path, e))
+        });
+    let (enumeration, names) = match listed {
+        Ok(listed) => listed,
+        Err(error) => return Err(Refused { file, error }),
+    };
     // Two directory handles per active depth: DELETE/identity guard and enumeration. OS
     // resource exhaustion is returned; there is no depth cap or handle per descendant.
-    Ok(Some(Frame {
+    Ok(Visited::Folder(Frame {
         file,
         enumeration,
-        path,
+        path: path.to_owned(),
         names,
+        keeps_skipped: false,
     }))
 }
 

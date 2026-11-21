@@ -168,35 +168,116 @@ fn a_mediated_reopen_reaching_a_named_pipe_never_lends_impersonation() {
 fn confirmed_deletion_falls_back_only_where_the_filesystem_lacks_posix_disposition() {
     let classic = Cell::new(0);
     let probed = Cell::new(0);
-    let run = |extended: io::Result<()>, read_only: bool| {
+    let restored = Cell::new(0);
+    // `writable`: Ok(true) when Read-only was set and is now cleared.
+    let run = |extended: io::Result<()>, deleted: io::Result<()>, writable: io::Result<bool>| {
         dispose(
             || extended,
             || {
                 classic.set(classic.get() + 1);
-                Ok(())
+                deleted
             },
             || {
                 probed.set(probed.get() + 1);
-                Ok(read_only)
+                writable.map(|cleared| {
+                    cleared.then(|| Box::new(|| restored.set(restored.get() + 1)) as Restore<'_>)
+                })
             },
         )
     };
-    // Supported: neither the classic class nor the attribute probe is used.
-    assert!(run(Ok(()), false).is_ok());
+    // Supported: neither the classic class nor the attribute is used.
+    assert!(run(Ok(()), Ok(()), Ok(false)).is_ok());
     assert_eq!((classic.get(), probed.get()), (0, 0));
     // FAT32/exFAT report the extended class as unsupported in one of three ways.
     for code in [1, 50, 87] {
-        assert!(run(Err(os(code)), false).is_ok(), "{code}");
+        assert!(run(Err(os(code)), Ok(()), Ok(false)).is_ok(), "{code}");
     }
     assert_eq!((classic.get(), probed.get()), (3, 3));
     // Other failures, such as a denied deletion, are never retried another way.
-    let error = run(Err(os(5)), false).unwrap_err();
+    let error = run(Err(os(5)), Ok(()), Ok(false)).unwrap_err();
     assert_eq!(error.raw_os_error(), Some(5));
-    // The classic class cannot ignore Read-only: confirmed deletion reports it.
-    let error = run(Err(os(87)), true).unwrap_err();
+    assert_eq!((classic.get(), probed.get()), (3, 3));
+    // The classic class cannot ignore Read-only: confirmed deletion clears it first, and
+    // only an entry that is not deleted after all gets it back.
+    assert!(run(Err(os(87)), Ok(()), Ok(true)).is_ok());
+    assert_eq!((classic.get(), restored.get()), (4, 0));
+    let error = run(Err(os(87)), Err(os(145)), Ok(true)).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(145));
+    assert_eq!((classic.get(), restored.get()), (5, 1));
+    // An entry whose Read-only stays (another name of it would lose it too) is not
+    // deleted.
+    let refused = io::Error::new(io::ErrorKind::PermissionDenied, "clear Read-only first");
+    let error = run(Err(os(87)), Ok(()), Err(refused)).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-    assert!(error.to_string().contains("Read-only"), "{error}");
-    assert_eq!(classic.get(), 3);
+    assert_eq!((classic.get(), restored.get()), (5, 1));
+}
+
+fn set_read_only(path: &Path, read_only: bool) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(read_only);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+fn read_only(path: &Path) -> bool {
+    fs::metadata(path).unwrap().permissions().readonly()
+}
+
+/// The classic route of FAT32, exFAT and some redirectors, on real NTFS entries with the
+/// POSIX class answered as unsupported (`ERROR_NOT_SUPPORTED`).
+fn dispose_classically(parent: &File, name: &str) -> io::Result<()> {
+    let entry = open_child(parent, OsStr::new(name), true).unwrap();
+    dispose(
+        || Err(os(50)),
+        || classic_dispose(&entry),
+        || writable(&entry),
+    )
+}
+
+#[test]
+fn the_classic_disposition_clears_read_only_and_puts_it_back_on_an_entry_that_stays() {
+    let temp = build_temp("classic-read-only-");
+    let parent = open_parent(temp.path()).unwrap();
+    // A read-only file is deleted once its last handle closes.
+    let file = temp.path().join("read-only.txt");
+    fs::write(&file, b"read-only").unwrap();
+    set_read_only(&file, true);
+    dispose_classically(&parent, "read-only.txt").unwrap();
+    assert!(!file.exists());
+    // So is a read-only empty folder.
+    let empty = temp.path().join("read-only empty folder");
+    fs::create_dir(&empty).unwrap();
+    set_read_only(&empty, true);
+    dispose_classically(&parent, "read-only empty folder").unwrap();
+    assert!(!empty.exists());
+    // A read-only folder that is not empty stays, and stays read-only.
+    let folder = temp.path().join("read-only folder");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("inside.txt"), b"inside").unwrap();
+    set_read_only(&folder, true);
+    let error = dispose_classically(&parent, "read-only folder").unwrap_err();
+    let kept_read_only = read_only(&folder);
+    set_read_only(&folder, false);
+    assert_eq!(error.raw_os_error(), Some(145), "{error}");
+    assert!(kept_read_only);
+    assert_eq!(fs::read(folder.join("inside.txt")).unwrap(), b"inside");
+    // A read-only file with another name, which may lie outside the confirmed tree,
+    // keeps the attribute and both names.
+    let linked = temp.path().join("linked.txt");
+    let other = temp.path().join("other name.txt");
+    fs::write(&linked, b"linked").unwrap();
+    fs::hard_link(&linked, &other).unwrap();
+    set_read_only(&linked, true);
+    let error = dispose_classically(&parent, "linked.txt").unwrap_err();
+    let kept_read_only = read_only(&other);
+    set_read_only(&other, false);
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+    assert!(
+        error.to_string().contains("clear Read-only first"),
+        "{error}"
+    );
+    assert!(kept_read_only);
+    assert_eq!(fs::read(&linked).unwrap(), b"linked");
+    assert_eq!(fs::read(&other).unwrap(), b"linked");
 }
 
 #[test]

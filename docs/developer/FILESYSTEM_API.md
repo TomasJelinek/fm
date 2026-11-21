@@ -192,7 +192,10 @@ resolved in one pass over its folder's listing, keeping only the selected member
 checking Stop every few thousand rows; the copy then takes its roots one at a time,
 and each selected member holds one root source until it is copied. It keeps the
 identities it has met (a member listed twice, a cycle or a duplicate identity, fails
-the copy) and the listing of each folder on its current path.
+the copy) and the listing of each folder on its current path. Resolving a selection of
+1,000,000 members grows the process by about 355 MiB, about 372 bytes per selected
+member (the ignored test `archive_selection_memory_per_member`, Linux, release build,
+21 November 2026; 375 bytes in a debug build).
 
 Archive folder sizes are a host backend service over these listing capabilities.
 Ctrl+Shift+S captures the exact committed mount/listing and opaque selected IDs;

@@ -71,7 +71,12 @@ descendant simultaneously or impose a depth/path-length ceiling. Memory includes
 the pending names for each active directory. Cancellation is checked during
 enumeration and before each removal. Progress is reported after each removed
 entry. Concurrent additions can cause an explicit nonempty-directory failure;
-contents are not a snapshot captured at confirmation time.
+contents are not a snapshot captured at confirmation time. The Delete job offers each
+step that fails (opening, listing or removing an entry, removing a folder after its
+entries) for a decision (`delete_with_decisions`): Retry repeats it (an entry is
+opened again by its name, a folder's removal reuses its guard), Skip keeps that entry
+and the folders that contain it, and Cancel ends the deletion. Without decisions the
+first failure ends it.
 
 `FileDispositionInfoEx` with delete and POSIX semantics removes the namespace
 entry while identity handles remain open. Explicitly
@@ -106,8 +111,11 @@ name then disappears only when the last handle to the entry closes: a descendant
 at once (its handles close right after its disposition), the selected entry's when
 the job releases its prepared handles at its end. Another process's open handle
 leaves an entry delete-pending, and its parent then fails as nonempty. The classic
-class cannot ignore the DOS Read-only attribute, so a confirmed deletion of a
-read-only entry there is reported instead of changing its attributes.
+class cannot ignore the DOS Read-only attribute: a confirmed deletion clears it on the
+entry itself first, through a second handle to the same object (an empty name relative
+to the pinned handle, never a path), and puts it back when the disposition still
+fails. A read-only file with other names (hard links), which may lie outside the
+confirmed tree, keeps the attribute and its deletion is reported.
 
 Deletion, deletion discovery, Rename, F7, empty-file creation, metadata editing and
 Find then identify entries by the 32-bit volume serial number and the 64-bit file

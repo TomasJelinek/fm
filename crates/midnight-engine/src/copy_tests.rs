@@ -11,10 +11,13 @@ use tokio::sync::{Notify, mpsc};
 mod archive;
 #[path = "copy_cancel_queue_tests.rs"]
 mod cancel_queue;
-// Linux reports a child that cannot be opened apart from its folder.
+// Linux and Windows report a child that cannot be opened apart from its folder.
 #[cfg(target_os = "linux")]
 #[path = "copy_child_failure_tests.rs"]
 mod child_failures;
+#[cfg(windows)]
+#[path = "copy_child_failure_windows_tests.rs"]
+mod child_failures_windows;
 #[path = "copy_completion_tests.rs"]
 mod completion;
 #[path = "copy_concurrency_regression_tests.rs"]

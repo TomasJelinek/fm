@@ -231,8 +231,14 @@ the Trash keeps its original mode. A read-only file needs nothing (unlink depend
 only on its folder). The folder that contains the selection, anything outside the
 confirmed tree and anything owned by another user is never changed: a removal they
 refuse pauses the job with Retry, Skip, Skip all errors and Cancel, and says why
-("write-protected" or "owned by another user"). Windows does not yet clear the
-read-only attribute of the items it deletes (a recorded follow-up), and Move's
+("write-protected" or "owned by another user"). On Windows, NTFS's POSIX delete
+ignores the read-only attribute without changing it, so read-only files and folders
+inside the confirmed tree are removed and an item that stays keeps the attribute. A
+filesystem without POSIX delete (FAT32, exFAT, some redirectors) cannot ignore it:
+Delete clears Read-only on the entry itself, through a second handle to that entry
+and never by path, and sets it again if the entry still cannot be removed. A file
+with other names (hard links), which may lie outside the confirmed tree, is not
+changed: its removal pauses the job with the same choices. Move's
 removal of its source after a cross-volume copy does not yet apply this rule.
 
 A same-volume Move on Linux renames a folder into another folder, which changes its

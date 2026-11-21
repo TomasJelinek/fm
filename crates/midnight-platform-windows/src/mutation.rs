@@ -1,8 +1,9 @@
 //! Identity-pinned Windows mutations. Only worker threads call this module.
 use crate::WindowsFileSystem;
 use midnight_core::{
-    Cancellation, CompressionStatus, DeleteCompletion, DeleteMode, EntryKind, EntryMetadata,
-    FsError, MutationItem, MutationService, PreparedDirectory, PreparedMutation, RenameCompletion,
+    Cancellation, CompressionStatus, DeleteCompletion, DeleteEntryFailure, DeleteFailureChoice,
+    DeleteMode, EntryKind, EntryMetadata, FsError, MutationItem, MutationService,
+    PreparedDirectory, PreparedMutation, RenameCompletion,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -276,19 +277,50 @@ impl PreparedMutation for WindowsMutation {
         cancel: &Cancellation,
         progress: &mut dyn FnMut(&Path),
     ) -> Result<DeleteCompletion, FsError> {
+        // Without a caller to decide, the first failure ends the deletion.
+        self.delete_decided(mode, cancel, progress, &mut |failure| Err(failure.error))
+    }
+
+    fn delete_with_decisions(
+        &self,
+        mode: DeleteMode,
+        cancel: &Cancellation,
+        progress: &mut dyn FnMut(&Path),
+        failed: &mut dyn FnMut(DeleteEntryFailure) -> DeleteFailureChoice,
+    ) -> Result<DeleteCompletion, FsError> {
+        self.delete_decided(mode, cancel, progress, &mut |failure| Ok(failed(failure)))
+    }
+}
+
+impl WindowsMutation {
+    /// A Trash move is one Shell call for the whole item, so its failure ends it and the
+    /// caller offers it for the item, as on Linux. A permanent deletion offers each
+    /// entry it cannot remove to `decide` ([`native::delete_tree`]); what a Skip leaves
+    /// stays under its own name with the folders that contain it.
+    fn delete_decided(
+        &self,
+        mode: DeleteMode,
+        cancel: &Cancellation,
+        progress: &mut dyn FnMut(&Path),
+        decide: &mut native::Decide<'_>,
+    ) -> Result<DeleteCompletion, FsError> {
         checked(cancel, &self.item.path)?;
         if mode == DeleteMode::Trash {
             return trash::recycle(self, cancel, progress).map(|()| DeleteCompletion::default());
         }
         let source = self.revalidate(true)?;
-        native::delete_tree(
+        let skipped = native::delete_tree(
             source,
             &self.parent,
             self.item.path.clone(),
             cancel,
             progress,
-        )
-        .map(|()| DeleteCompletion::default())
+            decide,
+        )?;
+        Ok(DeleteCompletion {
+            residue: None,
+            skipped,
+        })
     }
 }
 
@@ -419,6 +451,9 @@ fn changed(path: &Path) -> FsError {
     )
 }
 
+#[cfg(test)]
+#[path = "mutation_decision_tests.rs"]
+mod decision_tests;
 #[cfg(test)]
 #[path = "mutation_pause_tests.rs"]
 mod pause_tests;

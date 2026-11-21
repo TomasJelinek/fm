@@ -73,8 +73,10 @@ application delivery remain pending.
   with the token `delete-error:{job}:{version}`): Retry repeats that step, Skip leaves
   that item and goes on with every remaining item and target, Skip all errors skips
   the job's later failures without asking, Cancel job stops and keeps what is left,
-  and Decide later keeps the question for Jobs. A folder whose items cannot leave it
-  (write-protected, or owned by another user) is asked about once, for the folder.
+  and Decide later keeps the question for Jobs. On Linux a folder whose items cannot
+  leave it (write-protected, or owned by another user) is asked about once, for the
+  folder; on Windows each entry's own access decides, so each refused entry is asked
+  about.
   The last target failing as a whole in a way Retry cannot change (for example an
   item replaced after the confirmation) is only reported, as nothing is left to decide.
   Folders that keep skipped items are not deleted and not reported as more errors;
@@ -84,19 +86,36 @@ application delivery remain pending.
   skipped, and each completed target's issue; `completed` counts the targets
   deleted. While a decision waits, Linux puts what is left of a permanently deleted
   item back under its own name, so the cause can be fixed where it is shown, and
-  captures it again with the same identity checks before going on. Windows offers
-  only the whole item (a follow-up). On Linux, write-protected folders of the
-  confirmed tree that the user owns never stop a Delete ([security](../../SECURITY.md)).
+  captures it again with the same identity checks before going on. Windows deletes in
+  place without staging, so what is left stays under its own name. While a decision
+  waits it closes the entry that failed, which Retry opens again by its name (the
+  selected item and a folder whose own removal failed keep their checked handles),
+  and keeps the folders above it open for the deletion, so they cannot be renamed or
+  deleted meanwhile. A file that a program keeps open without delete sharing is the
+  typical Windows case. A Trash move is one step on both platforms (a rename on Linux,
+  one Shell `RecycleItem` call on Windows), so it is asked about for the selected item;
+  on Windows a folder with an open entry inside is asked about as a whole. On Linux,
+  write-protected folders of the confirmed tree that the user owns never stop a Delete
+  ([security](../../SECURITY.md)). On Windows the read-only attribute of files and
+  folders of the confirmed tree never does: NTFS deletes them with POSIX disposition,
+  which ignores the attribute without changing it, and filesystems without it (FAT32,
+  exFAT, some redirectors) take the classic disposition, which first clears the
+  attribute on the entry itself through a second handle to the same object and puts
+  it back on an entry that is not deleted after all. A read-only file with other names
+  (hard links), which may lie outside the confirmed tree, keeps it there and is asked
+  about.
 - Copy/Move enumerate a folder with `TransferSource::next_child_or_failure`. A child
   that cannot be opened once its name is read comes back on its own, and the job
   pauses for that child only (stage Reading the source, the child as source and its
   destination path): Retry opens it again with `open_child`, Skip and Skip all leave
   out that child (a Move keeps its folder and every folder above it) and the folder
   goes on with its next child. A failure of the folder itself (its listing breaks
-  off, it was replaced, or it lets its names be read but not opened) still pauses
-  once as Reading folder contents, where Skip leaves out the rest of that folder.
-  Linux reports child failures; Windows and archive sources keep the default, which
-  reports every failure as the folder's. A same-volume Linux Move of a folder the user
+  off, it was replaced, or, on Linux, it lets its names be read but not opened) still
+  pauses once as Reading folder contents, where Skip leaves out the rest of that
+  folder. Linux and Windows report child failures (on Windows typically a child the
+  user may not read, or a file that another program has open for writing, which a Copy
+  source does not read); archive sources keep the default, which reports every failure
+  as the folder's. A same-volume Linux Move of a folder the user
   owns that lacks owner write gets owner write through its retained descriptor only
   for its renames (a folder's ".." entry changes) and its own mode back afterwards; a
   prepared Move source is rechecked by identity, size and modified time, so a

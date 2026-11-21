@@ -187,6 +187,15 @@ Retry retains native identities and the original source/stage handles:
   (reserved, invalid or overlong) asks again before it reaches publication.
 - Enumeration errors cannot replay a cursor safely and offer Skip/Cancel, with
   Skip All scoped to this error type. Move retains the skipped subtree/ancestors.
+- A child that cannot be opened after its folder listed its name is that child's
+  failure (`TransferSource::next_child_or_failure`, stage Reading): Retry opens it
+  again by name with `open_child`, Skip leaves out only that child and its folder
+  goes on. The Linux and Windows sources report such children; on Windows they are
+  typically a child the user may not read, or a file that another program has open
+  for writing (a Copy source denies write sharing). A Windows folder is held with list
+  and traverse access, so unlike Linux no folder lists names that cannot be opened.
+  Cancellation, a changed folder binding and a broken listing remain the folder's
+  failure. Archive sources report every failure as the folder's.
 - File-source deletion Retry keeps the verified destination, obtains a fresh
   native finalizer and rehashes both held objects before another removal attempt.
   It never recopies the file. Directory removal retries the exhausted frame,

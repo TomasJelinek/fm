@@ -1445,10 +1445,16 @@ job, and goes on with every remaining item and target; its errors are counted pe
 failure. On Linux a write-protected folder that the user owns inside the confirmed
 tree gets owner write and search permission before it is emptied (original mode back
 if it stays), so it no longer stops the delete; the containing folder and other
-users' items are never changed ([security](../SECURITY.md)). Covered by engine,
-Linux platform and presenter tests only, without installed qualification. Windows
-offers decisions for whole items only and does not clear read-only attributes yet;
-Move's cross-volume source removal does not yet make protected folders writable;
+users' items are never changed ([security](../SECURITY.md)). Since 21 November a
+permanent Delete on Windows also asks about each entry inside the tree it cannot
+remove (a file another program holds, a folder it cannot list): Retry repeats that
+step, Skip keeps that entry and the folders that contain it. Read-only items there
+are removed: NTFS ignores the attribute without changing it, and a filesystem without
+POSIX delete gets it cleared on the entry and set again if the entry stays (a file
+with other hard links is refused instead). Covered by engine, Linux and Windows
+platform and presenter tests and the Windows native Delete UI tests, without
+installed qualification; the filesystems without POSIX delete are tested on NTFS
+entries only. Move's cross-volume source removal does not yet make protected folders writable;
 Jobs rows need an attention mark and Resolve for waiting Delete decisions (job
 window follow-up).
 Also since 20 November, on Linux a file or folder inside a copied folder that
@@ -1460,8 +1466,10 @@ folder the user owns that lacks owner write gets owner write through its retaine
 descriptor only for its renames and its own mode back afterwards, and a prepared
 Move source is rechecked by identity, size and modified time, so permission changes
 (for example the fix before Retry) no longer invalidate it. Covered by engine and
-Linux platform tests only. Windows and archive sources still report a child that
-cannot be opened as a failure of its folder. One of several selected items that
+Linux platform tests. Since 21 November a Windows source does the same for a listed
+child it cannot open (for example an access-denied file), covered by Windows
+platform and engine tests; archive sources still report a child that cannot be
+opened as a failure of its folder. One of several selected items that
 cannot be prepared (for example a folder nobody may read) offers Skip and Skip all
 besides Retry, and the other items are copied; captured tree and archive sources,
 a single item and a job that requires the exact modified time keep Retry and Cancel

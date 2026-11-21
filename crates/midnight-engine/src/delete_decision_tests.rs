@@ -205,6 +205,11 @@ async fn a_target_that_failed_as_a_whole_can_be_retried() {
     assert_eq!(h.deleted(), [first.clone(), first, h.target(1)]);
 }
 
+/// The real Windows provider: a file that another program keeps open decides.
+#[cfg(windows)]
+#[path = "delete_decision_windows_tests.rs"]
+mod native_windows;
+
 /// The real Linux provider: permissions decide, so these need an ordinary user.
 #[cfg(target_os = "linux")]
 mod native {

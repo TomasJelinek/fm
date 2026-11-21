@@ -586,6 +586,25 @@ impl TransferSource for Source {
             })
             .transpose()
     }
+    /// Reading this folder (its binding, its listing) and a cancellation fail the folder
+    /// and end its enumeration; only opening a listed child is that child's failure.
+    /// Unlike Linux, there is no folder whose names can be listed but not opened: a
+    /// folder is held with list and traverse access, and each child's own access
+    /// (an access-denied file, a file another program writes) decides its open.
+    fn next_child_or_failure(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::TransferChild>, FsError> {
+        checked(cancel, &self.entry.item.path)?;
+        let Some((name, native)) = self.next_name(cancel)? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.open_listed(&name, native, cancel)
+                .map(|source| Box::new(source) as Box<dyn TransferSource>)
+                .map_err(|error| midnight_core::TransferChildFailure { name, error }),
+        ))
+    }
 }
 impl Source {
     fn read_file(&self) -> &File {
@@ -811,3 +830,7 @@ impl Source {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "transfer_source_child_tests.rs"]
+mod child_tests;
