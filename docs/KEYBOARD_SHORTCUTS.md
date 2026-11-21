@@ -135,7 +135,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Alt+↑ / Alt+↓ in files | Previous / next selected file or folder in displayed order, including expanded tree rows. Skip the current row, preserve all marks, and stop at the boundary without wrapping; inactive during filename search. Configurable as `panel.previous-selected` / `panel.next-selected`. |
 | Shift+Backspace / Ctrl+Backspace / Ctrl+Backslash | Root of the focused panel's location: the filesystem root (`/` on Linux, the drive's root on Windows), the archive's root inside an archive, the share's root in a network panel |
 | Ctrl+PageDown | Enter a known folder; never launch a regular file |
-| Ctrl+G | Focus the path editor |
+| Ctrl+G | Focus the path editor; Enter there opens the typed folder, or the folder of a typed file with the cursor on the file |
 | Alt+F1 / Alt+F2 | Open left / right volume choices |
 | . in the drive dropdown | As Other Panel: open the other panel's current folder |
 | Shift+drive letter | Switch volume on Windows, using its remembered path; when no drive has that letter (always on Linux), the uppercase letter is typed into the filename search instead |

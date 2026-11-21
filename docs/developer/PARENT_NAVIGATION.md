@@ -10,7 +10,9 @@ request. Streaming entries can resolve it before completion, and the final sorte
 index resolves it again by raw path, independently of reassigned entry IDs. An
 ancestor breadcrumb chooses the immediate child of that ancestor, rather than a
 deeper descendant. Archive navigation uses the mounted provider's node identity
-from the location trail; equal display names cannot redirect the cursor.
+from the location trail; equal display names cannot redirect the cursor. A path
+typed in the path editor that names a file lists the file's folder with the file's
+raw path as the same focus hint ([path editor](PATH_PASTE.md)).
 
 A folder with nothing else to show still lists `..`, and the panel says why below
 it: "This folder is empty", "All 3 items here are hidden" (entries the Show hidden

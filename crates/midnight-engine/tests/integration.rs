@@ -39,6 +39,7 @@ mod locale_datetime;
 mod locale_sorting;
 mod navigation;
 mod navigation_fallback;
+mod navigation_not_a_folder;
 mod navigation_ordering;
 mod operations_real_windows;
 mod search;

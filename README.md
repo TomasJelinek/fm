@@ -1043,6 +1043,10 @@ editor scope and shortcuts reserved for later stages.
   without a summary; only failures, skips or cancellation report.
 - Click the blank area after the top breadcrumb to enter a custom path; Enter
   navigates and Escape cancels. Breadcrumb navigation/copy gestures remain available.
+  The path may name a file, also pasted in double quotes as Windows "Copy as path"
+  writes it: Enter opens the file's folder with the cursor on the file (an archive is
+  not opened), and the panel's status line says why when the file is hidden or the
+  panel filter leaves it out.
 - Panel view picker: independent Brief, Detailed and large-icon Thumbnails modes.
   Brief fills columns downward; Left/Right changes columns. Thumbnails uses
   Left/Right between cells and Up/Down between grid rows. Page Up/Down moves a

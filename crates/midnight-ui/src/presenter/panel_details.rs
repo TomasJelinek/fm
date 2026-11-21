@@ -11,10 +11,14 @@ pub(crate) struct PanelDetail {
 impl Presenter {
     /// The panel's status line: the focused entry or the selection, then how many
     /// hidden entries the panel leaves out while hidden files are not shown. For a
-    /// few seconds after a drag from the panel was released too soon, a note leads.
+    /// few seconds after a drag from the panel was released too soon, a note leads,
+    /// as one does while the panel does not show a file that the path bar named.
     pub(crate) fn panel_details(&self, pane: PaneId) -> Vec<PanelDetail> {
         let mut details = self.focus_details(pane);
         if let Some(note) = self.quick_drag_note(pane) {
+            details.insert(0, note);
+        }
+        if let Some(note) = self.file_target_note(pane) {
             details.insert(0, note);
         }
         let p = &self.panes[pane.index()];

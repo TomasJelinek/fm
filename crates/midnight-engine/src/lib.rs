@@ -89,6 +89,9 @@ mod navigation_fallback_unix_tests;
 mod navigation_fallback_windows_tests;
 mod navigation_ordering;
 mod network_neighborhood;
+mod not_a_folder;
+#[cfg(test)]
+mod not_a_folder_tests;
 mod operation_throughput;
 mod operations;
 #[cfg(test)]
@@ -1637,6 +1640,19 @@ fn list_directory(task: ListingTask) {
                     &cancel,
                 );
             }
+            return;
+        }
+        // A path that names a file: the path bar shows that file in its folder.
+        if elevated.is_none()
+            && !not_a_folder::report(
+                filesystem.as_ref(),
+                &outbox,
+                (pane, navigation),
+                &path,
+                &error,
+                &cancel,
+            )
+        {
             return;
         }
         let event = match navigation_fallback::next_path(

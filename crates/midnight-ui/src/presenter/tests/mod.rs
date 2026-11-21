@@ -50,6 +50,7 @@ mod tree_editor;
 mod tree_refresh;
 mod tree_shell;
 mod tree_user_commands;
+mod typed_paths;
 mod user_commands;
 mod volumes;
 mod watch;

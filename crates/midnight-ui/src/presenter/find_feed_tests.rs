@@ -845,3 +845,63 @@ fn go_to_file_of_an_archive_member_opens_its_archive_folder() {
         "the cursor waits for the listing"
     );
 }
+
+#[test]
+fn a_file_the_path_bar_names_leaves_the_results_for_its_folder() {
+    let (mut p, id, root) = listed();
+    p.feed_find_results(id).unwrap();
+    assert!(p.feed(PaneId::Left).is_some());
+    let file = root.join("hidden.txt");
+    let commands = RefCell::new(Vec::new());
+    assert!(
+        p.navigate_text(PaneId::Left, file.to_str().unwrap(), &|command| {
+            record(&commands, command)
+        })
+    );
+    let navigation = |commands: &RefCell<Vec<Command>>, path: &Path| {
+        commands.borrow().iter().find_map(|command| match command {
+            Command::Navigate {
+                navigation,
+                path: requested,
+                ..
+            }
+            | Command::Refresh {
+                navigation,
+                path: requested,
+                ..
+            } if requested == path => Some(*navigation),
+            _ => None,
+        })
+    };
+    let typed = navigation(&commands, &file).expect("the path is opened");
+    let commands = RefCell::new(Vec::new());
+    p.apply_with_sender(
+        Event::ListingNotAFolder {
+            pane: PaneId::Left,
+            navigation: typed,
+            parent: root.clone(),
+            entry: file.clone(),
+            hidden: false,
+        },
+        &|command| record(&commands, command),
+    );
+    // The folder under the list is listed again, and the list is left.
+    let folder = navigation(&commands, &root).expect("the file's folder is listed");
+    assert!(
+        p.feed(PaneId::Left).is_none(),
+        "the path bar leaves the list"
+    );
+    let entries: Arc<[Entry]> = [
+        Entry::new(EntryId(11), root.join("hidden"), EntryKind::Directory),
+        Entry::new(EntryId(12), file.clone(), EntryKind::File),
+    ]
+    .into();
+    p.apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation: folder,
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries,
+    });
+    assert_eq!(p.panes[0].cursor, Some(EntryId(12)));
+    assert!(p.feed(PaneId::Left).is_none());
+}

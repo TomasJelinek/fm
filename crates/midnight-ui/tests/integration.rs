@@ -145,6 +145,7 @@ mod panel_view_modes;
 mod panel_warning_details;
 mod parent_entry_icon;
 mod parent_focus;
+mod path_bar_file;
 mod path_bar_fit;
 mod path_elision;
 mod path_paste_ui;

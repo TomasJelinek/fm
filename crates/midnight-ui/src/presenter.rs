@@ -59,6 +59,7 @@ mod panel_warnings;
 #[cfg(test)]
 mod panel_warnings_tests;
 pub(crate) mod path_paste;
+mod path_target;
 mod preferences;
 mod rename_decisions;
 mod search;
@@ -145,6 +146,8 @@ struct Request {
     previous_view: Option<folder_presence::Source>,
     wanted_cursor: Option<PathBuf>,
     cursor_touched: bool,
+    /// Typed in the path bar: a path that names a file lists its folder instead.
+    accepts_file: bool,
     /// Refreshes and cached resorts stage privately behind the committed view.
     keep_rows: bool,
     /// An automatic re-read of the shown folder (`Reload::Background`); it
@@ -253,6 +256,8 @@ pub(crate) struct Pane {
     row_edits: Option<row_continuity::RowEdits>,
     committed_sort: SortSpec,
     pub(crate) search: search::SearchState,
+    /// The last file that the path bar named (`path_target`).
+    file_target: Option<path_target::FileTarget>,
 }
 
 /// In-memory state for two independent panes and their current navigation generations.
@@ -543,6 +548,7 @@ impl Presenter {
             self.retired.push(Box::new(mem::take(&mut p.history)));
             self.retired.push(Box::new(mem::take(&mut p.volume_paths)));
             self.retired.push(Box::new(p.pending.take()));
+            self.retired.push(Box::new(p.file_target.take()));
             p.retire_stream(&mut self.retired);
             p.cursor = None;
             p.parent_cursor = false;
@@ -843,6 +849,7 @@ impl Presenter {
             previous_view,
             wanted_cursor,
             cursor_touched: false,
+            accepts_file: false,
             keep_rows,
             background: mode == Reload::Background && keep_rows,
             changes: None,
@@ -930,6 +937,17 @@ impl Presenter {
         } = event
         {
             self.apply_navigation_fallback(pane, navigation, path, error, send);
+            return;
+        }
+        if let Event::ListingNotAFolder {
+            pane,
+            navigation,
+            parent,
+            entry,
+            hidden,
+        } = event
+        {
+            self.apply_not_a_folder((pane, navigation), parent, entry, hidden, send);
             return;
         }
         if let Event::FindFileCaptured(result) = event {
@@ -1062,6 +1080,11 @@ impl Presenter {
                 navigation,
                 error,
             });
+            return;
+        }
+        if let Event::ListingNotAFolder { parent, entry, .. } = event {
+            // Without a sender, the failure that follows is the outcome.
+            self.retired.push(Box::new((parent, entry)));
             return;
         }
         if let Event::PathPicked { request, result } = event {
@@ -1598,10 +1621,17 @@ impl Presenter {
         // The editor starts from the shown location, whose explicit bidirectional controls
         // are escaped (`shown_text`). That unchanged text names the location itself, and
         // that text followed by a separator and more path names a path below it. Any other
-        // edit is taken as typed.
+        // edit is taken as typed, without the quotes and whitespace of a pasted path.
         let location = p.display_location_text();
+        let shown = visible_name(&location);
+        let edited = text != shown;
+        let text = if edited {
+            path_target::typed_path(text)
+        } else {
+            text
+        };
         let below;
-        let text = match visible_name(&location) {
+        let text = match shown {
             std::borrow::Cow::Owned(shown) => match text.strip_prefix(shown.as_str()) {
                 Some("") => location.as_str(),
                 Some(rest)
@@ -1641,7 +1671,7 @@ impl Presenter {
                 return self.network_up(pane, send);
             }
             if Path::new(text).is_absolute() {
-                return self.navigate(pane, PathBuf::from(text), None, send);
+                return self.navigate_typed_path(pane, logical_path(text.into()), send);
             }
             return self.network_navigate(pane, NetworkAction::Parse(text.into()), send);
         }
@@ -1650,8 +1680,12 @@ impl Presenter {
                 return self.archive_up(pane, send);
             }
             let path = PathBuf::from(text);
-            if path.is_absolute() {
+            // The unchanged text of an archive folder keeps its former route.
+            if path.is_absolute() && !edited {
                 return self.navigate(pane, path, None, send);
+            }
+            if path.is_absolute() {
+                return self.navigate_typed_path(pane, logical_path(path), send);
             }
             self.desktop.report("Archive path", "Navigate archive folders through their rows or parent entry; display text is not a native path.".into());
             return false;
@@ -1666,7 +1700,7 @@ impl Presenter {
         } else {
             current.join(input)
         });
-        self.navigate(pane, path, None, send)
+        self.navigate_typed_path(pane, path, send)
     }
     pub(crate) fn open(
         &mut self,
@@ -1974,6 +2008,7 @@ impl Pane {
             streaming_index: HashMap::new(),
             committed_sort: SortSpec::default(),
             search: search::SearchState::default(),
+            file_target: None,
         }
     }
 

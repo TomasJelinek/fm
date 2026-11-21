@@ -760,6 +760,20 @@ pub enum Event {
         path: PathBuf,
         error: FsError,
     },
+    /// The path of a failed native listing names an existing entry that is not a
+    /// folder (a file, a link to one or a special file): `entry`, in the folder
+    /// `parent`. `hidden` says whether Show hidden files leaves it out of listings.
+    /// Sent just before that listing's `ListingFallback` or `ListingFailed`. A
+    /// request that asked for a file (a path typed in the path bar) may list `parent`
+    /// with the cursor on `entry` under a fresh navigation ID while this exact
+    /// request remains pending; anything else ignores it and handles the failure.
+    ListingNotAFolder {
+        pane: PaneId,
+        navigation: NavigationId,
+        parent: PathBuf,
+        entry: PathBuf,
+        hidden: bool,
+    },
     SpaceUpdated {
         pane: PaneId,
         navigation: NavigationId,
