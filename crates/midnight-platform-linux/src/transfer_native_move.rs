@@ -132,7 +132,7 @@ impl<'a> MoveSource<'a> {
             Self::Ordinary(capture) => capture.folder,
             Self::Link { folder, .. } => folder,
         };
-        folder.writable(self.parent().native_file())
+        folder.writable(self.parent())
     }
 
     fn name(self) -> &'a OsStr {
@@ -253,100 +253,106 @@ fn execute_in(
     checked(cancel, &entry.item.path)?;
     parent.namespace_announce(original_name, change, cancel)?;
     target.namespace_announce(name, change, cancel)?;
-    // For the stage, the capture and its publication, restoration or stage removal.
-    let _writable_parent = source.writable_parent();
-    let stage = match parent.source_stage_in(cancel, change) {
-        Ok(stage) => stage,
-        Err(mut failure) => {
-            if source.is_link()
-                && let Some(receipt) = link_capture::stage_creation_receipt(parent, &mut failure)
-            {
-                return Ok(TransferNativeMoveOutcome::RecoveryRequired {
-                    destination: None,
-                    recovery: vec![receipt],
-                    error: failure,
-                });
+    // For the stage, the capture and its publication, restoration or stage removal;
+    // each folder made writable gets its own mode back once the change returns.
+    let writable_parent = source.writable_parent();
+    let mut writable = None;
+    let outcome = (|| -> Result<TransferNativeMoveOutcome, FsError> {
+        let stage = match parent.source_stage_in(cancel, change) {
+            Ok(stage) => stage,
+            Err(mut failure) => {
+                if source.is_link()
+                    && let Some(receipt) =
+                        link_capture::stage_creation_receipt(parent, &mut failure)
+                {
+                    return Ok(TransferNativeMoveOutcome::RecoveryRequired {
+                        destination: None,
+                        recovery: vec![receipt],
+                        error: failure,
+                    });
+                }
+                return Err(failure);
             }
-            return Err(failure);
+        };
+        // Moving a folder into another folder rewrites its ".." entry, which needs write
+        // permission on the folder itself: an owned folder has it until this returns.
+        writable = writable_for_rename(source);
+        let captured = (|| {
+            if source.is_link() {
+                source.revalidate(cancel)?;
+                stage.check_recovery_parent(cancel)?;
+            }
+            renameat_with(
+                parent.native_file(),
+                original_name,
+                stage.native_file(),
+                original_name,
+                RenameFlags::NOREPLACE,
+            )
+            .map_err(|failure| capture_error(source, failure))
+        })();
+        if let Err(failure) = captured {
+            let mut recovery = Vec::new();
+            return match clean_stage(source, stage, change, &mut recovery) {
+                Ok(()) => Err(failure),
+                Err(cleanup) => Ok(TransferNativeMoveOutcome::RecoveryRequired {
+                    destination: None,
+                    recovery,
+                    error: combined(failure, "empty staging cleanup", cleanup),
+                }),
+            };
         }
-    };
-    // Moving a folder into another folder rewrites its ".." entry, which needs write
-    // permission on the folder itself: an owned folder has it until this returns.
-    let _writable = writable_for_rename(source);
-    let captured = (|| {
-        if source.is_link() {
-            source.revalidate(cancel)?;
-            stage.check_recovery_parent(cancel)?;
+        parent.namespace_changed(original_name);
+        stage.namespace_changed(original_name);
+        // Once captured, every refusal is a terminal namespace fact.
+        let validated = (|| {
+            let actual = stage.inspect(original_name, &Cancellation::default())?;
+            if actual.as_ref().map(|entry| entry.identity) != Some(entry.identity) {
+                return Err(invalid(
+                    &entry.item.path,
+                    "a different source was captured; its bytes were retained",
+                ));
+            }
+            target.revalidate(cancel)?;
+            validate_target(entry, &target, name, replace.as_ref(), cancel)?;
+            checked(cancel, &entry.item.path)
+        })();
+        if let Err(error) = validated {
+            return Ok(restore(source, stage, error, change));
         }
-        renameat_with(
-            parent.native_file(),
-            original_name,
+        before_publish();
+        let ready = checked(cancel, &entry.item.path)
+            .and_then(|()| source.check_link_stage(&stage, cancel))
+            .and_then(|()| source.verify_link(&stage, original_name, cancel));
+        if let Err(error) = ready {
+            return Ok(restore(source, stage, error, change));
+        }
+        let flags = if replaced.is_some() {
+            RenameFlags::EXCHANGE
+        } else {
+            RenameFlags::NOREPLACE
+        };
+        if let Err(failure) = renameat_with(
             stage.native_file(),
             original_name,
-            RenameFlags::NOREPLACE,
-        )
-        .map_err(|failure| capture_error(source, failure))
-    })();
-    if let Err(failure) = captured {
-        let mut recovery = Vec::new();
-        return match clean_stage(source, stage, change, &mut recovery) {
-            Ok(()) => Err(failure),
-            Err(cleanup) => Ok(TransferNativeMoveOutcome::RecoveryRequired {
-                destination: None,
-                recovery,
-                error: combined(failure, "empty staging cleanup", cleanup),
-            }),
-        };
-    }
-    parent.namespace_changed(original_name);
-    stage.namespace_changed(original_name);
-    // Once captured, every refusal is a terminal namespace fact.
-    let validated = (|| {
-        let actual = stage.inspect(original_name, &Cancellation::default())?;
-        if actual.as_ref().map(|entry| entry.identity) != Some(entry.identity) {
-            return Err(invalid(
-                &entry.item.path,
-                "a different source was captured; its bytes were retained",
+            target.native_file(),
+            name,
+            flags,
+        ) {
+            return Ok(restore(
+                source,
+                stage,
+                move_error(&target.path().join(name), failure.into()),
+                change,
             ));
         }
-        target.revalidate(cancel)?;
-        validate_target(entry, &target, name, replace.as_ref(), cancel)?;
-        checked(cancel, &entry.item.path)
+        stage.namespace_changed(original_name);
+        target.namespace_changed(name);
+        Ok(committed(
+            source, &target, name, stage, replaced, sync, change,
+        ))
     })();
-    if let Err(error) = validated {
-        return Ok(restore(source, stage, error, change));
-    }
-    before_publish();
-    let ready = checked(cancel, &entry.item.path)
-        .and_then(|()| source.check_link_stage(&stage, cancel))
-        .and_then(|()| source.verify_link(&stage, original_name, cancel));
-    if let Err(error) = ready {
-        return Ok(restore(source, stage, error, change));
-    }
-    let flags = if replaced.is_some() {
-        RenameFlags::EXCHANGE
-    } else {
-        RenameFlags::NOREPLACE
-    };
-    if let Err(failure) = renameat_with(
-        stage.native_file(),
-        original_name,
-        target.native_file(),
-        name,
-        flags,
-    ) {
-        return Ok(restore(
-            source,
-            stage,
-            move_error(&target.path().join(name), failure.into()),
-            change,
-        ));
-    }
-    stage.namespace_changed(original_name);
-    target.namespace_changed(name);
-    Ok(committed(
-        source, &target, name, stage, replaced, sync, change,
-    ))
+    writable::restored(outcome, [writable, writable_parent])
 }
 
 /// The pinned destination as this provider's directory, for recreating a link that
@@ -770,7 +776,7 @@ fn writable_for_rename(source: MoveSource<'_>) -> Option<writable::OwnerWrite<'_
         return None;
     }
     // The retained descriptor is the captured folder itself, not its name.
-    writable::OwnerWrite::grant(&capture._file)
+    writable::OwnerWrite::grant(&capture._file, &capture.entry.item.path)
 }
 
 #[cfg(test)]

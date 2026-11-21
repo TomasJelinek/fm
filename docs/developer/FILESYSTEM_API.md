@@ -307,14 +307,16 @@ writes by other programs between two queries are not counted. A member whose
 `StageBegin` declares a length above the 16 MiB memory stage limit (it goes to a spool
 file at once) first claims that many bytes of the volume's free space above the reserve
 (`staging_space.rs`): claims of stages still writing count against every later stage of
-the mounts that share the process's spool root, and each claim shrinks as its stage
-writes and ends with the stage. A member that does not fit is refused before its spool
+the process's mounts on the same spool volume, in whichever root they stage (a root
+chosen again, a per-process root), and each claim shrinks as its stage writes and ends
+with the stage, or once a mount is kept with its spools because its worker's end could
+not be confirmed. A member that does not fit is refused before its spool
 file exists, with a `StorageFull` error that names the space it needs, the space above
 the reserve and what other archive reads still need. Under protocol 3 the host refuses
 it through the cooperative cancellation acknowledgement (the session keeps serving its
 other users); under protocol 2 the refusal ends the exchange like any staging failure.
 Content of undeclared length is checked as it is appended, and so are spills of small
-stages. A refusal at the reserve makes the next mount choose its spool root again. The
+stages. A refusal keeps the spool root, which works. The
 parser sets no member-count or name-bytes limit. It retains the protocol's 64 KiB
 per-name limit, a 16 MiB bound on each buffered TAR long-name/long-link/PAX record,
 64 MiB XZ/Zstandard windows, a 256 MiB 7z LZMA/LZMA2 dictionary check (larger
@@ -370,8 +372,8 @@ mounts reuse the root. The engine makes it on a background thread right after pl
 discovery when an installed worker stages content (`Catalog::prepare_staging`), so the
 first archive opened does not wait for the test spool; a mount that starts during that
 check waits for its choice instead of making its own. A spool that cannot be created,
-written or sized there, or a refusal at the volume's reserve, makes the next mount
-choose again. A `<pid>` root serves only this process: every mount that uses it checks
+written or sized there makes the next mount choose again; a member refused for lack of
+space does not. A `<pid>` root serves only this process: every mount that uses it checks
 it again, and it is removed after its last spool closes. A fixed shared name is never
 used.
 

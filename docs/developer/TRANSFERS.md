@@ -525,7 +525,20 @@ Inside the moved tree Linux follows Delete's rule instead: a folder of that tree
 write gets it, through the descriptor the Move retains for it, only for each change
 that takes an entry out of it or puts one back (its private stage, a capture, a
 restoration, the stage's and an emptied folder's removal, an entry's own rename on
-one volume), and its own mode back as soon as that change returns. The folder that
+one volume), and its own mode back as soon as that change returns
+(`writable::restored` in `transfer_move_writable.rs`). If setting the mode back fails
+(the filesystem turned read-only or failed), the folder keeps owner write and the
+change says so, naming the folder: appended to the change's error, or as the error of
+its outcome. A capture then becomes `RecoveryRequired` with its stage as the recovery,
+so the source is put back; a native Move that reached its destination becomes
+`RecoveryRequired` with that destination, so the job records it and asks whether to go
+on; a stage cleanup, an emptied folder's removal or a restoration that was done
+returns that error. A folder whose set-group-ID bit the kernel would clear when its
+mode changes (the user is not a member of its group) is never made writable: its
+entries fail at preparation, named as the folder's write protection, and a native
+Move of the folder itself reports it as read-only. A folder's check runs once for
+all of its entries: its enumeration keeps the checked folder (`SourceFolder`) instead
+of checking it again, about a dozen system calls, for every entry. The folder that
 contains the selection is never changed, so a write-protected one still stops the
 Move at preparation ([security](../../SECURITY.md)). Windows needs nothing here: a
 folder's read-only attribute does not keep entries from leaving it.
@@ -961,13 +974,15 @@ link there to `/home/user/folder` is followed within its mount, links to
 `/proc` or `/sys/kernel` not at all.
 
 A target is never followed onto one of the kernel's interface filesystems, which its
-`statfs` type (`f_type`, linux/magic.h) names: proc, sysfs, devpts, cgroup and cgroup2,
-debugfs, tracefs, securityfs, apparmorfs, pstore, bpf, configfs, fusectl, mqueue,
-autofs, efivarfs, binfmt_misc, selinuxfs, smackfs, nsfs, resctrl, binderfs, nfsd and
-rpc_pipefs (`SYSTEM_FILESYSTEMS` in `transfer_directory_links.rs`). Their files describe
-the system and the copying process itself (`/proc/self/environ` is this process's
-environment), a read can wait for ever (tracefs's `trace_pipe`) or change state, and
-following a link to an automount point would mount it. The target is first located
+`statfs` type (`f_type`, linux/magic.h, or the driver source for the USB gadget
+filesystems) names: proc, sysfs, devpts, cgroup and cgroup2, debugfs, tracefs,
+securityfs, apparmorfs, pstore, bpf, configfs, fusectl, mqueue, autofs, efivarfs,
+binfmt_misc, selinuxfs, smackfs, nsfs, resctrl, binderfs, nfsd, rpc_pipefs, xenfs,
+functionfs and gadgetfs, 27 in all (`SYSTEM_FILESYSTEMS` in
+`transfer_directory_links.rs`). Their files describe the system and the copying process
+itself (`/proc/self/environ` is this process's environment), a read can wait for ever
+(tracefs's `trace_pipe`, a USB gadget's endpoint files) or change state (xenfs's
+hypervisor interfaces), and following a link to an automount point would mount it. The target is first located
 with `O_PATH` and not as a folder, which mounts nothing, so an automount point that is
 not mounted yet is seen as autofs and kept; the folder that is followed is then bound
 as a folder and its type checked again. This is a deny list rather than an allow list

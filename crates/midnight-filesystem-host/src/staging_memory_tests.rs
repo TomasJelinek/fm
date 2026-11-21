@@ -272,6 +272,11 @@ fn full(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
     })
 }
 
+/// A volume whose free space cannot be queried: a failure of the spool root.
+fn unreadable(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
+    Err(io::Error::other("the volume cannot be queried"))
+}
+
 #[test]
 fn the_spool_root_is_chosen_once_per_process_and_again_after_a_failure() {
     let temp = tempfile::tempdir().unwrap();
@@ -297,11 +302,9 @@ fn the_spool_root_is_chosen_once_per_process_and_again_after_a_failure() {
         1,
         "one test spool checked the root, for both mounts"
     );
-    // A spool that cannot be written in the cached root makes the next mount choose again.
-    // (Content of undeclared length reaches the append; a declared length would be
-    // refused at its StageBegin, which forgets the root as well.)
-    let mut failing = cache.open(candidates, full).unwrap();
-    failing.set_memory(0, budget(0));
+    // Content of undeclared length reaches the append (a declared length would be
+    // refused at its StageBegin). A full volume refuses it, but the root works: the next
+    // mount stages in it without choosing again.
     let op = read_op(1, 2);
     let begin = Message::StageBegin {
         request: 1,
@@ -309,26 +312,49 @@ fn the_spool_root_is_chosen_once_per_process_and_again_after_a_failure() {
         expected_length: None,
         max_length: 4,
     };
-    let Some(Message::StageCreated { stage, .. }) = failing.nested(&op, &begin).unwrap() else {
-        panic!("the member stage was not created")
-    };
-    let append = Message::StageAppend {
+    let append = |stage| Message::StageAppend {
         request: 1,
         stage,
         offset: 0,
         bytes: b"data".to_vec(),
     };
-    let error = failing.nested(&op, &append).unwrap_err();
+    let mut refusing = cache.open(candidates, full).unwrap();
+    refusing.set_memory(0, budget(0));
+    let Some(Message::StageCreated { stage, .. }) = refusing.nested(&op, &begin).unwrap() else {
+        panic!("the member stage was not created")
+    };
+    let error = refusing.nested(&op, &append(stage)).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    assert!(
+        cache
+            .open(candidates, ample)
+            .unwrap()
+            .root
+            .is_same(&first.root)
+    );
+    assert_eq!(walks.load(Ordering::Relaxed), 1);
+    // A spool that fails in the cached root, here because its volume cannot be queried,
+    // makes the next mount choose again.
+    let mut failing = cache.open(candidates, unreadable).unwrap();
+    failing.set_memory(0, budget(0));
+    let Some(Message::StageCreated { stage, .. }) = failing.nested(&op, &begin).unwrap() else {
+        panic!("the member stage was not created")
+    };
+    let error = failing.nested(&op, &append(stage)).unwrap_err();
+    assert!(error.to_string().contains("cannot be queried"), "{error}");
     assert_eq!(walks.load(Ordering::Relaxed), 1);
     let third = cache.open(candidates, ample).unwrap();
     assert_eq!(walks.load(Ordering::Relaxed), 2);
     assert!(!third.root.is_same(&first.root));
     assert_eq!(third.root.created_spools(), 1);
+    assert!(
+        Arc::ptr_eq(&first.claims, &third.claims),
+        "the root chosen again counts the claims on its volume"
+    );
 }
 
 #[test]
-fn a_member_refused_before_staging_makes_the_next_mount_choose_its_root_again() {
+fn a_member_refused_before_staging_keeps_the_spool_root() {
     let temp = tempfile::tempdir().unwrap();
     let cache: &'static RootCache = Box::leak(Box::new(RootCache::new()));
     let walks = AtomicUsize::new(0);
@@ -354,8 +380,10 @@ fn a_member_refused_before_staging_makes_the_next_mount_choose_its_root_again() 
         1,
         "only the root's test spool"
     );
-    drop(cache.open(candidates, ample).unwrap());
-    assert_eq!(walks.load(Ordering::Relaxed), 2);
+    // The root works: the next mount stages in it without choosing again.
+    let next = cache.open(candidates, ample).unwrap();
+    assert_eq!(walks.load(Ordering::Relaxed), 1);
+    assert!(next.root.is_same(&refusing.root));
 }
 
 #[test]

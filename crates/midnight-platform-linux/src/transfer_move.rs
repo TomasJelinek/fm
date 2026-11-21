@@ -34,10 +34,11 @@ enum Folder {
 
 impl Folder {
     /// Owner write for `folder` while one of its entries leaves it or comes back, when
-    /// it is an owned folder of the moved tree.
-    fn writable(self, folder: &File) -> Option<writable::OwnerWrite<'_>> {
+    /// it is an owned folder of the moved tree. The change gives it back its own mode
+    /// (`writable::restored`).
+    fn writable(self, folder: &destination::Directory) -> Option<writable::OwnerWrite<'_>> {
         if self == Self::Moved {
-            writable::OwnerWrite::grant(folder)
+            writable::OwnerWrite::grant(folder.native_file(), folder.path())
         } else {
             None
         }
@@ -143,51 +144,6 @@ fn move_parent(
     Ok((parent_file, parent_path.to_owned(), name.to_owned()))
 }
 
-/// A child of a folder of the moved tree, without links; `namespace` is the folder's
-/// bindings, shared by all of its children.
-pub(super) fn prepare_child(
-    parent_file: Arc<File>,
-    parent_path: PathBuf,
-    name: &OsStr,
-    namespace: Arc<namespace::Bindings>,
-    revisions: TransferRevisionPolicy,
-    cancel: &Cancellation,
-) -> Result<PreparedTransferMove, FsError> {
-    let (source, capture) = SourceFolder::open(
-        parent_file,
-        parent_path,
-        Some(namespace),
-        Folder::Moved,
-        cancel,
-    )?
-    .prepare_native(name, revisions, cancel)?;
-    Ok(PreparedTransferMove {
-        source: Box::new(source),
-        capture,
-    })
-}
-
-/// A child of a folder of the moved tree under the job's link `traversal`.
-pub(super) fn prepare_child_with_links(
-    parent_file: Arc<File>,
-    parent_path: PathBuf,
-    name: &OsStr,
-    namespace: Option<Arc<namespace::Bindings>>,
-    traversal: directory_links::Traversal,
-    revisions: TransferRevisionPolicy,
-    cancel: &Cancellation,
-) -> Result<PreparedTransferMoveEntry, FsError> {
-    prepare_child_or_failure(
-        parent_file,
-        parent_path,
-        name,
-        namespace,
-        Some(traversal),
-        revisions,
-        cancel,
-    )?
-}
-
 /// A child of a folder of the moved tree, under the job's link `traversal` if any, with
 /// the folder's own failure apart from the child's: `Err` is a failure of the folder
 /// itself, which every one of its entries would meet alike (`check_moved_folder`), and
@@ -227,15 +183,48 @@ fn prepare_candidate(
 
 /// A folder whose entries a Move prepares, with what each of them shares: the
 /// descriptor they are opened below, the folder's bindings and the folder itself as
-/// their parent. A folder of the moved tree is checked once, before its entries.
-struct SourceFolder {
+/// their parent. A folder of the moved tree is checked once, before its entries: its
+/// enumeration keeps it for all of them (`source::Source::next_move_child_or_failure`).
+pub(super) struct SourceFolder {
     file: Arc<File>,
     parent: destination::Directory,
     namespace: Arc<namespace::Bindings>,
     folder: Folder,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How often this thread checked a folder of the moved tree (`check_moved_folder`).
+    pub(super) static MOVED_FOLDER_CHECKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 impl SourceFolder {
+    /// The folder of the moved tree that `file`, at `path`, holds, checked for what its
+    /// entries need to leave it (`check_moved_folder`); `namespace` is its bindings.
+    pub(super) fn moved(
+        file: Arc<File>,
+        path: PathBuf,
+        namespace: Arc<namespace::Bindings>,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        Self::open(file, path, Some(namespace), Folder::Moved, cancel)
+    }
+
+    /// The child `name` without links, as a Move of the moved tree prepares it.
+    pub(super) fn prepare_child(
+        &self,
+        name: &OsStr,
+        revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMove, FsError> {
+        let (source, capture) = self.prepare_native(name, revisions, cancel)?;
+        Ok(PreparedTransferMove {
+            source: Box::new(source),
+            capture,
+        })
+    }
+
     fn open(
         file: Arc<File>,
         path: PathBuf,
@@ -266,7 +255,7 @@ impl SourceFolder {
     }
 
     /// The entry `name` under the job's link `traversal` if any.
-    fn prepare_entry(
+    pub(super) fn prepare_entry(
         &self,
         name: &OsStr,
         traversal: Option<directory_links::Traversal>,
@@ -416,25 +405,38 @@ fn check_containing_folder(
 /// needs to leave it: it is still the bound, protected recovery parent, and it lets a
 /// private stage be made in it and entries leave it, which takes write and search
 /// permission. A folder the current user owns that lacks owner write gets it for each
-/// such change (`writable::OwnerWrite`), so it needs search permission only. Every entry
-/// would fail these checks alike, so the error names the folder.
+/// such change (`writable::OwnerWrite`), so it needs search permission only, unless that
+/// would clear its set-group-ID bit. Every entry would fail these checks alike, so the
+/// error names the folder.
 fn check_moved_folder(
     parent: &destination::Directory,
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
     use rustix::fs::{Access, AtFlags, accessat};
+    #[cfg(test)]
+    MOVED_FOLDER_CHECKS.set(MOVED_FOLDER_CHECKS.get() + 1);
     parent.check_recovery_parent(cancel)?;
     let folder = parent.native_file();
-    let needed = if writable::lacking_owner_write(folder).is_some() {
+    let made_writable = writable::lacking_owner_write(folder).is_some();
+    let needed = if made_writable {
         Access::EXEC_OK
     } else {
         Access::WRITE_OK | Access::EXEC_OK
     };
     accessat(folder, ".", needed, AtFlags::EACCESS).map_err(|failure| {
-        let owned = rustix::fs::fstat(folder)
-            .is_ok_and(|stat| stat.st_uid == rustix::process::geteuid().as_raw());
+        let stat = rustix::fs::fstat(folder).ok();
+        let owned = stat
+            .as_ref()
+            .is_some_and(|stat| stat.st_uid == rustix::process::geteuid().as_raw());
+        let write_protected = stat.as_ref().is_some_and(|stat| stat.st_mode & 0o200 == 0);
         let reason = if failure != rustix::io::Errno::ACCESS {
             format!("Nothing can be moved out of this folder: {failure}.")
+        } else if owned && write_protected && !made_writable {
+            // The one owned write-protected folder a Move does not make writable.
+            "Permission denied: nothing can be moved out of this folder, because it is \
+             write-protected and would lose its set-group-ID bit if it were made writable \
+             (you are not a member of its group)."
+                .into()
         } else if owned {
             "Permission denied: nothing can be moved out of this folder, because its entries \
              cannot be opened (it lacks search permission)."
@@ -602,8 +604,9 @@ impl midnight_core::TransferMoveStageCleanup for StageCleanup {
             folder,
             stage,
         } = *self;
-        let _writable = folder.writable(parent.native_file());
-        parent.remove_empty_stage(stage)
+        let writable = folder.writable(&parent);
+        let removed = parent.remove_empty_stage(stage);
+        writable::restored(removed, [writable])
     }
 }
 impl Capture {
@@ -712,21 +715,24 @@ impl Capture {
             change,
             cancel,
         )?;
-        let _writable = self.folder.writable(self.parent.native_file());
+        let writable = self.folder.writable(&self.parent);
         // Empty-only, directory-relative removal. Linux has no inode-CAS rmdir;
         // retain the documented live-validation namespace threat boundary.
-        rustix::fs::unlinkat(
+        let removed = rustix::fs::unlinkat(
             self.parent.native_file(),
             &self.name,
             rustix::fs::AtFlags::REMOVEDIR,
         )
-        .map_err(|e| error(path, e.into()))?;
-        self.namespace
-            .changed(self.parent.native_file(), self.parent.path(), &self.name);
-        Ok(midnight_core::TransferDirectoryRemoval {
-            state: midnight_core::TransferSourceRemoval::Unlinked,
-            durability_confirmed: self.parent.native_file().sync_all().is_ok(),
-        })
+        .map_err(|e| error(path, e.into()))
+        .map(|()| {
+            self.namespace
+                .changed(self.parent.native_file(), self.parent.path(), &self.name);
+            midnight_core::TransferDirectoryRemoval {
+                state: midnight_core::TransferSourceRemoval::Unlinked,
+                durability_confirmed: self.parent.native_file().sync_all().is_ok(),
+            }
+        });
+        writable::restored(removed, [writable])
     }
 }
 
@@ -771,30 +777,38 @@ impl Capture {
             &cleanup,
         )?;
         stage.namespace_announce(&self.name, change, &cleanup)?;
-        let _writable = self.folder.writable(self.parent.native_file());
-        renameat_with(
+        let writable = self.folder.writable(&self.parent);
+        if let Err(failure) = renameat_with(
             stage.native_file(),
             &self.name,
             self.parent.native_file(),
             &self.name,
             RenameFlags::NOREPLACE,
-        )
-        .map_err(|e| error(&self.entry.item.path, e.into()))?;
+        ) {
+            let failure = error(&self.entry.item.path, failure.into());
+            return writable::restored(Err(failure), [writable]);
+        }
         self.namespace
             .changed(self.parent.native_file(), self.parent.path(), &self.name);
         stage.namespace_changed(&self.name);
         let synced = sync(stage);
-        // Record the namespace fact before reporting any failed durability check.
+        // Record the namespace fact before reporting any failed durability check or a
+        // folder that keeps owner write.
         state.outcome = Some(TransferMoveCaptureOutcome::Restored {
             source: self.entry.item.path.clone(),
             error: invalid(&self.entry.item.path, "temporary source staging restored"),
         });
-        synced.map_err(|mut failure| {
-            failure.message = format!(
-                "Source was restored; directory durability is unconfirmed: {}",
-                failure.message
-            );
+        let unsynced = synced.err().map(|mut failure| {
+            failure.message = format!("directory durability is unconfirmed: {}", failure.message);
             failure
+        });
+        let failure = match (unsynced, writable::restore_all([writable])) {
+            (Some(unsynced), Some(mode)) => Some(writable::with_restore_failure(unsynced, mode)),
+            (unsynced, mode) => unsynced.or(mode),
+        };
+        failure.map_or(Ok(()), |mut failure| {
+            failure.message = format!("Source was restored; {}", failure.message);
+            Err(failure)
         })
     }
 }
@@ -823,7 +837,39 @@ impl Capture {
             cancel,
         )?;
         // For the stage, the capture, and the restoration or stage removal of a failure.
-        let _writable = self.folder.writable(self.parent.native_file());
+        let writable = self.folder.writable(&self.parent);
+        let staged =
+            self.stage_and_capture(&mut state, cancel, before_capture, after_capture, change);
+        let (outcome, recovery) = match staged {
+            Ok(staged) => staged,
+            Err(failure) => {
+                return Err(match writable::restore_all([writable]) {
+                    Some(mode) => writable::with_restore_failure(failure, mode),
+                    None => failure,
+                });
+            }
+        };
+        // The folder gets its own mode back before the outcome is recorded, so that a
+        // repeated capture reports the same facts.
+        let outcome = match writable::restore_all([writable]) {
+            Some(mode) => writable::captured_with_restore_failure(outcome, mode),
+            None => outcome,
+        };
+        state.retained = Some(recovery);
+        state.outcome = Some(outcome.clone());
+        Ok(outcome)
+    }
+
+    /// The private stage and the capture of the source into it, with the restoration or
+    /// stage removal of a failure: the outcome and the stage, which the caller records.
+    fn stage_and_capture(
+        &self,
+        state: &mut State,
+        cancel: &Cancellation,
+        before_capture: impl FnOnce(),
+        after_capture: impl FnOnce(),
+        change: &mut namespace::Change<'_>,
+    ) -> Result<(TransferMoveCaptureOutcome, destination::Directory), FsError> {
         let recovery = match state.unused.take() {
             // Kept by an earlier attempt: announce it in this turn, as its creation
             // did, before the source is renamed into it. Nothing follows a refusal.
@@ -850,7 +896,7 @@ impl Capture {
             .map_err(|e| error(&self.entry.item.path, e.into()))
         })();
         if let Err(mut failure) = captured {
-            self.keep_or_remove_stage_in(&mut state, recovery, &mut failure, change);
+            self.keep_or_remove_stage_in(state, recovery, &mut failure, change);
             return Err(failure);
         }
         self.namespace
@@ -945,9 +991,7 @@ impl Capture {
                 recovery: receipt,
             }
         };
-        state.retained = Some(recovery);
-        state.outcome = Some(outcome.clone());
-        Ok(outcome)
+        Ok((outcome, recovery))
     }
 
     /// Removes, in the capture's own change, the empty private stage of a capture that

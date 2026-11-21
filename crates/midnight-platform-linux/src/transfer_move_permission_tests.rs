@@ -324,3 +324,121 @@ fn a_source_changed_after_preparation_is_named_as_the_source() {
     assert_eq!(fs::read(source.join("file")).unwrap(), b"changed content");
     assert!(!destination.join("file").exists());
 }
+
+#[test]
+fn a_moved_folder_that_cannot_get_its_mode_back_is_reported_with_the_move() {
+    if privileged() {
+        return;
+    }
+    let temp = native_tests::fixture();
+    let (source, destination) = (temp.path().join("source"), temp.path().join("destination"));
+    fs::create_dir_all(source.join("locked")).unwrap();
+    fs::create_dir(&destination).unwrap();
+    chmod(&source.join("locked"), 0o555);
+    // The filesystem turns read-only before the folder gets its own mode back.
+    let outcome = native_move(&source, &destination, "locked", TRANSFER, || {
+        writable::FAIL_RESTORE.set(Some(rustix::io::Errno::ROFS));
+    });
+    let injected = writable::FAIL_RESTORE.take();
+    let moved = destination.join("locked");
+    let left = moved.exists().then(|| mode(&moved));
+    for folder in [&moved, &source.join("locked")] {
+        if folder.exists() {
+            chmod(folder, 0o755);
+        }
+    }
+    assert_eq!(injected, None, "the change gave the folder its mode back");
+    // The folder moved, and the Move says that it keeps the owner write it needed.
+    let outcome = outcome.unwrap();
+    let TransferNativeMoveOutcome::RecoveryRequired {
+        destination: Some(reached),
+        recovery,
+        error,
+    } = outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(reached, moved);
+    assert!(recovery.is_empty(), "{recovery:?}");
+    assert_eq!(error.path, source.join("locked"));
+    assert!(
+        error.message.contains("0555") && error.message.contains("keeps owner write"),
+        "{error:?}"
+    );
+    assert_eq!(left, Some(0o755));
+}
+
+#[test]
+fn a_capture_whose_folder_cannot_get_its_mode_back_keeps_the_source_for_recovery() {
+    if privileged() {
+        return;
+    }
+    let temp = native_tests::fixture();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let locked = write_protected_tree(&source);
+    let cancel = Cancellation::default();
+    let restored = (|| -> Result<(), FsError> {
+        let (_root, children) = prepared_children(&locked)?;
+        let file = children
+            .into_iter()
+            .find(|child| child.capture.entry().item.path == locked.join("file"))
+            .expect("the file");
+        writable::FAIL_RESTORE.set(Some(rustix::io::Errno::IO));
+        let outcome = file.capture.capture(&cancel)?;
+        let TransferMoveCaptureOutcome::RecoveryRequired {
+            recovery, error, ..
+        } = outcome
+        else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(recovery.len(), 1);
+        assert_eq!(error.path, locked);
+        assert!(error.message.contains("keeps owner write"), "{error:?}");
+        // The folder kept owner write, so the source goes back without another change.
+        file.capture.restore()?;
+        let cleanup = file
+            .capture
+            .take_stage_cleanup()
+            .expect("the private stage");
+        drop(file);
+        cleanup.cleanup()
+    })();
+    writable::FAIL_RESTORE.set(None);
+    let left = (mode(&locked), private_names(&locked));
+    chmod(&locked, 0o755);
+    chmod(&locked.join("folder"), 0o755);
+    restored.unwrap();
+    assert_eq!(left, (0o755, Vec::<OsString>::new()));
+    assert_eq!(fs::read(locked.join("file")).unwrap(), b"file");
+}
+
+#[test]
+fn a_set_group_id_folder_gets_owner_write_only_where_it_keeps_the_bit() {
+    // The kernel clears the bit when the caller is not a member of the folder's group,
+    // both when owner write is added and when the mode is set back.
+    assert!(!writable::keeps_set_group_id(0o2555, 4242, |_| false));
+    assert!(writable::keeps_set_group_id(0o2555, 4242, |group| group == 4242));
+    assert!(writable::keeps_set_group_id(0o555, 4242, |_| false));
+    if privileged() {
+        return;
+    }
+    // In the caller's own group the bit stays through the owner write and back.
+    let temp = native_tests::fixture();
+    let folder = temp.path().join("shared");
+    fs::create_dir(&folder).unwrap();
+    chmod(&folder, 0o2555);
+    if mode(&folder) != 0o2555 {
+        chmod(&folder, 0o755);
+        eprintln!("SKIP: the folder's group is not the caller's, or the filesystem drops the bit");
+        return;
+    }
+    let file = File::open(&folder).unwrap();
+    let grant = writable::OwnerWrite::grant(&file, &folder).expect("an owned folder");
+    let writable = mode(&folder);
+    let restored = grant.restore();
+    let left = mode(&folder);
+    chmod(&folder, 0o755);
+    restored.unwrap();
+    assert_eq!((writable, left), (0o2755, 0o2555));
+}

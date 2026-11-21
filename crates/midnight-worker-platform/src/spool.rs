@@ -39,6 +39,13 @@ pub fn free_space_reserve(total: u64) -> u64 {
     (1u64 << 30).max(total / 50)
 }
 
+/// The volume that holds a private spool directory (`PrivateSpoolDirectory::volume`):
+/// directories on one volume share its free space, so space promised to spools in one
+/// of them is promised in all of them. Equal for every directory on one mounted
+/// filesystem (Linux) or volume serial number (Windows).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SpoolVolume(u64);
+
 /// Capacity of the volume that holds a private spool directory, in bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpoolSpace {
@@ -120,6 +127,12 @@ impl PrivateSpoolDirectory {
     /// Query the volume that holds this directory: one native call, for backend workers.
     pub fn space(&self) -> io::Result<SpoolSpace> {
         native::space(&self.root)
+    }
+
+    /// Identify the volume that holds this directory: one native call on the verified
+    /// directory itself, for backend workers.
+    pub fn volume(&self) -> io::Result<SpoolVolume> {
+        native::volume(&self.root).map(SpoolVolume)
     }
 
     /// Spool files requested in this directory through any clone, including failed

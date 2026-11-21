@@ -2,11 +2,20 @@ use super::*;
 use midnight_core::TreeDiagnostic;
 use std::os::unix::fs::MetadataExt;
 
-/// The descriptor of the report file: its `/proc/self/fd` entry and the file's device,
-/// inode and length. Once the file is closed, another thread's next file can take both
-/// the same descriptor number and the freed inode number, so the length (the report is
-/// hundreds of kilobytes) tells the report from such a newcomer.
-fn spool_descriptor(directory: &Path) -> (PathBuf, u64, u64, u64) {
+/// The descriptor of the report file: its `/proc/self/fd` entry, the test's own private
+/// folder that the entry's link names, and the file's device, inode and length. Once the
+/// file is closed, another thread's next file can take both the same descriptor number
+/// and the freed inode number. The folder tells the report from a newcomer of another
+/// test, which uses a unique temporary folder of its own, and the length (the report is
+/// hundreds of kilobytes) from any other file.
+struct Descriptor {
+    entry: PathBuf,
+    folder: PathBuf,
+    device: u64,
+    inode: u64,
+    length: u64,
+}
+fn spool_descriptor(directory: &Path) -> Descriptor {
     let found: Vec<_> = std::fs::read_dir("/proc/self/fd")
         .unwrap()
         .filter_map(Result::ok)
@@ -14,12 +23,13 @@ fn spool_descriptor(directory: &Path) -> (PathBuf, u64, u64, u64) {
             let path = entry.path();
             let target = std::fs::read_link(&path).ok()?;
             let metadata = std::fs::metadata(&path).ok()?;
-            (target.starts_with(directory) && metadata.is_file()).then_some((
-                path,
-                metadata.dev(),
-                metadata.ino(),
-                metadata.len(),
-            ))
+            (target.starts_with(directory) && metadata.is_file()).then(|| Descriptor {
+                entry: path,
+                folder: directory.to_owned(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                length: metadata.len(),
+            })
         })
         .collect();
     assert_eq!(
@@ -29,11 +39,14 @@ fn spool_descriptor(directory: &Path) -> (PathBuf, u64, u64, u64) {
     );
     found.into_iter().next().unwrap()
 }
-fn same_descriptor(descriptor: &(PathBuf, u64, u64, u64)) -> bool {
-    std::fs::metadata(&descriptor.0).is_ok_and(|metadata| {
-        (metadata.dev(), metadata.ino(), metadata.len())
-            == (descriptor.1, descriptor.2, descriptor.3)
-    })
+/// Whether the descriptor still holds the report file: a file in the test's own folder
+/// with the report's device, inode and length.
+fn same_descriptor(descriptor: &Descriptor) -> bool {
+    std::fs::read_link(&descriptor.entry).is_ok_and(|target| target.starts_with(&descriptor.folder))
+        && std::fs::metadata(&descriptor.entry).is_ok_and(|metadata| {
+            (metadata.dev(), metadata.ino(), metadata.len())
+                == (descriptor.device, descriptor.inode, descriptor.length)
+        })
 }
 #[test]
 fn report_retirement_tree_diagnostic_prefix_keeps_file_until_worker_cleanup() {

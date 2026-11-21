@@ -186,3 +186,28 @@ fn a_move_folder_whose_entries_cannot_leave_it_fails_once_as_itself() {
     assert_eq!(failure.kind, io::ErrorKind::Unsupported, "{failure:?}");
     assert_eq!(failure.path, folder);
 }
+
+#[test]
+fn a_move_folder_is_checked_once_for_all_of_its_children() {
+    let temp = crate::test_support::temporary("move-child-check-");
+    let folder = temp.path().join("folder");
+    fs::create_dir(&folder).unwrap();
+    for file in ["first", "second", "third"] {
+        fs::write(folder.join(file), file).unwrap();
+    }
+    let cancel = Cancellation::default();
+    let (mut source, policy) = prepared_move_folder(&folder);
+    let checks = || move_source::MOVED_FOLDER_CHECKS.get();
+    let before = checks();
+    let mut children = 0;
+    while let Some(child) = source.next_move_child_or_failure(policy, &cancel).unwrap() {
+        assert!(child.is_ok(), "{:?}", child.err());
+        children += 1;
+    }
+    assert_eq!(children, 3);
+    assert_eq!(
+        checks() - before,
+        1,
+        "the folder is checked once, before its first child"
+    );
+}

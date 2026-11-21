@@ -34,6 +34,9 @@ pub(super) struct Source {
     leaf: Option<directory_links::Leaf>,
     /// A folder the transfer entered holds descriptors: one of the process's levels.
     _level: Option<descriptor_budget::Level>,
+    /// This folder as the folder that its Move children leave, checked once before the
+    /// first of them (`moved_folder`).
+    moved_folder: Option<super::move_source::SourceFolder>,
 }
 impl Source {
     pub(super) fn enable_move(&mut self) {
@@ -228,6 +231,7 @@ impl Source {
             projected_link,
             leaf,
             _level: None,
+            moved_folder: None,
         })
     }
     fn empty_link(&self) -> bool {
@@ -340,18 +344,13 @@ impl TransferSource for Source {
                 "Copy sources have no Move authority",
             ));
         }
-        self.next_name(cancel)?
-            .map(|name| {
-                super::move_source::prepare_child(
-                    self.file.clone(),
-                    self.entry.item.path.clone(),
-                    &name,
-                    self.child_namespace()?,
-                    self.revisions,
-                    cancel,
-                )
-            })
-            .transpose()
+        let Some(name) = self.next_name(cancel)? else {
+            return Ok(None);
+        };
+        let revisions = self.revisions;
+        self.moved_folder(cancel)?
+            .prepare_child(&name, revisions, cancel)
+            .map(Some)
     }
     fn next_move_child_with_links(
         &mut self,
@@ -374,19 +373,13 @@ impl TransferSource for Source {
                     "this source has no Move authority for the requested directory link policy",
                 )
             })?;
-        self.next_name(cancel)?
-            .map(|name| {
-                super::move_source::prepare_child_with_links(
-                    self.file.clone(),
-                    self.entry.item.path.clone(),
-                    &name,
-                    Some(self.child_namespace()?),
-                    traversal,
-                    self.revisions,
-                    cancel,
-                )
-            })
-            .transpose()
+        let Some(name) = self.next_name(cancel)? else {
+            return Ok(None);
+        };
+        let revisions = self.revisions;
+        self.moved_folder(cancel)?
+            .prepare_entry(&name, Some(traversal), revisions, cancel)
+            .map(Some)
     }
     fn next_move_child_or_failure(
         &mut self,
@@ -399,15 +392,10 @@ impl TransferSource for Source {
         };
         // The folder's own checks failing ends its enumeration; only preparing the
         // child is the child's failure.
-        let prepared = super::move_source::prepare_child_or_failure(
-            self.file.clone(),
-            self.entry.item.path.clone(),
-            &name,
-            Some(self.child_namespace()?),
-            traversal,
-            self.revisions,
-            cancel,
-        )?;
+        let revisions = self.revisions;
+        let prepared = self
+            .moved_folder(cancel)?
+            .prepare_entry(&name, traversal, revisions, cancel);
         Ok(Some(prepared.map_err(|error| {
             midnight_core::TransferChildFailure { name, error }
         })))
@@ -668,6 +656,25 @@ impl Source {
             rustix::fs::AtFlags::EACCESS,
         )
         .map_err(|e| error(&self.entry.item.path, e.into()))
+    }
+    /// This folder as the folder that its Move children leave: checked once, before the
+    /// first of them, for what every child would fail alike (`check_moved_folder`),
+    /// which is then the folder's own failure. A failed check is not kept, so the next
+    /// call checks again.
+    fn moved_folder(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<&super::move_source::SourceFolder, FsError> {
+        let folder = match self.moved_folder.take() {
+            Some(folder) => folder,
+            None => super::move_source::SourceFolder::moved(
+                self.file.clone(),
+                self.entry.item.path.clone(),
+                self.child_namespace()?,
+                cancel,
+            )?,
+        };
+        Ok(self.moved_folder.insert(folder))
     }
     /// The link traversal that a Move child of this folder is prepared under for
     /// `links` (none for `Reject`); only a source prepared for Move has one.

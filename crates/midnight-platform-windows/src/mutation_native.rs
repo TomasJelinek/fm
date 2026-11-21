@@ -481,8 +481,9 @@ fn classic_dispose(source: &File) -> io::Result<()> {
     })
 }
 
-/// Puts back what [`dispose`] changed to delete an entry that stays after all.
-type Restore<'a> = Box<dyn FnOnce() + 'a>;
+/// Puts back what [`dispose`] changed to delete an entry that stays after all, and says
+/// whether that worked.
+type Restore<'a> = Box<dyn FnOnce() -> io::Result<()> + 'a>;
 
 /// Clears the DOS read-only attribute of the entry `source` itself, for the classic
 /// disposition, which cannot ignore it; returns how to put it back, or `None` when it
@@ -522,10 +523,7 @@ fn writable(source: &File) -> io::Result<Option<Restore<'static>>> {
             ),
         )
     })?;
-    Ok(Some(Box::new(move || {
-        // Best effort, as Linux restores a folder's mode: the entry stays either way.
-        let _ = set_attributes(&writer, attributes);
-    })))
+    Ok(Some(Box::new(move || set_attributes(&writer, attributes))))
 }
 
 /// Sets the attributes of `file` through `FileBasicInfo`; the filesystem keeps those it
@@ -600,7 +598,9 @@ fn native_result(succeeded: i32) -> io::Result<()> {
 /// handle, which removes the name once every handle to the entry is closed (the caller
 /// closes its own right afterwards). The classic class cannot ignore Read-only:
 /// `writable` clears it on the entry first ([`writable`]: never on an entry with other
-/// names), and an entry that the classic disposition still refuses gets it back.
+/// names), and an entry that the classic disposition still refuses gets it back. When
+/// setting it again fails too, the entry stays without Read-only, and the refusal that
+/// is returned says so after the reason the entry stays.
 fn dispose<'a>(
     extended: impl FnOnce() -> io::Result<()>,
     classic: impl FnOnce() -> io::Result<()>,
@@ -611,13 +611,19 @@ fn dispose<'a>(
         result => return result,
     }
     let restore = writable()?;
-    let result = classic();
-    if result.is_err()
-        && let Some(restore) = restore
-    {
-        restore();
+    let Err(error) = classic() else {
+        return Ok(());
+    };
+    match restore.map(|restore| restore()) {
+        Some(Err(restore)) => Err(io::Error::new(
+            error.kind(),
+            format!(
+                "{error}; the entry stays without Read-only, because setting it again \
+                 failed: {restore}"
+            ),
+        )),
+        _ => Err(error),
     }
-    result
 }
 
 /// Answers a failure. `Err` ends the deletion with that error: a decision that could not

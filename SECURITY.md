@@ -236,9 +236,11 @@ ignores the read-only attribute without changing it, so read-only files and fold
 inside the confirmed tree are removed and an item that stays keeps the attribute. A
 filesystem without POSIX delete (FAT32, exFAT, some redirectors) cannot ignore it:
 Delete clears Read-only on the entry itself, through a second handle to that entry
-and never by path, and sets it again if the entry still cannot be removed. A file
-with other names (hard links), which may lie outside the confirmed tree, is not
-changed: its removal pauses the job with the same choices. Move applies the same
+and never by path, and sets it again if the entry still cannot be removed; if setting
+it again fails too, the entry stays without Read-only and the error that pauses the job
+says so after the reason the entry stays. A file with other names (hard links), which
+may lie outside the confirmed tree, is not changed: its removal pauses the job with the
+same choices. Move applies the same
 rule to the tree it moves (below).
 
 A same-volume Move on Linux renames a folder into another folder, which changes its
@@ -254,10 +256,16 @@ gets owner write through the descriptor the Move retained for it, never through 
 path, only for each change that takes one of its entries out or puts one back (its
 private stage, the capture of an entry after a cross-volume copy, the stage's and an
 emptied folder's removal, an entry's own rename on one volume, a restoration), and
-gets its original mode back as soon as that change returns. The folder that contains
-the selection is never changed: a Move out of one that does not let the item leave
-stops at preparation, before anything is copied. Folders owned by another user,
-links and any other item are never changed. On Windows a folder's read-only
+gets its original mode back as soon as that change returns. If setting it back fails
+(the filesystem turned read-only or failed), the folder keeps owner write, and the
+change reports that with the folder's name instead of passing over it: a capture keeps
+its source for recovery and puts it back, and a moved folder or entry asks whether the
+job goes on. A folder with the set-group-ID bit whose group the user is not a member
+of is never changed, because the kernel would clear that bit with any change of its
+mode: it is reported as write-protected, as before. The folder that contains the
+selection is never changed: a Move out of one that does not let the item leave stops
+at preparation, before anything is copied. Folders owned by another user, links and
+any other item are never changed. On Windows a folder's read-only
 attribute does not stop entries from leaving it, so nothing is changed there. A
 prepared Move source is rechecked by identity, size and modified time before each
 attempt; its permissions and change time may differ, because the user may fix them
@@ -658,8 +666,9 @@ Copy that follows links opens a target only under the directory-link rules (no m
 links; no target on one of the kernel's interface filesystems, by `statfs` type: proc,
 sysfs, devpts, cgroup, cgroup2, debugfs, tracefs, securityfs, apparmorfs, pstore, bpf,
 configfs, fusectl, mqueue, autofs, efivarfs, binfmt_misc, selinuxfs, smackfs, nsfs,
-resctrl, binderfs, nfsd and rpc_pipefs, so no process state such as
-/proc/self/environ is copied and no automount point is mounted by a link; no link back
+resctrl, binderfs, nfsd, rpc_pipefs, xenfs and the USB gadget filesystems functionfs and
+gadgetfs, so no process state such as /proc/self/environ is copied and no automount
+point is mounted by a link; no link back
 to a folder on the current path, by device and inode across filesystems; at most 128
 links followed inside one another; a target this process can read and list) and
 recreates any link it cannot follow, with the reason. A target on another filesystem,

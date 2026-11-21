@@ -1,7 +1,11 @@
 use super::SpoolSpace;
 use crate::store::native::Root;
 use rustix::fs::{self, Mode, OFlags};
-use std::{fs::File, io, os::unix::fs::FileExt};
+use std::{
+    fs::File,
+    io,
+    os::unix::fs::{FileExt, MetadataExt},
+};
 
 #[cfg(test)]
 #[path = "spool_linux_tests.rs"]
@@ -27,6 +31,11 @@ pub(super) fn create(root: &Root) -> io::Result<File> {
 
 pub(super) fn read_at(file: &File, offset: u64, output: &mut [u8]) -> io::Result<usize> {
     file.read_at(output, offset)
+}
+
+/// The device of the verified root descriptor: the mounted filesystem that holds it.
+pub(super) fn volume(root: &Root) -> io::Result<u64> {
+    Ok(root.directory().metadata()?.dev())
 }
 
 /// Handle-relative: the verified root descriptor names the volume, never a path.

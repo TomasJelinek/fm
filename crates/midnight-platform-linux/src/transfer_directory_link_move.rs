@@ -139,68 +139,72 @@ impl Capture {
         let path = &self.entry().item.path;
         let name = self.original.name();
         self.parent.namespace_announce(name, change, cancel)?;
-        // For the stage, the capture, and the restoration or stage removal of a failure.
-        let _writable = self.folder.writable(self.parent.native_file());
-        let stage = match self.parent.source_stage_in(cancel, change) {
-            Ok(stage) => stage,
-            Err(failure) => return self.stage_creation_failure(failure),
-        };
-        let captured = self.revalidate(cancel).and_then(|()| {
-            stage.check_recovery_parent(cancel)?;
-            before_capture();
-            checked(cancel, path)?;
-            renameat_with(
-                self.parent.native_file(),
-                name,
-                stage.native_file(),
-                name,
-                RenameFlags::NOREPLACE,
-            )
-            .map_err(|failure| error(path, failure.into()))
-        });
-        if let Err(failure) = captured {
-            return self.failed_with_empty_stage(stage, failure, change);
-        }
-        self.parent.namespace_changed(name);
-        stage.namespace_changed(name);
-        after_capture();
-        let staged_path = stage.path().join(name);
-        let removed = (|| {
-            self.parent.check_recovery_parent(cancel)?;
-            stage.check_recovery_parent(cancel)?;
-            self.original.qualify_removal()?;
-            self.original
-                .verify_staged(stage.native_file(), &staged_path, cancel)?;
-            // The owned private stage excludes other unprivileged users. The
-            // existing same-UID and privileged namespace limitation still applies.
-            unlinkat(stage.native_file(), name, AtFlags::empty())
-                .map_err(|failure| error(&staged_path, failure.into()))
-        })();
-        if let Err(failure) = removed {
-            return self.restore(stage, failure, change);
-        }
-        stage.namespace_changed(name);
-        if let Err(failure) = self.original.verify_unlinked() {
-            return Ok(self.keep_recovery(&stage, stage_receipt(&stage), failure));
-        }
-        let synced = stage
-            .native_file()
-            .sync_all()
-            .map_err(|failure| error(&staged_path, failure));
-        let (recovery, cleanup_error) = self.clean_stage(stage, change);
-        let mut failure = synced.err();
-        if let Some(cleanup) = cleanup_error {
-            match &mut failure {
-                Some(failure) => append_error(failure, "Temporary directory cleanup", cleanup),
-                None => failure = Some(cleanup),
+        // For the stage, the capture, and the restoration or stage removal of a failure;
+        // the folder gets its own mode back once the change returns.
+        let writable = self.folder.writable(&self.parent);
+        let outcome = (|| -> Result<TransferDirectoryLinkRemoval, FsError> {
+            let stage = match self.parent.source_stage_in(cancel, change) {
+                Ok(stage) => stage,
+                Err(failure) => return self.stage_creation_failure(failure),
+            };
+            let captured = self.revalidate(cancel).and_then(|()| {
+                stage.check_recovery_parent(cancel)?;
+                before_capture();
+                checked(cancel, path)?;
+                renameat_with(
+                    self.parent.native_file(),
+                    name,
+                    stage.native_file(),
+                    name,
+                    RenameFlags::NOREPLACE,
+                )
+                .map_err(|failure| error(path, failure.into()))
+            });
+            if let Err(failure) = captured {
+                return self.failed_with_empty_stage(stage, failure, change);
             }
-        }
-        Ok(TransferDirectoryLinkRemoval::Removed {
-            state: TransferSourceRemoval::Unlinked,
-            durability_confirmed: failure.is_none(),
-            recovery: recovery.into_iter().collect(),
-            error: failure,
-        })
+            self.parent.namespace_changed(name);
+            stage.namespace_changed(name);
+            after_capture();
+            let staged_path = stage.path().join(name);
+            let removed = (|| {
+                self.parent.check_recovery_parent(cancel)?;
+                stage.check_recovery_parent(cancel)?;
+                self.original.qualify_removal()?;
+                self.original
+                    .verify_staged(stage.native_file(), &staged_path, cancel)?;
+                // The owned private stage excludes other unprivileged users. The
+                // existing same-UID and privileged namespace limitation still applies.
+                unlinkat(stage.native_file(), name, AtFlags::empty())
+                    .map_err(|failure| error(&staged_path, failure.into()))
+            })();
+            if let Err(failure) = removed {
+                return self.restore(stage, failure, change);
+            }
+            stage.namespace_changed(name);
+            if let Err(failure) = self.original.verify_unlinked() {
+                return Ok(self.keep_recovery(&stage, stage_receipt(&stage), failure));
+            }
+            let synced = stage
+                .native_file()
+                .sync_all()
+                .map_err(|failure| error(&staged_path, failure));
+            let (recovery, cleanup_error) = self.clean_stage(stage, change);
+            let mut failure = synced.err();
+            if let Some(cleanup) = cleanup_error {
+                match &mut failure {
+                    Some(failure) => append_error(failure, "Temporary directory cleanup", cleanup),
+                    None => failure = Some(cleanup),
+                }
+            }
+            Ok(TransferDirectoryLinkRemoval::Removed {
+                state: TransferSourceRemoval::Unlinked,
+                durability_confirmed: failure.is_none(),
+                recovery: recovery.into_iter().collect(),
+                error: failure,
+            })
+        })();
+        writable::restored(outcome, [writable])
     }
 
     fn restore(

@@ -281,6 +281,35 @@ impl StagingOwner {
     fn close(&mut self) {
         drop(self.retired.take());
     }
+    /// Return the claims of the staging, wherever it is now, to the count of its spool
+    /// volume (`Staging::release_claims`). Its spools stay open.
+    fn release_claims(&mut self) {
+        if let Some(staging) = self.retired.as_mut() {
+            staging.release_claims();
+        }
+        if let Some(staging) = self
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            staging.release_claims();
+        }
+    }
+}
+/// A teardown that failed keeps the staging armed with every spool open, but its claims
+/// are only accounting: they go back first, so later mounts on the same spool volume are
+/// never refused for space that this mount will not write ("other archive reads in
+/// progress still need"). This never unwinds, as the supervisor must publish its receipt.
+fn release_retained_claims(staging: &mut Retained<StagingOwner>) {
+    if let Some(staging) = staging.0.as_mut() {
+        let released = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            staging.release_claims();
+        }));
+        if let Err(payload) = released {
+            std::mem::forget(payload);
+        }
+    }
 }
 pub(super) struct Supervisor<P: SupervisorProcess = midnight_worker_platform::Process> {
     process: Retained<P>,
@@ -340,9 +369,13 @@ fn supervise_with<P: SupervisorProcess>(
     }));
     match result {
         Ok(Ok(())) => receipt.publish(CloseState::Closed),
-        Ok(Err(reason)) => receipt.publish(CloseState::Failed(reason)),
+        Ok(Err(reason)) => {
+            release_retained_claims(&mut owner.staging);
+            receipt.publish(CloseState::Failed(reason));
+        }
         Err(payload) => {
             std::mem::forget(payload);
+            release_retained_claims(&mut owner.staging);
             receipt.publish(CloseState::Failed(
                 "Archive supervisor teardown panicked".into(),
             ));

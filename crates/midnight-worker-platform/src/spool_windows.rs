@@ -3,7 +3,11 @@ use crate::store::native::Root;
 use std::{
     fs::File,
     io,
-    os::windows::{ffi::OsStrExt, fs::FileExt, io::FromRawHandle},
+    os::windows::{
+        ffi::OsStrExt,
+        fs::FileExt,
+        io::{AsRawHandle, FromRawHandle},
+    },
     path::Path,
     ptr,
     sync::atomic::{AtomicU64, Ordering},
@@ -90,6 +94,20 @@ pub(super) fn create(root: &Root) -> io::Result<File> {
 
 pub(super) fn read_at(file: &File, offset: u64, output: &mut [u8]) -> io::Result<usize> {
     file.seek_read(output, offset)
+}
+
+/// The serial number of the volume that holds the verified root, from its pinned handle.
+pub(super) fn volume(root: &Root) -> io::Result<u64> {
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the root keeps its directory handle open for this synchronous query, which
+    // needs only the read-attributes access it was opened with; the output is an exactly
+    // sized writable structure.
+    if unsafe { GetFileInformationByHandle(root.directory()?.as_raw_handle(), &mut information) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(u64::from(information.dwVolumeSerialNumber))
 }
 
 /// The root pins every ancestor, so its path still names the verified directory.

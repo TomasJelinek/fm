@@ -180,7 +180,12 @@ fn confirmed_deletion_falls_back_only_where_the_filesystem_lacks_posix_dispositi
             || {
                 probed.set(probed.get() + 1);
                 writable.map(|cleared| {
-                    cleared.then(|| Box::new(|| restored.set(restored.get() + 1)) as Restore<'_>)
+                    cleared.then(|| {
+                        Box::new(|| {
+                            restored.set(restored.get() + 1);
+                            Ok(())
+                        }) as Restore<'_>
+                    })
                 })
             },
         )
@@ -210,6 +215,35 @@ fn confirmed_deletion_falls_back_only_where_the_filesystem_lacks_posix_dispositi
     let error = run(Err(os(87)), Ok(()), Err(refused)).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert_eq!((classic.get(), restored.get()), (5, 1));
+}
+
+#[test]
+fn an_entry_that_stays_without_read_only_says_so_with_the_reason_it_stays() {
+    // The classic disposition refuses a folder that is not empty, and setting Read-only
+    // on it again fails too (a redirector that lost the connection, for example).
+    let error = dispose(
+        || Err(os(50)),
+        || Err(os(145)),
+        || Ok(Some(Box::new(|| Err(os(5))) as Restore<'_>)),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), os(145).kind());
+    let message = error.to_string();
+    let (refused, restore) = (os(145).to_string(), os(5).to_string());
+    assert!(
+        message.starts_with(&refused)
+            && message.contains("stays without Read-only")
+            && message.ends_with(&restore),
+        "{message}"
+    );
+    // Without a failure only the refusal is returned, as the native error it is.
+    let error = dispose(
+        || Err(os(50)),
+        || Err(os(145)),
+        || Ok(Some(Box::new(|| Ok(())) as Restore<'_>)),
+    )
+    .unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(145));
 }
 
 fn set_read_only(path: &Path, read_only: bool) {

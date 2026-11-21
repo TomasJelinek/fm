@@ -15,8 +15,9 @@ use std::{
     },
 };
 
-/// Bytes promised to the member stages of every mount that stages in one spool root and
-/// not written by them yet. Mounts that share the process's spool root share its claims.
+/// Bytes promised to the member stages of every mount that stages on one spool volume and
+/// not written by them yet. The mounts of this process that stage on one volume share its
+/// claims, in whichever root (`staging::Volumes`).
 #[derive(Debug, Default)]
 pub(crate) struct Claims(AtomicU64);
 

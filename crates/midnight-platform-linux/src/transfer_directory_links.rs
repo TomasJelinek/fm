@@ -30,15 +30,17 @@ const LINK_RESOLVE: ResolveFlags = ResolveFlags::NO_MAGICLINKS.union(ResolveFlag
 /// A link's text that leaves the mount of its folder: resolved as the kernel resolves
 /// it, across mount points, but never through a magic link.
 const ACROSS_RESOLVE: ResolveFlags = ResolveFlags::NO_MAGICLINKS;
-/// The kernel's interface filesystems by `statfs` f_type (linux/magic.h), which no
-/// followed link leads into: their files describe the system and the copying process
-/// itself (/proc/self/environ is this process's environment), a read can wait for ever
-/// (tracefs's trace_pipe) or change state, and an automount point (autofs) would be
-/// mounted. Every other filesystem holds files that Copy also reads when they are
-/// selected directly: local ones, network ones (NFS, SMB, 9p) and FUSE. devtmpfs
-/// reports tmpfs's type: it holds device nodes, which Copy never opens, and links,
-/// which follow these same rules.
-const SYSTEM_FILESYSTEMS: [(u32, &str); 24] = [
+/// The kernel's interface filesystems by `statfs` f_type (linux/magic.h; the USB gadget
+/// filesystems define theirs in drivers/usb/gadget: `FUNCTIONFS_MAGIC` in
+/// function/f_fs.c, `GADGETFS_MAGIC` in legacy/inode.c), which no followed link leads
+/// into: their files describe the system and the copying process itself
+/// (/proc/self/environ is this process's environment), a read can wait for ever
+/// (tracefs's trace_pipe, a gadget's endpoint files) or change state (xenfs's
+/// hypervisor interfaces), and an automount point (autofs) would be mounted. Every other
+/// filesystem holds files that Copy also reads when they are selected directly: local
+/// ones, network ones (NFS, SMB, 9p) and FUSE. devtmpfs reports tmpfs's type: it holds
+/// device nodes, which Copy never opens, and links, which follow these same rules.
+const SYSTEM_FILESYSTEMS: [(u32, &str); 27] = [
     (0x9fa0, "proc"),
     (0x6265_6572, "sysfs"),
     (0x1cd1, "devpts"),
@@ -63,6 +65,9 @@ const SYSTEM_FILESYSTEMS: [(u32, &str); 24] = [
     (0x6c6f_6f70, "binderfs"),
     (0x6e66_7364, "nfsd"),
     (0x6759_6969, "rpc_pipefs"),
+    (0xabba_1974, "xenfs"),
+    (0x0a64_7361, "functionfs"),
+    (0xaee7_1ee7, "gadgetfs"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -561,10 +566,15 @@ fn system_filesystem(target: &File, path: &Path) -> Result<Option<&'static str>,
     let magic = fstatfs(target)
         .map_err(|failure| error(path, failure.into()))?
         .f_type as u32;
-    Ok(SYSTEM_FILESYSTEMS
+    Ok(system_filesystem_named(magic))
+}
+
+/// The name of the kernel interface filesystem whose `statfs` type is `magic`.
+fn system_filesystem_named(magic: u32) -> Option<&'static str> {
+    SYSTEM_FILESYSTEMS
         .iter()
         .find(|(known, _)| *known == magic)
-        .map(|(_, name)| *name))
+        .map(|(_, name)| *name)
 }
 
 /// Why FollowLinks keeps a link to a target on a system filesystem, for the job details.

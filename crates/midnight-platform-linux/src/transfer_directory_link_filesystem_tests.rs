@@ -371,3 +371,23 @@ fn links_followed_across_filesystems_count_against_the_budget() {
     assert_eq!(refused.kind, io::ErrorKind::Unsupported);
     assert!(refused.message.contains("128 links"), "{}", refused.message);
 }
+
+/// The kernel's own interface filesystems are named by the `statfs` type that their
+/// sources give their superblocks, so no link is followed into one: Xen's hypervisor
+/// interface (`XENFS_SUPER_MAGIC`, linux/magic.h) and the USB gadget filesystems
+/// (`FUNCTIONFS_MAGIC` in drivers/usb/gadget/function/f_fs.c, `GADGETFS_MAGIC` in
+/// drivers/usb/gadget/legacy/inode.c), whose endpoint files block or change the device.
+#[test]
+fn xen_and_usb_gadget_interface_filesystems_are_system_filesystems() {
+    for (magic, name) in [
+        (0xabba_1974, "xenfs"),
+        (0x0a64_7361, "functionfs"),
+        (0xaee7_1ee7, "gadgetfs"),
+    ] {
+        assert_eq!(system_filesystem_named(magic), Some(name), "{magic:#x}");
+    }
+    // Filesystems that hold files are followed: ext4 and tmpfs.
+    for magic in [0xef53, 0x0102_1994] {
+        assert_eq!(system_filesystem_named(magic), None, "{magic:#x}");
+    }
+}

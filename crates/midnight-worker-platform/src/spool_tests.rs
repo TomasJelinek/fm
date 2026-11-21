@@ -157,3 +157,14 @@ fn clones_share_the_directory_and_count_every_created_spool() {
     assert!(!root.is_same(&other));
     assert_eq!(other.created_spools(), 0);
 }
+
+#[test]
+fn separate_directories_on_one_volume_name_the_same_volume() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = PrivateSpoolDirectory::open(&temporary.path().join("private")).unwrap();
+    let other = PrivateSpoolDirectory::open(&temporary.path().join("other")).unwrap();
+    let volume = root.volume().unwrap();
+    assert!(!root.is_same(&other));
+    assert_eq!(other.volume().unwrap(), volume);
+    assert_eq!(root.clone().volume().unwrap(), volume);
+}

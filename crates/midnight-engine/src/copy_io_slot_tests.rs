@@ -363,3 +363,44 @@ fn pause_acknowledged_by_the_checkpoint_returns_the_slot_first() {
     assert!(pause_checkpoint(&cancel, Some(&permit)));
     assert!(permit.is_held());
 }
+
+/// An archive copy can complete more roots than the notice queue holds. While the UI
+/// takes no notice, announcing one more root waits for room in that queue, and the job
+/// waits without its disk slot: a request queued on the slot is admitted meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_root_announcement_waiting_for_the_ui_returns_the_disk_slot() {
+    let gate = Arc::new(Gate::new(1));
+    let io = Arc::new(
+        gate.try_acquire_retained(Admission::Shared)
+            .expect("free slot"),
+    );
+    // The job's first progress was never delivered, so no notice reaches the UI.
+    let (sender, _ui) = mpsc::channel(1);
+    let outbox = CopyOutbox::pending(Outbox {
+        sender,
+        wakeup: Arc::new(|| {}),
+    });
+    let root = |entry| CopyEvent::RootCompleted {
+        id: OperationId(1),
+        source: CompletedCopySource::Archive(VirtualEntryId { mount: 7, entry }),
+    };
+    for entry in 0..MAX_NATIVE_TRANSFER_ROOTS as u64 + 2 {
+        outbox.send(Event::Copy(root(entry))).await;
+    }
+    let reader = Consumer::queue(&gate, Admission::Shared);
+    let announcement = tokio::spawn({
+        let (outbox, io) = (outbox.clone(), io.clone());
+        async move { announce_root(&outbox, &io, root(u64::MAX)).await }
+    });
+    // A bounded wait for the reader, not a sleep: it fails if the slot stays held.
+    let admitted =
+        tokio::task::block_in_place(|| reader.entered.recv_timeout(Duration::from_secs(4)).is_ok());
+    assert!(admitted, "a queued request waited for the job's UI");
+    assert!(!io.is_held());
+    assert!(
+        !announcement.is_finished(),
+        "the full notice queue had room"
+    );
+    announcement.abort();
+    reader.finish();
+}

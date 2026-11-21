@@ -526,6 +526,40 @@ fn failed_native_wait_retains_process_staging_and_accounting_and_returns_unconfi
 }
 
 #[test]
+fn an_unconfirmed_teardown_keeps_the_staging_but_returns_its_spool_claims() {
+    for failure in [Failure::Wait, Failure::WaitPanic] {
+        let mut fixture = Fixture::new(failure, false);
+        // A member too large for memory was admitted on the spool volume.
+        let large = 1 << 30;
+        let admitted = {
+            let mut staging = fixture.staging.lock().unwrap();
+            let staging = staging.as_mut().unwrap();
+            staging
+                .admit_member(&Message::StageBegin {
+                    request: 2,
+                    purpose: StagePurpose::Member { entry: 3 },
+                    expected_length: Some(large),
+                    max_length: large,
+                })
+                .unwrap();
+            staging.claimed()
+        };
+        assert_eq!(admitted, large);
+        let (done, worker) = fixture.release();
+        done.recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap_err();
+        worker.join().unwrap();
+        fixture.finish_supervisor();
+        assert!(!fixture.closed());
+        // The staging stays armed with its spools, but promises no space any more.
+        let staging = fixture.staging.lock().unwrap();
+        let staging = staging.as_ref().expect("the retained staging");
+        assert_eq!(staging.claimed(), 0);
+    }
+}
+
+#[test]
 fn supervisor_panics_publish_failed_without_dropping_opaque_payload_or_retained_owners() {
     for failure in [
         Failure::WaitPanic,

@@ -166,6 +166,12 @@ impl Root {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+    /// The pinned root directory itself, for queries of its own metadata.
+    pub(crate) fn directory(&self) -> io::Result<&File> {
+        self._pins
+            .last()
+            .ok_or_else(|| io::Error::other("Cache root is empty"))
+    }
     pub fn open(path: &Path) -> io::Result<Self> {
         if !path.is_absolute() {
             return Err(io::Error::other("Cache root must be absolute"));

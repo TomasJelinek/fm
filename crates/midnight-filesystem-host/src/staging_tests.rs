@@ -355,6 +355,152 @@ fn an_admission_made_before_its_stage_begins_is_used_once_by_that_request() {
     assert!(staging.admitted.is_none());
 }
 
+/// A member stage that declares `length` bytes.
+fn member(request: u64, entry: u64, length: u64) -> Message {
+    Message::StageBegin {
+        request,
+        purpose: StagePurpose::Member { entry },
+        expected_length: Some(length),
+        max_length: length,
+    }
+}
+/// A volume that cannot be queried: a failure of the spool root.
+fn failing_volume(_: &PrivateSpoolDirectory) -> io::Result<SpoolSpace> {
+    Err(io::Error::other("the fake volume query failed"))
+}
+
+#[test]
+fn a_member_refused_for_space_keeps_the_process_spool_root() {
+    static CACHE: RootCache = RootCache::new();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("kept");
+    // Four bytes above the reserve take no eight-byte member, declared or appended.
+    ABOVE_RESERVE.set(4);
+    let mut first = CACHE.open(|| vec![kept(&path)], fake_volume).unwrap();
+    first.spool_files_only();
+    let error = first.nested(&read(1, 2), &member(1, 2, 8)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    let error = first.admit_member(&member(2, 3, 8)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    let undeclared = Message::StageBegin {
+        request: 3,
+        purpose: StagePurpose::Member { entry: 4 },
+        expected_length: None,
+        max_length: 8,
+    };
+    first.nested(&read(3, 4), &undeclared).unwrap();
+    let chunk = Message::StageAppend {
+        request: 3,
+        stage: 1,
+        offset: 0,
+        bytes: vec![7; 8],
+    };
+    let error = first.nested(&read(3, 4), &chunk).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    // The root works: the next mount stages in it without walking the candidates or
+    // creating a test spool there again.
+    let created = first.root.created_spools();
+    let second = CACHE
+        .open(
+            || panic!("a refused member made the process choose its root again"),
+            fake_volume,
+        )
+        .unwrap();
+    assert!(second.root.is_same(&first.root));
+    assert_eq!(second.root.created_spools(), created);
+}
+
+#[test]
+fn a_root_chosen_again_or_another_root_on_the_volume_counts_the_earlier_claims() {
+    static CACHE: RootCache = RootCache::new();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("kept");
+    let occupied = temp.path().join("occupied");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+    let own = temp.path().join("archive-spool-7");
+    // Twelve bytes above the reserve, of which the first mount's stage claims eight.
+    ABOVE_RESERVE.set(12);
+    let mut first = CACHE.open(|| vec![kept(&path)], fake_volume).unwrap();
+    first.spool_files_only();
+    first.nested(&read(1, 2), &member(1, 2, 8)).unwrap();
+    // A spool failure in the root (here its volume cannot be queried) makes the next
+    // mount choose its root again: a new capability for the same directory.
+    first.set_space(failing_volume);
+    assert!(first.admit_member(&member(2, 3, 1)).is_err());
+    let mut again = CACHE.open(|| vec![kept(&path)], fake_volume).unwrap();
+    assert!(!again.root.is_same(&first.root));
+    again.spool_files_only();
+    // Only four bytes are not promised to the first mount's stage.
+    let error = again.nested(&read(1, 2), &member(1, 2, 8)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    assert!(error.to_string().contains("8 bytes of which"), "{error}");
+    again.nested(&read(1, 2), &member(1, 2, 2)).unwrap();
+    // Another root on the same volume, here a per-process one, counts them too.
+    again.set_space(failing_volume);
+    assert!(again.admit_member(&member(2, 3, 1)).is_err());
+    let mut other = CACHE
+        .open(|| vec![kept(&occupied), per_process(&own)], fake_volume)
+        .unwrap();
+    assert!(own.is_dir());
+    other.spool_files_only();
+    let error = other.nested(&read(1, 2), &member(1, 2, 4)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    other.nested(&read(1, 2), &member(1, 2, 2)).unwrap();
+    assert_eq!(first.claimed(), 12);
+    // Ended stages give their claims back to every root on the volume.
+    drop((first, again));
+    assert_eq!(other.claimed(), 2);
+}
+
+#[test]
+fn mounts_in_per_process_roots_count_each_others_claims() {
+    static CACHE: RootCache = RootCache::new();
+    let temp = tempfile::tempdir().unwrap();
+    let occupied = temp.path().join("occupied");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+    let path = temp.path().join("archive-spool-7");
+    let roots = || vec![kept(&occupied), per_process(&path)];
+    ABOVE_RESERVE.set(12);
+    // A per-process root is never kept, so each mount chooses it on its own.
+    let mut first = CACHE.open(roots, fake_volume).unwrap();
+    let mut second = CACHE.open(roots, fake_volume).unwrap();
+    assert!(!first.root.is_same(&second.root));
+    first.spool_files_only();
+    second.spool_files_only();
+    first.nested(&read(1, 2), &member(1, 2, 8)).unwrap();
+    let error = second.nested(&read(1, 3), &member(1, 3, 8)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    second.nested(&read(1, 3), &member(1, 3, 4)).unwrap();
+    assert_eq!(first.claimed(), 12);
+}
+
+#[test]
+fn released_claims_return_to_the_volume_and_the_mount_claims_no_more() {
+    let (_temp, mut staging) = staging_on_fake_volume(12);
+    let op = read(1, 2);
+    let Some(Message::StageCreated { stage, .. }) = staging.nested(&op, &member(1, 2, 8)).unwrap()
+    else {
+        panic!("the member stage was not created")
+    };
+    staging.admit_member(&member(2, 3, 4)).unwrap();
+    assert_eq!(staging.claimed(), 12);
+    staging.release_claims();
+    assert_eq!(staging.claimed(), 0);
+    // The pending stage stays, and checks the volume before it writes again.
+    let queries = QUERIES.get();
+    let chunk = Message::StageAppend {
+        request: 1,
+        stage,
+        offset: 0,
+        bytes: vec![7; 8],
+    };
+    staging.nested(&op, &chunk).unwrap();
+    assert_eq!((QUERIES.get(), pending_length(&staging)), (queries + 1, 8));
+    // No member claims space again.
+    assert!(staging.admit_member(&member(3, 4, 4)).is_err());
+    assert_eq!(staging.claimed(), 0);
+}
+
 #[test]
 fn spool_space_amounts_are_named_in_binary_units() {
     assert_eq!(space::amount(1023), "1023 bytes");

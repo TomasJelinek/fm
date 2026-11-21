@@ -3,13 +3,13 @@ use memory::{Content, MEMORY_BUDGET, MEMORY_STAGE_LIMIT, MemoryBudget};
 use midnight_filesystem_api::{MAX_READ, Message, StagePurpose};
 use midnight_worker_platform::spool::{
     PrivateSpoolDirectory, ProcessRootGuard, SPACE_CHECK_INTERVAL, SpoolRoot, SpoolSpace,
-    free_space_reserve,
+    SpoolVolume, free_space_reserve,
 };
 use std::{
     collections::{HashMap, VecDeque},
     io,
     path::Path,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError, Weak},
 };
 
 const CACHE_ENTRIES: usize = 16;
@@ -91,11 +91,14 @@ pub(crate) struct Staging {
     root: PrivateSpoolDirectory,
     /// Queries the volume of `root`; tests substitute a fake volume.
     space: SpaceQuery,
-    /// Spool space promised to member stages of every mount that shares `root`.
+    /// Spool space promised to member stages of every mount of this process that stages
+    /// on the volume of `root`, in whichever root (`Volumes`).
     claims: Arc<space::Claims>,
     /// A member stage admitted before its StageBegin is processed (`admit_member`),
     /// with the request it belongs to.
     admitted: Option<(u64, space::Admission)>,
+    /// Set once the mount's claims were released (`release_claims`): it claims no more.
+    released: bool,
     next: u64,
     pending: Option<(u64, Pending)>,
     sealed: HashMap<u64, Sealed>,
@@ -118,7 +121,8 @@ impl Staging {
     /// Open this user's private spool root from the platform's per-user candidates. A
     /// root that cannot be verified or cannot hold an anonymous spool yields to the
     /// next, so one unusable location never disables staged archive reads. The choice
-    /// is made once per process and kept until a spool fails in it (`RootCache`).
+    /// is made once per process and kept until a spool fails in it (`RootCache`); a
+    /// member refused for lack of space keeps it.
     pub(crate) fn open_private() -> io::Result<Self> {
         SHARED_ROOT.open(root::candidates, PrivateSpoolDirectory::space)
     }
@@ -190,6 +194,7 @@ impl Staging {
             space,
             claims,
             admitted: None,
+            released: false,
             next: 0,
             pending: None,
             sealed: HashMap::new(),
@@ -280,8 +285,7 @@ impl Staging {
                         // An admission that its request did not use returns its claim
                         // before this stage claims space.
                         drop(stale);
-                        self.admit(purpose, *expected_length)
-                            .map_err(|error| failed(self.shared, &self.root, error))?
+                        self.admit(purpose, *expected_length)?
                     }
                 };
                 self.next = self.next.checked_add(1).ok_or_else(invalid)?;
@@ -341,8 +345,8 @@ impl Staging {
                             &self.root,
                             self.space,
                             &self.claims,
-                        )
-                        .map_err(|error| failed(self.shared, &self.root, error))?,
+                            self.shared,
+                        )?,
                     };
                 Message::StageAck {
                     request,
@@ -438,9 +442,7 @@ impl Staging {
             expected_length,
             ..
         } = message
-            && let Some(admission) = self
-                .admit(purpose, *expected_length)
-                .map_err(|error| failed(self.shared, &self.root, error))?
+            && let Some(admission) = self.admit(purpose, *expected_length)?
         {
             self.admitted = Some((*request, admission));
         }
@@ -449,7 +451,9 @@ impl Staging {
     /// A member declared larger than the memory limit gets a spool file at once: claim its
     /// declared length on the spool volume first, or refuse it before anything is written
     /// (`staging_space.rs`). Other stages start in memory, and content of unknown length
-    /// is checked as it is appended (`append_to_spool`).
+    /// is checked as it is appended (`append_to_spool`). A volume that cannot be queried
+    /// is a failure of the root (`failed`); a member that does not fit is refused, and
+    /// the root that works is kept, with the claims on its volume.
     fn admit(
         &self,
         purpose: &StagePurpose,
@@ -461,8 +465,34 @@ impl Staging {
         if length <= self.memory_limit {
             return Ok(None);
         }
-        let volume = query_volume(self.space, &self.root)?;
+        if self.released {
+            return Err(io::Error::other(
+                "Archive staging ended: the archive's worker was stopped",
+            ));
+        }
+        let volume = query_volume(self.space, &self.root)
+            .map_err(|error| failed(self.shared, &self.root, error))?;
         self.claims.admit(length, volume).map(Some)
+    }
+    /// Return every claim of this mount's member stages to the count of its volume: the
+    /// admission of a stage that has not begun and what the pending stage has not written
+    /// yet, which then queries the volume again before it writes more. No stage claims
+    /// space afterwards. Claims are only accounting. A mount whose teardown could not be
+    /// confirmed is kept with every spool open (`session_close`), but it promises no
+    /// space to stages that will never write it, so later mounts on the volume are not
+    /// refused for that space.
+    pub(crate) fn release_claims(&mut self) {
+        self.released = true;
+        self.admitted = None;
+        if let Some((_, pending)) = &mut self.pending {
+            pending.claim = None;
+            pending.space_budget = 0;
+        }
+    }
+    /// The spool space promised to member stages on the volume of this mount's root.
+    #[cfg(test)]
+    pub(crate) fn claimed(&self) -> u64 {
+        self.claims.claimed()
     }
     pub(crate) fn cache_member(&mut self, entry: u64, lease: Lease) {
         if let Some(index) = self.cache.iter().position(|cached| cached.entry == entry)
@@ -584,7 +614,9 @@ impl Staging {
 }
 /// Write a chunk to the stage's spool file, first moving there what the stage holds in
 /// memory when it spills now. Both count against the volume's free-space reserve, and
-/// against the space claimed by other member stages that have not written it yet.
+/// against the space claimed by other member stages that have not written it yet. A
+/// volume that cannot be queried and a spool that fails are failures of the root
+/// (`failed`); a chunk the volume has no room for is refused, and the root kept.
 fn append_to_spool(
     pending: &mut Pending,
     offset: u64,
@@ -592,19 +624,21 @@ fn append_to_spool(
     root: &PrivateSpoolDirectory,
     query: SpaceQuery,
     claims: &space::Claims,
+    shared: Option<&RootCache>,
 ) -> io::Result<u64> {
+    let fail = |error| failed(shared, root, error);
     let length = pending.spool.in_memory() + bytes.len() as u64;
     if pending.space_budget < length {
         // Each stage's first write to its spool file, and at least every
         // SPACE_CHECK_INTERVAL bytes, queries the volume: never once per small append.
-        let volume = query_volume(query, root)?;
+        let volume = query_volume(query, root).map_err(fail)?;
         let own = pending.claim.as_ref().map_or(0, space::Claim::remaining);
         pending.space_budget = space::above_reserve(volume)
             .saturating_sub(claims.others(own))
             .min(SPACE_CHECK_INTERVAL);
         if pending.space_budget < length {
             // Like any other staging failure this ends the exchange, and the session
-            // drops the partial stage with its staging.
+            // drops the partial stage with its staging; the root works and stays.
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
                 "Archive staging stopped before the archive spool volume's free-space \
@@ -614,8 +648,8 @@ fn append_to_spool(
         }
     }
     pending.space_budget -= length;
-    pending.spool.spill(root)?;
-    let next = pending.spool.append(offset, bytes)?;
+    pending.spool.spill(root).map_err(fail)?;
+    let next = pending.spool.append(offset, bytes).map_err(fail)?;
     if let Some(claim) = &mut pending.claim {
         claim.wrote(length);
     }
@@ -632,15 +666,24 @@ fn query_volume(query: SpaceQuery, root: &PrivateSpoolDirectory) -> io::Result<S
 }
 /// The spool root of this process: chosen once from the platform's candidates and kept
 /// for every later mount, so mounts neither walk the candidates nor create a test spool
-/// again. Its mounts share the space claimed in it (`staging_space.rs`). A spool that
-/// fails to be created, written or sized in it (`failed`) makes the next mount choose
-/// again. A per-process root is never kept: its guard removes it once the last mount
-/// using it closes.
-pub(crate) struct RootCache(Mutex<Option<(PrivateSpoolDirectory, Arc<space::Claims>)>>);
+/// again. A spool that fails to be created, written or sized in it (`failed`) makes the
+/// next mount choose again; a member refused for lack of space does not, since the root
+/// works. A per-process root is never kept: its guard removes it once the last mount
+/// using it closes. Every mount it opens counts the space claimed on its root's volume
+/// with the others on that volume (`Volumes`), whichever root it chose and however often
+/// the root was chosen again.
+pub(crate) struct RootCache {
+    /// The kept root and the claims on its volume.
+    root: Mutex<Option<(PrivateSpoolDirectory, Arc<space::Claims>)>>,
+    volumes: Volumes,
+}
 static SHARED_ROOT: RootCache = RootCache::new();
 impl RootCache {
     pub(crate) const fn new() -> Self {
-        Self(Mutex::new(None))
+        Self {
+            root: Mutex::new(None),
+            volumes: Volumes::new(),
+        }
     }
     /// Staging in the cached root, or else in the first usable candidate
     /// (`Staging::open_first`). Concurrent mounts wait for one choice.
@@ -649,11 +692,12 @@ impl RootCache {
         candidates: impl FnOnce() -> Vec<SpoolRoot>,
         space: SpaceQuery,
     ) -> io::Result<Staging> {
-        let mut cached = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cached = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let mut staging = match cached.as_ref() {
             Some((root, claims)) => Staging::in_directory(root.clone(), claims.clone(), space),
             None => {
-                let staging = Staging::open_first(candidates(), space)?;
+                let mut staging = Staging::open_first(candidates(), space)?;
+                staging.claims = self.volumes.claims(&staging.root)?;
                 if staging.process_root.is_none() {
                     *cached = Some((staging.root.clone(), staging.claims.clone()));
                 }
@@ -677,7 +721,7 @@ impl RootCache {
     }
     /// Forget `root` if it is the cached root, so the next mount checks the candidates.
     fn forget(&self, root: &PrivateSpoolDirectory) {
-        let mut cached = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cached = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         if cached
             .as_ref()
             .is_some_and(|(cached, _)| cached.is_same(root))
@@ -686,7 +730,40 @@ impl RootCache {
         }
     }
 }
-/// A spool failure in `root`: the process chooses its root again at the next mount.
+/// The space claimed on each spool volume that this process stages on: one count per
+/// volume, kept while a mount or a stage uses it. A root chosen again after a spool
+/// failed in it, each mount in a per-process root (never kept) and any other root on
+/// the same volume count the same claims, so stages that run at the same time never
+/// promise each other the same free space (`staging_space.rs`).
+struct Volumes(Mutex<Vec<(SpoolVolume, Weak<space::Claims>)>>);
+impl Volumes {
+    const fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+    /// The claims on the volume that holds `root`.
+    fn claims(&self, root: &PrivateSpoolDirectory) -> io::Result<Arc<space::Claims>> {
+        let volume = root.volume().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("Cannot identify the archive spool root's volume: {error}"),
+            )
+        })?;
+        let mut volumes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        volumes.retain(|(_, claims)| claims.strong_count() > 0);
+        if let Some(claims) = volumes
+            .iter()
+            .filter(|(known, _)| *known == volume)
+            .find_map(|(_, claims)| claims.upgrade())
+        {
+            return Ok(claims);
+        }
+        let claims = Arc::default();
+        volumes.push((volume, Arc::downgrade(&claims)));
+        Ok(claims)
+    }
+}
+/// A spool failure in `root`: the process chooses its root again at the next mount. A
+/// member refused for lack of space is not one.
 fn failed(shared: Option<&RootCache>, root: &PrivateSpoolDirectory, error: io::Error) -> io::Error {
     if let Some(shared) = shared {
         shared.forget(root);

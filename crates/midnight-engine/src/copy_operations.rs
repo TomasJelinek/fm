@@ -1053,12 +1053,8 @@ async fn execute_input(
             }
         };
         if let Some(source) = completed {
-            outbox
-                .send(Event::Copy(CopyEvent::RootCompleted {
-                    id: snapshot(&status).id,
-                    source,
-                }))
-                .await;
+            let id = snapshot(&status).id;
+            announce_root(outbox, &io, CopyEvent::RootCompleted { id, source }).await;
         }
         if let Some(blockers) = busy {
             // Granted peers refused this change: only this item waits (holding no disk
@@ -1109,6 +1105,16 @@ async fn execute_input(
             retirement_unconfirmed(&status)
         }
     }
+}
+
+/// Announce a root the job completed. An archive copy can complete more roots than the
+/// notice queue holds (`MAX_NATIVE_TRANSFER_ROOTS` and two more), and once the UI takes
+/// no notices the announcement waits for room. No native call is outstanding here, so
+/// the disk slot goes back first, as for a decision: other transfers and call-scoped
+/// reads never wait for this job's UI, and the next step readmits it (`ready_for_io`).
+async fn announce_root(outbox: &CopyOutbox, io: &midnight_work_budget::Permit, root: CopyEvent) {
+    io.release();
+    outbox.send(Event::Copy(root)).await;
 }
 
 fn refresh_pause(status: &Status, cancel: &Cancellation) -> bool {
