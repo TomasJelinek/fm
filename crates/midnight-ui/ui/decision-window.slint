@@ -31,6 +31,28 @@ export component DecisionWindow inherits DialogWindow {
     }
     preferred-width: max(700px, Theme.font-size * 38);
     preferred-height: max(500px, Theme.font-size * 25);
+    // A failure's actions stay whole side by side: the window is never narrower than
+    // Retry, Skip and Skip all with the dialog's 8px padding. Each action is its caption,
+    // its glyph and 28px of padding, 8px from the next (ActionButtonContent); each caption
+    // is measured on its own, rounded as its button rounds it.
+    retry-caption := Text {
+        x: 0px; y: 0px; visible: false; text: "Retry";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    skip-caption := Text {
+        x: 0px; y: 0px; visible: false; text: "Skip";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    skip-all-caption := Text {
+        x: 0px; y: 0px; visible: false; text: root.skip-all-text;
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    private property <length> failure-action-pad: Theme.icon-size + 36px;
+    private property <length> failure-actions: !root.failure-mode ? 0px
+        : (root.can-retry ? retry-caption.preferred-width + root.failure-action-pad : 0px)
+            + (root.can-skip ? skip-caption.preferred-width + skip-all-caption.preferred-width
+                + 2 * root.failure-action-pad : 0px);
+    min-width: max(320px, root.failure-actions == 0px ? 0px : root.failure-actions + 8px);
     FocusScope {
         x: 0px; y: 0px; width: root.width; height: root.height;
         // A key router, not a Tab stop.

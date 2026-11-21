@@ -1,13 +1,70 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
-import { TextEdit } from "std-widgets.slint";
-import { VScrollView } from "scroll-view.slint";
-import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
+import { ScrollView, VScrollView } from "scroll-view.slint";
+import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
+import { ThemedLineEdit } from "content-controls.slint";
 import { CompactPicker, Tip } from "controls.slint";
 import { Theme } from "theme.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { FallbackIcons } from "action-icons.slint";
+
+// The generated list's read-only preview, scrolling both ways. The stock TextEdit
+// selects with Fluent's colours, which reach only 3.98:1 in Light; this one selects
+// with the theme's, as ThemedLineEdit does.
+component ListPreview inherits Rectangle {
+    in property <string> text;
+    in property <string> font-family;
+    background: Theme.surface;
+    border-radius: 4px;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? Theme.active-frame : Theme.frame;
+    forward-focus: input;
+    accessible-role: text-input;
+    accessible-read-only: true;
+    accessible-value: root.text;
+    accessible-action-default => { input.focus(); }
+    // Keep the caret in view while the keyboard moves it.
+    function reveal(left: length, top: length) {
+        let x = input.x + left;
+        let y = input.y + top;
+        let line = input.font-size * 1.5;
+        if x < -scroll.content-x { scroll.content-x = min(0px, 8px - x); }
+        else if x + input.text-cursor-width > -scroll.content-x + scroll.visible-width {
+            scroll.content-x = max(min(0px, scroll.visible-width - scroll.content-width),
+                scroll.visible-width - x - input.text-cursor-width - 8px);
+        }
+        if y < -scroll.content-y { scroll.content-y = min(0px, 6px - y); }
+        else if y + line > -scroll.content-y + scroll.visible-height {
+            scroll.content-y = max(min(0px, scroll.visible-height - scroll.content-height),
+                scroll.visible-height - y - line);
+        }
+    }
+    ContextMenuArea {
+        Menu {
+            MenuItem { title: @tr("Copy"); activated => { input.copy(); } }
+            MenuItem { title: @tr("Select All"); activated => { input.select-all(); } }
+        }
+        scroll := ScrollView {
+            x: 1px; y: 1px;
+            width: max(0px, parent.width - 2px); height: max(0px, parent.height - 2px);
+            min-width: 0px; min-height: 0px;
+            content-width: max(self.visible-width, input.preferred-width + 16px);
+            content-height: max(self.visible-height, input.preferred-height + 12px);
+            input := TextInput {
+                x: 8px; y: 6px;
+                width: max(1px, scroll.content-width - 16px);
+                height: max(1px, scroll.content-height - 12px);
+                text: root.text; read-only: true; single-line: false; wrap: no-wrap;
+                font-family: root.font-family; font-size: Theme.font-size; color: Theme.text;
+                selection-foreground-color: Theme.selection-text;
+                selection-background-color: Theme.selection-background;
+                accessible-role: none;
+                cursor-position-changed(position) => { root.reveal(position.x, position.y); }
+            }
+        }
+    }
+}
 
 // The host captures entries and performs every preview/export on backend workers.
 // This form owns only editable fields, selection offsets and action callbacks.
@@ -187,12 +244,13 @@ export component FileListDialog inherits Rectangle {
                         }
                         if root.destination == 2: HorizontalLayout {
                             spacing: 6px; min-height: Theme.control-height; vertical-stretch: 0;
-                            HintedLineEdit {
+                            // Themed, so that selected text uses the theme's selection colours.
+                            ThemedLineEdit {
                                 text <=> root.destination-path; min-width: 0px; horizontal-stretch: 1;
                                 enabled: !root.busy; accessible-label: "File list destination path";
                                 placeholder-text: "Destination file";
-                                hint: "Choose a text file. Existing output requires replacement confirmation or Append to file.";
                                 accepted => { root.submit(); }
+                                Tip { text: "Choose a text file. Existing output requires replacement confirmation or Append to file."; }
                             }
                             HintedActionButton {
                                 text: "Browse…"; fallback-icon: FallbackIcons.open-path;
@@ -206,11 +264,10 @@ export component FileListDialog inherits Rectangle {
                             hint: "Add the new list after the existing file contents.";
                         }
                         Text { text: "Preview"; color: Theme.strong-text; font-weight: 600; }
-                        TextEdit {
-                            text: root.preview-text; read-only: true; wrap: no-wrap;
+                        ListPreview {
+                            text: root.preview-text; font-family: root.preview-font-family;
                             min-width: 0px; min-height: 76px; preferred-height: 76px;
                             vertical-stretch: 1;
-                            font-family: root.preview-font-family; font-size: Theme.font-size;
                             accessible-label: "File list preview";
                         }
                         if root.error-text != "": ErrorNotice {

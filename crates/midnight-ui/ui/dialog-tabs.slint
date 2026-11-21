@@ -17,8 +17,9 @@ export component DialogTabs inherits HorizontalLayout {
         horizontal-stretch: 1;
         background: root.current-index == index ? Theme.active-header
             : area.has-hover ? Theme.hover : Theme.secondary-surface;
-        border-width: 1px;
-        border-color: root.current-index == index ? Theme.active-frame : Theme.frame;
+        // The keyboard focus shows as an action button's does.
+        border-width: scope.has-focus ? 2px : 1px;
+        border-color: root.current-index == index || scope.has-focus ? Theme.active-frame : Theme.frame;
         accessible-role: button; accessible-label: label;
         accessible-checkable: true; accessible-checked: root.current-index == index;
         accessible-action-default => { root.select(index); }

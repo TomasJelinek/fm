@@ -90,6 +90,8 @@ export component ColorPickerDialog inherits Rectangle {
     forward-focus: scope;
     scope := FocusScope {
         forward-focus: picker;
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.cancelled(); return accept; }
             reject

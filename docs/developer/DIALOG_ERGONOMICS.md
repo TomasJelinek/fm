@@ -68,7 +68,19 @@ separately; this document is not a claim that every item is already released.
   focused Cancel and the header close button retain their cancel behavior. Tab and
   Shift+Tab reach the header close button too, which Enter or Space presses.
   Escape also cancels. An empty named destination remains invalid; opening or
-  focusing a dialog never submits it.
+  focusing a dialog never submits it. Enter with an empty name (Create dir, New file,
+  Rename, Copy, Move) keeps the dialog open, moves the keyboard to the name field and
+  says "Type the <field label> first." under it, as the field's accessible description
+  too, until a name is typed. The FocusScopes that only route keys (Escape, a
+  dialog's shortcuts) in dialogs, the colour picker, shortcut replacement, Select by
+  mask and the main menu are not Tab stops.
+- Compare directories compares on Enter from an option or its tolerance field, as
+  other dialogs confirm from their options; Space ticks an option, and a held Enter or
+  one during a comparison does nothing. Dialog tabs and the Checksums and Jobs lists
+  show keyboard focus with a 2 px frame.
+- A job window's footer leaves out Copy details, then Jobs, when they would not fit
+  whole beside its dismiss button (Jobs offers Copy details too), and the failure
+  decision window is never narrower than its Retry, Skip and Skip all buttons.
 - Dialog dismissal stays reachable at 320 by 200, including large touch fonts.
   Compact forms (Compare folders, Hot Paths, Panel Filter, Attributes) move focus
   to dismissal once when they enter their compact layout, which can clip the
@@ -255,8 +267,10 @@ latencies; reduced CPU cost alone is not evidence of instant scrolling.
 ## Settings and forms, 11 November follow-up
 
 Options initially requests more vertical space and remains bounded by the current
-window/work area. Plugin catalogs scroll independently of the single pinned
-Rescan all plugins action. The full package path replaces the redundant plugin ID
+window/work area. The pages that fit their lists to the shown height (Comparators,
+Plugins, Keyboard) keep at least six control heights and 32 px; in a smaller window
+the page scrolls instead of squeezing their lists. Plugin catalogs scroll
+independently of the single pinned Rescan all plugins action. The full package path replaces the redundant plugin ID
 line. Previews shows the cache location resolved by the backend, above Clear cache;
 new settings use 96 logical pixels for the thumbnail's longest side.
 

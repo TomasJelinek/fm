@@ -33,6 +33,22 @@ export component JobProgressWindow inherits DialogWindow {
         && !root.awaiting-copy-confirmation && !root.copy-cancel-submitted;
     // A finished job shows how it ended instead of its last progress.
     private property <bool> outcome-view: !root.cancel-confirmation && !root.job.active;
+    // Copy details and Jobs leave the footer where they would sit half outside its
+    // scroller beside the dismiss button (DialogFooter's inline room); Copy details stays
+    // longer, and Jobs offers it too. An action is its caption, its glyph and 28px of
+    // padding, 8px from the next (ActionButtonContent). Pause and Details count with
+    // their longer captions, so that toggling them never moves another action.
+    private property <length> action-pad: Theme.icon-size + 28px + 8px;
+    private property <length> kept-actions: !root.show-actions ? 0px
+        : (root.job.pausable ? resume-caption.preferred-width + root.action-pad : 0px)
+            + details-caption.preferred-width + root.action-pad
+            + (root.job.attention ? resolve-caption.preferred-width + root.action-pad : 0px);
+    private property <length> action-room: footer.inline-room + 8px;
+    private property <bool> offers-copy-details: root.show-actions && !root.job.active
+        && root.kept-actions + copy-caption.preferred-width + root.action-pad <= root.action-room;
+    private property <bool> offers-jobs: root.show-actions
+        && root.kept-actions + (root.offers-copy-details ? copy-caption.preferred-width + root.action-pad : 0px)
+            + jobs-caption.preferred-width + root.action-pad <= root.action-room;
     title: root.job.title;
     preferred-width: max(640px, Theme.font-size * 34);
     preferred-height: root.transfer ? max(380px, Theme.font-size * 22) : max(420px, Theme.font-size * 24);
@@ -45,6 +61,27 @@ export component JobProgressWindow inherits DialogWindow {
     changed awaiting-copy-confirmation => { footer.focus-dismiss(); }
     changed copy-cancel-submitted => {
         if !root.copy-cancel-submitted { footer.focus-dismiss(); }
+    }
+    // The footer's captions in the actions' font, each rounded as its button rounds it.
+    resume-caption := Text {
+        x: 0px; y: 0px; visible: false; text: "Resume";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    details-caption := Text {
+        x: 0px; y: 0px; visible: false; text: "Fewer details";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    resolve-caption := Text {
+        x: 0px; y: 0px; visible: false; text: "Resolve";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    copy-caption := Text {
+        x: 0px; y: 0px; visible: false; text: "Copy details";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    jobs-caption := Text {
+        x: 0px; y: 0px; visible: false; text: "Jobs";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
     }
     FocusScope { focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
@@ -278,12 +315,12 @@ export component JobProgressWindow inherits DialogWindow {
                             : "Show operation counters, source, destination, diagnostics and notes.";
                         clicked => { root.details-visible = !root.details-visible; }
                     }
-                    HintedActionButton {
+                    if root.offers-jobs : HintedActionButton {
                         text: "Jobs"; hint: "Open the session's job list.";
                         clicked => { root.show-jobs(); }
                     }
                 }
-                if root.show-actions && !root.job.active : HintedActionButton {
+                if root.offers-copy-details : HintedActionButton {
                     text: "Copy details"; fallback-icon: FallbackIcons.copy;
                     hint: "Copy this operation's full details and retained errors.";
                     clicked => { root.copy-details(); }

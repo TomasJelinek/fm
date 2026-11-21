@@ -18,6 +18,47 @@ export struct FindRow {
     in-archive: bool,
 }
 
+// A column's sort heading: a Tab stop that Return or Space sorts by, with a hover
+// fill and a focus frame. A click sorts and leaves the keyboard where it was.
+component SortHeading inherits Rectangle {
+    in property <string> title;
+    in property <bool> sorted;
+    in property <bool> descending;
+    in property <bool> align-right;
+    callback sort();
+    // The heading took the keyboard: the table scrolls it into view.
+    callback focused();
+    background: area.has-hover ? Theme.hover : transparent;
+    // The caption is drawn over the frame, so the frame never cuts a glyph.
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.active-frame;
+    accessible-role: button;
+    accessible-label: "Sort by " + root.title;
+    accessible-value: root.sorted ? (root.descending ? "Descending" : "Ascending") : "Not sorted";
+    accessible-action-default => { root.sort(); }
+    forward-focus: focus;
+    Text {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        text: root.title + (root.sorted ? (root.descending ? " ↓" : " ↑") : "");
+        color: root.sorted ? Theme.accent : Theme.secondary-text;
+        font-size: Theme.small-font; font-weight: 600;
+        vertical-alignment: center; horizontal-alignment: root.align-right ? right : left;
+        overflow: elide;
+    }
+    focus := FocusScope {
+        focus-on-click: false;
+        changed has-focus => { if self.has-focus { root.focused(); } }
+        key-pressed(event) => {
+            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
+                && (event.text == Key.Return || event.text == Key.Space) {
+                root.sort(); return accept;
+            }
+            reject
+        }
+        area := TouchArea { clicked => { root.sort(); } }
+    }
+}
+
 component Columns inherits HorizontalLayout {
     in property <FindRow> entry;
     in property <bool> header;
@@ -27,6 +68,8 @@ component Columns inherits HorizontalLayout {
     in property <FindColumnWidths> widths;
     callback sort(int);
     callback resize(int, length);
+    // A heading took the keyboard: its left edge in the table, and its width.
+    callback reveal(length, length);
     padding-left: 6px; padding-right: 6px; spacing: 0px; alignment: start;
     pure function column-width(index: int) -> length {
         return index == 0 ? root.widths.name : index == 1 ? root.widths.extension
@@ -51,14 +94,11 @@ component Columns inherits HorizontalLayout {
       padding-right: root.header ? 0px : 10px;
       Rectangle {
         width: root.column-width(index);
-        if root.header || index != 2: Text {
+        if !root.header && index != 2: Text {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
-            text: root.header ? title + (root.sort-column == index ? (root.descending ? " ↓" : " ↑") : "")
-                : [root.entry.name, root.entry.extension, root.entry.path, root.entry.size, root.entry.modified][index];
-            color: root.header ? (root.sort-column == index ? Theme.accent : Theme.secondary-text)
-                : index == 0 ? (root.entry.directory ? Theme.directory-text : Theme.text) : Theme.secondary-text;
-            font-size: root.header ? Theme.small-font : Theme.font-size;
-            font-weight: root.header ? 600 : 400;
+            text: [root.entry.name, root.entry.extension, root.entry.path, root.entry.size, root.entry.modified][index];
+            color: index == 0 ? (root.entry.directory ? Theme.directory-text : Theme.text) : Theme.secondary-text;
+            font-size: Theme.font-size;
             vertical-alignment: center; horizontal-alignment: index == 3 ? right : left;
             overflow: elide;
         }
@@ -67,10 +107,12 @@ component Columns inherits HorizontalLayout {
             text: root.entry.path; tail: root.entry.path-tail;
             foreground: Theme.secondary-text; font-size: Theme.font-size;
         }
-        if root.header: Rectangle {
-            accessible-role: button; accessible-label: "Sort by " + title;
-            accessible-action-default => { root.sort(index); }
-            TouchArea { clicked => { root.sort(index); } }
+        if root.header: SortHeading {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            title: title; sorted: root.sort-column == index; descending: root.descending;
+            align-right: index == 3;
+            sort => { root.sort(index); }
+            focused => { root.reveal(self.absolute-position.x - root.absolute-position.x, self.width); }
         }
       }
       if root.header: ColumnGrip {
@@ -107,6 +149,14 @@ export component FindResults inherits FocusScope {
         group: root.widths.group, name: root.widths.name, extension: root.widths.extension,
         path: root.path-width, size: root.widths.size, modified: root.widths.modified,
     };
+    // Scroll the table so that a sort heading which took the keyboard is in view.
+    function reveal-column(left: length, width: length) {
+        let start = min(0px, list.visible-width - list.content-width);
+        if left + list.content-x < 0px { list.content-x = clamp(-left, start, 0px); }
+        else if left + width + list.content-x > list.visible-width {
+            list.content-x = clamp(list.visible-width - left - width, start, 0px);
+        }
+    }
     function resize-column(index: int, width: length) {
         if index == -1 { root.widths.group = width; }
         else if index == 0 { root.widths.name = width; }
@@ -156,14 +206,21 @@ export component FindResults inherits FocusScope {
             }
         }
     }
-    if root.show-header: Rectangle {
+    // The header row scrolls with the result list. Its clip is a Flickable with nothing
+    // to scroll of its own: Tab navigation reaches a heading that a Flickable hides,
+    // and the heading's focus then scrolls the table to it.
+    if root.show-header: Flickable {
         x: 0px; y: 0px;
-        height: Theme.column-height; width: parent.width; clip: true; background: Theme.header;
+        height: Theme.column-height; width: parent.width;
+        content-width: self.width; content-height: self.height;
+        interactive: false; mouse-drag-pan-enabled: false;
+        Rectangle { width: parent.width; height: parent.height; background: Theme.header; }
         Columns { x: list.content-x; width: list.content-width; height: parent.height;
             header: true; sort-column: root.sort-column; descending: root.descending; duplicates: root.duplicates;
             widths: root.shown-widths;
             sort(column) => { root.sort(column); }
-            resize(index, width) => { root.resize-column(index, width); } }
+            resize(index, width) => { root.resize-column(index, width); }
+            reveal(left, width) => { root.reveal-column(left, width); } }
     }
     list := ListView {
         y: root.header-height; width: parent.width; height: max(0px, parent.height - self.y);

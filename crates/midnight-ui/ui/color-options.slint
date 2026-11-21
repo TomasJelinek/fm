@@ -1,4 +1,3 @@
-import { ActionButton } from "action-icons.slint";
 import { Theme } from "theme.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
@@ -152,6 +151,9 @@ component ColorField inherits VerticalLayout {
                     clicked => { swatch-focus.focus(); ColorOptionsView.picker-field = ColorOptionsView.picker-field == root.field ? -1 : root.field; }
                 }
             }
+            // The swatch shows a colour, no caption. Last, so that it sees the pointer
+            // before the input area.
+            Tip { text: "Choose the " + root.label.to-lowercase() + " color in the color picker (Enter)."; }
         }
         HintedLineEdit {
             row: 0; col: 1;
@@ -296,8 +298,9 @@ export component ColorOptions inherits VerticalLayout {
             clicked => { ColorOptionsView.action(4); }
         }
         // Discarding returns to the saved rules and clears the error notice.
-        ActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+        HintedActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
             text: "Discard changes"; enabled: !ColorOptionsView.busy && (ColorOptionsView.dirty || ColorOptionsView.error != "");
+            hint: "Return to the saved color rules and clear the error.";
             clicked => { ColorOptionsView.action(5); } }
     }
 }

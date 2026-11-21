@@ -25,6 +25,8 @@ export component ShortcutReplacementDialog inherits Rectangle {
     }
     forward-focus: scope;
     scope := FocusScope {
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape {
                 root.decide(root.occurrence-token, false);

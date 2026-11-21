@@ -162,8 +162,8 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+R / Ctrl+F9 | Refresh |
 | Ctrl+F3 / Ctrl+F4 / Ctrl+F5 / Ctrl+F6 | Sort the active panel by name / extension / modified time / size; repeat to reverse the order. Each detailed panel also has a clickable Ext header next to Name, with the current sort arrow; repeat-click reverses the order. The drive-bar sort dropdown offers Extension in every view mode. |
 | Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
-| Ctrl+F8 | Open modeless Checksums: Calculate (SHA-256 default; optional SHA-512/MD5/SHA-1/CRC32 and recursion in the algorithm dropdown), Stop, copy, Save manifest… (confirms replacing an existing file) and Verify (`.sfv`, `.md5`, `.sha1`, `.sha256`, `.sha512`) |
-| Ctrl+F10 | Compare the two displayed native directories by size and/or modified time, optionally by contents and with subfolders; select differences; also available as Compare directories in the shared toolbar. While a comparison runs, Ctrl+F10 shows its progress with Cancel |
+| Ctrl+F8 | Open modeless Checksums: Calculate (SHA-256 default; optional SHA-512/MD5/SHA-1/CRC32 and recursion in the algorithm dropdown), Stop, copy, Save manifest… (confirms replacing an existing file) and Verify (`.sfv`, `.md5`, `.sha1`, `.sha256`, `.sha512`). Enter in the results or on the page runs Calculate or Verify when its button would, not from Details or while a save question waits |
+| Ctrl+F10 | Compare the two displayed native directories by size and/or modified time, optionally by contents and with subfolders; select differences; also available as Compare directories in the shared toolbar. In its dialog Enter compares from an option or the tolerance field (Space ticks an option). While a comparison runs, Ctrl+F10 shows its progress with Cancel |
 | Ctrl+Shift+C | Compare two selected files in the active panel; otherwise use its single selected/focused file and the opposite explicit selection, or its unique visible same-name file when nothing is selected there. If the pair cannot be determined, choose File A and File B using paths or Browse; Enter compares, Escape cancels. Exact native names are matched. Image pairs support Side-by-Side, Swipe and Onion Skin. Binary files, text over the text limits (32 MiB, 1,000,000 lines or a line over 16 KiB) and other pairs are compared as bytes in a hex view; the Hex button shows the bytes of a text pair. Compare files in the shared toolbar also works without a panel target. |
 | Ctrl+F11 | Fill the entire panels area with the active panel, hiding the other panel and splitter; press again to restore the previous split |
 | Ctrl+F12 | Configure the active panel's saved Masks, Regex or typed metadata Expression filter; also available on each drive bar immediately left of View. OK applies the filter, Cancel discards the draft; Show all or the panel indicator × disables it without discarding its expression |
@@ -190,7 +190,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | F1 | Help |
 | F2 | Rename the focused native file/folder, including an expanded folder occurrence; Enter confirms, Escape cancels. Marked selection does not change the target; collisions require overwrite consent. While the rename runs and until the new name is listed (at most 3 s after it completes) the panel holds input and then replays the keys typed meanwhile; Escape releases it at once |
 | Shift+F4 in files | New empty file in the captured panel folder; Enter confirms the name, Escape cancels. A listed file's name is asked about first; only the Replace file button (not another Enter) replaces it, keeping the original in a recovery folder |
-| F7 | Create an absolute or relative folder path, including `..` and missing intermediate folders |
+| F7 | Create an absolute or relative folder path, including `..` and missing intermediate folders. Enter with an empty name keeps the dialog open and says "Type the folder name or path first." under the field until a name is typed; New file, Rename, Copy and Move do the same for their name fields |
 | Delete / F8 | Confirm moving the selection (or focused entry) to the system Trash |
 | Shift+Delete / Shift+F8 | Explicitly confirm permanent deletion |
 | F11 / F12 | Connect / disconnect network drive through Windows system dialogs; unavailable on Linux, where these footer buttons are hidden |
@@ -595,6 +595,9 @@ Within the focused Find result list, View (**F3**), Basic View (**Alt+F3**) and
 Edit (**F4**) use the current configured file-action bindings. Their button hints
 update from the same map. **Enter** and double-click retain Go to file; **Open** is
 an explicit button because the system association may execute the file.
+**Tab** moves from the result list to its column headings (Name, Ext, Path, Size,
+Modified), each shown with a focus frame and scrolled into view; **Enter** or
+**Space** sorts by the focused heading, as a click does (repeat to reverse).
 Actions require a regular native result and fresh identity validation; a stopped
 search retains its results, while a closed or restarted search revokes pending
 actions. See the [Find contract](developer/FIND.md).

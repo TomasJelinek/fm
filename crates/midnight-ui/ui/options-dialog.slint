@@ -103,6 +103,10 @@ export component OptionsBody inherits Rectangle {
     private property <bool> compact: root.height < 350px;
     private property <bool> narrow: root.width < max(700px, Theme.font-size * 34);
     private property <bool> header-topic: root.compact && root.narrow;
+    // Pages that fit their lists to the shown height get room for a few rows at least:
+    // in the smallest windows the page scrolls instead of squeezing its lists, and
+    // their own scroll views, to nothing.
+    private property <length> page-height: max(content.visible-height, Theme.control-height * 6 + 32px);
     private property <length> navigation-width: max(144px,
         navigation-labels.preferred-width + 32px + FluentScrollMetrics.overlay-size);
     // Measure every selected caption independently of the visible sidebar and
@@ -310,7 +314,7 @@ export component OptionsBody inherits Rectangle {
                 private property <bool> focus-after-show: root.comparator-focus-after-show;
                 changed focus-after-show => { if self.focus-after-show { self.focus-error(); } }
                 narrow: root.narrow;
-                available-height: content.visible-height;
+                available-height: root.page-height;
                 reveal-field(top, height) => {
                     root.comparator-error-top = top;
                     root.comparator-error-height = height;
@@ -318,7 +322,7 @@ export component OptionsBody inherits Rectangle {
                 }
               }
               if root.topic-index == 5 : PluginOptions {
-                available-height: content.visible-height;
+                available-height: root.page-height;
                 open-archive-associations => { root.topic-index = 7; }
               }
               if root.topic-index == 8 : ColorOptions {
@@ -348,7 +352,7 @@ export component OptionsBody inherits Rectangle {
                 changed(enabled, network, archives, field) => { root.thumbnail-options-changed(enabled, network, archives, field); }
                 clear-cache => { root.thumbnail-clear-cache(); }
             }
-            if root.topic-index == 3 : KeyboardEditor { available-height: content.visible-height; narrow: root.narrow; }
+            if root.topic-index == 3 : KeyboardEditor { available-height: root.page-height; narrow: root.narrow; }
             if root.topic-index == 0 : VerticalLayout {
                 spacing: 16px; alignment: start;
                 Text { text: "Panels"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }

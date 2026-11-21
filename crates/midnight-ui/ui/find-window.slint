@@ -414,6 +414,12 @@ export component FindWindow inherits ToolWindow {
                         false
                     }
                 }
+                // The results show that they have the keyboard, with a text field's
+                // focus frame drawn over their edge.
+                Rectangle {
+                    border-width: results.has-focus ? 2px : 0px;
+                    border-color: Theme.active-frame;
+                }
                 if root.rows.length == 0: Text {
                     x: 1px; y: results.header-height + 1px;
                     width: max(0px, parent.width - 2px);

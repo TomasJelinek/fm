@@ -253,7 +253,10 @@ current run did not calculate cannot be shown. Include subfolders is its last ro
 The checkboxes lock while calculation, a save or a file chooser is active, and
 Calculate requires a nonempty set. The dropdown works from the keyboard: Enter,
 Space or an arrow opens it; Up/Down/Home/End move, Space ticks the row, Enter shows
-the row's column (or ticks Include subfolders), and Escape or Tab closes it. The
+the row's column (or ticks Include subfolders), and Escape or Tab closes it. Enter in
+the results list (which shows a focus ring), or on the page where no field takes it,
+runs Calculate or Verify under the same conditions as the footer button, never from
+Details, while a save question waits or on a held key. The
 shown algorithm controls the hash column, Copy and the format Save manifest… offers.
 File/bytes/status stay before the hash. The complete digest uses measured monospace
 width with horizontal scrolling when needed. The footer's Copy button copies the

@@ -108,6 +108,8 @@ export component MainMenuBody inherits Rectangle {
     forward-focus: scope;
     scope := FocusScope {
         forward-focus: category-picker;
+        // A key router, not a Tab stop.
+        focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.dismissed(); return accept; }
             reject

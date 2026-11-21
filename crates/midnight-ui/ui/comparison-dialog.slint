@@ -1,6 +1,8 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { VScrollView } from "scroll-view.slint";
-import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { ThemedLineEdit } from "content-controls.slint";
+import { TipBody } from "controls.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
@@ -28,6 +30,8 @@ export component CompareDirectoriesDialog inherits Rectangle {
     // not take focus from the field being edited.
     private property <bool> compact: root.width < 400px || root.height < 350px;
     changed compact => { if root.compact { footer.focus-dismiss(); } }
+    // The stock field's 32px, or the theme's control height when taller.
+    private property <length> field-height: max(32px, Theme.control-height, Theme.font-size + 12px);
     public function begin() {
         sizes.checked = root.model.by-size;
         times.checked = root.model.by-modified;
@@ -42,11 +46,24 @@ export component CompareDirectoriesDialog inherits Rectangle {
             sizes.focus();
         }
     }
+    // Compare, Enter in the options and Enter in the tolerance field start the same
+    // comparison; none while one runs.
+    function compare() {
+        if !root.model.busy {
+            root.submit(sizes.checked, times.checked, names.checked, tolerance.text,
+                directories.checked, contents.checked, subfolders.checked);
+        }
+    }
     background: Theme.surface; border-radius: 8px;
     border-width: 1px; border-color: Theme.active-frame;
     FocusScope {
         // A key router, not a Tab stop.
         focus-on-tab-navigation: false;
+        // A held Enter answers nothing: only a new press compares or closes.
+        capture-key-pressed(event) => {
+            if event.repeat && event.text == Key.Return { return accept; }
+            reject
+        }
         key-pressed(event) => {
             if event.text == Key.Escape { root.cancel(); return accept; }
             return reject;
@@ -57,57 +74,77 @@ export component CompareDirectoriesDialog inherits Rectangle {
                 fallback-icon: FallbackIcons.compare-directories;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
-            VScrollView {
+            // Enter in an option compares, as other dialogs confirm from their options
+            // (Space toggles one); the tolerance field compares on its own Enter, so its
+            // input method keeps the key. Close and the header's close button keep theirs.
+            FocusScope {
                 min-height: 0px; vertical-stretch: 1;
-                VerticalLayout {
-                    spacing: 12px; alignment: start;
+                // A key router, not a Tab stop.
+                focus-on-tab-navigation: false;
+                capture-key-pressed(event) => {
+                    if event.text == Key.Return && !tolerance.has-focus {
+                        root.compare();
+                        return accept;
+                    }
+                    reject
+                }
+                VScrollView {
                     VerticalLayout {
-                        spacing: 4px;
-                        Text { text: "First: " + root.model.left-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                        Text { text: "Second: " + root.model.right-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                        spacing: 12px; alignment: start;
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "First: " + root.model.left-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                            Text { text: "Second: " + root.model.right-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                        }
+                        Rectangle { height: 1px; background: Theme.frame; }
+                        Text {
+                            text: (contents.checked ? "Metadata and contents" : "Metadata only")
+                                + (subfolders.checked ? " · displayed files and folders, with their subfolders" : " · displayed files · no recursion");
+                            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                        }
+                        sizes := WrappingCheckBox {
+                            text: "Compare file size"; enabled: !root.model.busy; min-height: Theme.control-height;
+                            hint: "Select the larger file. Missing requested metadata selects both files as unknown. File contents are read only with Compare contents.";
+                        }
+                        times := WrappingCheckBox {
+                            text: "Compare modification time"; enabled: !root.model.busy; min-height: Theme.control-height;
+                            hint: "Select the newer file, comparing whole seconds with the chosen tolerance.";
+                        }
+                        Text { text: "Time tolerance (seconds)"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                        // Themed, so that selected text uses the theme's selection colours.
+                        tolerance := ThemedLineEdit {
+                            enabled: !root.model.busy; accessible-label: "Time tolerance in seconds";
+                            min-height: root.field-height; preferred-height: root.field-height;
+                            max-height: root.field-height;
+                            accepted => { root.compare(); }
+                            Tooltip { TipBody {
+                                text: "A whole number from 0 to 86400. A difference exactly equal to the tolerance counts as equal.";
+                            } }
+                        }
+                        contents := WrappingCheckBox {
+                            text: "Compare contents"; enabled: !root.model.busy; min-height: Theme.control-height;
+                            hint: "Read same-named files of equal size byte by byte when the other criteria find no difference; different bytes select both files. Sizes are checked first, so files of different size are never read. Runs in the background: the status line shows progress, and Compare directories again shows Cancel.";
+                        }
+                        names := WrappingCheckBox {
+                            text: "Match names with exact case"; enabled: !root.model.busy; min-height: Theme.control-height;
+                            hint: "Turn off to use Unicode case folding. Ambiguous folded names are all selected; native filenames are never changed.";
+                        }
+                        subfolders := WrappingCheckBox {
+                            text: "Include subfolders"; enabled: !root.model.busy; min-height: Theme.control-height;
+                            hint: "Compare same-named folders and everything inside them. A folder that contains a difference is selected on the side that differs (both sides for unknown or different contents); an expanded tree also selects the differing subfolders it shows. Folders and links on one side only count as differences; links are never followed.";
+                        }
+                        directories := WrappingCheckBox {
+                            text: "Select unmatched directories"; enabled: !root.model.busy && !subfolders.checked; min-height: Theme.control-height;
+                            hint: subfolders.checked ? "With Include subfolders, folders on one side only are always selected."
+                                : "Also select directories without a name match. Their contents and metadata are not compared. Persistent panel filters still apply to files.";
+                        }
+                        if root.model.busy: Text {
+                            text: root.model.progress != "" ? root.model.progress : "Comparing…";
+                            color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                        }
+                        if root.model.error != "": ErrorNotice { text: root.model.error; }
+                        if root.model.summary != "": Text { text: root.model.summary; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
                     }
-                    Rectangle { height: 1px; background: Theme.frame; }
-                    Text {
-                        text: (contents.checked ? "Metadata and contents" : "Metadata only")
-                            + (subfolders.checked ? " · displayed files and folders, with their subfolders" : " · displayed files · no recursion");
-                        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
-                    }
-                    sizes := WrappingCheckBox {
-                        text: "Compare file size"; enabled: !root.model.busy; min-height: Theme.control-height;
-                        hint: "Select the larger file. Missing requested metadata selects both files as unknown. File contents are read only with Compare contents.";
-                    }
-                    times := WrappingCheckBox {
-                        text: "Compare modification time"; enabled: !root.model.busy; min-height: Theme.control-height;
-                        hint: "Select the newer file, comparing whole seconds with the chosen tolerance.";
-                    }
-                    Text { text: "Time tolerance (seconds)"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                    tolerance := HintedLineEdit {
-                        enabled: !root.model.busy; accessible-label: "Time tolerance in seconds"; min-height: Theme.control-height;
-                        hint: "A whole number from 0 to 86400. A difference exactly equal to the tolerance counts as equal.";
-                    }
-                    contents := WrappingCheckBox {
-                        text: "Compare contents"; enabled: !root.model.busy; min-height: Theme.control-height;
-                        hint: "Read same-named files of equal size byte by byte when the other criteria find no difference; different bytes select both files. Sizes are checked first, so files of different size are never read. Runs in the background: the status line shows progress, and Compare directories again shows Cancel.";
-                    }
-                    names := WrappingCheckBox {
-                        text: "Match names with exact case"; enabled: !root.model.busy; min-height: Theme.control-height;
-                        hint: "Turn off to use Unicode case folding. Ambiguous folded names are all selected; native filenames are never changed.";
-                    }
-                    subfolders := WrappingCheckBox {
-                        text: "Include subfolders"; enabled: !root.model.busy; min-height: Theme.control-height;
-                        hint: "Compare same-named folders and everything inside them. A folder that contains a difference is selected on the side that differs (both sides for unknown or different contents); an expanded tree also selects the differing subfolders it shows. Folders and links on one side only count as differences; links are never followed.";
-                    }
-                    directories := WrappingCheckBox {
-                        text: "Select unmatched directories"; enabled: !root.model.busy && !subfolders.checked; min-height: Theme.control-height;
-                        hint: subfolders.checked ? "With Include subfolders, folders on one side only are always selected."
-                            : "Also select directories without a name match. Their contents and metadata are not compared. Persistent panel filters still apply to files.";
-                    }
-                    if root.model.busy: Text {
-                        text: root.model.progress != "" ? root.model.progress : "Comparing…";
-                        color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
-                    }
-                    if root.model.error != "": ErrorNotice { text: root.model.error; }
-                    if root.model.summary != "": Text { text: root.model.summary; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
                 }
             }
             footer := DialogFooter {
@@ -117,7 +154,7 @@ export component CompareDirectoriesDialog inherits Rectangle {
                 HintedActionButton { text: "Compare"; primary: true; enabled: !root.model.busy; min-height: Theme.control-height;
                     fallback-icon: FallbackIcons.compare-directories;
                     hint: "Replace both selections with differences: files present on only one side, plus the larger or newer file for enabled criteria, files with different contents and folders that contain differences when those options are on. No files are changed.";
-                    clicked => { root.submit(sizes.checked, times.checked, names.checked, tolerance.text, directories.checked, contents.checked, subfolders.checked); } }
+                    clicked => { root.compare(); } }
             }
         }
     }

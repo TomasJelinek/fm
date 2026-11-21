@@ -19,11 +19,12 @@ export component ChecksumWindow inherits ToolWindow {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }
     public function begin() { root.focus-page(); }
-    // Keyboard focus for the shown page: its results list, or the window's Escape
-    // handler. A control that removes itself when used calls this first: Slint
-    // leaves the focus on a removed item, and Escape would no longer close the window.
+    // Keyboard focus for the shown page: its results list, or the page's own key
+    // handler (`page-keys`). A control that removes itself when used calls this first:
+    // Slint leaves the focus on a removed item, and Escape would no longer close the
+    // window.
     function focus-page() {
-        if root.page == 0 && !root.show-details { results.focus(); } else { root.focus-content(); }
+        if root.page == 0 && !root.show-details { results.focus(); } else { page-keys.focus(); }
     }
     title: "Checksums · Midnight Explorer";
     icon: FallbackIcons.checksums;
@@ -99,6 +100,34 @@ export component ChecksumWindow inherits ToolWindow {
             root.verify-manifest(root.manifest-path);
         }
     }
+    // Calculate as its button allows it, which offers Stop instead while one runs.
+    private property <bool> can-calculate: !root.running && !root.stopping && !root.saving
+        && !root.picker-busy && root.has-algorithm && root.has-captured-files;
+    // Enter in the results or on the page itself starts the shown page's primary action,
+    // Calculate or Verify; not from the details, and not while a save question waits
+    // for its answer. Fields, buttons, the page chooser and the algorithm menu keep
+    // their own Enter.
+    function start-page-action() {
+        if root.show-details || root.save-prompt != "" { return; }
+        if root.page == 1 { root.submit-verify(); }
+        else if root.can-calculate { root.calculate(root.draft); }
+    }
+    // The page's key handler where no list takes the keys (Verify, Details). Below the
+    // page, so a click on a blank part of the window focuses it; Escape goes on to the
+    // window's handler.
+    page-keys := FocusScope {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        // focus-page() focuses it; it is no Tab stop.
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if event.text == Key.Return {
+                // A held key starts nothing: only a new press does.
+                if !event.repeat { root.start-page-action(); }
+                return accept;
+            }
+            reject
+        }
+    }
     VerticalLayout {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
         padding: root.compact ? 4px : 12px; spacing: root.compact ? 4px : 8px;
@@ -146,6 +175,7 @@ export component ChecksumWindow inherits ToolWindow {
                 generation-token: root.generation-token;
                 selected-row <=> root.selected-row; output-algorithm: root.output-algorithm;
                 copy-result(token, algorithm, whole) => { root.copy-result(token, algorithm, whole); }
+                activate => { root.start-page-action(); }
             }
             if root.page == 0 && root.rows.length == 0 && !root.show-details: Text {
                 text: root.running ? (root.verifying ? "Verifying files…" : root.progress-listing ? "Listing files…" : "Calculating checksums…")
@@ -153,6 +183,13 @@ export component ChecksumWindow inherits ToolWindow {
                 color: Theme.muted-text; wrap: word-wrap;
                 x: 12px; width: parent.width - 24px;
                 horizontal-alignment: center; vertical-alignment: center;
+            }
+            // The keyboard focus in the results: a ring over their frame, as a focused
+            // field shows it. Hidden instead of conditional: an `if` is one more
+            // generated component.
+            Rectangle {
+                visible: results.has-focus;
+                border-width: 2px; border-color: Theme.active-frame;
             }
             if root.show-details: VScrollView {
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;

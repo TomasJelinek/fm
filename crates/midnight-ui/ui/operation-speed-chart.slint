@@ -123,10 +123,13 @@ export component OperationSpeedChart inherits Rectangle {
                 width: 4px; height: 4px; border-radius: 2px;
                 border-width: 1px; border-color: Theme.pending-size; background: Theme.pane-background;
             }
+            // Inside the plot: a label longer than a narrow plot wraps instead of running
+            // past its edges ("Waiting for another job in the same folders to finish").
             if !root.chart.has-samples && !root.compact : Text {
+                x: 4px; y: 1px; width: max(0px, parent.width - 8px); height: max(0px, parent.height - 2px);
                 text: root.waiting-label; color: Theme.secondary-text;
                 horizontal-alignment: center; vertical-alignment: center;
-                font-size: Theme.small-font;
+                font-size: Theme.small-font; wrap: word-wrap;
             }
         }
         if root.verification-phase : HorizontalLayout {

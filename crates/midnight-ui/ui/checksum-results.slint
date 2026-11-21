@@ -108,6 +108,8 @@ export component ChecksumResults inherits FocusScope {
     in property <int> output-algorithm;
     in-out property <int> selected-row: -1;
     callback copy-result(string, int, bool);
+    // Enter in the list: the window's primary action. A held key starts nothing.
+    callback activate();
     private property <bool> compact-rows: root.height < Theme.column-height + (Theme.small-font * 2 + 12px) * 2;
     private property <length> row-height: root.compact-rows ? Theme.small-font + 4px : Theme.small-font * 2 + 12px;
     // Keep a complete result plus scrollbar available before allocating a header.
@@ -169,6 +171,10 @@ export component ChecksumResults inherits FocusScope {
         if event.text == Key.UpArrow { root.selected-row = max(0, root.selected-row - 1); return accept; }
         if event.text == Key.Home { root.selected-row = root.rows.length > 0 ? 0 : -1; return accept; }
         if event.text == Key.End { root.selected-row = root.rows.length - 1; return accept; }
+        if event.text == Key.Return {
+            if !event.repeat { root.activate(); }
+            return accept;
+        }
         if event.modifiers.shift && event.text == Key.F10 {
             root.open-menu(root.selected-row, 12px,
                 root.header-height + (root.selected-row + 1) * root.row-height + list.content-y);

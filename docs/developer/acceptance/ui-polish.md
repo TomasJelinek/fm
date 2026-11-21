@@ -189,15 +189,16 @@ All reported to the coordinator with their shots (run folders below `_build/acce
 | U-D20 | The command line's working folder is cut without ellipsis at Touch 960×600 and 320×200 (to confirm with the wheel probe). | U-K03 | 20261120-143600 `ui_review/Dark-Touch-Small-x1-main.png` |
 | U-D21 | Create dir / New file: Enter with the empty name gives no feedback (the gate now types a name first; to confirm). | U-K27 | 20261120-144625 `ui_polish_dialogs/dialogs-mkdir.png` |
 
-U-D01–U-D12 were sent in the first batch and assigned; U-D13–U-D21 are queued for the
-next batch.
+U-D01–U-D12 were sent in the first batch and U-D13–U-D21 in the second (21 November).
 
 Fixed in source on 21 November, with `midnight-ui` tests that fail on the earlier
 source; the gate itself has not been run again:
 
 - U-D05 for primary and destructive action buttons (hover and pressed fills that keep
-  each theme's text contrast, `action_button_states`). Options topics, which are not
-  action buttons, are still open.
+  each theme's text contrast, `action_button_states`). Hovering the Options topics did
+  not reproduce: all nine topics that are not selected, and every drawn control of the
+  General page, change on hover in Blue Desktop, Dark Touch and Light (`form_polish`
+  keeps the check).
 - U-D06 for the column sort headers, Edit folder path, the path's omission marker, the
   free-space button and the folder error icon (`main_window_polish`). The drive button
   did not reproduce in the harness.
@@ -213,20 +214,73 @@ source; the gate itself has not been run again:
 - U-D03: Tab and Shift+Tab reach the header × in Copy, Move, Trash, Delete, Rename,
   Create dir and New file.
 - U-D04: the key-routing wrapper FocusScopes of 15 dialogs and windows are no longer Tab
-  stops; those of the colour picker, shortcut replacement, Select by mask and the main
-  menu still are.
+  stops, nor (since the second batch) those of the colour picker, shortcut
+  replacement, Select by mask and the main menu.
 - U-D07: the Rename, Create, New file, Copy and Move name fields and the conflict
-  window's new-name field keep 4.5:1 selected-text contrast in all 26 themes. The
-  Compare directories tolerance and Make File List fields still use the default
-  selection colours.
+  window's new-name field keep 4.5:1 selected-text contrast in all 26 themes, and so do
+  Make File List's destination field and preview and the Compare directories
+  tolerance field since the second batch. The Checksums Verify page's path field
+  still uses the default selection colours.
 - U-D08, the notice part: at 320×200 shown details scroll with the message, the buttons
   stay in the dialog and Escape closes it. About's Close stays in its body there
-  (not reproducible, test added); the Options part is open.
+  (not reproducible, test added). Since the second batch the Options pages that fit
+  their lists to the window (Comparators, Plugins, Keyboard) keep room for six rows at
+  320×200 and scroll, instead of squeezing their lists to nothing.
 - U-D11 did not reproduce: the Hot Paths current folder has used middle elision with a
   tooltip since the 20 November integration (test added).
+- U-D16: Find's result column headings are Tab stops after the result list, with a
+  hover fill and a focus frame (at least 3.77:1 against the header in all 26 themes);
+  Enter or Space sorts by the focused heading, which scrolls into view, and the result
+  list shows a focus frame. Other keys on a focused heading still reach the list.
+- U-D19: the Attributes › Times date and time picker buttons, the Options › Colors
+  swatches and Discard changes have tooltips. The arrow cells inside the open calendar
+  and time popups have none: those popups close themselves, and Slint 1.18.1 panics
+  when a shown tooltip is destroyed inside a popup.
+- U-D20, confirmed: the command line's working folder was cut without an ellipsis at
+  Dark Touch 960×600, at 320×200 and with a long path at 1340×820. Its start is now drawn
+  by the shared path label, which ends it with "..."; the full path stays in the
+  tooltip and the accessible label.
+- U-D21, confirmed: Enter with an empty name in Create dir, New file, Rename, Copy and
+  Move did nothing. The dialog now stays open, moves the keyboard to the name field and
+  says "Type the <field> first." under it (also its accessible description) until a
+  name is typed.
+- U-D13: a finished job's footer leaves out Copy details, then Jobs, when they would
+  not fit whole beside the dismiss button (each caption measured in the actions' font;
+  Pause and Details count with their longer captions, so toggling them moves no other
+  action), and Jobs still offers Copy details: at 320×200 Blue Desktop shows Details,
+  Jobs and Close, Dark Touch Details and Close. The waiting label wraps inside the
+  speed chart. The failure decision window is never narrower than Retry, Skip and
+  Skip all side by side (on Windows 323 px in Blue Desktop, 382 px in Dark Touch); a
+  name conflict keeps 320 px. Still open: at Dark Touch 320×200, and in Blue Desktop
+  with fonts of 14 px and more, a running Copy job's Pause, Details and Cancel
+  operation do not fit, so Details is cut after its first letter. The gate does not
+  flag it (it measures the caption against the button's visible part); fixing it
+  needs a decision between stacking short footers and glyph-only actions.
+- U-D14 did not reproduce: for a finished Permanently delete job, Open shows its
+  window (brings it forward, or opens it again after it was closed) and Copy details
+  copies the job's details (`jobs_actions`).
+- U-D15: in Compare directories Enter compares from any option and from the tolerance
+  field (whose own Enter compares, so input methods keep the key); Space still ticks
+  an option, Close and the header × keep their Enter, and a held Enter or one during a
+  comparison does nothing. In Checksums, Enter in the results or on the page runs
+  Calculate or Verify under the footer button's conditions, but not from Details or
+  while a save question waits; fields, buttons, the page chooser and the algorithm
+  menu keep their own Enter.
+- U-D17: the Checksums page buttons and results list show focus, at least 3:1 in Blue,
+  Dark, Light, HighContrastDark and HighContrastLight. Every dialog tab (also in
+  Options › Plugins and Attributes) shows focus with a 2 px frame.
+- U-D18: the focused Jobs list shows a 2 px ring over its frame, at least 3:1 in the
+  same themes.
 
 The U-D01–U-D04, U-D07, U-D08 and U-D11 results come from `dialog_polish`, whose
-tests failed on the earlier dialogs except About's and Hot Paths'.
+tests failed on the earlier dialogs except About's and Hot Paths'. The second batch's
+U-D16 result comes from `find_polish` and its U-D04, U-D05, U-D07, U-D08 and
+U-D19–U-D21 results from `form_polish`: 14 of their 15 tests failed on the earlier
+source; the Options topics check passes on both. The U-D13–U-D15, U-D17 and U-D18
+results come from `tool_window_polish` and `native_job_windows` (`minimum_size`,
+`jobs_actions`): 8 of their 9 tests failed on the earlier source; the U-D14 one
+passes on both. The gate has not been run again since either batch, so the
+surfaces above keep their recorded results until it is.
 
 ## Runs
 

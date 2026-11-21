@@ -103,6 +103,8 @@ component SegmentField inherits Rectangle {
 
 component PickerButton inherits Rectangle {
     in property <string> label;
+    // What the button opens, shown as its tooltip: it draws a glyph, no caption.
+    in property <string> hint;
     in property <bool> enabled: true;
     in property <bool> clock;
     callback activate();
@@ -130,6 +132,8 @@ component PickerButton inherits Rectangle {
         }
         area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.activate(); } }
     }
+    // Last, so that it sees the pointer before the input area.
+    Tip { text: root.hint; }
 }
 
 component PopupCell inherits Rectangle {
@@ -195,6 +199,7 @@ component DateField inherits HorizontalLayout {
     }
     anchor := PickerButton {
         label: root.label + ": choose date"; enabled: root.enabled;
+        hint: "Choose the date in a calendar. Alt+Down in the date field opens it too.";
         activate => { root.open(); }
         popup := PopupWindow {
             private property <length> frame-width: root.cell * 7 + 16px;
@@ -295,6 +300,7 @@ component TimeField inherits HorizontalLayout {
     }
     anchor := PickerButton {
         label: root.label + ": choose time"; enabled: root.enabled; clock: true;
+        hint: "Choose the hour, minute and second. Alt+Down in the time field opens this too.";
         activate => { root.open(); }
         popup := PopupWindow {
             private property <length> frame-width: root.column * root.columns + 16px;

@@ -52,6 +52,15 @@ export component OperationDialog inherits Rectangle {
     // form without a name gives the hidden field no room.
     private property <length> name-height: !root.has-name ? 0px
         : max(32px, Theme.control-height, Theme.font-size + 12px);
+    // Enter asked for a confirmation that an empty name refused: the form says why
+    // under the field until a name is typed.
+    private property <bool> name-requested;
+    private property <bool> name-missing: root.name-requested && root.has-name && name.text == "";
+    private property <string> name-reason: "Type the "
+        + (root.input-label == "" ? "name" : root.input-label.to-lowercase()) + " first.";
+    changed name-missing => {
+        if root.name-missing { root.reveal-middle(name.y, name.height + root.row-spacing + Theme.font-size * 3); }
+    }
     private property <length> regular-row-spacing: root.wait-visible ? 6px : 12px;
     private property <length> row-spacing: root.compact ? 4px : root.regular-row-spacing;
     // What DialogText draws: the compact layout moves the warning into the summary,
@@ -192,6 +201,7 @@ export component OperationDialog inherits Rectangle {
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     public function begin() {
         middle.content-y = 0px;
+        root.name-requested = false;
         name.text = root.initial-name;
         if root.has-name { root.focus-name(); name.set-selection-offsets(0, root.selection-end); }
         else { root.focus-primary(); }
@@ -210,6 +220,8 @@ export component OperationDialog inherits Rectangle {
                     || option.has-focus || follow-links.has-focus || wait-option.has-focus || confirm-button.has-focus))
                 || (event.text == Key.Space && primary-focus.has-focus) {
                 if confirm-button.enabled { root.confirm(name.text); }
+                // An empty name cannot be confirmed: say so, where it is typed.
+                else if root.has-name && name.text == "" { root.name-requested = true; root.focus-name(); }
                 return accept;
             }
             // Enter in the name field of an armed replacement waits for the button.
@@ -264,8 +276,13 @@ export component OperationDialog inherits Rectangle {
                         max-height: root.name-height;
                         visible: root.has-name;
                         accessible-label: root.input-label == "" ? root.title : root.input-label;
+                        accessible-description: root.name-missing ? root.name-reason : "";
                         changed has-focus => { if self.has-focus { root.reveal-middle(self.y, self.height); } }
                         accepted => { if root.confirm-enabled && self.text != "" { root.confirm(self.text); } }
+                    }
+                    if root.name-missing : Text {
+                        text: root.name-reason; color: Theme.error-text;
+                        font-size: Theme.font-size; wrap: word-wrap;
                     }
                     option-scroll := HScrollView {
                         visible: root.option-visible; min-width: 0px;
