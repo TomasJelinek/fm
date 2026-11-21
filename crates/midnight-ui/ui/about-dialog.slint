@@ -77,7 +77,11 @@ component AboutTab inherits Rectangle {
 // pointer turns into a hand over it; the hovered and the selected row show an
 // open mark that shows the license with one click, as View license, Enter and a
 // double-click do. Up, Down, Page Up, Page Down, Home and End move the selection.
-component LicenseList inherits VerticalLayout {
+// A short tab scrolls as a whole instead of squeezing the list below three rows.
+component LicenseList inherits Rectangle {
+    // The dialog is short: the tab may scroll, and its content keeps clear of the
+    // scroll bar.
+    in property <bool> short;
     private property <length> row-height: Theme.column-height;
     private property <int> count: AboutView.rows.length;
     private property <bool> selected: AboutView.current >= 0 && AboutView.current < root.count;
@@ -85,7 +89,16 @@ component LicenseList inherits VerticalLayout {
     // The list's overlay scrollbar takes the clicks on the last pixels of every row,
     // so the open mark and its click area end before it.
     private property <length> bar-inset: licenses.viewport-height > licenses.visible-height ? FluentScrollMetrics.overlay-size : 0px;
-    spacing: 6px;
+    // The keyboard moves into the list: a short tab first scrolls it into view, since
+    // Slint drops the focus of a control scrolled out of view at the next key.
+    function focus-list() {
+        let top = list-frame.y;
+        if top + tab-scroll.viewport-y < 0px
+            || top + tab-scroll.viewport-y + min(list-frame.height, root.row-height + 2px) > tab-scroll.visible-height {
+            tab-scroll.viewport-y = max(min(0px, tab-scroll.visible-height - tab-scroll.viewport-height), -top);
+        }
+        list-keys.focus();
+    }
     function show(index: int) {
         AboutView.current = max(0, min(root.count - 1, index));
         let top = AboutView.current * root.row-height;
@@ -108,97 +121,110 @@ component LicenseList inherits VerticalLayout {
             AboutView.open(AboutView.rows[AboutView.current].name, AboutView.rows[AboutView.current].version);
         }
     }
-    HorizontalLayout {
-        spacing: 8px;
-        HintedLineEdit {
-            horizontal-stretch: 1;
-            text <=> AboutView.query;
-            accessible-label: "Filter libraries";
-            placeholder-text: "Filter by library, license or component";
-            hint: "Show only libraries whose name, license or component contains this text. Down moves to the list; Enter shows the license and authors of the selected library, or of the first one.";
-            edited(text) => { AboutView.filter(text); licenses.viewport-y = 0px; }
-            accepted => {
-                if !root.selected && root.count > 0 { root.show(0); }
-                root.open-current();
+    tab-scroll := VScrollView {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        content-width: self.visible-width;
+        content-height: max(self.visible-height, tab-content.min-height);
+        tab-content := VerticalLayout {
+            x: 0px; y: 0px; width: tab-scroll.visible-width;
+            height: max(tab-scroll.visible-height, self.min-height);
+            spacing: 6px;
+            padding-right: root.short ? FluentScrollMetrics.overlay-size : 0px;
+            HorizontalLayout {
+                spacing: 8px;
+                HintedLineEdit {
+                    horizontal-stretch: 1;
+                    text <=> AboutView.query;
+                    accessible-label: "Filter libraries";
+                    // Whole in a narrow tab too, with any font: the field does not shorten
+                    // its placeholder.
+                    placeholder-text: root.width < 400px ? "Filter" : "Filter by library, license or component";
+                    hint: "Show only libraries whose name, license or component contains this text. Down moves to the list; Enter shows the license and authors of the selected library, or of the first one.";
+                    edited(text) => { AboutView.filter(text); licenses.viewport-y = 0px; }
+                    accepted => {
+                        if !root.selected && root.count > 0 { root.show(0); }
+                        root.open-current();
+                    }
+                    key-pressed(event) => {
+                        if event.text == Key.DownArrow { root.show(max(0, AboutView.current)); root.focus-list(); return accept; }
+                        reject
+                    }
+                }
+                HintedActionButton {
+                    text: "View license"; fallback-icon: FallbackIcons.view; enabled: root.selected;
+                    hint: "Show the license text and authors of the selected library (Enter or a double-click on its row).";
+                    clicked => { root.open-current(); }
+                }
             }
-            key-pressed(event) => {
-                if event.text == Key.DownArrow { root.show(max(0, AboutView.current)); list-keys.focus(); return accept; }
-                reject
-            }
-        }
-        HintedActionButton {
-            text: "View license"; fallback-icon: FallbackIcons.view; enabled: root.selected;
-            hint: "Show the license text and authors of the selected library (Enter or a double-click on its row).";
-            clicked => { root.open-current(); }
-        }
-    }
-    Text { text: AboutView.summary; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
-    Rectangle {
-        vertical-stretch: 1; min-height: 0px;
-        border-width: 1px; border-color: list-keys.has-focus ? Theme.accent : Theme.frame; border-radius: 4px; clip: true;
-        list-keys := FocusScope {
-            key-pressed(event) => {
-                if event.text == Key.UpArrow { root.show(AboutView.current - 1); return accept; }
-                if event.text == Key.DownArrow { root.show(AboutView.current + 1); return accept; }
-                if event.text == Key.PageUp { root.show(AboutView.current - root.page); return accept; }
-                if event.text == Key.PageDown { root.show(AboutView.current + root.page); return accept; }
-                if event.text == Key.Home { root.show(0); return accept; }
-                if event.text == Key.End { root.show(root.count - 1); return accept; }
-                if event.text == Key.Return || event.text == " " { root.open-current(); return accept; }
-                reject
-            }
-        }
-        licenses := ListView {
-            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-            accessible-label: "Libraries";
-            for row[index] in AboutView.rows : Rectangle {
-                private property <bool> selected: index == AboutView.current;
-                private property <bool> hovered: row-area.has-hover || open-area.has-hover;
-                width: licenses.visible-width; height: root.row-height;
-                background: self.selected ? (list-keys.has-focus ? Theme.cursor-background : Theme.inactive-cursor)
-                    : self.hovered ? Theme.hover
-                    : Math.mod(index, 2) == 1 ? Theme.alternate-row : transparent;
-                accessible-role: button; accessible-label: row.version == "" ? row.name : row.name + " " + row.version;
-                accessible-description: row.license + ". Shows its license and authors.";
-                accessible-item-selectable: true;
-                accessible-item-selected: self.selected;
-                accessible-action-default => { AboutView.current = index; root.open-current(); }
-                // The selected row also carries an accent bar on its leading edge.
-                Rectangle { x: 0px; width: 3px; background: Theme.accent; visible: parent.selected; }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 2px + root.bar-inset; spacing: 8px;
-                    Text { text: row.name; color: Theme.text; font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
-                    // The version and license narrow only in a row too narrow for them,
-                    // so the open mark always stays in the row.
-                    Text { text: row.version; color: Theme.secondary-text; font-size: Theme.small-font; preferred-width: max(64px, Theme.small-font * 5); min-width: 0px; horizontal-stretch: 0; overflow: elide; vertical-alignment: center; }
-                    Text { text: row.license; color: Theme.secondary-text; font-size: Theme.small-font; preferred-width: min(max(150px, Theme.small-font * 12), licenses.visible-width * 0.4); min-width: 0px; horizontal-stretch: 0; overflow: elide; vertical-alignment: center; }
-                    Rectangle {
-                        width: max(22px, Theme.icon-size + 8px);
-                        border-radius: 3px; background: open-area.has-hover ? Theme.hover : transparent;
-                        Image {
-                            width: Theme.icon-size; height: Theme.icon-size; image-fit: contain;
-                            source: FallbackIcons.forward;
-                            colorize: open-area.has-hover ? Theme.accent : Theme.secondary-text;
-                            visible: row-area.has-hover || open-area.has-hover || index == AboutView.current;
+            Text { text: AboutView.summary; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+            list-frame := Rectangle {
+                vertical-stretch: 1; min-height: root.row-height * 3 + 2px;
+                border-width: 1px; border-color: list-keys.has-focus ? Theme.accent : Theme.frame; border-radius: 4px; clip: true;
+                list-keys := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.UpArrow { root.show(AboutView.current - 1); return accept; }
+                        if event.text == Key.DownArrow { root.show(AboutView.current + 1); return accept; }
+                        if event.text == Key.PageUp { root.show(AboutView.current - root.page); return accept; }
+                        if event.text == Key.PageDown { root.show(AboutView.current + root.page); return accept; }
+                        if event.text == Key.Home { root.show(0); return accept; }
+                        if event.text == Key.End { root.show(root.count - 1); return accept; }
+                        if event.text == Key.Return || event.text == " " { root.open-current(); return accept; }
+                        reject
+                    }
+                }
+                licenses := ListView {
+                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                    accessible-label: "Libraries";
+                    for row[index] in AboutView.rows : Rectangle {
+                        private property <bool> selected: index == AboutView.current;
+                        private property <bool> hovered: row-area.has-hover || open-area.has-hover;
+                        width: licenses.visible-width; height: root.row-height;
+                        background: self.selected ? (list-keys.has-focus ? Theme.cursor-background : Theme.inactive-cursor)
+                            : self.hovered ? Theme.hover
+                            : Math.mod(index, 2) == 1 ? Theme.alternate-row : transparent;
+                        accessible-role: button; accessible-label: row.version == "" ? row.name : row.name + " " + row.version;
+                        accessible-description: row.license + ". Shows its license and authors.";
+                        accessible-item-selectable: true;
+                        accessible-item-selected: self.selected;
+                        accessible-action-default => { AboutView.current = index; root.open-current(); }
+                        // The selected row also carries an accent bar on its leading edge.
+                        Rectangle { x: 0px; width: 3px; background: Theme.accent; visible: parent.selected; }
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 2px + root.bar-inset; spacing: 8px;
+                            Text { text: row.name; color: Theme.text; font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                            // The version and license narrow only in a row too narrow for them,
+                            // so the open mark always stays in the row.
+                            Text { text: row.version; color: Theme.secondary-text; font-size: Theme.small-font; preferred-width: max(64px, Theme.small-font * 5); min-width: 0px; horizontal-stretch: 0; overflow: elide; vertical-alignment: center; }
+                            Text { text: row.license; color: Theme.secondary-text; font-size: Theme.small-font; preferred-width: min(max(150px, Theme.small-font * 12), licenses.visible-width * 0.4); min-width: 0px; horizontal-stretch: 0; overflow: elide; vertical-alignment: center; }
+                            Rectangle {
+                                width: max(22px, Theme.icon-size + 8px);
+                                border-radius: 3px; background: open-area.has-hover ? Theme.hover : transparent;
+                                Image {
+                                    width: Theme.icon-size; height: Theme.icon-size; image-fit: contain;
+                                    source: FallbackIcons.forward;
+                                    colorize: open-area.has-hover ? Theme.accent : Theme.secondary-text;
+                                    visible: row-area.has-hover || open-area.has-hover || index == AboutView.current;
+                                }
+                            }
+                        }
+                        row-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { AboutView.current = index; list-keys.focus(); }
+                            double-clicked => { AboutView.current = index; root.open-current(); }
+                        }
+                        open-area := TouchArea {
+                            x: parent.width - root.bar-inset - self.width; width: max(26px, Theme.icon-size + 12px);
+                            mouse-cursor: pointer;
+                            clicked => { AboutView.current = index; root.open-current(); }
                         }
                     }
                 }
-                row-area := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { AboutView.current = index; list-keys.focus(); }
-                    double-clicked => { AboutView.current = index; root.open-current(); }
-                }
-                open-area := TouchArea {
-                    x: parent.width - root.bar-inset - self.width; width: max(26px, Theme.icon-size + 12px);
-                    mouse-cursor: pointer;
-                    clicked => { AboutView.current = index; root.open-current(); }
-                }
+            }
+            Text {
+                text: "Select a library, then double-click it or press Enter to see its license and authors.";
+                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
             }
         }
-    }
-    Text {
-        text: "Select a library, then double-click it or press Enter to see its license and authors.";
-        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
     }
 }
 
@@ -463,6 +489,9 @@ export component AboutDialog inherits Rectangle {
     // instead, so Escape still reaches it.
     private property <bool> detail: AboutView.detail-open;
     changed detail => { keys.focus(); }
+    // A short dialog (320×200 among them) tightens its spacing and lets the Licenses tab
+    // and a library scroll as a whole; its title strip is then 40px high.
+    private property <bool> short: root.height < 300px;
     function select-tab(tab: int) {
         if root.tab != tab { AboutView.retire-hints(); root.tab = tab; }
     }
@@ -486,14 +515,15 @@ export component AboutDialog inherits Rectangle {
         }
         VerticalLayout {
             spacing: 0px;
-            // A short dialog keeps the title strip, so Close stays in view.
+            // A short dialog keeps the title strip, so Close and the tab stay in view.
             Sky {
-                height: clamp(root.height - 250px, 56px, 176px);
+                height: clamp(root.height - 250px, 40px, 176px);
                 phase: root.phase; logo: root.application-icon; version: root.application-version;
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             VerticalLayout {
-                padding: 12px; padding-top: 4px; spacing: 8px; vertical-stretch: 1;
+                padding: root.short ? 8px : 12px; padding-top: 4px;
+                spacing: root.short ? 4px : 8px; vertical-stretch: 1;
                 if !AboutView.detail-open : HorizontalLayout {
                     spacing: 4px; alignment: center;
                     about-tab := AboutTab {
@@ -541,46 +571,63 @@ export component AboutDialog inherits Rectangle {
                     }
                     if !AboutView.detail-open && root.tab == 1 : LicenseList {
                         width: parent.width; height: parent.height;
+                        short: root.short;
                     }
                     // Slint's Text has no line height, so lines that must stay apart
                     // are separate Texts: the license and its users, and every author.
-                    if AboutView.detail-open : VerticalLayout {
-                        width: parent.width; height: parent.height; spacing: 10px;
-                        VerticalLayout {
-                            spacing: 6px;
-                            Text { text: AboutView.detail-title; color: Theme.strong-text; font-size: Theme.font-size * 1.2; font-weight: 700; overflow: elide; }
-                            InfoRow { label: "License"; value: AboutView.detail-license; }
-                            InfoRow { label: "Used by"; value: AboutView.detail-used-by; }
-                        }
-                        Rectangle {
-                            vertical-stretch: 1; min-height: 0px;
-                            border-width: 1px; border-color: Theme.frame; border-radius: 4px; clip: true;
-                            VScrollView {
-                                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                                VerticalLayout {
-                                    padding: 10px; spacing: 14px; alignment: start;
-                                    if AboutView.detail-authors-heading != "" : VerticalLayout {
-                                        spacing: 4px;
-                                        Text { text: AboutView.detail-authors-heading; color: Theme.strong-text; font-size: Theme.small-font; font-weight: 700; wrap: word-wrap; }
-                                        for author in AboutView.detail-authors : Text {
-                                            text: author; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+                    // A short dialog scrolls the library as a whole, its text box at
+                    // least four lines high, instead of squeezing that box to nothing.
+                    if AboutView.detail-open : detail-scroll := VScrollView {
+                        width: parent.width; height: parent.height;
+                        content-width: self.visible-width;
+                        content-height: max(self.visible-height, detail-content.min-height);
+                        detail-content := VerticalLayout {
+                            x: 0px; y: 0px; width: detail-scroll.visible-width;
+                            height: max(detail-scroll.visible-height, self.min-height);
+                            spacing: 10px;
+                            padding-right: root.short ? FluentScrollMetrics.overlay-size : 0px;
+                            VerticalLayout {
+                                spacing: 6px;
+                                Text { text: AboutView.detail-title; color: Theme.strong-text; font-size: Theme.font-size * 1.2; font-weight: 700; overflow: elide; }
+                                InfoRow { label: "License"; value: AboutView.detail-license; }
+                                InfoRow { label: "Used by"; value: AboutView.detail-used-by; }
+                            }
+                            Rectangle {
+                                vertical-stretch: 1; min-height: max(56px, Theme.small-font * 4 + 22px);
+                                border-width: 1px; border-color: Theme.frame; border-radius: 4px; clip: true;
+                                VScrollView {
+                                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                                    VerticalLayout {
+                                        padding: 10px; spacing: 14px; alignment: start;
+                                        if AboutView.detail-authors-heading != "" : VerticalLayout {
+                                            spacing: 4px;
+                                            Text { text: AboutView.detail-authors-heading; color: Theme.strong-text; font-size: Theme.small-font; font-weight: 700; wrap: word-wrap; }
+                                            for author in AboutView.detail-authors : Text {
+                                                text: author; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+                                            }
                                         }
+                                        Text { text: AboutView.detail-text; color: Theme.text; font-size: Theme.small-font; font-family: "monospace"; wrap: word-wrap; }
                                     }
-                                    Text { text: AboutView.detail-text; color: Theme.text; font-size: Theme.small-font; font-family: "monospace"; wrap: word-wrap; }
                                 }
                             }
                         }
                     }
                 }
-                if AboutView.detail-open : HintedActionButton {
-                    text: "Back"; fallback-icon: FallbackIcons.back; min-height: Theme.control-height;
-                    hint: "Return to the list of libraries (Escape).";
-                    clicked => { root.show-list(); }
-                }
-                close-button := HintedActionButton {
-                    text: "Close"; min-height: Theme.control-height;
-                    hint: "Close this dialog and return to the file manager.";
-                    clicked => { root.close(); }
+                // Back beside Close, which stays last: one row of the dialog's height.
+                HorizontalLayout {
+                    spacing: 8px;
+                    if AboutView.detail-open : HintedActionButton {
+                        text: "Back"; fallback-icon: FallbackIcons.back; min-height: Theme.control-height;
+                        horizontal-stretch: 1;
+                        hint: "Return to the list of libraries (Escape).";
+                        clicked => { root.show-list(); }
+                    }
+                    close-button := HintedActionButton {
+                        text: "Close"; min-height: Theme.control-height;
+                        horizontal-stretch: 1;
+                        hint: "Close this dialog and return to the file manager.";
+                        clicked => { root.close(); }
+                    }
                 }
             }
         }

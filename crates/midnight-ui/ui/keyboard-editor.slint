@@ -80,7 +80,8 @@ export component KeyboardEditor inherits VerticalLayout {
             }
         }
     }
-    Text { text: "Show commands containing"; color: Theme.text; font-size: Theme.font-size; }
+    // Captions wrap: at 320 px with a large font a line can be wider than the page.
+    Text { text: "Show commands containing"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
     HintedLineEdit {
         text: KeyboardEditorView.filter; accessible-label: "Search commands";
         hint: "Find commands by name or command ID. Matching ignores letter case.";
@@ -109,7 +110,7 @@ export component KeyboardEditor inherits VerticalLayout {
         }
         if KeyboardEditorView.commands.length == 0 : Text {
             text: "No matching commands"; color: Theme.secondary-text; font-size: Theme.font-size;
-            horizontal-alignment: center; vertical-alignment: center;
+            horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap;
         }
     }
     Text {
@@ -135,7 +136,7 @@ export component KeyboardEditor inherits VerticalLayout {
         }
         Text {
             row: root.narrow ? 2 : 1; col: 0; colspan: root.narrow ? 2 : 3;
-            text: "Press shortcut keys"; color: Theme.text; font-size: Theme.font-size;
+            text: "Press shortcut keys"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
         }
         capture-box := Rectangle {
             row: root.narrow ? 3 : 2; col: 0; colspan: root.narrow ? 2 : 1; min-width: 0px;
@@ -182,7 +183,7 @@ export component KeyboardEditor inherits VerticalLayout {
         }
     }
     Text { text: "Use in: " + KeyboardEditorView.scope; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-    Text { text: "Shortcut currently used by"; color: Theme.text; font-size: Theme.font-size; }
+    Text { text: "Shortcut currently used by"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
     Text { text: KeyboardEditorView.used-by == "" ? "—" : KeyboardEditorView.used-by; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
     if KeyboardEditorView.issue != "" : ErrorNotice { text: KeyboardEditorView.issue; maximum-notice-height: max(72px, Theme.font-size * 3); }
     GridLayout {

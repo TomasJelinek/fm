@@ -38,6 +38,19 @@ export component NoticeDialog inherits Rectangle {
         + folder-measure.preferred-height;
     private property <length> action-row-height: max(32px, Theme.control-height, copy-button.preferred-height)
         + (root.narrow ? 14px : 0px);
+    // The actions beside Close with their captions, measured in the actions' font: each
+    // is its caption, its glyph and 28px of padding, 8px from the next, and Details
+    // counts as Hide details, so that showing the details moves nothing. Where they do
+    // not fit, they show their glyphs only, as a job window's footer does: each keeps its
+    // caption as its accessible label and on its tooltip's first line.
+    private property <length> action-pad: Theme.icon-size + 28px + 8px;
+    private property <length> caption-actions: (root.details != "" ? hide-caption.preferred-width + root.action-pad : 0px)
+        + copy-caption.preferred-width + root.action-pad
+        + (root.can-authorize && !root.narrow ? authorize-caption.preferred-width + root.action-pad : 0px);
+    // Measured with the regular padding, like natural-height, which depends on the
+    // buttons' height: the compact padding would follow the dialog's own height.
+    private property <bool> glyph-actions: root.caption-actions
+        > root.width - 2 * 20px - close-button.preferred-width;
     private property <bool> compact: root.height < 280px;
     // A short dialog has no room for a details box beside the message and the folder
     // box: shown details follow them in the message's own scrolling text instead, and
@@ -78,6 +91,18 @@ export component NoticeDialog inherits Rectangle {
     folder-label-measure := Text {
         visible: false; accessible-role: none;
         text: "Folder"; font-size: Theme.small-font;
+    }
+    hide-caption := Text {
+        visible: false; accessible-role: none; text: "Hide details";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    copy-caption := Text {
+        visible: false; accessible-role: none; text: "Copy details";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    authorize-caption := Text {
+        visible: false; accessible-role: none; text: root.authorization-text;
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
     }
     FocusScope {
         // A key router, not a Tab stop.
@@ -149,19 +174,26 @@ export component NoticeDialog inherits Rectangle {
                     HorizontalLayout {
                         alignment: start; spacing: 8px;
                         if root.details != "": HintedActionButton {
-                            text: root.details-expanded ? "Hide details" : "Details";
+                            private property <string> caption: root.details-expanded ? "Hide details" : "Details";
+                            text: root.glyph-actions ? "" : self.caption;
+                            accessible-label: self.caption;
                             fallback-icon: FallbackIcons.properties;
-                            hint: "Show or hide diagnostic details.";
+                            hint: (root.glyph-actions ? self.caption + "\n" : "") + "Show or hide diagnostic details.";
                             clicked => { root.details-expanded = !root.details-expanded; }
                         }
                         copy-button := HintedActionButton {
-                            text: "Copy details"; fallback-icon: FallbackIcons.copy;
-                            hint: "Copy the complete message and diagnostic report to the clipboard.";
+                            text: root.glyph-actions ? "" : "Copy details";
+                            accessible-label: "Copy details";
+                            fallback-icon: FallbackIcons.copy;
+                            hint: (root.glyph-actions ? "Copy details\n" : "")
+                                + "Copy the complete message and diagnostic report to the clipboard.";
                             clicked => { root.copy-details(); }
                         }
                         if root.can-authorize && !root.narrow: HintedActionButton {
-                            text: root.authorization-text; fallback-icon: FallbackIcons.refresh;
-                            hint: root.authorization-button-hint;
+                            text: root.glyph-actions ? "" : root.authorization-text;
+                            accessible-label: root.authorization-text;
+                            fallback-icon: FallbackIcons.refresh;
+                            hint: (root.glyph-actions ? root.authorization-text + "\n" : "") + root.authorization-button-hint;
                             clicked => { root.authorize-retry(); }
                         }
                     }

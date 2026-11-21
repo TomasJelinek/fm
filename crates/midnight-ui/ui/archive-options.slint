@@ -77,12 +77,14 @@ export component ArchiveOptions inherits VerticalLayout {
             wrap: word-wrap; horizontal-stretch: 1;
         }
     }
+    // Captions wrap, as the descriptions do: at 320 px a large font is wider than the page.
     if ArchiveOptionsView.rows.length == 0 : Text {
         text: "No matching built-in file types"; color: Theme.secondary-text; font-size: Theme.font-size;
+        wrap: word-wrap;
     }
     Text {
         text: "Custom extensions";
-        color: Theme.strong-text; font-size: Theme.font-size;
+        color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
         min-height: Theme.control-height; vertical-alignment: center;
     }
     for extension in ArchiveOptionsView.custom-extensions : Rectangle {

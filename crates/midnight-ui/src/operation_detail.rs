@@ -1,5 +1,5 @@
 //! Bounded operation text; failure samples are independent of successful outcome samples.
-use crate::error_presentation::append_path;
+use crate::{error_presentation::append_path, job_presentation::counted};
 use midnight_core::{NumberLocale, OperationProgress};
 
 pub(super) fn detail(
@@ -10,11 +10,11 @@ pub(super) fn detail(
     // Counts follow regional grouping, as in the job's summary line; paths keep
     // their identity and cannot inject extra lines (see `append_path`).
     let mut text = format!(
-        "{} / {} targets · {} errors · {} entries processed\n\nSource folder\n",
+        "{} / {} · {} · {} processed\n\nSource folder\n",
         locale.format_u64(progress.completed),
-        locale.format_u64(progress.total),
-        locale.format_u64(progress.failed),
-        locale.format_u64(progress.processed_entries),
+        counted(progress.total, "target", "targets", locale),
+        counted(progress.failed, "error", "errors", locale),
+        counted(progress.processed_entries, "entry", "entries", locale),
     );
     append_path(&mut text, &progress.source_directory);
     if let Some(path) = &progress.current_path {
@@ -111,5 +111,21 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("\nforged"), "{text}");
+    }
+
+    #[test]
+    fn a_count_of_one_is_singular() {
+        let progress = OperationProgress {
+            total: 1,
+            completed: 1,
+            failed: 1,
+            processed_entries: 1,
+            ..progress()
+        };
+        let text = detail(&progress, "", &NumberLocale::default());
+        assert!(
+            text.starts_with("1 / 1 target · 1 error · 1 entry processed\n"),
+            "{text}"
+        );
     }
 }

@@ -13,20 +13,26 @@ export component WrappingCheckBox inherits Rectangle {
     in property <length> font-size: Theme.font-size;
     in property <length> control-height: Theme.control-height;
     callback toggled();
+    // The pointer on the box or on its caption gives the box the theme's active frame,
+    // 2px wide. Only the frame changes: the caption, the mark and the fill they are drawn
+    // on keep their contrast in every theme (tests/hover_feedback.rs).
+    private property <bool> hovered: root.enabled && (box-area.has-hover || caption-area.has-hover);
     min-width: 0px;
     height: max(root.control-height, caption.preferred-height);
     forward-focus: checkbox;
     HorizontalLayout {
         spacing: 6px; cross-axis-alignment: center;
-        Rectangle {
+        // Tracks the pointer above the native check box, which takes the clicks.
+        box-area := TouchArea {
             width: 24px; height: root.height; horizontal-stretch: 0;
+            enabled: root.enabled;
             indicator := Rectangle {
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 width: 18px; height: 18px; border-radius: 2px;
                 background: root.checked && root.enabled ? Theme.active-header : Theme.secondary-surface;
-                border-width: 1px;
-                border-color: root.enabled && root.checked ? Theme.active-frame : Theme.frame;
+                border-width: root.hovered ? 2px : 1px;
+                border-color: root.enabled && (root.checked || root.hovered) ? Theme.active-frame : Theme.frame;
                 // The mark and the focus ring are hidden instead of conditional:
                 // an `if` is one more generated component.
                 Path {
@@ -59,7 +65,7 @@ export component WrappingCheckBox inherits Rectangle {
             wrap: word-wrap;
             height: root.height; vertical-alignment: center;
             min-width: 0px; horizontal-stretch: 1;
-            TouchArea {
+            caption-area := TouchArea {
                 enabled: root.enabled;
                 clicked => { root.checked = !root.checked; checkbox.focus(); root.toggled(); }
             }

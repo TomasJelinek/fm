@@ -219,13 +219,33 @@ source; the gate itself has not been run again:
 - U-D07: the Rename, Create, New file, Copy and Move name fields and the conflict
   window's new-name field keep 4.5:1 selected-text contrast in all 26 themes, and so do
   Make File List's destination field and preview and the Compare directories
-  tolerance field since the second batch. The Checksums Verify page's path field
-  still uses the default selection colours.
+  tolerance field since the second batch. Since the third batch the Checksums Verify
+  page's path field does too: it selected with Fluent's colours (in Blue black on
+  #0078d4 instead of the theme's white on #315b86) and is now the themed field, with
+  its label, tooltip, height, Enter and typing unchanged (`checksum_verify_field`).
 - U-D08, the notice part: at 320×200 shown details scroll with the message, the buttons
   stay in the dialog and Escape closes it. About's Close stays in its body there
   (not reproducible, test added). Since the second batch the Options pages that fit
   their lists to the window (Comparators, Plugins, Keyboard) keep room for six rows at
-  320×200 and scroll, instead of squeezing their lists to nothing.
+  320×200 and scroll, instead of squeezing their lists to nothing. Third batch
+  (`options_caption_fit`): at 320×200 with fonts of 20–24 px "Show commands containing",
+  "No Custom Commands configured.", "Thumbnail size (longest side)" and "No matching
+  built-in file types" were cut without "…" (on Windows they needed 296–359 px of
+  286 px); they wrap now, as the pages' other captions do, and so do the other
+  one-line captions of those pages, which wider fonts would cut too. The leftovers of
+  run 20261121-045727 (`minimum_dialogs`, confirmed: About stayed open after the
+  gate's walk, click the filter, Down, Enter, Escape; at 320×200 the Licenses tab and
+  a library's licence were cut by the content area, 41 px high in Blue Desktop and
+  11 px in Dark Touch, and the filter's placeholder needed 200 of 149 px; a notice's
+  Copy details showed 61 of its 82 px caption in Dark Touch): a short About has a
+  40 px title strip and tighter spacing, its Licenses tab and a library scroll as a
+  whole with at least three list rows and four lines of licence, Down scrolls the list
+  into view before it takes the keyboard (Slint 1.18.1 drops the focus of a control
+  scrolled out of view at the next key, so Enter and Escape reached nothing), Back
+  sits beside Close, and a narrow filter's placeholder says "Filter". Hot Paths keeps its
+  current-folder line at its height (it was 0 px high there). A notice's Details and
+  Copy details show their glyphs only where their captions do not fit beside Close,
+  as a job window's actions do.
 - U-D11 did not reproduce: the Hot Paths current folder has used middle elision with a
   tooltip since the 20 November integration (test added).
 - U-D16: Find's result column headings are Tab stops after the result list, with a
@@ -251,11 +271,20 @@ source; the gate itself has not been run again:
   Jobs and Close, Dark Touch Details and Close. The waiting label wraps inside the
   speed chart. The failure decision window is never narrower than Retry, Skip and
   Skip all side by side (on Windows 323 px in Blue Desktop, 382 px in Dark Touch); a
-  name conflict keeps 320 px. Still open: at Dark Touch 320×200, and in Blue Desktop
-  with fonts of 14 px and more, a running Copy job's Pause, Details and Cancel
-  operation do not fit, so Details is cut after its first letter. The gate does not
-  flag it (it measures the caption against the button's visible part); fixing it
-  needs a decision between stacking short footers and glyph-only actions.
+  name conflict keeps 320 px. Third batch (`job_footer_glyphs`), confirmed on Windows
+  at the window's minimum size (320×200): a running Copy's Details showed 67 of 84 px
+  in Blue Desktop at 14 px, 47 of 90 at 16 px and 44 of 93 in Dark Touch; a paused
+  one's 76 of 78 already at 12 px, and a job waiting for a decision showed 1 of
+  Resolve's 83 px at 12 px; the question's Cancel operation showed 177 of 192 px at
+  20 px. The gate did not flag it (it measures the caption against the button's
+  visible part). Decision taken: the footer is not stacked; where the actions that
+  stay (Pause or Resume, Details, Resolve, or the question's Cancel operation) cannot
+  all show their captions beside the dismiss button, they show their glyphs only, each
+  with its caption as its accessible label and on its tooltip's first line, Resolve
+  with a glyph of its own; Copy details, then Jobs, still leave first. The job window
+  is never narrower than Pause, Details and Resolve as glyphs beside Cancel operation
+  (wider than 320 px in Dark Touch at 15 px), so they stay whole at its minimum size
+  with any font.
 - U-D14 did not reproduce: for a finished Permanently delete job, Open shows its
   window (brings it forward, or opens it again after it was closed) and Copy details
   copies the job's details (`jobs_actions`).
@@ -271,6 +300,42 @@ source; the gate itself has not been run again:
   Options › Plugins and Attributes) shows focus with a 2 px frame.
 - U-D18: the focused Jobs list shows a 2 px ring over its frame, at least 3:1 in the
   same themes.
+- U-D05, third batch (`hover_feedback`), confirmed: an unchecked WrappingCheckBox and
+  the Options › Colors swatches changed no pixel when hovered. A check box now answers
+  the pointer on its box or caption with a 2 px active frame around the box (checked
+  ones too), and a swatch with a 2 px active-frame ring around it; only the frame
+  changes, and in all 26 themes the active frame stands out from the dialog surface
+  at least as much as the resting frame. A swatch's own border showed no change in
+  HighContrastDark (the foreground swatch has the frame's colour), hence the ring
+  outside it.
+- Path bar omission marker in Network, third batch (`network_path_omission`),
+  confirmed: the marker's tooltip showed the location's own caption ("SERVER-0042"),
+  which is all a Network path editor holds. It now names what it omits: the chain from
+  the outermost location through the last omitted ancestor ("Network › Microsoft
+  Windows Network › A rather long workgroup name 文档"). On native and archive paths it
+  still shows the whole path. The last omitted part of each run now draws the marker,
+  which keeps every layout as before (`path_elision`, `archive_path_bar`).
+- WIN-3 of [windows.md](windows.md), confirmed (`path_bar_fit`): every drawn path
+  component's caption is rounded up to a whole pixel while the bar measured joined
+  captions, so where a long path just fitted, "Edit folder path" reached up to 7 px
+  out of the bar's clip on Windows (6 px in the run). The fitting now keeps a pixel
+  per component in reserve.
+- WIN-7 (the find record's F-L04), confirmed (`find_compact_status`): in a Find window
+  under 360 px high with text over 20 px the idle status was the last child of the
+  scrolled query form and showed 0 of its 26–42 px. It now takes the query area's last
+  line below the scrolled form, and the query area grows by that line.
+- WIN-2, confirmed (`command_path_overlay`): the command line's scrolled working folder
+  lay under the folder's start drawn over the strip (overlaps of 96×40, 21×22 and
+  15×32 px at the flagged sizes), and at Dark Touch 320×200 that start showed 15 px of
+  its text. The strip is now cut where the start ends (outside the strip, which keeps
+  its place, size and scrolling, so the start takes the strip's wheel, drag and hint);
+  the start is at least two characters wide, or left out where that and a character of
+  the end do not fit.
+- Jobs rows (windows.md, "Also seen"), confirmed: a row counted in the plural whatever
+  the number ("1 files · 0 skipped · 1 errors"). Copy, Move and Delete rows, and the
+  counts in a transfer's details, now use the singular for one ("1 file · 0 skipped ·
+  1 error", "1 / 1 target · 1 error", "1 temporary source location needs attention";
+  `job_presentation` unit test `job_rows_and_details_count_one_in_the_singular`).
 
 The U-D01–U-D04, U-D07, U-D08 and U-D11 results come from `dialog_polish`, whose
 tests failed on the earlier dialogs except About's and Hot Paths'. The second batch's
@@ -279,7 +344,16 @@ U-D19–U-D21 results from `form_polish`: 14 of their 15 tests failed on the ear
 source; the Options topics check passes on both. The U-D13–U-D15, U-D17 and U-D18
 results come from `tool_window_polish` and `native_job_windows` (`minimum_size`,
 `jobs_actions`): 8 of their 9 tests failed on the earlier source; the U-D14 one
-passes on both. The gate has not been run again since either batch, so the
+passes on both. The third batch's results come from `job_footer_glyphs`,
+`checksum_verify_field`, `options_caption_fit`, `hover_feedback`,
+`network_path_omission`, `path_bar_fit`, `find_compact_status`, `command_path_overlay`
+and `minimum_dialogs`, and the `job_presentation` unit test above: 16 of their 20
+tests failed on the earlier source; the other four guard what must stay (captions
+where they fit, the Verify field's label, tooltip, height and keys, the hover looks'
+contrast, the native and archive markers' tooltips). They ran on Windows only: WSL was
+unavailable, so none ran on Linux. The layout tests measure with the platform's own
+fonts, and the captions they check wrap, elide or shrink to glyphs by design rather
+than by Windows metrics. The gate has not been run again since any batch, so the
 surfaces above keep their recorded results until it is.
 
 ## Runs

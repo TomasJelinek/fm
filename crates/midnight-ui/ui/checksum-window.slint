@@ -1,6 +1,8 @@
 import { ProgressIndicator } from "std-widgets.slint";
 import { VScrollView } from "scroll-view.slint";
-import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { ThemedLineEdit } from "content-controls.slint";
+import { Tip } from "controls.slint";
 import { ErrorNotice, ErrorGlyph } from "error-notice.slint";
 import { Theme } from "theme.slint";
 import { CloseButton } from "close-button.slint";
@@ -206,12 +208,13 @@ export component ChecksumWindow inherits ToolWindow {
                     Text { text: "Checksum file"; color: Theme.strong-text; font-weight: 600; }
                     HorizontalLayout {
                         spacing: 8px;
-                        HintedLineEdit {
+                        // Themed, so that selected text uses the theme's selection colours.
+                        ThemedLineEdit {
                             text <=> root.manifest-path; accessible-label: "Checksum file to verify";
                             enabled: !root.running && !root.saving && !root.picker-busy;
                             min-width: 0px; horizontal-stretch: 1; height: Theme.control-height;
-                            hint: "SFV, MD5, SHA-1, SHA-256 or SHA-512 manifest. Names are resolved relative to this file.";
                             accepted => { root.submit-verify(); }
+                            Tip { text: "SFV, MD5, SHA-1, SHA-256 or SHA-512 manifest. Names are resolved relative to this file."; }
                         }
                         HintedActionButton { text: "…"; accessible-label: "Browse checksum file";
                             hint: "Choose a checksum file to verify."; width: Theme.control-height;

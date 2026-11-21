@@ -234,7 +234,8 @@ export component OperationsBody inherits Rectangle {
                     }
                 }
                 if root.selected.attention : HintedActionButton {
-                    text: "Resolve"; fallback-icon: FallbackIcons.view;
+                    // The job window's Resolve glyph: not Details' eye.
+                    text: "Resolve"; fallback-icon: FallbackIcons.edit;
                     hint: "Review the decision needed by this job.";
                     clicked => { root.resolve(root.selected.identity); }
                 }

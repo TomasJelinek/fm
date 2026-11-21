@@ -173,6 +173,9 @@ export component HotPathsDialog inherits Rectangle {
                     current-path := PathText {
                         text: "Current folder: " + root.path; tail: root.path-tail;
                         foreground: Theme.secondary-text; font-size: Theme.small-font;
+                        // Its line's height even in the smallest dialog, which scrolls:
+                        // a path label has no height of its own below its preferred one.
+                        min-height: self.preferred-height;
                         Tooltip { TipBody { text: root.path; } }
                     }
                     add-current := HintedActionButton {

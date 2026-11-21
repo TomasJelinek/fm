@@ -224,8 +224,9 @@ error appears as red text with an error icon, and the status line under the
 results summarizes progress; clicking either (tooltip "Click for more details")
 shows the full error, counts and diagnostics with Copy and Back. There is no
 separate Details button. A window shorter than 360 px with text larger than
-20 px shows the status in the query area instead, except while a search runs:
-the query area is then hidden, so the status stays under the results.
+20 px shows the status in the query area instead, pinned to its last line so that it
+is in view whatever the query area scrolls to, except while a search runs: the query
+area is then hidden, so the status stays under the results.
 
 The refactor has causal blocked-I/O, sorting, Stop-to-Sort and header-geometry
 RED/GREEN coverage. Windows and Linux software-window pointer/key/geometry checks

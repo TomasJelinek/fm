@@ -77,11 +77,31 @@ separately; this document is not a claim that every item is already released.
 - Compare directories compares on Enter from an option or its tolerance field, as
   other dialogs confirm from their options; Space ticks an option, and a held Enter or
   one during a comparison does nothing. Dialog tabs and the Checksums and Jobs lists
-  show keyboard focus with a 2 px frame.
+  show keyboard focus with a 2 px frame. A check box answers the pointer on its box or
+  its caption with a 2 px active frame around the box, and an Options › Colors swatch
+  with a 2 px active-frame ring around it; only the frame changes, so the caption, the
+  mark and the colour keep their contrast, and in every theme the active frame stands
+  out from the surface at least as much as the resting one.
 - A job window's footer leaves out Copy details, then Jobs, when they would not fit
-  whole beside its dismiss button (Jobs offers Copy details too), and the failure
-  decision window is never narrower than its Retry, Skip and Skip all buttons.
+  whole beside its dismiss button (Jobs offers Copy details too). Where the actions that
+  stay (Pause or Resume, Details, Resolve, or the question's Cancel operation) still
+  cannot show their captions there, they show their glyphs only, as the Options
+  footer's Export and Import do: each keeps its caption as its accessible label and on
+  its tooltip's first line, and Resolve has a glyph of its own, apart from Details'.
+  The footer is not stacked. The job window is never narrower than its widest footer,
+  Pause, Details and Resolve as glyphs beside Cancel operation, so they stay whole at
+  its minimum size with any font. A notice's Details and Copy details go glyph-only
+  beside Close the same way. The failure decision window is never narrower than its
+  Retry, Skip and Skip all buttons.
 - Dialog dismissal stays reachable at 320 by 200, including large touch fonts.
+  A short About (under 300 px) keeps a 40 px title strip and tighter spacing; its
+  Licenses tab and a library's licence scroll as a whole, keeping at least three list
+  rows and four lines of licence, Down in the filter scrolls the list into view before
+  it takes the keyboard (Slint 1.18.1 drops the focus of a control scrolled out of
+  view at the next key, which then reaches nothing, Escape included), and Back sits
+  beside Close. Hot Paths keeps its current-folder line at its height and scrolls. The
+  Options pages' one-line captions and empty-state notes wrap, so 20–24 px fonts at
+  320 px cut none of them.
   Compact forms (Compare folders, Hot Paths, Panel Filter, Attributes) move focus
   to dismissal once when they enter their compact layout, which can clip the
   focused field; resizing within that layout keeps the field being edited.
@@ -164,7 +184,11 @@ The resulting editor text is intentionally shell syntax when explicitly run.
 Names that cannot be represented exactly or contain control characters are
 rejected without modifying the draft; no lossy filename substitution is allowed.
 The command prompt's `>` is followed by only 4 logical pixels of padding in both
-mouse and touch layouts. Long working paths retain their horizontal viewport.
+mouse and touch layouts. Long working paths retain their horizontal viewport. A
+scrolled one shows the folder's start, at least two characters, and "..." over the
+strip's start, where the strip is cut, so the two never overlap; that start takes the
+strip's wheel, drag and tooltip. Without room for it and a character of the end, the
+strip shows its end alone.
 
 ## Performance requirements
 
@@ -194,8 +218,13 @@ collapse into one ellipsis marker. Up to two leading components stay (while they
 take at most about a third of the bar), then the marker, then the longest suffix of
 whole components that fits; nothing overlaps and no component is cut, except the
 last one, which is shortened at its end only when it alone is wider than the bar.
-At least 32 logical pixels after the path stay free; clicking there or on the
-marker edits the complete path, and the marker's tooltip shows it. Every shown
+At least 32 logical pixels after the path stay free, inside the bar: each shown
+component is drawn as its own caption, rounded up to a whole pixel, so the fitting
+keeps a pixel per component in reserve. Clicking there or on the marker edits the
+complete path, and the marker's tooltip shows it. A Network location's editor holds
+only its own caption, while its parts join the captions of its ancestors: there the
+marker's tooltip names what it stands for, the chain from the outermost location
+through the last ancestor it omits. Every shown
 component keeps its backend path identity; shortening never changes a copied or
 opened path. Component captions, like file names in rows, tabs and the details
 bar, keep a left-to-right base direction, so a right-to-left name keeps its

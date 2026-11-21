@@ -140,13 +140,22 @@ component ColorField inherits VerticalLayout {
             forward-focus: swatch-focus;
             // Measures a whole #RRGGBB value; inside the fixed swatch, out of the layout.
             hex-metrics := Text { visible: false; text: "#000000"; font-size: Theme.font-size; }
+            // Hovered, a ring in the theme's active frame surrounds the swatch: on the
+            // dialog's surface, where it shows whatever colour the swatch has, and outside
+            // it, so the colour shown keeps its place (tests/hover_feedback.rs). Hidden
+            // instead of conditional: an `if` is one more generated component.
+            Rectangle {
+                visible: swatch-area.has-hover;
+                x: -2px; y: -2px; width: parent.width + 4px; height: parent.height + 4px;
+                border-width: 2px; border-radius: 5px; border-color: Theme.active-frame;
+            }
             swatch-focus := FocusScope {
                 enabled: !ColorOptionsView.busy;
                 key-pressed(event) => {
                     if event.text == Key.Return || event.text == Key.Space { ColorOptionsView.picker-field = root.field; return accept; }
                     reject
                 }
-                TouchArea {
+                swatch-area := TouchArea {
                     enabled: !ColorOptionsView.busy;
                     clicked => { swatch-focus.focus(); ColorOptionsView.picker-field = ColorOptionsView.picker-field == root.field ? -1 : root.field; }
                 }

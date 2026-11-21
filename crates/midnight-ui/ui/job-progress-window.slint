@@ -39,11 +39,16 @@ export component JobProgressWindow inherits DialogWindow {
     // padding, 8px from the next (ActionButtonContent). Pause and Details count with
     // their longer captions, so that toggling them never moves another action.
     private property <length> action-pad: Theme.icon-size + 28px + 8px;
-    private property <length> kept-actions: !root.show-actions ? 0px
+    private property <length> kept-actions: root.cancel-confirmation ? cancel-caption.preferred-width + root.action-pad
+        : !root.show-actions ? 0px
         : (root.job.pausable ? resume-caption.preferred-width + root.action-pad : 0px)
             + details-caption.preferred-width + root.action-pad
             + (root.job.attention ? resolve-caption.preferred-width + root.action-pad : 0px);
     private property <length> action-room: footer.inline-room + 8px;
+    // Where even the actions that stay do not fit with their captions, they show their
+    // glyphs only, as the Options footer's Export and Import do: each keeps its caption
+    // as its accessible label and on its tooltip's first line.
+    private property <bool> glyph-actions: root.kept-actions > root.action-room;
     private property <bool> offers-copy-details: root.show-actions && !root.job.active
         && root.kept-actions + copy-caption.preferred-width + root.action-pad <= root.action-room;
     private property <bool> offers-jobs: root.show-actions
@@ -52,6 +57,12 @@ export component JobProgressWindow inherits DialogWindow {
     title: root.job.title;
     preferred-width: max(640px, Theme.font-size * 34);
     preferred-height: root.transfer ? max(380px, Theme.font-size * 22) : max(420px, Theme.font-size * 24);
+    // Never narrower than the widest footer: Pause, Details and Resolve as glyphs beside
+    // Cancel operation, the longest dismiss caption, inside the padding of a window that
+    // is not compact. A glyph is its icon and 24px of padding, 8px from the next.
+    min-width: max(320px, 2 * (root.transfer ? 10px : 16px)
+        + max(80px, cancel-caption.preferred-width + Theme.icon-size + 28px)
+        + 3 * (Theme.icon-size + 24px + 8px));
     request-close => { root.request-dismiss(); }
     public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
@@ -81,6 +92,10 @@ export component JobProgressWindow inherits DialogWindow {
     }
     jobs-caption := Text {
         x: 0px; y: 0px; visible: false; text: "Jobs";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    cancel-caption := Text {
+        x: 0px; y: 0px; visible: false; text: "Cancel operation";
         font-family: Theme.effective-font-family; font-size: Theme.font-size;
     }
     FocusScope { focus-on-tab-navigation: false;
@@ -293,26 +308,38 @@ export component JobProgressWindow inherits DialogWindow {
                     : root.job.active ? "Close this progress window (Escape)."
                     : "Close this completed operation.";
                 dismiss => { root.request-dismiss(); }
+                // Each action names its own glyph, so that glyph-only actions stay apart.
                 if root.cancel-confirmation : HintedActionButton {
                     private property <string> occurrence;
                     init => { self.occurrence = root.copy-confirmation-token; }
-                    text: "Cancel operation"; destructive: true;
+                    text: root.glyph-actions ? "" : "Cancel operation";
+                    accessible-label: "Cancel operation";
+                    fallback-icon: FallbackIcons.close; destructive: true;
                     enabled: root.job.active && root.job.cancellable;
-                    hint: "Cancel this operation. Completed changes will remain.";
+                    hint: (root.glyph-actions ? "Cancel operation\n" : "")
+                        + "Cancel this operation. Completed changes will remain.";
                     clicked => { root.confirm-cancel(self.occurrence); }
                 }
                 if root.show-actions && root.job.pausable : HintedActionButton {
-                    text: root.job.pause-requested ? "Resume" : "Pause";
-                    hint: "Pause or resume this operation at a safe file-operation checkpoint.";
+                    private property <string> caption: root.job.pause-requested ? "Resume" : "Pause";
+                    text: root.glyph-actions ? "" : self.caption;
+                    accessible-label: self.caption;
+                    fallback-icon: root.job.pause-requested ? FallbackIcons.run : FallbackIcons.pause;
+                    hint: (root.glyph-actions ? self.caption + "\n" : "")
+                        + "Pause or resume this operation at a safe file-operation checkpoint.";
                     clicked => { root.set-paused(!root.job.pause-requested); }
                 }
                 // One conditional, with the footer's spacing, instead of one per button.
                 if root.show-actions : HorizontalLayout {
                     spacing: 8px;
                     HintedActionButton {
-                        text: root.details-visible ? "Fewer details" : "Details";
-                        hint: root.details-visible ? "Hide the operation's details."
-                            : "Show operation counters, source, destination, diagnostics and notes.";
+                        private property <string> caption: root.details-visible ? "Fewer details" : "Details";
+                        text: root.glyph-actions ? "" : self.caption;
+                        accessible-label: self.caption;
+                        fallback-icon: FallbackIcons.view;
+                        hint: (root.glyph-actions ? self.caption + "\n" : "")
+                            + (root.details-visible ? "Hide the operation's details."
+                                : "Show operation counters, source, destination, diagnostics and notes.");
                         clicked => { root.details-visible = !root.details-visible; }
                     }
                     if root.offers-jobs : HintedActionButton {
@@ -326,7 +353,12 @@ export component JobProgressWindow inherits DialogWindow {
                     clicked => { root.copy-details(); }
                 }
                 if root.show-actions && root.job.attention : HintedActionButton {
-                    text: "Resolve"; hint: "Review this operation's pending overwrite or error decision.";
+                    text: root.glyph-actions ? "" : "Resolve";
+                    accessible-label: "Resolve";
+                    // Not Details' eye: beside it, a glyph-only Resolve must look different.
+                    fallback-icon: FallbackIcons.edit;
+                    hint: (root.glyph-actions ? "Resolve\n" : "")
+                        + "Review this operation's pending overwrite or error decision.";
                     clicked => { root.resolve(); }
                 }
             }

@@ -6,9 +6,10 @@ import { PathPartRow } from "navigation-models.slint";
 import { PathToken } from "path-token.slint";
 import { NameText, OmissionText } from "path-text.slint";
 
-// Stands for the collapsed middle components; it edits the complete path.
+// Stands for omitted components; it edits the complete path. Its tooltip names what it
+// stands for.
 component PathOmission inherits Rectangle {
-    in property <string> path;
+    in property <string> names;
     in property <length> text-size;
     in property <bool> highlighted;
     callback activated();
@@ -24,7 +25,7 @@ component PathOmission inherits Rectangle {
         horizontal-alignment: center; vertical-alignment: center;
     }
     area := TouchArea { clicked => { root.activated(); } }
-    Tip { text: root.path; }
+    Tip { text: root.names; }
 }
 
 // Paths are parsed by the backend. Each token contains a whole component,
@@ -54,7 +55,10 @@ export component PathNavigation inherits Rectangle {
     // the suffix that fits, as long as it and the last component both fit whole.
     // At least 32px stay free for opening the editor.
     private property <int> count: root.parts.length;
-    private property <length> room: max(0px, trail.width - 32px);
+    // Each component is drawn as its own caption, whose width is rounded up to a whole
+    // pixel, while the widths below measure joined captions: a pixel per component
+    // keeps the drawn components inside the room the measures allow.
+    private property <length> room: max(0px, trail.width - 32px - root.count * 1px);
     private property <length> omission-width: omission-metrics.preferred-width + 4px;
     // The shown components join into the shown path (each label is the part of its
     // prefix after the previous one), so prefixes measure suffix widths.
@@ -92,6 +96,12 @@ export component PathNavigation inherits Rectangle {
     // Not even the suffix from the anchor fits: the anchor stands between two markers.
     private property <bool> anchored: root.anchor-dropped && root.lead-count == 0
         && root.anchor-suffix-width + root.omission-width > root.room && root.anchor-alone-fits;
+    // The editor holds the whole path that the parts join into (a native or archive
+    // path), or only the location's own caption (Network, whose parts are the captions
+    // of its ancestors). A marker's tooltip names what it stands for: the whole path,
+    // which it edits, or else the chain through the last part it omits.
+    private property <bool> editor-holds-path: root.count == 0
+        || root.path == root.parts[root.count - 1].prefix;
     private property <length> lead-width: root.lead-count == 2 ? root.pair-width
         : root.lead-count == 1 ? root.first-width : 0px;
     private property <length> suffix-room: root.anchored
@@ -158,13 +168,6 @@ export component PathNavigation inherits Rectangle {
                 vertical-alignment: center; overflow: elide;
                 min-width: 0px; horizontal-stretch: 1;
             }
-            // Without leading components the marker opens the trail.
-            if root.collapsed && root.lead-count == 0 : PathOmission {
-                width: root.omission-width; height: trail.height;
-                path: root.path; text-size: root.text-size;
-                highlighted: root.hovered-index >= 0;
-                activated => { root.focus-editor(); }
-            }
             for part[index] in root.parts : Rectangle {
                 // This component and every later one, as shown.
                 private property <length> suffix-width: index == 0 ? root.full-width
@@ -172,18 +175,27 @@ export component PathNavigation inherits Rectangle {
                 private property <bool> shown: !root.collapsed || index < root.lead-count
                     || index == root.count - 1 || (root.anchored && index == root.anchor)
                     || self.suffix-width <= root.suffix-room;
-                // The last leading component, and an anchor before omitted ones, carry
-                // the marker after them.
-                private property <bool> marks-omission: (root.collapsed && index == root.lead-count - 1)
-                    || (root.anchored && root.anchor-gap && index == root.anchor);
-                visible: self.shown;
-                width: !self.shown ? 0px : token.width + (self.marks-omission ? root.omission-width : 0px);
+                // An omitted component that a shown one follows ends a run of omitted
+                // components (at the start of the trail, after the leading ones, or after
+                // the anchor), and its place holds the marker that stands for the run.
+                // The next component's suffix is measured from this one's prefix.
+                private property <bool> ends-omission: root.collapsed && !self.shown
+                    && (index + 1 >= root.count - 1 || (root.anchored && index + 1 == root.anchor)
+                        || root.full-width - own-metrics.preferred-width <= root.suffix-room);
+                visible: self.shown || self.ends-omission;
+                width: self.shown ? token.width : self.ends-omission ? root.omission-width : 0px;
                 height: trail.height;
                 parent-metrics := Text {
                     visible: false; font-size: root.text-size;
                     text: root.collapsed && index > 0 ? root.parts[index - 1].prefix : "";
                 }
+                // Only an omitted component measures its own prefix.
+                own-metrics := Text {
+                    visible: false; font-size: root.text-size;
+                    text: root.collapsed && !parent.shown ? part.prefix : "";
+                }
                 token := PathToken {
+                    visible: parent.shown;
                     x: 0px; y: 0px; height: parent.height;
                     width: index == root.count - 1
                         ? min(self.natural-width, max(0px, root.collapsed ? root.suffix-room : root.room))
@@ -197,10 +209,11 @@ export component PathNavigation inherits Rectangle {
                         else if root.hovered-index == index { root.hovered-index = -1; }
                     }
                 }
-                if self.marks-omission : PathOmission {
-                    x: token.width; y: 0px; width: root.omission-width; height: parent.height;
-                    path: root.path; text-size: root.text-size;
-                    // A hovered later component's prefix includes the collapsed ones.
+                if self.ends-omission : PathOmission {
+                    x: 0px; y: 0px; width: root.omission-width; height: parent.height;
+                    names: root.editor-holds-path ? root.path : part.prefix;
+                    text-size: root.text-size;
+                    // A hovered later component's prefix includes the omitted ones.
                     highlighted: root.hovered-index > index;
                     activated => { root.focus-editor(); }
                 }

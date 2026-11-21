@@ -37,7 +37,8 @@ export component ThumbnailOptions inherits VerticalLayout {
     }
     VerticalLayout {
         spacing: 4px;
-        Text { text: "Thumbnail size (longest side)"; color: Theme.text; font-size: Theme.font-size; }
+        // Captions wrap, as the check boxes do: at 320 px a large font is wider than the page.
+        Text { text: "Thumbnail size (longest side)"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
         HintedComboBox {
             private property <[int]> sizes: [48, 64, 72, 96, 128, 192, 256];
             private property <int> size-index: root.thumbnail-size == 48 ? 0 : root.thumbnail-size == 64 ? 1
@@ -52,7 +53,7 @@ export component ThumbnailOptions inherits VerticalLayout {
             selected(value) => { root.size-changed(self.sizes[self.current-index]); self.current-index = self.size-index; }
         }
     }
-    Text { text: "Thumbnail cache"; color: Theme.text; font-size: Theme.font-size; }
+    Text { text: "Thumbnail cache"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
     Text {
         text: root.thumbnail-cache-location == "" ? "Resolving cache location…" : root.thumbnail-cache-location;
         color: Theme.secondary-text; font-size: Theme.small-font; wrap: char-wrap;

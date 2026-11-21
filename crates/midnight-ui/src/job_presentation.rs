@@ -226,10 +226,10 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         title: title.into(),
         state: state.into(),
         summary: format!(
-            "{} / {} targets · {} errors",
+            "{} / {} · {}",
             p.number_locale.format_u64(progress.completed),
-            p.number_locale.format_u64(progress.total),
-            p.number_locale.format_u64(progress.failed)
+            counted(progress.total, "target", "targets", &p.number_locale),
+            counted(progress.failed, "error", "errors", &p.number_locale)
         )
         .into(),
         detail: detail.into(),
@@ -345,10 +345,10 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         pause_state(state, true, progress.paused, progress.pause_requested)
     };
     let mut summary = format!(
-        "{} files · {} skipped · {} errors",
-        p.number_locale.format_u64(progress.files_completed),
+        "{} · {} skipped · {}",
+        counted(progress.files_completed, "file", "files", &p.number_locale),
         p.number_locale.format_u64(progress.skipped),
-        p.number_locale.format_u64(progress.failed)
+        counted(progress.failed, "error", "errors", &p.number_locale)
     );
     if progress.native_entries_moved != 0 {
         summary = format!(
@@ -361,28 +361,57 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
     } else {
         "size + first/middle/last 64 KiB; gaps not checked"
     };
+    let locale = &p.number_locale;
     let mut detail = format!(
-        "{title}\n{state}\n\n{summary}\n{} folders created\n{} bytes copied\n{} bytes verified ({verification_label})",
-        p.number_locale.format_u64(progress.directories_created),
-        p.number_locale.format_u64(progress.copied_bytes),
-        p.number_locale.format_u64(progress.verified_bytes)
+        "{title}\n{state}\n\n{summary}\n{} created\n{} copied\n{} verified ({verification_label})",
+        counted(progress.directories_created, "folder", "folders", locale),
+        counted(progress.copied_bytes, "byte", "bytes", locale),
+        counted(progress.verified_bytes, "byte", "bytes", locale)
     );
     if moving {
-        detail.push_str(&format!("\n{} additional source/target bytes checked\n{} source files removed\n{} temporary source locations need attention",
-            p.number_locale.format_u64(progress.validation_bytes),
-            p.number_locale.format_u64(progress.source_files_removed),
-            p.number_locale.format_u64(progress.source_residual_count)));
+        let residuals = progress.source_residual_count;
+        detail.push_str(&format!(
+            "\n{} checked\n{} removed\n{} {} attention",
+            counted(
+                progress.validation_bytes,
+                "additional source/target byte",
+                "additional source/target bytes",
+                locale
+            ),
+            counted(
+                progress.source_files_removed,
+                "source file",
+                "source files",
+                locale
+            ),
+            counted(
+                residuals,
+                "temporary source location",
+                "temporary source locations",
+                locale
+            ),
+            if residuals == 1 { "needs" } else { "need" }
+        ));
         if progress.source_delete_pending > 0 {
             detail.push_str(&format!(
-                "\n{} source removals accepted by Windows; open handles may delay storage release",
-                p.number_locale.format_u64(progress.source_delete_pending)
+                "\n{} accepted by Windows; open handles may delay storage release",
+                counted(
+                    progress.source_delete_pending,
+                    "source removal",
+                    "source removals",
+                    locale
+                )
             ));
         }
         if progress.source_removal_durability_unconfirmed > 0 {
             detail.push_str(&format!(
-                "\n{} source namespace changes without a confirmed directory durability flush",
-                p.number_locale
-                    .format_u64(progress.source_removal_durability_unconfirmed)
+                "\n{} without a confirmed directory durability flush",
+                counted(
+                    progress.source_removal_durability_unconfirmed,
+                    "source namespace change",
+                    "source namespace changes",
+                    locale
+                )
             ));
         }
         append_move_residuals(&mut detail, progress);
@@ -591,13 +620,25 @@ fn append_move_residuals(detail: &mut String, progress: &CopyProgress) {
     }
 }
 
+/// A count with the noun that agrees with it: "1 file", "0 files", "2 errors".
+/// `count` and its noun, singular for exactly one.
+pub(crate) fn counted(count: u64, singular: &str, plural: &str, locale: &NumberLocale) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{} {noun}", locale.format_u64(count))
+}
+
 fn append_recovery(detail: &mut String, progress: &CopyProgress, locale: &NumberLocale) {
     if progress.recovery_count == 0 {
         return;
     }
     detail.push_str(&format!(
-        "\n\n{} recovery files retained",
-        locale.format_u64(progress.recovery_count)
+        "\n\n{} retained",
+        counted(
+            progress.recovery_count,
+            "recovery file",
+            "recovery files",
+            locale
+        )
     ));
     for path in &progress.recovery_paths {
         detail.push_str(&format!("\n{}", path.display()));

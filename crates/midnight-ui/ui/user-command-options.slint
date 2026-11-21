@@ -121,7 +121,7 @@ export component UserCommandOptions inherits VerticalLayout {
             else { UserCommandSettingsView.move(UserCommandSettingsView.token, index == 2 ? -1 : 1); }
         }
     }
-    if !UserCommandSettingsView.ready : Text { text: "Loading saved options…"; color: Theme.secondary-text; font-size: Theme.small-font; }
+    if !UserCommandSettingsView.ready : Text { text: "Loading saved options…"; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
     list-focus := FocusScope {
         height: root.command-row-height * clamp(UserCommandSettingsView.rows.length, 1, 6) + 2px;
         key-pressed(event) => {
@@ -197,7 +197,8 @@ export component UserCommandOptions inherits VerticalLayout {
        }
       }
     }
-    if UserCommandSettingsView.rows.length == 0 : Text { text: "No Custom Commands configured."; color: Theme.secondary-text; font-size: Theme.small-font; }
+    // Wraps, as the notes below do: at 320 px a large font makes it wider than the page.
+    if UserCommandSettingsView.rows.length == 0 : Text { text: "No Custom Commands configured."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
     if UserCommandSettingsView.dirty : Text { text: "Save or discard the draft before reordering commands."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
     if UserCommandSettingsView.has-draft : UserCommandForm { narrow: root.narrow; edited => { root.edited(); } }
     if UserCommandSettingsView.error != "" : ErrorNotice { text: UserCommandSettingsView.error; }

@@ -81,6 +81,10 @@ export component FindWindow inherits ToolWindow {
     // A running compact search hides the query area, so its status moves under the results.
     private property <bool> inline-status: root.height >= 360px
         || (!root.show-details && (Theme.font-size <= 20px || root.running));
+    // Otherwise a short window with large text shows the status in the query area, on
+    // its last line below the scrolled form, where it stays in view.
+    private property <bool> query-status: !root.inline-status && !root.show-details && root.progress != "";
+    private property <length> query-status-height: root.query-status ? max(18px, Theme.small-font + 4px) + 3px : 0px;
     in-out property <int> selected-row: -1;
     in-out property <bool> show-details;
     private property <bool> show-advanced;
@@ -171,10 +175,12 @@ export component FindWindow inherits ToolWindow {
                 // results. The instantiated editor/draft remains unchanged.
                 height: root.height < 360px && root.running && !root.show-details ? 0px
                     : root.height < 360px ? max(max(Theme.control-height, masks.preferred-height) + 8px, root.height * 0.32)
+                        + root.query-status-height
                     : root.show-details ? root.height * 0.45 : min(root.height * 0.60, query-form.preferred-height + 2px);
                 clip: true;
               query-scroll := ScrollView {
                 visible: !root.show-details;
+                height: parent.height - root.query-status-height;
                 horizontal-scrollbar-policy: always-off;
                 content-width: self.visible-width;
                 query-form := VerticalLayout {
@@ -373,12 +379,14 @@ export component FindWindow inherits ToolWindow {
                         max-height: Theme.font-size * 4.5;
                         details => { root.show-details = true; }
                     }
-                    // Short windows with large text have no status line under the results.
-                    if !root.inline-status && root.progress != "": FindStatusLine {
-                        text: root.progress; error: root.attention; font-size: Theme.small-font;
-                        details => { root.show-details = true; }
-                    }
                 }
+              }
+              // Short windows with large text have no status line under the results.
+              if root.query-status: FindStatusLine {
+                  x: 0px; y: parent.height - self.height; width: parent.width;
+                  height: root.query-status-height - 3px;
+                  text: root.progress; error: root.attention; font-size: Theme.small-font;
+                  details => { root.show-details = true; }
               }
               if root.show-details: ScrollView {
                 horizontal-scrollbar-policy: always-off;

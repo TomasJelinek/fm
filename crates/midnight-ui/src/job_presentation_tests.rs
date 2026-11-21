@@ -352,7 +352,7 @@ fn move_reports_exceptional_original_locations_and_never_claims_source_space_was
     assert!(row.detail.contains("0 source files removed"));
     assert!(
         row.detail
-            .contains("1 temporary source locations need attention")
+            .contains("1 temporary source location needs attention")
     );
     assert!(row.detail.contains("Original source\nsource/Žluťoučký.txt"));
     assert!(
@@ -380,12 +380,12 @@ fn move_reports_removed_sources_separately_from_retained_and_pending_storage() {
     assert!(row.detail.contains("3 source files removed"));
     assert!(
         row.detail
-            .contains("1 temporary source locations need attention")
+            .contains("1 temporary source location needs attention")
     );
     assert!(row.detail.contains("2 source removals accepted by Windows"));
     assert!(
         row.detail
-            .contains("1 source namespace changes without a confirmed")
+            .contains("1 source namespace change without a confirmed")
     );
 }
 
@@ -458,6 +458,60 @@ fn discovered_totals_keep_recursive_counts_and_exact_bytes_in_copy_details() {
         row.detail
             .contains("Source membership changed after discovery.")
     );
+}
+
+/// Jobs rows and job details count in the singular for one: "1 file · 0 skipped ·
+/// 1 error", not "1 files · 0 skipped · 1 errors".
+#[test]
+fn job_rows_and_details_count_one_in_the_singular() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(31);
+    value.state = CopyOperationState::CompletedWithErrors;
+    value.intent = TransferIntent::Move;
+    value.files_completed = 1;
+    value.failed = 1;
+    value.directories_created = 1;
+    value.copied_bytes = 1;
+    value.verified_bytes = 1;
+    value.validation_bytes = 1;
+    value.source_files_removed = 1;
+    value.source_residual_count = 1;
+    value.source_delete_pending = 1;
+    value.source_removal_durability_unconfirmed = 1;
+    value.recovery_count = 1;
+    let row = copy(&p, &value);
+    assert_eq!(row.summary, "1 file · 0 skipped · 1 error");
+    for line in [
+        "\n1 folder created\n1 byte copied\n1 byte verified (",
+        "\n1 additional source/target byte checked\n1 source file removed\n1 temporary source location needs attention",
+        "\n1 source removal accepted by Windows",
+        "\n1 source namespace change without a confirmed",
+        "\n1 recovery file retained",
+    ] {
+        assert!(row.detail.contains(line), "{line:?} in {:?}", row.detail);
+    }
+    value.files_completed = 2;
+    value.failed = 0;
+    assert_eq!(copy(&p, &value).summary, "2 files · 0 skipped · 0 errors");
+    let deletion = OperationProgress {
+        id: OperationId(32),
+        kind: MutationKind::Delete(DeleteMode::Trash),
+        state: OperationState::Completed,
+        pause_requested: false,
+        paused: false,
+        total: 1,
+        completed: 1,
+        failed: 1,
+        processed_entries: 1,
+        current_path: None,
+        source_directory: "source".into(),
+        renamed_to: None,
+        message: String::new(),
+        errors: vec![],
+        throughput: Arc::default(),
+        discovery: OperationDiscovery::default(),
+    };
+    assert_eq!(mutation(&p, &deletion).summary, "1 / 1 target · 1 error");
 }
 
 #[test]
@@ -632,7 +686,7 @@ fn delete_progress_distinguishes_waiting_scanning_and_control_states() {
     let refreshed = update(&mut p, &cleanup);
     assert_eq!(refreshed.state, "Cancelling");
     assert_eq!(refreshed.current_path, "source/cleanup-資料.txt");
-    assert_eq!(refreshed.summary, "1 / 3 targets · 1 errors");
+    assert_eq!(refreshed.summary, "1 / 3 targets · 1 error");
     assert!(refreshed.detail.contains("2 entries processed"));
     assert!(refreshed.detail.contains("Cleanup access denied"));
     assert!(refreshed.active && refreshed.failed && !refreshed.cancellable);
