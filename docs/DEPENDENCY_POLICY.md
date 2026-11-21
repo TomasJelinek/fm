@@ -52,6 +52,15 @@ when modifying/distributing this tool; MPL's file-level scope does not automatic
 apply its license to all application files. See the
 [Mozilla MPL FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/).
 
+**Swatinem/rust-cache 2.9.3 (CI only):** LGPL-3.0. CI's `scripts-and-lint`, `check`
+and `release` jobs run this GitHub Action unmodified, pinned by commit, to cache the
+compiled third-party dependencies of the root workspace. It is not linked into, built
+into or distributed with Midnight Explorer, its plugins or its public API/SDK, so the
+LGPL's conditions for conveying the library or a combined work do not arise; modifying
+or redistributing the action itself would bring them. It uses the GitHub Actions cache
+of this public repository, which has no fee. GitHub's own actions in the workflow are
+MIT. See [CI time](verification/2026-11-21-ci-time.md).
+
 **Native runtimes:** Windows/system graphics libraries remain governed by their
 vendors; their use does not make the operating system open source. Linux libraries
 retain their distribution's licenses. Rust bindings do not relicense native

@@ -696,9 +696,9 @@ tests need:
   and fixture export) and the filesystem API with the native and network filesystem
   plugins, with CI's test commands (for the viewers those of their `scripts/ci.*`)
   and the package builds that the private test installation needs;
-- the tests of CI's `check` job: the script and native helper tests, the PowerShell
-  deployment tests under PowerShell 7 and 5.1 (Windows), every workspace test target
-  including doc tests (CI's own [gates](docs/developer/TEST_EXECUTION.md#full-validation),
+- the tests of CI's `scripts-and-lint` and `check` jobs: the script and native helper
+  tests, the PowerShell deployment tests under PowerShell 7 and 5.1 (Windows), every
+  workspace test target including doc tests (CI's own [gates](docs/developer/TEST_EXECUTION.md#full-validation),
   retiring nothing and running every gate), and the ignored qualification tests
   against a private test installation of the packages built above; on Linux also the
   Trash and isolated X11 tests;

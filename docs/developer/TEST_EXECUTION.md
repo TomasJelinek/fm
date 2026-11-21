@@ -29,7 +29,8 @@ listed as skipped:
 | `image-viewer`, `thumbnail-image` | `viewer-image`, `viewer-pdf`, `thumbnail-image` (the test commands of their `scripts/ci.*`; the two viewers then build their packages) |
 | not in CI | `thumbnail-video` (needs an FFmpeg 9.0.2 prefix), `html-viewer` (`--no-default-features`, without native CEF) |
 | `archive-filesystem`, `filesystem-libraries` | `archive` (tests, release package, fixture export), `filesystem-api`, `filesystem-native` and `filesystem-network` (tests, release package) |
-| `check` | `test-install`, `script-tests`, `decoder-native-tests`, `powershell-tests-7`, `powershell-tests-5`, `workspace-tests`, `trash-qualification`, `bad-descriptor`, the nine ignored qualification steps, `x11-dnd`, `x11-clipboard` |
+| `scripts-and-lint` | `test-install`, `script-tests`, `decoder-native-tests`, `powershell-tests-7`, `powershell-tests-5` |
+| `check` | `workspace-tests`, `trash-qualification`, `bad-descriptor`, the nine ignored qualification steps, `x11-dnd`, `x11-clipboard` |
 | `release` | `host-build` and `smoke-test` for the selected profile |
 
 CI runs the `public-sdk` and `public-worker-sdk` jobs on ubuntu-24.04 only; its
@@ -60,8 +61,8 @@ validation ends), the web SDK packager compiles in `_build/html-viewer/api-targe
 `thumbnail-video` prepares FFmpeg in the build helpers' `_build/thumbnailers/ffmpeg`,
 temporary files go to `_build/tmp`, and the Windows private test installation
 (below) is created in `%USERPROFILE%`.
-`test-install` mirrors CI's `private-test-installation` action with the packages this
-run built: on Windows a new `%USERPROFILE%\MidnightViewerTests-<guid>` whose DACL
+`test-install` mirrors CI's `private-test-installation` and `plugin-packages` actions
+with the packages this run built: on Windows a new `%USERPROFILE%\MidnightViewerTests-<guid>` whose DACL
 grants only the user, SYSTEM and Administrators; on Linux a mode-700
 `_build/tmp/viewer-tests-*` directory. It sets `HOST_TEST_INSTALL_ROOT` and the other
 installation variables of that action for every later step, and is removed when
@@ -104,19 +105,55 @@ run: the build helpers compile the thumbnailer optimized only for a release buil
 (`build.bat release`, `./build.sh release`), so `--validate` with a debug build never
 compiles it optimized; the steps run one after another on one machine instead of in
 parallel jobs; test executables are kept; the developer's Cargo profile settings are
-kept, while CI's `check` job sets
-`CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_INCREMENTAL=0` and
-`CARGO_BUILD_JOBS=2` to fit its hosted disk (set them yourself to reproduce a CI
-build exactly); the filesystem API tests run once instead of in both filesystem
-jobs; and the two modules above that CI does not build yet are included when their
-inputs exist. Validation does not run inside `build.sh`'s Docker backend: the build
-image has no Xvfb, mounts the source read-only and has not been qualified for the
-tests, so `build.sh --validate` refuses Docker.
+kept, while CI's `check` and `scripts-and-lint` jobs set `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_INCREMENTAL=0` and `CARGO_BUILD_JOBS=4` (set them
+yourself to reproduce a CI build exactly; see [CI jobs and build time](#ci-jobs-and-build-time));
+the filesystem API tests run once instead of in both filesystem jobs; and the two
+modules above that CI does not build yet are included when their inputs exist.
+Validation does not run inside `build.sh`'s Docker backend: the build image has no
+Xvfb, mounts the source read-only and has not been qualified for the tests, so
+`build.sh --validate` refuses Docker.
+
+## CI jobs and build time
+
+CI's `check` and `release` jobs start with the run instead of after the plugin jobs.
+The workspace gates use no plugin package, only the empty protected root
+(`HOST_TEST_INSTALL_ROOT`) that the `private-test-installation` action creates; every
+test that reads an installed package is `#[ignore]`d and runs in a later qualification
+step. So both jobs build and test first, and only then does the `plugin-packages`
+action wait for this run's viewer and filesystem packages
+(`scripts/ci-wait-for-artifacts.py`), download them and install them into that root.
+The wait lists every artifact its pattern downloads select, so none starts with a
+partial set; it fails at once when a plugin job leg of the same runner label has
+finished without success, and after 60 minutes. Formatting, Clippy, the source size
+check and the script, native helper and PowerShell tests run beside them in
+`scripts-and-lint`.
+
+`check` and `scripts-and-lint` build with four Cargo jobs (the hosted runners have four
+CPUs and 16 GB of memory) and the default linkers. `check`, `scripts-and-lint` and
+`release` restore the compiled third-party dependencies of the
+root workspace from the Actions cache
+([Swatinem/rust-cache](https://github.com/Swatinem/rust-cache), pinned by commit);
+workspace crates are always compiled. Pushes to `main` save a new entry when its key
+changes: the job, the installed rustc versions, any Cargo manifest, lockfile or Cargo
+configuration, and the `CARGO_*` and `RUST*` environment. Other runs only restore; when
+no key matches they take the newest entry of the same job, toolchains and environment.
+The plugin jobs cache their downloads only. Measurements and the decisions behind
+these settings: [CI time](../verification/2026-11-21-ci-time.md).
+
+Locally, `.cargo/config.toml` keeps `jobs = 4`: several agents build on the shared
+development machine at once, and one generated UI crate alone needs up to 7 GB. On a
+machine of your own, set `CARGO_BUILD_JOBS` (or pass `-j`) to use more of it. On
+Windows, `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld.exe` (the pinned
+toolchain's LLVM linker) made the test executables of a CI-equivalent build about a
+fifth faster to build on the development machine, and every test passed; on the hosted
+runners it made no measurable difference, so CI does not use it. Set it only for test
+builds: release builds keep the MSVC linker.
 
 ## Acceptance suite
 
 The opt-in end-to-end acceptance suite is not part of validation, and CI does not run
-it: CI's check job lints it on Windows and Linux in its one workspace Clippy step,
+it: CI's `scripts-and-lint` job lints it on Windows and Linux in its one workspace Clippy step,
 which enables the suite's feature (`cargo clippy --workspace --all-targets --locked
 --features midnight-acceptance/acceptance -- -D warnings`), so its platform-specific
 code cannot stop compiling unnoticed and no dependency is checked twice.
@@ -180,11 +217,11 @@ the binary's entry point and therefore also refuse a module file declared there.
 Some `midnight-engine` integration test files include library sources with
 `#[path]` to reach their `#[cfg(test)]` internals (checksums, retirement, file
 targets). `cfg(test)` holds there too, so each include also compiles and runs the
-unit tests that those sources declare: 162 of the library's unit tests run again in
-the `integration` executable. No `cfg` tells the library's test build from such an
-include, and declaring the test modules inside a macro would hide their files from
-`cargo fmt`, which follows no `mod` inside a macro call; a new `#[path]` include of a
-source with unit tests adds them again.
+unit tests that those sources declare: on Windows 193 of the executable's 485 tests are
+library unit tests run again (they take 1.3–2.5 s alone; [CI time](../verification/2026-11-21-ci-time.md)).
+No `cfg` tells the library's test build from such an include, and declaring the test
+modules inside a macro would hide their files from `cargo fmt`, which follows no `mod`
+inside a macro call; a new `#[path]` include of a source with unit tests adds them again.
 
 On Windows with Microsoft Defender real-time protection, the first start of a newly
 linked test executable costs about 1.3 s plus 0.17 s per MB (0.8 to 2.2 s below 5 MB,

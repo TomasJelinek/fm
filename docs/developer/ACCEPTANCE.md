@@ -220,8 +220,9 @@ enables that feature, and every dependency of the crate is optional behind it, s
 - `scripts/ci-workspace-tests.py` (CI and `--validate`) only selects targets whose
   `required-features` are active, and lists `midnight-acceptance` among the excluded
   libraries of its `--lib`/`--doc` gates.
-- `cargo clippy --workspace --all-targets` skips the target as well. CI's check job
-  therefore enables the feature in its one workspace Clippy step, on both platforms:
+- `cargo clippy --workspace --all-targets` skips the target as well. CI's
+  `scripts-and-lint` job therefore enables the feature in its one workspace Clippy
+  step, on both platforms:
   `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings`.
   Every other package then resolves exactly as without the feature (checked with
   `cargo tree --workspace -e normal,build,dev` for both targets), so the step checks

@@ -728,6 +728,8 @@ versions, transitive dependencies and graphics drivers vary by installation.
 | Darwin/libSystem | Independent native macOS filesystem package prerequisite; not bundled | Apple platform terms; the libc Rust binding's MIT license does not relicense macOS |
 | Rust standard library/runtime | Application platforms and independent macOS filesystem package | MIT/Apache-2.0 plus component-specific notices; releases include `licenses/rust/COPYRIGHT-library.html` |
 | Unicode case-fold data in viewer packages | Unicode-insensitive search | Unicode-3.0; each package retains `UNICODE-LICENSE.txt` |
+| GitHub Actions `actions/checkout`, `actions/cache`, `actions/upload-artifact` and `actions/download-artifact` v4 | CI workflow steps; not shipped | MIT ([checkout](https://github.com/actions/checkout/blob/main/LICENSE)) |
+| Swatinem/rust-cache 2.9.3 (commit `d1527c8f`) | CI cache of the root workspace's compiled dependencies; run unmodified, not shipped | LGPL-3.0 ([license](https://github.com/Swatinem/rust-cache/blob/v2.9.3/LICENSE)); see the [dependency policy](DEPENDENCY_POLICY.md#current-decisions) |
 
 Read-only import inspection of the tested release found Linux `me` directly imports
 `libfontconfig.so.1`, `libgcc_s.so.1`, `libm.so.6` and `libc.so.6`; the three viewer
