@@ -89,12 +89,12 @@ fn path_components_and_the_edit_area_stay_inside_the_bar_at_every_width() {
     // every component adds its own rounding.
     let (path, rows) = parts(&[
         "D:\\",
-        "experiments\\",
-        "dev\\",
-        "FM\\",
-        ".claude\\",
-        "worktrees\\",
-        "main-branch-code-review-97667c\\",
+        "development\\",
+        "src\\",
+        "ME\\",
+        ".copies\\",
+        "checkouts\\",
+        "a-long-working-copy-name-12345\\",
         "_build\\",
         "acceptance-win\\",
         "20261121-045727\\",

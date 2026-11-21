@@ -44,7 +44,7 @@ in [Make File List services](../developer/MAKE_FILE_LIST.md).
 
 Three warning-detail tests initially failed because the shared
 `_build/tmp/MidnightExplorer-size-warnings` directory belonged to
-`NV-8NGHX14\CodexSandboxOffline`, while the test process ran under another
+a sandbox account of the machine, while the test process ran under another
 execution account. Its private owner/system DACL correctly prevented reuse;
 counts survived and reports explicitly stated that details could not be stored.
 Rerunning all four warning tests with a fresh run-owned `TEMP`/`TMP` directory

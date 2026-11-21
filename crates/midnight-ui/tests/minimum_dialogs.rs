@@ -351,7 +351,7 @@ fn about_cuts_nothing_off_at_the_minimum_size() {
 }
 
 /// The current folder of the gate's run.
-const GATE_FOLDER: &str = "D:\\experiments\\dev\\FM\\.claude\\worktrees\\main-branch-code-review-97667c\\_build\\acceptance-win\\20261121-045727\\fixture\\review";
+const GATE_FOLDER: &str = "D:\\development\\src\\ME\\.copies\\checkouts\\a-long-working-copy-name-12345\\_build\\acceptance-win\\20261121-045727\\fixture\\review";
 
 #[test]
 fn hot_paths_cuts_nothing_off_at_the_minimum_size() {

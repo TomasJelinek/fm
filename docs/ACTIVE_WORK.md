@@ -1329,7 +1329,7 @@ merge is at the end of the
 ### Deep code review — 18 November 2026
 
 A deep code review of the whole repository, started from main `3a27eeb2` on
-17 November, is integrated on `claude/main-branch-code-review-97667c` at
+17 November, is integrated on the review branch at
 **`d0f44c55`** (585 non-merge commits). Reviewers covered the engine, core,
 platforms, hosts, public APIs, plugins, UI, viewers, build scripts and CI; the
 Orchestrator, acting as Architect, decided the open design questions. What the

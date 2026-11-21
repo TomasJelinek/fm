@@ -51,7 +51,7 @@ those checks finish. This report does not claim broad-goal completion.
 The first full Windows engine suite passed 843 tests and failed 13 diagnostic
 storage assertions (7 opt-in tests ignored). All failures reported access denied
 while writing private warning reports. `_build/tmp/MidnightExplorer-size-warnings`
-was owned by `CodexSandboxOffline`, whereas the authorized runner used `<user>`.
+was owned by a sandbox account, whereas the authorized runner used `<user>`.
 The spool's existing restrictive ACL correctly refused another identity.
 
 The unchanged engine binary reproduced one failure with the old TEMP and passed

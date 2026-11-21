@@ -2,8 +2,8 @@
 
 ## Scope
 
-Follow-up to [test execution time](2026-11-18-test-execution-time.md) on branch
-`claude/test-speed-pass`, based on main `2e6ee4ff`: cut the test execution time that
+Follow-up to [test execution time](2026-11-18-test-execution-time.md) on a branch
+based on main `2e6ee4ff`: cut the test execution time that
 the timing of `2e6ee4ff` showed to be fixable on Windows and Linux, without losing
 coverage or isolation. Measured on 19 November. Build and link time are not included,
 except the compile cost of the one profile change.

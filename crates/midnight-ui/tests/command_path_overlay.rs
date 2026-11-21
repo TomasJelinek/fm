@@ -19,7 +19,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 type Rect = (f32, f32, f32, f32);
 
 /// Longer than the prompt shows in every combination below, as the gate's was.
-const PATH: &str = "D:\\experiments\\dev\\FM\\.claude\\worktrees\\main-branch-code-review-97667c\\_build\\acceptance-win\\20261121-045727\\work\\ui_polish_dialogs\\fixture\\a rather long folder name\\left 文档";
+const PATH: &str = "D:\\development\\src\\ME\\.copies\\checkouts\\a-long-working-copy-name-12345\\_build\\acceptance-win\\20261121-045727\\work\\ui_polish_dialogs\\fixture\\a rather long folder name\\left 文档";
 
 fn bounds(item: &ItemRc) -> Rect {
     let rect = item.geometry();
