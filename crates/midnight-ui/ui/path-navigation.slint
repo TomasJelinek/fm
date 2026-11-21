@@ -12,16 +12,18 @@ component PathOmission inherits Rectangle {
     in property <length> text-size;
     in property <bool> highlighted;
     callback activated();
-    background: root.highlighted ? Theme.hover : transparent;
+    // Lit by a hovered later component (whose prefix it is part of) or by its own hover.
+    private property <bool> lit: root.highlighted || area.has-hover;
+    background: root.lit ? Theme.hover : transparent;
     border-radius: 2px;
     accessible-role: button; accessible-label: "Edit full folder path";
     accessible-action-default => { root.activated(); }
     OmissionText {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
-        color: root.highlighted ? Theme.accent : Theme.text; font-size: root.text-size;
+        color: root.lit ? Theme.accent : Theme.text; font-size: root.text-size;
         horizontal-alignment: center; vertical-alignment: center;
     }
-    TouchArea { clicked => { root.activated(); } }
+    area := TouchArea { clicked => { root.activated(); } }
     Tip { text: root.path; }
 }
 
@@ -206,9 +208,11 @@ export component PathNavigation inherits Rectangle {
             Rectangle {
                 min-width: 32px; horizontal-stretch: 1;
                 height: trail.height;
+                background: edit-area.has-hover ? Theme.hover : transparent;
+                border-radius: 2px;
                 accessible-role: button; accessible-label: "Edit folder path";
                 accessible-action-default => { root.focus-editor(); }
-                TouchArea { clicked => { root.focus-editor(); } }
+                edit-area := TouchArea { mouse-cursor: MouseCursor.text; clicked => { root.focus-editor(); } }
                 Tip { text: ShortcutHints.hint("Enter a folder path", "panel.path") + ". Enter opens it; Escape cancels."; }
             }
         }

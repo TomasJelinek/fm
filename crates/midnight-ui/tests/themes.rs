@@ -20,18 +20,25 @@ fn luminance(color: Color) -> f64 {
     0.2126 * linear(color.red()) + 0.7152 * linear(color.green()) + 0.0722 * linear(color.blue())
 }
 
-fn contrast(foreground: Color, background: Color) -> f64 {
+/// WCAG contrast ratio of two colours (shared with `action_button_states`).
+pub(crate) fn contrast(foreground: Color, background: Color) -> f64 {
     let first = luminance(foreground);
     let second = luminance(background);
     (first.max(second) + 0.05) / (first.min(second) + 0.05)
 }
 
-fn readable(theme: &Theme<'_>, name: &str) {
-    let minimum = match theme.get_scheme() {
+/// The text contrast a palette keeps: WCAG AA, 7:1 for the contrast palettes and 12:1
+/// for the high-contrast ones (shared with `action_button_states`).
+pub(crate) fn text_minimum(scheme: i32) -> f64 {
+    match scheme {
         17..=20 => 7.0,
         21..=22 => 12.0,
         _ => 4.5,
-    };
+    }
+}
+
+fn readable(theme: &Theme<'_>, name: &str) {
+    let minimum = text_minimum(theme.get_scheme());
     let row_minimum = if matches!(theme.get_scheme(), 23..=25) {
         7.0
     } else {

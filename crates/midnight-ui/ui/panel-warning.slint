@@ -17,6 +17,7 @@ export component PanelWarning inherits Rectangle {
     accessible-description: root.detail;
     accessible-action-default => { root.inspect(); }
     forward-focus: focus;
+    background: pointer.has-hover ? Theme.hover : transparent;
     border-width: focus.has-focus ? 1px : 0px;
     border-color: Theme.active-frame;
     border-radius: 3px;

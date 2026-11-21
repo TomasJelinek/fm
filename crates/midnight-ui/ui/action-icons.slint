@@ -135,6 +135,15 @@ export global ActionGlyph {
     }
 }
 
+// Hovered and pressed fills of primary and destructive actions move toward the caption's
+// colour, as a state layer does: every palette keeps its hue, and the caption keeps the
+// palette's text contrast (tests/action_button_states.rs checks every theme).
+global ActionFill {
+    pure public function layer(fill: color, caption: color, hovered: bool, pressed: bool) -> color {
+        return fill.mix(caption, pressed ? 0.88 : hovered ? 0.94 : 1);
+    }
+}
+
 export component NativeActionImage inherits Image {
     in property <image> native-icon;
     in property <image> fallback-icon;
@@ -166,6 +175,9 @@ component ActionButtonContent inherits HorizontalLayout {
     in property <length> vertical-padding;
     in property <bool> removal-icon;
     in property <bool> destructive;
+    // A hovered or pressed primary action: its glyph takes the caption's colour, which keeps
+    // the text contrast on that state's fill where the dimmed foreground would not.
+    in property <bool> emphasized;
     in property <bool> enabled;
     // Close dismisses; it is never the red window-close cross, so it ignores native artwork.
     private property <bool> closing: root.text == "Close";
@@ -186,6 +198,7 @@ component ActionButtonContent inherits HorizontalLayout {
         width: Theme.icon-size; height: Theme.icon-size;
         // Removal and destructive actions keep the error color of their caption.
         colorize: root.enabled && (root.removal-icon || root.destructive) ? Theme.error-text
+            : root.enabled && root.emphasized ? Theme.text
             : ActionGlyph.tint(root.enabled);
         accessible-role: none;
     }
@@ -215,6 +228,7 @@ export component ActionButton inherits Rectangle {
     in property <bool> focusable: true;
     out property <bool> has-focus: input.has-focus;
     out property <bool> pressed: root.enabled && pointer.pressed;
+    private property <bool> hovered: root.enabled && pointer.has-hover;
     callback clicked();
     min-width: max(32px, content.min-width);
     min-height: max(root.minimum-control-height, root.control-height, content.min-height);
@@ -231,10 +245,10 @@ export component ActionButton inherits Rectangle {
         root.clicked();
     }
     background: !root.enabled ? Theme.secondary-surface
-        : root.destructive ? Theme.error-background
+        : root.destructive ? ActionFill.layer(Theme.error-background, Theme.error-text, root.hovered, root.pressed)
+        : root.primary ? ActionFill.layer(Theme.active-header, Theme.text, root.hovered, root.pressed)
         : root.pressed ? Theme.cursor-background
-        : root.primary ? Theme.active-header
-        : pointer.has-hover ? Theme.hover : Theme.secondary-surface;
+        : root.hovered ? Theme.hover : Theme.secondary-surface;
     border-radius: 4px;
     border-width: root.has-focus && root.enabled ? 2px : 1px;
     border-color: !root.enabled ? Theme.frame
@@ -244,6 +258,7 @@ export component ActionButton inherits Rectangle {
         text: root.text; native-icon: root.native-icon; fallback-icon: root.fallback-icon;
         compact: root.compact; font-size: root.font-size; vertical-padding: root.vertical-padding;
         removal-icon: root.removal-icon; destructive: root.destructive; enabled: root.enabled;
+        emphasized: root.primary && (root.hovered || root.pressed);
     }
     // The focus scope of Fluent's Button (button.slint, i-focus-scope) without the
     // Button around it, which was instantiated hidden at every use: zero width, so

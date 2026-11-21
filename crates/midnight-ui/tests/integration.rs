@@ -14,7 +14,9 @@
 // `operation_form`, `job_windows`, `operations_native`) keep their own copy. Neither
 // file holds process-wide state, so sharing them shares only their types. Nested, so
 // that `every_test_file_is_a_module` does not take them for test files.
+mod action_button_states;
 mod delete_job_resolve;
+mod main_window_polish;
 mod support {
     pub mod link_option;
     pub mod modeless;

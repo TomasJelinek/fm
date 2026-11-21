@@ -192,6 +192,42 @@ All reported to the coordinator with their shots (run folders below `_build/acce
 U-D01–U-D12 were sent in the first batch and assigned; U-D13–U-D21 are queued for the
 next batch.
 
+Fixed in source on 21 November, with `midnight-ui` tests that fail on the earlier
+source; the gate itself has not been run again:
+
+- U-D05 for primary and destructive action buttons (hover and pressed fills that keep
+  each theme's text contrast, `action_button_states`). Options topics, which are not
+  action buttons, are still open.
+- U-D06 for the column sort headers, Edit folder path, the path's omission marker, the
+  free-space button and the folder error icon (`main_window_polish`). The drive button
+  did not reproduce in the harness.
+- U-D09: the function bar shows whole keys only, and the status strip whole fields
+  only. The zero-width clock was the rows' time column, which is now hidden with its
+  column instead of drawn 0 px wide.
+- U-D10: a shortened name in a row has a tooltip with the full name, and the "Retry
+  folders in …" button shows its tooltip.
+- U-D12: the panel splitter has a tooltip.
+- U-D01: the framed Help window has no × of its own.
+- U-D02: the dialogs' header × (and the F10 menu's Close menu) has a tooltip that
+  names Escape.
+- U-D03: Tab and Shift+Tab reach the header × in Copy, Move, Trash, Delete, Rename,
+  Create dir and New file.
+- U-D04: the key-routing wrapper FocusScopes of 15 dialogs and windows are no longer Tab
+  stops; those of the colour picker, shortcut replacement, Select by mask and the main
+  menu still are.
+- U-D07: the Rename, Create, New file, Copy and Move name fields and the conflict
+  window's new-name field keep 4.5:1 selected-text contrast in all 26 themes. The
+  Compare directories tolerance and Make File List fields still use the default
+  selection colours.
+- U-D08, the notice part: at 320×200 shown details scroll with the message, the buttons
+  stay in the dialog and Escape closes it. About's Close stays in its body there
+  (not reproducible, test added); the Options part is open.
+- U-D11 did not reproduce: the Hot Paths current folder has used middle elision with a
+  tooltip since the 20 November integration (test added).
+
+The U-D01–U-D04, U-D07, U-D08 and U-D11 results come from `dialog_polish`, whose
+tests failed on the earlier dialogs except About's and Hot Paths'.
+
 ## Runs
 
 Host runs of `_build/coord-final/debug/deps/acceptance-<hash>` (a copy, so staged

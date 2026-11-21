@@ -77,13 +77,18 @@ export component FunctionBar inherits Rectangle {
     private property <length> cell-width: max(root.compact ? 36px : 0px,
         floor((root.width - 4px * root.visible-count) / (root.visible-count + 1) / 1px) * 1px);
     private property <length> key-width: max(Theme.touch ? 44px : 40px, root.cell-width);
-    private property <length> jobs-width: max(root.cell-width,
-        root.width - root.visible-count * (root.cell-width + 4px));
+    // The strip shows whole keys only. Keys that do not fit beside the Jobs key (at least
+    // a cell wide) scroll into view instead of showing a sliver, and the Jobs key takes
+    // the room that a partial key would have had.
+    private property <int> whole-keys: min(root.visible-count,
+        max(0, floor((root.width - root.cell-width) / (root.key-width + 4px))));
+    private property <length> keys-width: max(0px, root.whole-keys * (root.key-width + 4px) - 4px);
+    private property <length> jobs-width: root.width - (root.whole-keys > 0 ? root.keys-width + 4px : 0px);
     height: root.compact ? min(32px, Theme.bottom-height) : Theme.bottom-height;
     min-width: 0px;
     keys := ScrollStrip {
         x: 0px; y: 0px;
-        width: max(0px, root.width - root.jobs-width - 4px); height: root.height;
+        width: root.keys-width; height: root.height;
         mouse-drag-pan-enabled: true;
         content-width: max(self.visible-width,
             root.visible-count * root.key-width + max(0, root.visible-count - 1) * 4px);

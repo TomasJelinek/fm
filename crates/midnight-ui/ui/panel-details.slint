@@ -96,7 +96,7 @@ export component PanelDetails inherits Rectangle {
         x: root.width - self.width; y: 1px; height: root.height - 1px;
         clip: true;
         visible: self.width > 16px;
-        background: Theme.secondary-surface;
+        background: capacity-area.has-hover ? Theme.hover : Theme.secondary-surface;
         accessible-role: button;
         accessible-label: root.free-space + ". Copy to clipboard";
         accessible-action-default => { root.copy-field("capacity:" + root.free-space); }
@@ -107,7 +107,7 @@ export component PanelDetails inherits Rectangle {
             horizontal-alignment: right; vertical-alignment: center; overflow: elide;
             accessible-role: text; accessible-label: root.free-space;
         }
-        TouchArea {
+        capacity-area := TouchArea {
             private property <string> pressed-value;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
@@ -120,15 +120,19 @@ export component PanelDetails inherits Rectangle {
         }
         Tip { text: root.free-space + "\nClick to copy this value."; }
     }
-    ScrollStrip {
+    strip := ScrollStrip {
         x: primary.x + primary.width; y: 1px;
         width: max(0px, root.remaining - capacity.width); height: parent.height - 2px;
         mouse-drag-pan-enabled: true;
         HorizontalLayout {
             spacing: 0px; alignment: start;
             for field[index] in root.model : DetailField {
-                visible: index > 0;
-                width: index == 0 ? 0px : self.natural-width;
+                // Whole fields only: one that an edge of the strip would cut shows once
+                // scrolling brings all of it into view. A field wider than the strip
+                // is shortened to it; its tooltip holds the whole value.
+                visible: index > 0 && self.width > 0px && self.x + strip.content-x >= -0.5px
+                    && self.x + strip.content-x + self.width <= strip.visible-width + 0.5px;
+                width: index == 0 ? 0px : min(self.natural-width, strip.visible-width);
                 height: Theme.status-height - 2px;
                 field: field; revision: root.revision;
                 copy-field(identity) => { root.copy-field(identity); }
