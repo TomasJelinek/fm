@@ -158,6 +158,7 @@ fn viewport(width: u32, height: u32) -> Viewport {
         origin: [0.0; 2],
         background: [12, 16, 20, 255],
         selection_color: [45, 80, 140, 255],
+        selection_text: [0; 4],
     }
 }
 

@@ -93,8 +93,9 @@ impl Presenter {
             return self.begin_tree_drag(pane, row, identity, send);
         }
         let p = &self.panes[pane.index()];
+        // The dragged row, not the focused one: the shown rows must be settled.
         if !p.native_capabilities()
-            || !p.search_allows_activation()
+            || !p.rows_settled()
             || p.selection_pending_bulk
             || p.selection_deferred.any()
             || p.selection_rebase_pending
@@ -369,12 +370,10 @@ impl Presenter {
             || self.feed(pane).is_some()
             || p.loading
             || !p.native_capabilities()
-            || !p.search_allows_activation()
+            // The target row, not the focused one: the shown rows must be settled.
+            || !p.rows_settled()
             || navigation != NavigationId(p.generation)
         {
-            return None;
-        }
-        if p.tree_view().is_some() && !p.tree_input_ready() {
             return None;
         }
         let Some((row, identity)) = row else {

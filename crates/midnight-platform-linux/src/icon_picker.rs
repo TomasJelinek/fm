@@ -1,11 +1,10 @@
 //! Explicitly selected PNG/SVG artwork becomes an independent managed snapshot.
+use crate::icons::svg;
 use midnight_core::Cancellation;
 use std::{
     io,
     path::{Path, PathBuf},
 };
-#[path = "icon_svg.rs"]
-mod svg;
 
 pub(crate) fn snapshot(
     path: &Path,

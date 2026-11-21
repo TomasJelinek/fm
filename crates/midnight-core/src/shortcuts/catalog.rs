@@ -223,6 +223,12 @@ fn build() -> Vec<ShortcutDefinition> {
         &["Ctrl+Digit1"],
     );
     add(
+        "viewer.zoom-to",
+        "Type a zoom percentage",
+        ViewerOnlyContent,
+        &["Ctrl+Y"],
+    );
+    add(
         "viewer.find-next",
         "Next match in viewed file",
         ViewerAny,

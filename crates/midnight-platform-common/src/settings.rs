@@ -37,6 +37,8 @@ use native_path::NativePath;
 #[cfg(test)]
 mod archives_tests;
 #[cfg(test)]
+mod document_layout_tests;
+#[cfg(test)]
 mod file_list_tests;
 #[cfg(test)]
 mod panel_visibility_tests;
@@ -47,7 +49,7 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 35;
+const CURRENT_PREFERENCES_VERSION: u32 = 36;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -485,6 +487,15 @@ fn decode_preferences_impl(
     if stored.version == 35 && stored.show_hidden_files.is_none() && stored.mask_selection.is_none()
     {
         return Err(invalid("missing schema 35 preferences"));
+    }
+    // Version 36 is written only for a PDF layout choice; schema 35 fields stay optional.
+    if stored.version == 36
+        && !stored
+            .viewer
+            .as_ref()
+            .is_some_and(viewers::StoredViewerPreferences::has_document_layout)
+    {
+        return Err(invalid("missing schema 36 preferences"));
     }
     let glyph_fitting = match (stored.version, stored.glyph_fitting.as_deref()) {
         (1..=CURRENT_PREFERENCES_VERSION, None) => midnight_core::GlyphFitting::default(),
@@ -1014,9 +1025,14 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let mask_choices =
         preferences.mask_selection != midnight_core::MaskSelectionPreferences::default();
     let panel_choices = hidden_choices || mask_choices;
-    // Schema 35 keeps every field that versions 33 and 34 require.
-    let comparator_fields =
-        comparator_choices || thumbnailer_choices || glyph_choices || panel_choices;
+    let layout_choices =
+        preferences.viewer.document_layout != midnight_core::DocumentLayout::default();
+    // Schemas 35 and 36 keep every field that versions 33 and 34 require.
+    let comparator_fields = comparator_choices
+        || thumbnailer_choices
+        || glyph_choices
+        || panel_choices
+        || layout_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1151,7 +1167,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if panel_choices {
+        version: if layout_choices {
+            36
+        } else if panel_choices {
             35
         } else if thumbnailer_choices || glyph_choices {
             34

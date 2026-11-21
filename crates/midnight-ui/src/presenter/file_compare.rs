@@ -40,11 +40,12 @@ impl Presenter {
                 sources.extend(tree_sources(pane, counterpart, panes.len() == 2));
                 continue;
             }
+            // The quick search never matters; the focused row must be shown, unless
+            // the pane is only the same-name counterpart.
             if !pane.native_capabilities()
                 || pane.loading
                 || pane.search_view_waiting()
-                || (pane.selected.is_empty() && !counterpart && !pane.search_allows_activation())
-                || pane.search.pending
+                || (pane.selected.is_empty() && !counterpart && !pane.focus_actionable())
                 || pane.selection_rebase_pending
                 || pane.selection_applied != pane.selection_revision
                 || pane.selection_deferred.any()
@@ -106,7 +107,7 @@ fn tree_sources(pane: &Pane, counterpart: bool, across_panes: bool) -> Vec<FileC
         || !pane.tree_input_ready()
         || !pane.tree.preview.is_empty()
         || pane.tree.revision != pane.tree.resolved
-        || (count == 0 && !counterpart && !pane.search_allows_activation())
+        || (count == 0 && !counterpart && !pane.focus_actionable())
         || count > 2
         || (across_panes && count > 1)
         || !Arc::ptr_eq(publication.selection.basis(), view)

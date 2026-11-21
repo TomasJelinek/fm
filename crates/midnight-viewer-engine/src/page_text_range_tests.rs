@@ -41,6 +41,7 @@ fn flagged_page() -> Page {
         foreground: [220; 4],
         background: [20; 4],
         selection: [80; 4],
+        selection_text: [0; 4],
         accent: [180; 4],
     };
     Page::text(page, &appearance)

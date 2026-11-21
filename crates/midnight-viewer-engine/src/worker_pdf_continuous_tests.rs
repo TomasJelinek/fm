@@ -1,7 +1,6 @@
 //! PDF input/publication regressions using the shared Worker fixture.
 use super::*;
-use crate::image_worker::DocumentRaster;
-use midnight_core::{DocumentLayout, ViewerFrame};
+use midnight_core::{DocumentLayout, ViewerFrame, ViewerPixels};
 use midnight_image_viewer_host::Metadata;
 
 fn document_worker(
@@ -71,19 +70,24 @@ fn document_worker(
 }
 
 fn publish_document(worker: &mut Worker, output: &Mailbox) -> ViewerFrame {
-    // Substitute only decoder pixels. The production image publication path records both
-    // Worker/ImageFrames acceptance and the document's published-camera snapshot.
+    // Substitute only provider pixels: every band of the current camera's tiles. The
+    // production publication path records both Worker/ImageFrames acceptance and the
+    // document's published-camera snapshot.
     output.take();
     let image = worker.image.as_mut().unwrap();
-    let (size, _) = image.geometry.as_ref().unwrap().raster_geometry();
-    image.document_frame = Some((
-        image.revision,
-        DocumentRaster {
-            width: size[0],
-            height: size[1],
-            rgba: vec![255; size[0] as usize * size[1] as usize * 4].into(),
-        },
-    ));
+    while let Some(band) = image.scene.next_band().unwrap() {
+        let tiles = band
+            .tiles
+            .into_iter()
+            .map(|(key, charge)| {
+                let pixels = ViewerPixels::new(vec![255; 256 * 256 * 4], charge).unwrap();
+                (key, Arc::new(pixels))
+            })
+            .collect();
+        image.scene.complete_band(tiles).unwrap();
+    }
+    image.pending = None;
+    image.validated = Some(image.revision);
     worker.paint_image(output).unwrap();
     output
         .take()
@@ -424,5 +428,56 @@ fn actual_document_resize_fences_old_coordinates_until_replacement_is_published(
                 .scale,
             2.0,
         );
+    }
+}
+
+/// The layout chosen last is a viewer preference: the next document opens in it, in Fit,
+/// at the top of its first page.
+#[test]
+fn a_document_opens_in_the_layout_chosen_last_at_the_top_of_its_first_page() {
+    for layout in [DocumentLayout::Paged, DocumentLayout::Continuous] {
+        let (mut worker, output) = worker();
+        worker.preferences = Arc::new(midnight_core::ViewerPreferences {
+            document_layout: layout,
+            ..Default::default()
+        });
+        worker.image_size = [160, 120];
+        worker.geometry = ViewerGeometry {
+            width: 160,
+            height: 120,
+            scale: 1.0,
+        };
+        worker.image = Some(crate::image_view::ImageView::new(
+            crate::image_worker::ImageWorker::opened_for_test(
+                vec![
+                    Metadata {
+                        width: 400,
+                        height: 600,
+                    },
+                    Metadata {
+                        width: 1000,
+                        height: 400,
+                    },
+                ],
+                true,
+            ),
+            worker.image_ids.clone(),
+        ));
+        worker.poll_image(&output);
+        let frame = publish_document(&mut worker, &output);
+        let image = frame.image.as_ref().unwrap();
+        assert_eq!(image.document_layout, Some(layout));
+        assert_eq!(image.page, 1);
+        assert!(image.fitted);
+        near(image.zoom, 0.2);
+        match layout {
+            DocumentLayout::Paged => assert_eq!(image.extent, [400.0, 600.0]),
+            DocumentLayout::Continuous => {
+                assert_eq!(image.extent, [1000.0, 1024.0]);
+                assert_eq!(image.origin[1], 0.0, "the top of the first page");
+                near(image.origin[0] + 80.0 / 0.2, 500.0);
+            }
+        }
+        assert!(frame.tiles.is_some());
     }
 }

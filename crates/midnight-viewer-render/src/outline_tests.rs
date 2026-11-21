@@ -209,6 +209,7 @@ fn repainting_a_large_proportional_raster_reuses_every_cached_glyph_image() {
         origin: [0.0, 0.25],
         background: [23, 27, 31, 255],
         selection_color: [41, 72, 98, 255],
+        selection_text: [0; 4],
     };
     let first = renderer.rasterize(&page, view, None).unwrap();
     let misses = renderer.glyphs.misses;
@@ -231,6 +232,7 @@ fn view(x: f32, y: f32) -> Viewport {
         origin: [x, y],
         background: [23, 27, 31, 255],
         selection_color: [41, 72, 98, 255],
+        selection_text: [0; 4],
     }
 }
 

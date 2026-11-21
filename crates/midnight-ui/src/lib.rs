@@ -820,9 +820,14 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         };
         // Copying or inspecting the shown error maps it back (`Presenter::copy_panel_error`).
         let error = shown_text(presenter.panel_error_text(pane_id));
-        let watch = presenter.watch_notice(pane_id);
-        let (watch, watch_details) =
-            watch.map_or(("", String::new()), |notice| (notice.text, notice.details));
+        // What Enter or a command did not do takes the pane's status row while it applies.
+        let (watch, watch_details) = if let Some(note) = presenter.search_note(pane_id) {
+            (note, String::new())
+        } else {
+            presenter
+                .watch_notice(pane_id)
+                .map_or(("", String::new()), |notice| (notice.text, notice.details))
+        };
         if index == 0 {
             window.set_left_watch_status(watch.into());
             window.set_left_watch_details(shown_text(&watch_details));
@@ -1182,7 +1187,7 @@ pub fn install_with_owned(
             4 => MutationKind::CreateFile,
             _ => return,
         };
-        p.start_operation(pane(id), kind, s);
+        p.panel_command(pane(id), s, |p| p.start_operation(pane(id), kind, s));
         let _ = w;
     });
     callback!(on_network_connections, |_w, p, s, disconnect| {
@@ -1515,7 +1520,8 @@ pub fn install_with_owned(
         p.active = id;
         w.set_active_pane(id.index() as i32);
         w.invoke_focus_files();
-        p.open(id, row as usize, s);
+        // A double-click opens the clicked row, matching the quick search or not.
+        p.panel_row_command(id, s, |p| p.open(id, row as usize, s));
     });
     callback!(on_key, |w, p, s, id, key| {
         let id = pane(id);
@@ -1524,15 +1530,9 @@ pub fn install_with_owned(
             w.set_active_pane(p.active.index() as i32);
             w.invoke_focus_files();
         } else if key == 1 {
-            if p.panes[id.index()].search_allows_activation()
-                && let Some(row) = p.panes[id.index()].cursor_index()
-            {
-                p.open(id, row, s);
-            }
+            p.activate_focused(id, s);
         } else if key == 10 {
-            if p.panes[id.index()].search_allows_activation() {
-                p.open_folder(id, s);
-            }
+            p.enter_focused_folder(id, s);
         } else if (2..=7).contains(&key) && !p.panes[id.index()].search.query.is_empty() {
             p.move_search_cursor(id, key);
         } else {
@@ -1594,11 +1594,11 @@ pub fn install_with_owned(
         });
     }
     callback!(on_properties, |w, p, s, id| {
-        p.properties(pane(id), s);
+        p.panel_command(pane(id), s, |p| p.properties(pane(id), s));
         let _ = w;
     });
     callback!(on_folder_sizes, |w, p, s, id| {
-        p.folder_sizes(pane(id), s);
+        p.panel_command(pane(id), s, |p| p.folder_sizes(pane(id), s));
         let _ = w;
     });
     callback!(on_preferences_changed, |w, p, s, theme, density, field| {
@@ -1615,17 +1615,19 @@ pub fn install_with_owned(
         let path = p.panes[pane(id).index()].display_path().to_owned();
         insert_literal(&w, p, &path, CommandInsertion::Directory);
     });
-    callback!(on_insert_name, |w, p, _s| {
+    callback!(on_insert_name, |w, p, s| {
         // Under search results the full path (`focused_full_path`) names the result.
         if p.feed_refuses(p.active, "Inserting the focused name") {
             return;
         }
-        if let Some(name) = p.focused_name(p.active) {
+        let active = p.active;
+        if let Some(name) = p.panel_command(active, s, |p| p.focused_name(active)) {
             insert_literal(&w, p, &name, CommandInsertion::Filename);
         }
     });
-    callback!(on_insert_full_path, |w, p, _s| {
-        if let Some(path) = p.focused_full_path(p.active) {
+    callback!(on_insert_full_path, |w, p, s| {
+        let active = p.active;
+        if let Some(path) = p.panel_command(active, s, |p| p.focused_full_path(active)) {
             insert_literal(&w, p, &path, CommandInsertion::Filename);
         }
     });
@@ -1680,7 +1682,7 @@ pub fn install_with_owned(
         p.change_thumbnail_size(size, s);
     });
     callback!(on_edit_file, |w, p, s, id| {
-        p.edit_file(pane(id), s);
+        p.panel_command(pane(id), s, |p| p.edit_file(pane(id), s));
         let _ = w;
     });
     callback!(

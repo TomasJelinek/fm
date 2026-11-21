@@ -152,6 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             origin: [-32.0, -16.0],
             background,
             selection_color: [50, 110, 190, 150],
+            selection_text: [0; 4],
         };
         let image = renderer.rasterize(&page, view, None)?;
         support::write_bmp(&output.join(format!("{name}.bmp")), &image)?;

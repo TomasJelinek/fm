@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin: [0.0; 2],
         background: [24, 27, 34, 255],
         selection_color: [45, 80, 140, 255],
+        selection_text: [0; 4],
     };
     let started = Instant::now();
     let page = renderer.layout_with_options(

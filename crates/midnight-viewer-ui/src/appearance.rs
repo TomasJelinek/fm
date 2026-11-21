@@ -42,18 +42,49 @@ impl AppAppearance {
         window.set_accent(color(self.appearance.accent));
     }
 
+    /// Submit this window's document palette, and keep it for activation changes.
     pub fn restore_palette(&self, open: &OpenWindow) {
+        *open.app_appearance.borrow_mut() = Some(self.clone());
         let _ = open
             .palette
-            .restore_palette(&open.session, &self.appearance);
+            .restore_palette(&open.session, &self.document(open));
+    }
+
+    /// The application colors, with the theme's dimmer inactive selection pair while
+    /// `open` is inactive. That pair is the window's own Theme, which `present` set.
+    fn document(&self, open: &OpenWindow) -> ViewerAppearance {
+        let mut document = self.appearance.clone();
+        if !open.active.get() {
+            document.selection = rgba(open.window.get_inactive_selection_background());
+            document.selection_text = rgba(open.window.get_inactive_selection_text());
+        }
+        document
     }
 
     pub fn merge_palette(&self, document: &mut ViewerAppearance) {
         document.foreground = self.appearance.foreground;
         document.background = self.appearance.background;
         document.selection = self.appearance.selection;
+        document.selection_text = self.appearance.selection_text;
         document.accent = self.appearance.accent;
     }
+}
+
+/// The window was activated or deactivated: its selection is painted again with the
+/// theme's active or inactive pair. Text, page and accent colors stay.
+pub(super) fn activation_changed(open: &OpenWindow, active: bool) {
+    if open.active.replace(active) == active {
+        return;
+    }
+    let app = open.app_appearance.borrow().clone();
+    if let Some(app) = app {
+        app.restore_palette(open);
+    }
+}
+
+fn rgba(color: slint::Color) -> [u8; 4] {
+    let color = color.to_argb_u8();
+    [color.red, color.green, color.blue, color.alpha]
 }
 
 impl PartialEq for AppAppearance {
@@ -69,7 +100,7 @@ impl PartialEq for AppAppearance {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct Palette([[u8; 4]; 4]);
+struct Palette([[u8; 4]; 5]);
 
 impl From<&ViewerAppearance> for Palette {
     fn from(value: &ViewerAppearance) -> Self {
@@ -77,6 +108,7 @@ impl From<&ViewerAppearance> for Palette {
             value.foreground,
             value.background,
             value.selection,
+            value.selection_text,
             value.accent,
         ])
     }
@@ -205,6 +237,7 @@ mod tests {
             foreground: [48, 48, 48, 255],
             background: [255; 4],
             selection: [204, 204, 204, 255],
+            selection_text: [0; 4],
             accent: [69, 69, 69, 255],
         }
     }
@@ -248,6 +281,44 @@ mod tests {
             gutter: None,
         });
         frame
+    }
+
+    #[test]
+    fn an_inactive_window_paints_its_selection_with_the_theme_inactive_pair() {
+        let (_runtime, manager, open, _service) = image_presentation_tests::open();
+        open.timer.stop();
+        let mut app = image_presentation_tests::opening_appearance();
+        app.selection = [38, 79, 120, 255];
+        app.selection_text = [255; 4];
+        let present = |theme| {
+            manager.apply_appearance(&app, theme, UiDensity::Desktop, 12, 15);
+        };
+        let requested = || open.palette.state().requested.unwrap();
+        present(PreferenceTheme::SlateTeal);
+        let (active, Palette(colors)) = requested();
+        assert_eq!(colors, Palette::from(&app).0);
+        activation_changed(&open, false);
+        let (inactive, Palette(colors)) = requested();
+        assert_ne!(inactive, active, "a new palette request");
+        let pair = || {
+            [
+                rgba(open.window.get_inactive_selection_background()),
+                rgba(open.window.get_inactive_selection_text()),
+            ]
+        };
+        assert_eq!(pair(), [[0x31, 0x40, 0x3c, 255], [255; 4]]);
+        assert_eq!(colors[2..4], pair(), "the theme's inactive pair");
+        let unchanged = [colors[0], colors[1], colors[4]];
+        assert_eq!(unchanged, [app.foreground, app.background, app.accent]);
+        // Another deactivation is no change; a new theme keeps the window inactive.
+        activation_changed(&open, false);
+        assert_eq!(requested().0, inactive);
+        present(PreferenceTheme::Light);
+        assert_eq!(pair()[0], [0xe5, 0xeb, 0xf1, 255]);
+        assert_eq!(requested().1.0[2..4], pair());
+        activation_changed(&open, true);
+        assert_eq!(requested().1.0, Palette::from(&app).0);
+        manager.close_all();
     }
 
     #[test]

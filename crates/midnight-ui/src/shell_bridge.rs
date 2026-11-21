@@ -56,7 +56,9 @@ pub(crate) fn install(
         };
         let anchor = anchor(&window, x, y, control, shift);
         if with_owned_commands(&state, &begin, |p, send| {
-            p.request_entry_menu(pane(id), row, anchor, send);
+            p.panel_row_command(pane(id), send, |p| {
+                p.request_entry_menu(pane(id), row, anchor, send);
+            });
         })
         .is_none()
         {
@@ -91,13 +93,15 @@ pub(crate) fn install(
         let Some(window) = weak.upgrade() else {
             return;
         };
-        if with_owned_commands(&state, &begin, |p, send| match operation {
-            0 => p.copy_files(pane(id), send),
-            1 => p.paste_files(pane(id), send),
-            2 => p.request_copy_dialog(pane(id), send),
-            3 => p.request_move_dialog(pane(id), send),
-            4 => p.cut_files(pane(id), send),
-            _ => (),
+        if with_owned_commands(&state, &begin, |p, send| {
+            p.panel_command(pane(id), send, |p| match operation {
+                0 => p.copy_files(pane(id), send),
+                1 => p.paste_files(pane(id), send),
+                2 => p.request_copy_dialog(pane(id), send),
+                3 => p.request_move_dialog(pane(id), send),
+                4 => p.cut_files(pane(id), send),
+                _ => (),
+            })
         })
         .is_none()
         {

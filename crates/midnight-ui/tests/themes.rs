@@ -376,3 +376,58 @@ fn marked_rows_keep_each_theme_hue_and_distinct_cursor_outline() {
         }
     }
 }
+
+/// Selected text in every palette: the selection text color reads on its fill at the
+/// palette's text minimum (4.5:1; 7:1 for the contrast palettes and 12:1 for high
+/// contrast), active and while the window is inactive. The fill shows against the page
+/// without glaring, except in high contrast, where it stands out strongly; the inactive
+/// fill stays visible but is dimmer than the active one.
+#[test]
+fn text_selection_reads_shows_calmly_and_dims_while_inactive_in_every_palette() {
+    let test = ui::TestUi::new();
+    let theme = test.window.global::<Theme>();
+    let mut findings = Vec::new();
+    for scheme in 0..midnight_core::PreferenceTheme::ALL.len() as i32 {
+        theme.set_scheme(scheme);
+        let page = theme.get_pane_background();
+        let minimum = text_minimum(scheme);
+        let high_contrast = matches!(scheme, 21 | 22);
+        let fill = theme.get_selection_background();
+        let inactive_fill = theme.get_inactive_selection_background();
+        for (state, text, background) in [
+            ("selected", theme.get_selection_text(), fill),
+            (
+                "inactive",
+                theme.get_inactive_selection_text(),
+                inactive_fill,
+            ),
+        ] {
+            let ratio = contrast(text, background);
+            if ratio < minimum {
+                findings.push(format!(
+                    "palette {scheme}: {state} text {text:?} on {background:?} is {ratio:.2}:1, minimum {minimum}"
+                ));
+            }
+        }
+        let shown = contrast(fill, page);
+        let floor = if high_contrast { 7.0 } else { 1.4 };
+        if shown < floor {
+            findings.push(format!(
+                "palette {scheme}: selection {fill:?} on the page {page:?} is {shown:.2}:1, below {floor}"
+            ));
+        }
+        if !high_contrast && shown > 3.0 {
+            findings.push(format!(
+                "palette {scheme}: selection {fill:?} glares on the page {page:?} at {shown:.2}:1"
+            ));
+        }
+        let dimmed = contrast(inactive_fill, page);
+        if dimmed < 1.15 || dimmed >= shown {
+            findings.push(format!(
+                "palette {scheme}: inactive selection {inactive_fill:?} is {dimmed:.2}:1 on the page, the active one {shown:.2}:1"
+            ));
+        }
+    }
+    test.window.hide().unwrap();
+    assert!(findings.is_empty(), "{findings:#?}");
+}

@@ -159,7 +159,8 @@ impl Presenter {
         if !self.native_action_allowed(pane) {
             return;
         }
-        if self.menu_pending() || !self.panes[pane.index()].search_allows_activation() {
+        // The clicked row becomes the focused one: the shown rows must be settled.
+        if self.menu_pending() || !self.panes[pane.index()].rows_settled() {
             return;
         }
         let p = &self.panes[pane.index()];

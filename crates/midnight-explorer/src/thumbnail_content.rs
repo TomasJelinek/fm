@@ -36,7 +36,7 @@ impl Factory {
         edge: u32,
     ) -> Option<service::Target> {
         let (identity, extension, confirmed_ssd, capture) = match &row.content {
-            ThumbnailContent::ExecutableIcon(_) => return None,
+            ThumbnailContent::ExecutableIcon(_) | ThumbnailContent::FileIcon(_) => return None,
             ThumbnailContent::Native(path) => (
                 path.as_os_str().as_encoded_bytes().to_vec(),
                 path.extension()

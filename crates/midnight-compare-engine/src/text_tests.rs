@@ -154,6 +154,7 @@ pub(crate) fn appearance(font_size: f32) -> ViewerAppearance {
         foreground: [255; 4],
         background: [0, 0, 0, 255],
         selection: [40, 60, 90, 255],
+        selection_text: [0; 4],
         accent: [90, 150, 220, 255],
     }
 }

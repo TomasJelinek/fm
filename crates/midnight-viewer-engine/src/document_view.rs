@@ -85,9 +85,60 @@ impl DocumentView {
         })
     }
 
+    /// A newly opened document in `layout` (the viewer preference chosen last), in Fit,
+    /// showing the top of its first page.
+    pub fn opened(
+        pages: &[Metadata],
+        viewport: [u32; 2],
+        layout: DocumentLayout,
+    ) -> Result<Self, String> {
+        let mut view = Self::new(pages, viewport)?;
+        if layout == DocumentLayout::Continuous {
+            view.layout = layout;
+            let size = view.placements[0].size;
+            view.restore_anchor(Anchor {
+                page: 0,
+                local: [f64::from(size[0]) / 2.0, 0.0],
+                viewport: [f64::from(view.geometry.viewport[0]) / 2.0, 0.0],
+            });
+        }
+        Ok(view)
+    }
+
     pub fn painted(&mut self, frame: u64) {
         self.published = Some(self.snapshot(frame));
         self.pending_page = None;
+    }
+
+    /// The scrollable extent: the current page in the Paged layout, every page in the
+    /// Continuous one.
+    pub fn extent(&self) -> [f64; 2] {
+        if self.layout == DocumentLayout::Paged {
+            self.placements[self.page].size.map(f64::from)
+        } else {
+            self.canvas
+        }
+    }
+
+    /// The tile canvas of the current layout.
+    pub fn tile_canvas(&self) -> crate::image_scene::Canvas {
+        if self.layout == DocumentLayout::Paged {
+            let size = self.placements[self.page].size;
+            crate::image_scene::Canvas {
+                key: self.page,
+                pages: Arc::from([PagePlacement {
+                    origin: [0.0; 2],
+                    size,
+                }]),
+                extent: size.map(f64::from),
+            }
+        } else {
+            crate::image_scene::Canvas {
+                key: crate::image_tiles::CANVAS,
+                pages: self.placements.clone(),
+                extent: self.canvas,
+            }
+        }
     }
 
     pub fn set_layout(&mut self, frame: u64, layout: DocumentLayout) -> bool {

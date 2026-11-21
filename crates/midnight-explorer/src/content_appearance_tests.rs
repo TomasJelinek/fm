@@ -44,6 +44,8 @@ fn displayed_app_theme_primes_coalesces_and_rolls_back_through_the_installed_cal
             appearance.selection,
             rgba(actual.get_selection_background())
         );
+        // Content windows paint selected text in the theme's own selection text color.
+        assert_eq!(appearance.selection_text, rgba(actual.get_selection_text()));
         assert_eq!(appearance.accent, rgba(actual.get_accent()));
     }
     window.invoke_refresh_content_appearance();

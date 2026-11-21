@@ -7,12 +7,31 @@ pub(crate) struct ImageFrames {
     first: Option<u64>,
     last: u64,
     coordinate_minimum: u64,
+    /// The first published frame of the surface shown last, and that surface.
+    surface: Option<(u64, midnight_core::ViewerSurfaceId)>,
 }
 
 impl ImageFrames {
     pub fn painted(&mut self, frame: u64) {
         self.first.get_or_insert(frame);
         self.last = frame;
+    }
+
+    /// Record the surface of the published `frame`.
+    pub fn surface(&mut self, frame: u64, surface: midnight_core::ViewerSurfaceId) {
+        if self.surface.is_none_or(|(_, shown)| shown != surface) {
+            self.surface = Some((frame, surface));
+        }
+    }
+
+    /// A document's tile coordinates hold for every frame of one surface: an input made
+    /// against an earlier frame of the surface shown last refers to the latest frame.
+    /// Other frames stay as they are, for the ordinary checks to accept or refuse.
+    pub fn surface_frame(&self, frame: u64) -> u64 {
+        match self.surface {
+            Some((first, _)) if frame >= first && frame <= self.last => self.last,
+            _ => frame,
+        }
     }
 
     pub fn resized(&mut self) {

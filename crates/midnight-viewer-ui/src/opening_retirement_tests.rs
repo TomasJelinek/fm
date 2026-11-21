@@ -49,6 +49,7 @@ fn reject(manager: &ViewerWindows) {
             foreground: [255; 4],
             background: [0, 0, 0, 255],
             selection: [55; 4],
+            selection_text: [0; 4],
             accent: [150; 4],
         },
         slint::LogicalSize::new(320.0, 200.0),

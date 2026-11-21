@@ -5,6 +5,7 @@ fn info() -> ViewerImageInfo {
         surface: ViewerSurfaceId(3),
         origin: [1024.0; 2],
         visible_source: [900.0, 600.0],
+        extent: [6000.0, 4000.0],
         raster_scale: 1.0,
         zoom: 1.0,
         width: 6000,
@@ -185,4 +186,52 @@ fn boundaries_resize_and_file_switch_cancel_stale_motion_without_reusing_sequenc
     camera.tick(Duration::ZERO);
     assert_eq!(camera.origin[1], 20.0);
     assert!(camera.request().unwrap().1 > first.1);
+}
+
+/// A document drag through pages that are not retained: the engine publishes each camera
+/// it finished on the way (older pan sequences). The view shows them while the thumb
+/// stays at the drag's target, then lands on the target. An image keeps refusing them.
+#[test]
+fn a_document_drag_shows_the_cameras_finished_on_the_way_to_the_target() {
+    let mut camera = Camera::default();
+    let mut info = info();
+    info.page = 1;
+    info.page_count = 300;
+    info.document_layout = Some(DocumentLayout::Continuous);
+    camera.receive(&info, 1.0, grid(&info, info.origin));
+    camera.seek(1, 0.25);
+    let first = camera.request().unwrap();
+    camera.seek(1, 0.75);
+    let target = camera.request().unwrap();
+    assert_eq!(camera.position(1), 0.75);
+    // The engine finished the first drag step's camera and published it.
+    let mut passed = info.clone();
+    passed.origin = first.2;
+    passed.pan_sequence = first.1;
+    assert_eq!(camera.incoming(&passed), Some((first.2, true)));
+    camera.receive(&passed, 1.0, grid(&passed, first.2));
+    assert_eq!(camera.origin, first.2, "the view shows the passed camera");
+    assert_eq!(camera.position(1), 0.75, "the thumb stays at the target");
+    assert!(camera.active(), "still waiting for the target");
+    assert_eq!(camera.request(), None, "the target was asked for already");
+    // Then the target itself.
+    let mut answer = info.clone();
+    answer.origin = target.2;
+    answer.pan_sequence = target.1;
+    camera.receive(&answer, 1.0, grid(&answer, target.2));
+    assert_eq!(camera.origin, target.2);
+    assert!(!camera.active());
+
+    // An image drag still ignores replies for superseded steps.
+    let mut image = Camera::default();
+    let info = super::tests::info();
+    image.receive(&info, 1.0, grid(&info, info.origin));
+    image.seek(1, 0.25);
+    let first = image.request().unwrap();
+    image.seek(1, 0.75);
+    image.request().unwrap();
+    let mut passed = info.clone();
+    passed.origin = first.2;
+    passed.pan_sequence = first.1;
+    assert_eq!(image.incoming(&passed), None);
 }

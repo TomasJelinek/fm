@@ -118,10 +118,8 @@ impl Presenter {
             );
             return;
         }
+        // The capture needs a ready tree and takes only a shown, selectable focused row.
         let p = &self.panes[pane.index()];
-        if !p.search_allows_activation() {
-            return;
-        }
         let Some(capture) = tree_capture::Capture::new(p) else {
             return;
         };

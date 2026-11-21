@@ -195,12 +195,10 @@ pub(crate) fn install(
             {
                 return;
             }
-            p.request_user_command(
-                pane(window.get_active_pane()),
-                id.as_str(),
-                false,
-                send.as_ref(),
-            );
+            let active = pane(window.get_active_pane());
+            p.panel_command(active, send.as_ref(), |p| {
+                p.request_user_command(active, id.as_str(), false, send.as_ref());
+            });
         }
         crate::refresh(&window, &state.borrow());
     });

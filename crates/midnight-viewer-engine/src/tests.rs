@@ -3,6 +3,8 @@ use super::*;
 mod images;
 #[path = "pdf_navigation_tests.rs"]
 mod pdf_navigation;
+#[path = "pdf_scroll_probe_tests.rs"]
+mod pdf_scroll_probe;
 #[cfg(all(test, windows))]
 #[path = "source_native_acceptance_tests.rs"]
 mod source_native_acceptance;
@@ -21,6 +23,7 @@ fn appearance() -> ViewerAppearance {
         foreground: [230, 230, 230, 255],
         background: [25, 25, 25, 255],
         selection: [60, 80, 130, 255],
+        selection_text: [0; 4],
         accent: [100, 180, 240, 255],
     }
 }

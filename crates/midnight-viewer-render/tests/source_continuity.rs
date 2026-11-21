@@ -33,6 +33,7 @@ fn source_glyph_pixels_survive_rebasing_through_a_fractional_line_prefix() {
                             origin: [0.0, y],
                             background: [255; 4],
                             selection_color: [40, 80, 120, 255],
+                            selection_text: [0; 4],
                         },
                         None,
                     )

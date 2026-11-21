@@ -108,6 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 origin: [-24.0; 2],
                 background,
                 selection_color: [50, 110, 190, 150],
+                selection_text: [0; 4],
             },
             None,
         )?;

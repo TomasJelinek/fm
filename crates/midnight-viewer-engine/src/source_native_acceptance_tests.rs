@@ -1565,6 +1565,7 @@ mod oracle_tests {
                     origin: [0.0, 0.0],
                     background: theme.background,
                     selection_color: theme.selection,
+                    selection_text: theme.selection_text,
                 },
                 None,
             )

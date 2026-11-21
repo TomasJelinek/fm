@@ -187,6 +187,7 @@ impl OwnedCommandScope for FixtureScope {
             // needing a last-reference anchor. A deep copy would not protect
             // destruction of the original allocation by a boolean sender.
             Command::SetCommandIconView { .. }
+            | Command::SetFileIconView { .. }
             | Command::SetIconEdges(_)
             | Command::ConfirmFileList { .. }
             | Command::CancelFileList { .. }

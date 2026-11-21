@@ -198,6 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     foreground: [225, 229, 236, 255],
                     background: [25, 29, 37, 255],
                     selection: [55, 86, 124, 255],
+                    selection_text: [0; 4],
                     accent: [133, 185, 244, 255],
                 },
                 slint::LogicalSize::new(1000.0, 700.0),

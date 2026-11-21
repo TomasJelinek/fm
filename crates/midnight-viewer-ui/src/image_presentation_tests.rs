@@ -164,6 +164,7 @@ fn info() -> ViewerImageInfo {
         surface: ViewerSurfaceId(20),
         origin: [512.0; 2],
         visible_source: [400.0, 240.0],
+        extent: [4000.0, 3000.0],
         raster_scale: 1.0,
         pan_sequence: 0,
         width: 4000,
@@ -246,6 +247,7 @@ pub(super) fn opening_appearance() -> ViewerAppearance {
         foreground: [255; 4],
         background: [0, 0, 0, 255],
         selection: [55; 4],
+        selection_text: [0; 4],
         accent: [150; 4],
     }
 }
@@ -489,7 +491,7 @@ fn match_fixture_canvas(open: &OpenWindow) -> slint::LogicalSize {
     size
 }
 
-fn match_fixture_viewport(open: &OpenWindow) -> slint::LogicalSize {
+pub(super) fn match_fixture_viewport(open: &OpenWindow) -> slint::LogicalSize {
     let size = match_fixture_canvas(open);
     let preferences = ViewerPreferences {
         image_zoom: ViewerZoomPreference::ActualPixels,
@@ -844,6 +846,7 @@ fn toolbar_fit_restores_panned_rasters_at_native_dpi_through_late_frames_and_res
         let manual = ViewerImageInfo {
             width: source[0],
             height: source[1],
+            extent: source.map(f64::from),
             zoom: 2.0,
             origin: [128.0, 256.0],
             fitted: false,
@@ -1425,6 +1428,7 @@ fn rejected_open_does_not_leave_a_visible_native_window() {
             foreground: [255; 4],
             background: [0, 0, 0, 255],
             selection: [55; 4],
+            selection_text: [0; 4],
             accent: [150; 4],
         },
         slint::LogicalSize::new(420.0, 320.0),

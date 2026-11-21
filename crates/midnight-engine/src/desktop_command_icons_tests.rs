@@ -300,9 +300,12 @@ fn sized_worker_with(services: SizedIcons) -> SizedWorker {
             sender,
             wakeup: Arc::new(|| {}),
         },
-        receiver,
-        commands,
-        drawn,
+        Inputs {
+            icons: receiver,
+            commands,
+            files: watch::channel(file_icons::View::default()).1,
+            edges: drawn,
+        },
     ));
     SizedWorker {
         services,
@@ -345,6 +348,7 @@ async fn icons_are_delivered_at_each_edge_their_kind_is_drawn_at() {
             entry: 20,
             tile: 96,
             location: 26,
+            action: 32,
         })
         .unwrap();
     worker.icons.send(IconKey::file()).await.unwrap();
@@ -390,6 +394,7 @@ async fn changed_edges_reload_delivered_icons_and_equal_edges_do_not() {
         entry: 20,
         tile: 0,
         location: 20,
+        action: 32,
     };
     worker.edges.send(list).unwrap();
     worker.icons.send(IconKey::file()).await.unwrap();
@@ -413,6 +418,7 @@ async fn changed_edges_reload_delivered_icons_and_equal_edges_do_not() {
             entry: 25,
             tile: 120,
             location: 25,
+            action: 32,
         })
         .unwrap();
     let mut reloaded = HashSet::new();
@@ -445,6 +451,7 @@ async fn edges_changed_while_loads_are_queued_drop_the_stale_ones_and_duplicate_
         entry: 20,
         tile: 96,
         location: 26,
+        action: 32,
     };
     let rows = IconEdges {
         tile: 0,
@@ -489,6 +496,7 @@ async fn a_new_request_is_served_before_the_reloads_of_an_edges_change() {
         entry: 20,
         tile: 0,
         location: 20,
+        action: 32,
     };
     worker.edges.send(rows).unwrap();
     let typed = |index: usize| IconKey {
@@ -529,6 +537,7 @@ async fn a_single_size_provider_is_asked_once_for_every_drawn_edge() {
             entry: 20,
             tile: 96,
             location: 26,
+            action: 32,
         })
         .unwrap();
     worker.icons.send(IconKey::folder()).await.unwrap();
@@ -541,6 +550,7 @@ async fn a_single_size_provider_is_asked_once_for_every_drawn_edge() {
             entry: 40,
             tile: 192,
             location: 52,
+            action: 32,
         })
         .unwrap();
     worker.idle(ActionIcon::Exit).await;
@@ -593,9 +603,12 @@ async fn command_icons_progress_before_a_full_queue_of_cached_ordinary_duplicate
             sender,
             wakeup: Arc::new(|| {}),
         },
-        receiver,
-        commands,
-        watch::channel(IconEdges::default()).1,
+        Inputs {
+            icons: receiver,
+            commands,
+            files: watch::channel(file_icons::View::default()).1,
+            edges: watch::channel(IconEdges::default()).1,
+        },
     ));
     tokio::time::timeout(Duration::from_secs(4), async {
         let mut loaded = 0;

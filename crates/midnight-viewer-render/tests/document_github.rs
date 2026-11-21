@@ -73,6 +73,7 @@ fn code_and_quotes_have_real_insets_and_visible_theme_aware_decorations() {
             origin: [0.0; 2],
             background,
             selection_color: [80, 130, 200, 255],
+            selection_text: [0; 4],
         };
         let raster = renderer.rasterize(&page, view, None).unwrap();
         let offset = ((code.y0 as usize + 1) * 400 + 2) * 4;
@@ -192,6 +193,7 @@ fn github_tables_size_to_content_with_cell_padding_and_alternating_rows() {
                 origin: [0.0; 2],
                 background: [255; 4],
                 selection_color: [0; 4],
+                selection_text: [0; 4],
             },
             None,
         )

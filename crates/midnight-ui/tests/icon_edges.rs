@@ -98,6 +98,7 @@ fn rows_and_tiles_each_draw_the_bitmap_of_their_own_size_one_to_one() {
                 entry: 20,
                 tile: 96,
                 location: 20,
+                action: 32,
             },
             tiles: [false, true],
         }

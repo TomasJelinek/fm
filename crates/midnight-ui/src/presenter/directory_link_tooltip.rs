@@ -19,8 +19,8 @@ impl Presenter {
         if self.operations.closing
             || panel.loading
             || !panel.native_capabilities()
-            || !panel.search_allows_activation()
-            || (panel.tree_view().is_some() && !panel.tree_input_ready())
+            // The hovered row, not the focused one: its rows must be settled.
+            || !panel.rows_settled()
         {
             return None;
         }

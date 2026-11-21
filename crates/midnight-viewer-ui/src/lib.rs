@@ -56,6 +56,9 @@ mod web_input_tests;
 mod web_popup_tests;
 #[cfg(test)]
 mod web_wheel_tests;
+mod zoom_entry;
+#[cfg(test)]
+mod zoom_entry_ui_tests;
 
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
@@ -129,6 +132,10 @@ struct OpenWindow {
     preparation: RefCell<Option<pixel_preparation::Preparation>>,
     prepared_pixels: RefCell<Option<pixel_preparation::PreparedPixels>>,
     palette: appearance::PaletteGate,
+    /// The application presentation last applied, and whether this window is active:
+    /// an inactive window paints its selection with the theme's inactive pair.
+    app_appearance: RefCell<Option<appearance::AppAppearance>>,
+    active: Cell<bool>,
     last_geometry: Cell<(u32, u32, u32)>,
     layout: RefCell<LayoutState>,
     frame: Cell<u64>,
@@ -281,8 +288,15 @@ impl ViewerWindows {
         *self.preferences_listener.borrow_mut() = listener;
     }
 
-    /// Apply the displayed app theme to chrome and four document palette colors.
-    /// Document fonts, zoom, layout and preference listeners are unaffected.
+    /// The user's number format, read when a zoom percentage is typed: its decimal
+    /// separator reads and shows the typed value.
+    pub fn set_number_locale(&self, source: Rc<dyn Fn() -> NumberLocale>) {
+        zoom_entry::set_locale(source);
+    }
+
+    /// Apply the displayed app theme to chrome and the document palette colors (with
+    /// the theme's inactive selection pair in inactive windows). Document fonts, zoom,
+    /// layout and preference listeners are unaffected.
     pub fn apply_appearance(
         &self,
         appearance: &ViewerAppearance,
@@ -468,6 +482,8 @@ impl ViewerWindows {
             preparation: RefCell::new(None),
             prepared_pixels: RefCell::new(None),
             palette,
+            app_appearance: RefCell::new(app_appearance),
+            active: Cell::new(true),
             last_geometry: Cell::new((geometry.width, geometry.height, geometry.scale.to_bits())),
             layout: RefCell::new(LayoutState::default()),
             frame: Cell::new(0),
@@ -727,6 +743,7 @@ fn accept_preference(open: &OpenWindow, change: ViewerPreferenceChange) -> bool 
                     ViewerPreferenceChange::CaseSensitive(_)
                         | ViewerPreferenceChange::ImageZoom(_)
                         | ViewerPreferenceChange::DocumentZoom(_)
+                        | ViewerPreferenceChange::DocumentLayout(_)
                 ) {
                     open.text_position.borrow_mut().cancel();
                     raster_rebase::cancel_context(open);
@@ -804,6 +821,9 @@ fn change_document_layout(open: &OpenWindow, layout: DocumentLayout) {
         });
     }
     flush_document_layout(open);
+    // The layout chosen last is saved at once, like every viewer preference: the next
+    // document, also after a restart, opens in it.
+    accept_preference(open, ViewerPreferenceChange::DocumentLayout(layout));
 }
 
 fn flush_document_layout(open: &OpenWindow) {
@@ -944,6 +964,15 @@ fn send_input(open: &OpenWindow, input: ViewerInput) -> bool {
             ..
         }
     );
+    let zoom_anchor = match &input {
+        ViewerInput::Image {
+            input: ViewerImageInput::ViewZoom {
+                viewport_anchor, ..
+            },
+            ..
+        } => Some(*viewport_anchor),
+        _ => None,
+    };
     let accepted = open.enqueue(input);
     if accepted && is_zoom {
         open.image_camera.borrow_mut().cancel();
@@ -960,6 +989,15 @@ fn send_input(open: &OpenWindow, input: ViewerInput) -> bool {
                 image_viewport(open),
                 zoom,
             );
+            // Retained tiles take the new zoom at once, scaled, until the new ones arrive.
+            let scale = open.image_zoom.borrow().scale(
+                open.frame_generation.get(),
+                info,
+                image_viewport(open),
+            );
+            if let Some(anchor) = zoom_anchor {
+                image_motion::preview_zoom(open, scale, anchor);
+            }
         }
         accept_preference(open, preference);
     }
@@ -1132,6 +1170,7 @@ fn present_controlled_outputs(
                         open.image_textures.borrow().grid(),
                     );
                     window.set_image_tiles(model);
+                    image_motion::apply_preview(open, open.image_textures.borrow().preview());
                     window.set_tiled(true);
                     window.set_tile_upload_count(
                         open.image_textures.borrow().uploads.min(i32::MAX as u64) as i32,
@@ -1142,6 +1181,7 @@ fn present_controlled_outputs(
                     window.set_image_tiles(Default::default());
                     open.image_camera.borrow_mut().suspend();
                     open.image_textures.borrow_mut().clear();
+                    image_motion::apply_preview(open, open.image_textures.borrow().preview());
                 }
                 open.image_zoom
                     .borrow_mut()
@@ -1485,8 +1525,14 @@ fn bind(open: &Rc<OpenWindow>) {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        if let slint::winit_030::winit::event::WindowEvent::Focused(active) = event {
+            appearance::activation_changed(&open, *active);
+        }
         if midnight_ui_input::native_escape_pressed(event) {
-            close(&open);
+            // Escape in the typed zoom field keeps the zoom and closes only the field.
+            if !end_zoom_edit(&open) {
+                close(&open);
+            }
             ancillary_scroll.cancel();
             return EventResult::PreventDefault;
         }
@@ -1515,7 +1561,9 @@ fn bind(open: &Rc<OpenWindow>) {
             return false;
         };
         if midnight_ui_input::escape_pressed(&event) {
-            close(&open);
+            if !end_zoom_edit(&open) {
+                close(&open);
+            }
             return true;
         }
         let Some(chord) = native.borrow().logical_chord(&event) else {
@@ -1638,6 +1686,7 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             );
             return true;
         }
+        "viewer.zoom-to" => return begin_zoom_edit(open),
         "viewer.zoom-in" | "viewer.zoom-out" | "viewer.fit" | "viewer.actual-pixels" => {
             if open.window.get_web_mode() {
                 let current = f64::from(open.window.get_zoom_percent()) / 100.0;
@@ -1742,6 +1791,7 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
     );
     let accepted = send_input(open, input);
     if changing && accepted {
+        end_zoom_edit(open);
         open.image_zoom.borrow_mut().clear();
         if new_file {
             open.image_camera.borrow_mut().suspend();
@@ -1913,6 +1963,24 @@ fn bind_image(open: &Rc<OpenWindow>) {
         }
     });
     let weak = Rc::downgrade(open);
+    open.window.on_zoom_edit_begin(move || {
+        if let Some(open) = weak.upgrade() {
+            begin_zoom_edit(&open);
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_zoom_entered(move |text| {
+        if let Some(open) = weak.upgrade() {
+            enter_zoom(&open, &text);
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_zoom_edit_cancelled(move || {
+        if let Some(open) = weak.upgrade() {
+            end_zoom_edit(&open);
+        }
+    });
+    let weak = Rc::downgrade(open);
     open.window.on_image_zoom(move |delta, x, y| {
         if let Some(open) = weak.upgrade()
             && delta.is_finite()
@@ -1949,6 +2017,117 @@ fn bind_image(open: &Rc<OpenWindow>) {
                     },
                 },
             );
+        }
+    });
+}
+
+/// Open the zoom field with the shown percentage selected (a click on the percentage or
+/// `viewer.zoom-to`), for images, PDF documents and HTML.
+fn begin_zoom_edit(open: &OpenWindow) -> bool {
+    let web = open.window.get_web_mode();
+    if open.closed.get()
+        || media_controls::is_active(&open.window)
+        || !(web || (open.window.get_image_mode() && open.image_info.borrow().is_some()))
+    {
+        return false;
+    }
+    let decimals = if web { 0 } else { 1 };
+    let shown = zoom_entry::format(
+        f64::from(open.window.get_zoom_percent()),
+        decimals,
+        &zoom_entry::locale(),
+    );
+    open.window.set_zoom_entry(shown.into());
+    open.window.set_zoom_hint(Default::default());
+    open.window.set_zoom_editing(true);
+    true
+}
+
+/// Close the zoom field without applying anything; false when it was not open.
+fn end_zoom_edit(open: &OpenWindow) -> bool {
+    if !open.window.get_zoom_editing() {
+        return false;
+    }
+    open.window.set_zoom_editing(false);
+    open.window.invoke_focus_content();
+    true
+}
+
+/// Apply a typed percentage. Text without a number keeps the field open with a hint; a
+/// value outside the range is applied at its limit and the hint says so.
+fn enter_zoom(open: &OpenWindow, text: &str) {
+    if !open.window.get_zoom_editing() {
+        return;
+    }
+    let web = open.window.get_web_mode();
+    let range = if web {
+        zoom_entry::WEB_RANGE
+    } else {
+        zoom_entry::RASTER_RANGE
+    };
+    let locale = zoom_entry::locale();
+    let entry = zoom_entry::parse(text, &locale, range);
+    let zoom_entry::Entry::Value { percent, .. } = entry else {
+        show_zoom_hint(open, zoom_entry::hint(entry, range, &locale));
+        return;
+    };
+    let applied = if web {
+        let sent = web_input::send(open, viewer_web::CommandKind::Zoom(percent / 100.0));
+        if sent {
+            open.window.set_zoom_percent(percent as f32);
+        }
+        sent
+    } else {
+        apply_image_zoom(open, percent / 100.0)
+    };
+    end_zoom_edit(open);
+    show_zoom_hint(
+        open,
+        if applied {
+            zoom_entry::hint(entry, range, &locale)
+        } else {
+            "The view is changing; type the zoom again".into()
+        },
+    );
+}
+
+/// The typed zoom as one accepted zoom command anchored at the view's centre, saved like
+/// the other zoom commands.
+fn apply_image_zoom(open: &OpenWindow, scale: f64) -> bool {
+    let Some(info) = open.image_info.borrow().clone() else {
+        return false;
+    };
+    let current =
+        open.image_zoom
+            .borrow()
+            .scale(open.frame_generation.get(), &info, image_viewport(open));
+    if !current.is_finite() || current <= 0.0 {
+        return false;
+    }
+    send_input(
+        open,
+        ViewerInput::Image {
+            frame: open.frame.get(),
+            input: ViewerImageInput::Zoom {
+                factor: scale / current,
+                anchor: None,
+            },
+        },
+    )
+}
+
+/// Show `hint` above the zoom field for four seconds; an empty hint clears it.
+fn show_zoom_hint(open: &OpenWindow, hint: String) {
+    open.window.set_zoom_hint(hint.as_str().into());
+    if hint.is_empty() {
+        return;
+    }
+    let window = open.window.as_weak();
+    slint::Timer::single_shot(Duration::from_secs(4), move || {
+        if let Some(window) = window.upgrade()
+            && window.get_zoom_hint() == hint.as_str()
+        {
+            window.set_zoom_hint(Default::default());
         }
     });
 }

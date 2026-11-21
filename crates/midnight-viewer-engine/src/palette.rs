@@ -7,6 +7,7 @@ pub(crate) struct Colors {
     foreground: [u8; 4],
     background: [u8; 4],
     selection: [u8; 4],
+    selection_text: [u8; 4],
     accent: [u8; 4],
 }
 
@@ -16,16 +17,26 @@ impl From<&ViewerAppearance> for Colors {
             foreground: value.foreground,
             background: value.background,
             selection: value.selection,
+            selection_text: value.selection_text,
             accent: value.accent,
         }
     }
 }
 
 impl Colors {
+    /// Whether text, page or accent colors differ from `appearance`. Pages are laid
+    /// out with those; the selection pair is only painted, so changing it repaints.
+    pub fn recolors_text(self, appearance: &ViewerAppearance) -> bool {
+        self.foreground != appearance.foreground
+            || self.background != appearance.background
+            || self.accent != appearance.accent
+    }
+
     pub fn apply(self, appearance: &mut ViewerAppearance) {
         appearance.foreground = self.foreground;
         appearance.background = self.background;
         appearance.selection = self.selection;
+        appearance.selection_text = self.selection_text;
         appearance.accent = self.accent;
     }
 }

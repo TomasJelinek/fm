@@ -132,8 +132,6 @@ pub const MAX_ICON_EDGE: u16 = 256;
 /// Edges, in device pixels, at which a frontend draws native icons. The backend
 /// delivers every requested icon at the edges of the places its kind is drawn
 /// in, as far as the platform's provider serves them (`IconService::icon_edge`).
-/// Action art is drawn at several small sizes from one bitmap and stays at
-/// `IconKey::DEFAULT_EDGE`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IconEdges {
     /// File and folder rows.
@@ -142,6 +140,9 @@ pub struct IconEdges {
     pub tile: u16,
     /// Location, drive and bookmark choices.
     pub location: u16,
+    /// Toolbar, menu and dialog actions. One bitmap serves every action box, so
+    /// this is the largest of them: smaller boxes reduce it, none enlarges it.
+    pub action: u16,
 }
 
 impl Default for IconEdges {
@@ -151,6 +152,7 @@ impl Default for IconEdges {
             entry: IconKey::DEFAULT_EDGE,
             tile: 0,
             location: IconKey::DEFAULT_EDGE,
+            action: IconKey::DEFAULT_EDGE,
         }
     }
 }
@@ -158,7 +160,7 @@ impl Default for IconEdges {
 impl IconEdges {
     /// The distinct edges at which an icon of `kind` is drawn.
     pub fn of(self, kind: IconKind) -> impl Iterator<Item = u16> {
-        let action = IconKey::DEFAULT_EDGE;
+        let action = self.action;
         let places = match kind {
             IconKind::File | IconKind::Link => [self.entry, self.tile, 0, 0],
             // Folder art also stands in for a location without art of its own.
@@ -183,7 +185,10 @@ impl IconEdges {
     /// False for edges no provider is asked for.
     pub fn is_valid(self) -> bool {
         let drawn = 1..=MAX_ICON_EDGE;
-        drawn.contains(&self.entry) && drawn.contains(&self.location) && self.tile <= MAX_ICON_EDGE
+        drawn.contains(&self.entry)
+            && drawn.contains(&self.location)
+            && drawn.contains(&self.action)
+            && self.tile <= MAX_ICON_EDGE
     }
 }
 
@@ -501,6 +506,20 @@ pub trait IconService: Send + Sync + 'static {
     ) -> Result<Option<IconPixels>, FsError> {
         Ok(None)
     }
+
+    /// The artwork a listed file carries itself, such as a program's own icon, at
+    /// `edge` device pixels, for a file the frontend shows as a tile. This reads the
+    /// file's content: the caller captures and revalidates the file around this
+    /// backend-only lookup, and nothing in it is run. `Ok(None)` when the file has no
+    /// such artwork or the platform keeps to type icons.
+    fn load_file_icon(
+        &self,
+        _path: &Path,
+        _edge: u16,
+        _cancel: &crate::Cancellation,
+    ) -> Result<Option<IconPixels>, FsError> {
+        Ok(None)
+    }
 }
 
 /// Bounded presentation metadata, never a captured native owner.
@@ -508,6 +527,21 @@ pub trait IconService: Send + Sync + 'static {
 pub struct CommandIconTarget {
     pub identity: String,
     pub executable: PathBuf,
+}
+
+/// Visible tiles of files whose artwork is their own (`IconService::load_file_icon`)
+/// asked for at once: the thumbnail request budget (`MAX_THUMBNAIL_VIEW_TARGETS`).
+pub const MAX_FILE_ICON_TARGETS: usize = crate::MAX_THUMBNAIL_VIEW_TARGETS;
+
+/// A visible tile whose file carries its own artwork, such as a program. Bounded
+/// presentation metadata: the backend captures and revalidates the file itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileIconTarget {
+    /// The tile's thumbnail identity, which names the listed file revision.
+    pub identity: String,
+    pub path: PathBuf,
+    /// Device pixels, at most `MAX_ICON_EDGE`.
+    pub edge: u16,
 }
 
 pub trait TerminalService: Send + Sync + 'static {
@@ -722,6 +756,7 @@ mod tests {
             entry: 20,
             tile: 96,
             location: 26,
+            action: 32,
         };
         let of = |kind| edges.of(kind).collect::<Vec<_>>();
         assert_eq!(of(IconKind::File), [20, 96]);
@@ -740,8 +775,32 @@ mod tests {
             entry: 20,
             tile: 0,
             location: 20,
+            action: 20,
         };
         assert_eq!(rows.of(IconKind::Folder).collect::<Vec<_>>(), [20]);
+        assert_eq!(
+            rows.of(IconKind::Action(ActionIcon::Network))
+                .collect::<Vec<_>>(),
+            [20],
+            "action art drawn at the row edge is one bitmap"
+        );
+        // A denser display: action art follows the largest action box.
+        let dense = IconEdges {
+            action: 72,
+            ..edges
+        };
+        assert_eq!(
+            dense
+                .of(IconKind::Action(ActionIcon::Copy))
+                .collect::<Vec<_>>(),
+            [72]
+        );
+        assert_eq!(
+            dense
+                .of(IconKind::Action(ActionIcon::Parent))
+                .collect::<Vec<_>>(),
+            [72, 20, 96]
+        );
         assert_eq!(
             IconEdges::default()
                 .of(IconKind::Action(ActionIcon::Network))
@@ -763,6 +822,11 @@ mod tests {
             IconEdges { tile: 257, ..edges },
             IconEdges {
                 location: 257,
+                ..edges
+            },
+            IconEdges { action: 0, ..edges },
+            IconEdges {
+                action: 257,
                 ..edges
             },
         ] {

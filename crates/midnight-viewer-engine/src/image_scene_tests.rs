@@ -166,23 +166,36 @@ fn magnification_reuses_exact_source_pixels_and_retires_previous_camera_surfaces
         }
     }
 }
+/// Document tiles are rendered at exactly the shown zoom, one raster pixel per physical
+/// pixel, at every view size: a 4K or 8K view is never rendered smaller and drawn
+/// enlarged. Images keep their bounded raster geometry.
 #[test]
-fn documents_and_downsampling_preserve_the_original_bounded_raster_geometry() {
-    for viewport in [[1200, 800], [3840, 2160]] {
-        for basis in [6250, 12500, 116414] {
+fn documents_render_at_exact_physical_resolution_and_images_keep_bounded_geometry() {
+    for viewport in [[1200, 800], [3840, 2160], [7680, 4320]] {
+        for basis in [6250, 12500, 30520, 116414] {
             let mut geometry = ImageGeometry::document(607, 204, viewport);
             geometry.restore_zoom(midnight_core::ViewerZoomPreference::ScaleBasisPoints(basis));
-            let (size, density) = geometry.raster_geometry();
+            let canvas = crate::image_scene::Canvas {
+                key: 0,
+                pages: Arc::from([crate::document_view::PagePlacement {
+                    origin: [0.0; 2],
+                    size: [607, 204],
+                }]),
+                extent: [607.0, 204.0],
+            };
             let mut document = Scene::new(Arc::new(AtomicU64::new(0)));
-            document.update_document(0, &geometry).unwrap();
+            document.update_document(&canvas, &geometry, true).unwrap();
             let plan = document.plan.as_ref().unwrap();
-            assert_eq!(plan.scale, geometry.scale * density);
-            assert_eq!(plan.raster_size, size);
+            assert_eq!(plan.scale, geometry.scale, "{viewport:?} at {basis}");
+            assert_eq!(plan.raster_size, viewport);
+            // The budget holds the shown and the prefetched tiles of the view.
+            assert!(plan.keys().count() <= document.capacity());
+            let (size, density) = geometry.raster_geometry();
             if geometry.scale * density <= 1.0 {
                 let mut image = Scene::new(Arc::new(AtomicU64::new(0)));
                 image.update(0, &geometry).unwrap();
                 let image_plan = image.plan.as_ref().unwrap();
-                assert_eq!(image_plan.scale, plan.scale);
+                assert_eq!(image_plan.scale, geometry.scale * density);
                 assert_eq!(image_plan.raster_size, size);
             }
         }

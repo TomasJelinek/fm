@@ -140,6 +140,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         foreground: [220; 4],
         background: [20; 4],
         selection: [80; 4],
+        selection_text: [0; 4],
         accent: [180; 4],
     };
     let palette_state = Arc::new(crate::palette::State::new(&appearance));
@@ -418,8 +419,8 @@ fn newly_opened_raster_image_still_restores_its_saved_zoom() {
 }
 
 #[test]
-fn document_frames_reach_the_ui_in_the_buffer_the_image_actor_shared() {
-    use crate::image_worker::{DocumentRaster, Event, ImageWorker};
+fn document_band_tiles_reach_the_ui_in_the_buffers_the_image_actor_shared() {
+    use crate::image_worker::{Event, ImageWorker};
     let (mut worker, output) = worker();
     let (actor, events) = std::sync::mpsc::sync_channel(1);
     actor
@@ -439,18 +440,28 @@ fn document_frames_reach_the_ui_in_the_buffer_the_image_actor_shared() {
     let image = worker.image.as_mut().unwrap();
     let revision = image.revision;
     image.pending = Some(revision);
-    let rgba: Arc<[u8]> = vec![255; 8 * 8 * 4].into();
+    let render = |band: crate::image_scene::Band| -> Vec<_> {
+        band.tiles
+            .into_iter()
+            .map(|(key, charge)| {
+                let pixels = ViewerPixels::new(vec![255; 256 * 256 * 4], charge).unwrap();
+                (key, Arc::new(pixels))
+            })
+            .collect()
+    };
+    let first = render(image.scene.next_band().unwrap().expect("missing tiles"));
+    let shared = first[0].1.clone();
     actor
-        .send(Event::DocumentFrame {
+        .send(Event::Tiles {
             revision,
-            raster: DocumentRaster {
-                width: 8,
-                height: 8,
-                rgba: rgba.clone(),
-            },
+            tiles: first,
         })
         .unwrap();
     worker.poll_image(&output);
+    let image = worker.image.as_mut().unwrap();
+    while let Some(band) = image.scene.next_band().unwrap() {
+        image.scene.complete_band(render(band)).unwrap();
+    }
     worker.paint(&output).unwrap();
     let frame = output
         .take()
@@ -460,13 +471,22 @@ fn document_frames_reach_the_ui_in_the_buffer_the_image_actor_shared() {
             _ => None,
         })
         .expect("document frame");
-    assert_eq!([frame.width, frame.height], [8, 8]);
+    let tiles = frame
+        .tiles
+        .as_ref()
+        .expect("documents publish retained tiles");
+    assert!(frame.pixels.is_empty());
     assert!(
-        Arc::ptr_eq(&frame.pixels, &rgba),
-        "the viewer worker does not copy document pixels"
+        tiles.iter().any(|tile| Arc::ptr_eq(&tile.pixels, &shared)),
+        "the viewer worker does not copy document tile pixels"
+    );
+    let image = frame.image.as_ref().unwrap();
+    assert_eq!(image.extent, [400.0, 600.0]);
+    assert_eq!(
+        image.raster_scale, image.zoom,
+        "tiles are at the exact zoom"
     );
 }
-
 fn text_page(text: String) -> Page {
     Page {
         anchors: text

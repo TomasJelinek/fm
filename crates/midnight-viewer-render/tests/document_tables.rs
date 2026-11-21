@@ -130,6 +130,7 @@ fn narrow_unicode_tables_wrap_cells_and_keep_selection_and_borders_in_place() {
                 origin: [0.0; 2],
                 background: [0; 4],
                 selection_color: [0; 4],
+                selection_text: [0; 4],
             },
             None,
         )

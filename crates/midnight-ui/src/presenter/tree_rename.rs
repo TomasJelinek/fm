@@ -14,7 +14,8 @@ impl Presenter {
             return;
         }
         let p = &self.panes[pane.index()];
-        if p.loading || p.parent_cursor || !p.tree_input_ready() || !p.search_allows_activation() {
+        // The focused row is validated below, whatever the quick search.
+        if p.loading || p.parent_cursor || !p.tree_input_ready() {
             return;
         }
         let Some(view) = p.tree_view() else {
@@ -43,7 +44,6 @@ impl Presenter {
             && view.stamp.pane == pane
             && !self.panes[pane.index()].loading
             && self.panes[pane.index()].tree_input_ready()
-            && self.panes[pane.index()].search_allows_activation()
             && self.panes[pane.index()]
                 .tree_view()
                 .is_some_and(|current| Arc::ptr_eq(current, &view))

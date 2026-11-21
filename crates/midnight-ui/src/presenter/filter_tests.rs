@@ -276,7 +276,7 @@ fn cancelled_validation_cannot_change_saved_filters_and_applied_filter_waits_for
         "the other pane's filter is untouched"
     );
     assert!(p.panes[0].search_view_waiting());
-    assert!(!p.panes[0].search_allows_activation());
+    assert!(!p.panes[0].focus_actionable());
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn persistent_empty_projection_cannot_activate_a_previously_visible_cursor() {
         });
         assert_eq!(p.panes[0].display_len(), 0);
         assert!(
-            !p.panes[0].search_allows_activation(),
+            !p.panes[0].focus_actionable(),
             "hidden cursor must not become a fallback operation target"
         );
     }

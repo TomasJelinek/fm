@@ -31,6 +31,7 @@ mod parent_focus;
 mod preferences_load;
 mod reclamation;
 mod search;
+mod search_commands;
 mod selected_folder_sizes;
 mod selected_navigation;
 mod selected_size_status;

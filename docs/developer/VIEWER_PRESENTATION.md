@@ -55,13 +55,19 @@ text without those decorations. Limits and bounded-context/plain-text fallbacks
 are documented in the [plugin README](../../plugins/midnight-viewer-markdown/README.md).
 Remote images, HTML execution, mathematics and diagrams are not implemented.
 
-Selected text keeps its syntax or Markdown hue: a glyph color that would show at
-less than 4.5:1 contrast (WCAG) against the selection color, as painted over the
-viewport background, is lightened or darkened only as far as needed, decided per
-glyph cluster (black or white when no lightness of that hue reaches 4.5:1).
-Unselected text and underline/strikethrough lines keep their colors; the text
+Selected text, decided per glyph cluster, is painted in the theme's selection text
+color (`ViewerAppearance::selection_text`, the Theme's `selection-text`), syntax and
+link colors included, together with its underline and strikethrough lines; they
+return when the selection ends. A color that would show at less than 4.5:1 contrast
+(WCAG) against the selection, as painted over the viewport background, is lightened
+or darkened only as far as needed, keeping its hue (black or white when no lightness
+of that hue reaches 4.5:1). A fully transparent selection text color keeps each
+glyph's own color under the same rule. Unselected text keeps its colors; the text
 comparator's find highlight follows the same rule, and the HTML and image viewers
-are unaffected.
+are unaffected. While a viewer or comparator window is inactive, its selection uses
+the theme's dimmer inactive pair: the view is painted again, without a new layout
+(a palette that changes only the selection pair skips the recoloring layout). The colors
+and their rules are in the [theme record](../THEME_PROVENANCE.md#text-selection).
 
 Source gutters are separate prepared annotations, outside the text selection and
 clipboard content. Their width remains stable while scrolling because the source
@@ -402,6 +408,19 @@ Lua keeps matched long-bracket strings/comments and short-string escape state.
 YAML distinguishes mapping keys, quoted/plain/block scalars and flow punctuation;
 C++ retains custom raw-string delimiters. These are lexical profiles, not semantic
 analysis, language execution or complete-document validation.
+
+The host colors each role (`midnight_viewer_engine::role_color`): keywords and
+headings take the theme accent, strings, comments, numbers, types, functions and
+links, and errors take fixed tints, and other roles the body text. Each color moves
+toward black or white only as far as it must to reach `midnight_core::content_minimum`
+against the page: 5:1, a margin over WCAG AA's 4.5:1, and 7:1 where the theme's body
+text reaches 15:1 (the Contrast and High Contrast themes). Markdown quotes keep the
+same contrast or take the body color. Before 21 November 2026 the tints stopped at
+exactly 4.5:1, which left comments, strings and the other tints of every light theme,
+and of Paper Contrast, Sandstone Contrast and High Contrast Light, with no margin.
+`unselected_syntax_colors_of_every_theme_keep_their_contrast_on_the_page` in
+`crates/midnight-viewer-ui/tests/selection_contrast.rs` checks every role in every
+theme.
 
 When styles and anchors exceed the wire budget, the page is cropped at exact
 character/source boundaries while retaining styles: the beginning for forward

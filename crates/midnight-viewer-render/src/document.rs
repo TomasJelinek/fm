@@ -317,7 +317,10 @@ impl Palette {
         Self {
             border: mixed(0.2),
             subtle: mixed(0.045),
-            muted: if contrast::ratio(muted, background) >= contrast::MINIMUM {
+            // Quotes keep the contrast of other content colors, or take the body color.
+            muted: if contrast::ratio(muted, background)
+                >= contrast::content_minimum(foreground, background)
+            {
                 muted
             } else {
                 foreground
@@ -368,4 +371,23 @@ fn validate(
         end = style.range.end;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    #[test]
+    fn quotes_keep_the_content_contrast_or_take_the_body_color() {
+        // An ordinary light theme: the mixed gray reaches 5:1 (about 5.4:1) and stays.
+        let light = Palette::new([48, 48, 48, 255], [255; 4]);
+        assert_ne!(light.muted, [48, 48, 48, 255]);
+        assert!(contrast::ratio(light.muted, [255; 4]) >= 5.0);
+        // Paper Contrast: the mix reaches only 6.3:1, below the theme's 7:1.
+        let paper = [22, 35, 52, 255];
+        assert_eq!(Palette::new(paper, [253, 254, 254, 255]).muted, paper);
+        // Catppuccin Latte: the mix stays below 5:1.
+        let latte = [76, 79, 105, 255];
+        assert_eq!(Palette::new(latte, [239, 241, 245, 255]).muted, latte);
+    }
 }

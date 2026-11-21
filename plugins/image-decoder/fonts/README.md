@@ -5,6 +5,8 @@ Unmodified font files from the immutable cosmic-text 0.19.0 crates.io archive,
 These fonts retain SIL Open Font License 1.1; see [OFL.txt](OFL.txt) and
 [the exact embedded copyright notices](COPYRIGHT.md).
 The worker embeds these bytes and never reads system or document-selected fonts.
+Since 21 November it registers them by reference, without copying, and only for SVG
+documents that contain text.
 Latin/Greek/Cyrillic, Arabic and Hebrew fallback is available; this is not full
 Unicode or exact system-font coverage. Other requested families use Noto Sans.
 

@@ -94,7 +94,7 @@ pub(super) fn bind(
             1 => Some(PaneId::Right),
             _ => None,
         } {
-            p.open_metadata(pane, case, s);
+            p.panel_command(pane, s, |p| p.open_metadata(pane, case, s));
         }
     });
     callback!(on_dirty_metadata, false, |p, _s, token| {

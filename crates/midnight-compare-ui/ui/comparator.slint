@@ -91,6 +91,9 @@ export component ComparatorWindow inherits Window {
     in-out property <color> foreground: Theme.text;
     in-out property <color> background-color: Theme.pane-background;
     in-out property <color> accent: Theme.accent;
+    // The applied theme's dimmer selection pair, painted while this window is inactive.
+    out property <color> inactive-selection-background: Theme.inactive-selection-background;
+    out property <color> inactive-selection-text: Theme.inactive-selection-text;
     in property <bool> image-mode;
     // The content shows the byte comparison (hex view); `bytes-only` pairs have no text
     // view to return to (they are not text, or not two images).

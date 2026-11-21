@@ -7,6 +7,7 @@ fn appearance(background: [u8; 4], foreground: [u8; 4]) -> ViewerAppearance {
         foreground,
         background,
         selection: [70, 90, 130, 255],
+        selection_text: [0; 4],
         accent: [200, 120, 255, 255],
     }
 }

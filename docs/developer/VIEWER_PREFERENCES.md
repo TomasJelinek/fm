@@ -92,7 +92,25 @@ backend; the independent PDF plugin renders the supplied page and viewport.
 Use **Paged** to view one PDF page at a time, with the previous/next page buttons
 or **Ctrl+PageUp / Ctrl+PageDown**. Use **Continuous** to scroll through a sequence
 of pages. **Fit**, **1:1** and the zoom controls remain beside the layout buttons.
-The backend prepares bounded page regions as the view changes.
+The backend renders retained tiles at the exact zoom and the view scrolls over them
+([viewer scrolling](VIEWER_SCROLLING.md#documents-pdf)).
+
+The layout chosen last is a viewer preference, application-wide
+(`ViewerPreferences::document_layout`, `ViewerPreferenceChange::DocumentLayout`). A
+click on Paged or Continuous saves it at once, like every viewer preference, before
+the shown document has switched; the next PDF opens in it, in Fit at the top of its
+first page, also after a restart. Settings files store it from schema 36 (written only
+for Continuous; see [settings files](../SETTINGS_FILES.md)), and settings export and
+import carry it. A settings change does not re-lay out the shown document: the
+layout buttons own it. The Options dialog has no viewer presentation page (fonts,
+Markdown preset, zoom and layout are all chosen in the viewer), so the layout is not
+shown there either.
+
+The zoom percentage is also a field for a typed value: see
+[keyboard shortcuts](../KEYBOARD_SHORTCUTS.md) (Ctrl+Y). A typed zoom is one zoom
+command anchored at the view's centre and saved like the zoom buttons' commands. The
+user's decimal separator comes from the application's number format
+(`ViewerWindows::set_number_locale`).
 
 The new layout controls remain in development until their UI/application gates pass.
 The prior Fit/Paged footer regression and two keyboard cases now pass within the 31

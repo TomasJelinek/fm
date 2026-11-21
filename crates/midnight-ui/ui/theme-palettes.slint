@@ -28,8 +28,13 @@ export struct ThemeColors {
     cursor-edge: color,
     error-background: color,
     error-text: color,
+    // Selected text: a calm fill and the colour that all selected text takes on it.
+    // The inactive pair is a dimmer fill shown while its window is inactive. Contrast
+    // and visibility rules: docs/THEME_PROVENANCE.md#text-selection.
     selection-background: color,
     selection-text: color,
+    inactive-selection-background: color,
+    inactive-selection-text: color,
 }
 
 export global ThemePalettes {
@@ -77,8 +82,10 @@ export global ThemePalettes {
                 cursor-edge: #bdbdbd,
                 error-background: #402d2d,
                 error-text: #ffc3c3,
-                selection-background: #555555,
+                selection-background: #264f78,
                 selection-text: #ffffff,
+                inactive-selection-background: #3a3d41,
+                inactive-selection-text: #ffffff,
             };
         }
         // Light
@@ -112,8 +119,10 @@ export global ThemePalettes {
                 cursor-edge: #555555,
                 error-background: #ffebee,
                 error-text: #842434,
-                selection-background: #cccccc,
+                selection-background: #a5d0ff,
                 selection-text: #202020,
+                inactive-selection-background: #e5ebf1,
+                inactive-selection-text: #202020,
             };
         }
         // Dracula
@@ -149,6 +158,8 @@ export global ThemePalettes {
                 error-text: #ffb5c2,
                 selection-background: #534265,
                 selection-text: #ffffff,
+                inactive-selection-background: #46424c,
+                inactive-selection-text: #ffffff,
             };
         }
         // Nord
@@ -184,6 +195,8 @@ export global ThemePalettes {
                 error-text: #f6b2bc,
                 selection-background: #465a70,
                 selection-text: #eceff4,
+                inactive-selection-background: #484d54,
+                inactive-selection-text: #eceff4,
             };
         }
         // Gruvbox Dark
@@ -219,6 +232,8 @@ export global ThemePalettes {
                 error-text: #ffafa0,
                 selection-background: #504945,
                 selection-text: #fbf1c7,
+                inactive-selection-background: #46403d,
+                inactive-selection-text: #fbf1c7,
             };
         }
         // Catppuccin Mocha
@@ -254,6 +269,8 @@ export global ThemePalettes {
                 error-text: #f6a3bd,
                 selection-background: #524264,
                 selection-text: #f5e0dc,
+                inactive-selection-background: #3d3942,
+                inactive-selection-text: #f5e0dc,
             };
         }
         // Solarized Light
@@ -287,8 +304,10 @@ export global ThemePalettes {
                 cursor-edge: #006d74,
                 error-background: #f7ded5,
                 error-text: #9d2828,
-                selection-background: #28666d,
-                selection-text: #fdf6e3,
+                selection-background: #9ecdd2,
+                selection-text: #002b36,
+                inactive-selection-background: #d7e4e6,
+                inactive-selection-text: #002b36,
             };
         }
         // Carbon Green: charcoal surfaces and bright green accents.
@@ -324,6 +343,8 @@ export global ThemePalettes {
                 error-text: #ffbdb2,
                 selection-background: #426127,
                 selection-text: #f5ffe9,
+                inactive-selection-background: #31392a,
+                inactive-selection-text: #f5ffe9,
             };
         }
         // Tokyo Night: adapted Night surfaces with readable cyan/violet accents.
@@ -360,6 +381,8 @@ export global ThemePalettes {
                 error-text: #ffb2c1,
                 selection-background: #394b70,
                 selection-text: #e0e6ff,
+                inactive-selection-background: #323842,
+                inactive-selection-text: #e0e6ff,
             };
         }
         // One Dark: adapted charcoal and blue palette with lifted body text.
@@ -395,6 +418,8 @@ export global ThemePalettes {
                 error-text: #ffb5bc,
                 selection-background: #36546e,
                 selection-text: #edf1f7,
+                inactive-selection-background: #3d464d,
+                inactive-selection-text: #edf1f7,
             };
         }
         // Rosé Pine: adapted main variant with foam folders and rose focus.
@@ -430,6 +455,8 @@ export global ThemePalettes {
                 error-text: #ffb8cc,
                 selection-background: #52425e,
                 selection-text: #f4efff,
+                inactive-selection-background: #38343c,
+                inactive-selection-text: #f4efff,
             };
         }
         // Norton Commander inspired: classic blue, cyan and yellow, original tokens.
@@ -463,8 +490,10 @@ export global ThemePalettes {
                 cursor-edge: #55ffff,
                 error-background: #800000,
                 error-text: #ffffff,
-                selection-background: #55ffff,
-                selection-text: #00005f,
+                selection-background: #00737d,
+                selection-text: #ffffff,
+                inactive-selection-background: #0a4a8a,
+                inactive-selection-text: #ffffff,
             };
         }
         // Amber Terminal: charcoal, warm amber focus and soft cyan folders.
@@ -498,8 +527,10 @@ export global ThemePalettes {
                 cursor-edge: #8ed1cf,
                 error-background: #49282a,
                 error-text: #ffc2b8,
-                selection-background: #e9bb70,
-                selection-text: #202a28,
+                selection-background: #5f4b2a,
+                selection-text: #fff5df,
+                inactive-selection-background: #403b32,
+                inactive-selection-text: #fff5df,
             };
         }
         // Verdant Light: white and graphite with restrained forest-green and lime accents.
@@ -533,8 +564,10 @@ export global ThemePalettes {
                 cursor-edge: #47791e,
                 error-background: #fce8e5,
                 error-text: #a02c27,
-                selection-background: #3c6b18,
-                selection-text: #ffffff,
+                selection-background: #badaa9,
+                selection-text: #172213,
+                inactive-selection-background: #e1ebdc,
+                inactive-selection-text: #172213,
             };
         }
         // Catppuccin Latte: adapted cool porcelain, mauve focus and blue folders.
@@ -568,8 +601,10 @@ export global ThemePalettes {
                 cursor-edge: #1e66cb,
                 error-background: #fbe5eb,
                 error-text: #ab1034,
-                selection-background: #8839ef,
-                selection-text: #ffffff,
+                selection-background: #d0beef,
+                selection-text: #30334a,
+                inactive-selection-background: #e0daea,
+                inactive-selection-text: #30334a,
             };
         }
         // Rosé Pine Dawn: adapted warm paper, rose focus and pine folders.
@@ -603,8 +638,10 @@ export global ThemePalettes {
                 cursor-edge: #86609d,
                 error-background: #fbe4e5,
                 error-text: #983c53,
-                selection-background: #985069,
-                selection-text: #ffffff,
+                selection-background: #e9c0cb,
+                selection-text: #302c48,
+                inactive-selection-background: #eadde1,
+                inactive-selection-text: #302c48,
             };
         }
         // Paper Contrast: original palette; contrast targets in docs/THEME_PROVENANCE.md.
@@ -638,8 +675,10 @@ export global ThemePalettes {
                 cursor-edge: #17416d,
                 error-background: #f9e6e7,
                 error-text: #6f1721,
-                selection-background: #173f6b,
-                selection-text: #ffffff,
+                selection-background: #a6c9f2,
+                selection-text: #0c1727,
+                inactive-selection-background: #dce6f3,
+                inactive-selection-text: #0c1727,
             };
         }
         // Sandstone Contrast: original palette; contrast targets in docs/THEME_PROVENANCE.md.
@@ -673,8 +712,10 @@ export global ThemePalettes {
                 cursor-edge: #5b3a14,
                 error-background: #fbe5df,
                 error-text: #701f16,
-                selection-background: #523414,
-                selection-text: #fffbf2,
+                selection-background: #e4c09f,
+                selection-text: #1c160e,
+                inactive-selection-background: #ece0d7,
+                inactive-selection-text: #1c160e,
             };
         }
         // Deep Ocean: original palette; contrast targets in docs/THEME_PROVENANCE.md.
@@ -708,8 +749,10 @@ export global ThemePalettes {
                 cursor-edge: #86e7f0,
                 error-background: #3c1822,
                 error-text: #ffdbe1,
-                selection-background: #a5edf4,
-                selection-text: #091923,
+                selection-background: #185b60,
+                selection-text: #ffffff,
+                inactive-selection-background: #293739,
+                inactive-selection-text: #ffffff,
             };
         }
         // Graphite Contrast: original palette; contrast targets in docs/THEME_PROVENANCE.md.
@@ -743,8 +786,10 @@ export global ThemePalettes {
                 cursor-edge: #ffccad,
                 error-background: #401e26,
                 error-text: #ffdae1,
-                selection-background: #ffdbc4,
-                selection-text: #20191e,
+                selection-background: #65485b,
+                selection-text: #ffffff,
+                inactive-selection-background: #3c3439,
+                inactive-selection-text: #ffffff,
             };
         }
         // High Contrast Dark: original palette; contrast targets in docs/THEME_PROVENANCE.md.
@@ -778,8 +823,10 @@ export global ThemePalettes {
                 cursor-edge: #ffffff,
                 error-background: #180000,
                 error-text: #ffffff,
-                selection-background: #ffffff,
+                selection-background: #1aebff,
                 selection-text: #000000,
+                inactive-selection-background: #c8c8c8,
+                inactive-selection-text: #000000,
             };
         }
         // High Contrast Light: original palette; contrast targets in docs/THEME_PROVENANCE.md.
@@ -813,8 +860,10 @@ export global ThemePalettes {
                 cursor-edge: #000000,
                 error-background: #fff5f5,
                 error-text: #200000,
-                selection-background: #000000,
+                selection-background: #37006e,
                 selection-text: #ffffff,
+                inactive-selection-background: #c8c8c8,
+                inactive-selection-text: #000000,
             };
         }
         // Slate variants share charcoal surfaces; focus and selection carry the variant hue.
@@ -823,6 +872,9 @@ export global ThemePalettes {
             let active-header = index == 24 ? #243a35 : index == 25 ? #342e40 : #263844;
             let cursor = index == 24 ? #29443f : index == 25 ? #3b354b : #2c4050;
             let selected = index == 24 ? #283d38 : index == 25 ? #352f42 : #293946;
+            // A muted tint of the variant hue; white text reads at about 8:1 on it.
+            let selection = index == 24 ? #1c5b51 : index == 25 ? #5c4874 : #255575;
+            let inactive-selection = index == 24 ? #31403c : index == 25 ? #3f3a47 : #323d47;
             return {
                 light: false,
                 window-background: #16191e,
@@ -852,8 +904,10 @@ export global ThemePalettes {
                 cursor-edge: accent,
                 error-background: #432b32,
                 error-text: #ffd4dc,
-                selection-background: accent,
-                selection-text: #16191e,
+                selection-background: selection,
+                selection-text: #ffffff,
+                inactive-selection-background: inactive-selection,
+                inactive-selection-text: #ffffff,
             };
         }
         // Blue
@@ -888,6 +942,8 @@ export global ThemePalettes {
             error-text: #ffb7bd,
             selection-background: #315b86,
             selection-text: #ffffff,
+            inactive-selection-background: #323d48,
+            inactive-selection-text: #ffffff,
         };
     }
 }

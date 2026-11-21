@@ -68,6 +68,9 @@ impl Camera {
             self.origin = target;
             self.waiting = None;
             self.thumb = [None; 2];
+        } else if self.waiting.is_some() && info.page > 0 && self.covered(info.origin) {
+            // A document camera on the way to the target: show it, keep waiting.
+            self.origin = info.origin;
         }
     }
 
@@ -91,8 +94,10 @@ impl Camera {
         if self.waiting.is_some() {
             // An intermediate scrollbar reply must neither move the thumb nor
             // replace the retained view with a far-away, already superseded page.
+            // A document shows it: the engine finishes the camera in progress before
+            // the target, so a fast drag shows the pages it passes (`receive`).
             if info.pan_sequence < self.sequence {
-                return None;
+                return (info.page > 0).then_some((info.origin, true));
             }
             return Some((self.waiting.unwrap_or(self.origin), true));
         }
@@ -141,8 +146,7 @@ impl Camera {
             let Some(position) = position else {
                 continue;
             };
-            let dimension = if axis == 0 { info.width } else { info.height };
-            let maximum = f64::from(dimension) - info.visible_source[axis];
+            let maximum = info.extent[axis] - info.visible_source[axis];
             target[axis] = if maximum <= 0.0 {
                 maximum / 2.0
             } else {
@@ -251,7 +255,7 @@ impl Camera {
         let info = self.info.as_ref().filter(|_| !self.suspended)?;
         [1, 0]
             .into_iter()
-            .find(|&axis| f64::from([info.width, info.height][axis]) > info.visible_source[axis])
+            .find(|&axis| info.extent[axis] > info.visible_source[axis])
     }
 
     pub fn displayed_position(&self, axis: usize) -> f64 {
@@ -262,8 +266,7 @@ impl Camera {
         let Some(info) = &self.info else {
             return 0.0;
         };
-        let dimension = if axis == 0 { info.width } else { info.height };
-        let maximum = f64::from(dimension) - info.visible_source[axis];
+        let maximum = info.extent[axis] - info.visible_source[axis];
         if maximum <= 0.0 {
             0.0
         } else {
@@ -325,7 +328,7 @@ pub(super) fn grid_bounds(origin: [f64; 2], info: &ViewerImageInfo) -> ([i32; 2]
 
 fn clamp(info: &ViewerImageInfo, origin: [f64; 2]) -> [f64; 2] {
     std::array::from_fn(|axis| {
-        let maximum = f64::from([info.width, info.height][axis]) - info.visible_source[axis];
+        let maximum = info.extent[axis] - info.visible_source[axis];
         if maximum <= 0.0 {
             maximum / 2.0
         } else {

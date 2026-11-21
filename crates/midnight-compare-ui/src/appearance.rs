@@ -1,7 +1,7 @@
 //! Current application presentation; document typography stays in the existing session.
 use super::{ComparatorWindow, ComparatorWindows, OpenWindow, color};
 use midnight_core::{PreferenceTheme, UiDensity, ViewerAppearance};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 #[derive(Clone)]
 pub(super) struct Presentation {
@@ -78,13 +78,18 @@ impl Presentation {
         document.foreground = self.appearance.foreground;
         document.background = self.appearance.background;
         document.selection = self.appearance.selection;
+        document.selection_text = self.appearance.selection_text;
         document.accent = self.appearance.accent;
     }
 }
 
 pub(super) struct PaletteState {
-    colors: Cell<[[u8; 4]; 4]>,
+    colors: Cell<[[u8; 4]; 5]>,
     revision: Cell<u64>,
+    /// The presentation last applied, and whether the window is active: an inactive
+    /// window paints its selection with the theme's inactive pair.
+    presentation: RefCell<Option<Presentation>>,
+    active: Cell<bool>,
 }
 
 impl PaletteState {
@@ -92,7 +97,14 @@ impl PaletteState {
         Self {
             colors: Cell::new(colors(appearance)),
             revision: Cell::new(revision),
+            presentation: RefCell::new(None),
+            active: Cell::new(true),
         }
+    }
+
+    /// The presentation last applied to the window, which activation changes keep.
+    pub(super) fn presented(&self, presentation: Presentation) {
+        *self.presentation.borrow_mut() = Some(presentation);
     }
 
     pub(super) fn revision(&self) -> u64 {
@@ -101,6 +113,12 @@ impl PaletteState {
 
     pub(super) fn accepts(&self, revision: u64) -> bool {
         self.revision() == revision
+    }
+
+    /// The accepted document colors: text, page, selection, selection text, accent.
+    #[cfg(test)]
+    pub(super) fn colors(&self) -> [[u8; 4]; 5] {
+        self.colors.get()
     }
 }
 
@@ -143,11 +161,23 @@ impl OpenWindow {
             return;
         }
         presentation.apply_window(&self.window);
-        let next = colors(&presentation.appearance);
+        self.appearance.presented(presentation.clone());
+        self.restore_palette(presentation);
+    }
+
+    /// Submit the presentation's colors, with the theme's dimmer inactive selection
+    /// pair while the window is inactive.
+    fn restore_palette(&self, presentation: &Presentation) {
+        let mut document = presentation.appearance.clone();
+        if !self.appearance.active.get() {
+            document.selection = rgba(self.window.get_inactive_selection_background());
+            document.selection_text = rgba(self.window.get_inactive_selection_text());
+        }
+        let next = colors(&document);
         if self.appearance.colors.get() != next {
             // Acceptance fences UI delivery immediately. Queue-full wakes are handled
             // by the session's latest slot, without entering/replaying ordinary input.
-            if let Ok(revision) = self.session.restore_palette(&presentation.appearance) {
+            if let Ok(revision) = self.session.restore_palette(&document) {
                 self.appearance.colors.set(next);
                 self.appearance.revision.set(revision);
             }
@@ -157,11 +187,29 @@ impl OpenWindow {
     }
 }
 
-fn colors(appearance: &ViewerAppearance) -> [[u8; 4]; 4] {
+/// The window was activated or deactivated: its selection is painted again with the
+/// theme's active or inactive pair. Text, page and accent colors stay.
+pub(super) fn activation_changed(open: &OpenWindow, active: bool) {
+    if open.closed.get() || open.appearance.active.replace(active) == active {
+        return;
+    }
+    let presentation = open.appearance.presentation.borrow().clone();
+    if let Some(presentation) = presentation {
+        open.restore_palette(&presentation);
+    }
+}
+
+fn rgba(color: slint::Color) -> [u8; 4] {
+    let color = color.to_argb_u8();
+    [color.red, color.green, color.blue, color.alpha]
+}
+
+fn colors(appearance: &ViewerAppearance) -> [[u8; 4]; 5] {
     [
         appearance.foreground,
         appearance.background,
         appearance.selection,
+        appearance.selection_text,
         appearance.accent,
     ]
 }

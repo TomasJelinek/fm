@@ -95,6 +95,41 @@ fn latest_palette_recolors_active_and_cached_pages_without_source_or_camera_rese
 }
 
 #[test]
+fn a_new_selection_text_color_repaints_the_selected_text_and_nothing_else() {
+    // Retained pixels: a palette that changes only the selection pair is not laid out
+    // again, but its retained raster must still be painted again.
+    let (mut worker, output) = styled_worker(true);
+    let (_, generation, first, own_colors) = painted(&mut worker, &output);
+    let spans = worker.page.as_ref().unwrap().spans.clone();
+    let mut yellow = worker.appearance.clone();
+    yellow.selection_text = [255, 255, 0, 255];
+    assert_eq!(worker.palette_state.restore(&yellow, || Ok(())).unwrap(), 2);
+    worker.sync_palette(&output);
+    let (revision, current_generation, floor, selected_yellow) = painted(&mut worker, &output);
+    assert_eq!((revision, current_generation), (2, generation));
+    assert!(floor > first, "a new real frame fences the new color");
+    assert_ne!(
+        selected_yellow, own_colors,
+        "selected text is painted in the selection text color"
+    );
+    assert_eq!(
+        worker.page.as_ref().unwrap().spans[0].color,
+        spans[0].color,
+        "text colors are unchanged"
+    );
+    // Without a selection the two palettes paint the same pixels.
+    let (mut worker, output) = styled_worker(false);
+    worker.selection = None;
+    let (_, _, _, unselected_own) = painted(&mut worker, &output);
+    let mut yellow = worker.appearance.clone();
+    yellow.selection_text = [255, 255, 0, 255];
+    worker.palette_state.restore(&yellow, || Ok(())).unwrap();
+    worker.sync_palette(&output);
+    let (_, _, _, unselected_yellow) = painted(&mut worker, &output);
+    assert_eq!(unselected_own, unselected_yellow);
+}
+
+#[test]
 fn skipped_b_then_a_still_publishes_a_new_real_frame_floor() {
     let (mut worker, output) = styled_worker(false);
     let (_, generation, first, original_pixels) = painted(&mut worker, &output);

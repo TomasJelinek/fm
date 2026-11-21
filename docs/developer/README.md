@@ -30,6 +30,10 @@ It neither extends the semantic C ABI nor weakens the image decoder sandbox.
 The shared [pixel-scrolling contract](SCROLLING.md) covers panel/list wheel input,
 scrollbar ownership, bounded rendering and native frame measurements.
 
+The internal [native icons contract](NATIVE_ICONS.md) describes the device-pixel
+edges icons are drawn at, the Windows and Linux providers that render them at
+those edges, and where a listed program's own artwork is read.
+
 The internal [viewer scrolling contract](VIEWER_SCROLLING.md) describes immediate
 pointer feedback, bounded position queues, content acknowledgements and native
 latency measurement. These UI/engine messages are not part of the plugin ABI.

@@ -166,6 +166,104 @@ fn standard_fonts_are_embedded_and_blank_pages_are_white() {
     );
 }
 
+/// Text is drawn with antialiased edges at the exact requested scale: the outline of each
+/// glyph has intermediate grey levels between the black stems and the white page.
+#[test]
+fn glyph_edges_are_antialiased_at_the_requested_physical_scale() {
+    let bytes = pdf(&[("[0 0 120 40]", "BT /F1 20 Tf 5 12 Td (Hello PDF) Tj ET")]);
+    let document = midnight_viewer_pdf::decode(&mut Cursor::new(bytes)).unwrap();
+    for scale in [1.0, 2.5, 4.0] {
+        let frame = document
+            .render(
+                0,
+                Viewport {
+                    width: (120.0 * scale) as u32,
+                    height: (40.0 * scale) as u32,
+                    scale,
+                    ..viewport()
+                },
+            )
+            .unwrap();
+        let pixels = frame.rgba.as_chunks::<4>().0;
+        let ink = pixels.iter().filter(|pixel| pixel[0] < 250).count();
+        let solid = pixels.iter().filter(|pixel| pixel[0] < 10).count();
+        let edge = pixels
+            .iter()
+            .filter(|pixel| (10..250).contains(&pixel[0]))
+            .count();
+        assert!(
+            pixels.iter().all(|pixel| pixel[3] == 255),
+            "page pixels are opaque"
+        );
+        assert!(solid > 0, "scale {scale}: no solid stems");
+        // Aliased text would have no grey edge at all; antialiased text at these sizes
+        // has a grey rim on every stroke.
+        assert!(
+            edge * 5 > ink,
+            "scale {scale}: only {edge} of {ink} ink pixels are grey edge pixels"
+        );
+    }
+}
+
+/// The host renders a page in bands of tiles. Adjacent bands meet without a seam: they
+/// equal one render of the whole area, also when the second band reuses the page's caches.
+#[test]
+fn page_bands_join_without_seams_and_reuse_bounded_caches() {
+    let bytes = pdf(&[
+        (
+            "[0 0 200 120]",
+            "0.5 w 10 10 m 190 110 l S BT /F1 14 Tf 12 60 Td (Band seams 0123) Tj ET",
+        ),
+        ("[0 0 200 120]", "0 0 1 rg 20 20 160 80 re f"),
+        ("[0 0 200 120]", ""),
+    ]);
+    let document = midnight_viewer_pdf::decode(&mut Cursor::new(bytes)).unwrap();
+    let scale = 2.75;
+    let whole = document
+        .render(
+            0,
+            Viewport {
+                width: 550,
+                height: 330,
+                scale,
+                ..viewport()
+            },
+        )
+        .unwrap();
+    let mut joined = Vec::new();
+    for (top, height) in [(0u32, 256u32), (256, 74)] {
+        let band = document
+            .render(
+                0,
+                Viewport {
+                    width: 550,
+                    height,
+                    scale,
+                    origin_x: 0.0,
+                    origin_y: f64::from(top) / scale,
+                },
+            )
+            .unwrap();
+        joined.extend_from_slice(&band.rgba);
+    }
+    assert_eq!(joined.len(), whole.rgba.len());
+    let differing = joined
+        .iter()
+        .zip(&whole.rgba)
+        .filter(|(band, whole)| band.abs_diff(**whole) > 2)
+        .count();
+    assert!(
+        differing * 1000 < whole.rgba.len(),
+        "{differing} channel values differ between bands and one render"
+    );
+    assert_eq!(document.retained_caches(), vec![(0, scale)]);
+    for page in [1, 2, 0] {
+        document.render(page, viewport()).unwrap();
+    }
+    // Two pages are retained, least recently used first; the third evicted the oldest.
+    assert_eq!(document.retained_caches(), vec![(2, 1.0), (0, 1.0)]);
+}
+
 #[test]
 fn malformed_documents_and_invalid_geometry_fail() {
     for bytes in [

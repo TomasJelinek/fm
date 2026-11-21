@@ -493,11 +493,18 @@ impl CapturedSource {
 
 /// The decoder refused the source: what a refusal means in words a user can act on, then
 /// the decoder's own sanitized reason when the worker sent one (SDK 0.4.0 and later).
+///
+/// API 0.3.0 carries a reason's text but not its kind, so a limit or unsupported content
+/// must not be called damage (VIEW-06 adds the kind). Until then the text decides: a reason
+/// that is a complete sentence about the content ("This SVG is larger than 4 MiB, ...")
+/// states why it is not shown and is the whole message; any other reason, such as a codec
+/// error, continues the "damaged or incomplete" sentence.
 fn rejected(document: bool, reason: Option<&api::FailureReason>) -> io::Error {
     let kind = if document { "document" } else { "image" };
     io::Error::new(
         io::ErrorKind::Unsupported,
         match reason {
+            Some(reason) if statement(reason) => sentence(reason),
             Some(reason) => format!(
                 "This {kind} is damaged or incomplete: {}",
                 continuation(reason)
@@ -507,6 +514,21 @@ fn rejected(document: bool, reason: Option<&api::FailureReason>) -> io::Error {
             }
         },
     )
+}
+
+/// A provider's complete sentence about the content: it starts with "This ".
+fn statement(reason: &api::FailureReason) -> bool {
+    reason.as_str().starts_with("This ")
+}
+
+/// The statement as the whole status text, ending with a full stop.
+fn sentence(reason: &api::FailureReason) -> String {
+    let text = reason.as_str().trim_end();
+    if text.ends_with(['.', '!', '?']) {
+        text.to_owned()
+    } else {
+        format!("{text}.")
+    }
 }
 
 /// The decoder could not draw a view of a source it accepted. Images are decoded whole at
@@ -590,5 +612,48 @@ mod failure_text_tests {
             let reason = api::FailureReason::new(given).unwrap();
             assert_eq!(continuation(&reason), shown);
         }
+    }
+
+    #[test]
+    fn a_limit_or_unsupported_content_is_not_called_damage() {
+        // The SVG decoder states limits and unsupported constructs as sentences; damage
+        // stays a fragment after the host's own sentence.
+        for (given, shown) in [
+            (
+                "This SVG is larger than 4 MiB, the limit for SVG images.",
+                "This SVG is larger than 4 MiB, the limit for SVG images.",
+            ),
+            (
+                "This SVG declares XML entities (a DOCTYPE internal subset), which are not \
+                 supported.",
+                "This SVG declares XML entities (a DOCTYPE internal subset), which are not \
+                 supported.",
+            ),
+            (
+                "This image is 40000 x 20 pixels; the limit is 32768 pixels per side",
+                "This image is 40000 x 20 pixels; the limit is 32768 pixels per side.",
+            ),
+            (
+                "The SVG is not well-formed XML: the document ends too early (line 1, column 75)",
+                "This image is damaged or incomplete: the SVG is not well-formed XML: the \
+                 document ends too early (line 1, column 75)",
+            ),
+            (
+                "Thistle is not a sentence about the content",
+                "This image is damaged or incomplete: thistle is not a sentence about the \
+                 content",
+            ),
+        ] {
+            let reason = api::FailureReason::new(given).unwrap();
+            let error = rejected(false, Some(&reason));
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert_eq!(error.to_string(), shown);
+            assert!(!shown.starts_with("This SVG") || !shown.contains("damaged"));
+        }
+        let reason = api::FailureReason::new("This document needs a password").unwrap();
+        assert_eq!(
+            rejected(true, Some(&reason)).to_string(),
+            "This document needs a password."
+        );
     }
 }

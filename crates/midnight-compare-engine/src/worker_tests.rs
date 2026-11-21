@@ -272,6 +272,7 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
                 foreground: [255; 4],
                 background: [30, 30, 30, 255],
                 selection: [50, 80, 120, 255],
+                selection_text: [0; 4],
                 accent: [90, 150, 220, 255],
             },
             ViewerGeometry {
@@ -335,6 +336,7 @@ fn unresolved_pair_keeps_session_available_for_manual_file_selection() {
                 foreground: [255; 4],
                 background: [30, 30, 30, 255],
                 selection: [50, 80, 120, 255],
+                selection_text: [0; 4],
                 accent: [90, 150, 220, 255],
             },
             ViewerGeometry {

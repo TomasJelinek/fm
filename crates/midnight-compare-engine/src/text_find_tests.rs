@@ -294,6 +294,7 @@ fn resize_reveals_a_visible_hit_but_preserves_intentional_vertical_and_horizonta
         foreground: [240, 240, 240, 255],
         background: [20, 20, 20, 255],
         selection: [210, 170, 60, 255],
+        selection_text: [0; 4],
         accent: [60, 140, 220, 255],
     };
     let palette = Palette::from(&appearance);
@@ -388,6 +389,7 @@ fn selected_hit_is_highlighted_and_centered_using_painted_gutter_tabs_and_unicod
         foreground: [240, 240, 240, 255],
         background: [20, 20, 20, 255],
         selection: [210, 170, 60, 255],
+        selection_text: [0; 4],
         accent: [60, 140, 220, 255],
     };
     let palette = Palette::from(&appearance);

@@ -65,6 +65,7 @@ fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, OpenErr
             foreground: [255; 4],
             background: [30, 30, 30, 255],
             selection: [50, 80, 120, 255],
+            selection_text: [0; 4],
             accent: [90, 150, 220, 255],
         },
         ViewerGeometry {

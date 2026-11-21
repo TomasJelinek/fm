@@ -8,11 +8,29 @@ use std::{
 };
 
 // At most 32 MiB in the cache/model and another 32 MiB in the previous Slint
-// model while a repaint replaces its items. Driver-deferred GPU releases are separate.
-// The engine's tile cache uses the same bounds; a larger working set is refused here.
+// model while a repaint replaces its items; documents use the budget of their raster
+// view instead (`viewer_document_tile_cache_bytes`: the shown and prefetched tiles and a
+// bounded margin, 121.5 MiB for a 4000 x 2600 view). Driver-deferred GPU releases are
+// separate. The engine's tile cache uses the same bounds; a larger working set is
+// refused here.
 const MAX_BYTES: usize = midnight_core::VIEWER_TILE_CACHE_BYTES;
 const MAX_ENTRIES: usize = midnight_core::VIEWER_TILE_CACHE_ENTRIES;
 const EDGE: f64 = 256.0;
+
+/// The tiles and bytes this cache keeps for `info`: the image budget, or a document's
+/// budget for its raster view, computed as the engine computes it.
+fn budget(info: &ViewerImageInfo) -> (usize, usize) {
+    if info.page == 0 {
+        return (MAX_ENTRIES, MAX_BYTES);
+    }
+    let view = info.visible_source.map(|extent| {
+        (extent * info.raster_scale)
+            .round()
+            .clamp(1.0, f64::from(u32::MAX)) as u32
+    });
+    let bytes = midnight_core::viewer_document_tile_cache_bytes(view);
+    (bytes / midnight_core::VIEWER_TILE_BYTES, bytes)
+}
 
 struct Texture {
     // Proven-transparent coverage has no Slint image or uploaded pixel storage.
@@ -34,6 +52,9 @@ pub(super) struct Textures {
     model: Rc<VecModel<ViewerRasterTile>>,
     rows: Vec<(ViewerTileId, [i32; 2])>,
     base: Option<[f64; 2]>,
+    /// Scale and offset (logical pixels in the canvas) at which a zoom step shows the
+    /// retained tiles until tiles of its new surface arrive.
+    preview: Option<[f64; 3]>,
 }
 
 impl Textures {
@@ -44,6 +65,30 @@ impl Textures {
         self.positions.keys().copied().collect()
     }
 
+    /// Show the retained tiles scaled by `factor` around `anchor` (logical pixels in the
+    /// canvas) after a zoom step, so the view takes the new zoom at once instead of when
+    /// the new surface's tiles are ready. Steps compose; the new surface ends it.
+    pub fn preview_zoom(&mut self, factor: f64, anchor: [f64; 2]) -> [f64; 3] {
+        let [scale, x, y] = self.preview();
+        if self.surface.is_some()
+            && factor.is_finite()
+            && factor > 0.0
+            && anchor.iter().all(|value| value.is_finite())
+        {
+            self.preview = Some([
+                scale * factor,
+                anchor[0] * (1.0 - factor) + factor * x,
+                anchor[1] * (1.0 - factor) + factor * y,
+            ]);
+        }
+        self.preview()
+    }
+
+    /// The zoom preview's scale and offset: `[1, 0, 0]` when tiles show at their own zoom.
+    pub fn preview(&self) -> [f64; 3] {
+        self.preview.unwrap_or([1.0, 0.0, 0.0])
+    }
+
     pub fn receive(
         &mut self,
         tiles: &[ViewerTile],
@@ -51,14 +96,18 @@ impl Textures {
         displayed: [f64; 2],
         replace_camera: bool,
     ) -> Result<ModelRc<ViewerRasterTile>, String> {
-        // Engine scenes (visible tiles plus one frontier) fit the same entry bound.
-        if tiles.len() > MAX_ENTRIES {
+        // Engine scenes (visible tiles plus their guard frontier) fit the same entry bound.
+        let (max_entries, max_bytes) = budget(info);
+        if tiles.len() > max_entries {
             return Err("Image scene exceeds its tile bound.".into());
         }
         let same_surface = self.surface == Some(info.surface);
         if !same_surface || replace_camera {
             self.positions.clear();
             self.surface = Some(info.surface);
+        }
+        if !same_surface {
+            self.preview = None;
         }
         let rebase = !same_surface
             || self.base.is_none_or(|base| {
@@ -115,7 +164,7 @@ impl Textures {
                 } else {
                     tile.pixels.rgba().len()
                 };
-                while self.textures.len() >= MAX_ENTRIES || self.bytes + bytes > MAX_BYTES {
+                while self.textures.len() >= max_entries || self.bytes + bytes > max_bytes {
                     let oldest = self
                         .textures
                         .iter()

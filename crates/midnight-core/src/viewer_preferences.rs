@@ -87,6 +87,8 @@ pub struct ViewerPreferences {
     pub markdown_preset: MarkdownPreset,
     pub image_zoom: ViewerZoomPreference,
     pub document_zoom: ViewerZoomPreference,
+    /// The PDF layout chosen last, application-wide; the next document opens in it.
+    pub document_layout: crate::DocumentLayout,
 }
 
 impl Default for ViewerPreferences {
@@ -108,6 +110,7 @@ impl Default for ViewerPreferences {
             markdown_preset: MarkdownPreset::GitHub,
             image_zoom: ViewerZoomPreference::Fit,
             document_zoom: ViewerZoomPreference::Fit,
+            document_layout: crate::DocumentLayout::Paged,
         }
     }
 }
@@ -123,6 +126,7 @@ pub enum ViewerPreferenceChange {
     MarkdownPreset(MarkdownPreset),
     ImageZoom(ViewerZoomPreference),
     DocumentZoom(ViewerZoomPreference),
+    DocumentLayout(crate::DocumentLayout),
 }
 
 impl ViewerPreferences {
@@ -188,6 +192,7 @@ impl ViewerPreferences {
             }
             ViewerPreferenceChange::ImageZoom(value) => next.image_zoom = *value,
             ViewerPreferenceChange::DocumentZoom(value) => next.document_zoom = *value,
+            ViewerPreferenceChange::DocumentLayout(value) => next.document_layout = *value,
         }
         next.validate()?;
         *self = next;

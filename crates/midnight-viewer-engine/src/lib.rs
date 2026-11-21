@@ -169,7 +169,8 @@ impl WindowSession {
         self.palette.snapshot().0
     }
 
-    /// Accept four application colors only; the returned revision is not a paint ACK.
+    /// Accept the application colors only (text, page, selection fill, selection text
+    /// and accent); the returned revision is not a paint ACK.
     /// Document family/size and independently accepted viewer preferences stay owned
     /// by their existing controls. Full wake queues retain this bounded latest slot.
     pub fn restore_palette(&self, appearance: &ViewerAppearance) -> Result<u64, String> {

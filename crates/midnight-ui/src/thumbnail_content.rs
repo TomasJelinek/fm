@@ -7,6 +7,9 @@ pub enum ThumbnailContent {
     Native(PathBuf),
     /// System artwork for an executable, handled by the desktop actor, never the image decoder.
     ExecutableIcon(PathBuf),
+    /// A listed file's own artwork, such as a program's icon, at its tile's edge: read
+    /// by the desktop actor (`IconService::load_file_icon`), never by an image decoder.
+    FileIcon(PathBuf),
     Archive {
         mount: Arc<dyn ArchiveMount>,
         node: ArchiveNode,
@@ -20,7 +23,8 @@ impl PartialEq for ThumbnailContent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Native(left), Self::Native(right))
-            | (Self::ExecutableIcon(left), Self::ExecutableIcon(right)) => left == right,
+            | (Self::ExecutableIcon(left), Self::ExecutableIcon(right))
+            | (Self::FileIcon(left), Self::FileIcon(right)) => left == right,
             (
                 Self::Archive {
                     node: left,

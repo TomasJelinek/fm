@@ -136,7 +136,11 @@ pub struct ViewerAppearance {
     pub font_size: f32,
     pub foreground: [u8; 4],
     pub background: [u8; 4],
+    /// Fill behind selected text.
     pub selection: [u8; 4],
+    /// Color of all selected text on `selection`. Fully transparent keeps each
+    /// glyph's own color; renderers keep either readable on the fill.
+    pub selection_text: [u8; 4],
     pub accent: [u8; 4],
 }
 
@@ -162,6 +166,50 @@ pub const VIEWER_RETAINED_RASTER_PIXELS: usize = 6 * 1024 * 1024;
 pub const VIEWER_TILE_CACHE_BYTES: usize = 32 * 1024 * 1024;
 /// Tiles that the backend tile cache and the UI texture cache each keep.
 pub const VIEWER_TILE_CACHE_ENTRIES: usize = 128;
+/// Edge in pixels of one retained raster tile.
+pub const VIEWER_TILE_EDGE: u32 = 256;
+/// Bytes of one retained raster tile (premultiplied RGBA).
+pub const VIEWER_TILE_BYTES: usize = 256 * 256 * 4;
+/// Document tiles retained for reuse beyond the shown and prefetched ones stay within
+/// this many bytes (`viewer_document_tile_cache_bytes`).
+pub const VIEWER_DOCUMENT_TILE_CACHE_MAX_BYTES: usize = 96 * 1024 * 1024;
+
+/// Guard rows of document tiles prefetched in the direction of motion for a raster view
+/// `view_height` pixels tall: half a view and one row more, at most six rows (1536 pixels).
+pub fn viewer_document_guard_rows(view_height: u32) -> u32 {
+    (view_height.div_ceil(VIEWER_TILE_EDGE) / 2 + 1).min(6)
+}
+
+/// Bytes of document tiles that the backend tile cache and the UI texture cache each keep
+/// for a raster view of `view` pixels. Documents are rendered at exact physical resolution
+/// whatever the view's size, so the budget always holds the shown tiles and the guard tiles
+/// prefetched ahead, with half again (at most 64 MiB more) for scrolling back; recently
+/// shown tiles are kept up to three views, at least the image tile budget and at most
+/// `VIEWER_DOCUMENT_TILE_CACHE_MAX_BYTES`, when that is more.
+pub fn viewer_document_tile_cache_bytes(view: [u32; 2]) -> usize {
+    // A view's tiles across an edge when the camera is not aligned to the tile grid.
+    let span = |edge: u32| (edge as usize + 1).div_ceil(VIEWER_TILE_EDGE as usize) + 1;
+    let (columns, rows) = (span(view[0]), span(view[1]));
+    let guards = viewer_document_guard_rows(view[1]) as usize;
+    let working = (columns + 1)
+        .saturating_mul(rows + guards)
+        .saturating_mul(VIEWER_TILE_BYTES);
+    let views = usize::try_from(
+        u64::from(view[0])
+            .saturating_mul(u64::from(view[1]))
+            .saturating_mul(4 * 3),
+    )
+    .unwrap_or(usize::MAX)
+    .clamp(
+        VIEWER_TILE_CACHE_BYTES,
+        VIEWER_DOCUMENT_TILE_CACHE_MAX_BYTES,
+    );
+    working
+        .saturating_add((working / 2).min(64 * 1024 * 1024))
+        .max(views)
+        / VIEWER_TILE_BYTES
+        * VIEWER_TILE_BYTES
+}
 
 /// Platform-neutral interactive surface contract shared by backend and presentation.
 pub use midnight_web_viewer_api as viewer_web;
@@ -198,6 +246,9 @@ pub struct ViewerImageInfo {
     pub surface: ViewerSurfaceId,
     pub origin: [f64; 2],
     pub visible_source: [f64; 2],
+    /// Scrollable source extent that the camera clamps to and the scrollbars measure: the
+    /// image or the current page, or the column of every page in the Continuous layout.
+    pub extent: [f64; 2],
     pub raster_scale: f64,
     pub pan_sequence: u64,
     pub width: u32,

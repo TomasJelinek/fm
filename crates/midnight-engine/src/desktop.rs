@@ -26,6 +26,8 @@ mod captured;
 mod command_icons;
 #[path = "desktop_editor.rs"]
 mod editor;
+#[path = "desktop_file_icons.rs"]
+mod file_icons;
 #[path = "desktop_find.rs"]
 mod find;
 #[path = "desktop_link_targets.rs"]
@@ -63,6 +65,7 @@ pub(crate) struct Desktop {
     processes: Processes,
     icons: mpsc::Sender<IconKey>,
     command_icons: watch::Sender<command_icons::View>,
+    file_icons: watch::Sender<file_icons::View>,
     icon_edges: watch::Sender<IconEdges>,
     volume_icons: watch::Sender<Vec<IconKey>>,
     children: mpsc::Sender<TrackedChild>,
@@ -131,15 +134,19 @@ impl Desktop {
         } = services;
         let (icons, receiver) = mpsc::channel(64);
         let (command_icons, command_view) = watch::channel(command_icons::View::default());
+        let (file_icons, file_view) = watch::channel(file_icons::View::default());
         let (icon_edges, drawn_edges) = watch::channel(IconEdges::default());
         tasks.spawn(scope.future(command_icons::worker(
             scope.clone(),
             services.clone(),
             capture,
             outbox.clone(),
-            receiver,
-            command_view,
-            drawn_edges,
+            command_icons::Inputs {
+                icons: receiver,
+                commands: command_view,
+                files: file_view,
+                edges: drawn_edges,
+            },
         )));
         let (volume_icons, roots) = watch::channel(Vec::new());
         tasks.spawn(forward_icons(roots, icons.clone()));
@@ -173,6 +180,7 @@ impl Desktop {
             processes,
             icons,
             command_icons,
+            file_icons,
             icon_edges,
             volume_icons,
             children,
@@ -235,6 +243,28 @@ impl Desktop {
             }
             view.cancel.cancel();
             *view = command_icons::View {
+                generation,
+                targets: targets.take().unwrap_or_default(),
+                cancel: Cancellation::default(),
+            };
+            true
+        });
+    }
+
+    /// Replaces the visible tiles whose files carry their own artwork. The previous
+    /// view's load in progress is cancelled; its tiles that are still visible and
+    /// still lack artwork are part of the new view.
+    pub(crate) fn file_icons(&self, generation: u64, targets: Vec<FileIconTarget>) {
+        if targets.capacity() > MAX_FILE_ICON_TARGETS || !file_icons::valid_targets(&targets) {
+            return;
+        }
+        let mut targets = Some(targets);
+        self.file_icons.send_if_modified(|view| {
+            if generation <= view.generation {
+                return false;
+            }
+            view.cancel.cancel();
+            *view = file_icons::View {
                 generation,
                 targets: targets.take().unwrap_or_default(),
                 cancel: Cancellation::default(),
@@ -954,9 +984,17 @@ async fn icon_worker(
 ) {
     let (sender, commands) = watch::channel(command_icons::View::default());
     drop(sender);
+    let (sender, files) = watch::channel(file_icons::View::default());
+    drop(sender);
     let (sender, edges) = watch::channel(IconEdges::default());
     drop(sender);
-    command_icons::worker(scope, services, None, outbox, receiver, commands, edges).await;
+    let inputs = command_icons::Inputs {
+        icons: receiver,
+        commands,
+        files,
+        edges,
+    };
+    command_icons::worker(scope, services, None, outbox, inputs).await;
 }
 
 fn fallback_icon(kind: IconKind) -> Option<IconPixels> {

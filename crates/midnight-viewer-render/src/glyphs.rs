@@ -246,8 +246,9 @@ impl Coverage {
 
 impl GlyphPainter {
     /// Paint the glyphs of `page`. A glyph whose cluster starts inside
-    /// `selection` (decoded UTF-8 bytes of `page`) uses a brush that stays
-    /// readable over `view.selection_color` painted on `view.background`.
+    /// `selection` (decoded UTF-8 bytes of `page`) uses `view.selection_text`, or its
+    /// own brush when that is transparent, readable over `view.selection_color`
+    /// painted on `view.background`.
     pub(crate) fn paint(
         &mut self,
         page: &TextPage,
@@ -259,9 +260,11 @@ impl GlyphPainter {
         let selection = match selection {
             Some(range)
                 if !range.is_empty()
-                    && self
-                        .selection_colors
-                        .prepare(view.selection_color, view.background) =>
+                    && self.selection_colors.prepare(
+                        view.selection_color,
+                        view.background,
+                        view.selection_text,
+                    ) =>
             {
                 Some(range)
             }

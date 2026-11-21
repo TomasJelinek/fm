@@ -670,6 +670,7 @@ mod palette_tests {
             foreground: [255; 4],
             background: [0; 4],
             selection: [55; 4],
+            selection_text: [0; 4],
             accent: [150; 4],
         };
         palette.accepted(&appearance, 0);

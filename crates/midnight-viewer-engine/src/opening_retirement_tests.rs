@@ -53,6 +53,7 @@ fn rejected(invalid_preferences: bool) {
             foreground: [255; 4],
             background: [0, 0, 0, 255],
             selection: [55; 4],
+            selection_text: [0; 4],
             accent: [150; 4],
         },
         ViewerGeometry {

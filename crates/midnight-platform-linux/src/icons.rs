@@ -12,11 +12,15 @@ use std::{
 
 #[path = "icons_executable.rs"]
 mod executable;
+#[path = "icon_svg.rs"]
+pub(crate) mod svg;
 #[path = "icons_theme.rs"]
 mod theme;
 use theme::{configured_theme, manifest_field, theme_directories};
 
 const PNG_LIMIT: usize = 1024 * 1024;
+/// Artwork formats of a theme, in the order each directory is searched for a name.
+const FORMATS: [&str; 2] = ["png", "svg"];
 
 /// The only places icons are read from: fixed system locations, never a
 /// directory a user or a listed folder can choose.
@@ -47,6 +51,23 @@ impl Roots<'_> {
         // Most probes miss: one `lstat` answers them before the path is resolved.
         path.symlink_metadata().ok()?;
         decode_png(read_bounded(&self.trusted(path)?, PNG_LIMIT)?, size)
+    }
+
+    /// Scalable artwork rendered at exactly `size` device pixels.
+    fn load_svg(&self, path: &Path, size: u16, cancel: &Cancellation) -> Option<IconPixels> {
+        path.symlink_metadata().ok()?;
+        let bytes = read_bounded(&self.trusted(path)?, svg::MAX_THEME_SVG_BYTES)?;
+        let rgba = svg::rasterize(&bytes, size, svg::MAX_THEME_SVG_BYTES, cancel)?;
+        IconPixels::new(u32::from(size), u32::from(size), rgba).ok()
+    }
+
+    /// The artwork at `path`, a PNG reduced or a scalable drawing rendered at `size`.
+    fn load(&self, path: &Path, size: u16, cancel: &Cancellation) -> Option<IconPixels> {
+        match path.extension().and_then(|extension| extension.to_str()) {
+            Some("png") => self.load_png(path, size),
+            Some("svg") => self.load_svg(path, size, cancel),
+            _ => None,
+        }
     }
 }
 
@@ -93,9 +114,9 @@ pub(crate) fn theme_directory(home: Option<&Path>) -> Option<PathBuf> {
         .trusted(Path::new("/usr/share/icons"))
         .filter(|path| path.is_dir())
 }
-/// Probes for one lookup, across every theme and name. A name that no theme
-/// has costs one probe per listed directory: 131 in Yaru, 649 in hicolor.
-const MAX_PROBES: usize = 8192;
+/// Probes for one lookup, across every theme, name and format. A name that no
+/// theme has costs two probes per listed directory: 262 in Yaru, 1298 in hicolor.
+const MAX_PROBES: usize = 16384;
 /// Themes followed from the desktop's theme through `Inherits`.
 const MAX_INHERITED: usize = 16;
 
@@ -111,8 +132,8 @@ fn load_named_icon(
     find_icon(SYSTEM, configured_theme(home), names, size, cancel)
 }
 
-/// The first of `names` that `theme` or a theme behind it has as a PNG, at
-/// `size` device pixels.
+/// The first of `names` that `theme` or a theme behind it has as a PNG or as
+/// scalable artwork, at `size` device pixels.
 fn find_icon(
     roots: Roots<'_>,
     theme: Option<String>,
@@ -184,31 +205,34 @@ fn find_icon(
             // Specific MIME names are preferred across all sizes within this theme.
             for name in names {
                 for directory in &directories {
-                    if cancel.is_cancelled() {
-                        return None;
-                    }
-                    probes += 1;
-                    if probes > MAX_PROBES {
-                        break 'themes;
-                    }
-                    let path = theme_root.join(directory).join(format!("{name}.png"));
-                    if let Some(mut icon) = roots.load_png(&path, size) {
-                        icon.generic = *name == "text-x-generic";
-                        return Some(icon);
+                    for format in FORMATS {
+                        if cancel.is_cancelled() {
+                            return None;
+                        }
+                        probes += 1;
+                        if probes > MAX_PROBES {
+                            break 'themes;
+                        }
+                        let path = theme_root.join(directory).join(format!("{name}.{format}"));
+                        if let Some(mut icon) = roots.load(&path, size, cancel) {
+                            icon.generic = *name == "text-x-generic";
+                            return Some(icon);
+                        }
                     }
                 }
             }
         }
     }
     for name in names {
-        if cancel.is_cancelled() {
-            return None;
-        }
-        if let Some(mut icon) =
-            roots.load_png(&Path::new(roots.pixmaps).join(format!("{name}.png")), size)
-        {
-            icon.generic = *name == "text-x-generic";
-            return Some(icon);
+        for format in FORMATS {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let path = Path::new(roots.pixmaps).join(format!("{name}.{format}"));
+            if let Some(mut icon) = roots.load(&path, size, cancel) {
+                icon.generic = *name == "text-x-generic";
+                return Some(icon);
+            }
         }
     }
     None
@@ -354,41 +378,14 @@ pub(crate) fn decode_png(bytes: Vec<u8>, size: u16) -> Option<IconPixels> {
     reader.limits(limits);
     let source = reader.decode().ok()?.into_rgba8();
     let edge = u32::from(size);
-    let pixels = if source.dimensions() == (edge, edge) {
-        source
-    } else {
-        resize(&source, edge)
-    };
-    IconPixels::new(edge, edge, pixels.into_raw()).ok()
-}
-
-/// Scales in premultiplied alpha, so the hidden color of transparent pixels
-/// neither darkens nor tints the edges of the artwork.
-fn resize(source: &image::RgbaImage, edge: u32) -> image::RgbaImage {
-    let mut premultiplied = image::Rgba32FImage::new(source.width(), source.height());
-    for (from, to) in source.pixels().zip(premultiplied.pixels_mut()) {
-        let alpha = f32::from(from[3]) / 255.0;
-        let channel = |index: usize| f32::from(from[index]) / 255.0 * alpha;
-        *to = image::Rgba([channel(0), channel(1), channel(2), alpha]);
-    }
-    // Lanczos keeps reduced artwork sharp; it would ring around enlarged pixels.
-    let filter = if edge < source.width().max(source.height()) {
-        image::imageops::FilterType::Lanczos3
-    } else {
-        image::imageops::FilterType::CatmullRom
-    };
-    let scaled = image::imageops::resize(&premultiplied, edge, edge, filter);
-    let mut result = image::RgbaImage::new(edge, edge);
-    for (from, to) in scaled.pixels().zip(result.pixels_mut()) {
-        let alpha = from[3].clamp(0.0, 1.0);
-        let opacity = (alpha * 255.0).round() as u8;
-        if opacity == 0 {
-            continue;
-        }
-        let channel = |index: usize| ((from[index] / alpha).clamp(0.0, 1.0) * 255.0).round() as u8;
-        *to = image::Rgba([channel(0), channel(1), channel(2), opacity]);
-    }
-    result
+    // Reduced once in premultiplied alpha; returned untouched at its own size.
+    let rgba = midnight_platform_common::icon_scale::fit(
+        source.as_raw(),
+        source.width(),
+        source.height(),
+        edge,
+    )?;
+    IconPixels::new(edge, edge, rgba).ok()
 }
 
 #[cfg(test)]
@@ -792,6 +789,126 @@ mod tests {
             }
             assert!(partial > 0, "the seam is antialiased at edge {edge}");
         }
+    }
+
+    /// A square SVG drawing: a `color` disc on a transparent field, with a one-unit
+    /// hairline ring that only shows sharply when rendered at the requested size.
+    fn drawing(color: &str) -> String {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="{color}"/><circle cx="8" cy="8" r="7.5" fill="none" stroke="black" stroke-width="0.25"/></svg>"#
+        )
+    }
+
+    #[test]
+    fn scalable_artwork_is_rendered_at_the_exact_size_before_a_larger_bitmap_is_reduced() {
+        let themes = Themes::new(vec![(
+            "Vector",
+            "",
+            vec![
+                ("24x24/places", 24, 1, vec!["folder"]),
+                ("256x256/places", 256, 1, vec!["folder"]),
+            ],
+        )]);
+        let scalable = Path::new(&themes.icons).join("Vector/scalable/places");
+        std::fs::create_dir_all(&scalable).unwrap();
+        std::fs::write(scalable.join("folder.svg"), drawing("#20c040")).unwrap();
+        let manifest = Path::new(&themes.icons).join("Vector/index.theme");
+        let mut text = std::fs::read_to_string(&manifest).unwrap();
+        text = text.replace(
+            "Directories=24x24/places,256x256/places",
+            "Directories=24x24/places,256x256/places,scalable/places",
+        );
+        text += "[scalable/places]\nSize=16\nMinSize=8\nMaxSize=512\nType=Scalable\n";
+        std::fs::write(&manifest, text).unwrap();
+        let roots = Roots {
+            themes: &[&themes.icons],
+            pixmaps: &themes.pixmaps,
+        };
+        let find = |size| {
+            find_icon(
+                roots,
+                Some("Vector".into()),
+                &["folder"],
+                size,
+                &Cancellation::default(),
+            )
+            .unwrap()
+        };
+        // The PNG of the exact size comes first.
+        let exact = find(24);
+        assert_eq!((exact.width, exact.rgba[0], exact.rgba[1]), (24, 0, 0));
+        // At 20 and 216 px the drawing itself, not a reduced 24 or 256 px bitmap.
+        for size in [20u16, 216] {
+            let icon = find(size);
+            assert_eq!(
+                (icon.width, icon.height),
+                (u32::from(size), u32::from(size))
+            );
+            let edge = usize::from(size);
+            let center = &icon.rgba[(edge / 2 * edge + edge / 2) * 4..][..4];
+            assert_eq!(center, [0x20, 0xc0, 0x40, 255], "{size} px");
+            assert_eq!(
+                &icon.rgba[..4],
+                [0, 0, 0, 0],
+                "{size} px: transparent corner"
+            );
+        }
+        // Scalable artwork that cannot be drawn falls through to the bitmaps.
+        std::fs::write(scalable.join("folder.svg"), b"<svg>").unwrap();
+        let reduced = find(216);
+        assert_eq!(
+            (reduced.width, reduced.rgba[1]),
+            (216, 1),
+            "the 256 px directory"
+        );
+    }
+
+    #[test]
+    fn svg_artwork_in_fixed_directories_and_pixmaps_is_rendered_at_the_requested_size() {
+        let themes = Themes::new(vec![("Plain", "", vec![("16x16/apps", 16, 1, vec![])])]);
+        let apps = Path::new(&themes.icons).join("Plain/16x16/apps");
+        std::fs::write(apps.join("vector.svg"), drawing("#c02020")).unwrap();
+        std::fs::write(
+            Path::new(&themes.pixmaps).join("legacy-vector.svg"),
+            drawing("#2020c0"),
+        )
+        .unwrap();
+        let roots = Roots {
+            themes: &[&themes.icons],
+            pixmaps: &themes.pixmaps,
+        };
+        for (name, color) in [
+            ("vector", [0xc0, 0x20, 0x20]),
+            ("legacy-vector", [0x20, 0x20, 0xc0]),
+        ] {
+            let icon = find_icon(
+                roots,
+                Some("Plain".into()),
+                &[name],
+                48,
+                &Cancellation::default(),
+            )
+            .unwrap();
+            assert_eq!(icon.width, 48);
+            let center = &icon.rgba[(24 * 48 + 24) * 4..][..4];
+            assert_eq!(center[..3], color, "{name}");
+        }
+        // Oversized scalable artwork is not read.
+        std::fs::write(
+            apps.join("huge.svg"),
+            vec![b' '; svg::MAX_THEME_SVG_BYTES + 1],
+        )
+        .unwrap();
+        assert!(
+            find_icon(
+                roots,
+                Some("Plain".into()),
+                &["huge"],
+                48,
+                &Cancellation::default()
+            )
+            .is_none()
+        );
     }
 
     #[test]

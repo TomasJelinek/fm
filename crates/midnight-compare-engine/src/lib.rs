@@ -394,6 +394,7 @@ struct Palette {
     foreground: [u8; 4],
     background: [u8; 4],
     selection: [u8; 4],
+    selection_text: [u8; 4],
     accent: [u8; 4],
 }
 
@@ -403,6 +404,7 @@ impl From<&ViewerAppearance> for Palette {
             foreground: appearance.foreground,
             background: appearance.background,
             selection: appearance.selection,
+            selection_text: appearance.selection_text,
             accent: appearance.accent,
         }
     }

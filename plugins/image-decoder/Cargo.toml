@@ -14,7 +14,12 @@ description = "Shared bounded image codecs for independent restricted Midnight p
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "avif-native"] }
 dav1d = "=0.11.0"
 moxcms = "=0.8.1"
-resvg = { version = "=0.48.1", default-features = false, features = ["text"] }
+# `raster-images` lets resvg draw the PNGs that this crate encodes from embedded `data:`
+# images after decoding them itself; resvg never receives other image data.
+resvg = { version = "=0.48.1", default-features = false, features = ["text", "raster-images"] }
+# The style-rule matcher usvg uses (already in its graph), so the reference bound applies
+# the same rules.
+simplecss = "=0.2.2"
 
 [lints.rust]
 unsafe_code = "forbid"

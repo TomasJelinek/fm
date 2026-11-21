@@ -6,6 +6,11 @@ impl Presenter {
         &self.preferences.values.viewer
     }
 
+    /// The user's number format, for viewer windows that read typed numbers.
+    pub fn number_locale(&self) -> &midnight_core::NumberLocale {
+        &self.number_locale
+    }
+
     pub fn save_viewer_preferences(
         &mut self,
         change: ViewerPreferenceChange,

@@ -214,12 +214,14 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     drop(recorded);
     let count = commands.borrow().len();
     key(&window, Key::Return);
-    chord(&window, Key::Alt, Key::Return);
     assert_eq!(
         commands.borrow().len(),
         count,
-        "pending search cannot activate a leftover row"
+        "Enter opens no leftover row while the search computes"
     );
+    assert_eq!(window.get_left_search_query().as_str(), "al");
+    // Other commands close the search and act on the focused row
+    // (`panel_search_commands`).
 
     let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
     native.draw_if_needed(|renderer| {
@@ -261,14 +263,7 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     key(&window, "z");
     let no_match = latest_search(&commands);
     accept(&window, &presenter, &commands, &no_match, &[], 0);
-    let count = commands.borrow().len();
-    key(&window, Key::Return);
-    chord(&window, Key::Alt, Key::Return);
-    assert_eq!(
-        commands.borrow().len(),
-        count,
-        "an accepted empty result cannot activate the old cursor"
-    );
+    // Enter and commands with no match: `panel_search_commands`.
     assert_eq!(window.get_left_search_count(), 0);
     key(&window, Key::Backspace);
     key(&window, Key::Space);

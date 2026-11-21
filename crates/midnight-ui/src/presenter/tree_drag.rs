@@ -37,7 +37,8 @@ impl Presenter {
             return false;
         }
         let p = &self.panes[pane.index()];
-        if !p.native_capabilities() || !p.tree_input_ready() || !p.search_allows_activation() {
+        // The dragged row is validated below; the focused row does not matter.
+        if !p.native_capabilities() || !p.tree_input_ready() {
             return false;
         }
         let Some(display) = row

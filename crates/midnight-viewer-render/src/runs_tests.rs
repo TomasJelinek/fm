@@ -211,6 +211,7 @@ fn assert_same(renderer: &mut TextRenderer, full: &TextPage, pieces: &TextPage, 
         origin: [-2.0, -2.0],
         background: [250, 250, 245, 255],
         selection_color: [40, 80, 120, 255],
+        selection_text: [0; 4],
     };
     for selection in [None, Some(ranges[2].clone())] {
         let expected = renderer.rasterize(full, viewport, selection.clone());

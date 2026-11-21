@@ -3,11 +3,17 @@
 Independent process plugin for Midnight Explorer. PNG, JPEG, GIF, WebP, BMP, ICO
 and TIFF use exactly the pinned image-rs and moxcms libraries used by thumbnails.
 SVG uses the same shared restricted decoder with resvg 0.48.1 and embedded Noto
-fonts. SVG supports shapes, paths, gradients, local reuse and text; it rejects
-images, scripts, foreign objects and filter/mask/clip/marker/pattern effects.
-The source limit is 4 MiB, XML limit 32768 nodes, depth 64 and local-reference
-expansion 65536 visits. Embedded Noto Sans supplies Latin, Arabic and Hebrew
-fallback; system-font appearance and full Unicode coverage are not promised.
+fonts. It draws shapes, paths, text, gradients, patterns, markers, clip paths, masks,
+filters, local reuse and `data:` PNG/JPEG/GIF/WebP images; scripts never run,
+`foreignObject` is skipped for its `switch` fallback, and linked files and URLs are
+never opened. Malformed documents and documents over a bound are refused with the
+exact reason and bound: 4 MiB of source, 262,144 XML nodes, depth 64, an estimated
+256 MiB of converted tree after expanding references, and 448 MiB of memory and 2^33
+pixel operations at the drawing size (the
+[decoder contract](../image-decoder/README.md#svg) lists them all). The decoder's
+note naming skipped content does not reach the status line until image viewer API
+0.4.0 (VIEW-06). Embedded Noto Sans supplies Latin, Arabic and Hebrew fallback;
+system-font appearance and full Unicode coverage are not promised.
 Font provenance and OFL terms are retained in `notices/Noto-Sans/`.
 AVIF uses that same shared decoder with statically linked dav1d 1.5.4. Its encoded
 container is capped at 32 MiB; color and alpha each receive a 16,777,216-pixel
@@ -39,7 +45,9 @@ decoder's error text, sanitized to at most 160 printable ASCII characters withou
 paths, after the failure, and the host shows it after its own sentence, for example
 "This image is damaged or incomplete: the file is empty". The shared decoder names
 empty sources and content that is not an image before trying SVG; codec errors keep
-image-rs wording, such as "unexpected end of file" for a cut PNG.
+image-rs wording, such as "unexpected end of file" for a cut PNG. An SVG limit or
+unsupported construct is a complete sentence starting with "This ", which the host
+shows on its own ("This SVG is larger than 4 MiB, the limit for SVG images.").
 
 Use a separately released offline SDK registry. The project never edits host
 sources. All build/test output must lie below a `_build` directory: this project's own

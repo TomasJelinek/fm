@@ -3,6 +3,9 @@ use crate::*;
 
 /// The Slint index of `PanelViewMode::Thumbnails`.
 const THUMBNAILS: i32 = 2;
+/// The largest box, in logical pixels, that draws native action art: the title icon
+/// of a dialog frame (`dialog-frame.slint`). Toolbars and menus draw 14 to 24 px.
+const ACTION_BOX: f32 = 32.0;
 
 /// The device-pixel edges at which `window` draws native icons right now, and
 /// the panes whose entries are tiles. Density, font size, thumbnail size, view
@@ -23,6 +26,7 @@ pub fn icon_view(window: &MainWindow) -> IconView {
                 0
             },
             location: device_edge(theme.get_location_icon_size(), scale),
+            action: device_edge(ACTION_BOX, scale),
         },
         tiles,
     }
@@ -72,6 +76,7 @@ mod tests {
                 entry: 20,
                 tile: 0,
                 location: 20,
+                action: 32,
             },
             tiles: [false, false],
         };
@@ -111,6 +116,11 @@ mod tests {
             .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 2.0 });
         let dense = icon_view(&h.window).edges;
         assert_eq!((dense.entry, dense.location), (76, 52));
+        assert_eq!(dense.action, 64, "action art follows the scale as well");
+        h.window
+            .window()
+            .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 2.25 });
+        assert_eq!(icon_view(&h.window).edges.action, 72);
     }
 
     #[test]
@@ -129,6 +139,7 @@ mod tests {
                 entry: 20,
                 tile: 96,
                 location: 20,
+                action: 32,
             },
             tiles: [false, true],
         };

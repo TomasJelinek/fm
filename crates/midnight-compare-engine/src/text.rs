@@ -558,6 +558,7 @@ impl TextComparison {
                             origin: [self.horizontal, 0.0],
                             background,
                             selection_color: palette.selection,
+                            selection_text: palette.selection_text,
                         },
                         selection,
                     )

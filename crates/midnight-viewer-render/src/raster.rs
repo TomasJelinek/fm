@@ -8,6 +8,10 @@ pub struct Viewport {
     pub origin: [f32; 2],
     pub background: [u8; 4],
     pub selection_color: [u8; 4],
+    /// The color of selected glyphs and their underlines over `selection_color`.
+    /// Fully transparent keeps each glyph's own color. Either way a color below
+    /// 4.5:1 on the painted selection moves in lightness until it reaches that.
+    pub selection_text: [u8; 4],
 }
 
 impl Viewport {
@@ -116,6 +120,7 @@ impl TextRenderer {
                 origin,
                 background: [0; 4],
                 selection_color: [0; 4],
+                selection_text: [0; 4],
             },
             None,
             target,
@@ -150,6 +155,7 @@ impl TextRenderer {
             origin: origin.map(|value| value as f32),
             background: [0; 4],
             selection_color: [0; 4],
+            selection_text: [0; 4],
         };
         let (bytes, _) = validate(page, viewport, None)?;
         if target.rgba.len() != bytes {
@@ -159,8 +165,8 @@ impl TextRenderer {
     }
 
     /// Paint `page` into a new viewport raster. A `selection` (decoded UTF-8 byte
-    /// range) is filled with `viewport.selection_color`; its glyphs keep their
-    /// hue but change lightness where needed to stay readable on that fill.
+    /// range) is filled with `viewport.selection_color`; its glyphs take
+    /// `viewport.selection_text` (see [`Viewport`]) and stay readable on that fill.
     pub fn rasterize(
         &mut self,
         page: &TextPage,

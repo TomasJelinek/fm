@@ -80,11 +80,29 @@ fn document(generation: u64, revision: u64, layout: DocumentLayout) -> ViewerFra
 fn layout_selection_waits_for_publication_and_retries_a_fresh_frame_generation() {
     let fixture = Fixture::new();
     fixture.pdf(1, 2, DocumentLayout::Paged);
-    let preferences = fixture.open.session.preferences();
+    let saved = Rc::new(RefCell::new(Vec::new()));
+    let capture = saved.clone();
+    *fixture.open.preferences_listener.borrow_mut() =
+        Rc::new(move |change| capture.borrow_mut().push(change));
+    assert_eq!(
+        fixture.open.session.preferences().document_layout,
+        DocumentLayout::Paged
+    );
     fixture.open.window.invoke_change_document_layout(1);
     assert_eq!(fixture.layouts(), [(2, DocumentLayout::Continuous)]);
     assert_eq!(fixture.open.window.get_document_layout(), 0);
-    assert_eq!(fixture.open.session.preferences(), preferences);
+    // The choice is saved at once as the layout the next document opens in; the shown
+    // document switches when its frame is published.
+    assert_eq!(
+        fixture.open.session.preferences().document_layout,
+        DocumentLayout::Continuous
+    );
+    assert_eq!(
+        *saved.borrow(),
+        [ViewerPreferenceChange::DocumentLayout(
+            DocumentLayout::Continuous
+        )]
+    );
 
     fixture.deliver(Vec::new());
     assert_eq!(
@@ -116,6 +134,7 @@ fn layout_selection_waits_for_publication_and_retries_a_fresh_frame_generation()
         2,
         "a stale frame cannot replay intent"
     );
+    assert_eq!(saved.borrow().len(), 1, "one choice, one save");
 }
 
 #[test]

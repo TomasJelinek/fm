@@ -249,6 +249,7 @@ fn frames_painted_in_their_shared_buffers_match_the_allocating_renderer() {
             origin,
             background: worker.appearance.background,
             selection_color: worker.appearance.selection,
+            selection_text: worker.appearance.selection_text,
         };
         let shaped = worker.shaped.as_ref().unwrap();
         let Some(info) = &frame.raster else {
@@ -1294,6 +1295,7 @@ fn retained_wrapped_tab_refill_preserves_logical_context_and_exact_visible_pixel
                     origin: [-margin, target[1] as f32],
                     background: worker.appearance.background,
                     selection_color: worker.appearance.selection,
+                    selection_text: worker.appearance.selection_text,
                 },
                 None,
             )

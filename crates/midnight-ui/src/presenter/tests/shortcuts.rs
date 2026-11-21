@@ -120,7 +120,7 @@ fn acknowledged_native_tree(pane: PaneId, kind: EntryKind, name: &OsStr) -> (Pre
         Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Commit(actual)
             if Arc::ptr_eq(actual, &view)))));
     p.focus_display_row(pane, 2);
-    assert!(p.panes[pane.index()].search_allows_activation());
+    assert!(p.panes[pane.index()].focus_actionable());
     (p, path)
 }
 
@@ -349,7 +349,7 @@ fn tree_command_insertion_refuses_selection_replay_until_it_can_be_sent() {
 }
 
 #[test]
-fn tree_command_insertion_requires_the_current_matching_search_publication() {
+fn tree_command_insertion_waits_for_the_search_publication_but_not_for_a_match() {
     let pane = PaneId::Left;
     let (mut p, path) = acknowledged_native_tree(pane, EntryKind::File, OsStr::new("native.txt"));
     p.preferences.values.quick_search_filter = false;
@@ -385,13 +385,12 @@ fn tree_command_insertion_requires_the_current_matching_search_publication() {
     assert_eq!(p.focused_name(pane), Some(PathBuf::from("native.txt")));
     assert_eq!(p.focused_full_path(pane), Some(path));
     p.focus_display_row(pane, 1);
-    assert!(
-        !p.panes[pane.index()]
-            .tree_cursor_row()
-            .unwrap()
-            .search_match
-    );
-    assert_no_command_insertion(&p, pane);
+    let focused = p.panes[pane.index()].tree_cursor_row().unwrap();
+    assert!(!focused.search_match);
+    // The query never decides: Ctrl+Enter inserts a focused nonmatching row too.
+    let folder = focused.entry.path.clone();
+    assert_eq!(p.focused_name(pane), folder.file_name().map(PathBuf::from));
+    assert_eq!(p.focused_full_path(pane), Some(folder));
 }
 
 #[test]
@@ -476,12 +475,14 @@ fn tree_command_insertion_does_not_retain_a_removed_descendants_identity() {
 }
 
 #[test]
-fn flat_command_insertion_refuses_loading_and_pending_search() {
+fn flat_command_insertion_closes_a_pending_search_and_refuses_loading() {
     let (mut p, path) = focused(EntryKind::File, "文档 ' & $().txt");
     p.change_search_query(PaneId::Left, "文", &|_| false);
     assert!(p.panes[0].search.pending);
-    assert_no_command_insertion(&p, PaneId::Left);
-    p.change_search_query(PaneId::Left, "", &|_| true);
+    // Ctrl+Enter cancels the computing search and inserts the focused name.
+    let name = p.panel_command(PaneId::Left, &|_| true, |p| p.focused_name(PaneId::Left));
+    assert_eq!(name, Some(PathBuf::from("文档 ' & $().txt")));
+    assert_eq!(p.panes[0].search.query, "");
     assert_eq!(
         p.focused_name(PaneId::Left),
         Some(PathBuf::from("文档 ' & $().txt"))

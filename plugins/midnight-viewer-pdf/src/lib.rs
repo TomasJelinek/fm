@@ -13,6 +13,7 @@ use hayro::{
 };
 use midnight_image_viewer_sdk::{Document, ReadSeek, api};
 use std::{
+    cell::RefCell,
     io::{self, SeekFrom},
     sync::{
         Arc,
@@ -23,10 +24,21 @@ use std::{
 /// Maximum encoded source retained by this provider, independent of viewport/output limits.
 pub const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 
+/// Pages whose Hayro caches stay retained between viewport requests.
+const RETAINED_PAGE_CACHES: usize = 2;
+
 /// A parsed document retained only in the restricted provider process.
 pub struct PdfDocument {
-    pdf: Pdf,
+    /// The worker serves exactly one document for its whole life, so the parsed document
+    /// lives until the process exits; its caches can then borrow it for every request.
+    pdf: &'static Pdf,
     metadata: api::DocumentMetadata,
+    /// Hayro's caches (parsed fonts, glyph outlines and bitmaps, decoded images) for the
+    /// pages rendered most recently, keyed by page and scale. The host requests a page in
+    /// bands of tiles, so the bands after the first one reuse them. At most
+    /// `RETAINED_PAGE_CACHES` pages are kept: retained memory stays a few pages' worth
+    /// however far the user travels through the document.
+    caches: RefCell<Vec<((u32, u64), RenderCache<'static>)>>,
 }
 
 /// Read the captured opaque source once and reject unsupported geometry before rendering.
@@ -96,22 +108,51 @@ pub fn decode(stream: &mut dyn ReadSeek) -> io::Result<PdfDocument> {
     }
     let metadata = api::DocumentMetadata { pages };
     metadata.validate()?;
-    Ok(PdfDocument { pdf, metadata })
+    Ok(PdfDocument {
+        pdf: Box::leak(Box::new(pdf)),
+        metadata,
+        caches: RefCell::new(Vec::new()),
+    })
 }
 
+impl PdfDocument {
+    /// Make the retained caches of `page` at `scale` the most recently used entry, replacing
+    /// the least recently used one when they are not retained yet.
+    fn touch_cache(caches: &mut Vec<((u32, u64), RenderCache<'static>)>, page: u32, scale: f64) {
+        let key = (page, scale.to_bits());
+        if let Some(index) = caches.iter().position(|(cached, _)| *cached == key) {
+            let entry = caches.remove(index);
+            caches.push(entry);
+            return;
+        }
+        if caches.len() >= RETAINED_PAGE_CACHES {
+            caches.remove(0);
+        }
+        caches.push((key, RenderCache::new()));
+    }
+
+    /// Pages and scales whose caches are retained, least recently used first.
+    pub fn retained_caches(&self) -> Vec<(u32, f64)> {
+        self.caches
+            .borrow()
+            .iter()
+            .map(|((page, scale), _)| (*page, f64::from_bits(*scale)))
+            .collect()
+    }
+}
 impl Document for PdfDocument {
     fn metadata(&self) -> api::DocumentMetadata {
         self.metadata.clone()
     }
     fn render(&self, page: u32, viewport: api::Viewport) -> io::Result<api::Frame> {
         viewport.validate()?;
-        let page = self.pdf.pages().get(page as usize).ok_or_else(|| {
+        let pdf_page = self.pdf.pages().get(page as usize).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "PDF page outside document")
         })?;
         let mut context = RenderContext::new(viewport.width as u16, viewport.height as u16);
         let mapping = Affine::scale(viewport.scale)
             * Affine::translate((-viewport.origin_x, -viewport.origin_y));
-        let (width, height) = page.render_dimensions();
+        let (width, height) = pdf_page.render_dimensions();
         context.set_transform(mapping);
         context.set_paint(WHITE);
         context.fill_rect(&Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
@@ -123,16 +164,26 @@ impl Document for PdfDocument {
             }),
             ..Default::default()
         };
-        // Per-render caches prevent unbounded retained growth as the user traverses a document.
-        // The surrounding worker additionally enforces memory, CPU and operation deadlines.
+        // Glyphs and paths are antialiased (`aliasing_threshold: None`) and horizontal text
+        // is hinted at the exact physical size the host requests; the host never scales
+        // these pixels up at the zoom it shows them. The surrounding worker additionally
+        // enforces memory, CPU and operation deadlines.
+        let render_settings = RenderSettings {
+            aliasing_threshold: None,
+            ..RenderSettings::default()
+        };
+        let mut caches = self.caches.borrow_mut();
+        Self::touch_cache(&mut caches, page, viewport.scale);
+        let cache = &caches.last().expect("a retained page cache").1;
         hayro::render_into(
-            page,
-            &RenderCache::new(),
+            pdf_page,
+            cache,
             &settings,
-            &RenderSettings::default(),
+            &render_settings,
             &mut context,
-            mapping * page.initial_transform(true).to_kurbo(),
+            mapping * pdf_page.initial_transform(true).to_kurbo(),
         );
+        drop(caches);
         if warning.load(Ordering::Relaxed) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,

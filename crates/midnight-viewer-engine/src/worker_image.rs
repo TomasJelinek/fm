@@ -10,14 +10,13 @@ impl Worker {
         let page_before = image.page;
         let layout_before = image.document_view.as_ref().map(|view| view.layout);
         let mut page_turn = false;
-        let pan_ack = !image.document
-            && matches!(
-                input,
-                ViewerInput::Image {
-                    input: ViewerImageInput::PanTo { .. },
-                    ..
-                }
-            );
+        let pan_ack = matches!(
+            input,
+            ViewerInput::Image {
+                input: ViewerImageInput::PanTo { .. },
+                ..
+            }
+        );
         if let ViewerInput::Resize(geometry) = input {
             self.image_size = [geometry.width.max(1), geometry.height.max(1)];
             self.geometry = bounded_geometry(*geometry);
@@ -32,8 +31,9 @@ impl Worker {
         } else if let Some(document) = &mut image.document_view {
             match input {
                 ViewerInput::DocumentLayout { frame, layout } => {
-                    if !image.frames.accepts_document(*frame, true)
-                        || !document.set_layout(*frame, *layout)
+                    let frame = image.frames.surface_frame(*frame);
+                    if !image.frames.accepts_document(frame, true)
+                        || !document.set_layout(frame, *layout)
                     {
                         return true;
                     }
@@ -47,8 +47,25 @@ impl Worker {
                 ViewerInput::Scroll { x, y } => document.scroll([f64::from(*x), f64::from(*y)]),
                 ViewerInput::Seek(position) => document.seek(1, *position),
                 ViewerInput::Pan(position) => document.seek(0, *position),
+                // The UI's tiled camera moved over retained tiles of its current surface.
+                ViewerInput::Image {
+                    input:
+                        ViewerImageInput::PanTo {
+                            surface,
+                            sequence,
+                            origin,
+                        },
+                    ..
+                } => {
+                    if !image.pan_document(*surface, *sequence, *origin) {
+                        return true;
+                    }
+                }
                 ViewerInput::Image { frame, input } => {
-                    if !image.frames.accepts_document_image(*frame, input)
+                    // Tile coordinates stay valid for every frame of one surface, so an
+                    // input from an earlier frame of the shown surface refers to the latest.
+                    let frame = image.frames.surface_frame(*frame);
+                    if !image.frames.accepts_document_image(frame, input)
                         || !document.image_input(input)
                     {
                         return true;
@@ -109,7 +126,7 @@ impl Worker {
             } else if image.document_view.is_some() && matches!(input, ViewerInput::Resize(_)) {
                 image.frames.resized();
             }
-            image.changed();
+            image.changed_by(pan_ack);
             self.frames.invalidate();
             self.dirty = true;
         }
@@ -129,12 +146,19 @@ impl Worker {
                 if let Some(image) = &mut self.image {
                     let metadata = pages.first().copied().ok_or("Image contains no pages.")?;
                     let document_view = document
-                        .then(|| DocumentView::new(&pages, self.image_size))
+                        .then(|| {
+                            DocumentView::opened(
+                                &pages,
+                                self.image_size,
+                                self.preferences.document_layout,
+                            )
+                        })
                         .transpose()?;
                     image.pages = pages;
                     image.document = document;
                     image.document_view = document_view;
-                    // Each PDF source begins in Fit; page turns retain live geometry.
+                    // Each PDF source begins in Fit, in the layout chosen last; page turns
+                    // retain live geometry.
                     let view = if let Some(document) = &image.document_view {
                         document.geometry.clone()
                     } else {
@@ -170,19 +194,15 @@ impl Worker {
                 }
                 Ok(())
             }
-            Event::DocumentFrame { revision, raster } => {
-                if let Some(image) = &mut self.image {
-                    image.complete_document(revision, Some(raster));
-                    self.dirty = true;
-                }
-                Ok(())
-            }
-            Event::DocumentSuperseded(revision) => {
-                if let Some(image) = &mut self.image {
-                    image.complete_document(revision, None);
-                    self.dirty = true;
-                }
-                Ok(())
+            Event::Tiles { revision, tiles } => {
+                let Some(image) = &mut self.image else {
+                    return;
+                };
+                image.pending = None;
+                // Each page slice validated the source before and after rendering.
+                image.validated = Some(revision);
+                self.dirty = true;
+                image.scene.complete_band(tiles)
             }
             Event::Failed(error) => Err(error),
         };
@@ -225,21 +245,21 @@ impl Worker {
         let (horizontal_position, horizontal_extent) = metrics(0);
         let revision = self.frames.painted()?;
         image.frames.painted(revision);
+        image.frames.surface(revision, image.scene.surface);
         if let Some(document) = &mut image.document_view {
             document.painted(revision);
         }
-        let (width, height, pixels, tiles) = match paint {
-            crate::image_view::Paint::Tiles(tiles) => (
-                plan.raster_size[0],
-                plan.raster_size[1],
-                Arc::from([]),
-                Some(tiles.into()),
-            ),
-            // The actor already shared these pixels; the frame takes the same buffer.
-            crate::image_view::Paint::Raster(raster) => {
-                (raster.width, raster.height, raster.rgba, None)
-            }
-        };
+        let crate::image_view::Paint::Tiles(tiles) = paint;
+        let (width, height, pixels, tiles) = (
+            plan.raster_size[0],
+            plan.raster_size[1],
+            Arc::from([]),
+            Some(tiles.into()),
+        );
+        let extent = image.document_view.as_ref().map_or_else(
+            || [f64::from(view.width), f64::from(view.height)],
+            DocumentView::extent,
+        );
         output.put(ViewerOutput::Frame(Box::new(ViewerFrame {
             generation: self.positions.generation,
             media_control: None,
@@ -253,6 +273,7 @@ impl Worker {
                 surface: image.scene.surface,
                 origin: view.origin,
                 visible_source: view.viewport.map(|value| f64::from(value) / view.scale),
+                extent,
                 raster_scale: plan.scale,
                 pan_sequence: image.scene.sequence,
                 width: view.width,
@@ -302,6 +323,11 @@ impl Worker {
                 )
             },
         })));
+        // The camera in progress is shown: move on to the one the UI asked for meanwhile.
+        if image.published() {
+            self.frames.invalidate();
+            self.dirty = true;
+        }
         Ok(())
     }
 }

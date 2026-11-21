@@ -47,7 +47,9 @@ pub(crate) struct RoleSpan {
 }
 
 /// The color that text and document pages paint a `viewer::STYLE_*` role with in
-/// `appearance`; unknown roles use the foreground.
+/// `appearance`; unknown roles use the foreground. Role colors keep the contrast of
+/// `midnight_core::content_minimum` against the page: 5:1, or 7:1 in the Contrast and
+/// High Contrast themes.
 pub fn role_color(role: u16, appearance: &ViewerAppearance) -> [u8; 4] {
     let tint = match role {
         viewer::STYLE_KEYWORD | viewer::STYLE_HEADING => appearance.accent,
@@ -59,14 +61,10 @@ pub fn role_color(role: u16, appearance: &ViewerAppearance) -> [u8; 4] {
         viewer::STYLE_INVALID => [255, 105, 105, 255],
         _ => return appearance.foreground,
     };
-    let color = midnight_core::readable_rgb(
-        [tint[0], tint[1], tint[2]],
-        [
-            appearance.background[0],
-            appearance.background[1],
-            appearance.background[2],
-        ],
-    );
+    let rgb = |color: [u8; 4]| [color[0], color[1], color[2]];
+    let background = rgb(appearance.background);
+    let minimum = midnight_core::content_minimum(rgb(appearance.foreground), background);
+    let color = midnight_core::readable_rgb_at(rgb(tint), background, minimum);
     [color[0], color[1], color[2], 255]
 }
 
@@ -484,6 +482,7 @@ mod github_layout_tests {
             foreground: [31, 35, 40, 255],
             background: [255; 4],
             selection: [50, 100, 180, 255],
+            selection_text: [0; 4],
             accent: [200, 80, 40, 255],
         };
         let page = Page::document(

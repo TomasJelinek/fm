@@ -20,6 +20,7 @@ pub(crate) fn capture(window: &MainWindow) -> ViewerAppearance {
         foreground: rgba(theme.get_text()),
         background: rgba(theme.get_pane_background()),
         selection: rgba(theme.get_selection_background()),
+        selection_text: rgba(theme.get_selection_text()),
         accent: rgba(theme.get_accent()),
     }
 }

@@ -165,6 +165,7 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
                 foreground: [255; 4],
                 background: [0, 0, 0, 255],
                 selection: [80, 80, 80, 255],
+                selection_text: [0; 4],
                 accent: [100, 100, 255, 255],
             },
             slint::LogicalSize::new(900.0, 600.0),

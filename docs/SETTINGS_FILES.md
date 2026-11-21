@@ -156,8 +156,10 @@ settings file: `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, o
 - The document is one JSON object in UTF-8. Exports are indented and end with a
   newline. The whole file is at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 35. When exporting, it writes the lowest version that can hold the
-  settings, at most 35.
+  versions 1 to 36. When exporting, it writes the lowest version that can hold the
+  settings, at most 36. Schema 36 adds `viewer.document_layout` (`"continuous"`, the
+  PDF layout chosen last), written only when it is not the default Paged; a schema 36
+  file without it, or an earlier schema with it, is refused.
 - The other top-level fields belong to that schema version. A field that the
   version does not define is an error, not ignored.
 - Native paths are stored losslessly. A path that is valid Unicode is a JSON string.

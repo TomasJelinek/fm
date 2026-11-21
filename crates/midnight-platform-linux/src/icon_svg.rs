@@ -1,12 +1,32 @@
 //! Bounded static artwork rasterization. No external images, fonts, or network access.
-use midnight_core::Cancellation;
+use midnight_core::{Cancellation, MAX_ICON_EDGE};
 use midnight_platform_common::icon_snapshot::SnapshotPixels;
 use std::collections::{HashMap, HashSet};
 const MAX_SVG_BYTES: usize = 128 * 1024;
-pub(super) fn decode(bytes: &[u8], size: u16, cancel: &Cancellation) -> Option<SnapshotPixels> {
+/// Scalable artwork of an installed icon theme, under the fixed system icon roots.
+pub(crate) const MAX_THEME_SVG_BYTES: usize = 512 * 1024;
+
+/// Explicitly chosen artwork, at most 128 px.
+pub(crate) fn decode(bytes: &[u8], size: u16, cancel: &Cancellation) -> Option<SnapshotPixels> {
+    if !(1..=128).contains(&size) {
+        return None;
+    }
+    let rgba = rasterize(bytes, size, MAX_SVG_BYTES, cancel)?;
+    SnapshotPixels::new(u32::from(size), u32::from(size), rgba).ok()
+}
+
+/// Straight-alpha RGBA of `size` by `size` pixels: the drawing fitted to the square
+/// and centered, rendered at that size. `None` for input over `max_bytes`, beyond the
+/// structural bounds below, or cancelled.
+pub(crate) fn rasterize(
+    bytes: &[u8],
+    size: u16,
+    max_bytes: usize,
+    cancel: &Cancellation,
+) -> Option<Vec<u8>> {
     if cancel.is_cancelled()
-        || !(1..=128).contains(&size)
-        || bytes.len() > MAX_SVG_BYTES
+        || !(1..=MAX_ICON_EDGE).contains(&size)
+        || bytes.len() > max_bytes
         || bytes
             .iter()
             .filter(|byte| **byte == b'<')
@@ -61,15 +81,16 @@ pub(super) fn decode(bytes: &[u8], size: u16, cancel: &Cancellation) -> Option<S
     if cancel.is_cancelled() {
         return None;
     }
-    let rgba = bitmap
-        .pixels()
-        .iter()
-        .flat_map(|pixel| {
-            let color = pixel.demultiply();
-            [color.red(), color.green(), color.blue(), color.alpha()]
-        })
-        .collect();
-    SnapshotPixels::new(u32::from(size), u32::from(size), rgba).ok()
+    Some(
+        bitmap
+            .pixels()
+            .iter()
+            .flat_map(|pixel| {
+                let color = pixel.demultiply();
+                [color.red(), color.green(), color.blue(), color.alpha()]
+            })
+            .collect(),
+    )
 }
 fn bounded_expansion(
     document: &resvg::usvg::roxmltree::Document<'_>,

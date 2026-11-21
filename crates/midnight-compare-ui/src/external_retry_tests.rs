@@ -352,6 +352,7 @@ fn appearance() -> ViewerAppearance {
         foreground: [255; 4],
         background: [24, 28, 36, 255],
         selection: [60, 80, 120, 255],
+        selection_text: [0; 4],
         accent: [100, 150, 220, 255],
     }
 }

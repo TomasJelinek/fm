@@ -45,6 +45,7 @@ fn comparator_offers_fixed_pitch_fonts_persists_explicit_choice_and_fits_small_w
                 foreground: [240, 240, 240, 255],
                 background: [20, 20, 20, 255],
                 selection: [60, 80, 120, 255],
+                selection_text: [0; 4],
                 accent: [100, 150, 220, 255],
             },
             slint::LogicalSize::new(800.0, 600.0),
@@ -144,6 +145,7 @@ fn application_fonts_and_palette_updates_preserve_document_font_and_prime_later_
         foreground: [48, 48, 48, 255],
         background: [255, 255, 255, 255],
         selection: [204, 204, 204, 255],
+        selection_text: [0; 4],
         accent: [69, 69, 69, 255],
     };
     let b = ViewerAppearance {
@@ -152,6 +154,7 @@ fn application_fonts_and_palette_updates_preserve_document_font_and_prime_later_
         foreground: [255, 255, 255, 255],
         background: [0, 0, 0, 255],
         selection: [255, 255, 255, 255],
+        selection_text: [0; 4],
         accent: [191, 255, 255, 255],
     };
     let apply = |appearance: &ViewerAppearance, theme| {

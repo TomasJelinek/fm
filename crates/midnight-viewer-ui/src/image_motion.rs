@@ -71,6 +71,42 @@ pub(super) fn push(open: &OpenWindow, x: f32, y: f32, direct: bool) -> bool {
     accepted
 }
 
+/// A zoom step on retained tiles: show them at the new `zoom` around `anchor` (physical
+/// pixels in the view) at once; the new surface's tiles replace them when ready.
+pub(super) fn preview_zoom(open: &OpenWindow, zoom: f64, anchor: [f32; 2]) {
+    if !open.window.get_tiled() {
+        return;
+    }
+    let Some(info) = open.image_info.borrow().clone() else {
+        return;
+    };
+    let [scale, ..] = open.image_textures.borrow().preview();
+    let factor = zoom / (info.zoom * scale);
+    let pixel = f64::from(open.window.window().scale_factor());
+    // The view is centred in the canvas; the anchor in the canvas's logical pixels.
+    let left = [
+        (f64::from(open.window.get_content_width())
+            - f64::from(open.window.get_image_viewport_width()) / pixel)
+            / 2.0,
+        (f64::from(open.window.get_content_height())
+            - f64::from(open.window.get_image_viewport_height()) / pixel)
+            / 2.0,
+    ];
+    let anchor = std::array::from_fn(|axis| left[axis] + f64::from(anchor[axis]) / pixel);
+    let preview = open
+        .image_textures
+        .borrow_mut()
+        .preview_zoom(factor, anchor);
+    apply_preview(open, preview);
+}
+
+/// Present the tile cache's zoom preview (`Textures::preview`).
+pub(super) fn apply_preview(open: &OpenWindow, [scale, x, y]: [f64; 3]) {
+    open.window.set_tile_preview_scale(scale as f32);
+    open.window.set_tile_preview_x(x as f32);
+    open.window.set_tile_preview_y(y as f32);
+}
+
 pub(super) fn seek(open: &OpenWindow, axis: usize, position: f64) {
     if open.image_camera.borrow_mut().seek(axis, position) {
         present(open);
@@ -104,6 +140,13 @@ pub(super) fn present(open: &OpenWindow) {
         )
     };
     let base = open.image_textures.borrow().base().unwrap_or(info.origin);
+    // Document tiles are rendered at the exact physical scale: draw them at whole raster
+    // pixels, so glyph edges are not resampled between two screen pixels.
+    let origin = if info.page > 0 {
+        origin.map(|value| (value * info.raster_scale).round() / info.raster_scale)
+    } else {
+        origin
+    };
     open.window
         .set_tile_offset_x(((origin[0] - base[0]) / info.visible_source[0]) as f32);
     open.window

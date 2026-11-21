@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 #[path = "thumbnail_image_cache.rs"]
 mod cache;
+#[path = "file_icons.rs"]
+mod file_icons;
 
 /// Targets per thumbnail request; the thumbnail host refuses larger views.
 pub(crate) const MAX_THUMBNAIL_TARGETS: usize = midnight_core::MAX_THUMBNAIL_VIEW_TARGETS;
@@ -43,6 +45,7 @@ pub(crate) struct ThumbnailState {
     bytes: usize,
     tick: u64,
     pulse: usize,
+    file_icons: file_icons::State,
 }
 pub(crate) fn identity(pane: &Pane, entry: &Entry, side: PaneId) -> String {
     if pane.tree_view().is_some() {
@@ -91,6 +94,7 @@ impl Presenter {
     }
     pub fn clear_thumbnail_images(&mut self) {
         self.thumbnails.clear();
+        self.thumbnails.forget_file_icons();
         self.command_toolbar.native.borrow_mut().invalidate();
         self.command_toolbar
             .image_revision
@@ -393,9 +397,13 @@ fn thumbnail_content(
             network_allowed,
         })
     } else {
-        entry
-            .native_path()
-            .map(|path| ThumbnailContent::Native(path.to_owned()))
+        let path = entry.native_path()?.to_owned();
+        // A program's own icon stands in for a preview: no thumbnailer reads programs.
+        Some(if file_icons::carries_own_artwork(path.extension()) {
+            ThumbnailContent::FileIcon(path)
+        } else {
+            ThumbnailContent::Native(path)
+        })
     }
 }
 

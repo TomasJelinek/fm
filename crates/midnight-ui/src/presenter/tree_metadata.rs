@@ -15,12 +15,10 @@ impl Presenter {
         case: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
-        if self.operations.closing
-            || !self.native_action_allowed(pane)
-            || !self.panes[pane.index()].search_allows_activation()
-        {
+        if self.operations.closing || !self.native_action_allowed(pane) {
             return;
         }
+        // The capture needs a ready tree and takes only a shown, selectable focused row.
         let Some(capture) = tree_capture::Capture::new(&self.panes[pane.index()]) else {
             return;
         };

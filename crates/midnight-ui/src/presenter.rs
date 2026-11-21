@@ -64,6 +64,7 @@ mod path_target;
 mod preferences;
 mod rename_decisions;
 mod search;
+mod search_commands;
 mod selected_navigation;
 mod selection;
 mod selection_actions;
@@ -1822,7 +1823,10 @@ impl Presenter {
             return;
         }
         let p = &self.panes[pane.index()];
-        if matches!(key, 8 | 9) && !p.search_allows_activation() {
+        // The toggled row must be shown: neither a filtered view being computed nor a
+        // filter that hides the focused row. Insert clears the query before its toggle
+        // arrives; while searching, Space is query text.
+        if matches!(key, 8 | 9) && !p.focus_actionable() {
             return;
         }
         let count = p.display_len() + p.parent_offset();

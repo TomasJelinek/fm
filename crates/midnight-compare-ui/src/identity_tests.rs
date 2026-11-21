@@ -128,6 +128,7 @@ pub(super) fn open_service(service: &Service) -> Rc<OpenWindow> {
         foreground: [240, 240, 240, 255],
         background: [24, 28, 36, 255],
         selection: [60, 80, 120, 255],
+        selection_text: [0; 4],
         accent: [100, 150, 220, 255],
     };
     let session = service
@@ -360,6 +361,58 @@ fn session_compare_admission_ignores_full_local_queue_and_refusal_preserves_iden
 }
 
 #[test]
+fn an_inactive_comparator_paints_its_selection_with_the_theme_inactive_pair() {
+    let _native = platform();
+    let runtime = runtime();
+    let open = open(&runtime);
+    let app = ViewerAppearance {
+        family: "Segoe UI".into(),
+        font_size: 14.0,
+        foreground: [237, 241, 245, 255],
+        background: [31, 34, 40, 255],
+        selection: [28, 91, 81, 255],
+        selection_text: [255; 4],
+        accent: [103, 215, 196, 255],
+    };
+    open.apply_appearance(&appearance::Presentation::new(
+        &app,
+        midnight_core::PreferenceTheme::SlateTeal,
+        midnight_core::UiDensity::Desktop,
+        14,
+        15,
+    ));
+    let active = open.appearance.revision();
+    assert_eq!(
+        open.appearance.colors(),
+        [
+            app.foreground,
+            app.background,
+            app.selection,
+            app.selection_text,
+            app.accent
+        ]
+    );
+    appearance::activation_changed(&open, false);
+    let inactive = open.appearance.revision();
+    assert!(inactive > active, "a new palette request");
+    let colors = open.appearance.colors();
+    assert_eq!(colors[2..4], [[0x31, 0x40, 0x3c, 255], [255; 4]]);
+    assert_eq!(
+        [colors[0], colors[1], colors[4]],
+        [app.foreground, app.background, app.accent]
+    );
+    appearance::activation_changed(&open, false);
+    assert_eq!(open.appearance.revision(), inactive);
+    appearance::activation_changed(&open, true);
+    assert!(open.appearance.revision() > inactive);
+    assert_eq!(
+        open.appearance.colors()[2..4],
+        [app.selection, app.selection_text]
+    );
+    open.close();
+}
+
+#[test]
 fn accepted_palettes_fence_frames_without_replaying_choices_or_clearing_unknown() {
     let _native = platform();
     let runtime = runtime();
@@ -373,6 +426,7 @@ fn accepted_palettes_fence_frames_without_replaying_choices_or_clearing_unknown(
         foreground: [240, 240, 240, 255],
         background: [24, 28, 36, 255],
         selection: [60, 80, 120, 255],
+        selection_text: [0; 4],
         accent: [100, 150, 220, 255],
     };
     let mut b = a.clone();
@@ -487,6 +541,7 @@ fn font_resize_survives_input_backpressure_without_another_window_resize() {
         foreground: [240, 240, 240, 255],
         background: [24, 28, 36, 255],
         selection: [60, 80, 120, 255],
+        selection_text: [0; 4],
         accent: [100, 150, 220, 255],
     };
     let window = manager
@@ -716,6 +771,7 @@ fn completed_external_outcomes_survive_the_real_opening_palette_read() {
             foreground: [48, 48, 48, 255],
             background: [255, 255, 255, 255],
             selection: [204, 204, 204, 255],
+            selection_text: [0; 4],
             accent: [69, 69, 69, 255],
         };
         manager.apply_appearance(

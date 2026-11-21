@@ -477,8 +477,14 @@ impl Bridge {
             refused.set(refused.get() || !sent);
             sent
         });
-        busy |= refused.get();
         let scale = window.window().scale_factor();
+        // Tiles of programs show their own artwork, which the desktop actor reads.
+        state.refresh_file_icons(&rows, scale, &|command| {
+            let sent = (self.send)(command);
+            refused.set(refused.get() || !sent);
+            sent
+        });
+        busy |= refused.get();
         // Rows, tiles and choices take the bitmaps of their new edges.
         let mut refresh_all = std::mem::take(&mut self.icons_moved);
         let mut changed = Vec::new();
@@ -519,6 +525,7 @@ impl Bridge {
                     if matches!(
                         row.content,
                         midnight_ui::ThumbnailContent::ExecutableIcon(_)
+                            | midnight_ui::ThumbnailContent::FileIcon(_)
                     ) {
                         return None;
                     }

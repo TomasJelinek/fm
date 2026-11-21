@@ -5,9 +5,13 @@ PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, bounded static SVG and AVIF. The first sti
 is reduced without upscaling, with alpha-weighted averaging so pixels next to
 transparency are not darkened or tinted, then oriented and converted to straight-alpha
 sRGB. A frame that already fits the cell is not resampled.
-SVG rasterizes directly to the requested aspect ratio with embedded Noto fonts;
-it receives no path, network or system-font access. See the shared decoder's
-explicit SVG subset, resource limits and bundled font provenance.
+SVG rasterizes directly to the requested aspect ratio with embedded Noto fonts,
+through the same decoder path as the viewer: markers, patterns, clip paths, masks,
+filters, text and `data:` raster images are drawn; it receives no path, network or
+system-font access. Its drawing bounds apply at the thumbnail's size, so an SVG
+whose filters or layers are too costly at full size can still get a thumbnail. See
+the shared decoder's [SVG contract](../image-decoder/README.md#svg), resource limits
+and bundled font provenance.
 
 ## PDF first pages
 
@@ -35,7 +39,9 @@ makes anyway, so sniffing adds no host round trip.
 
 The provider version changes whenever decoding policy changes, invalidating old
 thumbnail cache identities. Adding PDF support changed it (it now names Hayro), so
-cached image thumbnails are regenerated once after the update. AVIF shares the
+cached image thumbnails are regenerated once after the update. Revision `r6` (21
+November) draws SVG markers, patterns, clip paths, masks, filters and embedded images
+that `r5` refused, so SVG thumbnails are regenerated too. AVIF shares the
 viewer's pinned static dav1d decoder,
 32 MiB encoded-container cap, and primary/alpha native frame limits. HEIC/HEIF is
 not enabled. The root thumbnail build scripts prepare pinned native tools/static

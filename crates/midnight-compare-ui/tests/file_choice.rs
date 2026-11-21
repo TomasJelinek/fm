@@ -94,6 +94,7 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
         foreground: [48, 48, 48, 255],
         background: [255, 255, 255, 255],
         selection: [204, 204, 204, 255],
+        selection_text: [0; 4],
         accent: [69, 69, 69, 255],
     };
     manager.apply_appearance(
@@ -123,6 +124,7 @@ fn manual_form_is_resizable_edits_paths_retries_and_closes_on_escape() {
                     foreground: [240, 240, 240, 255],
                     background: [28, 30, 38, 255],
                     selection: [55, 80, 120, 255],
+                    selection_text: [0; 4],
                     accent: [100, 150, 220, 255],
                 },
                 slint::LogicalSize::new(1000.0, 700.0),

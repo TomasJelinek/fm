@@ -7,6 +7,7 @@ pub mod filename_colors;
 pub mod filter;
 pub mod filter_expression;
 pub mod fonts;
+pub mod icon_scale;
 pub mod icon_snapshot;
 pub mod license_notices;
 pub mod metadata;

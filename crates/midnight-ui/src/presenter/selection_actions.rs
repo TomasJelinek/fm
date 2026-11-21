@@ -85,7 +85,9 @@ impl Presenter {
         if !self.tree_action_allowed(pane) || !self.native_action_allowed(pane) {
             return;
         }
-        if !self.panes[pane.index()].search_allows_activation() {
+        // A quick search never stops an action (`Presenter::panel_command` closes it);
+        // a filtered view that is still being computed does.
+        if !self.panes[pane.index()].rows_settled() {
             return;
         }
         if self.selection_actions[pane.index()].is_some() {
@@ -108,7 +110,8 @@ impl Presenter {
             );
             return;
         }
-        let fallback = (!p.parent_cursor)
+        // The focused row only while the panel shows it: a panel filter may hide it.
+        let fallback = (!p.parent_cursor && p.focus_actionable())
             .then(|| {
                 p.cursor
                     .and_then(|id| p.entry_by_id(id))
@@ -128,6 +131,7 @@ impl Presenter {
                 SelectionIntent::FolderSizes(_) | SelectionIntent::UserCommand(_)
             )
         {
+            self.note_filter_hides_focus(pane);
             return;
         }
         let request = self.desktop.request();

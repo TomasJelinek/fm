@@ -40,6 +40,7 @@ fn actual_comparator_window_exposes_three_modes_and_always_closes_on_escape() {
                     foreground: [255; 4],
                     background: [20, 20, 20, 255],
                     selection: [60, 80, 120, 255],
+                    selection_text: [0; 4],
                     accent: [100, 150, 220, 255],
                 },
                 slint::LogicalSize::new(1000.0, 700.0),

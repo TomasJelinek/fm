@@ -11,10 +11,10 @@ and thumb extent for the duration of a drag. It paints the local target directly
 A stationary grab/release does not reload content. A changed content context,
 resize or pointer cancellation ends the old gesture. An image's context is its
 surface, which changes with its zoom, viewport or page. A document in the Continuous
-layout gets a new surface for every page its view reaches, so its context is the
-document, zoom and viewport instead: frames painted for earlier steps of a drag
-across pages do not end it, and it lands where the thumb is released
-(`image_camera::position_context`).
+layout keeps its context as the document, zoom and viewport: frames painted for
+earlier steps of a drag across pages do not end it, and it lands where the thumb is
+released (`image_camera::position_context`). Documents scroll over retained tiles; see
+[Documents](#documents-pdf).
 
 Markdown uses the same asynchronous viewport pipeline. Its independent plugin
 counts semantic block lines, rather than only literal newlines, before cropping
@@ -169,6 +169,102 @@ most 128 tiles, 32 MiB, per frame) and reuses it by tile identity, so panning
 copies only newly exposed tiles. The UI refuses a frame with more tiles. These
 bounds, which the backend tile cache uses too, are defined once in `midnight-core`
 (`VIEWER_TILE_CACHE_BYTES`, `VIEWER_TILE_CACHE_ENTRIES`).
+
+## Documents (PDF)
+
+Documents use the image tile presentation, at exactly the shown zoom. Until 21
+November 2026 every scroll step rendered the whole view again: the engine composed all
+visible page slices into one raster, and a render still running when a newer camera
+arrived was abandoned, its result dropped. Wheel and thumb input every 16 ms therefore
+published no frame until the input stopped (the picture froze for the whole gesture),
+and views over 4 megapixels were rendered smaller and enlarged on screen, which made
+text soft and uneven. Measurements: [PDF scrolling](../verification/2026-11-21-pdf-scrolling.md).
+
+**Canvas and tiles.** The engine keeps one tile canvas per document layout: the current
+page in the Paged layout, the column of every page (`image_tiles::CANVAS`, pages 24
+points apart and centred) in the Continuous layout. Tiles are 256 × 256 premultiplied
+RGBA keyed by canvas, scale and tile position; a page's rotation and crop belong to the
+page, so they need no key of their own. One raster pixel is one physical pixel at every
+view size (`image_scene::document_raster`): the cache budget bounds memory, never a
+smaller rendering of what is shown at rest. Only a view beyond the tile position bound
+(`VIEWER_TILE_POSITION_BOUND`, 16,384 raster pixels with room for guard rows, wider than
+three 4K screens) is reduced.
+
+**Bands.** Missing tiles are rendered in bands, rectangles of whole missing tiles of at
+most 16 tiles across and down and 64 tiles in all, within the provider's 4096-pixel edge
+and 4-megapixel viewport bounds (`Scene::next_band`). A band starts at the first missing tile of the
+plan, spans the adjacent missing tiles of its row and then whole rows in the direction
+of motion. The image actor asks the provider once for each page the band meets and
+copies its pixels straight into the band's tiles (`document_render::render_band`); only
+an antialiased edge where two pages meet within one pixel blends. Tiles that meet no
+page (between and beside pages, beyond the canvas) are created transparent without
+rendering. One band is in flight at a time, on the actor, never on the UI thread or the
+viewer worker. The plan holds the visible tiles first, then the guard tiles: one column
+beside the view and half a view of rows ahead in the direction of motion, at most six
+rows (`viewer_document_guard_rows`), nearest first.
+
+**Publication is never starved.** A band finished for an older camera keeps every tile
+that the latest camera's plan needs (`Scene::complete_band`); other tiles of the same
+canvas and scale are kept while the budget has room. No completed work is discarded
+because a newer camera arrived. A frame is published whenever every visible tile of the
+latest camera exists and the source was validated for its surface, by a band or a
+validation requested since the latest camera change other than a pan; guard tiles are
+published as they arrive. A pan over retained tiles therefore never waits for a source
+check (the UI shows the same tiles without asking); the pan's own check follows when
+the actor is idle, so a changed source is still noticed at once. The provider validates
+the captured source before and after every page slice, and a band without slices
+validates it once. A camera the UI asks for while the visible tiles of the camera in
+progress are still rendering waits until that camera is published
+(`ImageView::deferred_pan`), so a fast scrollbar drag shows the pages it passes instead
+of chasing every new target and showing none.
+
+**Camera.** The UI's tiled camera (`image_camera`, `image_motion`) moves the retained
+tiles at display rate without a backend round trip and asks the engine to follow with
+`ViewerImageInput::PanTo { surface, sequence, origin }`. A pan keeps the surface. Every
+other camera change (page turn, zoom, Fit, layout, resize, and `Scroll`/`Seek` input
+that did not come from the tiled camera) gets a new surface, so the UI adopts the
+engine's camera; textures are reused by tile identity across surfaces. Coordinate
+inputs (zoom anchors, layout switches) refer to the shown surface, so they are accepted
+for any frame of it (`ImageFrames::surface_frame`); a resize still fences them.
+`ViewerImageInfo::extent` is the scrollable extent: the page in the Paged layout, the
+whole column in the Continuous one. Tiles are drawn on whole physical pixels: the
+centring margin is rounded, the canvas phase removed and a document camera snapped to
+whole raster pixels, so glyph edges are not resampled between screen pixels.
+
+**Budget.** The backend tile cache and the UI texture cache each keep
+`viewer_document_tile_cache_bytes(view)` for a raster view of `view` pixels: the shown
+and prefetched tiles and half again (at most 64 MiB more), and at least three views
+within 32–96 MiB when that is more. Pixels in all on the backend (cached, still shown
+after eviction, or reserved for the band in flight) stay within twice the budget.
+Examples:
+
+| Raster view | Budget each (backend, UI) |
+| --- | --- |
+| 1920 × 1080 | 33.75 MiB (135 tiles) |
+| 3000 × 1950 | 73.5 MiB (294 tiles) |
+| 3840 × 2160 | 101.25 MiB (405 tiles) |
+| 4000 × 2600 | 121.5 MiB (486 tiles) |
+| 7680 × 4320 | 262 MiB (1048 tiles) |
+
+GPU textures mirror the UI cache. Images keep their 32 MiB / 128-tile budget and their
+bounded raster geometry.
+
+**Provider.** The PDF plugin keeps Hayro's caches (parsed fonts, glyph outlines and
+bitmaps, decoded images) for the two pages rendered last at their scale, so a page's
+later bands reuse them; any other page or scale replaces the older entry. The plugin
+protocol is unchanged: the host still sends bounded `PageViewport` requests.
+
+**Text viewers** keep their retained-raster path (`worker_raster.rs`, `raster_camera`),
+owned separately. The same rules apply there: keep completed work that covers the
+latest target, publish on coverage, and render ahead off the input path.
+
+**Zoom.** A zoom step shows the retained tiles at once at the new zoom, scaled around
+the step's anchor (`Textures::preview_zoom`; steps compose), until the new surface's
+visible tiles arrive and replace them at exact resolution.
+
+**Not implemented.** A scrollbar jump to a region with no retained tiles keeps the old
+view until the new region's visible tiles arrive (one or a few bands); there is no
+low-resolution placeholder layer.
 
 ## Verification
 

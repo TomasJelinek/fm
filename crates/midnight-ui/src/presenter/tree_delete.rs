@@ -17,10 +17,8 @@ impl Presenter {
         if self.operations.closing || !self.native_action_allowed(pane) {
             return;
         }
+        // The capture needs a ready tree and takes only a shown, selectable focused row.
         let p = &self.panes[pane.index()];
-        if !p.search_allows_activation() {
-            return;
-        }
         let Some(capture) = tree_capture::Capture::new(p) else {
             return;
         };
@@ -54,7 +52,7 @@ impl Presenter {
             || !self.native_action_allowed(pane)
             || capture.request.is_some()
             || !scoped_row_valid
-            || !self.panes[pane.index()].search_allows_activation()
+            || !self.panes[pane.index()].rows_settled()
             || !self.panes[pane.index()]
                 .tree_view()
                 .is_some_and(|view| Arc::ptr_eq(view, &capture.view))

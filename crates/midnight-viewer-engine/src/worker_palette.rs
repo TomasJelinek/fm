@@ -9,8 +9,11 @@ impl Worker {
         }
         self.palette_revision = revision;
         let changed = colors != crate::palette::Colors::from(&self.appearance);
+        // Only the selection pair changes when its window is activated or deactivated:
+        // the shaped page stays valid and is only painted again.
+        let recolor = colors.recolors_text(&self.appearance);
         colors.apply(&mut self.appearance);
-        if changed {
+        if changed && recolor {
             if let Some((_, page)) = self.position_page.as_mut() {
                 page.recolor(&self.appearance);
             }
@@ -29,6 +32,8 @@ impl Worker {
                 }
             }
             self.text.gutter = None;
+        }
+        if changed {
             self.raster.palette_changed();
         }
         // A->B->A must produce a new real fence even if B was never applied.

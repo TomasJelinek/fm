@@ -8,6 +8,7 @@ fn semantic_tables_and_overlapping_inline_decorations_keep_source_anchors() {
         foreground: [220; 4],
         background: [0; 4],
         selection: [80; 4],
+        selection_text: [0; 4],
         accent: [180; 4],
     };
     let block = document::Block {

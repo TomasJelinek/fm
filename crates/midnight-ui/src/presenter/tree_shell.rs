@@ -38,8 +38,9 @@ impl Presenter {
             );
             return;
         }
+        // The clicked row is validated below; the focused row does not matter.
         let p = &self.panes[pane.index()];
-        if !p.tree_input_ready() || !p.search_allows_activation() {
+        if !p.tree_input_ready() {
             return;
         }
         let Some((row, kind)) = position
@@ -188,7 +189,6 @@ impl Presenter {
         let p = &self.panes[pane.index()];
         if self.operations.closing
             || !p.native_capabilities()
-            || !p.search_allows_activation()
             || !pending.capture.matches_current(p)
         {
             pending.capture.cancel.cancel();

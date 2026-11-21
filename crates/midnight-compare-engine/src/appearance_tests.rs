@@ -19,6 +19,7 @@ fn original() -> ViewerAppearance {
         foreground: [255; 4],
         background: [30, 30, 30, 255],
         selection: [50, 80, 120, 255],
+        selection_text: [0; 4],
         accent: [90, 150, 220, 255],
     }
 }
@@ -30,6 +31,7 @@ pub(crate) fn changed() -> ViewerAppearance {
         foreground: [220, 235, 250, 255],
         background: [12, 82, 162, 255],
         selection: [100, 20, 90, 255],
+        selection_text: [0; 4],
         accent: [60, 180, 40, 255],
     }
 }

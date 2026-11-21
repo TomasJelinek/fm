@@ -193,9 +193,11 @@ pub(crate) fn install(
             if closing.get() {
                 return;
             }
-            state
-                .borrow_mut()
-                .request_checksums(crate::pane(pane), send.as_ref());
+            let pane = crate::pane(pane);
+            let send = send.as_ref();
+            state.borrow_mut().panel_command(pane, send, |p| {
+                p.request_checksums(pane, send);
+            });
             if let Some(main) = weak.upgrade() {
                 crate::refresh(&main, &state.borrow());
             }

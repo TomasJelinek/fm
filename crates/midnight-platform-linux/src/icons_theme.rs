@@ -206,11 +206,12 @@ pub(super) fn manifest_field<'a>(input: &'a str, field: &str) -> Option<&'a str>
     None
 }
 
-/// A theme's directories, best fit for `size` device pixels first: the exact
-/// pixel size, then larger ones from the nearest up, then smaller ones from the
-/// nearest down, then directories of unknown size. A larger source is scaled
-/// down once; only a theme without one is enlarged. Lookup stays PNG-only, so
-/// directories that hold scalable artwork simply have no match.
+/// A theme's directories, best fit for `size` device pixels first: the exact pixel
+/// size, then scalable directories whose range holds it (their SVG artwork is
+/// rendered at exactly that size), then larger ones from the nearest up, then
+/// smaller ones from the nearest down, then directories of unknown size. A larger
+/// bitmap is scaled down once; only a theme without one is enlarged. A scalable
+/// directory outside its range counts as the nearest size of its range.
 pub(super) fn theme_directories(input: &str, size: u16) -> Vec<String> {
     let declared = directory_pixels(input);
     let mut seen = HashSet::new();
@@ -232,29 +233,87 @@ pub(super) fn theme_directories(input: &str, size: u16) -> Vec<String> {
     let wanted = u32::from(size);
     // Stable: directories of one size keep the manifest's order.
     directories.sort_by_key(|name| {
-        let pixels = declared.get(name).copied().or_else(|| named_pixels(name));
+        let pixels = declared.get(name).copied().or_else(|| {
+            named_pixels(name).map(|(pixels, scale)| Pixels {
+                pixels,
+                scale,
+                range: None,
+            })
+        });
         match pixels {
-            Some((pixels, scale)) if pixels == wanted => (0, 0, scale),
-            Some((pixels, scale)) if pixels > wanted => (1, pixels, scale),
-            Some((pixels, scale)) => (2, u32::MAX - pixels, scale),
-            None => (3, 0, 0),
+            Some(Pixels { pixels, scale, .. }) if pixels == wanted => (0, 0, scale),
+            Some(Pixels {
+                scale,
+                range: Some((least, most)),
+                ..
+            }) if (least..=most).contains(&wanted) => (1, 0, scale),
+            Some(Pixels {
+                pixels,
+                scale,
+                range,
+            }) => {
+                // The nearest size a directory holds: its range for scalable artwork.
+                let (least, most) = range.unwrap_or((pixels, pixels));
+                if least > wanted {
+                    (2, least, scale)
+                } else {
+                    (3, u32::MAX - most, scale)
+                }
+            }
+            None => (4, 0, 0),
         }
     });
     directories.into_iter().map(String::from).collect()
 }
 
-/// Pixel edge (`Size` times `Scale`) and scale of each directory section.
-fn directory_pixels(input: &str) -> HashMap<&str, (u32, u32)> {
-    type Section<'a> = Option<(&'a str, Option<u32>, u32)>;
-    fn finish<'a>(result: &mut HashMap<&'a str, (u32, u32)>, section: Section<'a>) {
-        if let Some((name, Some(size), scale)) = section
-            && result.len() < MAX_DIRECTORIES
-        {
-            result.insert(name, (size * scale, scale));
+/// The device pixels a directory section declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pixels {
+    /// `Size` times `Scale`.
+    pixels: u32,
+    scale: u32,
+    /// `MinSize` to `MaxSize` times `Scale` of a `Type=Scalable` section.
+    range: Option<(u32, u32)>,
+}
+
+/// The declared pixels of each directory section.
+fn directory_pixels(input: &str) -> HashMap<&str, Pixels> {
+    #[derive(Default)]
+    struct Fields {
+        size: Option<u32>,
+        scale: Option<u32>,
+        scalable: bool,
+        least: Option<u32>,
+        most: Option<u32>,
+    }
+    fn finish<'a>(result: &mut HashMap<&'a str, Pixels>, section: Option<(&'a str, Fields)>) {
+        let Some((name, fields)) = section else {
+            return;
+        };
+        let Some(size) = fields.size else {
+            return;
+        };
+        if result.len() >= MAX_DIRECTORIES {
+            return;
         }
+        // Each factor is bounded below, so their products cannot overflow.
+        let scale = fields.scale.unwrap_or(1);
+        let range = fields.scalable.then(|| {
+            let least = fields.least.unwrap_or(size).min(size);
+            let most = fields.most.unwrap_or(size).max(size);
+            (least * scale, most * scale)
+        });
+        result.insert(
+            name,
+            Pixels {
+                pixels: size * scale,
+                scale,
+                range,
+            },
+        );
     }
     let mut result = HashMap::new();
-    let mut section: Section<'_> = None;
+    let mut section: Option<(&str, Fields)> = None;
     for line in input.lines() {
         let line = line.trim();
         if let Some(name) = line
@@ -262,14 +321,19 @@ fn directory_pixels(input: &str) -> HashMap<&str, (u32, u32)> {
             .and_then(|line| line.strip_suffix(']'))
         {
             finish(&mut result, section.take());
-            section = (name != "Icon Theme").then_some((name, None, 1));
-        } else if let Some((_, size, scale)) = section.as_mut()
+            section = (name != "Icon Theme").then(|| (name, Fields::default()));
+        } else if let Some((_, fields)) = section.as_mut()
             && let Some((key, value)) = line.split_once('=')
         {
-            let value = value.trim().parse::<u32>().ok();
-            match key.trim() {
-                "Size" => *size = value.filter(|size| (1..=1024).contains(size)),
-                "Scale" => *scale = value.filter(|scale| (1..=8).contains(scale)).unwrap_or(1),
+            let (key, value) = (key.trim(), value.trim());
+            let number = value.parse::<u32>().ok();
+            let size = number.filter(|size| (1..=1024).contains(size));
+            match key {
+                "Size" => fields.size = size,
+                "Scale" => fields.scale = number.filter(|scale| (1..=8).contains(scale)),
+                "Type" => fields.scalable = value == "Scalable",
+                "MinSize" => fields.least = size,
+                "MaxSize" => fields.most = size,
                 _ => {}
             }
         }
@@ -410,13 +474,15 @@ mod tests {
         [scalable/places]\nSize=16\nMinSize=16\nMaxSize=256\nType=Scalable\n";
 
     #[test]
-    fn directories_rank_exact_pixels_then_nearest_larger_then_nearest_smaller() {
+    fn directories_rank_exact_pixels_then_scalable_ranges_then_nearest_larger_then_smaller() {
         let first = |size| theme_directories(SIZE_FIRST, size);
         assert_eq!(first(16)[..2], ["16x16/places", "scalable/places"]);
-        // Among equal pixel sizes, one-to-one artwork precedes the doubled smaller design.
+        // Scalable artwork rendered at 20 px precedes reducing a larger bitmap; among
+        // equal pixel sizes, one-to-one artwork precedes the doubled smaller design.
         assert_eq!(
-            first(20)[..4],
+            first(20)[..5],
             [
+                "scalable/places",
                 "24x24/places",
                 "32x32/places",
                 "16x16@2x/places",
@@ -425,14 +491,53 @@ mod tests {
         );
         assert_eq!(first(32)[..2], ["32x32/places", "16x16@2x/places"]);
         assert_eq!(first(48)[..2], ["48x48/places", "24x24@2x/places"]);
-        assert_eq!(first(96)[..2], ["48x48@2x/places", "256x256/places"]);
         assert_eq!(
-            first(300)[..3],
-            ["256x256/places", "48x48@2x/places", "48x48/places"]
+            first(96)[..3],
+            ["48x48@2x/places", "scalable/places", "256x256/places"]
         );
-        let all = first(20);
+        assert_eq!(first(216)[..2], ["scalable/places", "256x256/places"]);
+        // Beyond its range a scalable directory counts as its largest size.
+        assert_eq!(
+            first(300)[..4],
+            [
+                "256x256/places",
+                "scalable/places",
+                "48x48@2x/places",
+                "48x48/places"
+            ]
+        );
+        let all = first(24);
         assert_eq!(all.len(), 9, "the repeated directory is listed once");
-        assert_eq!(all[7..], ["16x16/places", "scalable/places"]);
+        assert_eq!(all[8], "16x16/places");
+    }
+
+    #[test]
+    fn scalable_ranges_follow_their_scale_and_default_to_their_size() {
+        let input = "[Icon Theme]\nDirectories=big,narrow,doubled,fixed\n\
+            [big]\nSize=64\nType=Scalable\nMinSize=64\nMaxSize=256\n\
+            [narrow]\nSize=16\nType=Scalable\n\
+            [doubled]\nSize=16\nScale=2\nType=Scalable\nMinSize=8\nMaxSize=48\n\
+            [fixed]\nSize=20\nType=Fixed\nMinSize=1\nMaxSize=512\n";
+        let pixels = directory_pixels(input);
+        assert_eq!(pixels["big"].range, Some((64, 256)));
+        assert_eq!(pixels["narrow"].range, Some((16, 16)));
+        assert_eq!(pixels["doubled"].range, Some((16, 96)));
+        assert_eq!(
+            pixels["fixed"].range, None,
+            "only scalable sections have a range"
+        );
+        assert_eq!(
+            theme_directories(input, 20),
+            ["fixed", "doubled", "big", "narrow"]
+        );
+        assert_eq!(
+            theme_directories(input, 128),
+            ["big", "doubled", "fixed", "narrow"]
+        );
+        assert_eq!(
+            theme_directories(input, 40),
+            ["doubled", "big", "fixed", "narrow"]
+        );
     }
 
     #[test]

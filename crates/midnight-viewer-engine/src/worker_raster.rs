@@ -614,6 +614,7 @@ impl Worker {
                         ],
                         background: self.appearance.background,
                         selection_color: self.appearance.selection,
+                        selection_text: self.appearance.selection_text,
                     },
                     self.selection.map(|(a, b)| a.min(b)..a.max(b)),
                     unique(&mut pixels)?,

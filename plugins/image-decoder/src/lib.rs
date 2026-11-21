@@ -2,9 +2,11 @@
 //! Call only after the caller has entered its restricted process boundary.
 #![forbid(unsafe_code)]
 
-use image::{DynamicImage, ImageDecoder, ImageReader, RgbaImage, metadata::Orientation};
+use image::{
+    DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage, metadata::Orientation,
+};
 use moxcms::{ColorProfile, DataColorSpace, Layout};
-use std::io::{self, Read, Seek};
+use std::io::{self, BufRead, Cursor, Read, Seek};
 mod avif;
 mod svg;
 mod window;
@@ -29,6 +31,18 @@ fn validate_dimensions(width: u32, height: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// A decoded still image and what it leaves out.
+#[derive(Debug)]
+pub struct Decoded {
+    /// Oriented straight-alpha sRGB RGBA8 pixels.
+    pub pixels: RgbaImage,
+    /// For SVG, one short sentence naming content that was skipped instead of drawn
+    /// (scripts, HTML in `foreignObject`, linked files, undecodable embedded images), for
+    /// a status line: at most 160 printable ASCII characters without `/` or `\`. `None`
+    /// when nothing was skipped, and for raster formats.
+    pub note: Option<String>,
+}
+
 /// Decode a first still frame to oriented straight-alpha sRGB RGBA8.
 /// A thumbnail bound preserves aspect ratio and never enlarges the original.
 /// SVG rasterizes directly at that size instead of allocating its full original raster.
@@ -36,21 +50,58 @@ pub fn decode<R: Read + Seek + ?Sized>(
     stream: &mut R,
     thumbnail: Option<(u32, u32)>,
 ) -> io::Result<RgbaImage> {
+    decode_with_note(stream, thumbnail).map(|decoded| decoded.pixels)
+}
+
+/// [`decode`], also returning the note about skipped SVG content.
+///
+/// Errors: `InvalidData` for damaged or incomplete content, whose text continues the
+/// sentence "This image is damaged or incomplete:"; for an SVG limit (`FileTooLarge`) or
+/// unsupported construct (`Unsupported`), a complete sentence that starts with "This ".
+pub fn decode_with_note<R: Read + Seek + ?Sized>(
+    stream: &mut R,
+    thumbnail: Option<(u32, u32)>,
+) -> io::Result<Decoded> {
     if let Some((width, height)) = thumbnail {
         validate_dimensions(width, height)?;
     }
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_DECODED_EDGE);
-    limits.max_image_height = Some(MAX_DECODED_EDGE);
-    limits.max_alloc = Some(MAX_DECODED_BYTES);
     // Each broker read crosses a process boundary and validates the captured
     // source. Batch decoder reads without preloading the complete file, and keep
     // fetched bytes across codec seeks.
     let buffered = window::Window::new(stream)?;
-    let mut reader = ImageReader::new(buffered).with_guessed_format()?;
+    let reader = ImageReader::new(buffered).with_guessed_format()?;
     if reader.format().is_none() {
         return svg::decode(reader.into_inner(), thumbnail);
     }
+    Ok(Decoded {
+        pixels: raster(reader, thumbnail)?,
+        note: None,
+    })
+}
+
+/// Decode an image that an SVG embeds as a `data:` URI: PNG, JPEG, GIF or WebP, with
+/// every limit of a raster file. Never SVG, so embedding cannot recurse.
+pub(crate) fn embedded_raster(bytes: &[u8]) -> io::Result<RgbaImage> {
+    let reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    match reader.format() {
+        Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP) => {
+            raster(reader, None)
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Embedded image format is not supported",
+        )),
+    }
+}
+
+fn raster<R: BufRead + Seek>(
+    mut reader: ImageReader<R>,
+    thumbnail: Option<(u32, u32)>,
+) -> io::Result<RgbaImage> {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODED_EDGE);
+    limits.max_image_height = Some(MAX_DECODED_EDGE);
+    limits.max_alloc = Some(MAX_DECODED_BYTES);
     let mut decoder: Box<dyn ImageDecoder + '_> =
         if reader.format() == Some(image::ImageFormat::Avif) {
             let mut decoder = avif::decoder(reader.into_inner())?;

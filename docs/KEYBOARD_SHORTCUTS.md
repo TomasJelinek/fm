@@ -440,6 +440,7 @@ Viewer windows have their own configurable shortcut context:
 | Ctrl+Minus | Zoom image out |
 | Ctrl+0 | Fit image without upscaling |
 | Ctrl+1 | Actual image pixels (1:1) |
+| Ctrl+Y | Type a zoom percentage for an image, PDF or HTML page (`viewer.zoom-to`, as Acrobat's Zoom To); also a click on the shown percentage. Enter applies, Escape keeps the zoom |
 | Ctrl+PageUp / Ctrl+PageDown | Previous / next PDF document page; also available as page buttons |
 | F7, Alt+Down, Alt+Right or N in file comparison | Next difference: changed lines, or the next region of differing bytes in the hex view; configurable as `compare.next-difference` |
 | Shift+F7, Alt+Up, Alt+Left or P in file comparison | Previous difference (lines or byte regions); configurable as `compare.previous-difference` |
@@ -449,7 +450,18 @@ In image mode, Ctrl+wheel zooms around the pointer and dragging pans the image.
 Text search/wrap controls are hidden for images. The same Close and previous/next
 file actions apply to images and PDF documents. Images exceeding the host's four-megapixel display surface are
 resampled to that bounded surface; 1:1 retains the physical size, with reduced
-display detail on larger canvases.
+display detail on larger canvases. PDF documents are always rendered at the exact
+shown zoom, one pixel per screen pixel.
+
+The zoom percentage in the footer (images and PDF documents) and in the HTML row is
+also a field: click it or press Ctrl+Y, type a value and press Enter. The value is a
+percentage, with or without `%` (`150`, `150%`), and may have decimals in the user's
+number format (`62,5` in a decimal-comma locale, `62.5` otherwise; a dot also works in
+a comma locale that does not group digits with dots). Escape, or moving the focus
+elsewhere, keeps the current zoom. A value outside the range (0.01–6400% for images
+and PDF documents, 10–1000% for HTML) is applied at the nearest limit and a hint says
+so, above the field (beside it in the HTML row); text without a number keeps the field
+open with a hint. Fit and 1:1 work as before.
 
 The optional Chromium HTML viewer uses the same configurable Find, Copy, zoom,
 navigation and previous/next-file actions. Escape always closes it. Space,

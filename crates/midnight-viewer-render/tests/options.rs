@@ -54,6 +54,7 @@ fn font_family_color_and_dpi_are_host_configuration() {
                 origin: [0.0; 2],
                 background: [0; 4],
                 selection_color: [0, 240, 0, 255],
+                selection_text: [0; 4],
             },
             Some(0..1),
         )

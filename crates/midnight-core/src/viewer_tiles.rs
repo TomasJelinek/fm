@@ -3,6 +3,8 @@ use std::{fmt, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ViewerTileId(pub u64);
+/// Largest distance in raster pixels of a tile from its frame's camera.
+pub const VIEWER_TILE_POSITION_BOUND: f32 = 16384.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ViewerSurfaceId(pub u64);
 
@@ -71,7 +73,9 @@ impl fmt::Debug for ViewerPixels {
 #[derive(Clone, Debug)]
 pub struct ViewerTile {
     pub id: ViewerTileId,
-    /// Raster pixels relative to the frame's visible camera, including bounded guards.
+    /// Raster pixels relative to the frame's visible camera, including bounded guards:
+    /// within `VIEWER_TILE_POSITION_BOUND`, enough for exact-resolution document views as
+    /// wide as three 4K screens.
     pub position: [f32; 2],
     pub width: u32,
     pub height: u32,
@@ -96,7 +100,7 @@ impl ViewerTile {
             || self
                 .position
                 .iter()
-                .any(|value| !value.is_finite() || value.abs() > 8192.0)
+                .any(|value| !value.is_finite() || value.abs() > VIEWER_TILE_POSITION_BOUND)
             || bytes != Some(self.pixels.rgba().len())
         {
             return Err("Invalid viewer raster tile.");
@@ -177,5 +181,25 @@ mod tests {
         drop(bad);
         drop(retained);
         assert_eq!(released.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn document_tile_budgets_hold_the_view_and_its_guard_rows_at_exact_resolution() {
+        let tiles = |view| crate::viewer_document_tile_cache_bytes(view) / crate::VIEWER_TILE_BYTES;
+        // The examples in docs/developer/VIEWER_SCROLLING.md.
+        assert_eq!(tiles([400, 300]), 128, "at least the image tile budget");
+        assert_eq!(tiles([1920, 1080]), 135);
+        assert_eq!(tiles([3000, 1950]), 294);
+        assert_eq!(tiles([3840, 2160]), 405);
+        assert_eq!(tiles([4000, 2600]), 486);
+        assert_eq!(tiles([7680, 4320]), 1048, "half again, at most 64 MiB more");
+        assert_eq!(crate::viewer_document_guard_rows(1080), 3);
+        assert_eq!(
+            crate::viewer_document_guard_rows(4320),
+            6,
+            "at most six rows"
+        );
+        let extreme = crate::viewer_document_tile_cache_bytes([u32::MAX; 2]);
+        assert_eq!(extreme % crate::VIEWER_TILE_BYTES, 0);
     }
 }

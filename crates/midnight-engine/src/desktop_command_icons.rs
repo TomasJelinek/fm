@@ -1,4 +1,5 @@
 //! Visible executable artwork shares the existing serial desktop icon actor.
+use super::file_icons::Pending as Tiles;
 use super::*;
 
 #[derive(Clone, Default)]
@@ -41,17 +42,32 @@ impl Drop for Pending {
     }
 }
 
+/// What the icon actor serves: icon requests, the visible command artwork and file
+/// artwork views, and the edges icons are drawn at.
+pub(super) struct Inputs {
+    pub icons: mpsc::Receiver<IconKey>,
+    pub commands: watch::Receiver<View>,
+    pub files: watch::Receiver<file_icons::View>,
+    pub edges: watch::Receiver<IconEdges>,
+}
+
 pub(super) async fn worker(
     scope: TaskLifetime,
     services: Option<Arc<dyn DesktopServices>>,
     capture: Option<crate::archives::ArchiveCapture>,
     outbox: Outbox,
-    mut icons: mpsc::Receiver<IconKey>,
-    mut commands: watch::Receiver<View>,
-    mut edges: watch::Receiver<IconEdges>,
+    inputs: Inputs,
 ) {
+    let Inputs {
+        mut icons,
+        mut commands,
+        mut files,
+        mut edges,
+    } = inputs;
     let mut cached = RecentIcons::default();
     let mut pending = Pending::default();
+    let mut tiles = Tiles::default();
+    let mut absent = file_icons::Absent::default();
     // Sized keys still to load. `requested` holds those of the icon received
     // last; nothing new is received until it is empty, so the channel keeps
     // bounding what listings can queue. `reloads` holds, after the drawn edges
@@ -61,10 +77,13 @@ pub(super) async fn worker(
     let mut reloads = VecDeque::new();
     let mut drawn = *edges.borrow_and_update();
     let (mut icons_open, mut commands_open, mut edges_open) = (true, true, true);
-    let mut prefer_command = false;
+    let mut files_open = true;
+    let (mut prefer_command, mut prefer_files) = (false, false);
     loop {
-        // Ordinary icons and command artwork take turns while both have work.
-        let turn = !prefer_command || pending.targets.is_empty();
+        // Ordinary icons and command artwork take turns while both have work, and
+        // file artwork takes every other turn while it has work.
+        let others = !prefer_files || tiles.targets.is_empty();
+        let turn = (!prefer_command || pending.targets.is_empty()) && others;
         tokio::select! {
             biased;
             changed = commands.changed(), if commands_open => {
@@ -78,6 +97,14 @@ pub(super) async fn worker(
                     targets: view.targets.into(),
                     cancel: view.cancel,
                 };
+            }
+            changed = files.changed(), if files_open => {
+                if changed.is_err() {
+                    files_open = false;
+                    continue;
+                }
+                // The replaced view's load in progress is cancelled with it.
+                tiles = files.borrow_and_update().clone().into();
             }
             changed = edges.changed(), if edges_open => {
                 if changed.is_err() {
@@ -93,7 +120,7 @@ pub(super) async fn worker(
                 reloads.extend(missing);
             }
             () = std::future::ready(()), if !requested.is_empty() && turn => {
-                prefer_command = true;
+                (prefer_command, prefer_files) = (true, true);
                 let Some(key) = requested.pop_front() else { continue; };
                 if !deliver(&scope, &services, &outbox, &cached, key).await {
                     break;
@@ -106,19 +133,20 @@ pub(super) async fn worker(
                 let wanted = provider_edges(services.as_deref(), drawn, icon.kind);
                 let missing = cached.admit(&icon, &wanted);
                 // An icon that needs nothing still takes this worker's turn, as a
-                // load does, so pending command artwork is never starved.
+                // load does, so pending command and file artwork is never starved.
                 prefer_command |= missing.is_empty();
+                prefer_files |= missing.is_empty();
                 requested.extend(missing.into_iter().map(|edge| icon.clone().sized(edge)));
             }
             () = std::future::ready(()), if requested.is_empty() && !reloads.is_empty() && turn => {
-                prefer_command = true;
+                (prefer_command, prefer_files) = (true, true);
                 let Some(key) = reloads.pop_front() else { continue; };
                 if !deliver(&scope, &services, &outbox, &cached, key).await {
                     break;
                 }
             }
-            () = std::future::ready(()), if !pending.targets.is_empty() => {
-                prefer_command = false;
+            () = std::future::ready(()), if !pending.targets.is_empty() && others => {
+                (prefer_command, prefer_files) = (false, true);
                 let Some(target) = pending.targets.pop_front() else { continue; };
                 if pending.cancel.is_cancelled() {
                     pending.targets.clear();
@@ -141,6 +169,42 @@ pub(super) async fn worker(
                         pixels: Arc::new(pixels),
                     }).await {
                     break;
+                }
+            }
+            () = std::future::ready(()), if !tiles.targets.is_empty() => {
+                prefer_files = false;
+                let Some(target) = tiles.targets.pop_front() else { continue; };
+                if tiles.cancel.is_cancelled() {
+                    tiles.targets.clear();
+                    continue;
+                }
+                if absent.contains(&target.identity) {
+                    continue;
+                }
+                let service = services.clone();
+                let capture = capture.clone();
+                let cancel = tiles.cancel.clone();
+                let FileIconTarget { identity, path, edge } = target;
+                let result = tokio::task::spawn_blocking(scope.blocking(move || {
+                    file_icons::load(service.as_deref(), capture.as_ref(), &path, edge, &cancel)
+                })).await;
+                if tiles.cancel.is_cancelled() {
+                    continue;
+                }
+                match result {
+                    Ok(Some(pixels)) => {
+                        if !outbox.send(Event::FileIconLoaded {
+                            generation: tiles.generation,
+                            identity,
+                            edge,
+                            pixels: Arc::new(pixels),
+                        }).await {
+                            break;
+                        }
+                    }
+                    // The tile keeps its type icon; its file is not read again.
+                    Ok(None) => absent.insert(identity),
+                    Err(_) => {}
                 }
             }
             else => break,
@@ -279,7 +343,7 @@ impl RecentIcons {
     }
 }
 
-fn valid_pixels(pixels: &IconPixels) -> bool {
+pub(super) fn valid_pixels(pixels: &IconPixels) -> bool {
     let edges = 1..=u32::from(MAX_ICON_EDGE);
     edges.contains(&pixels.width)
         && edges.contains(&pixels.height)

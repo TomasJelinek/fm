@@ -1,39 +1,60 @@
-//! Bounded page-local rendering into one document viewport. No retained tile amplification.
-use crate::document_view::DocumentView;
-use midnight_core::DocumentLayout;
+//! Page-local rendering of one band of document tiles: a rectangle of whole tiles of the
+//! canvas at one scale. Each page the band meets is rendered once, by the plugin, at exactly
+//! the band's scale; its pixels go straight into the band's missing tiles.
+use crate::{
+    document_view::DocumentView,
+    image_scene::Band,
+    image_tiles::{Charge, EDGE, Key, TILE_BYTES},
+};
+use midnight_core::{DocumentLayout, ViewerPixels};
 use midnight_image_viewer_host::{Frame, ImageSession, Viewport};
 use std::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 const MAX_EDGE: u32 = 4096;
 const MAX_PIXELS: u64 = 4_194_304;
 
+/// Page slices the provider was asked to render in this process: a measurement counter
+/// (`pdf_scroll_probe_tests`), never a limit.
+pub(crate) static PAGE_RENDERS: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) struct PageSlice {
     pub page: usize,
+    /// Top-left pixel of the slice in the band.
     pub destination: [u32; 2],
     pub viewport: Viewport,
 }
 
-pub(crate) struct DocumentRenderPlan {
+/// The page slices of one band and the tiles they fill.
+pub(crate) struct BandPlan {
+    /// Band size in pixels.
     pub size: [u32; 2],
+    /// Top-left pixel of the band in canvas raster coordinates.
+    pub origin: [i64; 2],
     pub slices: Vec<PageSlice>,
+    pub tiles: Vec<(Key, Arc<Charge>)>,
 }
 
-impl DocumentRenderPlan {
-    pub fn new(document: &DocumentView) -> Result<Self, String> {
-        let camera = &document.geometry;
-        let (size, density) = camera.raster_geometry();
-        raster_length(size)?;
-        let scale = camera.scale * density;
+impl BandPlan {
+    pub fn new(document: &DocumentView, band: Band) -> Result<Self, String> {
+        let scale = band.scale;
         if !scale.is_finite() || !(1.0 / 32768.0..=64.0).contains(&scale) {
             return Err("Document render scale exceeds its limit.".into());
         }
-        let mut slices = Vec::new();
-        let top = camera.origin[1];
-        let bottom = top + f64::from(size[1]) / scale;
-        let range = if document.layout == DocumentLayout::Paged {
+        let [x0, y0, x1, y1] = band.rect;
+        let edge = i64::from(EDGE);
+        let origin = [i64::from(x0) * edge, i64::from(y0) * edge];
+        let size = [(x1 - x0) as u32 * EDGE, (y1 - y0) as u32 * EDGE];
+        raster_length(size)?;
+        let paged = document.layout == DocumentLayout::Paged;
+        let top = origin[1] as f64 / scale;
+        let bottom = (origin[1] as f64 + f64::from(size[1])) / scale;
+        let range = if paged {
             document.page..document.page + 1
         } else {
             let first = document
@@ -42,22 +63,20 @@ impl DocumentRenderPlan {
             let end = document
                 .placements
                 .partition_point(|page| page.origin[1] < bottom);
-            first..end
+            first..end.max(first)
         };
+        let mut slices = Vec::new();
         for page in range {
             let placement = document.placements[page];
-            let origin = if document.layout == DocumentLayout::Paged {
-                [0.0; 2]
-            } else {
-                placement.origin
-            };
+            let page_origin = if paged { [0.0; 2] } else { placement.origin };
             let low: [u32; 2] = std::array::from_fn(|axis| {
-                ((origin[axis] - camera.origin[axis]) * scale)
+                (page_origin[axis] * scale - origin[axis] as f64)
                     .floor()
                     .clamp(0.0, f64::from(size[axis])) as u32
             });
             let high: [u32; 2] = std::array::from_fn(|axis| {
-                ((origin[axis] + f64::from(placement.size[axis]) - camera.origin[axis]) * scale)
+                ((page_origin[axis] + f64::from(placement.size[axis])) * scale
+                    - origin[axis] as f64)
                     .ceil()
                     .clamp(0.0, f64::from(size[axis])) as u32
             });
@@ -68,8 +87,8 @@ impl DocumentRenderPlan {
                 width: high[0] - low[0],
                 height: high[1] - low[1],
                 scale,
-                origin_x: camera.origin[0] + f64::from(low[0]) / scale - origin[0],
-                origin_y: camera.origin[1] + f64::from(low[1]) / scale - origin[1],
+                origin_x: (origin[0] as f64 + f64::from(low[0])) / scale - page_origin[0],
+                origin_y: (origin[1] as f64 + f64::from(low[1])) / scale - page_origin[1],
             };
             viewport.validate().map_err(|error| error.to_string())?;
             slices.push(PageSlice {
@@ -78,7 +97,17 @@ impl DocumentRenderPlan {
                 viewport,
             });
         }
-        Ok(Self { size, slices })
+        if band.tiles.iter().any(|(key, _)| {
+            key.x < x0 || key.x >= x1 || key.y < y0 || key.y >= y1 || key.page != band.key
+        }) {
+            return Err("Document band tile lies outside its band.".into());
+        }
+        Ok(Self {
+            size,
+            origin,
+            slices,
+            tiles: band.tiles,
+        })
     }
 }
 
@@ -111,72 +140,54 @@ impl PageRenderer for ImageSession {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum Composition {
-    Frame(Frame),
-    Superseded,
-}
-
-pub(crate) fn compose(
+/// Render every page slice of `plan` once and fill its tiles. The plugin validates the
+/// captured source before and after each slice; a band without slices validates it here,
+/// so every completed band proves the source current.
+pub(crate) fn render_band(
     renderer: &mut impl PageRenderer,
-    plan: &DocumentRenderPlan,
-    revision: u64,
-    wanted: &AtomicU64,
+    plan: BandPlan,
     cancel: &AtomicBool,
     timeout: Duration,
-) -> Result<Composition, String> {
+) -> Result<Vec<(Key, Arc<ViewerPixels>)>, String> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or("Document render deadline exceeds its limit.")?;
-    if !current(revision, wanted, cancel)? {
-        return Ok(Composition::Superseded);
+    let mut tiles = Vec::with_capacity(plan.tiles.len());
+    for _ in &plan.tiles {
+        let mut rgba = Vec::new();
+        rgba.try_reserve_exact(TILE_BYTES)
+            .map_err(|_| "Document tile allocation failed.")?;
+        rgba.resize(TILE_BYTES, 0);
+        tiles.push(rgba);
     }
-    remaining(deadline)?;
-    let length = raster_length(plan.size)?;
-    let mut rgba = Vec::new();
-    rgba.try_reserve_exact(length)
-        .map_err(|_| "Document viewport allocation failed.")?;
-    rgba.resize(length, 0);
+    let mut touched = vec![false; tiles.len()];
     for slice in &plan.slices {
-        if !current(revision, wanted, cancel)? {
-            return Ok(Composition::Superseded);
-        }
-        // Only close/source retirement owns cancel. Camera supersession never ends the SDK session.
-        let mut scratch =
+        PAGE_RENDERS.fetch_add(1, Ordering::Relaxed);
+        let mut frame =
             renderer.render_page(slice.page, slice.viewport, cancel, remaining(deadline)?)?;
-        if !current(revision, wanted, cancel)? {
-            return Ok(Composition::Superseded);
-        }
-        remaining(deadline)?;
-        if [scratch.width, scratch.height] != [slice.viewport.width, slice.viewport.height]
-            || scratch.rgba.len() != raster_length([scratch.width, scratch.height])?
+        if [frame.width, frame.height] != [slice.viewport.width, slice.viewport.height]
+            || frame.rgba.len() != raster_length([frame.width, frame.height])?
         {
             return Err("Invalid document page raster.".into());
         }
-        crate::image_pixels::premultiply(&mut scratch.rgba);
-        composite(&mut rgba, plan.size, slice.destination, &scratch)?;
+        crate::image_pixels::premultiply(&mut frame.rgba);
+        for (((key, _), tile), touched) in plan.tiles.iter().zip(&mut tiles).zip(&mut touched) {
+            *touched |= composite(tile, *key, &plan, slice, &frame, *touched);
+        }
     }
-    if !current(revision, wanted, cancel)? {
-        return Ok(Composition::Superseded);
-    }
-    remaining(deadline)?;
-    renderer.validate(cancel)?;
-    if !current(revision, wanted, cancel)? {
-        return Ok(Composition::Superseded);
+    if plan.slices.is_empty() {
+        renderer.validate(cancel)?;
     }
     remaining(deadline)?;
-    Ok(Composition::Frame(Frame {
-        width: plan.size[0],
-        height: plan.size[1],
-        rgba,
-    }))
-}
-
-fn current(revision: u64, wanted: &AtomicU64, cancel: &AtomicBool) -> Result<bool, String> {
-    if cancel.load(Ordering::Acquire) {
-        return Err("Document rendering cancelled.".into());
-    }
-    Ok(wanted.load(Ordering::Acquire) == revision)
+    plan.tiles
+        .into_iter()
+        .zip(tiles)
+        .map(|((key, charge), rgba)| {
+            ViewerPixels::new(rgba, charge)
+                .map(|pixels| (key, Arc::new(pixels)))
+                .map_err(str::to_owned)
+        })
+        .collect()
 }
 
 fn remaining(deadline: Instant) -> Result<Duration, String> {
@@ -194,42 +205,73 @@ fn raster_length([width, height]: [u32; 2]) -> Result<usize, String> {
     Ok(pixels as usize * 4)
 }
 
+/// Draw the part of `frame` (one page slice, premultiplied) that falls into the tile `key`
+/// over it, and report whether any did. A tile no earlier slice drew into is still
+/// transparent, where drawing over is a copy; a later slice (a page closer than one pixel
+/// to the previous one) blends source-over.
 fn composite(
-    output: &mut [u8],
-    size: [u32; 2],
-    destination: [u32; 2],
-    scratch: &Frame,
-) -> Result<(), String> {
-    if destination[0]
-        .checked_add(scratch.width)
-        .is_none_or(|end| end > size[0])
-        || destination[1]
-            .checked_add(scratch.height)
-            .is_none_or(|end| end > size[1])
-    {
-        return Err("Document page lies outside the output raster.".into());
+    tile: &mut [u8],
+    key: Key,
+    plan: &BandPlan,
+    slice: &PageSlice,
+    frame: &Frame,
+    blend: bool,
+) -> bool {
+    let edge = i64::from(EDGE);
+    // The tile and the slice in band pixels.
+    let tile_low = [
+        i64::from(key.x) * edge - plan.origin[0],
+        i64::from(key.y) * edge - plan.origin[1],
+    ];
+    let slice_low = slice.destination.map(i64::from);
+    let slice_high = [
+        slice_low[0] + i64::from(frame.width),
+        slice_low[1] + i64::from(frame.height),
+    ];
+    debug_assert!(
+        slice_high[0] <= i64::from(plan.size[0]) && slice_high[1] <= i64::from(plan.size[1]),
+        "a page slice lies within its band"
+    );
+    let low = [tile_low[0].max(slice_low[0]), tile_low[1].max(slice_low[1])];
+    let high = [
+        (tile_low[0] + edge).min(slice_high[0]),
+        (tile_low[1] + edge).min(slice_high[1]),
+    ];
+    if high[0] <= low[0] || high[1] <= low[1] {
+        return false;
     }
-    for row in 0..scratch.height as usize {
-        let source_start = row * scratch.width as usize * 4;
-        let target_start =
-            ((destination[1] as usize + row) * size[0] as usize + destination[0] as usize) * 4;
-        let source = &scratch.rgba[source_start..source_start + scratch.width as usize * 4];
-        let target = &mut output[target_start..target_start + scratch.width as usize * 4];
+    let width = (high[0] - low[0]) as usize * 4;
+    for y in low[1]..high[1] {
+        let source_start =
+            (((y - slice_low[1]) * i64::from(frame.width) + (low[0] - slice_low[0])) * 4) as usize;
+        let target_start = (((y - tile_low[1]) * edge + (low[0] - tile_low[0])) * 4) as usize;
+        let source = &frame.rgba[source_start..source_start + width];
+        let target = &mut tile[target_start..target_start + width];
+        if !blend {
+            target.copy_from_slice(source);
+            continue;
+        }
         for (source, target) in source
             .as_chunks::<4>()
             .0
             .iter()
             .zip(target.as_chunks_mut::<4>().0)
         {
-            let inverse_alpha = 255 - u16::from(source[3]);
-            for channel in 0..4 {
-                target[channel] = (u16::from(source[channel])
-                    + (u16::from(target[channel]) * inverse_alpha + 127) / 255)
-                    .min(255) as u8;
+            match source[3] {
+                255 => *target = *source,
+                0 => {}
+                alpha => {
+                    let inverse_alpha = 255 - u16::from(alpha);
+                    for channel in 0..4 {
+                        target[channel] = (u16::from(source[channel])
+                            + (u16::from(target[channel]) * inverse_alpha + 127) / 255)
+                            .min(255) as u8;
+                    }
+                }
             }
         }
     }
-    Ok(())
+    true
 }
 
 #[cfg(test)]

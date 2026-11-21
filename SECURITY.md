@@ -491,10 +491,25 @@ inspected as possibly holding the item; neither is described as unneeded.
   indices or resource paths. Native lookup, bounded raster decoding and caching
   stay on backend workers. Unsupported semantic roles retain UI vector fallbacks;
   negative caching prevents repeated native misses. Known-folder PIDLs have
-  scoped native ownership; Linux theme PNG loading retains its trusted-root,
-  encoded-size, decoded-allocation and lookup-attempt bounds.
+  scoped native ownership; Linux theme PNG and SVG loading retains its trusted-root,
+  encoded-size, decoded-allocation and lookup-attempt bounds, and theme SVG
+  artwork has the structural bounds of chosen command artwork (UTF-8 only, no DTD,
+  4,096 elements, bounded `<use>` expansion, no external images or fonts).
   Context discovery coalesces refreshes behind one native worker; typed drive
   letters come from the platform adapter, never UI path-prefix inference.
+- Windows icons of every size come from the Shell's system image lists by entry:
+  synthetic type names with `SHGFI_USEFILEATTRIBUTES`, stock ids, known-folder PIDLs
+  and validated discovered fixed drive roots, so a type lookup opens no file, probes
+  no media and touches no network path. The one exception that reads a listed file
+  for an icon is a program's tile: in the Thumbnails view, a visible `.exe` tile
+  shows the program's own icon where previews are allowed for its storage (the
+  network preview opt-in applies). It is read between two revalidations of a
+  native capture, through a handle opened without following links that denies
+  writing and deletion meanwhile, by mapping the file as a data file and image
+  resource: no code runs and no import is resolved. Icon groups and frames are
+  parsed with bounds (64 frames, 4 MiB per frame, 1,024 px per side) and decoded
+  by the system. Rows keep the type icon; Linux reads no listed file for artwork
+  ([native icons](docs/developer/NATIVE_ICONS.md)).
 - The command directory is complete plain text without elision. A scrollable
   presentation viewport bounds extreme layout height without limiting or
   modifying the native path. Viewing or scrolling it never submits a command.
@@ -1263,6 +1278,24 @@ fields and conservative physical-device classifications.
   reads and unpacked data per page, and XML tokens of 64 KiB nested at most 128
   deep. Markup the preview does not read is skipped and never shown as document
   text ([package rules](docs/developer/VIEWER_PREFERENCES.md#office-packages-what-opens-and-what-is-refused)).
+- SVG images and thumbnails use the shared image decoder inside the restricted image
+  workers. Scripts and event attributes never run; `foreignObject` is skipped (a
+  `switch` draws its SVG fallback); links to files or URLs (images, `use`, paint,
+  clip, mask, filter and marker references) are never opened, and there is no
+  resource directory, system font or network access. Raster images embedded as
+  `data:` URIs are decoded by the raster path with its limits and reach resvg only as
+  PNGs the decoder encoded. Entity declarations (a DOCTYPE internal subset) and
+  reference cycles are refused, so entities are never expanded. Before conversion the
+  decoder bounds the source (4 MiB), XML nodes (262,144), nesting of elements and
+  references (64), the converted tree after expanding `use`, marker, pattern,
+  clip-path, mask and filter references (256 MiB, estimated as 1 KiB per element and
+  4 bytes per byte of attributes and text) and style-rule checks (2^27); before
+  rendering, at the drawing size, memory while drawing (448 MiB, tree estimate
+  included) and weighted pixel work (2^33, about half a minute, calibrated by
+  micro-benchmarks), following resvg's own layer, mask, filter, pattern, image and dash
+  recursion, because resvg allocates without limits. A refusal names its reason and
+  bound; the workers' memory/CPU limits and the host's deadlines remain the last bound
+  ([decoder contract](plugins/image-decoder/README.md#svg)).
 - File comparison captures native regular-file identities. Both text inputs
   have byte/line/deadline limits; image inputs use the restricted image broker.
   A text source whose revision moved only in its change time is accepted after a

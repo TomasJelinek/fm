@@ -136,6 +136,7 @@ fn github_striping_starts_with_the_second_body_row_and_uses_single_shared_border
                 origin: [0.0; 2],
                 background: [255; 4],
                 selection_color: [0; 4],
+                selection_text: [0; 4],
             },
             None,
         )
@@ -201,6 +202,7 @@ fn compressed_table_borders_keep_one_physical_pixel_at_unit_scale() {
                 origin: [0.0; 2],
                 background: [255; 4],
                 selection_color: [0; 4],
+                selection_text: [0; 4],
             },
             None,
         )
@@ -307,6 +309,7 @@ fn table_raster_stays_identical_when_preceding_document_blocks_change() {
                     origin: [0.0, anchor.y0 as f32 - 7.0],
                     background: [255; 4],
                     selection_color: [0; 4],
+                    selection_text: [0; 4],
                 },
                 None,
             )
@@ -422,6 +425,7 @@ fn table_borders_survive_caret_restoration_across_fractional_document_origins() 
                     origin: [0.0, caret + caret_offset],
                     background: [255; 4],
                     selection_color: [0; 4],
+                    selection_text: [0; 4],
                 },
                 None,
             )
@@ -482,6 +486,7 @@ fn composite_paint_normalizes_both_error_signs_without_erasing_fractional_scroll
                     origin: [0.0, y],
                     background: [255; 4],
                     selection_color: [0; 4],
+                    selection_text: [0; 4],
                 },
                 None,
             )

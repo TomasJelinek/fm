@@ -103,3 +103,124 @@ to the Slate variants; stored base colors and custom rules are unchanged. See th
 
 Measured contrast, rendered filename checks and build evidence are recorded in
 [the Slate verification report](verification/2026-11-11-slate-themes.md).
+
+## Text selection
+
+A user report showed a Markdown table selected in Slate Teal: light gray text on
+the theme's bright teal accent (`#67d7c4`, 9.2:1 against the page), glaring and
+hard to read. Several palettes used their accent or ink color as a solid selection
+fill, and content views painted selected text in the ordinary text color, which the
+renderer only lifted to a bare 4.5:1. On 21 November 2026 every palette received a
+calm selection fill, an explicit color for the text on it and a dimmer inactive pair.
+
+| Token | Use |
+| --- | --- |
+| `selection-background` | Fill behind selected text in fields and content views. |
+| `selection-text` | Color of all selected text on that fill. |
+| `inactive-selection-background` | Fill of a selection in an inactive viewer or comparator window. |
+| `inactive-selection-text` | Color of selected text on the inactive fill. |
+
+Rules, checked for every palette by
+`text_selection_reads_shows_calmly_and_dims_while_inactive_in_every_palette`
+(`crates/midnight-ui/tests/themes.rs`):
+
+- Both text pairs reach the palette's text minimum: 4.5:1 (WCAG AA), 7:1 for the
+  four contrast palettes and 12:1 for the two High Contrast palettes.
+- The fill stands out from the page (`pane-background`) by at least 1.4:1 and, so
+  that it stays calm, by at most 3:1. Dark palettes use a muted tint of their accent,
+  light palettes a light one, in the manner of common editor selections. The High
+  Contrast palettes instead use strong fills of at least 7:1 against the page: High
+  Contrast Dark black on cyan, High Contrast Light white on deep violet, the usual
+  Windows high-contrast pairs.
+- The inactive fill stays visible (at least 1.15:1 against the page) but stands out
+  less than the active one: a less saturated tint, gray in High Contrast.
+
+Themed text fields and the path, command-line and panel-search inputs already took
+their selected text color from `selection-text`. The text, source and Markdown
+viewers, the hex view and the text comparator's Find highlight now do as well
+(`ViewerAppearance::selection_text`). Every selected glyph and its underline is
+painted in that color, syntax and link colors included, as in native text controls;
+they return when the selection ends. The renderer still moves the color in lightness
+if a fill would leave it below 4.5:1, so no selected text is ever unreadable.
+
+| Theme | Fill / text | Text on fill | Fill on page | Inactive fill / text | Text on inactive | Inactive on page | Before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Amber Terminal | `#5f4b2a` / `#fff5df` | 7.67:1 | 1.96:1 | `#403b32` / `#fff5df` | 10.26:1 | 1.46:1 | `#e9bb70` / `#202a28`, 9.15:1 on the page |
+| Blue | `#315b86` / `#ffffff` | 7.07:1 | 2.42:1 | `#323d48` / `#ffffff` | 11.07:1 | 1.55:1 | unchanged |
+| Carbon Green | `#426127` / `#f5ffe9` | 6.85:1 | 2.47:1 | `#31392a` / `#f5ffe9` | 11.64:1 | 1.45:1 | unchanged |
+| Catppuccin Latte | `#d0beef` / `#30334a` | 7.24:1 | 1.51:1 | `#e0daea` / `#30334a` | 9.06:1 | 1.21:1 | `#8839ef` / `#ffffff`, 4.79:1 on the page |
+| Catppuccin Mocha | `#524264` / `#f5e0dc` | 7.14:1 | 1.81:1 | `#3d3942` / `#f5e0dc` | 8.90:1 | 1.45:1 | unchanged |
+| Dark | `#264f78` / `#ffffff` | 8.50:1 | 1.92:1 | `#3a3d41` / `#ffffff` | 10.92:1 | 1.49:1 | `#555555` / `#ffffff`, 2.19:1 on the page |
+| Deep Ocean | `#185b60` / `#ffffff` | 7.77:1 | 2.30:1 | `#293739` / `#ffffff` | 12.35:1 | 1.45:1 | `#a5edf4` / `#091923`, 13.63:1 on the page |
+| Dracula | `#534265` / `#ffffff` | 8.99:1 | 1.58:1 | `#46424c` / `#ffffff` | 9.79:1 | 1.45:1 | unchanged |
+| Graphite Contrast | `#65485b` / `#ffffff` | 7.98:1 | 2.21:1 | `#3c3439` / `#ffffff` | 12.05:1 | 1.46:1 | `#ffdbc4` / `#20191e`, 13.56:1 on the page |
+| Gruvbox Dark | `#504945` / `#fbf1c7` | 7.78:1 | 1.67:1 | `#46403d` / `#fbf1c7` | 8.98:1 | 1.45:1 | unchanged |
+| High Contrast Dark | `#1aebff` / `#000000` | 14.37:1 | 14.37:1 | `#c8c8c8` / `#000000` | 12.55:1 | 12.55:1 | `#ffffff` / `#000000`, 21.00:1 on the page |
+| High Contrast Light | `#37006e` / `#ffffff` | 15.13:1 | 15.13:1 | `#c8c8c8` / `#000000` | 12.55:1 | 1.67:1 | `#000000` / `#ffffff`, 21.00:1 on the page |
+| Light | `#a5d0ff` / `#202020` | 10.14:1 | 1.61:1 | `#e5ebf1` / `#202020` | 13.57:1 | 1.20:1 | `#cccccc` / `#202020`, 1.61:1 on the page |
+| Nord | `#465a70` / `#eceff4` | 6.16:1 | 1.92:1 | `#484d54` / `#eceff4` | 7.39:1 | 1.60:1 | unchanged |
+| Norton Commander | `#00737d` / `#ffffff` | 5.60:1 | 2.37:1 | `#0a4a8a` / `#ffffff` | 8.90:1 | 1.49:1 | `#55ffff` / `#00005f`, 10.84:1 on the page |
+| One Dark | `#36546e` / `#edf1f7` | 6.99:1 | 1.77:1 | `#3d464d` / `#edf1f7` | 8.49:1 | 1.45:1 | unchanged |
+| Paper Contrast | `#a6c9f2` / `#0c1727` | 10.50:1 | 1.70:1 | `#dce6f3` / `#0c1727` | 14.27:1 | 1.25:1 | `#173f6b` / `#ffffff`, 10.61:1 on the page |
+| Rosé Pine | `#52425e` / `#f4efff` | 8.10:1 | 1.93:1 | `#38343c` / `#f4efff` | 10.81:1 | 1.45:1 | unchanged |
+| Rosé Pine Dawn | `#e9c0cb` / `#302c48` | 8.15:1 | 1.49:1 | `#eadde1` / `#302c48` | 10.08:1 | 1.21:1 | `#985069` / `#ffffff`, 5.22:1 on the page |
+| Sandstone Contrast | `#e4c09f` / `#1c160e` | 10.54:1 | 1.65:1 | `#ece0d7` / `#1c160e` | 13.85:1 | 1.25:1 | `#523414` / `#fffbf2`, 10.93:1 on the page |
+| Slate Blue | `#255575` / `#ffffff` | 7.97:1 | 2.00:1 | `#323d47` / `#ffffff` | 11.09:1 | 1.44:1 | `#72b8eb` / `#16191e`, 7.42:1 on the page |
+| Slate Teal | `#1c5b51` / `#ffffff` | 7.88:1 | 2.02:1 | `#31403c` / `#ffffff` | 10.89:1 | 1.46:1 | `#67d7c4` / `#16191e`, 9.18:1 on the page |
+| Slate Violet | `#5c4874` / `#ffffff` | 7.97:1 | 2.00:1 | `#3f3a47` / `#ffffff` | 11.01:1 | 1.45:1 | `#c5a3f1` / `#16191e`, 7.50:1 on the page |
+| Solarized Light | `#9ecdd2` / `#002b36` | 8.66:1 | 1.61:1 | `#d7e4e6` / `#002b36` | 11.53:1 | 1.21:1 | `#28666d` / `#fdf6e3`, 6.06:1 on the page |
+| Tokyo Night | `#394b70` / `#e0e6ff` | 7.01:1 | 1.97:1 | `#323842` / `#e0e6ff` | 9.51:1 | 1.45:1 | unchanged |
+| Verdant Light | `#badaa9` / `#172213` | 10.74:1 | 1.50:1 | `#e1ebdc` / `#172213` | 13.43:1 | 1.20:1 | `#3c6b18` / `#ffffff`, 6.20:1 on the page |
+
+Decisions and limits:
+
+- Midnight Explorer has no user-editable theme. The Colors page edits filename
+  rules, whose selected and focused row colors are derived from each row's
+  background (see the
+  [filename-color contract](developer/FILENAME_COLOR_OPTIONS.md#default-category-palette));
+  the selection tokens are palette constants, nothing is stored in settings.
+- Viewer and comparator windows switch to the inactive pair when the window is
+  deactivated and back when it is activated. The view is painted again with the
+  other pair; the page is not laid out again. Focus moving inside an active window,
+  for example to the Find bar, keeps the active pair, so a Find match stays
+  prominent.
+- Fields keep the active pair while their window is inactive. Slint keeps a field's
+  selection only across window deactivation, and fields are small; dimming them
+  would change every themed input and its tests, which is left for later.
+- Standard Slint inputs that are not themed (`HintedLineEdit` and the plain
+  `LineEdit`, `TextEdit` and `SpinBox` in Options pages, Find masks and content,
+  About, keyboard, plugin, archive and custom command forms) keep Slint Fluent's own
+  selection: the system accent fill with Fluent's text color, about 4.5:1. Slint
+  1.18 exposes no selection colors for them; reaching the theme's pair, and 12:1 in
+  High Contrast, requires replacing them with `ThemedLineEdit`.
+- The HTML viewer shows author pages with their own styles and Chromium's selection.
+  The host injects no appearance into pages, so there is no path for a
+  `::selection` rule; adding one would change author styling and the web viewer
+  API, and was not done.
+- PDF pages are rendered images without a text layer: there is no PDF text
+  selection to color.
+- A selection in a wrapped Markdown paragraph is one band per line with no gaps
+  between lines (`a_selected_wrapped_paragraph_has_no_gaps_between_its_lines` in
+  `crates/midnight-viewer-render/tests/selection_contrast.rs`). Table cells and
+  separate blocks (paragraphs, list items) keep their own bands, as in browsers.
+
+## Syntax colors
+
+Viewer syntax and link colors are not palette tokens: the host derives them from
+fixed role tints and the theme accent, moved toward black or white only as far as
+needed against the page. Since 21 November 2026 they reach 5:1, a margin over WCAG
+AA, and 7:1 in the Contrast and High Contrast themes, recognized by body text of
+15:1 or more (`midnight_core::content_minimum`). Before, the tints stopped at exactly
+4.5:1: in every light theme, and in Paper Contrast, Sandstone Contrast and High
+Contrast Light, where 7:1 is now required (comments, strings, numbers, types,
+functions and errors). Comments and errors in Deep Ocean and Graphite Contrast were
+below 7:1 too. Among the other dark themes only the error color of Nord, One Dark and
+Norton Commander moves (from 4.7–5.0:1 to 5.0:1); their other colors already exceed
+5:1. Keyword colors, the theme accent, already reach the target everywhere. Every
+color keeps its hue, so each theme keeps its character. See
+[source highlighting](developer/VIEWER_PRESENTATION.md#source-highlighting-and-dense-pages).
+
+A Windows acceptance run flagged `#b3bdcf` on `#fdfefe` (1.87:1) in Paper Contrast
+Rust source. That is not a theme color: it is an anti-aliased blend, about half and
+half, of the old 4.5:1 comment color (about `#60779b`) with the page, measured where a
+thin glyph stroke covers no whole pixel. The comment color is now 7:1.

@@ -26,6 +26,7 @@ pub(crate) fn install(
         .with_picker_owner(midnight_ui::native_path_picker_owner),
     );
     let settings = presenter.clone();
+    let compare_commands = commands.clone();
     windows.set_font_listener(Rc::new(move |family| {
         settings.borrow_mut().save_viewer_preferences(
             midnight_core::ViewerPreferenceChange::ComparisonFont(family),
@@ -39,11 +40,17 @@ pub(crate) fn install(
             return;
         };
         let result = (|| {
-            let launch = presenter.borrow().file_compare_launch(if pane == 0 {
-                PaneId::Left
-            } else {
-                PaneId::Right
-            })?;
+            // An open filename search closes; it never stops the comparison.
+            let launch = presenter.borrow_mut().compare_command(
+                if pane == 0 {
+                    PaneId::Left
+                } else {
+                    PaneId::Right
+                },
+                compare_commands.as_ref(),
+            );
+            midnight_ui::refresh(&window, &presenter.borrow());
+            let launch = launch?;
             let mut appearance = crate::content_appearance::capture(&window);
             // Document typography stays independent of the manager's primed UI font.
             appearance.family = presenter

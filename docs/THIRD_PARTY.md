@@ -2,9 +2,16 @@
 
 The independent image viewer and thumbnail workers now share
 `plugins/image-decoder`: the same pinned raster/color libraries plus resvg/usvg
-0.48.1 with only `text` enabled for bounded static SVG. MIT is selected for
-resvg/usvg and the existing image-rs dependency; tiny-skia's BSD-3-Clause notices
-remain intact. Source-selected image/font/file/network loading is disabled.
+0.48.1 with `text` and `raster-images` enabled for bounded static SVG. MIT is selected
+for resvg/usvg and the existing image-rs dependency; tiny-skia's BSD-3-Clause notices
+remain intact. Source-selected font/file/network loading is disabled. Since 21
+November `raster-images` lets resvg draw embedded `data:` images, which the decoder
+first decodes with image-rs and hands to resvg as PNG; the feature links resvg's
+`gif` 0.14.2, `image-webp` 0.2.4 and `zune-jpeg` 0.5.15, already in the graph through
+image-rs. `simplecss` 0.2.2 (`Apache-2.0 OR MIT`), already used by usvg, became a
+direct dependency for the SVG reference bound. The three image lockfiles gained only
+these dependency edges, no package; the pinned license files were rechecked and no
+mandatory fee, subscription or royalty is introduced.
 Unmodified Noto Sans Regular/Arabic/Hebrew font bytes are embedded under OFL-1.1;
 see [source and hashes](../plugins/image-decoder/fonts/README.md). Both worker
 packaging paths copy the complete shared `plugins/image-decoder/notices` set,
@@ -457,6 +464,23 @@ removals above, they change only:
   are unchanged);
 - the `rustix` 1.1.6 `fs` declaration in `midnight-platform-common` described above;
 - the archive plugin's own version (0.2.0), a project-owned package.
+
+Also on 21 November 2026 `midnight-platform-windows` added the windows 0.62.2
+feature `Win32_UI_Controls` for the Shell's system image lists (`IImageList`
+through `SHGetImageList`), which draw native icons at the size they are shown
+([native icons](developer/NATIVE_ICONS.md)). The pinned manifest defines the feature
+as `["Win32_UI"]` and windows 0.62.2 has no optional dependency, so the feature only
+compiles more of the same crate's generated bindings (`MIT OR Apache-2.0`, the same
+`license-apache-2.0` and `license-mit` files): no package, version, licence or notice
+changes, and `Cargo.lock` does not change. No other package requests it. A
+metadata-only Windows capture (`cargo metadata --locked --offline --format-version 1
+--filter-platform x86_64-pc-windows-msvc`) of HEAD `2b901122` plus the change
+resolves 44 features of windows 0.62.2, 43 without this request; that capture and
+the package's `resolve.nodes[].features` are retained in
+`_build/qa/native-icons-20261121/`. No inventory row changes, and the historical
+feature/license CSV is left as captured. The scalable (SVG) icon-theme
+artwork that the Linux provider now renders uses `midnight-platform-linux`'s
+existing resvg 0.48.1 dependency with its features unchanged.
 
 The Linux clipboard's eventfd wait and the Linux access-ACL reads use the `event`
 and `fs` features that `midnight-platform-linux` already declared (and the native

@@ -38,6 +38,7 @@ fn installed_font_catalog_arrives_without_content_and_is_shared_between_windows(
         foreground: [255; 4],
         background: [0, 0, 0, 255],
         selection: [70; 4],
+        selection_text: [0; 4],
         accent: [180; 4],
     };
     let geometry = ViewerGeometry {

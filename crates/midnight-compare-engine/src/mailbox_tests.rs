@@ -169,6 +169,7 @@ fn a_session_wakes_its_consumer_instead_of_being_polled() {
                 foreground: [255; 4],
                 background: [30, 30, 30, 255],
                 selection: [50, 80, 120, 255],
+                selection_text: [0; 4],
                 accent: [90, 150, 220, 255],
             },
             ViewerGeometry {

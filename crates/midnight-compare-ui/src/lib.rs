@@ -343,6 +343,7 @@ impl ComparatorWindows {
         .map_err(|error| error.to_string())?;
         before_palette_read(&session);
         let open = OpenWindow::new(window, session, &appearance);
+        open.appearance.presented(presentation);
         bind(&open, keys, self.service.clone());
         fonts::bind(&open, self.font_listener.clone());
         file_choice::bind(&open, self.picker_owner);
@@ -550,6 +551,9 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        if let slint::winit_030::winit::event::WindowEvent::Focused(active) = event {
+            appearance::activation_changed(&open, *active);
+        }
         let scrolled = scroll.observe(open.window.window(), event, None);
         if midnight_ui_input::native_escape_pressed(event) {
             open.close();
@@ -785,6 +789,7 @@ mod window_tests {
             foreground: [240, 240, 240, 255],
             background: [20, 20, 20, 255],
             selection: [60, 80, 120, 255],
+            selection_text: [0; 4],
             accent: [100, 150, 220, 255],
         };
         let policy = service.comparator_snapshot();

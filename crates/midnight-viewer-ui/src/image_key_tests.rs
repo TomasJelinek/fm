@@ -54,6 +54,7 @@ fn home_and_end_go_to_the_top_and_bottom_of_a_tall_image_and_across_a_wide_one()
     let info = wide.image.as_mut().unwrap();
     info.surface = ViewerSurfaceId(21);
     info.height = 200;
+    info.extent = [4000.0, 200.0];
     info.origin = [512.0, -20.0];
     present_outputs(
         &open,

@@ -236,7 +236,7 @@ fn tree_filter_matching_receipt_adopts_and_saves_once_after_commit() {
     );
     assert_eq!(p.panes[0].search.panel_filter, request.options.filter);
     assert!(p.panes[0].tree_input_ready());
-    assert!(p.panes[0].search_allows_activation());
+    assert!(p.panes[0].focus_actionable());
     assert!(
         sent.borrow()
             .iter()
@@ -485,7 +485,7 @@ fn tree_prefix_input_is_retained_and_enqueues_reprojection() {
     });
     assert_eq!(p.panes[0].search.query, "ch");
     assert!(p.panes[0].search.pending);
-    assert!(!p.panes[0].search_allows_activation());
+    assert!(!p.panes[0].focus_actionable());
     assert!(Arc::ptr_eq(&original, p.panes[0].tree_view().unwrap()));
     assert!(sent.borrow().iter().any(|command| matches!(command,
         Command::Tree(command) if matches!(command.as_ref(), TreeCommand::Reproject(_)))));
@@ -595,24 +595,25 @@ fn tree_prefix_latest_query_and_escape_supersede_inflight_first_match() {
     );
     assert_eq!(p.panes[0].search.query, "");
     assert_eq!(p.panes[0].search_prefix_end(1), 0);
-    assert!(!p.panes[0].search_allows_activation());
+    assert!(!p.panes[0].focus_actionable());
     let clear = sent
         .into_inner()
         .expect("latest Escape is delivered after receipt");
     assert!(clear.options.search.query.is_empty());
     p.apply_with_sender(prefix_receipt(&clear, &[]), &|_| true);
     assert_eq!(p.panes[0].cursor, Some(EntryId(7)));
-    assert!(p.panes[0].search_allows_activation());
+    assert!(p.panes[0].focus_actionable());
 }
 
 #[test]
-fn tree_prefix_navigation_uses_backend_matches_and_zero_matches_fence_activation() {
+fn tree_prefix_navigation_uses_backend_matches_and_zero_matches_fence_only_enter() {
     let mut p = fixture();
     let request = prefix_request(&mut p, "c");
     p.apply_with_sender(prefix_receipt(&request, &[1]), &|_| true);
     assert_eq!(p.panes[0].search_match_count(), 1);
     assert_eq!(p.panes[0].cursor, Some(EntryId(11)));
-    assert!(p.panes[0].search_allows_activation());
+    assert!(p.panes[0].focus_actionable());
+    assert!(p.panes[0].focus_matches_search());
     for key in [2, 3, 4, 5, 6, 7] {
         p.move_search_cursor(PaneId::Left, key);
         assert_eq!(p.panes[0].cursor, Some(EntryId(11)));
@@ -620,9 +621,12 @@ fn tree_prefix_navigation_uses_backend_matches_and_zero_matches_fence_activation
     let request = prefix_request(&mut p, "zz");
     p.apply_with_sender(prefix_receipt(&request, &[]), &|_| true);
     assert_eq!(p.panes[0].search_match_count(), 0);
-    assert!(!p.panes[0].search_allows_activation());
+    // Enter opens no nonmatching row; commands act on the shown one (`search_commands`).
+    assert!(!p.panes[0].focus_matches_search());
+    assert!(p.panes[0].focus_actionable());
     p.move_search_cursor(PaneId::Left, 6);
-    assert!(!p.panes[0].search_allows_activation());
+    assert_eq!(p.panes[0].cursor, Some(EntryId(11)));
+    assert!(!p.panes[0].focus_matches_search());
 }
 
 #[test]
@@ -789,7 +793,7 @@ fn tree_prefix_oversized_query_preserves_last_accepted_intent() {
     p.change_search_query(PaneId::Left, &"x".repeat(4097), &|_| panic!("over budget"));
     assert_eq!(p.panes[0].search.query, "c");
     assert_eq!(p.panes[0].search_match_count(), 1);
-    assert!(p.panes[0].search_allows_activation());
+    assert!(p.panes[0].focus_actionable());
 }
 
 #[test]
@@ -813,7 +817,7 @@ fn tree_prefix_context_caret_cannot_activate_with_empty_query() {
     );
     p.panes[0].cursor = Some(EntryId(7));
     p.panes[0].parent_cursor = false;
-    assert!(!p.panes[0].search_allows_activation());
+    assert!(!p.panes[0].focus_actionable());
 }
 
 #[test]
@@ -857,7 +861,11 @@ fn tree_prefix_escape_after_empty_filter_restores_last_usable_occurrence() {
     let missing = prefix_request(&mut p, "zz");
     p.apply_with_sender(prefix_receipt(&missing, &[]), &|_| true);
     assert_eq!(p.panes[0].display_len(), 0);
-    assert!(!p.panes[0].search_allows_activation());
+    assert_eq!(
+        p.panes[0].cursor, None,
+        "no hidden occurrence stays focused"
+    );
+    assert!(!p.panes[0].focus_matches_search(), "Enter opens nothing");
     let cleared = prefix_request(&mut p, "");
     p.apply_with_sender(prefix_receipt(&cleared, &[]), &|_| true);
     assert_eq!(
@@ -865,7 +873,7 @@ fn tree_prefix_escape_after_empty_filter_restores_last_usable_occurrence() {
         Some(EntryId(11)),
         "Escape restores the last focused raw occurrence"
     );
-    assert!(p.panes[0].search_allows_activation());
+    assert!(p.panes[0].focus_actionable());
 }
 
 #[test]
@@ -1214,7 +1222,7 @@ fn tree_prefix_filter_preference_keeps_matching_caret_and_replaces_hidden_caret(
             Some(expected),
             "quick-filter preserves a matching caret and moves a hidden caret to its first match"
         );
-        assert!(p.panes[0].search_allows_activation());
+        assert!(p.panes[0].focus_actionable());
     }
 }
 
@@ -1227,5 +1235,103 @@ fn tree_filter_history_waits_for_successful_correlated_publication() {
     assert_eq!(
         p.preferences.values.panel_filter_history,
         vec![request.options.filter]
+    );
+}
+
+/// The tree after "zz" found no name, with the cursor on child.txt.
+fn unmatched_tree() -> Presenter {
+    let mut p = fixture();
+    let request = prefix_request(&mut p, "c");
+    p.apply_with_sender(prefix_receipt(&request, &[1]), &|_| true);
+    let request = prefix_request(&mut p, "zz");
+    p.apply_with_sender(prefix_receipt(&request, &[]), &|_| true);
+    assert_eq!(p.panes[0].cursor, Some(EntryId(11)));
+    assert!(!p.panes[0].focus_matches_search());
+    p
+}
+
+fn tree_commands(sent: &[Command]) -> Vec<&TreeCommand> {
+    sent.iter()
+        .filter_map(|command| match command {
+            Command::Tree(command) => Some(command.as_ref()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn tree_command_captures_the_focused_row_before_its_search_closes() {
+    let mut p = unmatched_tree();
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.panel_command(PaneId::Left, &send, |p| {
+        p.start_operation(PaneId::Left, MutationKind::Delete(DeleteMode::Trash), &send);
+    });
+    let sent = sent.into_inner();
+    let tree = tree_commands(&sent);
+    // The capture goes first: the reprojection that closes the search replaces the view.
+    let [TreeCommand::Delete(delete), TreeCommand::Reproject(clear)] = tree.as_slice() else {
+        panic!("F8 captures the focused row, then the search closes");
+    };
+    assert_eq!(delete.fallback, Some(TreeRowId(11)));
+    assert!(delete.selection.is_empty());
+    assert!(clear.options.search.query.is_empty());
+    assert_eq!(p.panes[0].search.query, "");
+    let clear = clear.clone();
+    p.apply_with_sender(prefix_receipt(&clear, &[]), &|_| true);
+    assert_eq!(p.panes[0].cursor, Some(EntryId(11)), "the cursor stays");
+    assert!(p.panes[0].focus_actionable());
+}
+
+#[test]
+fn tree_enter_on_a_nonmatching_row_closes_the_search_and_opens_nothing() {
+    let mut p = unmatched_tree();
+    let sent = RefCell::new(Vec::new());
+    assert!(!p.activate_focused(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let sent = sent.into_inner();
+    assert!(
+        matches!(tree_commands(&sent).as_slice(),
+            [TreeCommand::Reproject(clear)] if clear.options.search.query.is_empty()),
+        "only the search closes"
+    );
+    assert_eq!(sent.len(), 1);
+    assert_eq!(p.panes[0].search.query, "");
+    assert_eq!(p.panes[0].cursor, Some(EntryId(11)));
+    assert_eq!(p.search_note(PaneId::Left), Some("No name matches “zz”"));
+}
+
+#[test]
+fn tree_search_still_computing_keeps_the_tree_busy_and_cannot_move_the_cursor_later() {
+    let mut p = fixture();
+    p.panes[0].cursor = Some(EntryId(7));
+    p.panes[0].parent_cursor = false;
+    let request = prefix_request(&mut p, "c");
+    assert!(!p.activate_focused(PaneId::Left, &|_| panic!("Enter sends nothing")));
+    assert_eq!(
+        p.search_note(PaneId::Left),
+        Some("Still searching for “c”…")
+    );
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    // The tree reports its own busy state: no capture while it reprojects.
+    p.panel_command(PaneId::Left, &send, |p| {
+        p.start_operation(PaneId::Left, MutationKind::Delete(DeleteMode::Trash), &send);
+    });
+    assert!(tree_commands(&sent.borrow()).is_empty());
+    assert_eq!(p.panes[0].search.query, "", "the search closes");
+    p.apply_with_sender(prefix_receipt(&request, &[1]), &send);
+    assert_eq!(
+        p.panes[0].cursor,
+        Some(EntryId(7)),
+        "the closed query's late receipt does not focus its first match"
     );
 }

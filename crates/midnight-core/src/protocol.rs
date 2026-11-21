@@ -46,6 +46,12 @@ pub enum Command {
         generation: u64,
         targets: Vec<crate::CommandIconTarget>,
     },
+    /// The visible tiles whose files carry their own artwork and still need it at
+    /// their edge. A newer generation replaces and cancels the previous view.
+    SetFileIconView {
+        generation: u64,
+        targets: Vec<crate::FileIconTarget>,
+    },
     /// The device-pixel edges at which the frontend now draws native icons.
     SetIconEdges(crate::IconEdges),
     EnqueueCapturedTransfer(crate::CapturedTransferRequest),
@@ -689,6 +695,13 @@ pub enum Event {
     CommandIconLoaded {
         generation: u64,
         identity: String,
+        pixels: Arc<IconPixels>,
+    },
+    /// A file's own artwork for a target of the file icon view `generation`.
+    FileIconLoaded {
+        generation: u64,
+        identity: String,
+        edge: u16,
         pixels: Arc<IconPixels>,
     },
     IconLoaded {

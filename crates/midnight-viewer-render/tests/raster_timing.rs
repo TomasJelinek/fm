@@ -14,6 +14,7 @@ fn retained(origin: [f32; 2]) -> Viewport {
         origin,
         background: [24, 27, 34, 255],
         selection_color: [45, 80, 140, 255],
+        selection_text: [0; 4],
     }
 }
 

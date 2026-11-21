@@ -55,6 +55,7 @@ fn raster(width: u32, height: u32, scale: f32) -> Result<(), String> {
                     origin: [0.0, frame as f32 * 0.76321],
                     background: [25, 29, 37, 255],
                     selection_color: [55, 86, 124, 255],
+                    selection_text: [0; 4],
                 },
                 None,
             )
@@ -124,6 +125,7 @@ fn worker(
             foreground: [225, 229, 236, 255],
             background: [25, 29, 37, 255],
             selection: [55, 86, 124, 255],
+            selection_text: [0; 4],
             accent: [133, 185, 244, 255],
         },
         ViewerGeometry {

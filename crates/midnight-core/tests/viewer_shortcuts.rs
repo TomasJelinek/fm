@@ -9,6 +9,7 @@ fn image_zoom_and_fit_have_distinct_configurable_viewer_actions() {
         ("Ctrl+Minus", "viewer.zoom-out"),
         ("Ctrl+Digit0", "viewer.fit"),
         ("Ctrl+Digit1", "viewer.actual-pixels"),
+        ("Ctrl+Y", "viewer.zoom-to"),
     ] {
         assert_eq!(
             map.resolve(&ShortcutChord::parse(key).unwrap(), ShortcutContext::Viewer)
@@ -16,6 +17,35 @@ fn image_zoom_and_fit_have_distinct_configurable_viewer_actions() {
             Some(action)
         );
     }
+}
+
+#[test]
+fn the_typed_zoom_default_yields_to_a_ctrl_y_saved_before_it_existed() {
+    // Ctrl+Y was free before `viewer.zoom-to`: saved shortcuts on it stay valid and win.
+    let chord = ShortcutChord::parse("Ctrl+Y").unwrap();
+    let saved = ShortcutMap::new(&[ShortcutBinding {
+        action: "viewer.copy".into(),
+        keys: vec!["Ctrl+Y".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        saved.resolve(&chord, ShortcutContext::Viewer).unwrap().id,
+        "viewer.copy"
+    );
+    // Assigned explicitly, the typed zoom still conflicts like any other action.
+    assert!(
+        ShortcutMap::new(&[
+            ShortcutBinding {
+                action: "viewer.copy".into(),
+                keys: vec!["Ctrl+Y".into()],
+            },
+            ShortcutBinding {
+                action: "viewer.zoom-to".into(),
+                keys: vec!["Ctrl+Y".into()],
+            },
+        ])
+        .is_err()
+    );
 }
 
 #[test]

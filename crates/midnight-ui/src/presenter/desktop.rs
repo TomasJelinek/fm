@@ -28,7 +28,8 @@ pub(crate) enum IconPlace {
     Entry(PaneId),
     /// A location, drive or bookmark choice.
     Location,
-    /// Toolbar, function-key, menu and dialog actions, which share one bitmap.
+    /// Toolbar, function-key, menu and dialog actions, which share one bitmap of
+    /// the largest action box.
     Action,
 }
 
@@ -138,7 +139,7 @@ impl DesktopState {
             IconPlace::Entry(pane) if tiles[pane.index()] && edges.tile != 0 => edges.tile,
             IconPlace::Entry(_) => edges.entry,
             IconPlace::Location => edges.location,
-            IconPlace::Action => IconKey::DEFAULT_EDGE,
+            IconPlace::Action => edges.action,
         }
     }
     /// The bitmap of exactly `edge`, else the next larger one, which scales down
@@ -331,6 +332,15 @@ impl Presenter {
                 pixels,
             } => {
                 self.receive_command_icon(generation, &identity, &pixels);
+                self.retired.push(Box::new(pixels));
+            }
+            Event::FileIconLoaded {
+                generation,
+                identity,
+                edge,
+                pixels,
+            } => {
+                self.receive_file_icon(generation, &identity, edge, &pixels);
                 self.retired.push(Box::new(pixels));
             }
             Event::IconLoaded { key, pixels } => {
@@ -754,6 +764,7 @@ mod tests {
                     entry: 20,
                     tile: 96,
                     location: 26,
+                    action: 32,
                 },
                 tiles: [false, true],
             },
@@ -896,6 +907,7 @@ mod tests {
             entry: 25,
             tile: 120,
             location: 33,
+            action: 32,
         };
         assert_eq!(width(state.image(&file, ROW)), 96);
         state.receive_image(file.clone().sized(25), &pixels(25));

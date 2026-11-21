@@ -296,6 +296,7 @@ fn icon_edges_are_sent_once_retried_when_refused_and_rows_follow_the_view() {
         entry: 20,
         tile: 96,
         location: 20,
+        action: 32,
     };
     assert_eq!(fixture.icon_edges.borrow().last(), Some(&tiles));
     let sent = fixture.icon_edges.borrow().len();

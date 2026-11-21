@@ -1,7 +1,7 @@
 {
   "protocol": 1,
   "id": "midnight-image",
-  "version": "image-0.25.10-moxcms-0.8.1-resvg-0.48.1-dav1d-1.5.4-hayro-0.9.0-r5",
+  "version": "image-0.25.10-moxcms-0.8.1-resvg-0.48.1-dav1d-1.5.4-hayro-0.9.0-r6",
   "executable": "midnight-thumbnail-image",
   "extensions": [
     "png",

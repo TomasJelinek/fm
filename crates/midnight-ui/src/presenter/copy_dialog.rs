@@ -789,7 +789,7 @@ impl Presenter {
         let Some(archive) = &p.archive else {
             return;
         };
-        if p.loading || archive.selection_pending || !p.search_allows_activation() {
+        if p.loading || archive.selection_pending || !p.rows_settled() {
             self.desktop.report(
                 "Selection still loading",
                 "Wait for the archive listing and selection to finish before copying.".into(),
@@ -799,11 +799,13 @@ impl Presenter {
         if archive.location.mount.is_none() {
             return;
         }
-        let focused = (!p.parent_cursor)
+        // The focused row only while the panel shows it (a filter may hide it).
+        let focused = (!p.parent_cursor && p.focus_actionable())
             .then_some(p.cursor)
             .flatten()
             .and_then(|id| p.entry_by_id(id));
         if archive.selected.is_empty() && focused.is_none() {
+            self.note_filter_hides_focus(pane);
             return;
         }
         let summary = if archive.selected.is_empty() {

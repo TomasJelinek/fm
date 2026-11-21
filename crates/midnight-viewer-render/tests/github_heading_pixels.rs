@@ -43,6 +43,7 @@ fn heading_separator_preserves_its_pixel_phase_after_fractional_caret_restoratio
                     origin: [0.0, y],
                     background: [255; 4],
                     selection_color: [0; 4],
+                    selection_text: [0; 4],
                 },
                 None,
             )

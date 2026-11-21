@@ -1,6 +1,7 @@
-//! Bounded viewer choices; schema22 adds the independent text comparator font.
+//! Bounded viewer choices; schema22 adds the independent text comparator font and
+//! schema 36 the PDF layout chosen last.
 use midnight_core::{
-    MarkdownPreset, ViewerFontPreferences, ViewerPreferences, ViewerZoomPreference,
+    DocumentLayout, MarkdownPreset, ViewerFontPreferences, ViewerPreferences, ViewerZoomPreference,
 };
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -23,6 +24,13 @@ pub(super) struct StoredViewerPreferences {
     markdown_preset: String,
     image_zoom: StoredZoom,
     document_zoom: StoredZoom,
+    /// Written only for the Continuous layout (schema 36); absent means Paged.
+    #[serde(
+        default,
+        deserialize_with = "super::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    document_layout: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -92,6 +100,8 @@ impl TryFrom<&ViewerPreferences> for StoredViewerPreferences {
             markdown_preset: value.markdown_preset.storage_name().into(),
             image_zoom: value.image_zoom.into(),
             document_zoom: value.document_zoom.into(),
+            document_layout: (value.document_layout != DocumentLayout::default())
+                .then(|| value.document_layout.storage_name().into()),
         })
     }
 }
@@ -113,6 +123,11 @@ impl TryFrom<StoredViewerPreferences> for ViewerPreferences {
                 .ok_or_else(|| invalid("Invalid Markdown rendering preset."))?,
             image_zoom: value.image_zoom.into(),
             document_zoom: value.document_zoom.into(),
+            document_layout: match value.document_layout.as_deref() {
+                None => DocumentLayout::default(),
+                Some(name) => DocumentLayout::from_storage_name(name)
+                    .ok_or_else(|| invalid("Invalid document layout."))?,
+            },
         };
         prefs.validate().map_err(invalid)?;
         Ok(prefs)
@@ -127,7 +142,15 @@ impl StoredViewerPreferences {
         {
             return Err(invalid("Comparison font requires preferences version 22."));
         }
+        if version < 36 && self.document_layout.is_some() {
+            return Err(invalid("Document layout requires preferences version 36."));
+        }
         Ok(())
+    }
+
+    /// Schema 36 is written only for a document layout choice.
+    pub(super) fn has_document_layout(&self) -> bool {
+        self.document_layout.is_some()
     }
 }
 

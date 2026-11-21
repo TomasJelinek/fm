@@ -92,6 +92,8 @@ impl Presenter {
             &mut p.search.query,
             query.to_owned(),
         )));
+        // Typing again keeps the new search open.
+        p.search.close_requested = false;
         p.search.revision = revision;
         p.search.filter = self.preferences.values.quick_search_filter;
         p.search.pending = true;

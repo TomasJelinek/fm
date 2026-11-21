@@ -4,22 +4,13 @@ use midnight_core::{Cancellation, PathPickerOwner, PathPickerRequest};
 use std::{
     cell::RefCell,
     ffi::OsString,
-    fs::{File, OpenOptions},
     io,
-    os::windows::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::{MetadataExt, OpenOptionsExt},
-        io::AsRawHandle,
-    },
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::PathBuf,
     ptr,
 };
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM},
-    Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        FILE_TYPE_DISK, GetFileType, GetFinalPathNameByHandleW,
-    },
     System::{Com::COINIT_APARTMENTTHREADED, Threading::GetCurrentThreadId},
     UI::{
         Shell::PickIconDlg,
@@ -261,49 +252,11 @@ fn capture_pixels(
     if cancel.is_cancelled() {
         return Err(io::ErrorKind::Interrupted.into());
     }
-    let source = OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
-    let metadata = source.metadata()?;
-    // SAFETY: source owns a live handle; this only queries its native file type.
-    if !metadata.is_file()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-        || unsafe { GetFileType(source.as_raw_handle()) } != FILE_TYPE_DISK
-    {
-        return Err(invalid("Choose an ordinary executable, DLL, or icon file."));
-    }
     // Resolve from the retained handle, never reopen through a retargetable junction.
     // The source handle denies write/delete sharing throughout resource extraction.
-    let resolved = final_path(&source)?;
+    let (_source, resolved) = crate::icons::open_pinned(path)?;
     crate::icons::load_resource(&resolved, index, 128, cancel)
         .ok_or_else(|| invalid("The selected icon resource could not be decoded."))
-}
-fn final_path(source: &File) -> io::Result<PathBuf> {
-    let mut buffer = vec![0u16; 256];
-    loop {
-        // SAFETY: the file handle and initialized writable UTF-16 buffer remain live.
-        let count = unsafe {
-            GetFinalPathNameByHandleW(
-                source.as_raw_handle(),
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                0,
-            )
-        } as usize;
-        if count == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if count >= PATH_UNITS {
-            return Err(invalid("The resource's native final path is too large."));
-        }
-        if count >= buffer.len() {
-            buffer.resize(count + 1, 0);
-            continue;
-        }
-        return Ok(PathBuf::from(OsString::from_wide(&buffer[..count])));
-    }
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)

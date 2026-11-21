@@ -90,14 +90,22 @@ boundary. SVG thumbnails rasterize directly at the requested size; the viewer
 retains a bounded original-size raster, so magnifying SVG uses image sampling
 rather than rerendering vectors.
 
-SVG supports paths/shapes, gradients, bounded local reuse and text from embedded
-Noto Sans fonts. It does not load system/document-selected fonts, local or remote
-images, scripts or external resources. DTDs, cycles, excessive XML/reference
-expansion, event handlers, foreign objects, and filter/mask/clip/marker/pattern
-effects fail explicitly. Encoded SVG is capped at 4 MiB, 32768 XML nodes, depth 64
-and 65536 expanded local-reference visits; the ordinary image pixel limits remain.
-The bundled Latin, Arabic and Hebrew fonts provide deterministic fallback, not
-exact system-font matching or complete Unicode coverage. See the
+SVG draws what resvg draws: paths and shapes, text from embedded Noto Sans fonts,
+gradients, patterns, markers, clip paths, masks, filters, local `use` and raster
+images embedded as `data:` URIs (PNG, JPEG, GIF, WebP, decoded by the raster path
+with its limits). Scripts and event attributes are never run, `foreignObject` is
+skipped (a `switch` draws its SVG fallback), and links to files or URLs (images,
+`use`, paint and effect references) are never opened. The decoder names skipped
+content in a note (`decode_with_note`); API 0.3.0 cannot carry it to the status line
+yet (VIEW-06 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). Entity declarations (a
+DOCTYPE internal subset), reference cycles and documents over a bound are refused
+with the exact reason and bound: 4 MiB of source, 262,144 XML nodes, depth 64, an
+estimated 256 MiB of converted tree after references are expanded (1 KiB per element
+and 4 bytes per byte of attributes and text), 2^27 style-rule checks, and, at the
+drawing size, 448 MiB of memory while drawing and 2^33 weighted pixel operations
+(about half a minute); the ordinary image pixel limits remain. The bundled Latin,
+Arabic and Hebrew fonts provide deterministic fallback, not exact system-font matching
+or complete Unicode coverage. See the
 [decoder contract](../../plugins/image-decoder/README.md) and its font notices.
 
 AVIF uses the same independent decoder through the narrowly patched image-rs
@@ -184,11 +192,14 @@ The host also rejects
 a reply whose declared payload exceeds the requested raster before allocating its
 body. These are host changes; the independent wire/SDK version is unchanged.
 
-Document providers currently retain one bounded viewport per render. They are
-identified by actual document metadata, not a filename suffix. Reinterpreting a
-whole PDF page for each small tile would amplify CPU work; document tiling is not
-claimed as an optimization. Both paths retain cancellation, captured-source
-validation and the same public viewport bounds.
+Document providers are identified by actual document metadata, not a filename
+suffix. The host renders a document as retained 256-pixel tiles at the exact shown
+zoom, in bands: each `PageViewport` request covers one page's part of a rectangle of
+whole tiles (at most 4096 pixels across and down, 4 megapixels in all), so a page is
+interpreted once per band, not once per tile. Scrolling moves retained tiles; it requests nothing
+for tiles that exist. This is a host change only: the wire format, the SDK and the
+public viewport bounds are unchanged, and both paths retain cancellation and
+captured-source validation. See [viewer scrolling](VIEWER_SCROLLING.md#documents-pdf).
 
 Page indices are zero-based. `metadata()` and existing `render()` address page
 zero; an ordinary image has one page and `is_document() == false`. Out-of-range
@@ -390,8 +401,10 @@ The SDK exposes `Document::metadata(&self) -> DocumentMetadata` and
 as `serve`, but validates document metadata and each page index before rendering.
 The SDK enters the sandbox before either parser and allows broker reads only
 during Open. Hayro 0.9.0 rasterizes each PDF viewport directly from retained PDF
-content; it never allocates an entire zoomed document. Per-render caches are
-released after each frame, with the same host process/time limits as images.
+content; it never allocates an entire zoomed document. Hayro's render caches (fonts,
+glyph outlines and bitmaps, decoded images) are kept for the two pages rendered last at
+their scale, so the bands of one page reuse them; the same host process/time limits as
+for images apply.
 Compiled standard fonts/CMaps and embedded document assets are available, while
 filesystem/network font lookup, JavaScript and link activation are absent.
 Password prompts and PDF editing are not implemented. Hayro is experimental;
@@ -433,6 +446,18 @@ recognized image format") before trying SVG; a PNG cut short reports "unexpected
 of file". The PDF viewer reports, for example, "The PDF structure is invalid or
 incomplete", "The document needs a password or uses unsupported encryption" and "The
 page contains content this viewer cannot draw".
+
+API 0.3.0 carries a reason's text, not its kind, yet a limit or unsupported content
+is not damage. Until a kind exists (VIEW-06), the text decides: a refused Open whose
+reason is a complete sentence starting with "This " shows that sentence alone, with a
+full stop added if it lacks one ("This SVG is larger than 4 MiB, the limit for SVG
+images."); any other reason continues the "damaged or incomplete" sentence ("This
+image is damaged or incomplete: the SVG is not well-formed XML: the document ends too
+early (line 1, column 75)"). Providers should phrase limits and unsupported content
+that way and damage as a fragment. The shared image decoder does; the PDF viewer's
+limit texts ("The document has more than 4096 pages") still read as damage. Hosts
+before this rule show a sentence after their own ("This image is damaged or
+incomplete: this SVG is larger than 4 MiB, …").
 
 ## Independent build and verification
 

@@ -1,6 +1,6 @@
 use super::*;
 
-fn snapshot(p: &mut Presenter, names: &[&str]) -> Arc<[Entry]> {
+pub(super) fn snapshot(p: &mut Presenter, names: &[&str]) -> Arc<[Entry]> {
     let path = test_root();
     let navigation = begin(p, PaneId::Left, path.to_str().unwrap());
     let source: Arc<[Entry]> = names
@@ -18,7 +18,7 @@ fn snapshot(p: &mut Presenter, names: &[&str]) -> Arc<[Entry]> {
     source
 }
 
-fn query(p: &mut Presenter, text: &str) -> SearchRequest {
+pub(super) fn query(p: &mut Presenter, text: &str) -> SearchRequest {
     let sent = RefCell::new(Vec::new());
     p.change_search_query(PaneId::Left, text, &|command| {
         sent.borrow_mut().push(command);
@@ -33,7 +33,7 @@ fn query(p: &mut Presenter, text: &str) -> SearchRequest {
         .expect("a committed source must be searched on the backend")
 }
 
-fn result(request: &SearchRequest, rows: &[usize], end: usize) -> Arc<SearchResult> {
+pub(super) fn result(request: &SearchRequest, rows: &[usize], end: usize) -> Arc<SearchResult> {
     let entries: Vec<_> = rows
         .iter()
         .map(|row| request.source[*row].clone())
@@ -63,7 +63,7 @@ fn result(request: &SearchRequest, rows: &[usize], end: usize) -> Arc<SearchResu
     })
 }
 
-fn accept(p: &mut Presenter, request: &SearchRequest, result: Arc<SearchResult>) {
+pub(super) fn accept(p: &mut Presenter, request: &SearchRequest, result: Arc<SearchResult>) {
     p.apply(Event::SearchReady {
         pane: request.pane,
         navigation: request.navigation,
@@ -233,7 +233,7 @@ fn streaming_and_queue_pressure_wait_for_immutable_source_and_retry_without_losi
 }
 
 #[test]
-fn match_navigation_is_bounded_and_no_match_cannot_open_old_cursor_properties() {
+fn match_navigation_is_bounded_and_a_missing_name_keeps_the_shown_cursor() {
     let mut p = Presenter::new(test_root(), test_root());
     snapshot(&mut p, &["alpha", "beta", "alpine", "gamma", "al"]);
     let request = query(&mut p, "al");
@@ -252,19 +252,22 @@ fn match_navigation_is_bounded_and_no_match_cannot_open_old_cursor_properties() 
         assert_eq!(p.panes[0].cursor, Some(EntryId(id)));
     }
     let request = query(&mut p, "missing");
-    assert!(!p.panes[0].search_allows_activation());
-    p.request_selection_properties(PaneId::Left, &|_| panic!("pending query must not activate"));
+    assert!(
+        !p.panes[0].focus_matches_search(),
+        "a pending query has no match"
+    );
     accept(&mut p, &request, result(&request, &[], 0));
     assert_eq!(p.panes[0].cursor, Some(EntryId(5)));
     assert_eq!(p.panes[0].search.query, "missing");
-    assert!(!p.panes[0].search_allows_activation());
-    p.request_selection_properties(PaneId::Left, &|_| panic!("no match must not activate"));
+    assert!(!p.panes[0].focus_matches_search());
+    // Commands act on the shown cursor row (`search_commands`); only Enter asks for a match.
+    assert!(p.panes[0].focus_actionable());
     p.preferences.values.quick_search_filter = true;
     p.search_filter_changed();
     assert_eq!(
         p.focused_name(PaneId::Left),
         None,
-        "a hidden stale basename cannot enter a command"
+        "a row the quick filter hides cannot enter a command"
     );
     p.change_search_query(PaneId::Left, "", &|_| true);
     assert_eq!(p.focused_name(PaneId::Left), Some(PathBuf::from("al")));
@@ -400,7 +403,7 @@ fn failed_refresh_searches_the_restored_canonical_generation_and_keeps_its_error
     assert_ne!(retry.navigation, failed);
     assert!(Arc::ptr_eq(&retry.source, &source));
     accept(&mut p, &retry, result(&retry, &[0], 2));
-    assert!(p.panes[0].search_allows_activation());
+    assert!(p.panes[0].focus_actionable());
     assert!(p.panes[0].error.contains("refresh denied"));
 }
 

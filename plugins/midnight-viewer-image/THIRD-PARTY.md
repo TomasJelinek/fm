@@ -2,9 +2,13 @@
 
 Both independent image workers use the shared image-decoder library. PNG, JPEG,
 GIF, WebP, BMP, ICO and TIFF retain image-rs 0.25.10 and moxcms 0.8.1. Static SVG
-adds resvg/usvg 0.48.1 with only the text feature: no system fonts, font memory
-mapping, SVGZ or raster-image loader is enabled. Explicit image resolvers also
-refuse external/embedded resources. These dependencies do not reference host code.
+adds resvg/usvg 0.48.1 with the text and raster-images features: no system fonts,
+font memory mapping or SVGZ is enabled. raster-images links resvg's existing gif,
+image-webp and zune-jpeg dependencies (already in this graph through image-rs), but
+the decoder's resolver hands resvg only PNGs it encoded from `data:` images it decoded
+itself; linked images and files are never opened. simplecss 0.2.2, already used by
+usvg, is also a direct dependency for the reference bound. No crate was added to the
+graph. These dependencies do not reference host code.
 
 MIT is selected for image/resvg/usvg; tiny-skia retains BSD-3-Clause notices.
 Unchanged embedded Noto Sans fonts retain OFL-1.1, including copyright, license,

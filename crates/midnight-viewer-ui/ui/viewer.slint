@@ -19,6 +19,68 @@ component TippedActionButton inherits ActionButton {
     Tooltip { text: @markdown("\{root.tip}"); }
 }
 
+// The zoom percentage of images, PDF documents and HTML. A click or Ctrl+Y turns it into a
+// field: Enter applies a typed percentage, Escape or leaving the field keeps the zoom. The
+// hint above it says why a value was refused or limited; the HTML row, at the top of the
+// window where the content below would cover a hint, shows it beside the field instead
+// (`show-hint: false`).
+component ZoomField inherits Rectangle {
+    in property <string> shown;
+    in property <bool> editing;
+    in-out property <string> entry;
+    in property <string> hint;
+    in property <bool> show-hint: true;
+    in property <length> font-size;
+    in property <length> control-height;
+    in property <string> label;
+    callback begin();
+    callback commit(string);
+    callback cancel();
+    // As wide as the shown percentage, like the plain label it replaces, and wide enough to
+    // type into.
+    metrics := Text { visible: false; text: root.shown; accessible-role: none; }
+    min-width: max(48px, metrics.preferred-width + 4px);
+    preferred-width: max(64px, metrics.preferred-width + 16px);
+    height: root.control-height;
+    if !root.editing: TouchArea {
+        mouse-cursor: MouseCursor.text;
+        accessible-role: button;
+        accessible-label: root.label;
+        accessible-value: root.shown;
+        accessible-description: "Type a zoom percentage (Ctrl+Y)";
+        accessible-action-default => { root.begin(); }
+        clicked => { root.begin(); }
+        Text {
+            text: root.shown;
+            color: Theme.text;
+            vertical-alignment: center; horizontal-alignment: center;
+        }
+        Tooltip { text: @markdown("Type a zoom percentage (Ctrl+Y)"); }
+    }
+    if root.editing: ThemedLineEdit {
+        text <=> root.entry;
+        font-size: root.font-size; control-height: root.control-height;
+        horizontal-alignment: center;
+        accessible-description: "Zoom percentage: Enter applies, Escape keeps the zoom";
+        init => { self.focus-value(); self.select-all(); }
+        accepted(text) => { root.commit(text); }
+        changed has-focus => { if !self.has-focus { root.cancel(); } }
+    }
+    if root.show-hint && root.hint != "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: -self.height - 4px;
+        width: hint-text.preferred-width + 16px;
+        height: hint-text.preferred-height + 8px;
+        background: Theme.surface;
+        border-width: 1px; border-color: Theme.frame; border-radius: 4px;
+        hint-text := Text {
+            x: 8px; y: 4px;
+            text: root.hint; color: Theme.text; font-size: root.font-size;
+            accessible-role: text;
+        }
+    }
+}
+
 export component ViewerWindow inherits Window {
     title: root.caption;
     preferred-width: 1000px; preferred-height: 720px; min-width: 320px; min-height: 200px;
@@ -58,6 +120,11 @@ export component ViewerWindow inherits Window {
     in property <[ViewerRasterTile]> image-tiles;
     in property <float> tile-offset-x;
     in property <float> tile-offset-y;
+    // A zoom step shows the retained tiles at the new zoom (scaled around its anchor,
+    // offset in logical pixels) until the new surface's tiles arrive.
+    in property <float> tile-preview-scale: 1;
+    in property <float> tile-preview-x;
+    in property <float> tile-preview-y;
     in property <int> tile-upload-count;
     in property <string> position-context;
     in property <bool> position-pending;
@@ -66,8 +133,12 @@ export component ViewerWindow inherits Window {
     in-out property <color> background-color: #202020;
     in-out property <color> accent: #8bb7ef;
     // The applied tool theme's text selection, which document pages paint selected
-    // text on (the application captures it from the same Theme for their palette).
+    // text on (the application captures it from the same Theme for their palette),
+    // and the dimmer pair that replaces it while this window is inactive.
     out property <color> selection-background: Theme.selection-background;
+    out property <color> selection-text: Theme.selection-text;
+    out property <color> inactive-selection-background: Theme.inactive-selection-background;
+    out property <color> inactive-selection-text: Theme.inactive-selection-text;
     in property <float> position;
     in property <float> displayed-position;
     out property <float> vertical-thumb-position: vbar.shown-position;
@@ -109,6 +180,11 @@ export component ViewerWindow inherits Window {
     in-out property <int> markdown-preset;
     in property <bool> narrow-typography: root.compact;
     in property <float> zoom-percent: 100;
+    // The typed zoom (`ZoomField`): open while editing, its text, and the hint that says
+    // why a value was refused or limited.
+    in-out property <bool> zoom-editing;
+    in-out property <string> zoom-entry;
+    in property <string> zoom-hint;
     in property <int> document-page;
     in property <int> document-pages;
     // -1 is an ordinary image; document values come only from published frames.
@@ -185,6 +261,9 @@ export component ViewerWindow inherits Window {
     callback change-font-size(int);
     callback change-markdown-preset(int);
     callback image-command(int);
+    callback zoom-edit-begin();
+    callback zoom-entered(string);
+    callback zoom-edit-cancelled();
     callback image-zoom(float, float, float);
     callback image-drag(float, float);
     callback document-turn(int);
@@ -247,12 +326,21 @@ export component ViewerWindow inherits Window {
                             ? @markdown("Allow JavaScript to read and transmit this document. Requires Online. Local assets remain unavailable.")
                             : @markdown("Network and JavaScript cannot be enabled for this preview."); }
                         toggled => { root.web-policy(root.web-network, self.checked); content-focus.focus(); } }
-                    Rectangle { horizontal-stretch: 1; }
+                    // A typed zoom's hint, beside the zoom field (see `ZoomField`).
+                    Text { horizontal-stretch: 1; min-width: 0px; text: root.zoom-hint; color: Theme.text;
+                        font-size: root.effective-ui-size; overflow: elide;
+                        horizontal-alignment: right; vertical-alignment: center; }
                     TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "−"; min-width: 36px; max-width: 36px;
                         accessible-label: "Zoom HTML out"; tip: "Zoom HTML out (Ctrl+-)";
                         clicked => { root.image-command(3); content-focus.focus(); } }
-                    Text { text: "\{round(root.zoom-percent)}%"; color: Theme.text; vertical-alignment: center;
-                        horizontal-alignment: center; min-width: 52px; max-width: 52px; }
+                    ZoomField { shown: "\{round(root.zoom-percent)}%"; label: "HTML zoom percentage";
+                        font-size: root.effective-ui-size; control-height: root.control-height;
+                        min-width: 52px; max-width: 64px;
+                        editing: root.zoom-editing; entry <=> root.zoom-entry; hint: root.zoom-hint;
+                        show-hint: false;
+                        begin => { root.zoom-edit-begin(); }
+                        commit(text) => { root.zoom-entered(text); }
+                        cancel => { root.zoom-edit-cancelled(); } }
                     TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "+"; min-width: 36px; max-width: 36px;
                         accessible-label: "Zoom HTML in"; tip: "Zoom HTML in (Ctrl++)";
                         clicked => { root.image-command(2); content-focus.focus(); } }
@@ -331,13 +419,16 @@ export component ViewerWindow inherits Window {
                         height: root.raster-height * root.raster-viewport-height;
                         image-fit: fill;
                     }
+                    // Tiles start on whole physical pixels: the centring margin is rounded and
+                    // the canvas's sub-pixel phase removed, so exact-scale document text is
+                    // drawn texel for pixel instead of being resampled between two pixels.
                     for tile in root.image-tiles: Image {
                         visible: root.tiled;
                         source: tile.image;
-                        x: (canvas.width - root.image-width) / 2 + (tile.x - root.tile-offset-x) * root.image-width;
-                        y: (canvas.height - root.image-height) / 2 + (tile.y - root.tile-offset-y) * root.image-height;
-                        width: tile.width * root.image-width;
-                        height: tile.height * root.image-height;
+                        x: (round((canvas.width - root.image-width) / 2 / 1phx) * 1phx - root.canvas-phase-x + (tile.x - root.tile-offset-x) * root.image-width) * root.tile-preview-scale + root.tile-preview-x * 1px;
+                        y: (round((canvas.height - root.image-height) / 2 / 1phx) * 1phx - root.canvas-phase-y + (tile.y - root.tile-offset-y) * root.image-height) * root.tile-preview-scale + root.tile-preview-y * 1px;
+                        width: tile.width * root.image-width * root.tile-preview-scale;
+                        height: tile.height * root.image-height * root.tile-preview-scale;
                         image-fit: fill;
                         image-rendering: root.image-native-pixels ? ImageRendering.pixelated : ImageRendering.smooth;
                     }
@@ -533,12 +624,14 @@ export component ViewerWindow inherits Window {
                                 tip: "Zoom image out (Ctrl+-)";
                                 clicked => { root.image-command(3); content-focus.focus(); }
                             }
-                            Text {
-                                text: "\{round(root.zoom-percent * 10) / 10}%";
-                                accessible-label: "Image zoom percentage";
-                                accessible-value: self.text;
-                                color: Theme.text;
-                                vertical-alignment: center; horizontal-alignment: center;
+                            ZoomField {
+                                shown: "\{round(root.zoom-percent * 10) / 10}%";
+                                label: "Image zoom percentage";
+                                font-size: root.effective-ui-size; control-height: root.control-height;
+                                editing: root.zoom-editing; entry <=> root.zoom-entry; hint: root.zoom-hint;
+                                begin => { root.zoom-edit-begin(); }
+                                commit(text) => { root.zoom-entered(text); }
+                                cancel => { root.zoom-edit-cancelled(); }
                             }
                             TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
                                 min-width: root.compact ? 26px : 0px;

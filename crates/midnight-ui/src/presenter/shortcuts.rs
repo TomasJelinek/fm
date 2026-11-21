@@ -58,10 +58,17 @@ impl Presenter {
                     .into(),
             );
         }
-        if !panel.search_allows_activation() {
+        // The quick search is never a reason: F3 closes it (`Presenter::view_command`).
+        if !panel.focus_actionable() {
             return Some(
-                "The quick search does not match the focused file yet. Finish or clear it, then view the file."
-                    .into(),
+                if !panel.rows_settled() {
+                    "The list is still being updated. View the file when it is shown."
+                } else if panel.search.panel_filter.enabled {
+                    "The panel filter hides the focused file. Focus a shown file or change the filter, then view it."
+                } else {
+                    "Focus a file in the list, then view it."
+                }
+                .into(),
             );
         }
         None
@@ -70,7 +77,7 @@ impl Presenter {
     pub fn viewer_launch(&self, pane: PaneId, basic: bool) -> Option<ViewerLaunch> {
         let disabled_plugins = self.viewer_plugins.startup_disabled.clone()?;
         let panel = &self.panes[pane.index()];
-        if panel.loading || panel.parent_cursor || !panel.search_allows_activation() {
+        if panel.loading || panel.parent_cursor || !panel.focus_actionable() {
             return None;
         }
         let entry = panel.cursor.and_then(|id| panel.entry_by_id(id))?;
@@ -271,8 +278,7 @@ impl Presenter {
             return None;
         }
         if p.parent_cursor && p.has_parent() {
-            return (p.tree_view().is_none() || p.search_allows_activation())
-                .then(|| PathBuf::from(".."));
+            return (p.tree_view().is_none() || p.focus_actionable()).then(|| PathBuf::from(".."));
         }
         focused_native_path(p)
             .and_then(Path::file_name)
@@ -282,10 +288,7 @@ impl Presenter {
 
 /// Borrow only a ready visible native occurrence; insertion performs no provider work.
 fn focused_native_path(pane: &Pane) -> Option<&Path> {
-    if pane.loading
-        || !pane.native_capabilities()
-        || pane.parent_cursor
-        || !pane.search_allows_activation()
+    if pane.loading || !pane.native_capabilities() || pane.parent_cursor || !pane.focus_actionable()
     {
         return None;
     }

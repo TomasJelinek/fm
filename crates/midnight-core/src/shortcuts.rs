@@ -507,6 +507,7 @@ impl ShortcutMap {
                         | "viewer.previous-file"
                         | "viewer.document-next"
                         | "viewer.document-previous"
+                        | "viewer.zoom-to"
                         | "compare.next-difference"
                         | "compare.previous-difference"
                         | "compare.first-difference"

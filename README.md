@@ -1007,7 +1007,14 @@ editor scope and shortcuts reserved for later stages.
 - F3 opens PDFs with the installed independent PDF viewer. Ctrl+PageUp/Down or
   the page buttons switch pages; Fit, zoom and pan are shared with image viewing.
   Each new PDF opens fitted to the window. Page changes retain manual zoom/100%;
-  Fit adapts to each page's dimensions.
+  Fit adapts to each page's dimensions. **Paged** shows one page, **Continuous** all
+  pages in one column; the layout chosen last is remembered for every PDF opened
+  later, also after a restart. Pages are rendered at the exact resolution of the
+  screen, in tiles kept for scrolling, so the wheel, the keyboard and the scrollbar
+  move the pages smoothly and text stays sharp at every zoom; a zoom step shows the
+  pages at the new size at once and sharpens them when their tiles arrive. Click the
+  zoom percentage or press Ctrl+Y to type a zoom (`150`, `150%`, `62,5` in a
+  decimal-comma locale); Enter applies it, Escape keeps the current zoom.
 - F5 inside an archive copies the captured members to a native destination using
   the background queue and SHA-256 destination readback. Archive contents stay
   read-only. XZ, Bzip2 and Zstandard streams and their TAR variants are supported

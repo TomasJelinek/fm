@@ -150,6 +150,14 @@ pub(crate) fn install(
     *retirement = Some(service.image_spare_retirement());
     let image_preparation = Rc::new(ImagePreparation::new(service.clone()));
     let viewers = Rc::new(ViewerWindows::new(service));
+    // A typed zoom percentage uses the user's decimal separator.
+    let locale = presenter.clone();
+    viewers.set_number_locale(Rc::new(move || {
+        locale
+            .try_borrow()
+            .map(|presenter| presenter.number_locale().clone())
+            .unwrap_or_default()
+    }));
     let settings = presenter.clone();
     let settings_commands = commands.clone();
     viewers.set_preferences_listener(Rc::new(move |change| {
@@ -233,14 +241,20 @@ pub(crate) fn install(
             midnight_ui::refresh(&window, &presenter.borrow());
             return;
         }
-        let launch = presenter.borrow().viewer_launch(pane, basic);
-        let Some(launch) = launch else {
-            let reason = presenter.borrow().viewer_unavailable_reason(pane);
-            if let Some(reason) = reason {
-                presenter.borrow_mut().report_viewer_error(reason);
-                midnight_ui::refresh(&window, &presenter.borrow());
+        // An open filename search closes; it never stops the viewer.
+        let launch = presenter
+            .borrow_mut()
+            .view_command(pane, basic, commands.as_ref());
+        midnight_ui::refresh(&window, &presenter.borrow());
+        let launch = match launch {
+            Ok(launch) => launch,
+            Err(reason) => {
+                if let Some(reason) = reason {
+                    presenter.borrow_mut().report_viewer_error(reason);
+                    midnight_ui::refresh(&window, &presenter.borrow());
+                }
+                return;
             }
-            return;
         };
         if let Err(error) = open(&window, &presenter, &commands, &manager, launch, None) {
             presenter.borrow_mut().report_viewer_error(error);
@@ -508,6 +522,7 @@ mod restore_tests {
                     foreground: [255; 4],
                     background: [0, 0, 0, 255],
                     selection: [80, 80, 80, 255],
+                    selection_text: [0; 4],
                     accent: [100, 100, 255, 255],
                 },
                 slint::LogicalSize::new(640.0, 480.0),

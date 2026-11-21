@@ -150,6 +150,7 @@ impl Presenter {
         p.sort = options.sort;
         p.committed_sort = options.sort;
         p.search.panel_filter = options.filter.clone();
+        p.search.filter_rows_current = false;
         p.set_error("", &mut self.retired);
         self.desktop.status = "Tree options applied".into();
         self.tree_search_applied(pane, options.search);

@@ -687,7 +687,10 @@ pub(crate) fn install(
                 if !p.drag_drop.attached {
                     return false;
                 }
-                p.begin_file_drag(pane(id), row, identity.as_str(), send)
+                // The quick search closes once the drag ends (`flush_quick_search_closes`).
+                p.panel_row_command(pane(id), send, |p| {
+                    p.begin_file_drag(pane(id), row, identity.as_str(), send)
+                })
             })
         else {
             return false;

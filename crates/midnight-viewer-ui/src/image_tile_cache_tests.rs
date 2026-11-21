@@ -10,6 +10,7 @@ fn info(origin: [f64; 2]) -> ViewerImageInfo {
         surface: ViewerSurfaceId(1),
         origin,
         visible_source: [128.0; 2],
+        extent: [4000.0, 3000.0],
         raster_scale: 1.0,
         zoom: 1.0,
         width: 4000,
@@ -59,6 +60,7 @@ fn wide_diagonal_transition_evicts_optional_guards_and_preserves_both_visible_re
         visible_source: [4096.0, 1024.0],
         width: 32768,
         height: 32768,
+        extent: [32768.0; 2],
         ..info(origin)
     };
     let tiles = |origin: [f64; 2], low: i32| {
@@ -151,6 +153,7 @@ fn transparent_metadata_is_bounded_and_eviction_removes_old_camera_coverage() {
     for index in 0..=MAX_ENTRIES {
         let info = ViewerImageInfo {
             width: 65536,
+            extent: [65536.0, 3000.0],
             ..info([index as f64 * 256.0, 0.0])
         };
         let tile = ViewerTile {
@@ -180,6 +183,7 @@ fn scenes_within_the_shared_entry_bound_are_accepted_and_larger_ones_refused_unt
     let pixels = Arc::new(ViewerPixels::transparent(256 * 256 * 4, Arc::new(Charge)).unwrap());
     let info = ViewerImageInfo {
         width: 65536,
+        extent: [65536.0, 3000.0],
         ..info([0.0; 2])
     };
     // Rows of 16 tiles keep every position within the tiles' camera-relative bound.

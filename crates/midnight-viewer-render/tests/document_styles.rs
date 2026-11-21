@@ -27,6 +27,7 @@ fn underline_is_painted_in_the_same_raster_as_glyphs() {
         origin: [0.0; 2],
         background: [0; 4],
         selection_color: [0; 4],
+        selection_text: [0; 4],
     };
     let normal = renderer.rasterize(&normal, viewport, None).unwrap();
     let styled = renderer.rasterize(&styled, viewport, None).unwrap();
@@ -151,6 +152,7 @@ fn code_spans_use_monospace_and_strikethrough_changes_visible_pixels() {
         origin: [0.0; 2],
         background: [0; 4],
         selection_color: [0; 4],
+        selection_text: [0; 4],
     };
     assert_ne!(
         renderer.rasterize(&code, viewport, None).unwrap().rgba,

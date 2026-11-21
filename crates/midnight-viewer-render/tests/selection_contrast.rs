@@ -49,6 +49,7 @@ fn layout(renderer: &mut TextRenderer, text: &str, colors: &[ColorSpan]) -> Text
         .unwrap()
 }
 
+/// Selected glyphs keep their own colors: no selection text color.
 fn viewport(background: [u8; 4], selection_color: [u8; 4]) -> Viewport {
     Viewport {
         width: WIDTH,
@@ -56,6 +57,7 @@ fn viewport(background: [u8; 4], selection_color: [u8; 4]) -> Viewport {
         origin: [0.0; 2],
         background,
         selection_color,
+        selection_text: [0; 4],
     }
 }
 
@@ -386,4 +388,119 @@ fn without_a_visible_selection_glyphs_keep_their_colors() {
         hidden.rgba == before.rgba,
         "a transparent selection changes nothing"
     );
+}
+
+#[test]
+fn a_selection_text_color_paints_every_selected_glyph_and_its_underline() {
+    const WHITE: [u8; 4] = [255, 255, 255, 255];
+    let mut renderer = TextRenderer::default();
+    // Three colored words; the last stays unselected.
+    let text = "MMMM MMMM MMMM";
+    let colors = [
+        ColorSpan {
+            range: 0..4,
+            color: DARK_BLUE,
+        },
+        ColorSpan {
+            range: 5..9,
+            color: LIGHT_TOKEN,
+        },
+        ColorSpan {
+            range: 10..14,
+            color: DARK_BLUE,
+        },
+    ];
+    let underline = StyleSpan {
+        range: 5..9,
+        weight: 400,
+        italic: false,
+        underline: true,
+        strikethrough: false,
+        monospace: false,
+        size: options().size,
+    };
+    let page = renderer
+        .layout_with_styles(text, &options(), &colors, &[underline])
+        .unwrap();
+    let view = Viewport {
+        selection_text: WHITE,
+        ..viewport(DARK_THEME, DARK_SELECTION)
+    };
+    let plain = renderer.rasterize(&page, view, None).unwrap();
+    let selected = renderer.rasterize(&page, view, Some(0..9)).unwrap();
+    for word in [0..4, 5..9] {
+        let cell = cells(&page, word.clone());
+        let painted = pixels(&selected, cell);
+        // Fully covered stems show the text color itself; no pixel keeps a glyph color.
+        assert_eq!(strongest(&painted, DARK_SELECTION), WHITE, "{word:?}");
+        assert!(
+            !painted.contains(&DARK_BLUE) && !painted.contains(&LIGHT_TOKEN),
+            "{word:?}"
+        );
+        // Every other pixel is the fill or a blend of the fill towards the text color.
+        for pixel in painted {
+            assert!(
+                (0..3).all(|channel| pixel[channel] >= DARK_SELECTION[channel]),
+                "{word:?}: {pixel:?}"
+            );
+        }
+    }
+    let unselected = cells(&page, 10..14);
+    assert!(pixels(&selected, unselected) == pixels(&plain, unselected));
+    assert!(pixels(&selected, unselected).contains(&DARK_BLUE));
+}
+
+#[test]
+fn a_selected_wrapped_paragraph_has_no_gaps_between_its_lines() {
+    let mut renderer = TextRenderer::default();
+    let text = "MMMM MMMM MMMM MMMM MMMM MMMM MMMM MMMM MMMM MMMM MMMM MMMM";
+    let blocks = [DocumentBlock {
+        range: 0..text.len(),
+        kind: DocumentKind::Paragraph,
+        depth: 0,
+    }];
+    // Generous line spacing, as the Markdown presets use.
+    let page = renderer
+        .layout_document(
+            text,
+            &TextOptions {
+                size: 18.0,
+                wrap_width: Some(200.0),
+                line_height: Some(1.6),
+                ..TextOptions::default()
+            },
+            &DocumentStyle {
+                colors: &[],
+                styles: &[],
+                tables: &[],
+                blocks: &blocks,
+                background: DARK_THEME,
+                start_of_document: false,
+            },
+        )
+        .unwrap();
+    let lines = page.selection_geometry(0..text.len()).unwrap();
+    assert!(lines.len() >= 3, "the paragraph wraps: {lines:?}");
+    let view = Viewport {
+        selection_text: [255; 4],
+        ..viewport(DARK_THEME, DARK_SELECTION)
+    };
+    let selected = renderer
+        .rasterize(&page, view, Some(0..text.len()))
+        .unwrap();
+    // Down the paragraph's left edge, every row from the first line's top to the last
+    // line's bottom is the selection (or selected ink on it), never the page.
+    let left = lines
+        .iter()
+        .map(|rect| rect.x0)
+        .fold(f64::INFINITY, f64::min);
+    let top = lines
+        .iter()
+        .map(|rect| rect.y0)
+        .fold(f64::INFINITY, f64::min);
+    let bottom = lines.iter().map(|rect| rect.y1).fold(0.0, f64::max);
+    let x = left.ceil() as usize;
+    for y in top.ceil() as usize..bottom.floor() as usize {
+        assert_ne!(pixel(&selected, x, y), DARK_THEME, "row {y} between lines");
+    }
 }

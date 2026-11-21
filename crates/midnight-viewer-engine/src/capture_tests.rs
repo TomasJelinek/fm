@@ -238,6 +238,7 @@ fn viewer_service_dispatches_injected_capture_on_a_backend_thread() {
                 foreground: [255; 4],
                 background: [0, 0, 0, 255],
                 selection: [80, 100, 180, 255],
+                selection_text: [0; 4],
                 accent: [150, 180, 240, 255],
             },
             midnight_core::ViewerGeometry {
@@ -327,6 +328,7 @@ fn backspace_after_opening_captures_only_neighbors_of_a_large_folder() {
                 foreground: [255; 4],
                 background: [0, 0, 0, 255],
                 selection: [80, 100, 180, 255],
+                selection_text: [0; 4],
                 accent: [150, 180, 240, 255],
             },
             midnight_core::ViewerGeometry {

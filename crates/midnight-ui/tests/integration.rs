@@ -138,6 +138,7 @@ mod panel_row_layout;
 mod panel_scroll;
 mod panel_scroll_costs;
 mod panel_search;
+mod panel_search_commands;
 mod panel_search_layout;
 mod panel_search_render;
 mod panel_selection;

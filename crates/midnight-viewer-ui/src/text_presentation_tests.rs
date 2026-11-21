@@ -204,6 +204,7 @@ fn raster_native_wheel_delivers_fractional_frames_between_notches() {
                     surface: ViewerSurfaceId(99),
                     origin: [0.0, 500.0],
                     visible_source: [400.0, 240.0],
+                    extent: [4000.0, 3000.0],
                     raster_scale: 1.0,
                     pan_sequence: 0,
                     width: 4000,

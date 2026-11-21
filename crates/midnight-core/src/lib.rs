@@ -93,7 +93,7 @@ pub use archive_format::*;
 pub use archive_sizes::*;
 pub use bookmark::*;
 pub use checksum::*;
-pub use color_contrast::readable_rgb;
+pub use color_contrast::{content_minimum, readable_rgb, readable_rgb_at};
 pub use command_history::*;
 pub use compare::*;
 pub use copy_operation::*;

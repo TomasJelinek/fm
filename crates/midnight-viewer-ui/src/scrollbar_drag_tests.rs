@@ -27,6 +27,7 @@ fn document(revision: u64, surface: u64, position: f64, layout: DocumentLayout) 
             surface: ViewerSurfaceId(surface),
             origin: [0.0; 2],
             visible_source: [400.0, 240.0],
+            extent: [400.0, 520.0],
             raster_scale: 1.0,
             pan_sequence: 0,
             width: 400,

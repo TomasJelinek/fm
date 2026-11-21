@@ -90,3 +90,31 @@ fn invalid_changes_never_replace_accepted_preferences() {
         ViewerZoomPreference::ScaleBasisPoints(12_500)
     );
 }
+
+#[test]
+fn the_document_layout_chosen_last_is_a_viewer_preference_with_stable_storage_names() {
+    let mut prefs = ViewerPreferences::default();
+    assert_eq!(prefs.document_layout, crate::DocumentLayout::Paged);
+    prefs
+        .apply(&ViewerPreferenceChange::DocumentLayout(
+            crate::DocumentLayout::Continuous,
+        ))
+        .unwrap();
+    assert_eq!(prefs.document_layout, crate::DocumentLayout::Continuous);
+    assert_eq!(
+        prefs.document_zoom,
+        ViewerZoomPreference::Fit,
+        "only the layout changed"
+    );
+    for layout in [
+        crate::DocumentLayout::Paged,
+        crate::DocumentLayout::Continuous,
+    ] {
+        assert_eq!(
+            crate::DocumentLayout::from_storage_name(layout.storage_name()),
+            Some(layout)
+        );
+    }
+    assert_eq!(crate::DocumentLayout::from_storage_name("Continuous"), None);
+    assert_eq!(crate::DocumentLayout::from_storage_name(""), None);
+}

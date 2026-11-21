@@ -152,7 +152,8 @@ impl Presenter {
         let Some(entry) = p.cursor.and_then(|id| p.entry_by_id(id)) else {
             return Vec::new();
         };
-        if !p.search_allows_activation() {
+        // Details of the focused row while it is shown, whatever the quick search.
+        if !p.focus_actionable() {
             return Vec::new();
         }
         let metadata = p

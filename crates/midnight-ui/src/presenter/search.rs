@@ -15,6 +15,13 @@ pub(crate) struct SearchState {
     pub(super) applied: SearchRevision,
     pub(super) failed: bool,
     pub(super) result: Option<Arc<SearchResult>>,
+    /// `result`'s persistent-filter rows were computed with the current panel
+    /// filter, so closing the quick search can keep showing them (`search_commands`).
+    pub(super) filter_rows_current: bool,
+    /// A command asked to close the quick search once no context menu or drag
+    /// still needs the view it captured (`search_commands`).
+    pub(super) close_requested: bool,
+    pub(super) note: Option<search_commands::SearchNote>,
 }
 
 impl Pane {
@@ -121,14 +128,14 @@ impl Pane {
         }
     }
 
-    fn search_projection(&self) -> Option<&SearchResult> {
+    pub(super) fn search_projection(&self) -> Option<&SearchResult> {
         self.search
             .result
             .as_deref()
             .filter(|result| !self.showing_stream() && Arc::ptr_eq(&result.source, &self.entries))
     }
 
-    fn current_search_result(&self) -> Option<&SearchResult> {
+    pub(super) fn current_search_result(&self) -> Option<&SearchResult> {
         (!self.search.pending && self.search.applied == self.search.revision)
             .then(|| self.search_projection())
             .flatten()
@@ -178,35 +185,49 @@ impl Pane {
             .map_or(0, |index| result.matches[index].display_prefix_end)
     }
 
-    pub(crate) fn search_allows_activation(&self) -> bool {
+    /// Whether the shown rows are settled: no tree update and no filtered view is
+    /// still being computed. Commands on a clicked row need no more.
+    pub(crate) fn rows_settled(&self) -> bool {
+        if self.tree_view().is_some() {
+            self.tree_input_ready()
+        } else {
+            !self.search_view_waiting()
+        }
+    }
+
+    /// Whether a command may act on the focused row: the panel shows it in settled
+    /// rows. The quick search is never a reason, whether or not the row matches it;
+    /// commands close the search first (`Presenter::panel_command`). A filter that
+    /// hides the row is one, and so is a tree context row.
+    pub(crate) fn focus_actionable(&self) -> bool {
         if self.tree_view().is_some() {
             return self.tree_input_ready()
-                && self.tree_search_current()
-                && if self.search.query.is_empty() {
-                    self.parent_cursor
-                        || self
-                            .tree_cursor_row()
-                            .is_some_and(|row| row.selectable && !row.context_only)
-                } else {
-                    self.tree_search_cursor_matches()
-                };
+                && (self.parent_cursor
+                    || self
+                        .tree_cursor_row()
+                        .is_some_and(|row| row.selectable && !row.context_only));
         }
-        if self.search.panel_filter.enabled
-            && !self.parent_cursor
-            && !self
-                .cursor
-                .is_some_and(|id| self.display_index().by_id.contains_key(&id))
-        {
-            return false;
+        let filtered = self.search.panel_filter.enabled
+            || (self.search.filter && !self.search.query.is_empty());
+        self.rows_settled()
+            && (!filtered
+                || self.parent_cursor
+                || self
+                    .cursor
+                    .is_some_and(|id| self.display_index().by_id.contains_key(&id)))
+    }
+
+    /// Whether the focused row is one of the current quick search's matches. The
+    /// parent row never matches; a search still computing has no matches yet.
+    pub(crate) fn focus_matches_search(&self) -> bool {
+        if self.tree_view().is_some() {
+            return self.tree_search_current() && self.tree_search_cursor_matches();
         }
-        !self.search_view_waiting()
-            && (self.search.query.is_empty()
-                || self.current_search_result().is_some_and(|result| {
-                    !self.parent_cursor
-                        && self
-                            .cursor
-                            .is_some_and(|id| result.index.by_id.contains_key(&id))
-                }))
+        !self.parent_cursor
+            && self.current_search_result().is_some_and(|result| {
+                self.cursor
+                    .is_some_and(|id| result.index.by_id.contains_key(&id))
+            })
     }
 }
 
@@ -242,6 +263,15 @@ impl Presenter {
             return;
         }
         self.clear_tree(pane, None);
+        let p = &self.panes[pane.index()];
+        if query.is_empty() && !p.loading && p.search.panel_filter.enabled && p.keeps_filter_rows()
+        {
+            // Escape and Insert keep the persistent filter's rows instead of waiting
+            // for the backend to compute them again; Insert's toggle needs them.
+            self.cancel_selection_actions(pane);
+            self.close_quick_search(pane, send);
+            return;
+        }
         let Some(revision) = self.next_search_revision(pane) else {
             return;
         };
@@ -255,6 +285,8 @@ impl Presenter {
             &mut p.search.query,
             query.to_owned(),
         )));
+        // Typing again keeps the new search open.
+        p.search.close_requested = false;
         p.search.revision = revision;
         p.search.pending = !query.is_empty() || p.search.panel_filter.enabled;
         p.search.needs_request = p.search.pending;
@@ -289,6 +321,8 @@ impl Presenter {
         p.search.failed = false;
         p.search.filter = self.preferences.values.quick_search_filter;
         p.search.panel_filter = self.preferences.values.panel_filters[pane.index()].clone();
+        p.search.filter_rows_current = false;
+        p.search.close_requested = false;
         if new_location {
             self.retired.push(Box::new(mem::take(&mut p.search.query)));
             self.retired.push(Box::new(p.search.result.take()));
@@ -314,6 +348,7 @@ impl Presenter {
 
     /// Retry bounded, nonblocking request delivery from the normal UI/event pump.
     pub fn flush_search(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.flush_quick_search_closes(send);
         self.flush_tree_preferences(send);
         for pane in [PaneId::Left, PaneId::Right] {
             if self.panes[pane.index()].tree_view().is_some() {
@@ -402,6 +437,7 @@ impl Presenter {
                     p.parent_cursor = false;
                 }
                 self.retired.push(Box::new(p.search.result.replace(result)));
+                p.search.filter_rows_current = true;
                 p.search.applied = revision;
                 p.search.pending = false;
                 p.search.needs_request = false;
@@ -472,6 +508,7 @@ impl Presenter {
                 self.cancel_selection_actions(pane);
                 let p = &mut self.panes[pane.index()];
                 p.search.panel_filter = persistent;
+                p.search.filter_rows_current = false;
                 p.search.revision = revision;
                 p.search.pending = p.search.panel_filter.enabled || !p.search.query.is_empty();
                 p.search.needs_request = p.search.pending;

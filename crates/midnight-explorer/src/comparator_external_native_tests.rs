@@ -344,6 +344,7 @@ impl Harness {
                 foreground: [240; 4],
                 background: [24, 24, 24, 255],
                 selection: [80, 100, 180, 255],
+                selection_text: [0; 4],
                 accent: [120; 4],
             },
             ViewerGeometry {

@@ -39,6 +39,7 @@ fn render(pass: &str) -> Result<(), Box<dyn Error>> {
                     origin: [0.0; 2],
                     background: [20, 20, 20, 255],
                     selection_color: [80, 80, 160, 255],
+                    selection_text: [0; 4],
                 },
                 None,
             )

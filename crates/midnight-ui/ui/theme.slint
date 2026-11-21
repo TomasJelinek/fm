@@ -40,8 +40,12 @@ export global Theme {
     out property <color> cursor-edge: palette.cursor-edge;
     out property <color> error-background: palette.error-background;
     out property <color> error-text: palette.error-text;
+    // Selected text in fields and content views; the inactive pair while the window is
+    // inactive (a field without focus keeps a selection only then).
     out property <color> selection-background: palette.selection-background;
     out property <color> selection-text: palette.selection-text;
+    out property <color> inactive-selection-background: palette.inactive-selection-background;
+    out property <color> inactive-selection-text: palette.inactive-selection-text;
     out property <length> row-height: max(touch ? 40px : 22px, font-size + (touch ? 12px : 8px));
     out property <length> control-height: max(touch ? 40px : 24px, font-size + (touch ? 14px : 10px));
     out property <length> tab-width: min(220px, max(110px, font-size * 8 + tool-width));

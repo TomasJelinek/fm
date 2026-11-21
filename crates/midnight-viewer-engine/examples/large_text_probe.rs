@@ -195,6 +195,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             foreground: [31, 35, 40, 255],
             background: [255; 4],
             selection: [180, 210, 250, 255],
+            selection_text: [0; 4],
             accent: [9, 105, 218, 255],
         },
         ViewerGeometry {

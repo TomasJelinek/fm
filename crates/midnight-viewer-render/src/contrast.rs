@@ -1,6 +1,7 @@
-//! WCAG 2 contrast, and readable colors for selected glyphs. A selected glyph
-//! keeps its hue and saturation: only its HSL lightness moves, and only as far as
-//! the minimum contrast against the painted selection background requires.
+//! WCAG 2 contrast, and readable colors for selected glyphs. A selected glyph takes
+//! the selection's text color, or keeps its own color when the selection has none.
+//! Either color keeps its hue and saturation: only its HSL lightness moves, and only
+//! as far as the minimum contrast against the painted selection background requires.
 use crate::raster::{blend_pixel, premultiply};
 use std::collections::HashMap;
 
@@ -17,21 +18,41 @@ pub(crate) fn ratio(a: [u8; 4], b: [u8; 4]) -> f64 {
     between(luminance([a[0], a[1], a[2]]), luminance([b[0], b[1], b[2]]))
 }
 
-/// Brushes of selected glyphs for one selection background. Each source brush
-/// is adjusted once and reused until the selection or viewport background
-/// changes; painting only looks them up.
+/// The contrast that content colors keep against a page of `foreground` text on
+/// `background`: 5:1, a margin over [`MINIMUM`], and 7:1 where the body text itself
+/// reaches 15:1, as in the Contrast and High Contrast themes. The viewer's syntax colors
+/// follow the same rule (`midnight_core::content_minimum`).
+pub(crate) fn content_minimum(foreground: [u8; 4], background: [u8; 4]) -> f64 {
+    if ratio(foreground, background) >= 15.0 {
+        7.0
+    } else {
+        5.0
+    }
+}
+
+/// Brushes of selected glyphs for one selection background and text color. Each
+/// source brush is adjusted once and reused until the selection, its text color or
+/// the viewport background changes; painting only looks them up.
 #[derive(Default)]
 pub(crate) struct SelectionColors {
     /// The selection color as painted over the viewport background, opaque.
     background: [u8; 3],
+    /// The selection's text color; `None` keeps each glyph's own color.
+    text: Option<[u8; 4]>,
     brushes: HashMap<[u8; 4], [u8; 4]>,
 }
 
 impl SelectionColors {
-    /// Adjust brushes for `selection` painted over `background` (straight RGBA).
+    /// Adjust brushes for `selection` painted over `background` and its `text` color
+    /// (straight RGBA; a fully transparent `text` keeps each glyph's own color).
     /// False when the selection is fully transparent: selected text then shows
     /// over the unchanged background and keeps its colors.
-    pub(crate) fn prepare(&mut self, selection: [u8; 4], background: [u8; 4]) -> bool {
+    pub(crate) fn prepare(
+        &mut self,
+        selection: [u8; 4],
+        background: [u8; 4],
+        text: [u8; 4],
+    ) -> bool {
         if selection[3] == 0 {
             return false;
         }
@@ -43,14 +64,18 @@ impl SelectionColors {
         let opaque = std::array::from_fn(|channel| {
             ((u16::from(pixel[channel]) * 255 + alpha / 2) / alpha).min(255) as u8
         });
-        if opaque != self.background {
+        let text = (text[3] != 0).then_some(text);
+        if opaque != self.background || text != self.text {
             self.background = opaque;
+            self.text = text;
             self.brushes.clear();
         }
         true
     }
 
-    /// The brush that a selected glyph uses instead of `brush`.
+    /// The brush that a selected glyph uses instead of `brush`: the selection's text
+    /// color at the glyph's own opacity, or `brush` itself without one, made readable.
+    /// An invisible glyph stays invisible.
     pub(crate) fn brush(&mut self, brush: [u8; 4]) -> [u8; 4] {
         if let Some(readable) = self.brushes.get(&brush) {
             return *readable;
@@ -58,7 +83,14 @@ impl SelectionColors {
         if self.brushes.len() >= MAX_BRUSHES {
             self.brushes.clear();
         }
-        let readable = readable_brush(brush, self.background);
+        let source = match self.text {
+            Some([red, green, blue, alpha]) => {
+                let alpha = (u16::from(alpha) * u16::from(brush[3]) + 127) / 255;
+                [red, green, blue, alpha as u8]
+            }
+            None => brush,
+        };
+        let readable = readable_brush(source, self.background);
         self.brushes.insert(brush, readable);
         readable
     }
