@@ -74,7 +74,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("\nconcurrency:\n", self.text)
         self.assertIn("cancel-in-progress:", self.text)
         on = self.text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertRegex(on, r"push:\n    branches: \[main\]")
+        self.assertRegex(on, r"push:\n    branches: \[main, ci-time-exp\]")
         self.assertIn("pull_request:", on)
 
     def test_the_opt_in_acceptance_suite_is_checked_on_both_platforms(self):
@@ -244,7 +244,7 @@ class WorkflowTests(unittest.TestCase):
         setup = action("rust-setup")
         self.assertRegex(setup, r"uses: Swatinem/rust-cache@[0-9a-f]{40} # v\d+\.\d+\.\d+\n")
         self.assertIn('workspaces: ". -> _build"', setup)
-        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", setup)
+        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-time-exp' }}", setup)
         self.assertIn("if: inputs.build-cache != 'true'\n      uses: actions/cache@v4", setup)
 
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")

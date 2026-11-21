@@ -3,7 +3,7 @@ name: build-and-test
 # Pull requests run once (not again for their push); main and manual runs too.
 on:
   push:
-    branches: [main]
+    branches: [main, ci-time-exp]
   pull_request:
   workflow_dispatch:
 
@@ -497,6 +497,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/private-test-installation
+      - name: Start resource sampler (experiment)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'resources.csv'
+          if ($IsWindows) {
+            Start-Process -FilePath python -ArgumentList '-B', 'scripts/ci-resource-sampler.py', 'sample', $log -WindowStyle Hidden
+          } else {
+            bash -c "nohup python3 -B scripts/ci-resource-sampler.py sample '$log' > /dev/null 2>&1 &"
+          }
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites
       - uses: ./.github/actions/rust-setup
@@ -536,6 +545,12 @@ jobs:
       # tokio and everything above it a second time.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings
+      - name: Resource summary (experiment)
+        if: always()
+        shell: pwsh
+        run: |
+          python -B scripts/ci-resource-sampler.py report (Join-Path $env:RUNNER_TEMP 'resources.csv')
+          if (-not $IsWindows) { sudo dmesg | Select-String -Pattern 'out of memory|oom-kill|Killed process' }
 
   # The workspace tests start at once; only the qualification steps after them wait
   # for this run's plugin packages (the plugin-packages action).
@@ -561,6 +576,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/private-test-installation
+      - name: Start resource sampler (experiment)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'resources.csv'
+          if ($IsWindows) {
+            Start-Process -FilePath python -ArgumentList '-B', 'scripts/ci-resource-sampler.py', 'sample', $log -WindowStyle Hidden
+          } else {
+            bash -c "nohup python3 -B scripts/ci-resource-sampler.py sample '$log' > /dev/null 2>&1 &"
+          }
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites
       - uses: ./.github/actions/rust-setup
@@ -673,6 +697,12 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" \
             env -u WAYLAND_DISPLAY MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1 "$executable" \
             clipboard::tests::x11_ file_clipboard::x11::tests:: --ignored --test-threads=1
+      - name: Resource summary (experiment)
+        if: always()
+        shell: pwsh
+        run: |
+          python -B scripts/ci-resource-sampler.py report (Join-Path $env:RUNNER_TEMP 'resources.csv')
+          if (-not $IsWindows) { sudo dmesg | Select-String -Pattern 'out of memory|oom-kill|Killed process' }
 
   # The fat-LTO release build runs beside the test job instead of after it, and like it
   # waits for the plugin packages only before its smoke test.
@@ -691,6 +721,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/private-test-installation
+      - name: Start resource sampler (experiment)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'resources.csv'
+          if ($IsWindows) {
+            Start-Process -FilePath python -ArgumentList '-B', 'scripts/ci-resource-sampler.py', 'sample', $log -WindowStyle Hidden
+          } else {
+            bash -c "nohup python3 -B scripts/ci-resource-sampler.py sample '$log' > /dev/null 2>&1 &"
+          }
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites
       - uses: ./.github/actions/rust-setup
@@ -719,3 +758,9 @@ jobs:
             & $executable --smoke-test
             if ($LASTEXITCODE -ne 0) { throw 'Installed native filesystem smoke failed' }
           }
+      - name: Resource summary (experiment)
+        if: always()
+        shell: pwsh
+        run: |
+          python -B scripts/ci-resource-sampler.py report (Join-Path $env:RUNNER_TEMP 'resources.csv')
+          if (-not $IsWindows) { sudo dmesg | Select-String -Pattern 'out of memory|oom-kill|Killed process' }
