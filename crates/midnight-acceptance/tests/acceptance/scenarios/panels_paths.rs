@@ -100,7 +100,7 @@ fn toolbar_history(
         root.join("text"),
         root.join("images"),
         root.join("docs"),
-        root.join("docs/page_files"),
+        root.join("docs").join("page_files"),
     ];
     for path in &trail {
         go(app, path)?;
@@ -188,7 +188,7 @@ fn toolbar_history(
         None => failures.push("no toolbar Folder sizes button".into()),
         Some(item) => {
             click(app, &item);
-            let expected = ps::disk_size(&root.join("docs/page_files"));
+            let expected = ps::disk_size(&root.join("docs").join("page_files"));
             let measured = |app: &App| {
                 app.rows(LEFT)
                     .iter()
@@ -259,7 +259,7 @@ fn keys(app: &mut App, root: &Path, failures: &mut Vec<String>) -> Result<(), St
     // Ctrl+PageDown enters a folder.
     panel::select_row(app, LEFT, "page_files")?;
     input::chord(app.slint(), &[Key::Control], Key::PageDown);
-    if !reached(app, &root.join("docs/page_files")) {
+    if !reached(app, &root.join("docs").join("page_files")) {
         failures.push(format!(
             "Ctrl+PageDown on a folder went to {:?}",
             at(app, LEFT)
@@ -307,8 +307,13 @@ fn keys(app: &mut App, root: &Path, failures: &mut Vec<String>) -> Result<(), St
     ] {
         go(app, &root.join("docs"))?;
         input::chord(app.slint(), modifiers, key);
-        if !reached(app, Path::new("/")) {
-            failures.push(format!("{name} went to {:?}, expected /", at(app, LEFT)));
+        let filesystem_root = crate::files_support::filesystem_root(root);
+        if !reached(app, &filesystem_root) {
+            failures.push(format!(
+                "{name} went to {:?}, expected {}",
+                at(app, LEFT),
+                filesystem_root.display()
+            ));
         }
     }
     // Double clicks: a folder opens; `..` goes back with the cursor on the folder left.
@@ -365,7 +370,9 @@ fn segments(app: &App) -> Vec<(String, ItemRc)> {
     inspect::controls(app.slint(), AccessibleRole::Button)
         .into_iter()
         .filter(|(label, item)| {
-            label.starts_with("Open /")
+            label
+                .strip_prefix("Open ")
+                .is_some_and(|prefix| Path::new(prefix).is_absolute())
                 && inspect::center(item).x < edge
                 && inspect::visible_rect(item).is_some()
                 && inspect::rect(item).1 < app.window.get_left_list_top()
@@ -379,7 +386,7 @@ fn path_bar(
     root: &Path,
     failures: &mut Vec<String>,
 ) -> Result<(), String> {
-    go(app, &root.join("docs/page_files"))?;
+    go(app, &root.join("docs").join("page_files"))?;
     // Hovering a segment highlights its prefix.
     let docs = root.join("docs").to_string_lossy().into_owned();
     match segments(app)
@@ -418,19 +425,19 @@ fn path_bar(
                     copied(app)
                 ));
             }
-            if at(app, LEFT).as_deref() != Some(root.join("docs/page_files").as_path()) {
+            if at(app, LEFT).as_deref() != Some(root.join("docs").join("page_files").as_path()) {
                 failures.push(format!(
                     "right-clicking a path segment navigated to {:?}",
                     at(app, LEFT)
                 ));
             }
-            // Pasted into the path editor it ends with a separator.
+            // Pasted into the path editor it ends with the platform's separator.
             panel::focus_list(app, LEFT)?;
             input::chord(app.slint(), &[Key::Control], "g");
             app.settle();
             input::chord(app.slint(), &[Key::Control], "a");
             input::chord(app.slint(), &[Key::Control], "v");
-            let wanted = format!("{docs}/");
+            let wanted = format!("{docs}{}", std::path::MAIN_SEPARATOR);
             if !ps::wait(app, Duration::from_secs(3), |app| {
                 app.window.get_left_path_draft() == wanted.as_str()
             }) {
@@ -441,7 +448,7 @@ fn path_bar(
             }
             input::key(app.slint(), Key::Escape);
             app.settle();
-            if at(app, LEFT).as_deref() != Some(root.join("docs/page_files").as_path())
+            if at(app, LEFT).as_deref() != Some(root.join("docs").join("page_files").as_path())
                 || app.window.get_focused_pane() != 0
             {
                 failures.push(format!(
@@ -607,10 +614,18 @@ fn drives(
                 .map(|(label, _)| label)
                 .collect();
             context.note(format!("left drive menu entries: {labels:?}"));
-            if !labels
-                .iter()
-                .any(|label| label.as_str() == "/" || label.starts_with("/ — "))
-            {
+            // `/` on Unix; on Windows the fixture's drive (`D:`), however it is labelled.
+            let drive = crate::files_support::filesystem_root(root)
+                .to_string_lossy()
+                .trim_end_matches(['\\', '/'])
+                .to_owned();
+            if !labels.iter().any(|label| {
+                if cfg!(windows) {
+                    label.contains(&drive)
+                } else {
+                    label.as_str() == "/" || label.starts_with("/ — ")
+                }
+            }) {
                 failures.push(format!(
                     "the drive menu lists no filesystem root: {labels:?}"
                 ));
@@ -724,6 +739,8 @@ fn empty_states(
     // Everything hidden by the hidden-files setting: a message of its own.
     let hidden = support::scratch(context, "only-hidden")?;
     ps::write(&hidden.join(".dot"), "dot")?;
+    // Windows hides by the hidden attribute, not by name.
+    crate::fixtures::hide(&hidden.join(".dot"))?;
     go(app, &hidden)?;
     panel::focus_list(app, LEFT)?;
     input::chord(app.slint(), &[Key::Control], "h");
@@ -862,7 +879,16 @@ fn details_copy(app: &mut App, root: &Path, failures: &mut Vec<String>) -> Resul
         ("Bytes", false, None),
         ("Date", false, None),
         ("Time", false, None),
-        ("Permissions", false, None),
+        // Windows shows the attribute letters where Unix shows the mode.
+        (
+            if cfg!(windows) {
+                "Attributes"
+            } else {
+                "Permissions"
+            },
+            false,
+            None,
+        ),
     ] {
         let Some((caption, item)) = field(app, label) else {
             failures.push(format!(

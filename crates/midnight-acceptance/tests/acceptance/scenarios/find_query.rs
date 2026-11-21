@@ -151,7 +151,7 @@ fn walk(root: &Path) -> BTreeSet<String> {
         for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
             let path = entry.path();
             if let Ok(relative) = path.strip_prefix(root) {
-                found.insert(relative.display().to_string());
+                found.insert(crate::files_support::slashed(relative));
             }
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 visit(root, &path, found);

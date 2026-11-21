@@ -1,16 +1,19 @@
 //! Journey: work goes on while a copy is paused. Two copies without "Wait for other
 //! operations to finish", the first paused as soon as it copies, and a permanent delete
-//! in a third folder meanwhile; Jobs shows all three; Resume finishes the first; every
-//! result is exact on disk and no notice appears.
+//! in a third folder meanwhile; Jobs shows all three; Resume finishes the first and then
+//! the delete; every result is exact on disk and no notice appears.
 //!
 //! 1. F5 of `many/` (Wait off) to its own folder, paused from its window.
 //! 2. F5 of `small/` (Wait off) to another folder: it completes beside the paused copy
 //!    (pending while a job that does not wait still waits beside a paused one).
-//! 3. Shift+F8 of `doomed/` (a tree) in the same panel: it completes without a question
-//!    while the copy stays paused.
-//! 4. Jobs lists the paused copy, the completed copy and the completed delete.
-//! 5. Resume: the first copy completes; its window closes; both copies equal their
-//!    sources, the sources are unchanged, `doomed/` is gone; no notice.
+//! 3. Shift+F8 of `doomed/` (a tree) in the same panel: no question; it waits queued and
+//!    deletes nothing while the copy stays paused. A Delete holds the whole namespace,
+//!    and every transfer keeps its namespace share until it ends, paused or not
+//!    (`docs/developer/OPERATION_PROGRESS.md`, "Admission policy and waits").
+//! 4. Jobs lists the paused copy, the completed copy and the queued delete.
+//! 5. Resume: the first copy completes; its window closes; then the delete completes;
+//!    both copies equal their sources, the sources are unchanged, `doomed/` is gone; no
+//!    notice.
 use super::journeys_support::{self as journey, Journey, wait};
 use crate::{
     Context,
@@ -70,8 +73,10 @@ pub fn concurrent_jobs(context: &mut Context) -> Result<(), String> {
     journey.finish(context, ended)
 }
 
-/// Shift+F8 of the focused row, confirmed with Enter; how it ended within `limit`.
-fn delete_now(app: &mut App, limit: Duration) -> Result<DeleteEnd, String> {
+/// Shift+F8 of the focused row, confirmed with Enter. Returns where the delete's reports
+/// start in `app.operations` once it reported itself queued, ended or asked, and 3 s more
+/// passed for whatever it does next.
+fn delete_queued(app: &mut App) -> Result<usize, String> {
     panel::wait_input(app);
     let start = app.operations.len();
     input::chord(app.slint(), &[Key::Shift], Key::F8);
@@ -85,13 +90,36 @@ fn delete_now(app: &mut App, limit: Duration) -> Result<DeleteEnd, String> {
         return Err("Shift+F8 did not ask for a permanent delete".into());
     }
     input::key(app.slint(), Key::Return);
+    wait(
+        app,
+        "the delete to be queued, end or ask",
+        Duration::from_secs(30),
+        move |app| {
+            app.operations[start..].iter().any(|progress| {
+                progress.state == OperationState::Queued || progress.state.is_terminal()
+            }) || files::delete_question(app).is_some()
+        },
+    )?;
+    app.idle(Duration::from_secs(3));
+    Ok(start)
+}
+
+/// Whether the delete whose reports start at `start` completes within `limit`.
+fn delete_completed(app: &mut App, start: usize, limit: Duration) -> Result<(), String> {
     wait(app, "the delete to end or ask", limit, move |app| {
         app.operations[start..]
             .iter()
             .any(|progress| progress.state.is_terminal())
             || files::delete_question(app).is_some()
     })?;
-    Ok(files::wait_delete(app, start))
+    match files::wait_delete(app, start) {
+        DeleteEnd::Done(progress) => files::operation_ok(&progress, "the delete"),
+        DeleteEnd::Asked(window) => {
+            let asked = format!("it asked: {}", files::describe_window(&window));
+            files::dismiss_all(app);
+            Err(asked)
+        }
+    }
 }
 
 fn steps(
@@ -160,39 +188,50 @@ fn steps(
         "F5 of small/ (Wait off) beside the paused copy: completed {second_done}"
     ));
 
-    // 3. A permanent delete meanwhile.
+    // 3. A permanent delete meanwhile: it holds the whole namespace, of which the paused
+    //    copy keeps a share, so it waits queued until that copy ends.
     panel::select_row(app, LEFT, "doomed")?;
-    match delete_now(app, Duration::from_secs(30)) {
+    let deleting = match delete_queued(app) {
         Err(error) => {
             journey.check("Shift+F8 of doomed/ while a copy is paused", Err(error));
+            None
         }
-        Ok(DeleteEnd::Asked(window)) => {
+        Ok(_) if files::delete_question(app).is_some() => {
+            let window = files::delete_question(app).expect("a question");
             journey.check(
                 "Shift+F8 of doomed/ while a copy is paused",
                 Err(format!("it asked: {}", files::describe_window(&window))),
             );
             files::dismiss_all(app);
+            None
         }
-        Ok(DeleteEnd::Done(progress)) => {
+        Ok(start) => {
+            let latest = app.operations[start..].last().cloned();
             journey.check(
-                "Shift+F8 of doomed/ completes while a copy is paused",
-                files::operation_ok(&progress, "the delete"),
+                "Shift+F8 of doomed/ waits queued while a copy is paused",
+                match latest {
+                    Some(progress) if progress.state == OperationState::Queued => Ok(()),
+                    other => Err(format!(
+                        "it is {:?}",
+                        other.map(|progress| (
+                            progress.state,
+                            progress.failed,
+                            progress.message.clone()
+                        ))
+                    )),
+                },
             );
+            journey.check(
+                "the queued delete leaves doomed/ on the disk",
+                if root.join("doomed").is_dir() {
+                    Ok(())
+                } else {
+                    Err("doomed/ is gone while the delete is queued".into())
+                },
+            );
+            Some(start)
         }
-    }
-    journey.check(
-        "doomed/ is gone from the disk",
-        journey::absent(&root.join("doomed")),
-    );
-    journey.check(
-        "doomed/ is gone from the panel",
-        wait(
-            app,
-            "doomed to leave the panel",
-            Duration::from_secs(10),
-            |app| !journey::shown(app, LEFT).contains("doomed"),
-        ),
-    );
+    };
     journey.check(
         "the first copy stays paused meanwhile",
         match files::job(app, one) {
@@ -207,7 +246,7 @@ fn steps(
             )),
         },
     );
-    journey.step("Shift+F8 of doomed/ completes while the copy stays paused");
+    journey.step("Shift+F8 of doomed/ waits queued while the copy stays paused");
 
     // 4. Jobs lists all three.
     let jobs = journey::open_jobs(app)?;
@@ -224,8 +263,8 @@ fn steps(
         },
     );
     journey.check(
-        "Jobs shows the completed delete",
-        match journey::job_row(&rows, "Permanently delete", &["Completed"]) {
+        "Jobs shows the queued delete",
+        match journey::job_row(&rows, "Permanently delete", &["Queued"]) {
             Some(_) => Ok(()),
             None => Err(format!("Jobs lists {rows:?}")),
         },
@@ -276,6 +315,26 @@ fn steps(
             },
         );
     }
+    // Then the delete runs: no transfer holds a namespace share any more.
+    if let Some(start) = deleting {
+        journey.check(
+            "Shift+F8 of doomed/ completes once the copies ended",
+            delete_completed(app, start, Duration::from_secs(120)),
+        );
+    }
+    journey.check(
+        "doomed/ is gone from the disk",
+        journey::absent(&root.join("doomed")),
+    );
+    journey.check(
+        "doomed/ is gone from the panel",
+        wait(
+            app,
+            "doomed to leave the panel",
+            Duration::from_secs(10),
+            |app| !journey::shown(app, LEFT).contains("doomed"),
+        ),
+    );
     let watched = window.clone();
     journey.check(
         "the completed copy's window closes",

@@ -3,12 +3,13 @@
 //! Skip of an unreadable folder with the rest copied, a write-protected folder moved as
 //! it is, Retry of a Move out of a write-protected folder, Decide later and Resolve,
 //! Merge all folders, a job whose outcome has errors and notes, and a Copy and a Move to
-//! another filesystem when one is available ($XDG_RUNTIME_DIR).
+//! another filesystem when one is available ($XDG_RUNTIME_DIR; on Windows the private
+//! installation's drive when the run is on another one).
 use crate::{
     Context,
     app::{self, App, Config},
     files_support::{self as support, Choice, Pending, TransferSpec, facts, io_error, tree_facts},
-    fixtures, input, inspect, panel,
+    input, inspect, panel,
     tools_support::{self as tools, Tool},
 };
 use i_slint_core::items::AccessibleRole;
@@ -26,19 +27,21 @@ const SIZE: (u32, u32) = (760, 560);
 /// Announced error handling that may not be implemented yet.
 const CONTINUE_AFTER_SKIP: &str = "Copy/Move continues with the rest of a folder after Skip";
 const SKIP_ROOT: &str = "skippable Copy/Move failures while a transfer is prepared";
+/// The system's own words for a refused access, as the job windows show them.
+const DENIED: &str = if cfg!(windows) {
+    "Access is denied"
+} else {
+    "Permission denied"
+};
+/// Whether `links-ok` holds a dangling link: Unix only (Windows links need a privilege
+/// or Developer Mode, and Windows copies never recreate links).
+const LINK_NOTE: bool = cfg!(unix);
 const MOVE_PROMPT: &str =
     "a Move out of a write-protected folder asks, as Delete does outside the deleted tree";
 
-#[cfg(unix)]
+/// Set `path`'s permission bits; on Windows their equivalent (`tools::set_mode`).
 fn chmod(path: &Path, mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
-        .map_err(|error| io_error(path, error))
-}
-
-#[cfg(not(unix))]
-fn chmod(_: &Path, _: u32) -> Result<(), String> {
-    Ok(())
+    tools::set_mode(path, mode)
 }
 
 /// The permission bits of `path` (links not followed).
@@ -355,7 +358,7 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
         context,
         &mut failures,
         "Skip all this error type",
-        Some("Permission denied"),
+        Some(DENIED),
         "skip-all-errors",
     );
 
@@ -489,7 +492,7 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
     #[cfg(unix)]
     let kept_mode = mode(&move_dest.join("locked")) == Some(0o555);
     #[cfg(not(unix))]
-    let kept_mode = true;
+    let kept_mode = crate::fixtures::write_protected(&move_dest.join("locked"));
     if !decisions.is_empty() || done.state != CopyOperationState::Completed || !moved || !kept_mode
     {
         failures.push(format!(
@@ -733,11 +736,20 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
         ));
     }
     let has = |wanted: &str| outcome.iter().any(|text| text.contains(wanted));
+    if !LINK_NOTE {
+        context.note(
+            "no link in links-ok on Windows (links need a privilege or Developer Mode, and \
+             Windows copies never recreate links): the link's note is not checked",
+        );
+    }
     for wanted in [
         "Files copied: ",
         "1 skipped item was not copied.",
         "1 link was copied as a link; Details says why.",
     ] {
+        if wanted.contains("link") && !LINK_NOTE {
+            continue;
+        }
         if !has(wanted) {
             failures.push(format!(
                 "the outcome does not say {wanted:?}: {:?}",
@@ -773,9 +785,10 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
             Err(error) => failures.push(format!("the outcome's Details: {error}")),
             Ok(details) => {
                 if details.len() <= before
-                    || !details
-                        .iter()
-                        .any(|text| text.contains("because its target does not exist"))
+                    || (LINK_NOTE
+                        && !details
+                            .iter()
+                            .any(|text| text.contains("because its target does not exist")))
                 {
                     failures.push(format!(
                         "Details does not show the link's reason: {:?}",
@@ -847,7 +860,7 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
                     app.settle();
                     let opened = inspect::visible_texts(window.window());
                     let detail = |texts: &[String]| {
-                        texts.iter().any(|text| text.contains("Permission denied"))
+                        texts.iter().any(|text| text.contains(DENIED))
                             && texts.iter().any(|text| text.contains("Operation:"))
                             && texts.iter().any(|text| text.contains("err.txt"))
                     };
@@ -885,91 +898,108 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
     support::report_with(context, &failures, &pending)
 }
 
-/// Copy and Move to a private folder on another filesystem ($XDG_RUNTIME_DIR, usually
-/// tmpfs), when there is one; removed afterwards.
+/// A private folder's parent on another filesystem than `source`, where Copy and Move
+/// must cross volumes: `$XDG_RUNTIME_DIR` (usually tmpfs) on Unix; on Windows the
+/// private installation (`MIDNIGHT_ACCEPTANCE_STAGE_ROOT`, below the user profile) when
+/// it is on another drive than the run. None, with the reason, when there is none.
+fn other_volume(source: &Path) -> Result<PathBuf, &'static str> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let device = |path: &Path| fs::metadata(path).map(|metadata| metadata.dev()).ok();
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_dir())
+            .filter(|runtime| device(runtime) != device(source))
+            .ok_or("no second filesystem ($XDG_RUNTIME_DIR)")
+    }
+    #[cfg(not(unix))]
+    {
+        let drive = |path: &Path| {
+            path.components()
+                .next()
+                .map(|component| component.as_os_str().to_ascii_uppercase())
+        };
+        std::env::var_os("MIDNIGHT_ACCEPTANCE_STAGE_ROOT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_dir())
+            .filter(|root| drive(root) != drive(source))
+            .ok_or("no private folder on another drive (MIDNIGHT_ACCEPTANCE_STAGE_ROOT)")
+    }
+}
+
+/// Copy and Move to a private folder on another filesystem ([`other_volume`]), when
+/// there is one; removed afterwards.
 fn cross_volume(
     app: &mut App,
     context: &mut Context,
     source: &Path,
     failures: &mut Vec<String>,
 ) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute() && path.is_dir());
-        let device = |path: &Path| fs::metadata(path).map(|metadata| metadata.dev()).ok();
-        let Some(runtime) = runtime.filter(|runtime| device(runtime) != device(source)) else {
-            context.note(
-                "cross-volume Copy and Move not run: no second filesystem ($XDG_RUNTIME_DIR)",
-            );
+    let runtime = match other_volume(source) {
+        Ok(runtime) => runtime,
+        Err(reason) => {
+            context.note(format!("cross-volume Copy and Move not run: {reason}"));
             return Ok(());
-        };
-        let run = context
-            .run_dir
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let volume = fixtures::create_fresh(&runtime, &format!("midnight-acceptance-{run}"))?;
-        chmod(&volume, 0o700)?;
-        let result = (|| -> Result<(), String> {
-            choose(app, &["x.txt"])?;
-            let start = support::start_transfer(
-                app,
-                context,
-                TransferSpec {
-                    destination: Some(volume.as_path()),
-                    ..TransferSpec::copy()
-                },
-            )?;
-            let (done, decisions) = settle(app, start, &[])?;
-            if done.state != CopyOperationState::Completed
-                || fs::read(volume.join("x.txt")).ok() != fs::read(source.join("x.txt")).ok()
-            {
-                failures.push(format!(
-                    "Copy to another filesystem ended {:?} (questions {decisions:?})",
-                    done.state
-                ));
-            }
-            support::dismiss_all(app);
-            let before = facts(&source.join("y.txt"))?;
-            choose(app, &["y.txt"])?;
-            let start = support::start_transfer(
-                app,
-                context,
-                TransferSpec {
-                    destination: Some(volume.as_path()),
-                    ..TransferSpec::moving()
-                },
-            )?;
-            let (done, decisions) = settle(app, start, &[Choice::Skip])?;
-            let moved = !source.join("y.txt").exists()
-                && fs::read(volume.join("y.txt")).ok().as_deref() == Some(b"y.txt\n".as_slice());
-            let kept = facts(&source.join("y.txt")).ok().as_ref() == Some(&before)
-                && !volume.join("y.txt").exists();
-            context.note(format!(
-                "Move to another filesystem ({}): {:?}, moved {moved}, source kept {kept}, \
-                 questions {decisions:?}",
-                volume.display(),
+        }
+    };
+    let run = context
+        .run_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let volume = crate::fixtures::create_fresh(&runtime, &format!("midnight-acceptance-{run}"))?;
+    chmod(&volume, 0o700)?;
+    let result = (|| -> Result<(), String> {
+        choose(app, &["x.txt"])?;
+        let start = support::start_transfer(
+            app,
+            context,
+            TransferSpec {
+                destination: Some(volume.as_path()),
+                ..TransferSpec::copy()
+            },
+        )?;
+        let (done, decisions) = settle(app, start, &[])?;
+        if done.state != CopyOperationState::Completed
+            || fs::read(volume.join("x.txt")).ok() != fs::read(source.join("x.txt")).ok()
+        {
+            failures.push(format!(
+                "Copy to another filesystem ended {:?} (questions {decisions:?})",
                 done.state
             ));
-            if !moved && !kept {
-                failures.push(format!(
-                    "Move to another filesystem left both sides inconsistent: {:?}",
-                    done.state
-                ));
-            }
-            support::dismiss_all(app);
-            Ok(())
-        })();
-        let _ = fixtures::remove_tree(&volume);
-        result
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (app, source, failures);
-        context.note("cross-volume Copy and Move not run on this platform");
+        }
+        support::dismiss_all(app);
+        let before = facts(&source.join("y.txt"))?;
+        choose(app, &["y.txt"])?;
+        let start = support::start_transfer(
+            app,
+            context,
+            TransferSpec {
+                destination: Some(volume.as_path()),
+                ..TransferSpec::moving()
+            },
+        )?;
+        let (done, decisions) = settle(app, start, &[Choice::Skip])?;
+        let moved = !source.join("y.txt").exists()
+            && fs::read(volume.join("y.txt")).ok().as_deref() == Some(b"y.txt\n".as_slice());
+        let kept = facts(&source.join("y.txt")).ok().as_ref() == Some(&before)
+            && !volume.join("y.txt").exists();
+        context.note(format!(
+            "Move to another filesystem ({}): {:?}, moved {moved}, source kept {kept}, \
+             questions {decisions:?}",
+            volume.display(),
+            done.state
+        ));
+        if !moved && !kept {
+            failures.push(format!(
+                "Move to another filesystem left both sides inconsistent: {:?}",
+                done.state
+            ));
+        }
+        support::dismiss_all(app);
         Ok(())
-    }
+    })();
+    let _ = crate::fixtures::remove_tree(&volume);
+    result
 }

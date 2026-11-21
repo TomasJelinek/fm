@@ -54,7 +54,7 @@ fn wait(app: &mut App, what: &str, condition: impl Fn(&App) -> bool) -> Result<(
 }
 
 fn lock(path: &Path) -> Result<(), String> {
-    tools::set_mode(path, 0o000)
+    crate::fixtures::deny_read(path)
 }
 
 /// Enter `name` with Enter and wait for the "Cannot open folder" notice.
@@ -190,8 +190,8 @@ pub fn notices_and_jobs(context: &mut Context) -> Result<(), String> {
     let result = notices(&mut app, context, &panel_folder, &long, &mut failures)
         .and_then(|()| jobs(&mut app, context, &panel_folder, &mut failures));
     // The work folder stays deletable whatever happened.
-    let _ = tools::set_mode(&locked, 0o755);
-    let _ = tools::set_mode(&long, 0o755);
+    let _ = crate::fixtures::allow_read(&locked);
+    let _ = crate::fixtures::allow_read(&long);
     app.shutdown()?;
     result?;
     if failures.is_empty() {
@@ -269,6 +269,8 @@ fn notices(
     input::click_button(app.slint(), "Copy details")?;
     if let Err(error) = copied(app, &before, &["Cannot open folder", path.as_str(), DENIED]) {
         failures.push(format!("the notice's {error}"));
+    } else if let Err(error) = tools::notice_copy_starts_as_shown(app) {
+        failures.push(error);
     }
     if tools::shown_notice(app).is_none() {
         failures.push("Copy details closed the notice".into());
@@ -536,7 +538,7 @@ fn jobs(
         ));
     }
     let header = format!("{} operations", rows.len());
-    if !texts.iter().any(|text| *text == header) {
+    if !texts.contains(&header) {
         failures.push(format!(
             "the Jobs header does not say {header:?}: {texts:?}"
         ));

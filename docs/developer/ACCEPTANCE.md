@@ -4,7 +4,8 @@ The acceptance suite exercises Midnight Explorer end to end, close to real use: 
 real `MainWindow`, `Presenter` and `Engine` on the native filesystem, driven by
 synthetic keyboard and pointer events on software-rendered windows, against a
 generated fixture tree. It complements the unit and integration tests; it never runs in
-`cargo test`, `cargo test --workspace`, CI or `./build.sh --validate`.
+`cargo test`, `cargo test --workspace`, CI or `./build.sh --validate` (CI only lints it,
+on Windows and Linux).
 
 ## Running it
 
@@ -48,13 +49,108 @@ absolute; `--dry-run` prints it). Options:
 The runner also reads `MIDNIGHT_ACCEPTANCE_FILTER` (comma-separated),
 `MIDNIGHT_ACCEPTANCE_SCALE`, `MIDNIGHT_ACCEPTANCE_RUN_DIR` (or its own `--run-dir DIR`,
 see "Results"), `MIDNIGHT_ACCEPTANCE_KEEP_FIXTURE=1`,
-`MIDNIGHT_ACCEPTANCE_STRICT_REVIEW=1`, `MIDNIGHT_ACCEPTANCE_ALL_THEMES=1` and
+`MIDNIGHT_ACCEPTANCE_STRICT_REVIEW=1`, `MIDNIGHT_ACCEPTANCE_ALL_THEMES=1`,
 `MIDNIGHT_ACCEPTANCE_PLUGINS` (the folder whose `viewers/`, `filesystems/` and
 `thumbnailers/` the viewer scenarios stage; default: the test executable's profile
-folder, `_build/debug`). The built test executable
-(`_build/debug/deps/acceptance-<hash>`) can also be run directly, with scenario names as
-plain arguments. Exit status: 0 when every scenario passed or warned, 1 when one failed,
-timed out or could not run, 2 for invalid arguments, 127 when Cargo is missing.
+folder, `_build/debug`) and `MIDNIGHT_ACCEPTANCE_STAGE_ROOT` (the folder in which the
+viewer scenarios create their stages; required on Windows, see "Windows"). The built
+test executable (`_build/debug/deps/acceptance-<hash>`) can also be run directly, with
+scenario names as plain arguments. Exit status: 0 when every scenario passed or warned,
+1 when one failed, timed out or could not run, 2 for invalid arguments, 127 when Cargo is
+missing.
+
+### Windows
+
+```text
+pwsh -File scripts\acceptance.ps1 [debug|release] [--dry-run] [--list] [--scale smoke|full]
+     [--only NAME[,NAME...]] [--strict-review] [--keep-fixture] [--all-themes]
+     [--run-dir DIR] [--plugins DIR | --validation-packages] [--test-binary FILE] [--offline]
+```
+
+`scripts/acceptance.ps1` is the Windows runner (PowerShell 7; `build.bat` has no
+acceptance step). It builds the suite with the same Cargo command as
+`scripts/acceptance.sh` (plus `--no-run`, and `--offline` when asked), or takes an
+already built executable with `--test-binary`, and runs it from a private installation:
+a new folder `%USERPROFILE%\MidnightAcceptance-<guid>` whose DACL grants only this
+account, SYSTEM and Administrators (not inherited), as `scripts/validate.ps1` and CI
+make their private test installations. The Windows plugin host loads a plugin only
+when no other account can change it or any folder above it, up to the drive's root, and
+a checkout's drive usually grants Authenticated Users write access, so stages below
+`_build` could never load a plugin. The folder holds a copy of the test executable in
+`bin\` (a rebuild cannot replace the running one, and staged scenarios start it again)
+and the plugin packages in `packages\{viewers,filesystems,thumbnailers}` (network
+providers are left out); the runner sets `MIDNIGHT_ACCEPTANCE_PLUGINS` to `packages\`,
+`MIDNIGHT_ACCEPTANCE_STAGE_ROOT` to the folder itself and `TEMP`/`TMP` to `_build\tmp`,
+and removes the folder afterwards. Packages come from `<target>\<profile>` (a normal
+`build.bat` build; `CARGO_TARGET_DIR` is honoured), from `--plugins DIR` with that
+layout, or with `--validation-packages` from what `scripts\validate.ps1` left in
+`_build\validate` (`viewer-packages`, `filesystem-packages` and
+`archive-ci\package\archive`). `--list` runs the executable in place. Run folders follow
+the rules under "Results" (`--run-dir` must be absolute). The other options and the exit
+status are those of `scripts/acceptance.sh`. Without `MIDNIGHT_ACCEPTANCE_STAGE_ROOT` a
+viewer scenario on Windows reports `SKIP` with that reason. The Windows runs, their
+results and findings are recorded in [acceptance/windows.md](acceptance/windows.md).
+
+What differs on Windows, and why:
+
+- Staged children get a private profile instead of the XDG folders: `USERPROFILE`
+  (the application's settings resolve through the LocalAppData known folder,
+  `%USERPROFILE%\AppData\Local`), `LOCALAPPDATA` (thumbnail cache, browser sessions,
+  plugin workers), `APPDATA` and `TEMP`/`TMP`, all below the child's stage or work
+  folder. A child kills its own process tree (`taskkill /T`) where Unix kills its process
+  group; plugin workers of a child that already exited end with it, in their kill-on-close
+  job objects.
+- Windows keeps one Recycle Bin per volume and account, which no variable redirects:
+  `files_trash` reports `SKIP`, `files_delete` cancels F8 without reading the Recycle
+  Bin, and `ui_polish_dialogs` never confirms the Trash dialog (Enter and Move to Trash
+  are exempt, with that reason, in its notes).
+- Permissions (`fixtures::deny_read`, `deny_write`, `tools_support::set_mode`): an
+  unreadable folder or file (mode 000) is an explicit deny entry for this account's own
+  SID on listing or reading data and on writing or adding to it (`icacls /deny
+  <SID>:(RD,WD,AD)`), as mode 000 refuses both; a folder without owner write (`5xx`)
+  denies adding files and folders and deleting its children (`(WD,AD,DC)`), and each
+  entry it holds denies its own deletion (`(DE)`), because Windows lets an entry go when
+  either it or its folder allows that; a file without owner write gets the read-only
+  attribute. The owner can always change its own DACL, so the per-scenario restore
+  removes the deny entries (and clears the read-only attribute) wherever a folder cannot
+  be listed or refuses a new entry, and on the files the process made unreadable (an
+  unreadable file never keeps its folder from being deleted). A listable folder whose
+  entries cannot be reached (mode 0444 on a folder) has no equivalent (traverse checking
+  is bypassed): `tools_compare_dirs` notes that part as not run.
+- Links: creating a symbolic link needs administrator rights or Developer Mode, so the
+  fixture's `links/` is empty. `files_links` uses directory junctions instead (`mklink
+  /J`, no privilege) against the Windows contract of "Follow directory links";
+  `journeys_links_readonly` reports `SKIP` (its checks are Linux link and mode semantics).
+- External programs: Windows has no `/bin/cp`, `touch`, `true` or `/bin/sh`, so the
+  scenarios that configure editors, comparators and Custom Commands get stand-ins
+  (`tests/acceptance/tool.rs`): the test executable hard-linked or copied as `cp.exe`,
+  `touch.exe`, `true.exe` and `sh.exe` into the run's `work\.tools\`, which act as the
+  program their name says (`sh` runs only the suite's literal list script and `-c true`).
+- Hidden files: Windows hides by the hidden attribute, not by a dot-name, so the
+  scenarios that hide dot-names give them that attribute too (`fixtures::hide`). The
+  product's own `.midnight-recovery-*` folder gets no hidden attribute, so on Windows
+  `journeys_filtered_conflicts` expects it listed while hidden files are hidden.
+- Attributes: the Ctrl+F2 dialog shows Windows attributes (three-state Read-only,
+  Hidden, System, Archive, Compression boxes) instead of permission boxes and octal
+  modes, so `files_attributes` sets and clears attributes there and `panels_dialogs`
+  sets Read-only where Linux types octal 600; times are checked to NTFS's 100 ns.
+- Sparse files: NTFS allocates the whole length of an extended file, so
+  `tools_support::sparse` marks files of 1 MiB or more sparse first (`fsutil sparse
+  setflag`, no privilege needed). Smaller ones take their space: `find_budgets`' 100,001
+  files of 1 to 100,001 bytes hold about 5 GB until the run folder is removed.
+- Another volume: `files_transfer_errors` copies and moves to a folder in the private
+  installation (`MIDNIGHT_ACCEPTANCE_STAGE_ROOT`) when it is on another drive than the
+  run; otherwise it notes that the cross-volume checks did not run.
+- Packages: `--validation-packages` holds no HTML viewer and no thumbnailers
+  (`scripts\validate.ps1` packages neither), so the HTML cases of the viewer scenarios
+  report themselves skipped with that reason and `viewers_thumbnails` reports `SKIP`; a
+  normal `build.bat` build has both. Those packages are as old as the last
+  `scripts\validate.ps1` run: viewer checks of behavior added since then fail with
+  them, so a viewer result counts only with packages built from the source under test.
+- Paths: the run folder is the canonical path without Windows' verbatim `\\?\` prefix,
+  as a user would type it; relative paths in expectations use `/` on every platform
+  (`files_support::slashed`); the filesystem root is the fixture drive's root
+  (`files_support::filesystem_root`).
 
 ### Results
 
@@ -107,8 +203,9 @@ enables that feature, and every dependency of the crate is optional behind it, s
 - `scripts/ci-workspace-tests.py` (CI and `--validate`) only selects targets whose
   `required-features` are active, and lists `midnight-acceptance` among the excluded
   libraries of its `--lib`/`--doc` gates.
-- `cargo clippy --workspace --all-targets` skips the target as well. Lint it with
-  `cargo clippy --workspace --locked --features midnight-acceptance/acceptance --test acceptance`.
+- `cargo clippy --workspace --all-targets` skips the target as well. CI's check job
+  therefore lints it in a step of its own on both platforms:
+  `cargo clippy -p midnight-acceptance --features midnight-acceptance/acceptance --all-targets --locked -- -D warnings`.
 
 A dedicated feature-gated target was chosen over `#[ignore]` because ignored tests
 still compile into a normal test binary (and `--include-ignored` would run them), and
@@ -171,7 +268,8 @@ Deliberate differences from the application, to keep runs hermetic and headless:
   `Config::user_commands`), installed exactly as `run_window` installs them. They
   start real processes, so only scenarios that configure harmless programs writing
   into their own work folder enable them (`/bin/cp`, `/bin/sh` with a literal script,
-  `touch`); none runs a terminal or a real editor.
+  `touch`, `/bin/true`; on Windows the stand-ins of `tests/acceptance/tool.rs`, see
+  "Windows"); none runs a terminal or a real editor.
 
 ## Scenarios
 
@@ -189,17 +287,17 @@ Deliberate differences from the application, to keep runs hermetic and headless:
 | `files_copy_kinds` | transfers | F5 of every entry of `text/`, `code/`, `docs/`, `images/`, `archives/`, `sizes/`, `names/`, `readonly/` and of a folder of distinct permission modes, one at a time to the other panel; each folder's files as a Ctrl+A multi-selection into a typed subfolder with "Preserve exact modified time"; the 12-level `deep/` tree. Bytes, exact names, trees and nanosecond times (where promised) verified; the new row is listed and the sources are unchanged. Every copied file and folder, inside copied folders too (`modes/tools/inner.sh`), must have the source's permission bits masked by the process umask, as SECURITY.md promises (`[AF-2]` otherwise; a folder may keep an inherited set-group-ID bit). |
 | `files_move_kinds` | transfers | F6 of the same entries one at a time and as Ctrl+Shift+A multi-selections into typed subfolders; the source is gone, content, exact name, mode and modified time are those of the moved entry, both panels update, and the number of moved entries is checked. The owned write-protected `readonly/locked-folder` (mode 0555, with contents) moves as it is and keeps its mode, as every moved folder must; any question fails the scenario (it is answered with Cancel job, so the next move starts clean). |
 | `files_conflicts` | transfers | Copy and Move onto existing names in the decision window: Replace (original kept in the recovery folder), Skip, Copy as, Replace all and Skip all (one question), Merge folders then Skip a child, Cancel job midway (earlier copy kept, later file not started), a copy into its own folder, Move with Skip, Replace and another name, and moving a folder into itself or its subfolder (refused, nothing changes). A deliberate skip must not be reported as a failure. |
-| `files_links` | transfers | F5 of a link to a folder, to a file, a dangling link and a link to its own folder, with the link option ("Follow links" on Linux) cleared: each must arrive as a link with the same target text. Checked (as offered): the folder link arrives as the folder's tree, the file link as the file's content, the dangling link as the same link with a note in the job, and the self link as its folder copied once with the self link inside kept as a link (noted). F5 of a folder holding only a link to itself copies the folder once with the link kept. F6 of each link must move the link itself (source gone, same target). Every run must complete without a question, notice, skip or failure (`[AF-3]` otherwise), and sources and link targets must not change. |
+| `files_links` | transfers | F5 of a link to a folder, to a file, a dangling link and a link to its own folder, with the link option ("Follow links" on Linux) cleared: each must arrive as a link with the same target text. Checked (as offered): the folder link arrives as the folder's tree, the file link as the file's content, the dangling link as the same link with a note in the job, and the self link as its folder copied once with the self link inside kept as a link (noted). F5 of a folder holding only a link to itself copies the folder once with the link kept. F6 of each link must move the link itself (source gone, same target). Every run must complete without a question, notice, skip or failure (`[AF-3]` otherwise), and sources and link targets must not change. Windows: directory junctions to a folder, to a missing folder and to their own folder; with "Follow directory links" cleared each arrives as an empty folder, checked the folder junction arrives as the folder's tree (the other two recorded, never as a link), F6 moves the folder junction itself. |
 | `files_delete` | operations | Shift+F8 of every entry of the kind folders one at a time, of each link (its target stays), of a mode-0444 file and a mode-0555 folder, of a Ctrl+A multi-selection and of the 12-level tree; F8 only opens the Trash confirmation, which Escape cancels, and the Trash folder is unchanged. It runs in a staged child process (`viewers_stage::run_private`) whose `XDG_DATA_HOME`, and so the application's home Trash, is a private folder in its work folder: the account's own Trash is neither used nor read. |
 | `files_trash` | operations | F8 for real, into the private Trash of a staged process (`viewers_stage::run_private`): a file (bytes, `[Trash Info]`, percent-encoded `Path=`, `DeletionDate=`, `Trash`/`files`/`info` mode 0700), a folder (tree, modes and times kept), a Ctrl+A multi-selection, awkward names (Unicode, spaces, `#&$%;`, a 224-byte name shortened to a 32-byte label), a mode-0444 file (mode kept) and a nested row of the inline tree; a permanent delete of 3,000 files paused (its window holds still), resumed and cancelled (every file left is whole). Pending until announced: a mode-0555 folder with contents goes to the Trash (owner write is added inside the deleted tree); a file of a mode-0555 folder asks Retry/Skip/Skip all/Cancel and Retry works once the folder is writable; two such files end with Skip all and stay; Shift+F8 of a tree holding a mode-0555 folder deletes it whole without a question. |
 | `files_copy_options` | transfers | The Copy dialog for one file: summary (name and source folder), destination (the other panel), "Verification: full SHA-256.", "Preserve exact modified time" and "Wait for other operations to finish" shown unchecked, "Follow links" shown checked; a relative path, an empty destination and a missing folder are refused in the dialog ("Enter the full path of an existing destination folder."; a missing folder admitted as a job fails the scenario with finding ACC-OPT-01, and its question is answered with Cancel job), Escape copies nothing; exact times are not offered for a folder; the Move dialog's policy line and no link option. The large file copied with full verification (every byte read back) and, after clearing "Verify entire copied file with SHA-256 (recommended)" in Options › General, with size and samples (at most three 64 KiB samples read back; the dialog's policy line says so); `many/` in one job (3,000 files, each synced and read back: 5 min allowed), tree verified; rows marked at depths 1 and 2 of two inline tree branches copied together, each as its own folder. |
-| `files_transfer_jobs` | jobs | "Wait for other operations to finish" off and on with three jobs: job 1 (`many/`) is paused; job 2 (off) runs at once and completes beside it while job 1 stays paused; job 3 (on) reports `EarlierTransfers` and "Queued — waiting for earlier transfers" and copies nothing until job 1 ends after Resume (its 3,000 files may take minutes on a busy disk: 5 min allowed); the Jobs window lists the three states. A 1 GiB sparse file (only its copy takes space, removed afterwards) is paused in the middle of its copy: its window shows the files and bytes totals, Time remaining, the speed chart's Scale and, under Details, the current file's progress; it is copied whole after Resume. Cancel operation (question, Cancelled, only whole files kept); the Jobs window's Cancel job stops a paused job at once without the question; with a job that ended with an error (an unreadable file skipped) in the list, Clear finished without errors removes the cleanly completed jobs and keeps it, and Clear all finished empties the list; no job window, Jobs window or notice says "published"; the progress, Jobs and decision windows, framed by their title bars, have no × of their own. Pending until announced: a job whose "Wait for other operations to finish" is off starts at once (it waited with `SameFolders` beside a paused job in disjoint folders); a per-file bar for a slow file without Details. |
+| `files_transfer_jobs` | jobs | "Wait for other operations to finish" off and on with three jobs: job 1 (`many/`) is paused; job 2 (off) runs at once and completes beside it while job 1 stays paused; job 3 (on) reports `EarlierTransfers` and "Queued — waiting for earlier transfers" and copies nothing until job 1 ends after Resume (its 3,000 files may take minutes on a busy disk: 5 min allowed); the Jobs window lists the three states. A 1 GiB sparse file (only its copy takes space, removed afterwards) is paused in the middle of its copy: its window shows the files and bytes totals, Time remaining, the speed chart's Scale and, under Details, the current file's progress; it is copied whole after Resume. Cancel operation (question, Cancelled, only whole files kept); the Jobs window's Cancel job stops a paused job at once without the question; with a job that ended with an error (an unreadable file skipped) in the list, Clear finished without errors removes the cleanly completed jobs and keeps it, and Clear all finished empties the list; no job window, Jobs window or notice says "published"; the progress, Jobs and decision windows, framed by their title bars, have no × of their own. After Resume, without Details, the large file shows its own bar ("Current file progress") beside its name once it has been copying for 2 s of running time (pauses do not count); a copy that ends sooner is noted as not observable. Pending until announced: a job whose "Wait for other operations to finish" is off starts at once (it waited with `SameFolders` beside a paused job in disjoint folders). |
 | `files_transfer_errors` | transfers | Copy into a mode-0555 folder: the error offers Retry, Skip, Skip all this error type and Cancel job; Retry after the folder is made writable copies the file. Skip all this error type: one question for three files, nothing written. Cancel job at the error: Cancelled, nothing written. An unreadable source file: Retry once it is readable. An unreadable folder inside a copied tree: Skip, the rest is copied. An owned mode-0555 folder with contents moves without a question and keeps its mode. A file in a mode-0555 folder (outside the moved item) asks Retry, Skip, Skip all this error type and Cancel job; Retry once the folder is writable must move it (finding ACC-ERR-01 otherwise). Decide later leaves the job waiting for a decision; Resolve in its window brings the question back. Merge all folders: one question for two folder conflicts. An unreadable folder inside a copied folder: one question, Skip, the outcome counts it. A copy and a move to a private folder on another filesystem (`$XDG_RUNTIME_DIR`), removed afterwards; Move must either move or keep the source untouched. The job window of a job with errors shows the error itself, no notice follows it or Cancel job, Details shows more, and an outcome counts a skipped item and never lists notes one by one. Pending until announced: the rest of a folder is copied after Skip of an unreadable subfolder; an unreadable selected folder, which fails while the transfer is prepared (Retry and Cancel job only), can be skipped so the rest of the selection is copied; an outcome counts its notes. |
 | `files_clipboard_drag` | transfers | With the in-process clipboard: Ctrl+C of two marked files puts them on the clipboard to copy and Ctrl+V in the other panel copies them; Ctrl+X then Ctrl+V moves a file. Drag and drop with the mouse: a plain drag to the other panel on one volume offers and does Move, Ctrl+drag Copy, a folder dropped onto a folder row lands inside it, and Ctrl+Shift is refused ("Not allowed here") and starts nothing. |
 | `files_archive_transfers` | transfers | Through the installed archive plugin (a staged process): a file, a nested folder and an empty folder marked inside a ZIP are copied out (known bytes); the same tree copied out of a tar.gz equals it; F6 of an archive member is refused before any dialog with its reason ("cannot be moved"); F5 of a native file into an archive panel is refused or reported and leaves the archive byte for byte unchanged. |
 | `files_rename` | operations | F2 to a Unicode name (listed at once, cursor on it), a case-only change, a collision (Skip, then Replace), a name with `/`, an empty name, a 255-byte and a 256-byte name, a folder, and Down Down typed with the confirming Enter (held, then replayed from the renamed row). |
 | `files_create` | operations | F7 with one name (cursor on it), with nested segments (cursor on the created ancestor) and with `..`, F7 on an existing folder, Shift+F4 with nested segments, on an existing file (asks; Escape keeps it; the Replace file button empties it, and a recovery copy a notice names must hold the original bytes) and with leading and trailing spaces, Escape in both dialogs. |
-| `files_attributes` | operations | Ctrl+F2: permission check boxes and the octal field; Modified and Accessed typed as date, time (nanoseconds) and UTC offset for one file, for three files and for a folder (its contents unchanged). Each change is reviewed, applied and read back from disk; no notice or window stays open. |
+| `files_attributes` | operations | Ctrl+F2: permission check boxes and the octal field (Windows: the Hidden, Archive and Read-only attributes, three-state boxes set and cleared and read back as attribute bits); Modified and Accessed typed as date, time (nanoseconds) and UTC offset for one file, for three files and for a folder (its contents unchanged; NTFS keeps times in 100 ns steps). Each change is reviewed, applied and read back from disk; no notice or window stays open. |
 | `files_selection` | selection | Insert, Space (with the folder size), Ctrl+A, Ctrl+Shift+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I, Ctrl+click, Shift+click ranges; Select and Deselect by mask with the keypad's + and − (masks with `;`, `|` and case, Include folders, the remembered mask, Escape) and from F10, the keypad's * with and without folders, the number row's + still searching; and F5 of a multi-selection (exactly the marked files arrive; completed roots are deselected). The keypad keys are sent through the window's physical-shortcut entry, which the native key hook calls; synthetic Slint key events carry only the typed character. |
 | `files_sorting` | panels | Ctrl+F3/F4/F5/F6 pressed twice each: name, extension (extensionless last), modified time and size in both directions, compared with the disk; folders first. |
 | `files_filter_search` | panels | Show hidden files: Ctrl+H, the View menu and F10 hide and show dot-names (status count, cursor to the next shown row, dropped mark, Ctrl+A of shown files, a hidden child left out of an inline tree), Options → General saved across a restart; then the Ctrl+F12 panel filter in Masks (`*.txt;*.TXT`, `*.*|.*`) and Expression mode, Show all; filename search with Down and Escape. |
@@ -209,9 +307,9 @@ Deliberate differences from the application, to keep runs hermetic and headless:
 | `files_file_list` | panels | Ctrl+M with a `$(FileName)$(TAB)$(FileSize)$(CRLF)` template: the preview shows the tabs expanded to eight-column stops, the File output is written byte for byte and the selection is cleared. |
 | `files_tree_ops` | tree | Expand and collapse with the expander, then F5, F2 and Shift+F8 of a folder only visible three levels deep in the inline tree; the renamed row stays at its depth with the cursor on it. |
 | `files_busy_folder` | panels | While a writer creates, modifies and deletes files in the shown folder: unchanged rows keep identity and content, cursor and selection stay, no loading state; a Rename and a Copy finished meanwhile are listed within 1.5 s; afterwards the listing equals the disk. |
-| `panels_busy_ops` | panels | While a writer churns the shown folder: F7, Shift+F4 and Ctrl+F2 (octal) succeed on disk, created entries are listed within 1.5 s with the cursor on them, nothing stays open, marks stay, an expanded branch stays expanded, and the listing equals the disk afterwards. |
+| `panels_busy_ops` | panels | While a writer churns the shown folder: F7, Shift+F4 and Ctrl+F2 (octal 600, on Windows the Read-only attribute) succeed on disk (Ctrl+F2 on the two marked files, not the focused one), created entries are listed within 1.5 s with the cursor on them, nothing stays open, marks stay, an expanded branch stays expanded, and the listing equals the disk afterwards. |
 | `panels_dialogs` | panels | Every panel dialog (F7, Shift+F4, F2, Ctrl+F2, Ctrl+F7, Ctrl+F12, Ctrl+=, Ctrl+−, Ctrl+M, Hot Paths manager, Alt+Enter, Ctrl+F1) opened by its key and by the pointer (toolbar, footer with its Ctrl layer, Hot Paths menu, F10) and closed with Escape, the header's × and Cancel/Close: one × and one Cancel/Close per dialog, no notice or window afterwards, Down moves the panel cursor (the keyboard is back in the list), the folder is unchanged; then each dialog does its job once, and Properties of three marked items counts their kinds and bytes. |
-| `panels_notices` | panels | An unreadable folder at the end of a 400-character path, entered with Enter, a double click and Ctrl+G, a missing typed path and a failed inline branch: the notice's title, reason and folder, every line readable whole (no scrolling needed), Details and Hide details, Copy details (the title, reason and whole path on the clipboard), Escape, Close and ×; the panel keeps its listing without a duplicate banner; Retry lists the branch once the folder is readable; no notice from the background probe; touch density in a 900×640 window; a control proves the whole-path check fails in a 480×260 window. |
+| `panels_notices` | panels | An unreadable folder at the end of a 400-character path, entered with Enter, a double click and Ctrl+G, a missing typed path and a failed inline branch: the notice's title, reason and folder, every line readable whole (no scrolling needed), Details and Hide details, Copy details (the clipboard starts with the title, reason and whole path, as the notice shows them), Escape, Close and ×; the panel keeps its listing without a duplicate banner; Retry lists the branch once the folder is readable; no notice from the background probe; touch density in a 900×640 window; a control proves the whole-path check fails in a 480×260 window. |
 | `panels_times` | panels | Ctrl+F2 Times: Up/Down per date, time and offset part; the calendar (Alt+Down, arrows, Page Up/Down, Enter, Previous/Next month, a day, Today) and time picker (Alt+Down, arrows, Page Up/Down, Escape, ▲/▼, Enter); Now; the picked moment read back from disk to the second, Accessed untouched; Escape closes a picker only, the next Escape the editor without applying; Ctrl+F7 lowercase on the Case page; Include subfolders on a folder (every descendant gets the time) and Back to editing keeping the draft. |
 | `panels_view_sort` | panels | Ctrl+F3–F6, every column header (both directions, its accessible state) and the sort menu (each column, Reverse order) give the exact order with folders first and extensionless files last, marks and cursor kept and in view; the right panel sorts on its own; View menu and Alt+2/3/5 keep cursor and marks, arrows move by column (Brief) and cell/row (Thumbnails); the splitter dragged, clamped at its minimum with names readable, double-clicked, moved with its keys, restored after a restart; Ctrl+F11 and Tab; a 600×480 window's rail; touch density. |
 | `panels_paths` | panels | Toolbar Back/Forward (disabled without history), Parent, Folder sizes and Refresh; the Back and Forward history menus; Ctrl+PageUp, Ctrl+PageDown (a file is not opened), Shift+Backspace, Ctrl+Backslash; double clicks on a folder and `..`; Tab and Shift+Tab; path segments (hover highlight, right-click copy, paste with a separator), a long path's middle marker, the blank space after the path, Escape; Alt+F1, Alt+F2, `.` As Other Panel and the root by pointer; the details strip copying name, path and size; empty folders and everything hidden or filtered say so below `..`; a quick filter without matches. |
@@ -229,13 +327,13 @@ Deliberate differences from the application, to keep runs hermetic and headless:
 | `find_query_syntax` | find | The query language with known answers: masks (`;;` literal, `*.*` with extensionless names and folders, several exclusions, an excluded folder still searched, Unicode letter case), Regex (`(?i)` against Match name case), Expression (`kB`/`KiB`/`B`, `=~`, `not (…)`, a UTC offset at an inclusive and an exclusive bound, `present`/`missing`); Containing text in UTF-8 with and without BOM and UTF-16 LE/BE with BOM (BOM-less UTF-16 not decoded), Unicode case, whole words at a combining mark and an underscore, per-line regular expressions with CRLF, malformed UTF-8 reported per file (also after a match); Modified within in minutes, hours and days (the future never, 366 days in each unit), invalid ages that disable Find, the collapsed options summary; Identical files (empty, small and binary groups, a hard-link pair counted once, groups together under Name and Size both ways, Search inside archives disabled). |
 | `find_roots_windows` | find | Search folders: Add typed with Enter and OK, a listed folder added again (ticked, not doubled), relative and parent-step paths refused with the entry open, a missing folder (others searched, Incomplete, named), Remove, 16 folders at most; Subfolders on and off over three folders; Find from the right panel (its folder; Go to file there); Ctrl+F, the toolbar button and F10 › Find files…; four windows at most; searches in several windows at once with their own results, run again with the kept draft, a third search waiting while two run; the window is modeless and keeps its draft; Escape closes the Add entry, the help, then the window; Close during a search. |
 | `find_result_actions` | find | Every column sorted both ways against known orders (folders first and missing extensions last under Extension, equal keys by path, a new search in the window's order), Name order equal to the panel's; Home/End/Up/Down/Page Down in the results; Go to file by Enter, double click and button, for files and folders, Open on a folder; View, F3 and Alt+F3 ask for a viewer of the file (recorded here; `find_viewers` opens them), Edit and F4 run a harmless configured editor, Open reaches the launcher (none here); deleted and changed results refused with the panel unmoved; Stop keeps 20 results sorted, the folder being read named only while the search runs, Feed to panel disabled before and during a search, a new search replaces the results. |
-| `find_feed_panel` | find | Feed to panel: the Find window's order, title, status, Folder column; cursor keys, Alt+Right and Ctrl+R inert; Insert, Space, the bulk keys with their panel meaning, keypad *, Ctrl+click, Shift+click, Alt+Up/Down; Enter, Ctrl+Page Down and a double click to a file or folder; Backspace, Alt+Left, Ctrl/Shift+Backspace, Back to folder and Ctrl+G leave the list, Tab keeps it; F3, Alt+F3, F4 and folders; Alt+Enter; F5, F6 (the row stays), F8, Delete and Shift+Delete asked, Shift+F8 of a folder and its result; every refusal (keys, keypad, toolbar, a custom command, function bar, main menu) with the folder unchanged; the right panel. |
+| `find_feed_panel` | find | Feed to panel: the Find window's order, title, status, Folder column; cursor keys, Alt+Right and Ctrl+R inert; Insert, Space, the bulk keys with their panel meaning, keypad * (as Ctrl+I, and as Ctrl+Shift+I once Select by mask last had Include folders, chosen in the right panel), Ctrl+click, Shift+click, Alt+Up/Down; Enter, Ctrl+Page Down and a double click to a file or folder; Backspace, Alt+Left, Ctrl/Shift+Backspace, Back to folder and Ctrl+G leave the list, Tab keeps it; F3, Alt+F3, F4 and folders; Alt+Enter; F5, F6 (the row stays), F8, Delete and Shift+Delete asked, Shift+F8 of a folder and its result; every refusal (keys, keypad, toolbar, a custom command, function bar, main menu) with the folder unchanged; the right panel. |
 | `find_budgets` | find | Budgets named in the details of an Incomplete search: 128 folder levels (the files of 127 nested folders found), a sparse file over 1 GiB not read, an identical-files group over the 10,000-result limit omitted whole while a later group is listed, 100,000 duplicate candidates. |
-| `find_layout` | find | The Find window in Blue, Dark and Touch with 24 px text at its preferred, a narrow and a compact size: the UI review's layout checks; narrow stacking (Remove under Add, Browse… and OK under the path), sideways column scrolling and shortened Path cells that keep their last folder; compact "Query" label, the query area hidden while searching, the idle status above the results with large text; a column drag never sorts and its width is kept. |
+| `find_layout` | find | The Find window in Blue, Dark and Touch with 24 px text at its preferred, a narrow and a compact size: the UI review's layout checks; narrow stacking (Remove under Add, Browse… and OK under the path), sideways column scrolling and shortened Path cells that keep their last folder; compact "Query" label, the query area hidden while searching, the idle status in the query area (by the area that clips it) and in view with large text; a column drag never sorts and its width is kept. |
 | `find_archives` | find | Staged with the installed plugins: Search inside archives finds members of a ZIP, a tar, a tar.gz and a gzip stream by name (Unicode, member folders), content (literal, per-line regex), expression and Modified within (tar times only); a member archive is not opened; with Subfolders off an archive in the searched folder is still searched completely and one in an ordinary subfolder is not reached; two folders with archives at once; a broken archive is reported; Go to file opens the archive at the member and Backspace returns; View/Edit/Open refused for members; Feed to panel leaves members out; Find refused inside an archive; 300 ZIPs and one of 20,000 members searched completely; Stop while a panel opens an archive; 1,000,000 visited entries; an archive over 100,000 entries (one folder of 120,000 members, searched completely: neither the archive plugin, the plugin host nor the engine limits archive members). |
 | `find_viewers` | find | Staged with the installed viewers: View, F3 and Alt+F3 on Find results open the selected file (Markdown rendered, or its source) and only that file (Space walks no further); F3 and Alt+F3 in a fed list open the focused result, and Space and Backspace walk the list's results. |
 | `tools_checksum_algorithms` | checksums | The algorithm dropdown's tick boxes (SHA-256 alone by default): all five calculated at once, each digest checked against an independent implementation (SHA-1 and SHA-512 in `tools_support.rs`); in the results Ctrl+C copies the shown SHA-256, Ctrl+Shift+C the whole row, and Shift+F10 and a right click open the copy menu whose Copy MD5 copies the MD5 (the in-process clipboard's text compared); a manifest saved per algorithm with the suggested name and exact lines, the Replace prompt's Cancel keeps the file, Replace writes it, Escape then closes the window; Include subfolders; nothing starts before a button is pressed. |
-| `tools_checksum_manifests` | checksums | Escape closes a window opened on the Verify page; Verify preselected (and not started) for BSD SHA-512, GNU binary SHA-1 with a mismatch and a missing file, hash-only SHA-1 and MD5 sidecars, UTF-16 SHA-256 and SFV with a wrong CRC and a missing file; a manifest mixing algorithms fails and says why. |
+| `tools_checksum_manifests` | checksums | Escape closes a window opened on the Verify page; the page tabs are Calculate and Verify; Verify preselected (and not started) for BSD SHA-512, GNU binary SHA-1 with a mismatch and a missing file, hash-only SHA-1 and MD5 sidecars, UTF-16 SHA-256 and SFV with a wrong CRC and a missing file; a manifest mixing algorithms fails and says why. |
 | `tools_checksum_large_stop` | checksums | The large file and a 2 GiB sparse file with all algorithms: progress (bytes read growing), Stop, Cancelled with finished rows kept and no manifest written. |
 | `tools_folder_sizes` | tree | Ctrl+Shift+S on marked `links/` (0 bytes: links inside are not followed), `readonly/` and `many/` only; marked folder links inside `links/` (measured as their targets); a folder with an unreadable subfolder (partial size, warning button); cancelling a running scan, then a complete one. |
 | `tools_jobs_copy` | jobs | F5 of the large file and `many/`: the progress window, Pause (the transfer holds still), the Jobs window while paused (it should say Paused), Resume, Cancel operation with its confirmation (only whole files remain); the window stays open saying "Copy cancelled; files already copied are kept." and no notice appears while it is open or after it is closed; a second copy that completes and closes its window, Jobs listing Completed and Cancelled, Clear all finished. |
@@ -275,7 +373,7 @@ Deliberate differences from the application, to keep runs hermetic and headless:
 | `shortcuts_hints` | keyboard | F1 keyboard help lists every catalog action with all of its keys (or "Unassigned"); the F10 main menu shows each item's key (Ctrl+= beside Select by mask, Num * beside the invert, nothing beside Options); after Create folder is rebound to Ctrl+Alt+K in Options › Keyboard the menu, the help and the footer follow at once (F7's cell unassigned and disabled), the new key opens the dialog and F7 does not. |
 | `about_box` | tools | About from the toolbar's application icon: the version in the title strip and the Version row, at least 6 px between the About tab's lines, Left/Right between the tabs; Licenses: the count matches the list, rows set the pointer cursor, hover changes a row and shows the "›" mark on it alone, a click selects (the mark stays, View license enables); View license, Enter, a double-click and a click on the mark open the detail (title, License, Used by, authors, text); Back and Escape return with row and filter kept; Up, Down, Page Down, End, Home; the filter ("K of N", only matches, no match, Down into the list, Enter opens the first); reopening keeps filter and selection; Escape in the list, Close and a click outside close About; dragging the sky moves it. The scenario sets the application version as `main.rs` does. |
 | `tools_user_menu` | tools | F9 with seeded Custom Commands: the items in order (built-in actions, the commands with the separator as a rule and the disabled command disabled, Close); Command line, Bookmarks and Hot Paths, Properties, folder sizes, Checksums and Close each do what they say; Tab then Enter runs the first item, Escape and a click outside close it; the grouped and the per-item command run on three marked files and on a folder shown only in an expanded tree branch, verified on disk; the disabled command runs nothing; without commands the empty state's Set up opens Options › Custom Commands. |
-| `tools_notices_jobs` | tools | Notices: entering an unreadable folder shows "Cannot open folder" with the folder; Details expands the diagnostic details and Hide details collapses them; Copy details sends the message to the in-process clipboard ("Copied to clipboard"); Close, Escape and the header's close button each close it and no other notice follows within a second; a 1,500-character folder path keeps Close in view and its box scrolls to the end. Jobs: create, rename, delete and a failed create listed with their states and count; a click and Up/Down select; Open and Enter show the job's window; Copy details; Cancel job disabled for finished jobs; Clear finished without errors keeps the failed job, Clear all finished leaves "No background operations"; Close and Escape close it. |
+| `tools_notices_jobs` | tools | Notices: entering an unreadable folder shows "Cannot open folder" with the folder; Details expands the diagnostic details and Hide details collapses them; Copy details sends the message to the in-process clipboard ("Copied to clipboard"), starting with the notice's title, reason and folder; Close, Escape and the header's close button each close it and no other notice follows within a second; a 1,500-character folder path keeps Close in view and its box scrolls to the end. Jobs: create, rename, delete and a failed create listed with their states and count; a click and Up/Down select; Open and Enter show the job's window; Copy details; Cancel job disabled for finished jobs; Clear finished without errors keeps the failed job, Clear all finished leaves "No background operations"; Close and Escape close it. |
 
 `scripts/acceptance.sh --list` prints the current list. The Find scenarios' coverage
 record, item by item with its status, is [acceptance/find.md](acceptance/find.md); the
@@ -298,7 +396,9 @@ frame of the same moment:
 - the layout checks of `inspect::check_layout`: **control clipped by window**,
   **overlapping controls**, **zero-size label**, **label elided to nothing** and **text
   does not fit its button** (file system paths are exempt: they are elided in the
-  middle by design and carry the full path in their tooltip and accessible label);
+  middle by design and carry the full path in their tooltip and accessible label; a
+  text whose own box holds it, cut at the edge of a view that scrolls sideways, such as
+  a table's last column, is scrolled out of view, not elided);
 - **internal close button in a framed window**: an icon-only Close, Close dialog,
   Cancel dialog, Dismiss or Decide later button in the top band of a tool window whose
   Window element is framed;
@@ -310,7 +410,8 @@ frame of the same moment:
 - **text clipped without ellipsis**, **wrapped text cut off**, and **elided text without
   full text** (neither its accessible label, an accessible ancestor's label or
   description, nor a tooltip holds the full text);
-- **control without accessible name** and **icon-only button without tooltip**;
+- **control without accessible name** and **icon-only button without tooltip** (a list
+  row scrolled to a sliver at its viewport's edge is not icon-only);
 - **overlapping text** and **text outside the window** (glyph areas, placed by each
   text's alignment);
 - **uneven button heights** and **uneven button spacing** within a row, and **dismiss
@@ -319,23 +420,29 @@ frame of the same moment:
 - **low text contrast**: WCAG 2.2 AA in the rendered pixels. Every visible text is
   measured against each background colour that covers at least 15 % of its glyph area:
   4.5:1, or 3:1 for large text (24 px, or 18.67 px bold) and symbols; a text field's
-  selected text is measured with its selection colours; text of disabled controls is
-  exempt (WCAG 1.4.3).
+  selected text is measured with its selection colours; text of disabled controls and
+  text scrolled to a sliver at its viewport's edge (less than half of its height in
+  view) are exempt (WCAG 1.4.3).
 
 Interactive checks (`ui_polish_dialogs`, `ui_polish_jobs`): Tab from the dialog's first
 focus reaches every enabled control (one member of a tab or radio group reaches the
 group) and never leaves the dialog, Shift+Tab visits the stops backwards, every stop
-looks focused with an indicator of at least 3:1 (WCAG 1.4.11); Escape closes the dialog;
+looks focused with an indicator of at least 3:1 (WCAG 1.4.11), compared with the frame
+before the Tab that reached it (a Tab that leaves the focus where it was, as in a dialog
+whose only stop already has it, leaves nothing to compare); Escape closes the dialog;
 Enter in a freshly opened dialog has an observable effect; every button and tab, each
 clicked in a freshly opened dialog on freshly restored scratch folders, has an
 observable effect (windows, notices, popups, texts, control states, the folders on disk,
-commands to the backend, file-chooser requests, jobs, the panels, or the still window's
-pixels outside the clicked and focused controls; changes between two quiet samples
-before the click do not count); no window or notice appears after Escape, Cancel,
-Close, the header's close or Decide later, nor after a job ends; hovering a button,
-tab, check box, radio button, combo box or switch changes how it looks; hovering an
-icon-only button with a tooltip area shows tooltip text. The main window gets the hover
-and tooltip checks; Tab switches its panels by design.
+commands to the backend, file-chooser requests, jobs, the panels, copies to the
+clipboard, or the still window's pixels outside the clicked and focused controls;
+changes between two quiet samples before the click do not count, and a surface still
+changing is sampled again, for up to 2 s, until two samples agree); buttons that clear a
+list (Jobs' Clear finished without errors, then Clear all finished) are clicked after
+the others, which reopen on the same list; no window or notice appears after Escape,
+Cancel, Close, the header's close or Decide later, nor after a job ends; hovering a
+button, tab, check box, radio button, combo box or switch changes how it looks; hovering
+an icon-only button with a tooltip area shows tooltip text. The main window gets the
+hover and tooltip checks; Tab switches its panels by design.
 
 The gate is strict: a gate scenario fails on any flag, with or without
 `--strict-review`, unless the flag is an exemption listed with its reason in
@@ -458,9 +565,9 @@ manifests (with known-answer self-tests).
 | `deep/` | `level-01/…/level-12`, one file per level. |
 | `many/` | 400 or 3,000 small files (`item-NNNNN.{dat,txt,log,bin}`) and ten folders. |
 | `names/` | Spaces (leading, trailing before the extension), leading dot and dash, Latin/Greek/Hebrew/Japanese, emoji, NFD combining and NFC precomposed forms, upper/lower case, shell punctuation, no extension, many dots, a 224-byte name, hidden folder, folder with spaces. |
-| `links/` | Symbolic links to a folder, to a file, dangling, and to its own folder (a cycle); Unix only. |
+| `links/` | Symbolic links to a folder, to a file, dangling, and to its own folder (a cycle); Unix only (empty on Windows, where `files_links` makes junctions in its work folder). |
 | `checksums/` | Four data files (one empty, one name with a space) with valid `.sha256`, `.md5` and `.sfv` manifests, one with a wrong hash and one naming a missing file. |
-| `readonly/` | A mode-0444 file and a mode-0555 folder (Windows: read-only attribute). |
+| `readonly/` | A mode-0444 file and a mode-0555 folder (Windows: the file with the read-only attribute, no folder). |
 | `compare/` | Comparator pairs: identical text; three differences (a changed, an inserted and a removed line); a 3.5 MiB log pair differing in two lines and a 4.25 MiB log over the comparator's former 4 MiB text limit; the same text as UTF-8 and UTF-16 LE; two 64×64 PNGs differing in a red square; two binaries differing in three bytes. |
 | `thumbs/` | 60 PNGs of 96×72 pixels, one colour each with a white diagonal, a one-page PDF and a JPEG. |
 
@@ -580,5 +687,7 @@ Pitfalls the tools scenarios ran into (helpers in `tests/acceptance/tools_suppor
   need the explorer crate.
 - **Installed native filesystem plugin.** `Config::plugins` browses through it, archives
   included; the other scenarios keep `LocalFileSystem`.
-- **Windows.** The suite code is platform-neutral apart from symbolic links and
-  permissions; `build.bat` and a PowerShell runner do not exist yet.
+- **Windows.** `scripts/acceptance.ps1` runs the suite (see "Windows" under "Running
+  it"). Code that needs Unix semantics stays behind `cfg(unix)` with a Windows
+  equivalent beside it, or a `SKIP` or a note in the report that names the reason; a
+  check is never dropped silently.

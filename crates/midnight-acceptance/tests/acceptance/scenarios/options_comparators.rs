@@ -41,7 +41,7 @@ fn wait_ready(app: &mut App) -> Result<(), String> {
 pub fn comparators(context: &mut Context) -> Result<(), String> {
     let folder = context.work.join("comparators");
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-    let tool = options::program(&["/bin/true", "/usr/bin/true"])?;
+    let tool = crate::tool::program(context, "true")?;
     let tool_text = tool.to_string_lossy().into_owned();
     let store = SettingsStore::new();
     let mut app = App::start(config(&folder, &store));

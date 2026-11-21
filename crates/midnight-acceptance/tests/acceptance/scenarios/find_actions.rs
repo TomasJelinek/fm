@@ -96,7 +96,7 @@ fn setup(work: &Path) -> Result<Setup, String> {
 
 pub fn result_actions(context: &mut Context) -> Result<(), String> {
     let setup = setup(&context.work)?;
-    let cp = crate::options_support::program(&["/bin/cp", "/usr/bin/cp"])?;
+    let cp = crate::tool::program(context, "cp")?;
     let edited = setup.edited.display().to_string();
     let store = SettingsStore::seeded(move |preferences| {
         preferences.editor = EditorPreferences {
@@ -203,10 +203,7 @@ fn sort_by(
     input::click_button(window.window(), &format!("Sort by {column}"))?;
     wait_order(app, window, root, wanted, &format!("{column} {arrow}"))?;
     let header = format!("{column} {arrow}");
-    if !inspect::visible_texts(window.window())
-        .iter()
-        .any(|text| *text == header)
-    {
+    if !inspect::visible_texts(window.window()).contains(&header) {
         return Err(format!("the {column} header does not show {arrow}"));
     }
     Ok(())

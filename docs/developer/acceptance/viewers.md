@@ -212,6 +212,9 @@ Checked in source on 21 November, without a new acceptance run:
 - Copy-out of the 100,001-file folder (F5, bytes and a time budget), Ctrl+Shift+S on it
   inside the archive (exact 5,151 bytes), and F5 of a 100,001-member selection
   (PENDING: copy-out of more than 4,096 entries is being enabled): written in
-  `viewers_archives`, not run yet.
+  `viewers_archives`, not run on Linux yet. Its first run, on Windows on 21 November
+  (debug test build, the machine shared with other runs and builds), copied 59,456 of
+  the 100,001 files in the 600 s budget, the selection likewise ran out of time; finding
+  WIN-8 in [windows.md](windows.md).
 - The AppArmor Install… offer (O20), the Make File List viewer opened from Ctrl+M (P's
   area, hooked here), a viewer for every file reached from a Find feed of archive members.

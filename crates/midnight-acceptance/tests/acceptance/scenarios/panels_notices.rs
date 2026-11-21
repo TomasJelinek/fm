@@ -31,6 +31,7 @@ fn folder_path(app: &App) -> String {
 
 /// The notice that `what` opened: its title, its body, the folder it names, every line
 /// readable whole, one close control in its header and one Close button.
+#[allow(clippy::too_many_arguments)] // One call per way of opening the notice.
 fn check_notice(
     app: &mut App,
     context: &mut Context,
@@ -206,12 +207,6 @@ pub fn notices(context: &mut Context) -> Result<(), String> {
     run(context)
 }
 
-#[cfg(not(unix))]
-fn run(_: &mut Context) -> Result<(), String> {
-    Err("SKIP: an unreadable folder needs Unix permissions".into())
-}
-
-#[cfg(unix)]
 fn run(context: &mut Context) -> Result<(), String> {
     let base = support::scratch(context, "notices")?;
     let mut parent = base.clone();
@@ -236,7 +231,6 @@ fn run(context: &mut Context) -> Result<(), String> {
     support::report(&failures)
 }
 
-#[cfg(unix)]
 fn desktop(
     context: &mut Context,
     parent: &Path,
@@ -348,7 +342,6 @@ fn desktop(
 /// Details expands the diagnostic report and collapses it again; Copy details puts the
 /// whole report, with the reason and the folder's path, on the clipboard and keeps the
 /// notice open.
-#[cfg(unix)]
 fn details(app: &mut App, context: &mut Context, locked: &Path, failures: &mut Vec<String>) {
     let report_shown = |app: &App| {
         ps::dialog_texts(app)
@@ -400,6 +393,8 @@ fn details(app: &mut App, context: &mut Context, locked: &Path, failures: &mut V
             failures.push(format!(
                 "Copy details copied {text:?}: it lacks the title, the reason or the folder's whole path"
             ));
+        } else if let Err(error) = crate::tools_support::notice_copy_starts_as_shown(app) {
+            failures.push(error);
         }
     }
     if support::shown_notice(app).is_none() {
@@ -407,7 +402,6 @@ fn details(app: &mut App, context: &mut Context, locked: &Path, failures: &mut V
     }
 }
 
-#[cfg(unix)]
 fn tree_error(
     app: &mut App,
     context: &mut Context,
@@ -481,7 +475,7 @@ fn tree_error(
         failures.push("the failed branch's folder left the listing".into());
     }
     // Once readable, Retry lists the branch; then it is locked again for the rest.
-    crate::tools_support::set_mode(locked, 0o755)?;
+    crate::fixtures::allow_read(locked)?;
     match click_expander(app, LOCKED) {
         Err(error) => failures.push(format!("the failed branch's Retry: {error}")),
         Ok(()) => {
@@ -509,12 +503,11 @@ fn tree_error(
             });
         }
     }
-    crate::tools_support::set_mode(locked, 0o000)?;
+    crate::fixtures::deny_read(locked)?;
     Ok(())
 }
 
 /// The same notice at touch density in a smaller window still shows the whole path.
-#[cfg(unix)]
 fn touch(
     context: &mut Context,
     parent: &Path,
@@ -547,7 +540,6 @@ fn touch(
 /// The whole-path check must be able to fail: in a 480×260 window the long path cannot
 /// fit the notice, so the check has to report it cut (the notice then scrolls, which
 /// is right for so small a window).
-#[cfg(unix)]
 fn blind_control(app: &mut App, locked: &Path, failures: &mut Vec<String>) {
     app.resize(480, 260);
     app.settle();

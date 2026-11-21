@@ -165,9 +165,17 @@ impl PathPickerService for ScriptedPicker {
 pub struct MemoryClipboard {
     files: std::sync::Mutex<Option<FileClipboard>>,
     text: std::sync::Mutex<Option<String>>,
+    /// Every copy so far, also of what the clipboard already held.
+    writes: std::sync::atomic::AtomicU64,
 }
 
 impl MemoryClipboard {
+    /// How many times anything was copied (text or files): a copy is observable even
+    /// when it puts the same text there again.
+    pub fn writes(&self) -> u64 {
+        self.writes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The file list on the clipboard, if any.
     pub fn files(&self) -> Option<FileClipboard> {
         self.files.lock().expect("clipboard files").clone()
@@ -185,6 +193,9 @@ struct MemoryClipboardSession(Arc<MemoryClipboard>);
 impl ClipboardSession for MemoryClipboardSession {
     fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
         *self.0.text.lock().expect("clipboard text") = Some(text.to_owned());
+        self.0
+            .writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -200,6 +211,9 @@ impl ClipboardSession for MemoryClipboardSession {
 
     fn copy_files(&mut self, files: &FileClipboard) -> Result<(), FsError> {
         *self.0.files.lock().expect("clipboard files") = Some(files.clone());
+        self.0
+            .writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -1090,12 +1104,18 @@ fn settings_service(
             .map(|tabs| tabs.validate().is_ok() && tabs.paths.get(tabs.active).is_some())
     };
     if config.real_settings {
-        // The real store writes `$XDG_CONFIG_HOME/midnight-explorer`: only a staged
+        // The real store writes `$XDG_CONFIG_HOME/midnight-explorer` (Windows: the
+        // LocalAppData known folder, `%USERPROFILE%\AppData\Local`): only a staged
         // process has a private one.
+        let private = if cfg!(unix) {
+            "XDG_CONFIG_HOME"
+        } else {
+            "USERPROFILE"
+        };
         assert!(
             std::env::var_os("MIDNIGHT_ACCEPTANCE_STAGED").is_some()
-                && std::env::var_os("XDG_CONFIG_HOME").is_some(),
-            "Config::real_settings needs a staged process with a private XDG_CONFIG_HOME"
+                && std::env::var_os(private).is_some(),
+            "Config::real_settings needs a staged process with a private {private}"
         );
         // Read once before the start, as production's startup read does; the engine's
         // first load then reads the store again, asynchronously.

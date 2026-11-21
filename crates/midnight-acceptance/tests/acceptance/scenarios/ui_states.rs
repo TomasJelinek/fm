@@ -163,16 +163,9 @@ fn no_extra(app: &mut App, allowed: &[String], what: &str) -> Option<Issue> {
     ))
 }
 
-#[cfg(unix)]
+/// Set `path`'s permission bits (on Windows their equivalent, `tools_support::set_mode`).
 fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
-        .map_err(|error| format!("{}: {error}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_mode(_: &Path, _: u32) -> Result<(), String> {
-    Ok(())
+    crate::tools_support::set_mode(path, mode)
 }
 
 fn write(path: &Path, text: &str) -> Result<(), String> {
@@ -187,9 +180,12 @@ fn job_folders(root: &Path) -> Result<(), String> {
     let source = root.join("source");
     let target = root.join("target");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
-    tools::sparse(&source.join("big.bin"), 256 << 20).or_else(|_| {
+    // Long enough to be paused while it copies: Windows reads a sparse file's zeros fast
+    // enough to finish 256 MiB before the window's Pause is pressed.
+    let big: u64 = if cfg!(windows) { 1 << 30 } else { 256 << 20 };
+    tools::sparse(&source.join("big.bin"), big).or_else(|_| {
         fs::create_dir_all(&source).map_err(|error| error.to_string())?;
-        tools::sparse(&source.join("big.bin"), 256 << 20)
+        tools::sparse(&source.join("big.bin"), big)
     })?;
     for index in 0..3 {
         write(&source.join(format!("small/file-{index}.txt")), "small\n")?;
@@ -557,6 +553,14 @@ fn errors(
 
 /// A copy that follows a dangling link: completed with a note.
 fn notes(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), String> {
+    if cfg!(windows) {
+        context.note(format!(
+            "{prefix}: no job with notes on Windows: its note comes from a dangling link \
+             copied as a link, and Windows links need a privilege or Developer Mode and are \
+             never recreated by a copy"
+        ));
+        return Ok(());
+    }
     let before = copy_windows(app).len();
     let mut spec = TransferSpec::copy();
     spec.follow_links = Some(true);
@@ -675,7 +679,8 @@ fn jobs_body(context: &mut Context) -> Result<(), String> {
         config.density = density;
         config.clipboard = true;
         let mut app = App::start(config);
-        let steps: [(&str, fn(&mut App, &mut Context, &str) -> Result<(), String>); 6] = [
+        type Step = fn(&mut App, &mut Context, &str) -> Result<(), String>;
+        let steps: [(&str, Step); 6] = [
             ("long copy", long_copy),
             ("conflict", conflict),
             ("few errors", |app, context, prefix| {

@@ -45,7 +45,7 @@ fn folders_first(app: &App, pane: PaneId) -> bool {
 type SortKey = fn(&(&str, usize, u64)) -> (u8, String, usize, u64);
 
 fn set_modified(path: &Path, time: SystemTime) -> Result<(), String> {
-    fs::File::open(path)
+    crate::tools_support::times_handle(path)
         .and_then(|file| file.set_modified(time))
         .map_err(|error| io_error(path, error))
 }
@@ -53,11 +53,13 @@ fn set_modified(path: &Path, time: SystemTime) -> Result<(), String> {
 pub fn sorting(context: &mut Context) -> Result<(), String> {
     let folder = support::scratch(context, "sorting")?;
     let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    // name, size, modified offset (minutes)
+    // name, size, modified offset (minutes). The names sort the same in every common
+    // collation: Windows sorts names by the user's locale, where Czech puts "ch" after
+    // "h", so "charlie" would sort after "echo".
     let files: [(&str, usize, u64); 5] = [
         ("alpha.txt", 40, 3),
         ("bravo.log", 10, 1),
-        ("charlie.dat", 30, 5),
+        ("coral.dat", 30, 5),
         ("delta.bin", 20, 2),
         ("echo", 50, 4),
     ];
@@ -252,7 +254,7 @@ pub fn navigation(context: &mut Context) -> Result<(), String> {
     // Filesystem root and back.
     panel::wait_input(&mut app);
     input::chord(app.slint(), &[Key::Control], Key::Backspace);
-    let filesystem_root = PathBuf::from("/");
+    let filesystem_root = crate::files_support::filesystem_root(&context.fixture.root);
     panel::wait_location(&mut app, LEFT, &filesystem_root);
     app.screenshot(
         context,
@@ -484,7 +486,7 @@ pub fn tabs(context: &mut Context) -> Result<(), String> {
     app.until("the new tab to show text/", |app| {
         tabs_of(app)
             .iter()
-            .any(|(path, active)| *active && path.ends_with("/text"))
+            .any(|(path, active)| *active && Path::new(path).ends_with("text"))
     });
     // Ctrl+Shift+Tab: back to the first tab (the fixture root).
     input::chord(app.slint(), &[Key::Control, Key::Shift], Key::Tab);

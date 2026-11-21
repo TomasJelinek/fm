@@ -77,7 +77,8 @@ fn run(context: &mut Context) -> Result<(), String> {
     config.plugins = Some(context.work.join("plugins"));
     let mut app = App::start(config);
     let failures = Failures::default();
-    let sections: [(&str, fn(&mut App, &mut Context) -> Result<(), String>, &str); 6] = [
+    type Section = fn(&mut App, &mut Context) -> Result<(), String>;
+    let sections: [(&str, Section, &str); 6] = [
         ("Find results and a fed list", find_results, "find"),
         ("an inline tree branch", tree_branch, "tree"),
         ("four viewer windows", several_windows, "multi"),
@@ -481,6 +482,12 @@ fn compact(app: &mut App, context: &mut Context) -> Result<(), String> {
     ];
     let mut problems = Vec::new();
     for (file, controls) in kinds {
+        if file.ends_with(".html")
+            && let Some(reason) = crate::viewers_stage::html_viewer_missing()
+        {
+            context.note(format!("{file} in small windows not checked: {reason}"));
+            continue;
+        }
         panel::select_row(app, PaneId::Left, file)?;
         let viewing = support::view(app, false, OPEN_LIMIT)?;
         for (width, height) in [(480, 320), (320, 200)] {
@@ -497,8 +504,11 @@ fn compact(app: &mut App, context: &mut Context) -> Result<(), String> {
                 context.note(format!("{file} at {width} x {height}: {finding}"));
             }
             for (role, label) in controls {
+                // Placed, not drawn: a WrappingCheckBox ("Source line numbers") draws
+                // its box and caption beside an accessible check box under an
+                // opacity-0 layer, which `visible_rect` would drop.
                 let shown = crate::inspect::find(viewing.slint(), *role, label)
-                    .and_then(|item| crate::inspect::visible_rect(&item))
+                    .and_then(|item| crate::inspect::placed_rect(&item))
                     .is_some_and(|(x, y, w, h)| {
                         x >= -0.5
                             && y >= -0.5

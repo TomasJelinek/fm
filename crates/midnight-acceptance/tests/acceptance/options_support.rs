@@ -813,15 +813,6 @@ pub fn review_shot(app: &mut App, context: &mut Context, name: &str, caption: &s
     }
 }
 
-/// The first of `candidates` that exists (system programs differ between images).
-pub fn program(candidates: &[&str]) -> Result<std::path::PathBuf, String> {
-    candidates
-        .iter()
-        .map(std::path::PathBuf::from)
-        .find(|path| path.is_file())
-        .ok_or_else(|| format!("none of {candidates:?} exists on this machine"))
-}
-
 /// Wait (bounded) until `path` exists, pumping the application meanwhile.
 pub fn wait_file(app: &mut App, path: &Path, what: &str) -> Result<(), String> {
     let wanted = path.to_path_buf();

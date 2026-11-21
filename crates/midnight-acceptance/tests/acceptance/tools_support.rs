@@ -38,6 +38,34 @@ pub fn shown_notice(app: &App) -> Option<(String, String)> {
     })
 }
 
+/// A folder notice's Copy details starts with what the notice shows: its title, its
+/// reason and, when it names one, the folder (`Title\n\nReason\n\nFolder\n<path>`),
+/// before any diagnostic report. Compares the in-process clipboard with the notice.
+pub fn notice_copy_starts_as_shown(app: &App) -> Result<(), String> {
+    let notice = app.window.global::<NoticePresentation>();
+    let mut start = format!("{}\n\n{}", notice.get_title(), notice.get_body());
+    let folder = notice.get_folder_path().to_string();
+    if !folder.is_empty() {
+        start.push_str(&format!("\n\nFolder\n{folder}"));
+    }
+    let text = app
+        .clipboard
+        .as_ref()
+        .and_then(|clipboard| clipboard.text())
+        .unwrap_or_default();
+    if text.starts_with(&start) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Copy details copied {:?}, which does not start with the notice's title, reason \
+             and folder {start:?}",
+            text.chars()
+                .take(start.chars().count() + 80)
+                .collect::<String>()
+        ))
+    }
+}
+
 /// Click the shown (not transparent, not clipped away) button with this label that
 /// comes last in tree order: the topmost one a user can see.
 pub fn click_shown(window: &slint::Window, label: &str) -> Result<(), String> {
@@ -431,11 +459,34 @@ pub fn count_before(text: &str, unit: &str) -> Option<u64> {
 }
 
 pub fn set_modified(path: &Path, time: SystemTime) -> Result<(), String> {
-    fs::File::options()
-        .write(true)
-        .open(path)
+    times_handle(path)
         .and_then(|file| file.set_modified(time))
         .map_err(|error| format!("set the time of {}: {error}", path.display()))
+}
+
+/// A handle that may change the times of the file or folder `path`. Unix: the file
+/// opened for writing, a folder for reading (its owner may set its times). Windows: one
+/// with only the right to write attributes, which a read-only file grants too and a
+/// folder gives with backup semantics.
+pub fn times_handle(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        if fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+            fs::File::open(path)
+        } else {
+            fs::File::options().write(true).open(path)
+        }
+    }
 }
 
 /// Write `data` to `path` (creating parents) and give it the modification time `time`.
@@ -448,10 +499,33 @@ pub fn write_at(path: &Path, data: &[u8], time: SystemTime) -> Result<(), String
 }
 
 /// A sparse file: `length` bytes that read as zeros and use (almost) no disk space.
+/// NTFS allocates the whole length of an ordinary file it extends, so on Windows a file
+/// of 1 MiB or more is marked sparse first (`fsutil sparse setflag`, which needs no
+/// privilege); smaller ones take their length.
 pub fn sparse(path: &Path, length: u64) -> Result<(), String> {
-    fs::File::create(path)
-        .and_then(|file| file.set_len(length))
-        .map_err(|error| format!("{}: {error}", path.display()))
+    let error = |error: std::io::Error| format!("{}: {error}", path.display());
+    let file = fs::File::create(path).map_err(error)?;
+    #[cfg(windows)]
+    let file = if length >= 1 << 20 {
+        drop(file);
+        let output = std::process::Command::new("fsutil")
+            .args(["sparse", "setflag"])
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|failure| format!("fsutil sparse setflag {}: {failure}", path.display()))?;
+        if !output.status.success() {
+            return Err(format!(
+                "fsutil sparse setflag {}: {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stdout).trim()
+            ));
+        }
+        fs::File::options().write(true).open(path).map_err(error)?
+    } else {
+        file
+    };
+    file.set_len(length).map_err(error)
 }
 
 #[cfg(unix)]
@@ -459,6 +533,39 @@ pub fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
         .map_err(|error| format!("chmod {mode:o} {}: {error}", path.display()))
+}
+
+/// The Windows equivalent of the owner bits of `mode` that the scenarios use: no owner
+/// access (`000`) denies reading (`fixtures::deny_read`), a folder without owner write
+/// (`5xx`) denies creating entries in it (`fixtures::deny_write`), a file without
+/// owner write (`4xx`, `5xx`) gets the read-only attribute, and owner write (`6xx`,
+/// `7xx`) gives everything back. Other combinations (a listable folder whose entries
+/// cannot be reached, `4xx` on a folder) have no Windows equivalent and are refused.
+#[cfg(windows)]
+pub fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let folder = metadata.is_dir();
+    let readonly = |value: bool| {
+        let mut permissions = metadata.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(value);
+        fs::set_permissions(path, permissions)
+            .map_err(|error| format!("read-only attribute {value} {}: {error}", path.display()))
+    };
+    match (mode & 0o700, folder) {
+        (owner, _) if owner & 0o200 != 0 => {
+            crate::fixtures::allow_read(path)?;
+            readonly(false)
+        }
+        (0, _) => crate::fixtures::deny_read(path),
+        (0o500, true) => crate::fixtures::deny_write(path),
+        (0o400 | 0o500, false) => readonly(true),
+        _ => Err(format!(
+            "mode {mode:o} on {} has no Windows equivalent in this suite",
+            path.display()
+        )),
+    }
 }
 
 /// SHA-1 (FIPS 180-4), for checking the application's results independently.

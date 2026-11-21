@@ -196,7 +196,7 @@ combinations. Helpers of these scenarios are in
 | --- | --- | --- | --- |
 | W-01 | While the folder churns: rows keep identity, cursor and marks stay, no loading state | `files_busy_folder` | PASS |
 | W-02 | A rename and a copy finished meanwhile are listed within 1.5 s | `files_busy_folder` | PASS |
-| W-03 | F7 and Shift+F4 while busy: done, listed at once, nothing left open; Ctrl+F2 while busy | `panels_busy_ops` | F7/Shift+F4 PASS; Ctrl+F2 FAIL (test error, not a product bug: with two files marked, Ctrl+F2 rightly acts on the marked files, 2 done; the check expects the focused file — fix the check to expect the marked files) |
+| W-03 | F7 and Shift+F4 while busy: done, listed at once, nothing left open; Ctrl+F2 while busy | `panels_busy_ops` | F7/Shift+F4 PASS; Ctrl+F2 FAIL (test error, not a product bug: with two files marked, Ctrl+F2 rightly acts on the marked files, 2 done; the check expected the focused file). The check expects the marked files since 21 November; not re-run on Linux (Windows: [windows.md](windows.md)) |
 | W-04 | Once quiet the listing equals the disk | `files_busy_folder`; `panels_busy_ops` | PASS |
 
 ## Create, rename, attributes and times

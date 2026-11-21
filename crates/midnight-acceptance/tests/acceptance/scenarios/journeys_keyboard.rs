@@ -13,7 +13,7 @@
 //! 7. Alt+F7: type a mask, Enter searches, Tab reaches the results, Enter goes to the
 //!    file, Escape closes Find.
 //! 8. Ctrl+F12 filters to `*.txt` and back to `*` with Enter in the expression field.
-//! 9. Ctrl+U swaps the panels and back.
+//! 9. Ctrl+U swaps the panels and back: they change places, each keeping its folder.
 use super::journeys_support::{self as journey, Journey, wait};
 use crate::{
     Context,
@@ -112,6 +112,36 @@ fn location(app: &mut App, pane: PaneId, folder: &Path) -> Result<(), String> {
         STEP,
         move |app| app.location(pane).as_ref() == Some(&wanted) && !app.loading(pane),
     )
+}
+
+/// Wait until the panels are drawn `swapped` (Ctrl+U moves the panels, not their
+/// folders: `panels-swapped`, the left pane drawn right of the right one) while the left
+/// pane still shows `left` and the right one `right`.
+fn panels_swapped(app: &mut App, swapped: bool, left: &Path, right: &Path) -> Result<(), String> {
+    let (left, right) = (left.to_path_buf(), right.to_path_buf());
+    wait(
+        app,
+        if swapped {
+            "the panels to change places"
+        } else {
+            "the panels to change places back"
+        },
+        STEP,
+        move |app| {
+            app.window.get_panels_swapped() == swapped
+                && (app.window.get_left_pane_left() > app.window.get_right_pane_left()) == swapped
+                && app.location(LEFT).as_ref() == Some(&left)
+                && app.location(RIGHT).as_ref() == Some(&right)
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "{error}; panels-swapped {}, the left pane at x {}, the right pane at x {}",
+            app.window.get_panels_swapped(),
+            app.window.get_left_pane_left(),
+            app.window.get_right_pane_left()
+        )
+    })
 }
 
 /// Ctrl+F12, the expression replaced by typing, Enter.
@@ -385,16 +415,17 @@ fn steps(
     );
     journey.step("Ctrl+F12 *.txt then * with Enter in the expression");
 
-    // 9. Ctrl+U and back.
+    // 9. Ctrl+U and back: the panels change places, each with its folder (as
+    //    files_navigation checks).
     key(app, &[Key::Control], "u");
     journey.check(
         "Ctrl+U swaps the panels",
-        location(app, LEFT, other).and_then(|()| location(app, RIGHT, home)),
+        panels_swapped(app, true, home, other),
     );
     key(app, &[Key::Control], "u");
     journey.check(
         "Ctrl+U swaps them back",
-        location(app, LEFT, home).and_then(|()| location(app, RIGHT, other)),
+        panels_swapped(app, false, home, other),
     );
     journey.check(
         "no pointer event was sent",

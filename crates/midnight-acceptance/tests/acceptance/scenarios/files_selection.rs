@@ -62,7 +62,7 @@ fn keypad_key(app: &mut App, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn mask_dialog_open(app: &App) -> bool {
+pub(crate) fn mask_dialog_open(app: &App) -> bool {
     !app.window
         .global::<PanelChoices>()
         .get_mask_token()
@@ -78,7 +78,7 @@ fn checked(app: &App, label: &str) -> Option<bool> {
 /// In the open Select/Deselect files dialog: type the mask and press Enter in the
 /// field, or click Include folders and then OK (Enter on a focused check box
 /// toggles it, as on every check box).
-fn apply_mask(app: &mut App, mask: &str, folders: bool) -> Result<(), String> {
+pub(crate) fn apply_mask(app: &mut App, mask: &str, folders: bool) -> Result<(), String> {
     app.until("the Select/Deselect files dialog", mask_dialog_open);
     input::fill(app.slint(), "Selection mask", mask)?;
     if checked(app, "Include folders") == Some(folders) {

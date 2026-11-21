@@ -229,10 +229,7 @@ fn summary(app: &App) -> Option<String> {
 
 /// "N libraries and components" or "K of N libraries and components".
 fn counts(text: &str) -> Option<(u64, u64)> {
-    let numbers: Vec<u64> = text
-        .split_whitespace()
-        .filter_map(|word| tools::number(word))
-        .collect();
+    let numbers: Vec<u64> = text.split_whitespace().filter_map(tools::number).collect();
     match numbers.as_slice() {
         [all] => Some((*all, *all)),
         [shown, all] if text.contains(" of ") => Some((*shown, *all)),
@@ -379,14 +376,14 @@ pub fn about(context: &mut Context) -> Result<(), String> {
 }
 
 fn checks(
-    mut app: &mut App,
+    app: &mut App,
     context: &mut Context,
     version: &str,
     failures: &mut Vec<String>,
 ) -> Result<(), String> {
     // The About tab: the version in the title strip and below, with room between lines.
-    open_about(&mut app)?;
-    let shown = texts(&app);
+    open_about(app)?;
+    let shown = texts(app);
     let pill = format!("Version {version}");
     for wanted in [
         "Midnight Explorer",
@@ -423,9 +420,9 @@ fn checks(
     app.screenshot(context, "about-tab", "About, the About tab");
 
     // Left and Right move between the tabs.
-    show_tab(&mut app, "About")?;
+    show_tab(app, "About")?;
     input::key(app.slint(), Key::RightArrow);
-    if wait(&mut app, "Right to show the Licenses tab", |app| {
+    if wait(app, "Right to show the Licenses tab", |app| {
         inspect::find(app.slint(), AccessibleRole::TextInput, "Filter libraries").is_some()
     })
     .is_err()
@@ -433,7 +430,7 @@ fn checks(
         failures.push("Right on the About tab does not show the Licenses tab".into());
     }
     input::key(app.slint(), Key::LeftArrow);
-    if wait(&mut app, "Left to show the About tab", |app| {
+    if wait(app, "Left to show the About tab", |app| {
         inspect::find(app.slint(), AccessibleRole::TextInput, "Filter libraries").is_none()
             && inspect::visible_texts(app.slint())
                 .iter()
@@ -445,15 +442,13 @@ fn checks(
     }
 
     // The Licenses tab: the count, every row a library with its license.
-    show_tab(&mut app, "Licenses")?;
-    let all = summary(&app)
-        .and_then(|text| counts(&text))
-        .ok_or_else(|| {
-            format!(
-                "the Licenses tab shows no count: {:?}",
-                inspect::visible_texts(app.slint())
-            )
-        })?;
+    show_tab(app, "Licenses")?;
+    let all = summary(app).and_then(|text| counts(&text)).ok_or_else(|| {
+        format!(
+            "the Licenses tab shows no count: {:?}",
+            inspect::visible_texts(app.slint())
+        )
+    })?;
     if all.0 != all.1 || all.1 < 50 {
         failures.push(format!("the unfiltered list counts {all:?} libraries"));
     }
@@ -464,7 +459,7 @@ fn checks(
             all.1
         ));
     }
-    let rows = libraries(&app);
+    let rows = libraries(app);
     if rows.len() < 5 {
         return Err(format!(
             "the Licenses tab shows {} library rows",
@@ -501,7 +496,7 @@ fn checks(
         failures.push("an open mark shows before any row is hovered or selected".into());
     }
     let plain = {
-        let frame = crate::options_support::Frame::of(&mut app);
+        let frame = crate::options_support::Frame::of(app);
         frame.digest(second.rect)
     };
     input::move_to(
@@ -512,7 +507,7 @@ fn checks(
         ),
     );
     app.settle();
-    let hovered = libraries(&app);
+    let hovered = libraries(app);
     let marked: Vec<&String> = hovered
         .iter()
         .filter(|row| mark_shown(&row.item))
@@ -524,7 +519,7 @@ fn checks(
             second.label
         ));
     }
-    let lit = crate::options_support::Frame::of(&mut app).digest(second.rect);
+    let lit = crate::options_support::Frame::of(app).digest(second.rect);
     if lit == plain {
         failures.push(format!(
             "hovering {:?} does not change its row",
@@ -536,18 +531,18 @@ fn checks(
         "licenses-hover",
         "Licenses: a hovered row with its open mark",
     );
-    click_rect(&mut app, first.rect);
-    if selected(&app).as_deref() != Some(first.label.as_str()) {
+    click_rect(app, first.rect);
+    if selected(app).as_deref() != Some(first.label.as_str()) {
         failures.push(format!(
             "clicking {:?} selects {:?}",
             first.label,
-            selected(&app)
+            selected(app)
         ));
     }
     // Away from the list, the selected row keeps its mark; others show none.
     input::move_to(app.slint(), LogicalPosition::new(4.0, 4.0));
     app.settle();
-    let marked: Vec<String> = libraries(&app)
+    let marked: Vec<String> = libraries(app)
         .into_iter()
         .filter(|row| mark_shown(&row.item))
         .map(|row| row.label)
@@ -571,10 +566,10 @@ fn checks(
 
     // View license, then Back: the list returns with the row still selected.
     input::click_button(app.slint(), "View license")?;
-    if let Err(error) = check_detail(&mut app, &first.label, &first.license, "View license") {
+    if let Err(error) = check_detail(app, &first.label, &first.license, "View license") {
         failures.push(error);
     }
-    let shown = texts(&app);
+    let shown = texts(app);
     if let Err(error) = spacing(&shown, &[first.label.as_str(), "License", "Used by"], 3.0) {
         failures.push(format!("the library detail is cramped: {error}"));
     }
@@ -584,18 +579,18 @@ fn checks(
         "Licenses: a library's license and authors",
     );
     input::click_button(app.slint(), "Back")?;
-    wait(&mut app, "Back to the list", |app| !detail_open(app))?;
-    if selected(&app).as_deref() != Some(first.label.as_str()) {
+    wait(app, "Back to the list", |app| !detail_open(app))?;
+    if selected(app).as_deref() != Some(first.label.as_str()) {
         failures.push(format!(
             "after Back the selected library is {:?}, not {:?}",
-            selected(&app),
+            selected(app),
             first.label
         ));
     }
 
     // The keyboard: Down, Page Down, End, Home and Up move the selection.
-    let start = libraries(&app);
-    click_rect(&mut app, start[0].rect);
+    let start = libraries(app);
+    click_rect(app, start[0].rect);
     let order = |app: &App| -> Vec<String> {
         let model = app.window.global::<AboutView>().get_rows();
         model
@@ -609,7 +604,7 @@ fn checks(
             })
             .collect()
     };
-    let names = order(&app);
+    let names = order(app);
     // The selection is AboutView's row; whether a user sees it is checked separately.
     let position = |app: &App| {
         usize::try_from(app.window.global::<AboutView>().get_current())
@@ -623,15 +618,15 @@ fn checks(
         (Key::UpArrow, "Up"),
         (Key::Home, "Home"),
     ] {
-        let before = position(&app);
+        let before = position(app);
         input::key(app.slint(), key);
         // The list creates the rows of its new viewport while it is drawn.
         for _ in 0..3 {
             app.idle(Duration::from_millis(40));
         }
-        let after = position(&app);
+        let after = position(app);
         if let Some(index) = after
-            && let Some(error) = in_view(&app, &names[index])
+            && let Some(error) = in_view(app, &names[index])
         {
             failures.push(format!(
                 "finding: after {check} in the library list {error}"
@@ -655,13 +650,13 @@ fn checks(
     // Enter opens the selected library; Escape returns to the list, not out of About.
     input::key(app.slint(), Key::DownArrow);
     app.idle(Duration::from_millis(80));
-    if let Some(row) = libraries(&app).into_iter().find(|row| row.selected) {
+    if let Some(row) = libraries(app).into_iter().find(|row| row.selected) {
         input::key(app.slint(), Key::Return);
-        if let Err(error) = check_detail(&mut app, &row.label, &row.license, "Enter") {
+        if let Err(error) = check_detail(app, &row.label, &row.license, "Enter") {
             failures.push(error);
         }
         input::key(app.slint(), Key::Escape);
-        if wait(&mut app, "Escape to return to the list", |app| {
+        if wait(app, "Escape to return to the list", |app| {
             !detail_open(app) && about_open(app)
         })
         .is_err()
@@ -673,12 +668,12 @@ fn checks(
     }
 
     // A double-click opens a row; so does a click on its open mark.
-    let rows = libraries(&app);
+    let rows = libraries(app);
     let third = rows
         .get(2)
         .cloned()
         .ok_or("fewer than three library rows")?;
-    pause_for_click(&mut app);
+    pause_for_click(app);
     input::double_click_at(
         app.slint(),
         LogicalPosition::new(
@@ -686,17 +681,17 @@ fn checks(
             third.rect.1 + third.rect.3 / 2.0,
         ),
     );
-    if let Err(error) = check_detail(&mut app, &third.label, &third.license, "a double-click") {
+    if let Err(error) = check_detail(app, &third.label, &third.license, "a double-click") {
         failures.push(error);
     }
     input::click_button(app.slint(), "Back")?;
-    wait(&mut app, "Back to the list", |app| !detail_open(app))?;
-    let fourth = libraries(&app)
+    wait(app, "Back to the list", |app| !detail_open(app))?;
+    let fourth = libraries(app)
         .get(3)
         .cloned()
         .ok_or("fewer than four library rows")?;
     // Hover shows the row's "›" mark; a click on the mark opens the library.
-    pause_for_click(&mut app);
+    pause_for_click(app);
     input::move_to(
         app.slint(),
         LogicalPosition::new(
@@ -707,16 +702,16 @@ fn checks(
     app.settle();
     match mark_rect(&fourth.item) {
         Some(mark) => {
-            click_point(&mut app, mark.0 + mark.2 / 2.0, mark.1 + mark.3 / 2.0);
+            click_point(app, mark.0 + mark.2 / 2.0, mark.1 + mark.3 / 2.0);
             app.idle(Duration::from_millis(300));
-            if !detail_open(&app) {
+            if !detail_open(app) {
                 // Where the click went: the list's overlay scrollbar covers the last
                 // 14 px of every row. Does the mark's left edge still open it?
                 let row_end = fourth.rect.0 + fourth.rect.2;
-                pause_for_click(&mut app);
-                click_point(&mut app, mark.0 + 1.0, mark.1 + mark.3 / 2.0);
+                pause_for_click(app);
+                click_point(app, mark.0 + 1.0, mark.1 + mark.3 / 2.0);
                 app.idle(Duration::from_millis(300));
-                let edge = detail_open(&app);
+                let edge = detail_open(app);
                 failures.push(format!(
                     "finding: a click in the middle of {:?}'s \"›\" mark does not open it; the mark spans x {:.0}–{:.0} of a row ending at {row_end:.0}, under the list's 14 px overlay scrollbar{}",
                     fourth.label,
@@ -729,7 +724,7 @@ fn checks(
                     }
                 ));
             } else if let Err(error) = check_detail(
-                &mut app,
+                app,
                 &fourth.label,
                 &fourth.license,
                 "a click on the open mark",
@@ -742,17 +737,15 @@ fn checks(
             fourth.label
         )),
     }
-    if detail_open(&app) {
+    if detail_open(app) {
         input::key(app.slint(), Key::Escape);
-        wait(&mut app, "Escape to return to the list", |app| {
-            !detail_open(app)
-        })?;
+        wait(app, "Escape to return to the list", |app| !detail_open(app))?;
     }
 
     // The filter: K of N, every row matching, no match, Down into the list, Enter.
-    filter(&mut app, "slint")?;
-    let narrowed = summary(&app).and_then(|text| counts(&text));
-    let rows = libraries(&app);
+    filter(app, "slint")?;
+    let narrowed = summary(app).and_then(|text| counts(&text));
+    let rows = libraries(app);
     match narrowed {
         Some((count, total)) if count > 0 && count < total && total == all.1 => {}
         other => failures.push(format!("filtering by \"slint\" counts {other:?}")),
@@ -765,45 +758,45 @@ fn checks(
             row.label, row.license
         ));
     }
-    if selected(&app).is_some() {
+    if selected(app).is_some() {
         failures.push("a changed filter keeps a selection".into());
     }
     input::key(app.slint(), Key::DownArrow);
     app.idle(Duration::from_millis(80));
-    let first_match = libraries(&app).first().cloned();
-    if selected(&app) != first_match.as_ref().map(|row| row.label.clone()) {
+    let first_match = libraries(app).first().cloned();
+    if selected(app) != first_match.as_ref().map(|row| row.label.clone()) {
         failures.push(format!(
             "Down in the filter selects {:?}, not the first match",
-            selected(&app)
+            selected(app)
         ));
     }
     input::key(app.slint(), Key::DownArrow);
     app.idle(Duration::from_millis(80));
-    if selected(&app) != libraries(&app).get(1).map(|row| row.label.clone()) {
+    if selected(app) != libraries(app).get(1).map(|row| row.label.clone()) {
         failures.push("after Down into the list, Down does not move to the second match".into());
     }
-    filter(&mut app, "zz-no-such-library")?;
-    if summary(&app).and_then(|text| counts(&text)) != Some((0, all.1)) {
+    filter(app, "zz-no-such-library")?;
+    if summary(app).and_then(|text| counts(&text)) != Some((0, all.1)) {
         failures.push(format!(
             "a filter matching nothing shows {:?}",
-            summary(&app)
+            summary(app)
         ));
     }
-    if !libraries(&app).is_empty()
+    if !libraries(app).is_empty()
         || inspect::find(app.slint(), AccessibleRole::Button, "View license")
             .is_some_and(|button| tools::enabled(&button))
     {
         failures.push("a filter matching nothing still lists rows or enables View license".into());
     }
     // Enter in the filter opens the first match when none is selected.
-    filter(&mut app, "slint")?;
-    let first_match = libraries(&app)
+    filter(app, "slint")?;
+    let first_match = libraries(app)
         .first()
         .cloned()
         .ok_or("no match for slint")?;
     input::key(app.slint(), Key::Return);
     if let Err(error) = check_detail(
-        &mut app,
+        app,
         &first_match.label,
         &first_match.license,
         "Enter in the filter",
@@ -811,7 +804,7 @@ fn checks(
         failures.push(error);
     }
     input::click_button(app.slint(), "Back")?;
-    wait(&mut app, "Back to the list", |app| !detail_open(app))?;
+    wait(app, "Back to the list", |app| !detail_open(app))?;
     if inspect::find(app.slint(), AccessibleRole::TextInput, "Filter libraries")
         .map(|field| property(&field, AccessibleStringProperty::Value))
         .as_deref()
@@ -821,32 +814,32 @@ fn checks(
     }
 
     // Escape in the list closes About; reopening keeps the filter and the selection.
-    let before_close = selected(&app);
+    let before_close = selected(app);
     input::key(app.slint(), Key::Escape);
-    if wait(&mut app, "Escape to close About", |app| !about_open(app)).is_err() {
+    if wait(app, "Escape to close About", |app| !about_open(app)).is_err() {
         failures.push("Escape in the library list does not close About".into());
         input::click_button(app.slint(), "Close")?;
     }
-    open_about(&mut app)?;
-    show_tab(&mut app, "Licenses")?;
+    open_about(app)?;
+    show_tab(app, "Licenses")?;
     let field = inspect::find(app.slint(), AccessibleRole::TextInput, "Filter libraries")
         .map(|field| property(&field, AccessibleStringProperty::Value));
-    if field.as_deref() != Some("slint") || selected(&app) != before_close {
+    if field.as_deref() != Some("slint") || selected(app) != before_close {
         failures.push(format!(
             "reopened About shows the filter {field:?} and selection {:?}, not \"slint\" and {before_close:?}",
-            selected(&app)
+            selected(app)
         ));
     }
-    filter(&mut app, "")?;
-    if summary(&app).and_then(|text| counts(&text)) != Some(all) {
-        failures.push(format!("clearing the filter shows {:?}", summary(&app)));
+    filter(app, "")?;
+    if summary(app).and_then(|text| counts(&text)) != Some(all) {
+        failures.push(format!("clearing the filter shows {:?}", summary(app)));
     }
 
     // Dragging the sky moves the dialog; a click outside it closes About.
     let close = inspect::find(app.slint(), AccessibleRole::Button, "Close")
         .map(|button| inspect::rect(&button))
         .ok_or("About has no Close button")?;
-    let sky = texts(&app)
+    let sky = texts(app)
         .into_iter()
         .find(|(text, _)| text == "Midnight Explorer")
         .map(|(_, rect)| rect)
@@ -869,10 +862,10 @@ fn checks(
             moved.1 - close.1
         ));
     }
-    pause_for_click(&mut app);
+    pause_for_click(app);
     let bottom = app.height as f32 - 6.0;
-    click_point(&mut app, 6.0, bottom);
-    if wait(&mut app, "a click outside to close About", |app| {
+    click_point(app, 6.0, bottom);
+    if wait(app, "a click outside to close About", |app| {
         !about_open(app)
     })
     .is_err()
@@ -882,10 +875,10 @@ fn checks(
     }
 
     // Close closes it too, and the panels take input again.
-    open_about(&mut app)?;
+    open_about(app)?;
     input::click_button(app.slint(), "Close")?;
-    wait(&mut app, "Close to close About", |app| !about_open(app))?;
-    panel::focus_list(&mut app, PaneId::Left)?;
+    wait(app, "Close to close About", |app| !about_open(app))?;
+    panel::focus_list(app, PaneId::Left)?;
     context.note(format!(
         "About: version {version}; {} libraries and components; every check ran",
         all.1

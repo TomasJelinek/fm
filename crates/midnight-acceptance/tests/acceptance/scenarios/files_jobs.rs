@@ -19,7 +19,6 @@ use std::{fs, path::Path, time::Duration};
 const LEFT: PaneId = PaneId::Left;
 const SIZE: (u32, u32) = (760, 560);
 /// Announced job-window behavior that may not be implemented yet.
-const SLOW_FILE_BAR: &str = "a per-file bar for slow files without Details";
 const WAIT_OFF: &str = "a job whose Wait for other operations is off starts at once";
 /// The size of the file paused in the middle of its copy.
 const LARGE: u64 = 1 << 30;
@@ -97,6 +96,60 @@ fn pause(app: &mut App, window: &Tool, start: usize, what: &str) -> Result<(), S
     Ok(())
 }
 
+/// What [`slow_file_bar`] saw.
+enum SlowBar {
+    /// The bar appeared; its accessible value ("45%").
+    Shown(String),
+    /// The job ended after this many milliseconds of running time on the file, under
+    /// the 2 s after which the bar appears.
+    NotObservable(u64),
+}
+
+/// How long a file must be copying (running time, pauses excluded) before its window
+/// shows the file's own bar: `SLOW_FILE_MILLIS` of the presenter.
+const SLOW_FILE: u64 = 2_000;
+
+/// Wait, while the job `start` runs, for its window's "Current file progress" bar
+/// beside the file's name. It is a failure when the file has been copying for well
+/// over 2 s of running time (as the job reports it) without one.
+fn slow_file_bar(app: &mut App, window: &Tool, start: usize) -> Result<SlowBar, String> {
+    // Presentation lags the backend's report by a few frames; a second is plenty.
+    const MARGIN: u64 = 1_000;
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let mut longest = 0;
+    loop {
+        if let Some(bar) = inspect::find(
+            window.window(),
+            AccessibleRole::ProgressIndicator,
+            "Current file progress",
+        ) {
+            return Ok(SlowBar::Shown(tools::value(&bar)));
+        }
+        match support::job(app, start) {
+            Some(job) if job.state.is_terminal() => {
+                return if longest >= SLOW_FILE + MARGIN {
+                    Err(format!(
+                        "the large file copied for {longest} ms of running time and its window \
+                         never showed the \"Current file progress\" bar"
+                    ))
+                } else {
+                    Ok(SlowBar::NotObservable(longest))
+                };
+            }
+            Some(job) => longest = longest.max(job.current_file_active_millis),
+            None => {}
+        }
+        if longest >= SLOW_FILE + MARGIN || std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "after {longest} ms of running time on the large file its window shows no \
+                 \"Current file progress\" bar without Details: {:?}",
+                texts(window)
+            ));
+        }
+        app.idle(Duration::from_millis(20));
+    }
+}
+
 /// Every file below `target` is a whole copy of the same file below `source`.
 fn whole_copies(source: &Path, target: &Path) -> Result<usize, String> {
     let wanted = tree_facts(source)?;
@@ -140,9 +193,7 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     // A file large enough to pause in the middle of its copy: 1 GiB, sparse, so only
     // its copy takes disk space (removed once checked).
     let large_file = source.join("large.bin");
-    fs::File::create(&large_file)
-        .and_then(|file| file.set_len(LARGE))
-        .map_err(|error| support::io_error(&large_file, error))?;
+    tools::sparse(&large_file, LARGE)?;
     // A folder whose copy ends with an error: one of its files cannot be read.
     let faulty = source.join("faulty");
     fs::create_dir(&faulty).map_err(|error| support::io_error(&faulty, error))?;
@@ -150,13 +201,7 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
         let path = faulty.join(name);
         fs::write(&path, name).map_err(|error| support::io_error(&path, error))?;
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let path = faulty.join("unreadable.txt");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o000))
-            .map_err(|error| support::io_error(&path, error))?;
-    }
+    crate::fixtures::deny_read(&faulty.join("unreadable.txt"))?;
     let faulty_target = support::scratch(context, "t-faulty")?;
     let mut app = App::start(Config::new(&source, &targets[0]));
     let mut failures = Vec::new();
@@ -439,9 +484,6 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     let window4 = new_window(&mut app, "Copy", before)?;
     // Paused in the middle of the file, the window holds still for reading.
     pause(&mut app, &window4, large, "the large file's copy")?;
-    let without_details = texts(&window4)
-        .into_iter()
-        .find(|text| text.starts_with("Current file written"));
     tools::click_last(window4.window(), "Details")?;
     let per_file = wait_text(&mut app, &window4, Duration::from_secs(10), |text| {
         text.starts_with("Current file written")
@@ -476,13 +518,6 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
             "Details shows no progress of the current file: {shown:?}"
         ));
     }
-    pending.check(
-        "the progress of a slow file shows without Details",
-        SLOW_FILE_BAR,
-        without_details.map(|_| ()).ok_or_else(|| {
-            "no \"Current file written\" progress before Details was pressed".to_owned()
-        }),
-    );
     context.note(format!(
         "large file progress: {:?}",
         shown
@@ -498,8 +533,25 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
             .any(|prefix| text.starts_with(prefix)))
             .collect::<Vec<_>>()
     ));
+    // Without Details, a file that takes a while shows its own bar beside its name: the
+    // "Current file progress" indicator appears once the file has been copying for 2 s
+    // of running time (pauses do not count), so it is looked for after Resume.
+    tools::click_last(window4.window(), "Fewer details")?;
+    app.settle();
     if tools::has(window4.window(), AccessibleRole::Button, "Resume") {
         tools::click_last(window4.window(), "Resume")?;
+    }
+    match slow_file_bar(&mut app, &window4, large) {
+        Ok(SlowBar::Shown(value)) => {
+            context.note(format!(
+                "the slow file's own bar showed {value:?} beside its name without Details"
+            ));
+        }
+        Ok(SlowBar::NotObservable(millis)) => context.note(format!(
+            "the slow-file bar was not observable: the large file was copied after {millis} ms \
+             of running time, under the 2 s after which the bar appears"
+        )),
+        Err(failure) => failures.push(failure),
     }
     let done = support::wait_job(&mut app, large);
     let copied = targets[3].join("large.bin");
@@ -687,7 +739,7 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
         "jobs-finished",
         "Jobs: finished jobs before clearing",
     );
-    if !all.iter().any(|row| with_error(row)) {
+    if !all.iter().any(&with_error) {
         failures.push(format!(
             "the Jobs window shows no job with an error: {all:?}"
         ));
@@ -699,7 +751,7 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
             app.idle(Duration::from_millis(200));
             let left = rows(&jobs);
             if left.iter().any(|row| state(row) == "Completed")
-                || !left.iter().any(|row| with_error(row))
+                || !left.iter().any(with_error)
                 || left.len() >= all.len()
             {
                 failures.push(format!(

@@ -380,7 +380,8 @@ fn confirm_each(
     } else if !folder.join("b renamed.txt").is_file() || folder.join("b.txt").exists() {
         failures.push("F2 after the cancelled rounds did not rename b.txt on disk".into());
     }
-    // Ctrl+F2: octal 600 on c.log.
+    // Ctrl+F2: octal 600 on c.log; on Windows, whose Attributes dialog has attributes
+    // instead of permissions, the Read-only attribute set.
     panel::select_row(app, LEFT, "c.log")?;
     input::chord(app.slint(), &[Key::Control], Key::F2);
     app.until("the Attributes dialog to load", |app| {
@@ -388,7 +389,11 @@ fn confirm_each(
             && !app.window.get_metadata_busy()
             && (!cfg!(unix) || app.window.get_metadata_unix_known_mask() != 0)
     });
-    input::fill(app.slint(), "Octal permissions", "600")?;
+    if cfg!(unix) {
+        input::fill(app.slint(), "Octal permissions", "600")?;
+    } else {
+        ps::set_attribute(app, "Read-only", "Set")?;
+    }
     app.settle();
     input::click_button(app.slint(), "Review changes")?;
     app.until("the reviewed draft", |app| {
@@ -406,6 +411,11 @@ fn confirm_each(
         failures.push(format!(
             "Ctrl+F2 after the cancelled rounds left c.log at mode {mode:o}, not 600"
         ));
+    }
+    if cfg!(windows) && !ps::read_only_attribute(&folder.join("c.log")) {
+        failures.push(
+            "Ctrl+F2 after the cancelled rounds left c.log without the Read-only attribute".into(),
+        );
     }
     // Ctrl+F12 Masks *.log, then Show all.
     panel::focus_list(app, LEFT)?;

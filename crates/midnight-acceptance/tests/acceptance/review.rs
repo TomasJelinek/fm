@@ -469,12 +469,7 @@ fn locked_folder(left: &Path) -> Result<String, String> {
     let name = "a-folder-whose-long-name-makes-the-error-path-long-enough-to-wrap-in-a-notice";
     let path = left.join(name);
     std::fs::create_dir_all(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-    }
+    super::fixtures::deny_read(&path)?;
     Ok(name.to_owned())
 }
 

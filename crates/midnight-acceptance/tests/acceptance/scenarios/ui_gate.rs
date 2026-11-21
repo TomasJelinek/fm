@@ -468,7 +468,8 @@ fn text_node(item: &ItemRc, default_size: f32) -> Option<TextNode> {
                 false,
                 None,
             )
-        } else if let Some(text) = item.downcast::<TextInput>() {
+        } else {
+            let text = item.downcast::<TextInput>()?;
             let text = text.as_pin_ref();
             let selected = text.cursor_position_byte_offset() != text.anchor_position_byte_offset()
                 && !text.text().is_empty();
@@ -489,8 +490,6 @@ fn text_node(item: &ItemRc, default_size: f32) -> Option<TextNode> {
                     )
                 }),
             )
-        } else {
-            return None;
         };
     let (color, gradient) = brush_color(&brush);
     let preferred = (
@@ -718,7 +717,12 @@ pub fn checked_roots(window: &slint::Window, tooltips: bool) -> Vec<ItemRc> {
     if dialogs {
         popups
     } else {
-        let mut roots = vec![ItemRc::new_root(inner.component())];
+        // A tool window that closed itself has no item tree any more.
+        let mut roots: Vec<ItemRc> = inner
+            .try_component()
+            .map(ItemRc::new_root)
+            .into_iter()
+            .collect();
         roots.extend(popups);
         roots
     }
@@ -1228,7 +1232,12 @@ fn names_and_tooltips(nodes: &[Node], issues: &mut Vec<Issue>) {
                 ),
             ));
         }
-        if node.role == AccessibleRole::Button && !shows_text(nodes, index) {
+        // A row of a scrolled list cut to a sliver at the viewport's edge shows none of
+        // its texts, but it is not an icon-only button: scrolled in, it shows them.
+        let mostly_hidden = node
+            .shown
+            .is_some_and(|shown| shown.2 < node.rect.2 * 0.5 || shown.3 < node.rect.3 * 0.5);
+        if node.role == AccessibleRole::Button && !mostly_hidden && !shows_text(nodes, index) {
             let (px, py) = middle(node.shown.unwrap_or(node.rect));
             if !tooltip_at(nodes, px, py) {
                 issues.push(Issue::new(
@@ -1319,7 +1328,10 @@ fn button_rows(analysis: &Analysis<'_>, issues: &mut Vec<Issue>) {
                     .is_some_and(|(_, _, w, h)| w >= 12.0 && h >= 12.0)
                 && node.shown == Some(node.rect)
                 && !subtree_texts(nodes, *index).is_empty()
-                && !node.label.starts_with("Open /")
+                && !node
+                    .label
+                    .strip_prefix("Open ")
+                    .is_some_and(|prefix| std::path::Path::new(prefix).is_absolute())
                 && !node.checkable
                 && !subtree_texts(nodes, *index)
                     .iter()
@@ -1458,9 +1470,15 @@ pub fn contrast_issues(frame: &Frame, nodes: &[Node]) -> Vec<Issue> {
             continue;
         }
         let Some(shown) = node.shown else { continue };
-        let Some(area) = overlap(ink(node, text), shown) else {
+        let inked = ink(node, text);
+        let Some(area) = overlap(inked, shown) else {
             continue;
         };
+        // Text scrolled to a sliver at a viewport's edge shows no readable glyphs, and
+        // what lies under the sliver is the viewport's frame, not the text's background.
+        if area.3 < inked.3 * 0.5 {
+            continue;
+        }
         if let Some(issue) = text_contrast(frame, node, text, area) {
             issues.push(issue);
         }
@@ -1884,7 +1902,10 @@ pub fn size_tool(window: &MinimalSoftwareWindow, logical: (f32, f32), scale: f32
 
 /// A window's minimum and preferred logical sizes, from its root layout.
 pub fn window_sizes(window: &slint::Window) -> ((f32, f32), (f32, f32)) {
-    let component = WindowInner::from_pub(window).component();
+    // A tool window that closed itself has no layout any more: one pixel each way.
+    let Some(component) = WindowInner::from_pub(window).try_component() else {
+        return ((1.0, 1.0), (1.0, 1.0));
+    };
     let component = ItemTreeRc::borrow_pin(&component);
     let horizontal = component.as_ref().layout_info(Orientation::Horizontal);
     let vertical = component.as_ref().layout_info(Orientation::Vertical);

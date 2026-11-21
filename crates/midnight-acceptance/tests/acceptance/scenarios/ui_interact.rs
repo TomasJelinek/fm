@@ -41,13 +41,18 @@ pub const EXTRA_SURFACE: &str = "unexpected window or notice";
 pub const NO_HOVER: &str = "no hover feedback";
 pub const TOOLTIP_MISSING: &str = "tooltip does not show";
 
+/// Opens a surface from the idle state and returns where it lives.
+pub type Opener<'a> = Box<dyn FnMut(&mut App) -> Result<Target, String> + 'a>;
+/// Whether a surface is still open.
+pub type Probe<'a> = Box<dyn Fn(&App, &Target) -> bool + 'a>;
+
 /// A surface the interactive checks can open again and again from the idle state.
 pub struct Surface<'a> {
     pub name: String,
     /// Open it from the idle state; returns where it lives.
-    pub open: Box<dyn FnMut(&mut App) -> Result<Target, String> + 'a>,
+    pub open: Opener<'a>,
     /// Whether it is still open.
-    pub is_open: Box<dyn Fn(&App, &Target) -> bool + 'a>,
+    pub is_open: Probe<'a>,
     /// Bring the application back to the idle state.
     pub reset: Box<dyn FnMut(&mut App) + 'a>,
     /// Buttons that are not clicked, with the reason (recorded as exemptions).
@@ -193,6 +198,9 @@ pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
     let mut forward: Vec<Option<usize>> = Vec::new();
     let mut previous = Frame::of(&software);
     let mut escaped = false;
+    // The stop that had the focus before each Tab: a Tab that leaves the focus where it
+    // was (a dialog whose only stop already has it) shows nothing to compare.
+    let mut current = stop(window).flatten();
     for _ in 0..limit {
         input::key(window, Key::Tab);
         app.idle(Duration::from_millis(160));
@@ -212,7 +220,9 @@ pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
             Some(Some(index)) => {
                 forward.push(Some(index));
                 let node = &nodes[index];
-                if let Some(shown) = node.shown {
+                let moved = current != Some(index);
+                current = Some(index);
+                if moved && let Some(shown) = node.shown {
                     let area = inflate(shown, 4.0);
                     let changed = frame.changed(&previous, area);
                     if changed.is_empty() {
@@ -473,6 +483,8 @@ struct State {
     jobs: (usize, usize, usize),
     panels: String,
     pixels: u64,
+    /// Copies to the in-process clipboard so far (Copy details, a copied path).
+    clipboard: u64,
 }
 
 fn folder_digest(folders: &[PathBuf]) -> u64 {
@@ -603,6 +615,10 @@ fn state(app: &App, folders: &[PathBuf], skip: &[(usize, inspect::Rect)]) -> Sta
             files_support::selected_names(app, PaneId::Right).len()
         ),
         pixels: hasher.finish(),
+        clipboard: app
+            .clipboard
+            .as_ref()
+            .map_or(0, |clipboard| clipboard.writes()),
     }
 }
 
@@ -627,6 +643,7 @@ fn evidence(noisy: &State, quiet: &State, after: &State) -> Vec<&'static str> {
     field!(jobs);
     field!(panels);
     field!(pixels);
+    field!(clipboard);
     if noisy.commands == quiet.commands && quiet.commands != after.commands {
         found.push("commands");
     }
@@ -726,9 +743,11 @@ fn dialog_buttons(app: &App, target: &Target) -> Vec<ButtonRef> {
         if node.active {
             continue;
         }
-        let occurrence = buttons
+        // Counted as `locate` finds it again: among every inactive control of this role
+        // and label, such as the Checksums footer's Verify after the Verify page tab.
+        let occurrence = nodes[..index]
             .iter()
-            .filter(|other| other.role == node.role && other.label == node.label)
+            .filter(|other| other.role == node.role && other.label == node.label && !other.active)
             .count();
         buttons.push(ButtonRef {
             role: node.role,
@@ -748,7 +767,7 @@ fn locate(app: &mut App, target: &Target, button: &ButtonRef) -> Option<(ItemRc,
         let nodes = gate::nodes(window, &root);
         let node = nodes
             .iter()
-            .filter(|node| node.role == button.role && node.label == button.label)
+            .filter(|node| node.role == button.role && node.label == button.label && !node.active)
             .nth(button.occurrence)
             .cloned()?;
         let full = node.rect;
@@ -808,9 +827,20 @@ fn act(
     if let Some(rect) = clicked {
         skip.push((index, inflate(rect, 6.0)));
     }
-    let noisy = state(app, &surface.folders, &skip);
+    let mut noisy = state(app, &surface.folders, &skip);
     app.idle(Duration::from_millis(250));
-    let quiet = state(app, &surface.folders, &skip);
+    let mut quiet = state(app, &surface.folders, &skip);
+    // A surface still settling (a page detecting its file, a panel re-reading a folder)
+    // changes between the two samples, and a change there never counts as the click's:
+    // wait up to 2 s more for two equal samples.
+    for _ in 0..8 {
+        if noisy == quiet {
+            break;
+        }
+        noisy = quiet;
+        app.idle(Duration::from_millis(250));
+        quiet = state(app, &surface.folders, &skip);
+    }
     match clicked {
         Some((x, y, w, h)) => input::click_at(
             target.window(app),
@@ -892,7 +922,16 @@ pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
     if surface.buttons {
         let buttons = match (surface.open)(app) {
             Ok(target) => {
-                let found = dialog_buttons(app, &target);
+                let mut found = dialog_buttons(app, &target);
+                // A button that clears a list (Jobs) leaves nothing for the buttons after
+                // it, since a surface reopens on the same list: those come last, the one
+                // that clears everything at the very end.
+                found.sort_by_key(|button| {
+                    (
+                        button.label.starts_with("Clear"),
+                        button.label.starts_with("Clear all"),
+                    )
+                });
                 (surface.reset)(app);
                 found
             }

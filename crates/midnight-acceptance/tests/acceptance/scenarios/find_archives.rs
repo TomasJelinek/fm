@@ -308,7 +308,7 @@ fn queries(app: &mut App, context: &mut Context, tree: &Tree) -> Result<(), Stri
     }
     let member = rows
         .iter()
-        .find(|row| row.folder.ends_with("bundle.zip/docs"))
+        .find(|row| Path::new(row.folder.as_str()).ends_with(Path::new("bundle.zip").join("docs")))
         .ok_or("no bundle.zip member row")?;
     if member.size != "25 B" {
         problems.add(format!("the bundle member's size reads {:?}", member.size));
@@ -497,7 +497,7 @@ fn member_actions(app: &mut App, context: &mut Context, tree: &Tree) -> Result<(
     loop {
         app.settle();
         let path = app.window.get_left_path().to_string();
-        if path.ends_with("bundle.zip/docs")
+        if Path::new(&path).ends_with(Path::new("bundle.zip").join("docs"))
             && !app.loading(PaneId::Left)
             && files::cursor_name(app, PaneId::Left).as_deref() == Some("readme.txt")
         {

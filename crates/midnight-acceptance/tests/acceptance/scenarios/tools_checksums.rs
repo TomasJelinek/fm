@@ -726,6 +726,18 @@ pub fn checksum_manifests(context: &mut Context) -> Result<(), String> {
         if app.checksum_runs.len() != runs {
             return Err(format!("{name}: verification started without Verify"));
         }
+        // The pages are "Calculate" and "Verify" (once "Verify file"): on this page the
+        // tab and the page's own button both say "Verify".
+        let buttons = inspect::labels(w, AccessibleRole::Button);
+        let verify = buttons.iter().filter(|label| *label == "Verify").count();
+        if !buttons.iter().any(|label| label == "Calculate")
+            || verify < 2
+            || buttons.iter().any(|label| label.starts_with("Verify file"))
+        {
+            return Err(format!(
+                "{name}: the page tabs are not Calculate and Verify: buttons {buttons:?}"
+            ));
+        }
         tools::click_last(w, "Verify")?;
         let line = wait_progress(&mut app, &window, &format!("{name} verification"), status);
         let images: Vec<String> = inspect::labels(w, AccessibleRole::Image)

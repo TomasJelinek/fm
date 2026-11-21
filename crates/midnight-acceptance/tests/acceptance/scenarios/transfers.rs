@@ -49,11 +49,7 @@ pub fn snapshot(root: &Path) -> Result<Vec<(String, String)>, String> {
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let full = entry.path();
-            let relative = full
-                .strip_prefix(root)
-                .unwrap_or(&full)
-                .to_string_lossy()
-                .into_owned();
+            let relative = crate::files_support::slashed(full.strip_prefix(root).unwrap_or(&full));
             let metadata = fs::symlink_metadata(&full).map_err(|error| error.to_string())?;
             if metadata.file_type().is_symlink() {
                 let target = fs::read_link(&full).map_err(|error| error.to_string())?;

@@ -685,10 +685,8 @@ fn sparse(path: &Path, length: u64) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let file = fs::File::create(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    file.set_len(length)
-        .and_then(|()| file.set_modified(at(0)))
-        .map_err(|error| format!("{}: {error}", path.display()))
+    tools::sparse(path, length)?;
+    tools::set_modified(path, at(0))
 }
 
 /// A content comparison long enough to watch: progress, the refusal of Create folder
@@ -855,6 +853,11 @@ fn unreadable(context: &mut Context, root: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
-fn unreadable(_: &mut Context, _: &Path) -> Result<(), String> {
+fn unreadable(context: &mut Context, _: &Path) -> Result<(), String> {
+    context.note(
+        "not on Windows: unreadable metadata. A folder that lists but whose entries cannot \
+         be reached (mode 0444) has no Windows equivalent (traverse checking is bypassed), \
+         and a dangling file link needs a privilege or Developer Mode",
+    );
     Ok(())
 }

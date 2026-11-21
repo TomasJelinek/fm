@@ -92,18 +92,32 @@ fn mode_of(metadata: &fs::Metadata) -> u32 {
     }
 }
 
-/// Every entry below `root` (relative path to facts), links not followed.
+/// The root of the filesystem holding `path`, where Ctrl+Backspace goes: `/` on Unix,
+/// the drive's root (`D:\`) on Windows.
+pub fn filesystem_root(path: &Path) -> PathBuf {
+    path.ancestors()
+        .last()
+        .map_or_else(PathBuf::new, Path::to_path_buf)
+}
+
+/// A relative path with `/` between its names on every platform, as the scenarios
+/// spell their expectations (a Windows path's `\` never ends up in a key).
+pub fn slashed(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Every entry below `root` (relative path to facts, `/` between names), links not
+/// followed.
 pub fn tree_facts(root: &Path) -> Result<BTreeMap<String, Facts>, String> {
     fn visit(root: &Path, path: &Path, output: &mut BTreeMap<String, Facts>) -> Result<(), String> {
         for entry in fs::read_dir(path).map_err(|error| io_error(path, error))? {
             let entry = entry.map_err(|error| io_error(path, error))?;
             let full = entry.path();
             let found = facts(&full)?;
-            let relative = full
-                .strip_prefix(root)
-                .unwrap_or(&full)
-                .to_string_lossy()
-                .into_owned();
+            let relative = slashed(full.strip_prefix(root).unwrap_or(&full));
             let folder = found.content == Content::Folder;
             output.insert(relative, found);
             if folder {

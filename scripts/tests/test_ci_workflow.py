@@ -64,6 +64,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertRegex(on, r"push:\n    branches: \[main\]")
         self.assertIn("pull_request:", on)
 
+    def test_the_opt_in_acceptance_suite_is_checked_on_both_platforms(self):
+        # `--workspace --all-targets` skips a target whose required feature is off.
+        text = step(self.jobs["check"], "Clippy for the opt-in acceptance suite")
+        self.assertIn(
+            "cargo clippy -p midnight-acceptance --features midnight-acceptance/acceptance "
+            "--all-targets --locked -- -D warnings",
+            text,
+        )
+        self.assertNotIn("if:", text)
+
     def test_post_gate_steps_reuse_the_workspace_feature_selection(self):
         check = self.jobs["check"]
         after_gates = check.split("ci-workspace-tests.py --retire-successful-test-artifacts", 1)[1]

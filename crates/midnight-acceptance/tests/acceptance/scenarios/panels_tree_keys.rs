@@ -72,7 +72,7 @@ pub fn tree_keys(context: &mut Context) -> Result<(), String> {
         let child = root.join("branch").join(name);
         ps::folder(&child.join("deeper"))?;
         ps::write(&child.join("file.bin"), vec![1_u8; 100 * minutes as usize])?;
-        std::fs::File::open(&child)
+        crate::tools_support::times_handle(&child)
             .and_then(|folder| folder.set_modified(base + Duration::from_secs(minutes * 60)))
             .map_err(|error| format!("{}: {error}", child.display()))?;
     }

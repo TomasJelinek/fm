@@ -294,5 +294,6 @@ records the earlier isolated SDK gate; its test counts are historical, not a
 replacement for current workspace checks.
 
 For coordinated local checks, see [targeted parallel test execution](TEST_EXECUTION.md).
-The opt-in end-to-end [acceptance suite](ACCEPTANCE.md) (`./build.sh --acceptance`)
-drives the real application with synthetic input against a generated fixture tree.
+The opt-in end-to-end [acceptance suite](ACCEPTANCE.md) (`./build.sh --acceptance`;
+on Windows `pwsh -File scriptscceptance.ps1`) drives the real application with
+synthetic input against a generated fixture tree.

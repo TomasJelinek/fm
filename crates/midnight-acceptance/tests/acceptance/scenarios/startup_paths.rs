@@ -1,7 +1,8 @@
 //! Starting with folders on the command line (`--left`, `--right`, both or neither)
 //! against the application's own settings store: the preferences are read
-//! asynchronously from `$XDG_CONFIG_HOME/midnight-explorer/preferences.json`, as in
-//! production, here in the staged process's private profile seeded with a saved tab
+//! asynchronously from `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` (Windows:
+//! `%LOCALAPPDATA%\Midnight Explorer\preferences.json`), as in production, here in the
+//! staged process's private profile seeded with a saved tab
 //! session. Each start must finish within production's settings deadline; a panel given
 //! a path shows that path in one tab, the other panel restores its saved tabs, and the
 //! saved tabs of a panel without a path stay in the profile.
@@ -70,13 +71,27 @@ fn run(context: &mut Context) -> Result<(), String> {
     // Only the staged process has a private profile, beside its run folder
     // (`<work>/staged/{run/<run>,xdg/config}`); never touch the account's settings.
     let staged = context.run_dir.parent().and_then(Path::parent);
-    let profile = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|config| staged.is_some_and(|staged| config.starts_with(staged)))
-        .ok_or("startup_paths runs only in its staged process, with a private XDG_CONFIG_HOME")?;
+    // Unix: `$XDG_CONFIG_HOME/midnight-explorer`. Windows: the LocalAppData known folder
+    // (`%USERPROFILE%\AppData\Local`, also `LOCALAPPDATA`)`\Midnight Explorer`.
+    #[cfg(unix)]
+    let (variables, application) = (["XDG_CONFIG_HOME"], "midnight-explorer");
+    #[cfg(not(unix))]
+    let (variables, application) = (["LOCALAPPDATA", "USERPROFILE"], "Midnight Explorer");
+    let mut private = variables.iter().map(|variable| {
+        std::env::var_os(variable)
+            .map(PathBuf::from)
+            .filter(|folder| staged.is_some_and(|staged| folder.starts_with(staged)))
+            .ok_or(format!(
+                "startup_paths runs only in its staged process, with a private {variable}"
+            ))
+    });
+    let profile = private.next().ok_or("no profile variable")??;
+    for other in private {
+        other?;
+    }
     context.note(format!(
         "Private settings profile of the staged process: {}",
-        profile.join("midnight-explorer").display()
+        profile.join(application).display()
     ));
     let root = support::scratch(context, "startup")?;
     let given = [marked(&root, "given-left")?, marked(&root, "given-right")?];

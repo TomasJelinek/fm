@@ -115,13 +115,18 @@ tests, so `build.sh --validate` refuses Docker.
 
 ## Acceptance suite
 
-The opt-in end-to-end acceptance suite is not part of validation or CI.
+The opt-in end-to-end acceptance suite is not part of validation, and CI does not run
+it: CI's check job only lints it on Windows and Linux (Clippy with its feature), so
+its platform-specific code cannot stop compiling unnoticed.
 `./build.sh --acceptance` (native or Docker backend) runs `scripts/acceptance.sh` after
-its build steps; the suite drives the real application with synthetic input against a
-generated fixture tree and writes an HTML report below `_build/acceptance/`. Its only
-test target requires the `acceptance` feature of `crates/midnight-acceptance`, so
+its build steps, and on Windows `pwsh -File scriptscceptance.ps1` builds and runs it
+(`build.bat` has no acceptance step); the suite drives the real application with
+synthetic input against a generated fixture tree and writes an HTML report below
+`_build/acceptance/` (on Windows `_buildcceptance-win`). Its only test target
+requires the `acceptance` feature of `crates/midnight-acceptance`, so
 `cargo test --workspace` and `scripts/ci-workspace-tests.py` never build or run it.
-See [the acceptance suite](ACCEPTANCE.md).
+See [the acceptance suite](ACCEPTANCE.md) and its
+[Windows results](acceptance/windows.md).
 
 ## Targeted test execution
 

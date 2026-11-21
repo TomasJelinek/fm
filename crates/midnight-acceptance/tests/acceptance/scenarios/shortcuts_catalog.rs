@@ -89,6 +89,8 @@ pub fn fixture(work: &Path) -> Result<Paths, String> {
     for name in [".hidden.txt", "alpha.txt", "beta.txt", "gamma.dat"] {
         write(&left.join(name), name)?;
     }
+    // Windows hides by the hidden attribute, not by name.
+    crate::fixtures::hide(&left.join(".hidden.txt"))?;
     for index in 0..NUMBERED {
         write(&left.join(format!("n-{index:03}.txt")), "n\n")?;
     }
@@ -598,6 +600,7 @@ fn probe_for(id: &str, paths: &Paths) -> Option<Probe> {
     let right = paths.right.clone();
     let sub = paths.sub.clone();
     let root = paths.root.clone();
+    let filesystem_root = crate::files_support::filesystem_root(&root);
     let files = Setup::at("alpha.txt");
     if let Some(slot) = id
         .strip_prefix("bookmark.open.")
@@ -745,11 +748,11 @@ fn probe_for(id: &str, paths: &Paths) -> Option<Probe> {
         "panel.parent" => probe(files, &["location0", "cursor0"], move |_, _, after| {
             same("the left folder", after.location[0].clone(), at(&root))
         })?,
-        "panel.root" => probe(files, &["location0", "cursor0"], |_, _, after| {
+        "panel.root" => probe(files, &["location0", "cursor0"], move |_, _, after| {
             same(
                 "the left folder",
                 after.location[0].clone(),
-                at(Path::new("/")),
+                at(&filesystem_root),
             )
         })?,
         "panel.back" => probe(

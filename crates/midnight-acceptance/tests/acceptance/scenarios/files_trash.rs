@@ -30,6 +30,15 @@ const DELETE_PROMPT: &str =
     "Delete failures ask Retry/Skip/Skip all/Cancel and continue after Skip";
 
 pub fn trash(context: &mut Context) -> Result<(), String> {
+    if cfg!(windows) {
+        return Err(
+            "SKIP: Windows recycles into the account's own Recycle Bin, one per volume \
+             (`<volume>\\$Recycle.Bin\\<SID>`), which no variable redirects to a private \
+             folder, and keeps no FreeDesktop Trash records; F8 for real would put the run's \
+             files into the user's Recycle Bin"
+                .into(),
+        );
+    }
     viewers_stage::run_private(context, TIMEOUT, run)
 }
 

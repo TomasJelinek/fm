@@ -259,8 +259,9 @@ fn select_page(
         ),
     );
     // The page's own background showing between selected runs (table cells, the gutter
-    // edge) is not text.
-    let glyphs: Vec<([u8; 3], usize)> = probe::glyph_colours(&after, selection, GLYPH_PIXELS)
+    // edge) is not text. Each text colour is measured at its glyphs' solid cores: their
+    // anti-aliased edges are blends that read lower than the colour itself.
+    let glyphs: Vec<([u8; 3], usize)> = probe::glyph_cores(&after, selection, GLYPH_PIXELS)
         .into_iter()
         .filter(|(colour, _)| {
             colour
@@ -287,7 +288,7 @@ fn select_page(
         .fold(f64::INFINITY, f64::min);
     // What the same colours would show without the selection's adjustment: proof that
     // this check can fail where the theme's colours need it.
-    let plain = probe::glyph_colours(&before, background, GLYPH_PIXELS);
+    let plain = probe::glyph_cores(&before, background, GLYPH_PIXELS);
     let unadjusted: Vec<String> = plain
         .iter()
         .filter(|(colour, _)| probe::contrast(*colour, selection) < 4.5)

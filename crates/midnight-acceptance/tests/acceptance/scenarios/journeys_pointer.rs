@@ -6,14 +6,17 @@
 //!    it.
 //! 2. A rubber band from the gutter marks two files.
 //! 3. The footer's F5 cell and the dialog's Copy button copy them; the name conflict is
-//!    answered with Replace · keep original.
+//!    answered with Replace · keep original. The kept original is a warning, so the
+//!    job's window stays with that outcome; its Close button closes it.
 //! 4. A file dragged onto a folder row of the other panel is moved into that folder
 //!    (one volume: Move), confirmed with the dialog's Move button if one opens.
 //! 5. The Size header sorts by size and, clicked again, reverses; the Name header
 //!    restores the order.
-//! 6. The toolbar's Jobs button lists both jobs; its Close button closes it.
+//! 6. The toolbar's Jobs button lists both jobs (the copy completed with warnings, the
+//!    move completed); its Close button closes it.
 //! 7. A click on a row, the footer's F8 cell and the confirmation's button move a file
-//!    to the (private) Trash.
+//!    to the (private) Trash. Windows has no private Recycle Bin: there the
+//!    confirmation is cancelled and the file must stay.
 //! 8. A drop within 400 ms of the press is cancelled: nothing is copied or moved
 //!    (pending until announced).
 use super::{
@@ -45,6 +48,8 @@ const QUICK_DROP: &str = "a drop within 400 ms of the press is cancelled";
 /// Drag feedback states (`MainWindow.drag-feedback-state`).
 const MOVE: i32 = 4;
 const LONG: &str = "one, the longest of the three files\n";
+/// The Copy window's outcome line for the original kept by Replace · keep original.
+const KEPT: &str = "1 file was kept in a recovery folder; Details shows where.";
 
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
@@ -62,10 +67,20 @@ pub fn pointer_only(context: &mut Context) -> Result<(), String> {
 
 fn run(context: &mut Context) -> Result<(), String> {
     let staged = context.run_dir.parent().and_then(Path::parent);
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|data| staged.is_some_and(|staged| data.starts_with(staged)))
-        .ok_or("this journey runs only in its private process, with a private XDG_DATA_HOME")?;
+    // Windows keeps one Recycle Bin per volume and account, which no variable makes
+    // private: there the Trash confirmation is cancelled instead (step 7).
+    let data = if cfg!(unix) {
+        Some(
+            std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .filter(|data| staged.is_some_and(|staged| data.starts_with(staged)))
+                .ok_or(
+                    "this journey runs only in its private process, with a private XDG_DATA_HOME",
+                )?,
+        )
+    } else {
+        None
+    };
     let home = files::scratch(context, "pt")?;
     let other = files::scratch(context, "pt-out")?;
     for (name, text) in [
@@ -86,7 +101,7 @@ fn run(context: &mut Context) -> Result<(), String> {
         &mut journey,
         &home,
         &other,
-        &data.join("Trash"),
+        data.map(|data| data.join("Trash")).as_deref(),
     );
     files::dismiss_all(&mut app);
     let ended = ended.and(app.shutdown());
@@ -115,6 +130,29 @@ fn file_order(app: &App) -> Vec<String> {
 }
 
 /// Click the left panel's header `label`.
+/// Close every finished job window titled `title` that stayed open with its outcome, by
+/// its Close button (this session presses no key); how many there were.
+fn close_finished(app: &mut App, title: &str) -> Result<usize, String> {
+    let open: Vec<_> = journey::titled(app, title)
+        .into_iter()
+        .filter(|window| window.window().is_visible())
+        .collect();
+    for window in &open {
+        // A tool window is sized before it is used: an unsized one has no area.
+        crate::app::layout_tool(window, 760, 560);
+        app.settle();
+        crate::tools_support::click_last(window.window(), "Close")?;
+        let watched = window.clone();
+        wait(
+            app,
+            &format!("the {title} window to close"),
+            STEP,
+            move |_| !watched.window().is_visible(),
+        )?;
+    }
+    Ok(open.len())
+}
+
 fn header(app: &mut App, label: &str) -> Result<(), String> {
     let edge = app.window.get_left_pane_left() + app.window.get_left_pane_width();
     let item = inspect::find_all(app.slint(), AccessibleRole::Button, label)
@@ -132,7 +170,7 @@ fn steps(
     journey: &mut Journey,
     home: &Path,
     other: &Path,
-    trash: &Path,
+    trash: Option<&Path>,
 ) -> Result<(), String> {
     // 1. Double clicks.
     let position = row(app, LEFT, "folder")?;
@@ -213,7 +251,33 @@ fn steps(
         "b-two.txt replaced",
         journey::holds(&other.join("b-two.txt"), "two new\n"),
     );
-    journey.step("footer F5, Copy, Replace · keep original: both files in the other panel");
+    // The kept original is a warning: the job's window stays and says so.
+    let copies: Vec<_> = journey::titled(app, "Copy")
+        .into_iter()
+        .filter(|window| window.window().is_visible())
+        .collect();
+    for window in &copies {
+        crate::app::layout_tool(window, 760, 560);
+    }
+    let said = wait(app, "the Copy window's outcome", STEP, |app| {
+        journey::titled(app, "Copy")
+            .iter()
+            .any(|window| journey::window_text(window).contains(KEPT))
+    });
+    journey.check(
+        "the copy's window stays and says the original was kept",
+        said.map_err(|error| {
+            format!(
+                "{error}; Copy windows say {:?}",
+                copies.iter().map(journey::window_text).collect::<Vec<_>>()
+            )
+        }),
+    );
+    close_finished(app, "Copy")?;
+    journey.step(
+        "footer F5, Copy, Replace · keep original: both files in the other panel; the job's \
+         window kept the outcome until its Close button",
+    );
 
     // 4. A drag onto a folder row.
     let start = app.copies.len();
@@ -247,8 +311,25 @@ fn steps(
             !journey::shown(app, LEFT).contains("c-three.txt")
         }),
     );
+    // A Move with nothing to report closes its window; one that stayed with its outcome
+    // is shown, then closed by its Close button (Jobs below says why it stayed).
+    if let Some(window) = journey::titled(app, "Move")
+        .into_iter()
+        .find(|window| window.window().is_visible())
+    {
+        crate::app::layout_tool(&window, 760, 560);
+        app.settle();
+        app.screenshot_window(
+            context,
+            &window,
+            "move-outcome",
+            "The drag's Move window stayed",
+        );
+    }
+    let stayed = close_finished(app, "Move")?;
     journey.step(format!(
-        "drag of c-three.txt onto into/: {label:?}, moved inside"
+        "drag of c-three.txt onto into/: {label:?}, moved inside; {stayed} Move window(s) \
+         stayed with the outcome"
     ));
 
     // 5. Header sorting.
@@ -282,8 +363,14 @@ fn steps(
     let jobs = journey::open_jobs(app)?;
     let rows = journey::job_rows(&jobs);
     journey.check(
-        "Jobs lists the copy and the move as completed",
-        if journey::job_row(&rows, "Copy", &["Completed"]).is_some()
+        "Jobs lists the copy as completed with warnings (an original kept) and the move as \
+         completed",
+        if journey::job_row(
+            &rows,
+            "Copy",
+            &["Completed with warnings", "2 files · 0 skipped · 0 errors"],
+        )
+        .is_some()
             && journey::job_row(&rows, "Move", &["Completed"]).is_some()
         {
             Ok(())
@@ -291,6 +378,9 @@ fn steps(
             Err(format!("Jobs lists {rows:?}"))
         },
     );
+    crate::app::layout_tool(&jobs, 760, 560);
+    app.settle();
+    app.screenshot_window(context, &jobs, "jobs", "Jobs: the copy and the move");
     crate::tools_support::click_last(jobs.window(), "Close")?;
     let watched = jobs.clone();
     journey.check(
@@ -315,29 +405,44 @@ fn steps(
     if app.window.get_operation_dangerous() {
         return Err("the footer's F8 asked for a permanent delete".into());
     }
-    click(app, "Move to Trash")?;
-    wait(app, "the move to the Trash", STEP, move |app| {
-        app.operations[start..]
+    if let Some(trash) = trash {
+        click(app, "Move to Trash")?;
+        wait(app, "the move to the Trash", STEP, move |app| {
+            app.operations[start..]
+                .iter()
+                .any(|progress| progress.state.is_terminal())
+        })?;
+        let done = app.operations[start..]
             .iter()
-            .any(|progress| progress.state.is_terminal())
-    })?;
-    let done = app.operations[start..]
-        .iter()
-        .find(|progress| progress.state.is_terminal())
-        .cloned();
-    journey.check(
-        "F8 by clicks completes",
-        match done {
-            Some(progress) if progress.state == OperationState::Completed => Ok(()),
-            other => Err(format!("{:?}", other.map(|progress| progress.state))),
-        },
-    );
-    journey.check(
-        "the file is in the Trash and gone from its folder",
-        journey::holds(&trash.join("files/b-two.txt"), "two new\n")
-            .and_then(|()| journey::absent(&home.join("b-two.txt"))),
-    );
-    journey.step("a click on b-two.txt, footer F8, Move to Trash: the file is in the Trash");
+            .find(|progress| progress.state.is_terminal())
+            .cloned();
+        journey.check(
+            "F8 by clicks completes",
+            match done {
+                Some(progress) if progress.state == OperationState::Completed => Ok(()),
+                other => Err(format!("{:?}", other.map(|progress| progress.state))),
+            },
+        );
+        journey.check(
+            "the file is in the Trash and gone from its folder",
+            journey::holds(&trash.join("files/b-two.txt"), "two new\n")
+                .and_then(|()| journey::absent(&home.join("b-two.txt"))),
+        );
+        journey.step("a click on b-two.txt, footer F8, Move to Trash: the file is in the Trash");
+    } else {
+        click(app, "Cancel")?;
+        wait(app, "the Trash confirmation to close", STEP, |app| {
+            app.window.get_operation_token().is_empty()
+        })?;
+        journey.check(
+            "a cancelled Trash confirmation keeps the file",
+            journey::holds(&home.join("b-two.txt"), "two new\n"),
+        );
+        journey.step(
+            "a click on b-two.txt, footer F8: the Trash confirmation, cancelled (Windows has \
+             no private Recycle Bin)",
+        );
+    }
 
     // 8. A drop within 400 ms of the press.
     let start = app.copies.len();
@@ -380,6 +485,8 @@ fn steps(
         let _ = wait(app, "the quick drop's job to end", STEP, move |app| {
             files::job(app, start).is_some_and(|job| job.state.is_terminal())
         });
+        close_finished(app, "Move")?;
+        close_finished(app, "Copy")?;
     }
     journey.pending(
         "a drop released within 400 ms of the press does nothing",

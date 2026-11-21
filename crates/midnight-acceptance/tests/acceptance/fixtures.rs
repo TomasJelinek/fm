@@ -822,10 +822,274 @@ fn restore_into(path: &Path, stuck: &mut Vec<PathBuf>) {
             stuck.push(path.to_path_buf());
         }
     }
+    // What `deny_read` and `deny_write` took away: this account's deny entries on a
+    // folder that cannot be listed or refuses a new entry (here or in a staged child that
+    // ended before it gave them back), and on the entries this process denied otherwise
+    // (unreadable files, the entries of a write-protected folder). Files are not probed
+    // one by one (work folders hold up to 100,000), and none of those entries keeps its
+    // folder from being deleted once the folder is restored.
+    let denied = denied_entries().contains(path)
+        || (metadata.is_dir() && (read_denied(path, &metadata) || write_denied(path, &metadata)));
+    if denied && allow_read(path).is_err() {
+        stuck.push(path.to_path_buf());
+    }
     if metadata.is_dir() {
         for entry in fs::read_dir(path).into_iter().flatten().flatten() {
             restore_into(&entry.path(), stuck);
         }
+    }
+}
+
+#[cfg(not(unix))]
+fn refused(result: std::io::Result<()>) -> bool {
+    result.is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+}
+
+/// Whether this account may not list the folder `path`: a deny entry of [`deny_read`]
+/// is still there.
+#[cfg(not(unix))]
+fn read_denied(path: &Path, metadata: &fs::Metadata) -> bool {
+    metadata.is_dir() && refused(fs::read_dir(path).map(drop))
+}
+
+/// The entries this process gave deny entries ([`deny_read`], [`deny_write`]) and has
+/// not restored yet.
+#[cfg(not(unix))]
+fn denied_entries() -> std::sync::MutexGuard<'static, std::collections::BTreeSet<PathBuf>> {
+    static DENIED: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    DENIED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether this account may not create an entry in the folder `path` (a deny entry of
+/// [`deny_write`]): probed by creating and removing an empty folder with a reserved name.
+#[cfg(not(unix))]
+fn write_denied(path: &Path, metadata: &fs::Metadata) -> bool {
+    if !metadata.is_dir() {
+        return false;
+    }
+    let probe = path.join(".midnight-acceptance-write-probe");
+    let created = fs::create_dir(&probe);
+    if created.is_ok() {
+        let _ = fs::remove_dir(&probe);
+    }
+    refused(created)
+}
+
+/// This account's security identifier (`S-1-…`), from `whoami`, for its own deny
+/// entries: the suite takes access away from itself only.
+#[cfg(windows)]
+fn account_sid() -> Result<&'static str, String> {
+    static SID: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    SID.get_or_init(|| {
+        let output = std::process::Command::new("whoami")
+            .args(["/user", "/fo", "csv", "/nh"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|error| format!("whoami /user: {error}"))?;
+        // "domain\user","S-1-5-21-…"
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.trim()
+            .rsplit(',')
+            .next()
+            .map(|field| field.trim().trim_matches('"').to_owned())
+            .filter(|sid| output.status.success() && sid.starts_with("S-1-"))
+            .ok_or_else(|| format!("whoami /user printed no security identifier: {text:?}"))
+    })
+    .as_deref()
+    .map_err(Clone::clone)
+}
+
+/// Run `icacls` on `path` (spelled `\\?\…`, so long paths work too).
+#[cfg(windows)]
+fn icacls(path: &Path, arguments: &[String]) -> Result<(), String> {
+    let mut spelled = path.as_os_str().to_string_lossy().replace('/', "\\");
+    if !spelled.starts_with(r"\\") {
+        spelled.insert_str(0, r"\\?\");
+    }
+    let output = std::process::Command::new("icacls")
+        .arg(&spelled)
+        .args(arguments)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("icacls {}: {error}", path.display()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "icacls {} {arguments:?}: {} {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+/// Take access to `path` away from this account, as a user meets a folder or a file
+/// they may not open: mode 000 on Unix. On Windows, where the read-only attribute
+/// cannot make anything unreadable, an explicit deny entry for this account on listing
+/// a folder or reading a file's data and on writing or adding to it (`icacls /deny
+/// <SID>:(RD,WD,AD)`), as mode 000 refuses both; the owner keeps the right to change
+/// the entry, so [`allow_read`] and the run's restore give access back.
+pub fn deny_read(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000))
+            .map_err(|error| format!("chmod 000 {}: {error}", path.display()))
+    }
+    #[cfg(windows)]
+    {
+        icacls(
+            path,
+            &["/deny".into(), format!("*{}:(RD,WD,AD)", account_sid()?)],
+        )?;
+        denied_entries().insert(path.to_path_buf());
+        Ok(())
+    }
+}
+
+/// Take away this account's right to change the folder `path`'s entries while it can
+/// still list them: mode 0555 on Unix (no entry is created, removed or renamed in it;
+/// the folder itself may still move). Windows, where a folder's read-only attribute
+/// does not stop any of that, lets an entry go when either the entry or its folder
+/// allows it, so there the folder gets a deny entry on adding files and folders and on
+/// deleting its children (`(WD,AD,DC)`), and each of its present entries one on its own
+/// deletion (`(DE)`).
+pub fn deny_write(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o555))
+            .map_err(|error| format!("chmod 555 {}: {error}", path.display()))
+    }
+    #[cfg(windows)]
+    {
+        let sid = account_sid()?;
+        for entry in fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))? {
+            let entry = entry
+                .map_err(|error| format!("{}: {error}", path.display()))?
+                .path();
+            icacls(&entry, &["/deny".into(), format!("*{sid}:(DE)")])?;
+            denied_entries().insert(entry);
+        }
+        icacls(path, &["/deny".into(), format!("*{sid}:(WD,AD,DC)")])?;
+        denied_entries().insert(path.to_path_buf());
+        Ok(())
+    }
+}
+
+/// Whether this account may not create entries in the folder `path`, as
+/// [`deny_write`] leaves it: no owner write bit on Unix, a refused probe on Windows.
+pub fn write_protected(path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.is_dir() && metadata.permissions().mode() & 0o200 == 0
+    }
+    #[cfg(not(unix))]
+    write_denied(path, &metadata)
+}
+
+/// Give back what [`deny_read`] or [`deny_write`] took: mode 0755 (folders) or 0644
+/// (files) on Unix; on Windows this account's deny entries removed from `path` and from
+/// the entries of `path` that [`deny_write`] protected.
+pub fn allow_read(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+            0o755
+        } else {
+            0o644
+        };
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .map_err(|error| format!("chmod {mode:o} {}: {error}", path.display()))
+    }
+    #[cfg(windows)]
+    {
+        let sid = account_sid()?;
+        icacls(path, &["/remove:d".into(), format!("*{sid}")])?;
+        let mut denied = denied_entries();
+        denied.remove(path);
+        let children: Vec<PathBuf> = denied
+            .iter()
+            .filter(|entry| entry.parent() == Some(path))
+            .cloned()
+            .collect();
+        for child in children {
+            if fs::symlink_metadata(&child).is_ok() {
+                icacls(&child, &["/remove:d".into(), format!("*{sid}")])?;
+            }
+            denied.remove(&child);
+        }
+        Ok(())
+    }
+}
+
+/// Make the dot-named entry `path` hidden as the platform defines it: Unix hides a
+/// dot-name by its name; Windows by the hidden attribute (`attrib +h`), which the
+/// scenarios give their dot-names so that "hidden" means the same on both.
+pub fn hide(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("attrib")
+            .arg("+h")
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|error| format!("attrib +h {}: {error}", path.display()))?;
+        // attrib reports some failures on its output with a zero status.
+        let text = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success() || !text.trim().is_empty() {
+            return Err(format!("attrib +h {}: {}", path.display(), text.trim()));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+    Ok(())
+}
+
+/// A directory junction at `link` to the folder `target`, the Windows directory link
+/// that needs no privilege (`mklink /J`); the target need not exist.
+#[cfg(windows)]
+pub fn junction(link: &Path, target: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let (link_text, target_text) = (link.to_string_lossy(), target.to_string_lossy());
+    if [&link_text, &target_text]
+        .iter()
+        .any(|text| text.contains(['"', '%', '\n', '\r']))
+    {
+        return Err(format!(
+            "cannot spell {} or {} for cmd's mklink",
+            link.display(),
+            target.display()
+        ));
+    }
+    let output = std::process::Command::new("cmd")
+        .raw_arg(format!(
+            "/d /c mklink /J \"{}\" \"{}\"",
+            link_text.replace('/', "\\"),
+            target_text.replace('/', "\\")
+        ))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("mklink /J {}: {error}", link.display()))?;
+    if output.status.success() && fs::symlink_metadata(link).is_ok() {
+        Ok(())
+    } else {
+        Err(format!(
+            "mklink /J {} {}: {}{}",
+            link.display(),
+            target.display(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
@@ -848,7 +1112,9 @@ fn locked_into(path: &Path, locked: &mut Vec<PathBuf>) {
         (metadata.is_dir() && mode & 0o700 != 0o700) || (metadata.is_file() && mode & 0o200 == 0)
     };
     #[cfg(not(unix))]
-    let blocked = !metadata.file_type().is_symlink() && metadata.permissions().readonly();
+    let blocked = !metadata.file_type().is_symlink()
+        && (metadata.permissions().readonly()
+            || (metadata.is_dir() && read_denied(path, &metadata)));
     if blocked {
         locked.push(path.to_path_buf());
     }

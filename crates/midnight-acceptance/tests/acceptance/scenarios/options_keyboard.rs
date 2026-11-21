@@ -183,7 +183,7 @@ pub fn keyboard(context: &mut Context) -> Result<(), String> {
         capture(&mut app, &[Key::Control, Key::Alt], letter, &shown)?;
         if index < 3 {
             options::press(&mut app, "Assign")?;
-            if options::texts_with(&app, "At most four").len() > 0 {
+            if !options::texts_with(&app, "At most four").is_empty() {
                 return Err(format!("the shortcut number {} was refused", index + 2));
             }
         } else {

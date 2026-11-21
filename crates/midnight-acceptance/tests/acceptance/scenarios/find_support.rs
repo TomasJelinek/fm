@@ -236,9 +236,33 @@ pub fn to_top(app: &mut App, window: &Tool) -> Result<(), String> {
     wheel(app, window, 1.0e7)
 }
 
+/// The shown rows' tokens with their places, and the result count.
+fn shown_order(window: &Tool) -> (usize, Vec<(String, usize)>) {
+    (
+        result_count(window),
+        visible_rows(window)
+            .into_iter()
+            .map(|(token, row)| (token, row.index))
+            .collect(),
+    )
+}
+
 /// Every result, in display order: rows are virtualized, so the list is scrolled
 /// with the mouse wheel, a screenful at a time, until all of them were seen.
 pub fn all_rows(app: &mut App, window: &Tool) -> Result<Vec<Row>, String> {
+    // The engine sorts on a worker and delivers the order up to a quarter second after
+    // the results: rows that move while the list is scrolled could pass unseen, so the
+    // shown rows must hold still (their tokens and places) for 300 ms first.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut last = shown_order(window);
+    while Instant::now() < deadline {
+        app.idle(Duration::from_millis(300));
+        let now = shown_order(window);
+        if now == last {
+            break;
+        }
+        last = now;
+    }
     let total = result_count(window);
     let mut seen = visible_rows(window);
     if seen.is_empty() && total > 0 {
@@ -263,13 +287,34 @@ pub fn all_rows(app: &mut App, window: &Tool) -> Result<Vec<Row>, String> {
             stalled = if seen.len() == before { stalled + 1 } else { 0 };
         }
         seen.extend(visible_rows(window));
+        // A screenful at a time can pass rows that a frame had not laid out yet: go
+        // through again a row's height at a time, letting each frame settle.
+        if seen.len() < total {
+            to_top(app, window)?;
+            app.idle(Duration::from_millis(50));
+            let step = (inspect::rect(&list).3 / 12.0).max(16.0);
+            let mut stalled = 0;
+            while seen.len() < total && stalled < 6 {
+                let before = seen.len();
+                seen.extend(visible_rows(window));
+                wheel(app, window, -step)?;
+                app.idle(Duration::from_millis(20));
+                stalled = if seen.len() == before { stalled + 1 } else { 0 };
+            }
+            seen.extend(visible_rows(window));
+        }
         // Back to the top, as a reader leaves the list: the next search starts there.
         to_top(app, window)?;
     }
     if seen.len() != total {
+        let shown: BTreeSet<usize> = seen.values().map(|row| row.index).collect();
+        let missing: Vec<usize> = (0..total).filter(|index| !shown.contains(index)).collect();
         return Err(format!(
-            "scrolling showed {} of {total} results",
-            seen.len()
+            "scrolling showed {} of {total} results (rows never shown: {missing:?}; list {} \
+             px high)",
+            seen.len(),
+            tools::control(window.window(), AccessibleRole::List, "Find results")
+                .map_or(0.0, |list| inspect::rect(&list).3)
         ));
     }
     let mut rows: Vec<Row> = seen.into_values().collect();
@@ -309,7 +354,7 @@ pub fn ordered(rows: &[Row], root: &Path) -> Vec<String> {
             let full = row.path();
             full.strip_prefix(root).map_or_else(
                 |_| full.display().to_string(),
-                |path| path.display().to_string(),
+                crate::files_support::slashed,
             )
         })
         .collect()

@@ -179,6 +179,12 @@ fn run(context: &mut Context) -> Result<(), String> {
     let failures = Failures::default();
     let mut notches: Vec<(String, i32)> = Vec::new();
     for subject in SUBJECTS {
+        if subject.kind == Kind::Html
+            && let Some(reason) = crate::viewers_stage::html_viewer_missing()
+        {
+            failures.skip(subject.label, &reason);
+            continue;
+        }
         match open(&mut app, subject) {
             Ok(viewing) => {
                 context.note(format!(

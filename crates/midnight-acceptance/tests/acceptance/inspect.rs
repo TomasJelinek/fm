@@ -3,7 +3,7 @@
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ParentItemTraversalMode},
-    items::{AccessibleRole, ComplexText, Item, Opacity, SimpleText},
+    items::{AccessibleRole, ComplexText, Flickable, Item, Opacity, SimpleText},
     layout::Orientation,
     window::{WindowInner, WindowKind},
 };
@@ -13,7 +13,11 @@ use slint::LogicalPosition;
 /// dialogs and menus live in popups on the same adapter), topmost last.
 pub fn roots(window: &slint::Window) -> Vec<ItemRc> {
     let inner = WindowInner::from_pub(window);
-    let mut roots = vec![ItemRc::new_root(inner.component())];
+    // A tool window that closed itself (a completed job's) has no item tree any more.
+    let Some(component) = inner.try_component() else {
+        return Vec::new();
+    };
+    let mut roots = vec![ItemRc::new_root(component)];
     for popup in inner.active_popups().iter() {
         if !matches!(popup.window_kind, WindowKind::ToolTip) {
             roots.push(ItemRc::new_root(popup.component.clone()));
@@ -204,6 +208,20 @@ pub fn clip_rect(item: &ItemRc) -> Option<Rect> {
     clip
 }
 
+/// Whether a scroll view whose content is wider than itself holds `item`.
+fn in_sideways_scroll(item: &ItemRc) -> bool {
+    let mut current = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = current {
+        if let Some(flickable) = ancestor.downcast::<Flickable>()
+            && flickable.as_pin_ref().content_width().get() > rect(&ancestor).2 + 1.0
+        {
+            return true;
+        }
+        current = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    false
+}
+
 /// Whether the item or an ancestor is a fully transparent layer.
 fn transparent(item: &ItemRc) -> bool {
     let mut current = Some(item.clone());
@@ -221,7 +239,18 @@ fn transparent(item: &ItemRc) -> bool {
 /// The part of the item a user can see: its rectangle within its clipping ancestors;
 /// None when it is clipped away, transparent or has no area.
 pub fn visible_rect(item: &ItemRc) -> Option<Rect> {
-    if !item.is_visible() || transparent(item) {
+    if transparent(item) {
+        return None;
+    }
+    placed_rect(item)
+}
+
+/// Where the item lies within its clipping ancestors, drawn or not: for a control that
+/// its siblings draw, such as a WrappingCheckBox, whose accessible native check box
+/// sits under an opacity-0 layer beside the drawn box and caption. None when it is
+/// hidden, clipped away or has no area.
+pub fn placed_rect(item: &ItemRc) -> Option<Rect> {
+    if !item.is_visible() {
         return None;
     }
     let full = rect(item);
@@ -296,6 +325,9 @@ fn check_root(root: &ItemRc, width: f32, height: f32, findings: &mut Vec<Finding
             && let Some(preferred) = preferred_width(item)
             && preferred > shown + 1.0
             && shown < font_size.max(8.0) * 1.2
+            // A text whose own box holds it, cut at the edge of a view that scrolls
+            // sideways (a table's last column), is scrolled out of view, not elided.
+            && !(text_width + 1.0 >= preferred && in_sideways_scroll(item))
         {
             findings.push(Finding {
                 kind: "label elided to nothing",

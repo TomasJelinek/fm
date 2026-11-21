@@ -34,7 +34,7 @@ const CAPTION: &str = "List";
 const COMMANDS_LIST: &str = "Configured Custom Commands";
 /// The grouped command's script: one line per argument after `$0`, written into its
 /// working folder.
-const LIST_SCRIPT: &str = "for f in \"$@\"; do printf '%s\\n' \"$f\"; done > selection.txt";
+use crate::tool::LIST_SCRIPT;
 
 struct Setup {
     panel: PathBuf,
@@ -266,8 +266,8 @@ pub fn custom_commands(context: &mut Context) -> Result<(), String> {
         panel: root.join("panel"),
         out: root.join("out"),
         missing: root.join("missing-tool"),
-        sh: options::program(&["/bin/sh", "/usr/bin/sh"])?,
-        touch: options::program(&["/usr/bin/touch", "/bin/touch"])?,
+        sh: crate::tool::program(context, "sh")?,
+        touch: crate::tool::program(context, "touch")?,
         store: SettingsStore::new(),
     };
     fs::create_dir_all(&setup.panel).map_err(|error| error.to_string())?;
@@ -481,11 +481,14 @@ pub fn custom_commands(context: &mut Context) -> Result<(), String> {
     options::page(&mut app, "Custom Commands")?;
     select_command(&mut app, LIST_RENAMED)?;
     options::press(&mut app, "Preview Custom Command")?;
+    // The preview shows each argument Debug-escaped (USER_COMMAND_SETTINGS.md): quoted,
+    // with a Windows path's `\` doubled.
     let gamma = setup.panel.join("gamma.md").to_string_lossy().into_owned();
+    let gamma_shown = format!("{gamma:?}");
     let mut preview = Vec::new();
     for _ in 0..200 {
         // The full path appears only in the preview (the panel shows the name).
-        preview = options::texts_with(&app, &gamma);
+        preview = options::texts_with(&app, &gamma_shown);
         if !preview.is_empty() {
             break;
         }

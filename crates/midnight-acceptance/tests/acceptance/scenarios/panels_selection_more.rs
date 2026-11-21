@@ -103,6 +103,7 @@ fn expect(app: &mut App, folder: &Path, what: &str, wanted: &[&str], failures: &
 
 /// Open the mask dialog with `modifiers`+`key`, check its kind and starting mask, type
 /// `mask` (setting Include folders to `folders`) and press Enter or OK.
+#[allow(clippy::too_many_arguments)] // Each argument is one expectation of the dialog.
 fn mask(
     app: &mut App,
     key: &str,

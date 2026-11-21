@@ -7,7 +7,8 @@
 //! Each surface is also captured once with the static and contrast checks.
 //!
 //! It runs in a private child process (`viewers_stage::run_private`): the buttons are
-//! really pressed, so Delete to Trash moves a scratch file into a private Trash.
+//! really pressed, so Delete to Trash moves a scratch file into a private Trash. Windows
+//! has no private Recycle Bin, so there the Trash confirmation is never confirmed.
 use crate::{
     Context, Scenario,
     app::{self, App, Config},
@@ -44,14 +45,10 @@ struct Scratch {
     right: PathBuf,
 }
 
-#[cfg(unix)]
+/// Set `path`'s permission bits (on Windows their equivalent, `tools_support::set_mode`).
 fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+    let _ = crate::tools_support::set_mode(path, mode);
 }
-
-#[cfg(not(unix))]
-fn set_mode(_: &Path, _: u32) {}
 
 /// Empty `folder`, giving its entries owner permissions back first.
 fn empty(folder: &Path) -> Result<(), String> {
@@ -598,6 +595,19 @@ fn body(context: &mut Context) -> Result<(), String> {
         surface.enter = spec.enter;
         surface.enter_text = spec.enter_text;
         surface.buttons = spec.buttons;
+        // Windows recycles into the account's own Recycle Bin, which no variable makes
+        // private: the Trash confirmation is never confirmed there (Enter, its button).
+        if cfg!(windows) && spec.name == "trash" {
+            surface.enter = false;
+            surface.skip.push((
+                "Move to Trash".to_owned(),
+                "on Windows it would recycle into the account's own Recycle Bin",
+            ));
+            context.note(
+                "trash: Enter and Move to Trash not pressed on Windows (the account's own \
+                 Recycle Bin cannot be made private)",
+            );
+        }
         let outcome = interact::check_surface(&mut app, &mut surface);
         interact::record(
             context,

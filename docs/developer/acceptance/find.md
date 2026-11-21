@@ -32,7 +32,7 @@ Last runs: 2026-11-20 on Linux, smoke scale, debug test build, with the archive 
 | `find_result_actions` | sorting, collation, Go to file, View/Edit/Open, stale results, Stop, scrolling | FAIL (Stop: the new searched-folder check looked for the bare path; corrected, not rerun) | 58 |
 | `find_feed_panel` | Feed to panel: list, marks, keys, refusals, viewers, file operations, right panel | PASS | 57 |
 | `find_budgets` | folder depth, content per file, result count with a group, duplicate candidates | PASS | 22 |
-| `find_layout` | Blue, Dark and Touch at preferred, narrow and compact sizes; column drags; path tails | FAIL (a narrow window: the sideways step found the Name header already out of view; Touch compact: the idle status under the results, not yet analysed) | 18 |
+| `find_layout` | Blue, Dark and Touch at preferred, narrow and compact sizes; column drags; path tails | FAIL (a narrow window: the sideways step found the Name header already out of view; Touch compact: the idle status under the results, not yet analysed). Both analysed on Windows on 21 November: the sideways step now finds the headers where they are (Windows run 20261121-042048: the narrow checks hold), and Touch compact fails with FIND-COMPACT-STATUS-HIDDEN (F-L04) | 18 |
 | `find_archives` | Search inside archives through the installed plugin, many and large archives, Stop, visited entries | PASS | 74 |
 | `find_viewers` | viewer windows from the results and from a fed list | PASS | 22 |
 
@@ -138,7 +138,7 @@ that verified it.
 | F-S04 | Name order equals the panels' collation | `find_result_actions` | same names, same order | PASS |
 | F-S05 | Large result lists; the 10,000 results | `tools_find_results` | every entry of `many/`; 10,000 rows | PASS |
 | F-S06 | Every column resized by dragging; a drag never sorts; the width is kept for the next search | `tools_find_criteria`, `find_layout` | widths; order; arrow | PASS |
-| F-S07 | Keys in the results; Left and Right scroll sideways | `find_result_actions`, `find_layout` | selected row; header position | PASS in `find_result_actions`; the sideways part: PENDING (the Name header was already out of view before Right; check to adjust) |
+| F-S07 | Keys in the results; Left and Right scroll sideways | `find_result_actions`, `find_layout` | selected row; header position | PASS in `find_result_actions`; the sideways part: PENDING on Linux (the Name header was already out of view before Right; the check was adjusted on 21 November and held on Windows in run 20261121-042048, [windows.md](windows.md)) |
 | F-S08 | Go to file by Enter, double click and button, for files and folders; the window stays open | `find_result_actions`, `find_by_mask` | panel folder and cursor | PASS |
 | F-S09 | Open on a folder goes to it | `find_result_actions` | panel folder and cursor | PASS |
 | F-S10 | View, F3 and Alt+F3 open the selected file in a viewer (Markdown rendered, or its source) | `find_viewers`, `find_result_actions` | the viewer's text and mode; the request's file and plain-text choice | PASS |
@@ -225,7 +225,7 @@ that verified it.
 | F-L01 | No clipped or overlapping controls in Blue, Dark and Touch (24 px text) at the preferred, a narrow and a compact size | `find_layout` | the UI review's layout checks | PASS |
 | F-L02 | Narrow: Remove under Add; Browse… and OK under the typed path | `find_layout` | control positions | PASS |
 | F-L03 | Compact: the field is "Query"; a running search hides the query area; the idle status shows under the results | `find_layout` | label; field hidden; status under the results and in view | PASS |
-| F-L04 | Compact with text over 20 px: the idle status moves into the query area and shows there | `find_layout` | status position; a status line in view after the search | PENDING: the last run found the idle status under the results in a 700×340 Touch window with 24 px text, where FIND.md places it in the query area; not yet analysed |
+| F-L04 | Compact with text over 20 px: the idle status moves into the query area and shows there | `find_layout` | status position; a status line in view after the search | FAIL (FIND-COMPACT-STATUS-HIDDEN, analysed on Windows on 21 November): the status line is in the query area, as FIND.md says, but at its end, scrolled out of the short query area's view, so the user does not see how the search ended. The earlier "under the results" reading was a check defect: it placed the line by window coordinates, where a line scrolled out below the query area lies below the list; it now goes by the area that clips the line. Windows run 20261121-042048, `find_layout/touch-700x340-idle.png` ([windows.md](windows.md)); not re-run on Linux |
 | F-L05 | A shortened Path cell keeps the last folder, as the fed list's Folder cells and other shortened paths do | `find_layout` | every shortened Path cell at 560 px shows its `/folder` tail | PASS |
 
 ## Not offered by Find

@@ -298,22 +298,21 @@ pub fn dialog_texts(app: &App) -> Vec<ShownText> {
     texts
 }
 
-/// Restores a path's permission bits when dropped, so a failed check never leaves an
+/// Gives a path's read access back when dropped, so a failed check never leaves an
 /// unreadable folder behind.
-pub struct ModeGuard(pub PathBuf, pub u32);
+pub struct ReadGuard(pub PathBuf);
 
-impl Drop for ModeGuard {
+impl Drop for ReadGuard {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        let _ = crate::tools_support::set_mode(&self.0, self.1);
+        let _ = crate::fixtures::allow_read(&self.0);
     }
 }
 
-/// Make `path` unreadable (mode 000) until the guard drops.
-#[cfg(unix)]
-pub fn lock(path: &Path) -> Result<ModeGuard, String> {
-    crate::tools_support::set_mode(path, 0o000)?;
-    Ok(ModeGuard(path.to_path_buf(), 0o755))
+/// Make `path` unreadable until the guard drops (`fixtures::deny_read`: mode 000 on
+/// Unix, a deny entry for this account on Windows).
+pub fn lock(path: &Path) -> Result<ReadGuard, String> {
+    crate::fixtures::deny_read(path)?;
+    Ok(ReadGuard(path.to_path_buf()))
 }
 
 /// Seconds since the epoch of a civil UTC date and time (Howard Hinnant's algorithm).
@@ -338,6 +337,44 @@ pub fn instant(
 ) -> std::time::SystemTime {
     let seconds = civil_seconds(date, time) - offset * 60;
     std::time::UNIX_EPOCH + Duration::new(seconds as u64, nanos)
+}
+
+/// Click the Attributes dialog's three-state box `label` (Unchanged, Set, Clear, in
+/// turn) until it shows `choice`: Windows' Ctrl+F2 has attribute boxes where Unix has
+/// permission boxes and an octal mode.
+pub fn set_attribute(app: &mut App, label: &str, choice: &str) -> Result<(), String> {
+    let state = |app: &App| {
+        inspect::find(app.slint(), AccessibleRole::Checkbox, label)
+            .map(|item| crate::tools_support::value(&item))
+    };
+    for _ in 0..3 {
+        if state(app).as_deref() == Some(choice) {
+            return Ok(());
+        }
+        input::click(app.slint(), AccessibleRole::Checkbox, label)?;
+        app.settle();
+    }
+    match state(app) {
+        Some(shown) if shown == choice => Ok(()),
+        shown => Err(format!(
+            "the {label:?} attribute shows {shown:?}, not {choice:?}"
+        )),
+    }
+}
+
+/// Whether the file `path` has the Windows Read-only attribute (never on Unix).
+pub fn read_only_attribute(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const READ_ONLY: u32 = 0x1;
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.file_attributes() & READ_ONLY != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 /// Open Ctrl+F2 (or Ctrl+F7 with `case`) on the focused panel and wait until the

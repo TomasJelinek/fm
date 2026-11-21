@@ -234,12 +234,12 @@ fn steps(
     );
     journey.check(
         "the fed list's count of left-out members is grammatical (finding J-1)",
-        if status.contains("1 archive members") {
-            Err(format!(
-                "status {status:?}: one member is counted in the plural"
-            ))
-        } else {
+        if status.contains("1 archive member not shown") {
             Ok(())
+        } else {
+            Err(format!(
+                "status {status:?}, not \"1 archive member not shown\""
+            ))
         },
     );
     app.screenshot(context, "fed", "The results fed to the panel");

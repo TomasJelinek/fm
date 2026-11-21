@@ -203,10 +203,38 @@ fn set_marks(app: &mut App, wanted: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// Make Select by mask remember `folders` for Include folders: Select files (Num +) in
+/// the right panel with a mask that marks nothing there, then back to the fed list.
+fn mask_folders(app: &mut App, folders: bool) -> Result<(), String> {
+    let focused = |app: &App| app.window.get_focused_pane();
+    key(app, &[], Key::Tab);
+    if focused(app) != PaneId::Right.index() as i32 {
+        return Err(format!(
+            "Tab focused pane {}, not the right one",
+            focused(app)
+        ));
+    }
+    if !find::keypad(app, "NumpadAdd") {
+        return Err("Num + was not handled in the right panel".into());
+    }
+    super::files_selection::apply_mask(app, "*.no-such-extension", folders)?;
+    key(app, &[], Key::Tab);
+    // A fed list takes the keyboard in place of its panel's file list.
+    let feed = app.window.get_feed_focused_pane();
+    if feed != LEFT.index() as i32 || !feed_view(app, LEFT).open {
+        return Err(format!(
+            "Tab back focused pane {} (fed list {feed}); the left panel's results open: {}",
+            focused(app),
+            feed_view(app, LEFT).open
+        ));
+    }
+    Ok(())
+}
+
 pub fn feed_panel(context: &mut Context) -> Result<(), String> {
     let setup = setup(&context.work)?;
-    let cp = crate::options_support::program(&["/bin/cp", "/usr/bin/cp"])?;
-    let touch = crate::options_support::program(&["/usr/bin/touch", "/bin/touch"])?;
+    let cp = crate::tool::program(context, "cp")?;
+    let touch = crate::tool::program(context, "touch")?;
     let edited = setup.edited.display().to_string();
     let marker = setup
         .edited
@@ -290,10 +318,17 @@ fn list(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), Strin
         .iter()
         .map(|row| row.folder.to_string())
         .collect();
+    // The folders as the platform spells them (`\` between names on Windows).
     let expected: Vec<String> = ["src", "src/sub", "", "src", "docs", "docs"]
         .iter()
-        .map(|folder| setup.root.join(folder).display().to_string())
-        .map(|folder| folder.trim_end_matches('/').to_owned())
+        .map(|folder| {
+            folder
+                .split('/')
+                .filter(|name| !name.is_empty())
+                .fold(setup.root.clone(), |path, name| path.join(name))
+                .display()
+                .to_string()
+        })
         .collect();
     if folders != expected {
         return Err(format!("the Folder column shows {folders:?}"));
@@ -427,7 +462,8 @@ fn marks(app: &mut App) -> Result<(), String> {
         &["g.txt", "f.txt", "d.txt", "b.txt"],
         "Ctrl+Shift+I (invert files and folders)",
     )?;
-    // Keypad * inverts the marks like Ctrl+I does in the list.
+    // Keypad * inverts the marks as in a panel: like Ctrl+I while Select by mask leaves
+    // folders out (the default) ...
     set_marks(app, &["sub", "a.txt"])?;
     if !find::keypad(app, "NumpadMultiply") {
         problems.push("keypad * was not handled by the list".into());
@@ -436,6 +472,32 @@ fn marks(app: &mut App) -> Result<(), String> {
         problems.push(format!(
             "keypad * marked {:?}, Ctrl+I {inverted:?}",
             feed_marked(app, LEFT)
+        ));
+    }
+    // ... and folders too once Select by mask last had Include folders (chosen in the
+    // right panel's Select files, Num +, with a mask that marks nothing there).
+    match mask_folders(app, true) {
+        Err(error) => problems.push(format!(
+            "Select by mask with Include folders in the right panel: {error}"
+        )),
+        Ok(()) => {
+            set_marks(app, &["sub", "a.txt"])?;
+            if !find::keypad(app, "NumpadMultiply") {
+                problems.push("keypad * was not handled by the list".into());
+            }
+            let wanted = find::set(&["g.txt", "f.txt", "d.txt", "b.txt"]);
+            if feed_marked(app, LEFT) != wanted {
+                problems.push(format!(
+                    "after Select by mask with Include folders, keypad * marked {:?}, not \
+                     {wanted:?} (folders inverted too, as in a panel)",
+                    feed_marked(app, LEFT)
+                ));
+            }
+        }
+    }
+    if let Err(error) = mask_folders(app, false) {
+        problems.push(format!(
+            "Select by mask without Include folders in the right panel: {error}"
         ));
     }
     // Ctrl+click toggles a row; Shift+click marks the range from the cursor.

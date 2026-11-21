@@ -578,7 +578,7 @@ pub fn main_menu(context: &mut Context) -> Result<(), String> {
             |app| at(app, target),
         )?;
     }
-    let root = PathBuf::from("/");
+    let root = crate::files_support::filesystem_root(&left);
     menu(&mut app, "Filesystem root")?;
     wait(&mut app, "the filesystem root", |app| at(app, &root))?;
     menu(&mut app, "Back")?;

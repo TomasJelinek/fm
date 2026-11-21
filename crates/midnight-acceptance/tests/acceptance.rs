@@ -33,6 +33,8 @@ mod report;
 mod review;
 #[path = "acceptance/scenarios/mod.rs"]
 mod scenarios;
+#[path = "acceptance/tool.rs"]
+mod tool;
 #[path = "acceptance/tools_support.rs"]
 mod tools_support;
 #[path = "acceptance/viewers_stage.rs"]
@@ -206,6 +208,10 @@ fn options() -> Result<Options, String> {
 }
 
 fn main() -> std::process::ExitCode {
+    // Started by the application as a scenario's harmless program (`tool.rs`).
+    if let Some(code) = tool::run_if_requested() {
+        return code;
+    }
     // One line per panic on the console; the full message (with the harness's
     // diagnostics) goes to the scenario's result and the report.
     std::panic::set_hook(Box::new(|info| {

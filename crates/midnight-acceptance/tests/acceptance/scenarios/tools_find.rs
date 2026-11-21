@@ -8,8 +8,8 @@ use crate::{
     input, inspect, panel,
     scenarios::{
         find_support::{
-            BASE, MODES, Query, Row, SIZE, all_rows, fill, open_find, relative, result_count, run,
-            search, set, status, terminal, to_top, visible_rows, wheel,
+            self, BASE, MODES, Query, Row, SIZE, all_rows, fill, open_find, relative, result_count,
+            run, search, set, status, terminal, to_top, visible_rows, wheel,
         },
         transfers::copy_tree,
     },
@@ -61,7 +61,7 @@ fn find_tree(root: &Path) -> Result<(), String> {
         &root.join("old.txt"),
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_577_934_245),
     )?;
-    #[cfg(unix)]
+    // Mode 0444; on Windows the read-only attribute.
     tools::set_mode(&root.join("readonly.txt"), 0o444)?;
     Ok(())
 }
@@ -492,6 +492,29 @@ pub fn find_criteria(context: &mut Context) -> Result<(), String> {
             return Err(format!(
                 "missing(attributes) found {} entries ({text}), expected all 19",
                 rows.len()
+            ));
+        }
+    }
+    // Windows listings report the native flags: only readonly.txt has the read-only
+    // attribute, and a dot-name is not hidden there either.
+    #[cfg(windows)]
+    for (masks, wanted) in [
+        ("attributes has readonly", &["readonly.txt"][..]),
+        ("attributes has hidden", &[][..]),
+    ] {
+        let (text, rows) = search(
+            &mut app,
+            &window,
+            Query {
+                mode: "Expression",
+                masks,
+                ..BASE
+            },
+        )?;
+        let found = relative(&rows, &root);
+        if !text.starts_with("Completed") || found != set(wanted) {
+            return Err(format!(
+                "{masks:?} on Windows: {text:?}, {found:?}, expected {wanted:?}"
             ));
         }
     }
@@ -1085,10 +1108,8 @@ pub fn find_results(context: &mut Context) -> Result<(), String> {
 
 /// The names and marks of the search results the left panel shows.
 fn feed_rows(app: &App) -> Vec<(String, bool)> {
-    use slint::Model;
-    let rows = app.window.get_left_feed_rows();
-    (0..rows.row_count())
-        .filter_map(|row| rows.row_data(row))
+    find_support::feed_rows(app, PaneId::Left)
+        .into_iter()
         .map(|row| (row.name.to_string(), row.selected))
         .collect()
 }
@@ -1184,7 +1205,7 @@ fn feed_to_panel(context: &mut Context) -> Result<String, String> {
     }
     tools::click_last(w, "Feed to panel")?;
     app.until("the results to fill the left panel", |app| {
-        app.window.get_left_feed().open
+        find_support::feed_view(app, PaneId::Left).open
     });
     let watched = window.clone();
     app.until("Feed to panel to close the Find window", move |_| {
@@ -1194,7 +1215,9 @@ fn feed_to_panel(context: &mut Context) -> Result<String, String> {
     if names != set(&["one.txt", "two.txt", "four.txt"]) {
         return Err(format!("the panel lists the results {names:?}"));
     }
-    let title = app.window.get_left_feed().title.to_string();
+    let title = find_support::feed_view(&app, PaneId::Left)
+        .title
+        .to_string();
     if !title.starts_with("Search results (3)") {
         return Err(format!("the results list is titled {title:?}"));
     }
@@ -1243,7 +1266,7 @@ fn feed_to_panel(context: &mut Context) -> Result<String, String> {
     // Backspace leaves the results: the panel shows its folder again.
     input::key(app.slint(), Key::Backspace);
     app.until("the folder to show again", |app| {
-        !app.window.get_left_feed().open
+        !find_support::feed_view(app, PaneId::Left).open
     });
     if app.location(PaneId::Left).as_deref() != Some(root.as_path()) {
         return Err(format!(

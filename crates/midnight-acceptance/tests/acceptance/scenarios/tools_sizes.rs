@@ -120,8 +120,26 @@ pub fn folder_sizes_tools(context: &mut Context) -> Result<(), String> {
     }
 
     // Inside links/: a marked folder link is measured as its target; the link to its
-    // own folder measures that folder without following the links in it.
+    // own folder measures that folder without following the links in it. Windows has
+    // no symbolic links in the fixture (they need a privilege): there the same folder
+    // links are directory junctions in a work folder, opened with Ctrl+G.
     unmarked_focus(&mut app)?;
+    #[cfg(windows)]
+    {
+        let links = context.work.join("links");
+        fs::create_dir(&links).map_err(|error| format!("{}: {error}", links.display()))?;
+        crate::fixtures::junction(
+            &links.join("to-folder"),
+            &root.join("deep").join("level-01"),
+        )?;
+        crate::fixtures::junction(&links.join("to-self"), &links)?;
+        input::chord(app.slint(), &[Key::Control], "g");
+        input::replace_text(app.slint(), &links.display().to_string());
+        input::key(app.slint(), Key::Return);
+        panel::wait_location(&mut app, pane, &links);
+        context.note("inside links/: directory junctions in a work folder (Windows)");
+    }
+    #[cfg(not(windows))]
     panel::enter(&mut app, pane, "links")?;
     for name in ["to-folder", "to-self"] {
         panel::select_row(&mut app, pane, name)?;
@@ -167,7 +185,6 @@ pub fn folder_sizes_tools(context: &mut Context) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(partial.join("clean")).map_err(|error| error.to_string())?;
     fs::write(partial.join("clean/file.bin"), [1_u8; 64]).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
     tools::set_mode(&partial.join("mixed/locked"), 0o000)?;
     let mut config = Config::new(&partial, &context.work);
     config.size_bytes = true;
@@ -187,7 +204,6 @@ pub fn folder_sizes_tools(context: &mut Context) -> Result<(), String> {
         "unreadable",
         "A folder with an unreadable subfolder",
     );
-    #[cfg(unix)]
     tools::set_mode(&partial.join("mixed/locked"), 0o755)?;
     if exact(&clean) != Some(64) {
         return Err(format!("clean/ shows {:?}", clean.size));

@@ -636,10 +636,19 @@ pub fn damaged() -> Vec<Damaged> {
 
 /// A program on the `PATH`, if there is one.
 pub fn program(name: &str) -> Option<PathBuf> {
+    // Windows programs carry their extension (Git for Windows ships xz.exe, bzip2.exe).
+    let names = if cfg!(windows) {
+        vec![format!("{name}.exe"), name.to_owned()]
+    } else {
+        vec![name.to_owned()]
+    };
     std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|folder| folder.join(name))
-            .find(|candidate| candidate.is_file())
+        std::env::split_paths(&paths).find_map(|folder| {
+            names
+                .iter()
+                .map(|name| folder.join(name))
+                .find(|candidate| candidate.is_file())
+        })
     })
 }
 

@@ -73,9 +73,10 @@ fn expect_root(app: &mut App, pane: PaneId, what: &str, failures: &mut Vec<Strin
     let other_before = app.location(other);
     let before = app.location(pane);
     shift_backspace(app);
-    if !reached(app, pane, Path::new("/")) {
+    let filesystem_root = before.as_deref().map(support::filesystem_root);
+    if !filesystem_root.is_some_and(|root| reached(app, pane, &root)) {
         failures.push(format!(
-            "{what}: Shift+Backspace left the {pane:?} panel at {:?} (from {before:?}), expected /",
+            "{what}: Shift+Backspace left the {pane:?} panel at {:?} (from {before:?}), expected its filesystem root",
             app.location(pane)
         ));
     }
@@ -110,7 +111,7 @@ fn body(context: &mut Context) -> Result<(), String> {
     // Ctrl+Backspace, the other default, in the right panel.
     go(&mut app, RIGHT, &deep)?;
     input::chord(app.slint(), &[Key::Control], Key::Backspace);
-    if !reached(&mut app, RIGHT, Path::new("/")) {
+    if !reached(&mut app, RIGHT, &support::filesystem_root(&deep)) {
         failures.push(format!(
             "Ctrl+Backspace left the right panel at {:?}",
             app.location(RIGHT)
@@ -163,7 +164,7 @@ fn body(context: &mut Context) -> Result<(), String> {
     app.settle();
     shift_backspace(&mut app);
     ps::wait(&mut app, Duration::from_secs(3), |app| {
-        app.location(LEFT).as_deref() == Some(Path::new("/"))
+        app.location(LEFT).as_deref() == Some(support::filesystem_root(&deep).as_path())
     });
     context.note(format!(
         "Shift+Backspace during the search \"l\": left panel at {:?}, search {:?} active {}",
@@ -276,7 +277,9 @@ fn archive(
     let bar = path_bar(app, pane);
     let location = app.location(pane);
     if !at_root
-        || location.as_deref() == Some(Path::new("/"))
+        || location
+            .as_deref()
+            .is_some_and(|location| location.parent().is_none())
         || !bar.trim_end_matches('/').ends_with("bundle.zip")
     {
         failures.push(format!(

@@ -109,6 +109,8 @@ pub fn search_filter(context: &mut Context) -> Result<(), String> {
     ] {
         ps::write(&folder.join(name), vec![b'x'; size])?;
     }
+    // Windows hides by the hidden attribute, not by name.
+    crate::fixtures::hide(&folder.join(".hidden-a.txt"))?;
     let mut app = App::start(Config::new(&folder, &folder));
     let mut failures = Vec::new();
     searching(&mut app, &folder, &mut failures)?;

@@ -182,9 +182,6 @@ export component MainWindow inherits Window {
     callback find-files(int);
     callback refresh-find-windows();
     callback close-find-windows();
-    // `FeedPresentation` holds the panels' search results; the acceptance scenarios read these.
-    out property <FeedView> left-feed: FeedPresentation.left;
-    out property <[FeedRow]> left-feed-rows: FeedPresentation.left-rows;
     callback calculate-checksums(int);
     callback make-file-list(int);
     callback refresh-file-list-window();

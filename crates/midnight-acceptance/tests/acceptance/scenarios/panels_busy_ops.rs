@@ -149,20 +149,34 @@ pub fn busy_ops(context: &mut Context) -> Result<(), String> {
             &mut failures,
         ),
     }
-    // Ctrl+F2 while busy: octal 600 on one file.
+    // Ctrl+F2 while busy: octal 600 (on Windows, whose Attributes dialog has attributes
+    // instead of permissions, Read-only set) for the marked files: with files marked,
+    // Ctrl+F2 acts on them, not on the focused row.
     panel::select_row(&mut app, LEFT, "stable-040.txt")?;
     ps::open_metadata(&mut app, false)?;
-    input::fill(app.slint(), "Octal permissions", "600")?;
+    if cfg!(unix) {
+        input::fill(app.slint(), "Octal permissions", "600")?;
+    } else {
+        ps::set_attribute(&mut app, "Read-only", "Set")?;
+    }
     app.settle();
     match ps::apply_metadata(&mut app) {
         Err(error) => failures.push(format!("Ctrl+F2 while busy: {error}")),
         Ok((progress, reviewed)) => {
-            let mode = support::facts(&folder.join("stable-040.txt")).map_or(0, |facts| facts.mode);
-            if cfg!(unix) && mode != 0o600 {
-                failures.push(format!(
-                    "Ctrl+F2 octal 600 while busy left stable-040.txt at mode {mode:o}; the job ended {:?} ({} done, {} failed) after reviewing {reviewed:?}",
-                    progress.state, progress.completed, progress.failed
-                ));
+            for name in marked {
+                let path = folder.join(name);
+                let mode = support::facts(&path).map_or(0, |facts| facts.mode);
+                let changed = if cfg!(unix) {
+                    mode == 0o600
+                } else {
+                    ps::read_only_attribute(&path)
+                };
+                if !changed {
+                    failures.push(format!(
+                        "Ctrl+F2 while busy did not change the marked {name} (mode {mode:o}); the job ended {:?} ({} done, {} failed) after reviewing {reviewed:?}",
+                        progress.state, progress.completed, progress.failed
+                    ));
+                }
             }
         }
     }

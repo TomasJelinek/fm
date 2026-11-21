@@ -73,6 +73,10 @@ pub fn filtered_conflicts(context: &mut Context) -> Result<(), String> {
     for (name, text) in TARGET {
         journey::write(&target.join(name), text)?;
     }
+    // Windows hides by the hidden attribute, not by name.
+    for folder in [&source, &target] {
+        crate::fixtures::hide(&folder.join(".hidden.txt"))?;
+    }
     let mut app = App::start(Config::new(&source, &target));
     let mut journey = Journey::default();
     let ended = steps(&mut app, context, &mut journey, &source, &target);
@@ -278,6 +282,12 @@ fn steps(
         "1 skipped item was not copied.",
         "1 file was kept in a recovery folder; Details shows where.",
     ];
+    // A tool window is sized before it is read: an unsized one has no area, so none of
+    // its text is in view.
+    for window in journey::titled(app, "Copy") {
+        crate::app::layout_tool(&window, 760, 560);
+    }
+    app.settle();
     let shown = wait(app, "the Copy window's outcome", STEP, |app| {
         journey::titled(app, "Copy").iter().any(|window| {
             let text = journey::window_text(window);
@@ -302,6 +312,9 @@ fn steps(
         },
     );
     if let Some(window) = windows.last() {
+        // A tool window is sized before it is rendered: an unsized one has no area.
+        crate::app::layout_tool(window, 760, 560);
+        app.settle();
         app.screenshot_window(context, window, "outcome", "The Copy job's outcome");
         journey.check(
             "the finished job's window closes",
@@ -346,15 +359,25 @@ fn steps(
     }
     journey.step("on disk: replaced, kept, renamed and recovered exactly; nothing else copied");
 
-    // 7. Both panels.
+    // 7. Both panels. Windows hides by the hidden attribute, which the recovery folder
+    //    does not get (TRANSFERS.md: an owner-only DACL), so there it is listed while
+    //    hidden files are hidden.
+    let mut names = vec!["alpha.txt", "bravo.txt", "delta.txt", RENAMED];
+    let recovery_folders: Vec<String> = fs::read_dir(target)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with(".midnight-recovery-"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if cfg!(windows) {
+        names.extend(recovery_folders.iter().map(String::as_str));
+    }
     journey.check(
         "the target lists the copy's names, dot-names hidden",
-        journey::wait_shown(
-            app,
-            RIGHT,
-            &["alpha.txt", "bravo.txt", "delta.txt", RENAMED],
-            STEP,
-        ),
+        journey::wait_shown(app, RIGHT, &names, STEP),
     );
     journey.check(
         "the source keeps its filter",
@@ -404,6 +427,8 @@ fn steps(
             None => Err(format!("Jobs lists {rows:?}")),
         },
     );
+    crate::app::layout_tool(&jobs, 760, 560);
+    app.settle();
     app.screenshot_window(context, &jobs, "jobs", "Jobs after the copy");
     journey::close_window(app, &jobs, "the Jobs window")?;
     journey.step("Jobs lists the copy: Completed with warnings, 2 files · 1 skipped · 0 errors");

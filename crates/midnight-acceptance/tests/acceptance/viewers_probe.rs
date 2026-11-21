@@ -165,7 +165,6 @@ pub struct Settled {
     /// The horizontal position.
     pub horizontal: f32,
     pub status: String,
-    pub elapsed: Duration,
 }
 
 /// How long nothing may change before a view counts as settled: longer than a refill
@@ -203,7 +202,6 @@ pub fn settle(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Settl
                 displayed: now.1,
                 horizontal: now.2,
                 status,
-                elapsed: started.elapsed(),
             });
         }
         if started.elapsed() >= limit {
@@ -405,12 +403,12 @@ impl Lines<'_> {
         let mut aligned: Vec<(u64, i32)> = Vec::new();
         for shift in -reach..=reach {
             let (mut total, mut lines) = (0_u64, 0_u64);
-            for line in 0..self.count {
+            for (line, &a) in new.iter().enumerate().take(self.count) {
                 let origin = line as i32 + shift;
                 if origin < 0 || origin >= self.count as i32 {
                     continue;
                 }
-                let (a, b) = (new[line], old[origin as usize]);
+                let b = old[origin as usize];
                 if a == 0 && b == 0 {
                     continue;
                 }
@@ -450,25 +448,6 @@ pub fn vertical_shift(before: &Canvas, after: &Canvas) -> Option<(i32, f32)> {
         count: before.height,
         length: before.width - 24,
         at: |canvas, line, position| canvas.at(position, line),
-    }
-    .shift()
-}
-
-/// How far the content moved left between two renders (positive: towards the end of
-/// the lines), from whole columns, as [`vertical_shift`] measures rows.
-pub fn horizontal_shift(before: &Canvas, after: &Canvas) -> Option<(i32, f32)> {
-    if before.width != after.width || before.height != after.height || before.height == 0 {
-        return None;
-    }
-    if before.fingerprint() == after.fingerprint() {
-        return Some((0, 1.0));
-    }
-    Lines {
-        before,
-        after,
-        count: before.width,
-        length: before.height,
-        at: |canvas, line, position| canvas.at(line, position),
     }
     .shift()
 }
@@ -536,6 +515,47 @@ pub fn glyph_colours(
     background: [u8; 3],
     minimum: usize,
 ) -> Vec<([u8; 3], usize)> {
+    let mut glyphs: Vec<([u8; 3], usize)> = glyph_groups(canvas, background)
+        .into_iter()
+        .filter_map(|members| {
+            let total: usize = members.iter().map(|(_, count, _)| count).sum();
+            let farthest = members.first()?.2;
+            let (colour, count, _) = members
+                .iter()
+                .filter(|(_, _, reach)| *reach >= farthest * 0.85)
+                .max_by_key(|(_, count, _)| *count)?;
+            (total >= minimum && *count >= 6).then_some((*colour, total))
+        })
+        .collect();
+    glyphs.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    glyphs
+}
+
+/// The text colours drawn over `background` for a contrast measurement: the groups of
+/// [`glyph_colours`], each standing for the colour of its highest contrast against
+/// `background` (seen at least twice). WCAG measures the text's own colour, which only
+/// the solid cores of glyph strokes show; their anti-aliased edges are blends towards
+/// the background and read lower, however often they occur. Groups under `minimum`
+/// pixels are left out. Returns (core colour, pixels of its group), most pixels first.
+pub fn glyph_cores(canvas: &Canvas, background: [u8; 3], minimum: usize) -> Vec<([u8; 3], usize)> {
+    let mut glyphs: Vec<([u8; 3], usize)> = glyph_groups(canvas, background)
+        .into_iter()
+        .filter_map(|members| {
+            let total: usize = members.iter().map(|(_, count, _)| count).sum();
+            let (colour, _, _) = members
+                .iter()
+                .max_by(|a, b| contrast(a.0, background).total_cmp(&contrast(b.0, background)))?;
+            (total >= minimum).then_some((*colour, total))
+        })
+        .collect();
+    glyphs.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    glyphs
+}
+
+/// The colours of glyph runs over `background` (see [`glyph_colours`]) in groups of
+/// one direction from it: each group's members (colour, times seen, distance from the
+/// background), farthest first.
+fn glyph_groups(canvas: &Canvas, background: [u8; 3]) -> Vec<Vec<([u8; 3], usize, f32)>> {
     const NEAR: f32 = 10.0;
     const LONGEST_RUN: usize = 16;
     let mut counts: HashMap<[u8; 3], usize> = HashMap::new();
@@ -615,21 +635,7 @@ pub fn glyph_colours(
             None => {}
         }
     }
-    let mut glyphs: Vec<([u8; 3], usize)> = groups
-        .into_iter()
-        .filter_map(|group| {
-            let total: usize = group.members.iter().map(|(_, count, _)| count).sum();
-            let farthest = group.members.first()?.2;
-            let (colour, count, _) = group
-                .members
-                .iter()
-                .filter(|(_, _, reach)| *reach >= farthest * 0.85)
-                .max_by_key(|(_, count, _)| *count)?;
-            (total >= minimum && *count >= 6).then_some((*colour, total))
-        })
-        .collect();
-    glyphs.sort_by_key(|entry| std::cmp::Reverse(entry.1));
-    glyphs
+    groups.into_iter().map(|group| group.members).collect()
 }
 
 /// `#rrggbb`.

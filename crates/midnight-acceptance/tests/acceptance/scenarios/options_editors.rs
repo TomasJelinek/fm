@@ -75,7 +75,7 @@ pub fn editors(context: &mut Context) -> Result<(), String> {
     let setup = Setup {
         panel: root.join("panel"),
         out: root.join("out"),
-        cp: options::program(&["/bin/cp", "/usr/bin/cp"])?,
+        cp: crate::tool::program(context, "cp")?,
         store: SettingsStore::new(),
     };
     fs::create_dir_all(&setup.panel).map_err(|error| error.to_string())?;

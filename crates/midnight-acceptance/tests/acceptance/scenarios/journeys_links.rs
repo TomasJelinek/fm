@@ -12,6 +12,13 @@
 //! 4. Shift+F8 of each copy: deleted whole without a question (Delete clears owner write
 //!    protection inside the deleted tree), gone from the panel.
 //! 5. The original tree (content, modes, times) and the link targets are unchanged.
+//!
+//! Not on Windows (`SKIP`): its checks are Linux link and mode semantics. Windows copies
+//! never recreate links (docs/developer/TRANSFERS.md), file links need a privilege or
+//! Developer Mode, and a folder is protected by its ACL, not a mode. `files_links` covers
+//! junctions there.
+// The journey's helpers are Unix-only; on Windows only the SKIP remains.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 use super::journeys_support::{self as journey, Journey, wait};
 use crate::{
     Context,
@@ -52,7 +59,13 @@ pub fn scenario() -> crate::Scenario {
 pub fn links_readonly(context: &mut Context) -> Result<(), String> {
     #[cfg(not(unix))]
     {
-        return Err("SKIP: symbolic links and modes are Unix-only in this suite".into());
+        let _ = context;
+        Err(
+            "SKIP: the journey checks Linux link and mode semantics: Windows copies never \
+             recreate links, file links need a privilege or Developer Mode, and folders are \
+             protected by ACLs (files_links covers junctions)"
+                .into(),
+        )
     }
     #[cfg(unix)]
     {

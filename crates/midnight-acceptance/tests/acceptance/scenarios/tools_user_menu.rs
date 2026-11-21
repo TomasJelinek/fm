@@ -37,7 +37,7 @@ const STAMP: &str = "Stamp each";
 const RULE: &str = "Group";
 const DISABLED: &str = "Disabled tool";
 /// One line per argument after `$0`, written into the working folder.
-const LIST_SCRIPT: &str = "for f in \"$@\"; do printf '%s\\n' \"$f\"; done > selection.txt";
+use crate::tool::LIST_SCRIPT;
 const BUILT_IN: [&str; 5] = [
     "Command line",
     "Bookmarks and Hot Paths",
@@ -310,8 +310,8 @@ pub fn user_menu(context: &mut Context) -> Result<(), String> {
     let setup = Setup {
         panel: root.join("panel"),
         out: root.join("out"),
-        sh: options::program(&["/bin/sh", "/usr/bin/sh"])?,
-        touch: options::program(&["/usr/bin/touch", "/bin/touch"])?,
+        sh: crate::tool::program(context, "sh")?,
+        touch: crate::tool::program(context, "touch")?,
     };
     for folder in ["project/sub-a", "project/sub-b"] {
         fs::create_dir_all(setup.panel.join(folder)).map_err(|error| error.to_string())?;

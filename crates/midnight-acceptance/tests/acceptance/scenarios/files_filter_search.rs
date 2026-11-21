@@ -3,7 +3,8 @@
 //! row, marks on hidden entries are dropped, Ctrl+A and the status line follow,
 //! an inline tree leaves them out); Options › General saves the choice across a
 //! restart. Then the panel filter (Masks, the hidden-name exclusion, Expression,
-//! Show all) and filename search.
+//! Show all) and filename search. Windows hides by the hidden attribute, not by name,
+//! so there the dot-names also get that attribute (`fixtures::hide`).
 use crate::{
     Context,
     app::{App, Config},
@@ -350,6 +351,14 @@ pub fn filter_and_search(context: &mut Context) -> Result<(), String> {
     for name in [TREE_SECRET, TREE_SHOWN] {
         let subfolder = folder.join(TREE_FOLDER).join(name);
         fs::create_dir(&subfolder).map_err(|error| io_error(&subfolder, error))?;
+    }
+    // Windows hides by attribute, not by name: the dot-names get the hidden attribute.
+    for hidden in [
+        folder.join(".hidden"),
+        folder.join(".hidden-folder"),
+        folder.join(TREE_FOLDER).join(TREE_SECRET),
+    ] {
+        crate::fixtures::hide(&hidden)?;
     }
     let all = support::names_on_disk(&folder);
     let store = SettingsStore::new();

@@ -136,6 +136,14 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
             checkbox(&app, "Follow links")
         ));
     }
+    // Windows keeps its directory-link option, followed by default at Copy.
+    #[cfg(windows)]
+    if checkbox(&app, "Follow directory links") != Some((true, true)) {
+        failures.push(format!(
+            "Copy's \"Follow directory links\" is {:?}, not shown checked",
+            checkbox(&app, "Follow directory links")
+        ));
+    }
     app.screenshot(context, "copy-dialog", "F5 of one file");
 
     // Destinations the dialog refuses: a relative path, nothing, then a missing folder.
@@ -208,6 +216,11 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
     if checkbox(&app, "Follow links").is_some() {
         failures.push("the Move dialog offers \"Follow links\"".into());
     }
+    #[cfg(windows)]
+    context.note(format!(
+        "the Move dialog's \"Follow directory links\" (shown, checked): {:?}",
+        checkbox(&app, "Follow directory links")
+    ));
     app.screenshot(context, "move-dialog", "F6 of one file");
     close_dialog(&mut app);
 

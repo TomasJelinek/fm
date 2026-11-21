@@ -156,18 +156,41 @@ fn narrow(app: &mut App, context: &mut Context, window: &Tool) -> Result<(), Str
         return Err(format!("*.* ended {text:?}"));
     }
     find::select_result(app, window, "a-rather-long-result-name-00.txt", None)?;
-    let before = rect(window, AccessibleRole::Button, "Sort by Name")?;
+    // The headers' places before Right, after it and after Left. One step may scroll a
+    // whole column out of view (how far depends on the font), so the first header that
+    // stays in view is measured.
+    const HEADERS: [&str; 3] = ["Sort by Name", "Sort by Extension", "Sort by Path"];
+    let places = |window: &Tool| {
+        HEADERS.map(|label| {
+            rect(window, AccessibleRole::Button, label)
+                .ok()
+                .map(|place| place.0)
+        })
+    };
+    let before = places(window);
     input::key(w, Key::RightArrow);
     app.settle();
-    let scrolled = rect(window, AccessibleRole::Button, "Sort by Name")?;
+    let scrolled = places(window);
     input::key(w, Key::LeftArrow);
     app.settle();
-    let back = rect(window, AccessibleRole::Button, "Sort by Name")?;
-    if scrolled.0 >= before.0 - 10.0 || (back.0 - before.0).abs() > 0.5 {
-        return Err(format!(
-            "Right and Left in the results: Name header at x {:.0} → {:.0} → {:.0}",
-            before.0, scrolled.0, back.0
-        ));
+    let back = places(window);
+    let measured = (0..HEADERS.len()).find_map(|index| {
+        Some((
+            HEADERS[index],
+            before[index]?,
+            scrolled[index]?,
+            back[index]?,
+        ))
+    });
+    match measured {
+        Some((_, before, scrolled, back))
+            if scrolled < before - 10.0 && (back - before).abs() <= 0.5 => {}
+        _ => {
+            return Err(format!(
+                "Right and Left in the results: header places {HEADERS:?} at x {before:?} → \
+                 {scrolled:?} → {back:?}"
+            ));
+        }
     }
     Ok(())
 }
@@ -213,14 +236,14 @@ fn missing_tails(window: &Tool) -> (usize, Vec<(String, Vec<String>)>) {
                 let row = find::parse_row(&label, 0, false);
                 let tail = Path::new(&row.folder)
                     .file_name()
-                    .map(|name| format!("/{}", name.to_string_lossy()))
+                    .map(|name| format!("{}{}", std::path::MAIN_SEPARATOR, name.to_string_lossy()))
                     .unwrap_or_default();
                 let texts = tools::item_texts(item);
                 // A shortened path shows the omission marker; its label keeps the whole
                 // text, cut by its width.
                 if texts.iter().any(|text| text == "...") {
                     shortened_rows += 1;
-                    if !texts.iter().any(|text| *text == tail) {
+                    if !texts.contains(&tail) {
                         missing.push((row.name, texts));
                     }
                 }
@@ -308,14 +331,31 @@ fn status_rects(window: &Tool) -> Vec<inspect::Rect> {
     found
 }
 
-/// Whether the status lines are under the results list, and whether one is above it.
+/// Whether a status line is under the results list, and whether one is in the query
+/// area above it. A line in the query area counts as above even where that area's
+/// scroller holds it out of view, below its viewport and so below the list in window
+/// coordinates: the area that clips it ends above the list. Whether a status line is
+/// in view is checked separately.
 fn status_places(window: &Tool) -> Result<(bool, bool), String> {
     let list = rect(window, AccessibleRole::List, "Find results")?;
-    let rects = status_rects(window);
-    Ok((
-        rects.iter().any(|shown| shown.1 >= list.1 + list.3 - 1.0),
-        rects.iter().any(|shown| shown.1 < list.1),
-    ))
+    let (mut under, mut above) = (false, false);
+    for root in inspect::roots(window.window()) {
+        inspect::walk(&root, &mut |item| {
+            if item.accessible_role() == AccessibleRole::Button
+                && inspect::label(item).is_some_and(|label| find::is_status(&label))
+            {
+                let shown = inspect::rect(item);
+                let in_area_above =
+                    inspect::clip_rect(item).is_some_and(|clip| clip.1 + clip.3 <= list.1 + 1.0);
+                if in_area_above || shown.1 + shown.3 <= list.1 + 1.0 {
+                    above = true;
+                } else if shown.1 >= list.1 + list.3 - 1.0 {
+                    under = true;
+                }
+            }
+        });
+    }
+    Ok((under, above))
 }
 
 /// Below 360 px high: the field is "Query"; while a search runs the query area is

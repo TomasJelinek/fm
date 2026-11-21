@@ -1,4 +1,5 @@
-//! Ctrl+F2 Attributes and times: permission check boxes and the octal field, and the
+//! Ctrl+F2 Attributes and times: permission check boxes and the octal field (Windows:
+//! the Hidden, Archive and Read-only attributes), and the
 //! typed date, time and UTC-offset fields of Modified and Accessed for one file, a
 //! multi-selection and a folder. Every change is reviewed, applied and verified on
 //! disk; no summary window stays open afterwards.
@@ -134,6 +135,7 @@ fn type_time(
     Ok(())
 }
 
+#[cfg(unix)]
 fn mode(path: &Path) -> u32 {
     support::facts(path).map_or(0, |facts| facts.mode)
 }
@@ -151,37 +153,10 @@ pub fn attributes_and_times(context: &mut Context) -> Result<(), String> {
     let pane = PaneId::Left;
     let mut failures = Vec::new();
 
-    // Permission check boxes: set group write, clear other read.
-    panel::select_row(&mut app, pane, "one.txt")?;
-    open_editor(&mut app)?;
-    app.screenshot(context, "attributes", "Ctrl+F2 Attributes of one.txt");
-    input::click(app.slint(), AccessibleRole::Checkbox, "Group write")?;
-    input::click(app.slint(), AccessibleRole::Checkbox, "Other read")?;
-    app.settle();
-    match review_and_apply(&mut app, context, Some("attributes-review")) {
-        Err(error) => failures.push(format!("permissions of one.txt: {error}")),
-        Ok(_) if mode(&folder.join("one.txt")) != 0o660 => failures.push(format!(
-            "one.txt has mode {:o} instead of 660",
-            mode(&folder.join("one.txt"))
-        )),
-        Ok(_) => {}
-    }
-    support::dismiss_all(&mut app);
-
-    // The octal field: read-only for everyone.
-    panel::select_row(&mut app, pane, "two.txt")?;
-    open_editor(&mut app)?;
-    input::fill(app.slint(), "Octal permissions", "444")?;
-    app.settle();
-    match review_and_apply(&mut app, context, None) {
-        Err(error) => failures.push(format!("octal 444 on two.txt: {error}")),
-        Ok(_) if mode(&folder.join("two.txt")) != 0o444 => failures.push(format!(
-            "two.txt has mode {:o} instead of 444",
-            mode(&folder.join("two.txt"))
-        )),
-        Ok(_) => {}
-    }
-    support::dismiss_all(&mut app);
+    #[cfg(unix)]
+    permissions(&mut app, context, &folder, &mut failures)?;
+    #[cfg(windows)]
+    windows_attributes(&mut app, context, &folder, &mut failures)?;
 
     // Modified and accessed times of one file, to the nanosecond, with offsets.
     panel::select_row(&mut app, pane, "one.txt")?;
@@ -201,7 +176,13 @@ pub fn attributes_and_times(context: &mut Context) -> Result<(), String> {
         "times-typed",
         "Times page with typed date, time and offset",
     );
-    let modified = instant((2021, 3, 4), (5, 6, 7), 123_456_789, 120);
+    // NTFS keeps times in 100 ns steps: the nanoseconds typed arrive truncated there.
+    let nanos = if cfg!(windows) {
+        123_456_700
+    } else {
+        123_456_789
+    };
+    let modified = instant((2021, 3, 4), (5, 6, 7), nanos, 120);
     let accessed = instant((2020, 1, 2), (3, 4, 5), 0, 0);
     match review_and_apply(&mut app, context, Some("times-review")) {
         Err(error) => failures.push(format!("times of one.txt: {error}")),
@@ -274,7 +255,127 @@ pub fn attributes_and_times(context: &mut Context) -> Result<(), String> {
         "after-attributes",
         "After the attribute and time changes",
     );
-    context.note("Ctrl+F2: check boxes (660), octal 444, modified+accessed of one file with offsets and nanoseconds, modified of three files and of a folder — verified on disk, no window left open");
+    context.note(format!(
+        "Ctrl+F2: {}, modified+accessed of one file with offsets and nanoseconds, modified of three files and of a folder — verified on disk, no window left open",
+        if cfg!(windows) {
+            "Hidden set and Archive cleared on one.txt, Read-only set on two.txt"
+        } else {
+            "check boxes (660), octal 444"
+        }
+    ));
     app.shutdown()?;
     support::report(&failures)
+}
+
+/// Permission check boxes (group write set, other read cleared) and the octal field
+/// (444), each reviewed, applied and read back from disk.
+#[cfg(unix)]
+fn permissions(
+    app: &mut App,
+    context: &mut Context,
+    folder: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let pane = PaneId::Left;
+    // Permission check boxes: set group write, clear other read.
+    panel::select_row(app, pane, "one.txt")?;
+    open_editor(app)?;
+    app.screenshot(context, "attributes", "Ctrl+F2 Attributes of one.txt");
+    input::click(app.slint(), AccessibleRole::Checkbox, "Group write")?;
+    input::click(app.slint(), AccessibleRole::Checkbox, "Other read")?;
+    app.settle();
+    match review_and_apply(app, context, Some("attributes-review")) {
+        Err(error) => failures.push(format!("permissions of one.txt: {error}")),
+        Ok(_) if mode(&folder.join("one.txt")) != 0o660 => failures.push(format!(
+            "one.txt has mode {:o} instead of 660",
+            mode(&folder.join("one.txt"))
+        )),
+        Ok(_) => {}
+    }
+    support::dismiss_all(app);
+
+    // The octal field: read-only for everyone.
+    panel::select_row(app, pane, "two.txt")?;
+    open_editor(app)?;
+    input::fill(app.slint(), "Octal permissions", "444")?;
+    app.settle();
+    match review_and_apply(app, context, None) {
+        Err(error) => failures.push(format!("octal 444 on two.txt: {error}")),
+        Ok(_) if mode(&folder.join("two.txt")) != 0o444 => failures.push(format!(
+            "two.txt has mode {:o} instead of 444",
+            mode(&folder.join("two.txt"))
+        )),
+        Ok(_) => {}
+    }
+    support::dismiss_all(app);
+    Ok(())
+}
+
+/// Windows attributes: Hidden set and Archive cleared on one.txt, Read-only set on
+/// two.txt, each reviewed, applied and read back from disk (the file's attribute bits).
+#[cfg(windows)]
+fn windows_attributes(
+    app: &mut App,
+    context: &mut Context,
+    folder: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    const READ_ONLY: u32 = 0x1;
+    const HIDDEN: u32 = 0x2;
+    const ARCHIVE: u32 = 0x20;
+    let attributes = |name: &str| {
+        fs::metadata(folder.join(name)).map_or(0, |metadata| metadata.file_attributes())
+    };
+    let pane = PaneId::Left;
+    for (name, changes, wanted, unwanted) in [
+        (
+            "one.txt",
+            &[("Hidden", "Set"), ("Archive", "Clear")][..],
+            HIDDEN,
+            ARCHIVE | READ_ONLY,
+        ),
+        ("two.txt", &[("Read-only", "Set")][..], READ_ONLY, HIDDEN),
+    ] {
+        panel::select_row(app, pane, name)?;
+        open_editor(app)?;
+        if name == "one.txt" {
+            app.screenshot(context, "attributes", "Ctrl+F2 Attributes of one.txt");
+        }
+        // Each attribute is a three-state box: a click goes Unchanged, Set, Clear.
+        for (label, choice) in changes {
+            let state = |app: &App| {
+                inspect::find(app.slint(), AccessibleRole::Checkbox, label)
+                    .map(|item| crate::tools_support::value(&item))
+            };
+            for _ in 0..3 {
+                if state(app).as_deref() == Some(*choice) {
+                    break;
+                }
+                input::click(app.slint(), AccessibleRole::Checkbox, label)?;
+                app.settle();
+            }
+            if state(app).as_deref() != Some(*choice) {
+                return Err(format!(
+                    "the {label:?} attribute shows {:?}, not {choice:?}",
+                    state(app)
+                ));
+            }
+        }
+        app.settle();
+        let shot = (name == "one.txt").then_some("attributes-review");
+        match review_and_apply(app, context, shot) {
+            Err(error) => failures.push(format!("attributes of {name}: {error}")),
+            Ok(_) => {
+                let found = attributes(name);
+                if found & wanted != wanted || found & unwanted != 0 {
+                    failures.push(format!(
+                        "{name} has the attributes {found:#x} after {changes:?}"
+                    ));
+                }
+            }
+        }
+        support::dismiss_all(app);
+    }
+    Ok(())
 }

@@ -159,6 +159,25 @@ fn is_run_name(name: &str) -> bool {
         }
 }
 
+/// A canonical path as a user spells it. Windows' `canonicalize` returns a verbatim
+/// `\\?\C:\…` or `\\?\UNC\…` path, which the application would then show in its panels
+/// and paths; a drive or UNC path drops that prefix (the standard library reaches long
+/// paths without it).
+fn plain(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(text) = path.to_str() {
+        if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{share}"));
+        }
+        if let Some(drive) = text.strip_prefix(r"\\?\")
+            && drive.as_bytes().get(1) == Some(&b':')
+        {
+            return PathBuf::from(drive);
+        }
+    }
+    path
+}
+
 /// Create this run's own folder below `root`, which must be an absolute folder other
 /// than a filesystem root: `root/<run id>`, made with `create_dir`, so it never is an
 /// existing folder. Everything the run deletes later is inside it. Returns the
@@ -166,9 +185,10 @@ fn is_run_name(name: &str) -> bool {
 pub fn create_run(root: &Path) -> Result<PathBuf, String> {
     fs::create_dir_all(root)
         .map_err(|error| format!("cannot create {}: {error}", root.display()))?;
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("cannot resolve {}: {error}", root.display()))?;
+    let root = plain(
+        root.canonicalize()
+            .map_err(|error| format!("cannot resolve {}: {error}", root.display()))?,
+    );
     if root.parent().is_none() {
         return Err(format!(
             "{} is a filesystem root; name a folder for the run folders",

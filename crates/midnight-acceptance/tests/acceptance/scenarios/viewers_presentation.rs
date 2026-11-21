@@ -72,11 +72,8 @@ fn run(context: &mut Context) -> Result<(), String> {
     config.plugins = Some(context.work.join("plugins"));
     let mut app = App::start(config);
     let failures = Failures::default();
-    let sections: [(
-        &str,
-        &str,
-        fn(&mut App, &mut Context, &Viewing) -> Result<(), String>,
-    ); 8] = [
+    type Section = fn(&mut App, &mut Context, &Viewing) -> Result<(), String>;
+    let sections: [(&str, &str, Section); 8] = [
         ("Find bar", "words.txt", find_bar),
         ("Source and Text modes, Lines", "sample.rs", source_modes),
         ("Markdown and Text modes, presets", "doc.md", markdown_modes),
@@ -87,6 +84,12 @@ fn run(context: &mut Context) -> Result<(), String> {
         ("Find in the hex view", "bytes.bin", hex_find),
     ];
     for (what, file, section) in sections {
+        if file.ends_with(".html")
+            && let Some(reason) = crate::viewers_stage::html_viewer_missing()
+        {
+            failures.skip(what, &reason);
+            continue;
+        }
         let result = open(&mut app, file).and_then(|viewing| {
             let result = section(&mut app, context, &viewing);
             // A section may close its viewer itself (Escape in the Find bar).
@@ -137,8 +140,11 @@ fn changed(base: &Canvas, now: &Canvas) -> Option<(usize, usize, usize, usize)> 
 }
 
 /// Where the match highlight is: the top-left of the pixels painted in the highlight's
-/// colour where the unsearched page showed its background.
+/// colour where the unsearched page showed its background. The pointer leaves the
+/// window first: the tooltip of a find bar control it rests on ("Next match (F3)",
+/// "Find whole words") would cover the page's corner and be taken for the highlight.
 fn highlight(app: &mut App, viewing: &Viewing, base: &Canvas) -> Result<(usize, usize), String> {
+    super::ui_gate::pointer_out(viewing.slint());
     let now = probe::still_canvas(app, viewing, STEP)?;
     let background = probe::dominant(base);
     let (colour, _) = probe::painted_over(base, &now, background)

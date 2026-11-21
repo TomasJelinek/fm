@@ -232,8 +232,11 @@ fn buttons(app: &App) -> Vec<Button> {
     found
 }
 
-fn seed(command: &str, out: &std::path::Path) -> Result<Arc<SettingsStore>, String> {
-    let sh = options::program(&["/bin/sh", "/usr/bin/sh"])?;
+fn seed(
+    command: &str,
+    sh: std::path::PathBuf,
+    out: &std::path::Path,
+) -> Result<Arc<SettingsStore>, String> {
     let out = out.display().to_string();
     let command = command.to_owned();
     Ok(SettingsStore::seeded(move |preferences| {
@@ -261,7 +264,11 @@ pub fn every_button(context: &mut Context) -> Result<(), String> {
     let folder = context.work.join("buttons");
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     fs::write(folder.join("file.txt"), "file\n").map_err(|error| error.to_string())?;
-    let store = seed("Harmless note", &folder)?;
+    let store = seed(
+        "Harmless note",
+        crate::tool::program(context, "sh")?,
+        &folder,
+    )?;
     let mut config = Config::new(&folder, &folder);
     config.settings = Some(store.clone());
     config.user_commands = true;

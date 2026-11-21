@@ -42,14 +42,25 @@ fn run(context: &mut Context) -> Result<(), String> {
     // Only the staged process has a private data folder, beside its run folder
     // (`<work>/staged/{run/<run>,xdg/data}`); never look at the account's.
     let staged = context.run_dir.parent().and_then(Path::parent);
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|data| staged.is_some_and(|staged| data.starts_with(staged)))
-        .ok_or("files_delete runs only in its staged process, with a private XDG_DATA_HOME")?;
-    context.note(format!(
-        "Private Trash of the staged process: {}",
-        data.join("Trash").display()
-    ));
+    // Windows keeps one Recycle Bin per volume and account, which no variable redirects:
+    // it is never read, and F8 is cancelled before anything could reach it.
+    let data = if cfg!(unix) {
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|data| staged.is_some_and(|staged| data.starts_with(staged)))
+            .ok_or("files_delete runs only in its staged process, with a private XDG_DATA_HOME")?;
+        context.note(format!(
+            "Private Trash of the staged process: {}",
+            data.join("Trash").display()
+        ));
+        Some(data)
+    } else {
+        context.note(
+            "the Recycle Bin is not read: it is the account's own (one per volume); F8 is \
+             cancelled and the file must stay",
+        );
+        None
+    };
     let root = support::scratch(context, "delete")?;
     support::stage(
         context,
@@ -59,7 +70,22 @@ fn run(context: &mut Context) -> Result<(), String> {
         ],
         &root,
     )?;
-    let trash_before = trash_entries(&data);
+    // Windows has no mode 0555: its write-protected folder is one with the read-only
+    // attribute, which refuses its own deletion until the attribute is cleared.
+    #[cfg(windows)]
+    {
+        let folder = root.join("readonly").join("locked-folder");
+        fs::create_dir(&folder).map_err(|error| support::io_error(&folder, error))?;
+        let inside = folder.join("inside.txt");
+        fs::write(&inside, "inside\n").map_err(|error| support::io_error(&inside, error))?;
+        let mut permissions = fs::metadata(&folder)
+            .map_err(|error| support::io_error(&folder, error))?
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&folder, permissions)
+            .map_err(|error| support::io_error(&folder, error))?;
+    }
+    let trash_before = data.as_deref().map(trash_entries);
     let mut app = App::start(Config::new(&root, &context.work));
     let pane = PaneId::Left;
     let mut failures = Vec::new();
@@ -273,7 +299,7 @@ fn run(context: &mut Context) -> Result<(), String> {
     }
     support::wait_row(&mut app, pane, "deep", false);
 
-    let trash_after = trash_entries(&data);
+    let trash_after = data.as_deref().map(trash_entries);
     if trash_after != trash_before {
         failures.push(format!(
             "the Trash changed: before {trash_before:?}, after {trash_after:?}"

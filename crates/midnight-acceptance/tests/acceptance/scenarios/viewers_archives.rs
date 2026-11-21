@@ -809,7 +809,7 @@ fn generated_archives(context: &mut Context, failures: &Failures) -> Result<(), 
 /// Member `index` of `flat.tar`'s folder: every thousandth file holds `index / 1000 + 1`
 /// bytes, the others are empty (101 files, 5,151 bytes in all).
 fn flat_bytes(index: usize) -> Vec<u8> {
-    if index % 1000 == 0 {
+    if index.is_multiple_of(1000) {
         vec![b'f'; index / 1000 + 1]
     } else {
         Vec::new()

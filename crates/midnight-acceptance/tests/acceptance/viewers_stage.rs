@@ -50,6 +50,11 @@ pub const LIMIT: &str = "MIDNIGHT_ACCEPTANCE_STAGED_LIMIT_MS";
 /// Optional folder holding the `viewers/`, `filesystems/` and `thumbnailers/` packages
 /// to stage; by default the build's profile folder (`_build/debug`).
 const PACKAGES: &str = "MIDNIGHT_ACCEPTANCE_PLUGINS";
+/// The folder in which plugin stages are created. Optional on Unix; required on
+/// Windows, whose plugin host loads a plugin only when no other account can change it
+/// or any folder above it (every ancestor's owner and DACL are checked): an owner-only
+/// folder below the user profile, as `scripts/acceptance.ps1` creates.
+const STAGE_ROOT: &str = "MIDNIGHT_ACCEPTANCE_STAGE_ROOT";
 const RESULT: &str = "staged-result.tsv";
 /// Stage folders are `<build>/acceptance-stage-<run>-<scenario>`.
 const STAGE_PREFIX: &str = "acceptance-stage-";
@@ -116,6 +121,21 @@ pub fn installed_packages(kind: &str) -> usize {
                 .count()
         })
         .unwrap_or(0)
+}
+
+/// Why the HTML viewer cannot be checked here: its package is not installed beside this
+/// executable (in a staged child, not staged). Packages built by
+/// `scripts/validate.ps1` do not include it; a normal build (`build.bat`,
+/// `./build.sh`) does.
+pub fn html_viewer_missing() -> Option<String> {
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf))
+        .is_some_and(|folder| folder.join("viewers").join("midnight-viewer-html").is_dir());
+    (!installed).then(|| {
+        "the HTML viewer package (viewers/midnight-viewer-html) is not installed in this stage"
+            .to_owned()
+    })
 }
 
 // ---------------------------------------------------------------------------------------
@@ -255,7 +275,8 @@ fn own_stage() -> Option<PathBuf> {
 }
 
 /// Kill this process's group (its plugin workers and itself) when this process leads
-/// it, as a staged child started by [`parent`] does; otherwise do nothing.
+/// it, as a staged child started by [`parent`] does; otherwise do nothing. Windows has
+/// no process groups: a staged child kills its own process tree there.
 fn stop_own_group() {
     #[cfg(unix)]
     if leads_own_group() {
@@ -265,6 +286,10 @@ fn stop_own_group() {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+    #[cfg(not(unix))]
+    if std::env::var_os(STAGED).is_some() {
+        kill_group(std::process::id());
     }
 }
 
@@ -357,7 +382,9 @@ fn kill_group(group: u32) {
         .status();
 }
 
-/// Kill process `group` and the processes it started.
+/// Kill process `group` and the processes it started (`taskkill /T` walks the tree of
+/// a running process). Plugin workers of a child that already exited end with it: the
+/// plugin host runs them in kill-on-close job objects.
 #[cfg(not(unix))]
 fn kill_group(group: u32) {
     let _ = Command::new("taskkill")
@@ -572,10 +599,30 @@ impl Stage {
     /// stage sits beside it where the same AppArmor profile pattern covers it, or else
     /// this executable's build folder.
     fn create(guard: &Guard, source: &Path, run: &str, scenario: &str) -> Result<Self, String> {
-        let build = source
-            .parent()
-            .filter(|parent| parent.file_name().is_some_and(|name| name == "_build"))
-            .map_or_else(build_folder, |parent| Ok(parent.to_path_buf()))?;
+        let build = match std::env::var_os(STAGE_ROOT) {
+            Some(root) => {
+                let root = PathBuf::from(root);
+                if !root.is_absolute() || !root.is_dir() {
+                    return Err(format!(
+                        "{STAGE_ROOT} {} is not an absolute, existing folder",
+                        root.display()
+                    ));
+                }
+                root
+            }
+            None if cfg!(windows) => {
+                return Err(format!(
+                    "SKIP: Windows loads plugins only from a folder that no other account can \
+                     change, up to the drive's root; name such a folder (owner, SYSTEM and \
+                     Administrators only, below the user profile) in {STAGE_ROOT}, as \
+                     scripts/acceptance.ps1 does"
+                ));
+            }
+            None => source
+                .parent()
+                .filter(|parent| parent.file_name().is_some_and(|name| name == "_build"))
+                .map_or_else(build_folder, |parent| Ok(parent.to_path_buf()))?,
+        };
         let root = fixtures::create_fresh(&build, &format!("{STAGE_PREFIX}{run}-{scenario}"))?;
         guard.stage(&root)?;
         private(&root)?;
@@ -681,14 +728,32 @@ fn private_folder(path: &Path) -> Result<(), String> {
     private(path)
 }
 
-/// Private XDG cache, config and data folders in `folder` for the child's environment:
-/// Chromium's sessions, the archive spool and the Trash stay inside it.
-fn private_xdg(folder: &Path) -> Result<[(&'static str, PathBuf); 3], String> {
-    let variables = [
+/// Private profile folders in `folder` for the child's environment, so settings,
+/// Chromium's sessions, the archive spool, thumbnail caches and (on Unix) the Trash stay
+/// inside it: the XDG cache, config and data folders on Unix. On Windows a private
+/// `USERPROFILE` with its `AppData\Local` and `AppData\Roaming` (the application's
+/// settings resolve through the LocalAppData known folder, `%USERPROFILE%\AppData\Local`;
+/// caches and plugin workers read `LOCALAPPDATA`) and a private `TEMP`. Windows keeps one
+/// Recycle Bin per volume and account, which no variable redirects.
+fn private_xdg(folder: &Path) -> Result<Vec<(&'static str, PathBuf)>, String> {
+    #[cfg(unix)]
+    let variables = vec![
         ("XDG_CACHE_HOME", folder.join("cache")),
         ("XDG_CONFIG_HOME", folder.join("config")),
         ("XDG_DATA_HOME", folder.join("data")),
     ];
+    #[cfg(not(unix))]
+    let variables = {
+        let profile = folder.join("profile");
+        let temporary = folder.join("temp");
+        vec![
+            ("LOCALAPPDATA", profile.join("AppData").join("Local")),
+            ("APPDATA", profile.join("AppData").join("Roaming")),
+            ("USERPROFILE", profile),
+            ("TEMP", temporary.clone()),
+            ("TMP", temporary),
+        ]
+    };
     private_folder(folder)?;
     for (_, path) in &variables {
         private_folder(path)?;

@@ -347,6 +347,10 @@ pub fn copy_every_kind(context: &mut Context) -> Result<(), String> {
             "Permission bits of every copied file and folder, inside copied folders too, are \
              the source's masked by the umask {umask:04o}"
         )),
+        None if cfg!(windows) => context.note(
+            "Permission bits were not checked: Windows files have no mode bits (a copy \
+             inherits its ACL from the destination folder)",
+        ),
         None => context.note(
             "Permission bits were not checked: the process umask cannot be read here (no \
              /proc/self/status)",

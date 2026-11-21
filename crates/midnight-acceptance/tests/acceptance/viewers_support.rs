@@ -129,6 +129,10 @@ fn archive_capture(filesystem: Arc<InstalledProvider>) -> midnight_engine::Archi
 /// When a viewer reported its initial content (or failure), and the result.
 pub type Ready = Rc<RefCell<Option<(Instant, Result<(), String>)>>>;
 
+/// What the viewer and comparator launches record: the windows opened and the
+/// refusals.
+type Records<'a> = (&'a Rc<RefCell<Vec<Opened>>>, &'a Rc<RefCell<Vec<String>>>);
+
 /// One viewer opened with F3 or Alt+F3.
 #[derive(Clone)]
 pub struct Opened {
@@ -516,7 +520,7 @@ fn file_list_viewer(
     presenter: &Rc<RefCell<Presenter>>,
     commands: &Rc<dyn Fn(Command) -> bool>,
     viewers: &Rc<ViewerWindows>,
-    records: (&Rc<RefCell<Vec<Opened>>>, &Rc<RefCell<Vec<String>>>),
+    records: Records<'_>,
 ) -> impl Fn() + 'static {
     let scheduled = Rc::new(Cell::new(false));
     let (state, sender, manager, weak) = (
@@ -596,7 +600,7 @@ fn pending_viewers(
     presenter: &Rc<RefCell<Presenter>>,
     commands: &Rc<dyn Fn(Command) -> bool>,
     viewers: &Rc<ViewerWindows>,
-    records: (&Rc<RefCell<Vec<Opened>>>, &Rc<RefCell<Vec<String>>>),
+    records: Records<'_>,
     take: fn(&mut Presenter) -> Option<ViewerLaunch>,
 ) -> impl Fn() + 'static {
     let scheduled = Rc::new(Cell::new(false));
@@ -1302,11 +1306,6 @@ impl Failures {
     /// A check this environment cannot make, with the reason.
     pub fn skip(&self, what: &str, reason: &str) {
         self.skipped.borrow_mut().push(format!("{what}: {reason}"));
-    }
-
-    /// How many checks failed so far.
-    pub fn failed(&self) -> usize {
-        self.failed.borrow().len()
     }
 
     /// The scenario's result without its notes: failures first, then pending checks.

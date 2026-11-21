@@ -16,9 +16,10 @@
 //! (the hex view), broken Markdown, HTML and JSON (shown as far as they go).
 //!
 //! An HTML case is skipped, with its reason in the scenario's message, only when the
-//! HTML viewer reports that this machine refuses its browser: AppArmor denies
-//! Chromium's sandbox to this installation (no profile covers the stage), or there is
-//! no writable cgroup-v2 delegation (a container). Any other viewer error fails.
+//! stage has no HTML viewer package, or the HTML viewer reports that this machine
+//! refuses its browser: AppArmor denies Chromium's sandbox to this installation (no
+//! profile covers the stage), or there is no writable cgroup-v2 delegation (a
+//! container). Any other viewer error fails.
 use crate::{
     Context,
     app::{App, Config},
@@ -548,6 +549,11 @@ fn open_and_check(
 
 fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
     let window = &viewing.window;
+    if matches!(case.expect, Expect::Html | Expect::HtmlText)
+        && let Some(reason) = crate::viewers_stage::html_viewer_missing()
+    {
+        return Err(format!("SKIP: {reason}"));
+    }
     if !matches!(
         case.expect,
         Expect::Rejected(_) | Expect::Damaged(_) | Expect::Truncated(_)
