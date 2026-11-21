@@ -48,7 +48,8 @@ def expand(steps, profile):
 # a value given to a flag, unknown steps, profiles or options and a missing SDK file.
 INVALID_ARGUMENTS = (("--bogus",), ("debug", "release"), ("--only",), ("--only", "no-such-step"),
                      ("--only", ","), ("--only=",), ("--only=,,",), ("--strict=no",), ("--dry-run=",),
-                     ("--offline=yes",), ("--help=1",), ("--plugin-sdk", "missing.toml"))
+                     ("--offline=yes",), ("--help=1",), ("--plugin-sdk", "missing.toml"), ("--jobs",),
+                     ("--jobs", "0"), ("--jobs", "x"), ("--jobs=-1",), ("--jobs", "2", "--jobs", "3"))
 SELECTION = r"ci-workspace-tests\.py (?:run|artifact) (\S+) ([^\s)]+)"
 # A plugin's scripts/ci.* also runs its formatting and lint checks.
 PLUGIN_CI_SCRIPT = r'(?:&|bash) "[^"]*/scripts/ci\.(?:ps1|sh)"'
@@ -359,10 +360,10 @@ class LinuxValidationTests(ValidationRunFixture, unittest.TestCase):
                 self.assertFalse((self.root / "_build/validate").exists())
 
     def test_dry_run_prints_every_step_with_its_commands_and_runs_nothing(self):
-        result = self.run_validation("--dry-run", "--offline", "release")
+        result = self.run_validation("--dry-run", "--offline", "release", "--jobs", "3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_plan_lists_every_step(result.stdout, "powershell-tests-7", "Windows only")
-        self.assertIn("CARGO_NET_OFFLINE=true", result.stdout)
+        self.assertIn("CARGO_NET_OFFLINE=true; CARGO_BUILD_JOBS=3; RUST_TEST_THREADS=3", result.stdout)
         self.assertIn("offline_flag=(--offline)", result.stdout)
         self.assertIn("host-build - Host build (release)", result.stdout)
         self.assertIn("(run if these pass: sdk-package)", result.stdout)
@@ -372,6 +373,7 @@ class LinuxValidationTests(ValidationRunFixture, unittest.TestCase):
     def test_only_selects_the_named_steps_and_the_steps_they_need(self):
         result = self.run_validation("--dry-run", "--only", "viewer-basic,smoke-test")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotRegex(result.stdout, r"Environment:.*CARGO_BUILD_JOBS", "all CPUs without --jobs")
         self.assertEqual(re.findall(r"^\s*\d+\. (\S+) - ", result.stdout, re.MULTILINE),
                          ["sdk-package", "viewer-basic", "test-install", "host-build", "smoke-test"])
 
@@ -477,10 +479,10 @@ class WindowsValidationTests(ValidationRunFixture, unittest.TestCase):
                 self.assertFalse((self.root / "_build/validate").exists())
 
     def test_dry_run_prints_every_step_with_its_commands_and_runs_nothing(self):
-        result = self.run_validation("--dry-run", "--offline")
+        result = self.run_validation("--dry-run", "--offline", "--jobs", "3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_plan_lists_every_step(result.stdout, "trash-qualification", "Linux only")
-        self.assertIn("CARGO_NET_OFFLINE=true", result.stdout)
+        self.assertIn("CARGO_NET_OFFLINE=true; CARGO_BUILD_JOBS=3; RUST_TEST_THREADS=3", result.stdout)
         self.assertIn("$OfflineFlag = @('--offline')", result.stdout)
         # CI sets TEMP, TMP and TMPDIR; Python's tempfile prefers TMPDIR.
         for name in ("TEMP", "TMP", "TMPDIR"):

@@ -51,7 +51,7 @@ package="$staging/package"
 mkdir -- "$package"
 native_offline=()
 [[ ${MIDNIGHT_IMAGE_NATIVE_OFFLINE:-0} != 1 ]] || native_offline+=(--offline)
-native_jobs=${CARGO_BUILD_JOBS:-2}
+native_jobs=${CARGO_BUILD_JOBS:-$(nproc)}
 source "$repository/plugins/image-decoder/native/bootstrap-linux.sh" "$build_root/native-tools" "$native_jobs" "${native_offline[@]}"
 source "$repository/plugins/image-decoder/native/build-linux.sh" "$build_root/native-dav1d" "$native_jobs" "${native_offline[@]}"
 for name in "${plugins[@]}"; do

@@ -53,7 +53,7 @@ if ($nativeTarget -ne 'x86_64-pc-windows-msvc') { throw "Unsupported Windows tar
 $nativeTools = Join-Path $BuildRoot 'native-tools'
 $nativeBuild = Join-Path $BuildRoot 'native-dav1d'
 $nativeScripts = Join-Path $pluginRoot '../image-decoder/native'
-$nativeJobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { 2 }
+$nativeJobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { [Environment]::ProcessorCount }
 & (Join-Path $nativeScripts 'bootstrap-windows.ps1') -BuildRoot $nativeTools -Offline:$NativeOffline
 & (Join-Path $nativeScripts 'build-windows.ps1') -BuildRoot $nativeBuild -Jobs $nativeJobs -Offline:$NativeOffline
 $executable = 'midnight-viewer-image.exe'

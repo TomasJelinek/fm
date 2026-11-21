@@ -91,7 +91,7 @@ New-Item -ItemType Directory -Path $package | Out-Null
 $cleanStaging=$true
 try {
     $nativeScripts=Join-Path $repository 'plugins/image-decoder/native'
-    $nativeJobs=if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { 2 }
+    $nativeJobs=if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { [Environment]::ProcessorCount }
     & (Join-Path $nativeScripts 'bootstrap-windows.ps1') -BuildRoot (Join-Path $BuildRoot 'native-tools') -Offline:$NativeOffline
     & (Join-Path $nativeScripts 'build-windows.ps1') -BuildRoot (Join-Path $BuildRoot 'native-dav1d') -Jobs $nativeJobs -Offline:$NativeOffline
     foreach ($name in $plugins) {

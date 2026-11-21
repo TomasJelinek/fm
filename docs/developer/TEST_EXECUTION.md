@@ -12,13 +12,17 @@ build step (native backend only). Run them on their own once the toolchain and
 Python 3.12+ are installed:
 
 ```text
-pwsh -NoProfile -File scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run] [--only ID[,ID...]]
-bash scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run] [--only ID[,ID...]]
+pwsh -NoProfile -File scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run] [--jobs N] [--only ID[,ID...]]
+bash scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run] [--jobs N] [--only ID[,ID...]]
 ```
 
-`--dry-run` prints every step with its commands, the variables they use and why a
-step would be skipped, and runs nothing. Both scripts list the same 40 steps in CI's
-job order (a test keeps them in step); a step that belongs to the other platform is
+Builds and tests use every logical CPU: Cargo's build jobs, libtest's test threads
+and the native dav1d builds of the raster plugins. `--jobs N` limits all of them to N
+(it sets `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` for every step);
+`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` set by the caller have the same effect.
+`--dry-run` prints every step with its commands, the variables they use and why a step
+would be skipped, and runs nothing. Both scripts list the same 40 steps in CI's job
+order (a test keeps them in step); a step that belongs to the other platform is
 listed as skipped:
 
 | CI job | Steps |
@@ -41,7 +45,8 @@ runs these steps in addition: it packages the bundles its plugin steps need, and
 
 `workspace-tests` runs CI's gates (below) with
 `scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast`: the same Cargo
-selections and features, including doc tests and example builds, but it retires no
+selections and features, including doc tests and example builds (its `--jobs N`
+limits Cargo's jobs and the test threads, as `validate`'s does), but it retires no
 test executable, needs no `CI=true` or `_build` target directory, adds Cargo's
 `--no-fail-fast` and runs every gate after a failure (exiting with the first failing
 status). The later qualification steps reuse those executables through its `run` and
@@ -106,8 +111,8 @@ run: the build helpers compile the thumbnailer optimized only for a release buil
 compiles it optimized; the steps run one after another on one machine instead of in
 parallel jobs; test executables are kept; the developer's Cargo profile settings are
 kept, while CI's `check` and `scripts-and-lint` jobs set `CARGO_PROFILE_DEV_DEBUG=0`,
-`CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_INCREMENTAL=0` and `CARGO_BUILD_JOBS=4` (set them
-yourself to reproduce a CI build exactly; see [CI jobs and build time](#ci-jobs-and-build-time));
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0` (set them yourself to reproduce
+a CI build exactly; see [CI jobs and build time](#ci-jobs-and-build-time));
 the filesystem API tests run once instead of in both filesystem jobs; and the two
 modules above that CI does not build yet are included when their inputs exist.
 Validation does not run inside `build.sh`'s Docker backend: the build image has no
@@ -129,8 +134,9 @@ finished without success, and after 60 minutes. Formatting, Clippy, the source s
 check and the script, native helper and PowerShell tests run beside them in
 `scripts-and-lint`.
 
-`check` and `scripts-and-lint` build with four Cargo jobs (the hosted runners have four
-CPUs and 16 GB of memory) and the default linkers. `check`, `scripts-and-lint` and
+`check` and `scripts-and-lint` build on every CPU of the runner (four, with 16 GB of
+memory; Cargo's default, as nothing sets a job count) and with the default linkers.
+`check`, `scripts-and-lint` and
 `release` restore the compiled third-party dependencies of the
 root workspace from the Actions cache
 ([Swatinem/rust-cache](https://github.com/Swatinem/rust-cache), pinned by commit);
@@ -141,11 +147,12 @@ no key matches they take the newest entry of the same job, toolchains and enviro
 The plugin jobs cache their downloads only. Measurements and the decisions behind
 these settings: [CI time](../verification/2026-11-21-ci-time.md).
 
-Locally, `.cargo/config.toml` keeps `jobs = 4`: several agents build on the shared
-development machine at once, and one generated UI crate alone needs up to 7 GB. On a
-machine of your own, set `CARGO_BUILD_JOBS` (or pass `-j`) to use more of it. On
-Windows, `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld.exe` (the pinned
-toolchain's LLVM linker) made the test executables of a CI-equivalent build about a
+Locally too, Cargo, libtest and the validation and test scripts use every logical CPU;
+no Cargo configuration sets a job count. Limit them where several builds share a
+machine, or where memory is short (one generated UI crate alone needs up to 7 GB): with
+Cargo's `-j N`, the scripts' `--jobs N` (`validate.*`, `ci-workspace-tests.py`) or
+`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`. On Windows,
+`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld.exe` (the pinned toolchain's LLVM linker) made the test executables of a CI-equivalent build about a
 fifth faster to build on the development machine, and every test passed; on the hosted
 runners it made no measurable difference, so CI does not use it. Set it only for test
 builds: release builds keep the MSVC linker.

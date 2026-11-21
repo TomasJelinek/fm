@@ -477,6 +477,13 @@ def artifact_main(arguments, invoke=subprocess.run, metadata_loader=None):
     return invoke([str(executable), *rest[2:]], cwd=directory).returncode
 
 
+def positive_count(value):
+    """A whole number of at least one, as --jobs takes it."""
+    if not value.isdigit() or int(value) < 1:
+        raise argparse.ArgumentTypeError('needs a positive whole number')
+    return int(value)
+
+
 def main():
     configure_output()
     if sys.argv[1:2] in (['artifact'], ['run']):
@@ -494,7 +501,13 @@ def main():
                         default=DEFAULT_BATCH_SIZE,
                         help='Maximum selected integrations per Cargo command, except atomic '
                              'same-name groups (default: %(default)s)')
+    parser.add_argument('--jobs', type=positive_count, metavar='N',
+                        help='Build with N Cargo jobs and run each test executable with N test '
+                             'threads (default: every logical CPU, or CARGO_BUILD_JOBS and '
+                             'RUST_TEST_THREADS when set)')
     args = parser.parse_args()
+    if args.jobs:
+        os.environ['CARGO_BUILD_JOBS'] = os.environ['RUST_TEST_THREADS'] = str(args.jobs)
     if not args.keep_test_artifacts and (not args.retire_successful_test_artifacts
                                          or os.environ.get('CI', '').lower() != 'true'):
         parser.error('Requires CI=true and explicit --retire-successful-test-artifacts, '

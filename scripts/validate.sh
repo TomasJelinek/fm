@@ -11,14 +11,15 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run]
+Usage: scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run] [--jobs N]
            [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
 Runs the tests that CI runs for this platform; debug|release selects the
 profile of the host build and smoke test (default debug). --strict fails when a step is
 skipped for a missing prerequisite. --offline (or CARGO_NET_OFFLINE=true) forbids
-downloads. --dry-run prints the plan and its commands. --only runs the named steps and
-the steps they need. The --*-sdk options use an already packaged SDK bundle instead
-of packaging one, as CI's plugin jobs download theirs.
+downloads. --dry-run prints the plan and its commands. --jobs N limits every build and
+test to N parallel jobs and test threads (default: all logical CPUs). --only runs the
+named steps and the steps they need. The --*-sdk options use an already packaged SDK
+bundle instead of packaging one, as CI's plugin jobs download theirs.
 EOF
 }
 
@@ -32,6 +33,7 @@ build_profile=
 strict=0
 dry_run=0
 offline=0
+cargo_jobs=
 selection=()
 supplied_plugin_sdk=
 supplied_worker_sdk=
@@ -67,7 +69,7 @@ while [[ $# -gt 0 ]]; do
                 --help) usage; exit 0 ;;
             esac
             ;;
-        --only|--plugin-sdk|--worker-sdk|--web-sdk)
+        --only|--plugin-sdk|--worker-sdk|--web-sdk|--jobs)
             if [[ $has_value == 0 ]]; then
                 [[ $# -gt 0 ]] || stop_usage "$name needs a value"
                 value=$1
@@ -75,6 +77,11 @@ while [[ $# -gt 0 ]]; do
             fi
             [[ -n $value ]] || stop_usage "$name needs a value"
             case "$name" in
+                --jobs)
+                    [[ $value =~ ^[1-9][0-9]*$ ]] || stop_usage "$name needs a positive whole number"
+                    [[ -z $cargo_jobs ]] || stop_usage "$name was given twice"
+                    cargo_jobs=$value
+                    ;;
                 --only)
                     ids_found=0
                     IFS=, read -r -a ids <<< "$value"
@@ -276,7 +283,7 @@ step_viewer_conformance() {
 # its scripts/ci.sh (the image viewer also the shared decoder's); the two viewers
 # then build the package that the private test installation needs.
 raster_step() {
-    local plugin_root="plugins/midnight-$plugin" build="$out/raster-ci" jobs=${CARGO_BUILD_JOBS:-2} project
+    local plugin_root="plugins/midnight-$plugin" build="$out/raster-ci" jobs=${CARGO_BUILD_JOBS:-$(nproc)} project
     local -a native_option=() projects=("plugins/midnight-$plugin") target_option=(--target "$native_target")
     cargo --config "$worker_sdk" fetch --manifest-path "$plugin_root/Cargo.toml" --locked "${offline_flag[@]}"
     if [[ $offline == 1 ]]; then export MIDNIGHT_IMAGE_NATIVE_OFFLINE=1; native_option=(--offline); fi
@@ -686,9 +693,10 @@ if [[ $dry_run == 1 ]]; then
     printf 'Tools: cargo=%s; rustc=%s; python3=%s\n' "$(command -v cargo || :)" "$(command -v rustc || :)" "$(command -v python3 || :)"
     if [[ ${#missing[@]} -gt 0 ]]; then printf 'Missing tools (a real run stops with exit 127): %s\n' "${missing[*]}"; fi
     printf 'Logs: %s\n' "$run_directory"
-    printf 'Environment: TMPDIR=%s; PYTHONUTF8=1; CARGO_REGISTRIES_MIDNIGHT_INDEX=%s%s\n' "$temporary_root" \
+    printf 'Environment: TMPDIR=%s; PYTHONUTF8=1; CARGO_REGISTRIES_MIDNIGHT_INDEX=%s%s%s\n' "$temporary_root" \
         "${CARGO_REGISTRIES_MIDNIGHT_INDEX:-https://midnight-explorer.invalid/api-index}" \
-        "$([[ $offline == 0 ]] || printf '; CARGO_NET_OFFLINE=true')"
+        "$([[ $offline == 0 ]] || printf '; CARGO_NET_OFFLINE=true')" \
+        "$([[ -z $cargo_jobs ]] || printf '; CARGO_BUILD_JOBS=%s; RUST_TEST_THREADS=%s' "$cargo_jobs" "$cargo_jobs")"
     printf 'Private test installation: a new mode-700 directory below %s (HOST_TEST_INSTALL_ROOT), removed afterwards\n' "$temporary_root"
     printf 'Step variables: root=%s out=%s run_id=%s build_profile=%s cargo_target=%s offline_flag=(%s)\n' \
         "$root" "$out" "$run_id" "$build_profile" "$cargo_target" "${offline_flag[*]:-}"
@@ -725,6 +733,8 @@ mkdir -p -- "$temporary_root" "$run_directory"
 export TMPDIR="$temporary_root" PYTHONUTF8=1
 export CARGO_REGISTRIES_MIDNIGHT_INDEX=${CARGO_REGISTRIES_MIDNIGHT_INDEX:-https://midnight-explorer.invalid/api-index}
 [[ $offline == 0 ]] || export CARGO_NET_OFFLINE=true
+# Without --jobs, Cargo, libtest and the native builds use every logical CPU.
+[[ -z $cargo_jobs ]] || export CARGO_BUILD_JOBS=$cargo_jobs RUST_TEST_THREADS=$cargo_jobs
 remove_owned() {
     if [[ -L $1 || ! -d $1 ]]; then return; fi
     if rm -rf -- "$1"; then printf 'Removed %s %s\n' "$2" "$1"

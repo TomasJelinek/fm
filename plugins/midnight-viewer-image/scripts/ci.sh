@@ -43,7 +43,7 @@ problem=$(generated_output_problem "$build_root")
 decoder_root="$(cd -- "$plugin_root/../image-decoder" && pwd)"
 native_offline=()
 [[ ${MIDNIGHT_IMAGE_NATIVE_OFFLINE:-0} != 1 ]] || native_offline+=(--offline)
-native_jobs=${CARGO_BUILD_JOBS:-2}
+native_jobs=${CARGO_BUILD_JOBS:-$(nproc)}
 source "$plugin_root/../image-decoder/native/bootstrap-linux.sh" "$build_root/native-tools" "$native_jobs" "${native_offline[@]}"
 source "$plugin_root/../image-decoder/native/build-linux.sh" "$build_root/native-dav1d" "$native_jobs" "${native_offline[@]}"
 # The native .pc prefix is absolute; an unrelated GUI sysroot must not rewrite it.

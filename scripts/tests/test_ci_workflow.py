@@ -246,21 +246,25 @@ class WorkflowTests(unittest.TestCase):
                 else:
                     self.assertNotIn("\n    permissions:", job)
 
-    def test_tests_and_clippy_build_alike_with_four_jobs_and_the_default_linker(self):
+    def test_tests_and_clippy_build_alike_on_every_cpu_with_the_default_linker(self):
         def environment(job):
             block = re.search(r"\n    env:\n((?:      .*\n)+)", self.jobs[job]).group(1)
             return [line.strip() for line in block.splitlines() if not line.strip().startswith("#")]
         check = environment("check")
-        for setting in ('CARGO_PROFILE_DEV_DEBUG: "0"', 'CARGO_PROFILE_TEST_DEBUG: "0"',
-                        'CARGO_INCREMENTAL: "0"', 'CARGO_BUILD_JOBS: "4"'):
+        for setting in ('CARGO_PROFILE_DEV_DEBUG: "0"', 'CARGO_PROFILE_TEST_DEBUG: "0"', 'CARGO_INCREMENTAL: "0"'):
             self.assertIn(setting, check)
         # Same settings, so the two jobs' dependency caches hold the same builds.
         self.assertEqual(environment("scripts-and-lint"), check)
+        # Cargo, libtest and the test runner default to every CPU; nothing caps them here
+        # or in the Cargo configurations (docs/verification/2026-11-21-ci-time.md).
+        self.assertNotIn("CARGO_BUILD_JOBS", self.text)
+        self.assertNotRegex(self.text, r"ci-workspace-tests\.py[^\n]*--jobs")
+        for config in (ROOT / ".cargo/config.toml", ROOT / "api/.cargo/config.toml"):
+            self.assertNotRegex(config.read_text(encoding="utf-8"), r"(?m)^jobs\s*=", config)
         # rust-lld made no measurable difference on the hosted runners; release builds
-        # keep the MSVC linker in any case (docs/verification/2026-11-21-ci-time.md).
+        # keep the MSVC linker in any case.
         self.assertNotIn("LINKER", self.text)
-        config = (ROOT / ".cargo/config.toml").read_text(encoding="utf-8")
-        self.assertNotIn("linker", config)
+        self.assertNotIn("linker", (ROOT / ".cargo/config.toml").read_text(encoding="utf-8"))
 
     def test_only_root_workspace_jobs_cache_build_output_and_only_main_saves_it(self):
         for name, job in self.jobs.items():

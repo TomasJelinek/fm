@@ -1,6 +1,5 @@
 [build]
 target-dir = "_build"
-jobs = 4
 
 # Public API/SDK releases are resolved from an explicitly supplied offline bundle.
 [registries.midnight]

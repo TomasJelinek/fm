@@ -4,7 +4,7 @@ this host, with CI's own test commands and the builds and packages those tests n
 CI's job order. build.bat --validate runs it after its build steps and before the
 private deployment.
 
-Usage: scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run]
+Usage: scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run] [--jobs N]
            [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
 
 Each step runs in its own PowerShell 7 process (Windows PowerShell 5.1 when PowerShell 7
@@ -17,14 +17,15 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $usage = @'
-Usage: scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run]
+Usage: scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run] [--jobs N]
            [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
 Runs the tests that CI runs for this platform; debug|release selects the
 profile of the host build and smoke test (default debug). --strict fails when a step is
 skipped for a missing prerequisite. --offline (or CARGO_NET_OFFLINE=true) forbids
-downloads. --dry-run prints the plan and its commands. --only runs the named steps and
-the steps they need. The --*-sdk options use an already packaged SDK bundle instead
-of packaging one, as CI's plugin jobs download theirs.
+downloads. --dry-run prints the plan and its commands. --jobs N limits every build and
+test to N parallel jobs and test threads (default: all logical CPUs). --only runs the
+named steps and the steps they need. The --*-sdk options use an already packaged SDK
+bundle instead of packaging one, as CI's plugin jobs download theirs.
 '@
 
 function Write-Line([string]$Text = '') { [Console]::Out.WriteLine($Text) }
@@ -40,6 +41,7 @@ $profileName = $null
 $strict = $false
 $dryRun = $false
 $offline = $false
+$cargoJobs = $null
 $selection = @()
 $supplied = @{ PluginSdk = $null; WorkerSdk = $null; WebSdk = $null }
 $optionNames = @{
@@ -48,6 +50,7 @@ $optionNames = @{
     '--plugin-sdk' = 'PluginSdk'; '-pluginsdk' = 'PluginSdk'; '--worker-sdk' = 'WorkerSdk'
     '-workersdk' = 'WorkerSdk'; '--web-sdk' = 'WebSdk'; '-websdk' = 'WebSdk'
     '--profile' = 'profile'; '-profile' = 'profile'; '--help' = 'help'; '-help' = 'help'
+    '--jobs' = 'jobs'; '-jobs' = 'jobs'
     '-h' = 'help'; '-?' = 'help'
 }
 # Called in a session (& scripts\validate.ps1 --only a,b), PowerShell passes a list as an array.
@@ -61,7 +64,7 @@ for ($index = 0; $index -lt $args.Count; $index++) {
     if ($argument -in @('debug', 'release')) { $option = 'profile'; $value = $argument }
     if (-not $option) { Stop-Usage "unknown argument '$argument'" }
     if ($option -in @('help', 'strict', 'dry-run', 'offline') -and $null -ne $value) { Stop-Usage "$name takes no value" }
-    if ($option -in @('only', 'PluginSdk', 'WorkerSdk', 'WebSdk', 'profile') -and $null -eq $value) {
+    if ($option -in @('only', 'PluginSdk', 'WorkerSdk', 'WebSdk', 'profile', 'jobs') -and $null -eq $value) {
         $index++
         if ($index -ge $args.Count) { Stop-Usage "$name needs a value" }
         $value = ConvertTo-ArgumentText $args[$index]
@@ -75,6 +78,11 @@ for ($index = 0; $index -lt $args.Count; $index++) {
             $ids = @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             if (-not $ids.Count) { Stop-Usage "$name needs at least one step id" }
             $selection += $ids
+        }
+        'jobs' {
+            if ($value -notmatch '^[1-9][0-9]*$') { Stop-Usage "$name needs a positive whole number" }
+            if ($cargoJobs) { Stop-Usage "$name was given twice" }
+            $cargoJobs = $value
         }
         'profile' {
             if ($value -notin @('debug', 'release')) { Stop-Usage "unknown profile '$value'" }
@@ -408,7 +416,7 @@ try {
         cargo --config $WorkerSdk fetch --manifest-path "$pluginRoot/Cargo.toml" --locked @OfflineFlag
         if ($LASTEXITCODE -ne 0) { throw 'Dependency fetch failed' }
         if ($Plugin -ne 'viewer-pdf') {
-            $jobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { 2 }
+            $jobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { [Environment]::ProcessorCount }
             & plugins/image-decoder/native/bootstrap-windows.ps1 -BuildRoot (Join-Path $build 'native-tools') -Offline:$Offline
             & plugins/image-decoder/native/build-windows.ps1 -BuildRoot (Join-Path $build 'native-dav1d') -Jobs $jobs -Offline:$Offline
         }
@@ -795,6 +803,8 @@ try {
         CARGO_REGISTRIES_MIDNIGHT_INDEX = $(if ($env:CARGO_REGISTRIES_MIDNIGHT_INDEX) { $env:CARGO_REGISTRIES_MIDNIGHT_INDEX } else { 'https://midnight-explorer.invalid/api-index' })
     }
     if ($offline) { $environment['CARGO_NET_OFFLINE'] = 'true' }
+    # Without --jobs, Cargo, libtest and the native builds use every logical CPU.
+    if ($cargoJobs) { $environment['CARGO_BUILD_JOBS'] = $cargoJobs; $environment['RUST_TEST_THREADS'] = $cargoJobs }
 
     if ($dryRun) {
         Write-Line "Validation plan (dry run) for $Root"

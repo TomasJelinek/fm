@@ -493,7 +493,6 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_INCREMENTAL: "0"
-      CARGO_BUILD_JOBS: "4"
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/private-test-installation
@@ -552,12 +551,11 @@ jobs:
     env:
       # Debug information and incremental output would only cost build time and disk
       # here (with debug information the generated UI suite once filled the runner disk).
-      # Four jobs match the runner's four CPUs and fit its 16 GB
+      # Cargo and libtest use every CPU of the runner; four jobs fit its 16 GB
       # (docs/verification/2026-11-21-ci-time.md).
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_INCREMENTAL: "0"
-      CARGO_BUILD_JOBS: "4"
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/private-test-installation

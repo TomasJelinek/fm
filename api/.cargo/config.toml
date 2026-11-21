@@ -1,6 +1,5 @@
 [build]
 target-dir = "../_build/api"
-jobs = 4
 
 # Offline release identity; packaging maps this to the local artifact bundle.
 [registries.midnight]

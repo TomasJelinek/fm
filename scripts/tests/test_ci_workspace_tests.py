@@ -275,9 +275,30 @@ class WorkspaceTests(unittest.TestCase):
         code, call = run(['--retire-successful-test-artifacts'], ci=True)
         self.assertEqual((code, call.kwargs['retire_artifacts'], call.kwargs['fail_fast']), (0, True, True))
         for arguments in ([], ['--retire-successful-test-artifacts'],
-                          ['--keep-test-artifacts', '--retire-successful-test-artifacts']):
+                          ['--keep-test-artifacts', '--retire-successful-test-artifacts'],
+                          ['--keep-test-artifacts', '--jobs', '0'], ['--keep-test-artifacts', '--jobs', 'x'],
+                          ['--keep-test-artifacts', '--jobs=-2']):
             with self.subTest(arguments=arguments):
                 self.assertEqual(run(arguments, ci=False)[0], 2)
+
+    def test_jobs_limit_cargo_jobs_and_test_threads_and_default_to_every_cpu(self):
+        def environment_seen_by_execute(arguments):
+            seen = {}
+            environment = {name: value for name, value in os.environ.items()
+                           if name not in ('CARGO_BUILD_JOBS', 'RUST_TEST_THREADS')}
+            def execute(*args, **kwargs):
+                seen.update({name: os.environ.get(name) for name in ('CARGO_BUILD_JOBS', 'RUST_TEST_THREADS')})
+                return 0
+            with mock.patch.object(sys, 'argv', ['ci-workspace-tests.py', '--keep-test-artifacts', *arguments]), \
+                    mock.patch.dict('os.environ', environment, clear=True), \
+                    mock.patch.object(runner, 'load_metadata', return_value={'loaded': True}), \
+                    mock.patch.object(runner, 'execute', side_effect=execute):
+                self.assertEqual(runner.main(), 0)
+            return seen
+        self.assertEqual(environment_seen_by_execute(['--jobs', '3']),
+                         {'CARGO_BUILD_JOBS': '3', 'RUST_TEST_THREADS': '3'})
+        # Without --jobs, Cargo and libtest choose: every logical CPU.
+        self.assertEqual(environment_seen_by_execute([]), {'CARGO_BUILD_JOBS': None, 'RUST_TEST_THREADS': None})
 
     def test_outside_or_unexpected_artifact_never_gets_deleted(self):
         metadata = graph(self.root, [target('selection')])

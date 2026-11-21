@@ -7,7 +7,7 @@ $SdkConfig = (Resolve-Path -LiteralPath $SdkConfig).Path
 $BuildRoot = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildRoot))
 if ($BuildRoot -notmatch '[/\\]_build([/\\]|$)') { throw 'Generated output must be under _build' }
 $nativeScripts = Join-Path $pluginRoot '../image-decoder/native'
-$nativeJobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { 2 }
+$nativeJobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { [Environment]::ProcessorCount }
 & (Join-Path $nativeScripts 'bootstrap-windows.ps1') -BuildRoot (Join-Path $BuildRoot 'native-tools') -Offline:$NativeOffline
 & (Join-Path $nativeScripts 'build-windows.ps1') -BuildRoot (Join-Path $BuildRoot 'native-dav1d') -Jobs $nativeJobs -Offline:$NativeOffline
 $manifest = Join-Path $pluginRoot 'Cargo.toml'

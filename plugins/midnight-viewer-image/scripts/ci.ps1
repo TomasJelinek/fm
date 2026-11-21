@@ -12,7 +12,7 @@ $decoderRoot = Join-Path (Split-Path -Parent $pluginRoot) 'image-decoder'
 $nativeTools = Join-Path $BuildRoot 'native-tools'
 $nativeBuild = Join-Path $BuildRoot 'native-dav1d'
 $nativeScripts = Join-Path $pluginRoot '../image-decoder/native'
-$nativeJobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { 2 }
+$nativeJobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { [Environment]::ProcessorCount }
 & (Join-Path $nativeScripts 'bootstrap-windows.ps1') -BuildRoot $nativeTools -Offline:$NativeOffline
 & (Join-Path $nativeScripts 'build-windows.ps1') -BuildRoot $nativeBuild -Jobs $nativeJobs -Offline:$NativeOffline
 foreach ($project in @($decoderRoot, $pluginRoot)) {
