@@ -95,14 +95,40 @@ Handover items:
 - A Linux size-warnings test compares the report file's length too, so a file that
   reuses its descriptor and inode after it is closed no longer looks like it
   (`d7d65be9`).
+- Copy that follows links follows one into another filesystem, local, network or
+  FUSE, but never into the kernel's interface filesystems such as /proc or /sys
+  (`3424b0c1`); Windows already followed a junction into another local volume.
+- The path bar of a Network location shows its ancestor chain, one part per
+  location that browses it (`196a1a61`).
+- Move empties owned write-protected folders of the moved tree (Delete's rule), a
+  Move child that cannot be prepared is skipped alone, and an uncertain commit or
+  cleanup whose data stays in place asks Skip or Cancel instead of ending the job
+  (`80e8f98a`).
+- The acceptance suite runs on Windows (`scriptscceptance.ps1`; 91 of 107 scenarios
+  pass, see the [Windows results](developer/acceptance/windows.md)), and CI lints the
+  suite on both platforms (`4d788480`).
+- Viewers: the Rust source travel lost at the raster frontier is reproduced and
+  fixed, refills of line-budget pages read only the rows past the shown page, the
+  HTML viewer on Windows scrolls the host's distance per wheel notch, and the zoom
+  buttons have tooltips (`6cd20942`).
 
 CI runs 44828132118 (`3987d3c8`), 44837536773 (`c5c95186`), 44845219935
 (`9a41840c`) and 44851212423 (`985c8ec0`) passed every job on Windows and Linux. Run
 44841450903 (`aaa6e579`) failed only in the Windows engine test that `accfcc53` fixes.
 Run 44853258726 (`accfcc53`) failed only in the Windows integration test that
 `c7185efe` fixes, and run 44861514459 (`c7185efe`, which contains `e835f4ec` to
-`c7185efe`) passed every job on Windows and Linux. Runs of commits that a newer push
+`c7185efe`) passed every job on Windows and Linux, as did runs 44865587302
+(`3d42cb1f`) and 44869629215 (`196a1a61`). Runs of commits that a newer push
 superseded were cancelled.
+
+On 21 November drive C: filled up: the WSL disk image (73 GB), which the agents'
+Linux build clones had grown, lives there, and WSL failed with I/O errors. The
+finished agents' clones were deleted inside WSL (71 to 55 GB used), but the image
+does not shrink by itself; moving it to D: (`wsl --manage Ubuntu-24.04 --move`) or
+compacting it needs the user. Until then no Linux check runs in WSL, and the Linux
+side of the commits from `80e8f98a` on is checked by CI only (the acceptance suite,
+which CI only lints, and the HTML viewer plugin, which CI does not build, not at
+all on Linux).
 
 Still open from the handover, beside the work in progress (acceptance on Windows,
 Copy following links into other filesystems, item-level Skip in Move and Copy, the
@@ -121,7 +147,14 @@ network path bar, the viewer's raster frontier, page reads and HTML wheel):
   single-line captions cut without "…" at 320×200 with fonts of 20–24 px in the
   keyboard, Custom Commands, thumbnail and archive options.
 - The UI polish gate and the acceptance suites have not been run again since these
-  changes.
+  changes; the acceptance scenarios changed for all platforms need a Linux run
+  ([Linux reruns needed](developer/acceptance/windows.md#linux-reruns-needed)).
+- Windows acceptance defects in progress: every same-volume Windows Move ends
+  "Completed with warnings" (WIN-6), and a paused Windows Copy hides its current
+  file's progress (WIN-1). WIN-8 (copying 100,001 archive members out at about 100
+  files per second in a debug build) needs a release measurement.
+- Viewers: rows longer than about 1,200 bytes still lose some travel, and larger
+  plugin pages need a wire API change (Architect decisions).
 
 ### Integration follow-up — 20 November 2026
 

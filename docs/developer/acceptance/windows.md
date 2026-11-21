@@ -208,6 +208,21 @@ Linux too.
   escaped one; `panels_dialogs`, `panels_busy_ops` and `panels_paths` expected octal
   permissions and `/` where Windows has attributes and `\`.
 
+## Linux reruns needed
+
+The harness changes of this Windows work that apply to every platform have not run on
+Linux yet, and its Unix code was first compiled by CI (which lints the suite on both
+platforms). These scenarios need a Linux run before their Linux records change:
+`journeys_concurrent_jobs`, `journeys_keyboard_only`, `journeys_filtered_conflicts`,
+`journeys_pointer_only`; `panels_busy_ops` (W-03), `panels_dialogs`, `panels_paths`;
+`find_layout` (it should now report F-L04 on Linux too), `find_feed_panel`,
+`find_query_syntax` and the other find scenarios; `viewers_presentation`,
+`viewers_selection`, `viewers_combinations`; `options_custom_commands`,
+`files_transfer_jobs`, `tools_notices_jobs`, `panels_notices`; and every UI gate
+scenario (`ui_review`, `ui_themes`, `ui_polish_checks`, `ui_polish_dialogs`,
+`ui_polish_jobs`, `ui_polish_viewers`, `options_visual`, `ui_matrix_full`).
+`scripts/acceptance.sh` and its Linux runner tests are unchanged.
+
 ## Not covered on Windows
 
 - The Recycle Bin: `files_trash` (`SKIP`); `files_delete` never confirms F8 and does not
