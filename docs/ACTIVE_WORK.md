@@ -154,6 +154,23 @@ Handover items:
   shaping runs, because parley keeps a cluster's offset in its run in 16 bits, without
   changing a glyph, caret or pixel; long-row pages hold 120 KiB since, and 2400-byte
   rows fill the window at rest (`ffa6f3fe`).
+- WIN-8: a Windows destination's ancestry is checked once per refresh batch, 121 → 44
+  ancestor opens per copied file (`cd2f821a`; see the open item below).
+- Archives: a container whose change time alone moved (Defender for Endpoint's DLP
+  tagged one with an alternate data stream during the WIN-8 measurement and stopped a
+  copy-out at member 315) is read on, as Copy and Move sources and viewers are
+  (VIEW-05), and a lasting change fails without Retry (`1f8dcac5`); requests to an
+  archive whose worker has stopped offer no Retry either (`26117b66`); a Retry that
+  opens the archive again is ARCH-08.
+- A settings test round-tripped a PowerShell terminal command, which Linux now keeps
+  inactive on import; it uses the system's own shell (`a045453e`, CI run 44889924835).
+- Test speed pass (`ddc95448`,
+  [record](verification/2026-11-21-test-speed-pass.md)): every test timed again on
+  Windows (7,973 tests; 254 over 0.5 s, listed); the slowest new ones split per view,
+  laid out instead of rendered, or given a smaller busy fixture, each still failing
+  with its fix undone; dead test code removed. All 67 test executables 84.9 s →
+  75.1 s; tests that wait on real timing or real fixture sizes are listed for their
+  owners.
 
 CI runs 44828132118 (`3987d3c8`), 44837536773 (`c5c95186`), 44845219935
 (`9a41840c`) and 44851212423 (`985c8ec0`) passed every job on Windows and Linux. Run
@@ -166,8 +183,12 @@ Run 44853258726 (`accfcc53`) failed only in the Windows integration test that
 Windows-only fixture helpers unused on Unix; `f499e364`). Runs 44877701093
 (`5984bf66`) and 44881878957 (`08914523`) failed only in Linux's
 `options_caption_fit` (the archive filter placeholder; `32e79cf9`), and run
-44884116446 (`32e79cf9`) passed every job on Windows and Linux. Runs of commits that
-a newer push superseded were cancelled.
+44884116446 (`32e79cf9`) passed every job on Windows and Linux. Runs 44889924835
+(`d0733dc7`) and 44893276832 (`ffa6f3fe`) failed only in Linux's test step, in the
+settings round-trip of a PowerShell command (`a045453e`), and run 44895582122
+(`cd2f821a`, which contains every commit from `8db2091a` to `cd2f821a`) passed every
+job on Windows and Linux. Runs of commits that a newer push superseded were
+cancelled.
 
 On 21 November drive C: filled up: the WSL disk image (73 GB), which the agents'
 Linux build clones had grown, lives there, and WSL failed with I/O errors. The
