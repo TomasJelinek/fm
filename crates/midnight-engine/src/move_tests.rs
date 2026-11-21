@@ -15,6 +15,8 @@ mod linux;
 mod linux_links;
 #[path = "copy_metadata_tests.rs"]
 mod metadata;
+#[path = "move_removal_confirmation_tests.rs"]
+mod removal_confirmation;
 #[path = "move_restore_tests.rs"]
 mod restoration;
 pub(super) use cross_device::CrossDeviceService;

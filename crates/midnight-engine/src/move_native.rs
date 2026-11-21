@@ -24,11 +24,13 @@ impl Job {
         };
         let _permit = move_job::permit(&self.cancel, &work.entry().item.path)?;
         work.destination.revalidate(&self.cancel)?;
-        let outcome = match work.removal {
+        // A provider may leave saving a committed rename to a confirmation, which the job
+        // runs with the others it defers, saving each folder once for all of them.
+        let (outcome, confirmation) = match work.removal {
             EntryRemoval::Ordinary => {
                 let capture = move_work.capture_for(work.entry())?;
                 capture.revalidate(&self.cancel)?;
-                capture.try_native_move(
+                capture.try_native_move_deferred(
                     work.destination.as_ref(),
                     &work.name,
                     replacement,
@@ -38,7 +40,7 @@ impl Job {
             EntryRemoval::DirectoryLink(original) => {
                 let capture = move_work.link_capture_for(original, &work.entry().item.path)?;
                 capture.revalidate(&self.cancel)?;
-                capture.try_native_move(
+                capture.try_native_move_deferred(
                     work.destination.as_ref(),
                     &work.name,
                     replacement,
@@ -47,6 +49,7 @@ impl Job {
             }
             EntryRemoval::Copy => unreachable!("read-only entries have no native Move identity"),
         };
+        let mut deferred = None;
         // `failure` breaks the provider's contract and ends the job; `uncertain` is a
         // rename that needs recovery, whose names stay where they are: the job asks
         // whether to go on, and never repeats it.
@@ -61,8 +64,12 @@ impl Job {
                 recovery,
                 durability_confirmed,
             } => {
-                if !durability_confirmed {
-                    self.progress.source_removal_durability_unconfirmed += 1;
+                match confirmation {
+                    Some(confirmation) => deferred = Some(confirmation),
+                    None if !durability_confirmed => {
+                        self.progress.source_removal_durability_unconfirmed += 1;
+                    }
+                    None => {}
                 }
                 let failure = if destination != work.destination.path().join(&work.name) {
                     Some(error(
@@ -95,6 +102,9 @@ impl Job {
             move_work.record_parents(self, &work.entry().item.path);
         }
         let completion = move_work.discard_entry(work.removal, work.entry().identity);
+        if let Some(confirmation) = deferred {
+            move_work.defer_confirmation(confirmation, &mut self.progress);
+        }
         self.move_work = Some(move_work.into_inner());
         for retained in recovery {
             if !moved && retained.identity == Some(identity) {

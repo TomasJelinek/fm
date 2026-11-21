@@ -155,6 +155,9 @@ impl TransferMoveCapture for Capture {
     ) -> Result<TransferDirectoryRemoval, FsError> {
         self.0.remove_empty_directory(cancel)
     }
+    fn take_removal_confirmation(&self) -> Option<Box<dyn TransferDurabilityConfirmation>> {
+        self.0.take_removal_confirmation()
+    }
     fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError> {
         self.0.capture(cancel)
     }

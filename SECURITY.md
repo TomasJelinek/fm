@@ -770,7 +770,10 @@ require content-read or directory-list rights. After a committed native rename, 
 reopens the source and destination folders (and a replacement's private recovery
 folder) through their retained handles, never by path, with only the right to add
 files or else subfolders, sharing everything, to flush them, and closes them at once;
-no volume handle or administrator right is used. A folder that cannot be opened so
+no volume handle or administrator right is used. A Move keeps those retained folder
+handles until it flushes the folders of its pending renames together (before it
+removes a folder, after 64 renames, and when the job ends); the handles grant nothing
+more than the Move's pins. A folder that cannot be opened so
 leaves the Move's durability unconfirmed and never refuses or undoes the rename
 ([Move durability on Windows](docs/developer/TRANSFERS.md#move-durability-on-windows)). Linux
 requires protected source parents (the Copy parent rule above) and effective
@@ -792,10 +795,14 @@ Move handle continues denying write sharing. The final source/destination
 validation retains fresh read guards through the explicit finalization check;
 full mode hashes all bytes, while quick mode uses the same declared samples.
 Exact-handle POSIX delete disposition uses image-section checks and no readonly
-override. All application DELETE/source owners close, then empty-stage cleanup
-runs before the next file. External readers may retain bytes after namespace
-removal; no measured physical
-space or parent-entry power-loss durability is promised.
+override. All application DELETE/source owners close (a directory link's capture closes
+its own deleting handle right after the disposition), then the removal is confirmed:
+its name is looked up through the held folder that contained it, never by path, and only
+"no such file" counts as removed; that folder is then flushed as after a native rename.
+This changes neither which object is removed nor any check before the removal; a
+removal it cannot confirm is reported as accepted by Windows and unconfirmed.
+Empty-stage cleanup runs next, before the next file. External readers may retain bytes
+after namespace removal; no measured physical space is promised.
 
 A skip retains that source. Every pre-deletion failure or cancellation after
 staging attempts a no-replace restore with an independent cleanup token. A new

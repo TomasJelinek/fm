@@ -302,6 +302,8 @@ struct State {
     /// source consumes it, so it is never set together with `retained`.
     unused: Option<destination::Directory>,
     native_outcome: Option<midnight_core::TransferNativeMoveOutcome>,
+    /// The confirmation of this emptied directory's removal (`remove_empty_directory`).
+    removal: Option<folder_flush::Removal>,
 }
 struct Capture {
     entry: TransferEntry,
@@ -325,6 +327,18 @@ impl TransferMoveCapture for Capture {
         cancel: &Cancellation,
     ) -> Result<midnight_core::TransferNativeMoveOutcome, FsError> {
         native_move::attempt(self, destination, name, replace, cancel)
+    }
+    fn try_native_move_deferred(
+        &self,
+        destination: &dyn TransferDirectory,
+        name: &OsStr,
+        replace: Option<(
+            Arc<dyn TransferTarget>,
+            midnight_core::TransferReplacementPolicy,
+        )>,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::DeferredNativeMove, FsError> {
+        native_move::attempt_deferred(self, destination, name, replace, cancel)
     }
     fn remove_empty_directory(
         &self,
@@ -351,10 +365,27 @@ impl TransferMoveCapture for Capture {
                 .remove(&self.file, cancel, || native::remove(&self.file))
                 .map_err(|e| error(path, e))
         })?;
+        // The folder's name leaves its parent only when its handle (shared with the
+        // traversal's source) closes: the engine confirms that, and saves the parent, after
+        // dropping both (`take_removal_confirmation`).
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).removal =
+            Some(folder_flush::Removal::new(self.parent.clone(), &self.name));
         Ok(midnight_core::TransferDirectoryRemoval {
             state: midnight_core::TransferSourceRemoval::DeletePending,
             durability_confirmed: false,
         })
+    }
+    fn take_removal_confirmation(
+        &self,
+    ) -> Option<Box<dyn midnight_core::TransferDurabilityConfirmation>> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .removal
+            .take()
+            .map(|removal| {
+                Box::new(removal) as Box<dyn midnight_core::TransferDurabilityConfirmation>
+            })
     }
     fn preflight_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.entry.item.path)?;

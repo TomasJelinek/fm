@@ -1,12 +1,15 @@
 //! Same-volume namespace moves. No content reads, staging copy, or checksum work.
 use super::*;
-use midnight_core::{TransferNativeMoveOutcome as Outcome, TransferReplacementPolicy};
+use midnight_core::{
+    DeferredNativeMove, TransferNativeMoveOutcome as Outcome, TransferReplacementPolicy,
+};
 use std::os::windows::io::AsRawHandle;
 use windows_sys::{
     Wdk::Storage::FileSystem::{FILE_NON_DIRECTORY_FILE, FILE_OPEN},
     Win32::Foundation::ERROR_NOT_SAME_DEVICE,
 };
 
+/// The native rename, its folders saved before it returns.
 pub(super) fn attempt(
     capture: &Capture,
     target: &dyn TransferDirectory,
@@ -17,6 +20,18 @@ pub(super) fn attempt(
     attempt_with(capture, target, name, replace, cancel, || {})
 }
 
+/// The native rename, its folders saved by the returned confirmation, which the engine
+/// runs together with the job's other renames (`folder_flush::settle`).
+pub(super) fn attempt_deferred(
+    capture: &Capture,
+    target: &dyn TransferDirectory,
+    name: &OsStr,
+    replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+    cancel: &Cancellation,
+) -> Result<DeferredNativeMove, FsError> {
+    rename(capture, target, name, replace, cancel, || {}, true)
+}
+
 pub(super) fn attempt_with(
     capture: &Capture,
     target: &dyn TransferDirectory,
@@ -25,9 +40,21 @@ pub(super) fn attempt_with(
     cancel: &Cancellation,
     after_capture: impl FnOnce(),
 ) -> Result<Outcome, FsError> {
+    rename(capture, target, name, replace, cancel, after_capture, false).map(|(outcome, _)| outcome)
+}
+
+fn rename(
+    capture: &Capture,
+    target: &dyn TransferDirectory,
+    name: &OsStr,
+    replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+    cancel: &Cancellation,
+    after_capture: impl FnOnce(),
+    deferred: bool,
+) -> Result<DeferredNativeMove, FsError> {
     let mut state = capture.state.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(outcome) = &state.native_outcome {
-        return Ok(outcome.clone());
+        return Ok((outcome.clone(), None));
     }
     if state.outcome.is_some() {
         return Err(invalid(
@@ -42,12 +69,12 @@ pub(super) fn attempt_with(
     // is decided before pinning, so it enters the verified cross-device route.
     target.revalidate(cancel)?;
     if capture.entry.identity.device != target.identity().device {
-        return Ok(Outcome::CrossDevice);
+        return Ok((Outcome::CrossDevice, None));
     }
     let directory = pin_destination(target, cancel)?;
     let same_parent = capture.parent.identity() == directory.identity();
     if same_parent && name == capture.name {
-        return Ok(Outcome::SameEntry);
+        return Ok((Outcome::SameEntry, None));
     }
     directory.reject_source_ancestor(capture.entry.identity, cancel)?;
     let existing = directory.inspect(name, cancel)?;
@@ -60,6 +87,8 @@ pub(super) fn attempt_with(
             "destination is a distinct hard-link alias",
         ));
     }
+    // The private folder that keeps a replaced original, saved with the others below.
+    let mut kept = None;
     let outcome = super::super::namespace::change(cancel, |mutation| {
         mutation.prepare_rename(&capture.file, directory.native_file(), name, cancel)?;
         if let Some((expected, policy)) = replace {
@@ -78,6 +107,10 @@ pub(super) fn attempt_with(
                 after_capture,
                 mutation,
             )
+            .map(|(outcome, recovery)| {
+                kept = recovery;
+                outcome
+            })
         } else {
             if existing.is_some() && !same_object {
                 return Err(collision(
@@ -93,7 +126,7 @@ pub(super) fn attempt_with(
                 Ok(()) => Ok(Outcome::Moved {
                     destination: directory.path().join(name),
                     recovery: Vec::new(),
-                    // Unless saving a folder it changed fails (`folder_flush::confirm`).
+                    // Unless saving a folder it changed fails (`folder_flush::settle`).
                     durability_confirmed: true,
                 }),
                 Err(failure) if failure.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE as i32) => {
@@ -104,20 +137,20 @@ pub(super) fn attempt_with(
         }
     })?;
     if matches!(outcome, Outcome::CrossDevice) {
-        return Ok(outcome);
+        return Ok((outcome, None));
     }
-    // The rename removed the name from the source folder and added it to the destination:
-    // save both before reporting it.
-    let outcome = super::folder_flush::confirm(
-        outcome,
-        &[
-            (directory.native_file(), directory.identity()),
-            (capture.parent.native_file(), capture.parent.identity()),
-        ],
-    );
+    // The rename removed the name from the source folder and added it to the destination
+    // (a replacement also put the original in its private folder): save them, outside the
+    // namespace turn, before the rename is reported or when the engine confirms it.
+    let folders = kept
+        .into_iter()
+        .chain([directory, capture.parent.clone()])
+        .map(super::folder_flush::Held::Directory)
+        .collect();
+    let (outcome, confirmation) = super::folder_flush::settle(outcome, folders, deferred);
     // Cancellation after a successful rename cannot erase the committed namespace fact.
     state.native_outcome = Some(outcome.clone());
-    Ok(outcome)
+    Ok((outcome, confirmation))
 }
 
 pub(super) fn pin_destination(
@@ -186,6 +219,8 @@ pub(super) fn collision(path: &Path, message: &str) -> FsError {
     error(path, io::Error::new(io::ErrorKind::AlreadyExists, message))
 }
 
+/// A committed replacement also returns the private folder now holding the displaced
+/// original, to be saved after the namespace turn with the other folders it changed.
 fn replace_existing(
     capture: &Capture,
     directory: &destination::Directory,
@@ -194,7 +229,7 @@ fn replace_existing(
     cancel: &Cancellation,
     after_capture: impl FnOnce(),
     mutation: &mut super::super::namespace::Mutation<'_>,
-) -> Result<Outcome, FsError> {
+) -> Result<(Outcome, Option<destination::Directory>), FsError> {
     let (expected, policy) = replacement;
     let path = directory.path().join(name);
     if policy != TransferReplacementPolicy::RecoverableCurrentEntry {
@@ -260,7 +295,7 @@ fn replace_existing(
             .map_err(|e| error(&path, e))
     });
     if let Err(failure) = capture_original {
-        return cleanup_empty(recovery, failure, false, mutation);
+        return cleanup_empty(recovery, failure, false, mutation).map(|outcome| (outcome, None));
     }
     after_capture();
     let publish = capture
@@ -284,26 +319,23 @@ fn replace_existing(
             failure
                 .message
                 .push_str(&format!("; original retained for recovery: {restore}"));
-            return Ok(Outcome::RecoveryRequired {
+            let outcome = Outcome::RecoveryRequired {
                 destination: None,
                 recovery: vec![original_receipt],
                 error: failure,
-            });
+            };
+            return Ok((outcome, None));
         }
         drop(original);
-        return cleanup_empty(recovery, failure, true, mutation);
+        return cleanup_empty(recovery, failure, true, mutation).map(|outcome| (outcome, None));
     }
-    Ok(Outcome::Moved {
+    let outcome = Outcome::Moved {
         destination: path,
         recovery: vec![original_receipt],
-        // The private recovery folder now holds the displaced original. Only this turn
-        // holds that folder, so it is saved here; the destination and source folders are
-        // saved after the turn (`folder_flush::confirm`).
-        durability_confirmed: super::folder_flush::saved(&[(
-            recovery.native_file(),
-            recovery.identity(),
-        )]),
-    })
+        // Unless saving a folder it changed fails (`folder_flush::settle`).
+        durability_confirmed: true,
+    };
+    Ok((outcome, Some(recovery)))
 }
 
 fn cleanup_empty(

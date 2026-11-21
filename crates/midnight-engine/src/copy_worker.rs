@@ -990,6 +990,8 @@ impl Job {
                     let retaining = frame.retain_source
                         || matches!(mode, EntryRemoval::DirectoryLink(_))
                             && completed_before != (self.progress.failed, self.progress.skipped);
+                    // The emptied folder's removal, counted once this frame is dropped.
+                    let mut removal = None;
                     if mode != EntryRemoval::Copy
                         && let Some(move_work) = self.move_work.take()
                     {
@@ -1003,9 +1005,9 @@ impl Job {
                                 .revalidate(&self.cancel)
                                 .and_then(|()| frame.destination.revalidate(&self.cancel))
                                 .and_then(|()| match mode {
-                                    EntryRemoval::Ordinary => {
-                                        move_work.remove_directory(&entry, self)
-                                    }
+                                    EntryRemoval::Ordinary => move_work
+                                        .remove_directory(&entry, self)
+                                        .map(|removed| removal = Some(removed)),
                                     EntryRemoval::DirectoryLink(original) => {
                                         move_work.remove_materialized_link(original, &entry, self)
                                     }
@@ -1048,7 +1050,12 @@ impl Job {
                     if completed_before == (self.progress.failed, self.progress.skipped) {
                         self.progress.completed_directories += 1;
                     }
+                    // The frame's source holds the folder's own handle: Windows removes
+                    // a folder by delete disposition only once it is dropped here.
                     self.stack.pop();
+                    if let Some(removal) = removal {
+                        removal.count(&mut self.progress);
+                    }
                     return Step::Continue;
                 }
                 Err(error) => {

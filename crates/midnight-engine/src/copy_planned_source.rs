@@ -368,12 +368,32 @@ impl TransferMoveCapture for Capture {
             capture.try_native_move(destination, name, replace, cancel)
         })
     }
+    fn try_native_move_deferred(
+        &self,
+        destination: &dyn TransferDirectory,
+        name: &OsStr,
+        replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        cancel: &Cancellation,
+    ) -> Result<DeferredNativeMove, FsError> {
+        self.0.capture(cancel, |capture| {
+            capture.try_native_move_deferred(destination, name, replace, cancel)
+        })
+    }
     fn remove_empty_directory(
         &self,
         cancel: &Cancellation,
     ) -> Result<TransferDirectoryRemoval, FsError> {
         self.0
             .capture(cancel, |capture| capture.remove_empty_directory(cancel))
+    }
+    fn take_removal_confirmation(&self) -> Option<Box<dyn TransferDurabilityConfirmation>> {
+        self.0
+            .lock()
+            .ok()?
+            .as_ref()?
+            .capture
+            .as_ref()?
+            .take_removal_confirmation()
     }
     fn prepare_finalization(
         &self,

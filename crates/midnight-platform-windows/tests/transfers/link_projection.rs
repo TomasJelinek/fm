@@ -527,15 +527,18 @@ fn move_projection_removes_only_its_original_junction_after_publication() {
         std::io::ErrorKind::Interrupted
     );
     assert!(fs::symlink_metadata(&link).is_ok());
+    // The removal closes the link's deleting handle: the link is gone, its folder saved,
+    // while the capture, its projection and the source are still held.
     assert!(matches!(
         capture.remove_original(&cancel).unwrap(),
         TransferDirectoryLinkRemoval::Removed {
-            state: TransferSourceRemoval::DeletePending,
+            state: TransferSourceRemoval::Unlinked,
+            durability_confirmed: true,
             recovery,
             error: None,
-            ..
         } if recovery.is_empty()
     ));
+    assert!(fs::symlink_metadata(&link).is_err());
     drop((capture, projection, source, root));
     assert!(!link.exists());
     assert_eq!(fs::read(target.join("sentinel")).unwrap(), b"referent data");

@@ -87,6 +87,73 @@ fn a_folder_that_another_program_holds_without_write_sharing_is_not_saved() {
 }
 
 #[test]
+fn a_removed_name_is_confirmed_once_its_deleting_handle_closes_although_a_reader_remains() {
+    let temp = build_temp("folder-removal-");
+    let path = temp.path().join("folder 文档");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("removed"), b"removed").unwrap();
+    let folder = pinned(&path);
+    let id = identity(&folder, &path).unwrap();
+    let name = OsStr::new("removed");
+    assert!(!removed(&folder, id, name), "the name is still there");
+    let deleting = native::open_relative(
+        &folder,
+        name,
+        FILE_READ_ATTRIBUTES | DELETE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        0,
+    )
+    .unwrap();
+    let duplicate = deleting.try_clone().unwrap();
+    let mut reader = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path.join("removed"))
+        .unwrap();
+    native::remove(&deleting).unwrap();
+    // Pending deletion while any handle on the deleting object is open, a duplicate too.
+    drop(deleting);
+    assert!(!removed(&folder, id, name));
+    drop(duplicate);
+    assert!(removed(&folder, id, name));
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut reader, &mut bytes).unwrap();
+    assert_eq!(
+        bytes, b"removed",
+        "the reader keeps the removed file's data"
+    );
+}
+
+#[test]
+fn a_name_taken_again_or_a_folder_that_cannot_be_saved_is_not_a_confirmed_removal() {
+    let temp = build_temp("folder-removal-not-");
+    let path = temp.path().join("held");
+    fs::create_dir(&path).unwrap();
+    let folder = pinned(&path);
+    let id = identity(&folder, &path).unwrap();
+    let name = OsStr::new("removed");
+    fs::write(
+        path.join("removed"),
+        b"another entry under the removed name",
+    )
+    .unwrap();
+    assert!(!removed(&folder, id, name));
+    fs::remove_file(path.join("removed")).unwrap();
+    assert!(removed(&folder, id, name));
+    // Gone, but another program holds the folder without write sharing: not saved.
+    let other = OpenOptions::new()
+        .access_mode(FILE_LIST_DIRECTORY)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&path)
+        .unwrap();
+    assert!(!removed(&folder, id, name));
+    drop(other);
+    assert!(removed(&folder, id, name));
+}
+
+#[test]
 fn only_an_unsupported_folder_flush_counts_as_saved_without_a_flush() {
     assert_eq!(after_flush(Ok(())), Saved::Flushed);
     for code in [

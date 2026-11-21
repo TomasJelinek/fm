@@ -414,6 +414,138 @@ async fn same_volume_move_of_a_file_and_a_folder_ends_completed_without_warnings
     assert!(!file.exists() && !folder.exists());
 }
 
+/// WIN-6: a verified (cross-volume) Move removes each source by delete disposition. Once
+/// the job has closed the source's handles its name is gone and the folder that held it is
+/// saved, so the Move ends without the "accepted by Windows" note or an unconfirmed count,
+/// also while another program still reads a removed file.
+#[test]
+fn a_verified_move_of_a_file_and_a_folder_confirms_every_removal() {
+    use std::{io::Read, os::windows::fs::OpenOptionsExt};
+    /// FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE.
+    const SHARE_ALL: u32 = 0x7;
+    let (_temp, parent) = super::directories::tree_fixture();
+    let file = parent.join("file 文档");
+    let folder = parent.join("folder");
+    let destination = parent.join("destination");
+    fs::write(&file, b"file").unwrap();
+    fs::create_dir_all(folder.join("empty")).unwrap();
+    fs::write(folder.join("child"), b"child").unwrap();
+    fs::create_dir(&destination).unwrap();
+    let mut reader = fs::File::options()
+        .read(true)
+        .share_mode(SHARE_ALL)
+        .open(&file)
+        .unwrap();
+    let (mut job, _) = prepare_move(
+        &[file.clone(), folder.clone()],
+        &destination,
+        Cancellation::default(),
+    );
+    drive(&mut job);
+    let done = job.finish();
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.source_files_removed, 2, "{done:?}");
+    assert_eq!(done.source_delete_pending, 0, "{done:?}");
+    assert_eq!(done.source_removal_durability_unconfirmed, 0, "{done:?}");
+    assert!(!file.exists() && !folder.exists());
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"file");
+    assert_eq!(
+        fs::read(destination.join("folder/child")).unwrap(),
+        b"child"
+    );
+    assert!(destination.join("folder/empty").is_dir());
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 2); // seed + destination, no stages
+}
+
+/// WIN-6 across real volumes: NATIVE_MOVE_OTHER_VOLUME_ROOT names an owned folder on
+/// another local NTFS volume than the repository's `_build`.
+#[tokio::test]
+#[ignore = "requires NATIVE_MOVE_OTHER_VOLUME_ROOT on a distinct local NTFS volume"]
+async fn cross_volume_move_of_a_file_and_a_folder_ends_completed_without_warnings() {
+    let other = tempfile::tempdir_in(
+        std::env::var_os("NATIVE_MOVE_OTHER_VOLUME_ROOT").expect("owned second-volume root"),
+    )
+    .unwrap();
+    let (_temp, parent) = super::directories::tree_fixture();
+    let file = parent.join("file 文档");
+    let folder = parent.join("folder");
+    fs::write(&file, b"file").unwrap();
+    fs::create_dir_all(folder.join("empty")).unwrap();
+    fs::write(folder.join("child"), b"child").unwrap();
+    let mut harness = Harness::native();
+    harness
+        .controller
+        .enqueue_move(request(1, &[file.clone(), folder.clone()], other.path()))
+        .await;
+    let done = harness.terminal(1).await;
+    harness.close().await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.native_entries_moved, 0, "{done:?}");
+    assert_eq!(done.source_files_removed, 2, "{done:?}");
+    assert_eq!(done.source_delete_pending, 0, "{done:?}");
+    assert_eq!(done.source_removal_durability_unconfirmed, 0, "{done:?}");
+    assert!(done.closure.is_none(), "{done:?}");
+    assert!(!file.exists() && !folder.exists());
+    assert_eq!(fs::read(other.path().join("file 文档")).unwrap(), b"file");
+    assert_eq!(
+        fs::read(other.path().join("folder/child")).unwrap(),
+        b"child"
+    );
+}
+
+/// WIN-6: a same-volume Move that merges a folder into an existing one renames its entries
+/// and then removes the emptied folder by delete disposition; that removal is confirmed
+/// once the folder's handles close, so the Move ends Completed without warnings.
+#[tokio::test]
+async fn same_volume_move_merging_a_folder_ends_completed_without_warnings() {
+    let (_temp, parent) = protected_fixture();
+    let folder = parent.join("folder 文档");
+    let destination = parent.join("destination");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("moved"), b"moved").unwrap();
+    fs::create_dir_all(destination.join("folder 文档")).unwrap();
+    fs::write(destination.join("folder 文档/kept"), b"kept").unwrap();
+    let mut harness = Harness::native();
+    harness
+        .controller
+        .enqueue_move(request(1, std::slice::from_ref(&folder), &destination))
+        .await;
+    let done = loop {
+        match harness.next().await {
+            CopyEvent::Conflict(conflict) => {
+                assert!(conflict.can_merge, "{conflict:?}");
+                harness
+                    .controller
+                    .decide(CopyDecision {
+                        id: conflict.id,
+                        version: conflict.version,
+                        choice: CopyChoice::Merge { all: false },
+                    })
+                    .await;
+            }
+            CopyEvent::Progress(progress) if progress.state.is_terminal() => break progress,
+            _ => {}
+        }
+    };
+    harness.close().await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.native_entries_moved, 1, "{done:?}");
+    assert_eq!(done.source_delete_pending, 0, "{done:?}");
+    assert_eq!(done.source_removal_durability_unconfirmed, 0, "{done:?}");
+    assert!(done.closure.is_none(), "{done:?}");
+    assert!(!folder.exists());
+    assert_eq!(
+        fs::read(destination.join("folder 文档/moved")).unwrap(),
+        b"moved"
+    );
+    assert_eq!(
+        fs::read(destination.join("folder 文档/kept")).unwrap(),
+        b"kept"
+    );
+}
+
 #[test]
 fn move_removes_this_verified_source_before_copying_next_and_cancel_keeps_remainder() {
     let (_temp, parent) = protected_fixture();

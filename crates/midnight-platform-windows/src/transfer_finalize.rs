@@ -1,7 +1,10 @@
 //! Exact-handle regular-file disposition after independent per-file proof checks.
 use super::super::destination::recovery::Revision;
 use super::*;
-use midnight_core::{TransferMoveFinalizeOutcome, TransferMoveFinalizer, TransferSourceRemoval};
+use midnight_core::{
+    TransferDurabilityConfirmation, TransferMoveFinalizeOutcome, TransferMoveFinalizer,
+    TransferSourceRemoval,
+};
 use std::{
     mem::{offset_of, size_of},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -216,6 +219,7 @@ pub(super) fn prepare(
         file: capture.file.clone(),
         revision: Revision::of(&capture.file, source)?,
         outcome: None,
+        confirmation: None,
         _namespace_owner: super::super::namespace::owner(&[capture.entry.identity]),
     };
     finalizer.revalidate(cancel)?;
@@ -230,6 +234,9 @@ struct Finalizer {
     file: Arc<File>,
     revision: Revision,
     outcome: Option<TransferMoveFinalizeOutcome>,
+    /// After the disposition: the removal's confirmation, which the engine runs once it has
+    /// closed the source's handle (shared with the source and the capture).
+    confirmation: Option<super::folder_flush::Removal>,
     // Last: the retained source and recovery-directory handles close before this signal.
     _namespace_owner: super::super::namespace::NativeOwner,
 }
@@ -301,15 +308,28 @@ impl TransferMoveFinalizer for Finalizer {
                 recovery: self.receipt.clone(),
                 error,
             },
-            Ok(()) => TransferMoveFinalizeOutcome::Removed {
-                source: self.source.clone(),
-                recovery: self.receipt.clone(),
-                state: TransferSourceRemoval::DeletePending,
-                durability_confirmed: false,
-            },
+            Ok(()) => {
+                // The staged name leaves the private stage when the source's handle closes:
+                // the engine confirms that, and saves the stage, after closing it.
+                self.confirmation = Some(super::folder_flush::Removal::new(
+                    self.directory.clone(),
+                    &self.name,
+                ));
+                TransferMoveFinalizeOutcome::Removed {
+                    source: self.source.clone(),
+                    recovery: self.receipt.clone(),
+                    state: TransferSourceRemoval::DeletePending,
+                    durability_confirmed: false,
+                }
+            }
         };
         self.outcome = Some(outcome.clone());
         outcome
+    }
+    fn take_removal_confirmation(&mut self) -> Option<Box<dyn TransferDurabilityConfirmation>> {
+        self.confirmation
+            .take()
+            .map(|removal| Box::new(removal) as Box<dyn TransferDurabilityConfirmation>)
     }
 }
 

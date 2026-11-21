@@ -254,6 +254,7 @@ impl Fixture {
             refresh_parents: Vec::new(),
             failed_phase: None,
             retryable_failure: false,
+            pending_confirmations: Vec::new(),
         });
         let io = Arc::new(midnight_work_budget::Gate::new(1));
         let namespace = Arc::new(Semaphore::new(1));

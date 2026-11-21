@@ -736,6 +736,18 @@ impl TransferDirectoryLinkMoveCapture for LeasedDirectoryLinkCapture {
             .try_native_move(destination, name, replace, cancel)
     }
 
+    fn try_native_move_deferred(
+        &self,
+        destination: &dyn TransferDirectory,
+        name: &OsStr,
+        replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        cancel: &Cancellation,
+    ) -> Result<DeferredNativeMove, FsError> {
+        self.inner
+            .try_native_move_deferred(destination, name, replace, cancel)
+            .map(|moved| leased_native_move(moved, &self._lease))
+    }
+
     fn entry(&self) -> &TransferEntry {
         self.inner.entry()
     }
@@ -792,6 +804,22 @@ impl TransferMoveCapture for LeasedMoveCapture {
     ) -> Result<TransferDirectoryRemoval, FsError> {
         self.inner.remove_empty_directory(cancel)
     }
+    fn take_removal_confirmation(&self) -> Option<Box<dyn TransferDurabilityConfirmation>> {
+        self.inner
+            .take_removal_confirmation()
+            .map(|inner| leased_confirmation(inner, &self.lease))
+    }
+    fn try_native_move_deferred(
+        &self,
+        destination: &dyn TransferDirectory,
+        name: &OsStr,
+        replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        cancel: &Cancellation,
+    ) -> Result<DeferredNativeMove, FsError> {
+        self.inner
+            .try_native_move_deferred(destination, name, replace, cancel)
+            .map(|moved| leased_native_move(moved, &self.lease))
+    }
     fn prepare_finalization(
         &self,
         cancel: &Cancellation,
@@ -829,6 +857,46 @@ impl TransferMoveFinalizer for LeasedFinalizer {
     }
     fn finalize(&mut self, cancel: &Cancellation) -> TransferMoveFinalizeOutcome {
         self.inner.finalize(cancel)
+    }
+    fn take_removal_confirmation(&mut self) -> Option<Box<dyn TransferDurabilityConfirmation>> {
+        self.inner
+            .take_removal_confirmation()
+            .map(|inner| leased_confirmation(inner, &self._lease))
+    }
+}
+fn leased_confirmation(
+    inner: Box<dyn TransferDurabilityConfirmation>,
+    lease: &LeaseReference,
+) -> Box<dyn TransferDurabilityConfirmation> {
+    Box::new(LeasedConfirmation {
+        inner: NativeAuthority(Some(inner)),
+        _lease: lease.clone(),
+    })
+}
+fn leased_native_move(
+    (outcome, confirmation): DeferredNativeMove,
+    lease: &LeaseReference,
+) -> DeferredNativeMove {
+    (
+        outcome,
+        confirmation.map(|inner| leased_confirmation(inner, lease)),
+    )
+}
+// Own no source, capture or finalizer: it runs after their native owners have closed.
+struct LeasedConfirmation {
+    inner: NativeAuthority<Box<dyn TransferDurabilityConfirmation>>,
+    _lease: LeaseReference,
+}
+impl TransferDurabilityConfirmation for LeasedConfirmation {
+    fn confirm(mut self: Box<Self>, round: &mut TransferDurabilityRound) -> bool {
+        let inner = self.inner.0.take().expect("confirmation remains owned");
+        if crate::copy_nested_retirement::current().is_none() {
+            return inner.confirm(round);
+        }
+        // A step that cannot run (quarantine) or unwinds leaves the change unconfirmed.
+        let mut confirmed = false;
+        crate::copy_nested_retirement::checked_step(|| confirmed = inner.confirm(round))
+            && confirmed
     }
 }
 // Own no source, capture or finalizer: native DELETE owners must close before cleanup.

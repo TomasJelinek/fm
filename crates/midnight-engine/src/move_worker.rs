@@ -48,6 +48,8 @@ pub(super) struct MoveWork {
     refresh_parents: Vec<std::path::PathBuf>,
     failed_phase: Option<Phase>,
     retryable_failure: bool,
+    /// Confirmations of committed native renames, run together ([`Self::confirm_pending`]).
+    pending_confirmations: Vec<Box<dyn TransferDurabilityConfirmation>>,
 }
 
 struct LinkAuthority {
@@ -367,6 +369,7 @@ fn prepare_sources_inner(
         failed_phase: None,
         retryable_failure: false,
         refresh_parents,
+        pending_confirmations: Vec::new(),
     });
     Ok(job.into_inner())
 }
@@ -700,6 +703,7 @@ impl MoveWork {
         entry: &TransferEntry,
         job: &mut Job,
     ) -> Result<(), FsError> {
+        self.confirm_pending(&mut job.progress);
         let capture = self.link_capture_for(original, &entry.item.path)?;
         let _permit = permit(&job.cancel, &entry.item.path)?;
         capture.revalidate(&job.cancel)?;
@@ -748,11 +752,16 @@ impl MoveWork {
         Ok(())
     }
 
+    /// Removes the emptied directory `entry`. The caller counts the returned removal
+    /// ([`PendingRemoval::count`]) once it has also dropped the directory's traversal
+    /// frame, whose source holds the directory's handle.
     pub(super) fn remove_directory(
         &mut self,
         entry: &TransferEntry,
         job: &mut Job,
-    ) -> Result<(), FsError> {
+    ) -> Result<PendingRemoval, FsError> {
+        // The renames out of this folder are saved before it goes.
+        self.confirm_pending(&mut job.progress);
         let capture = self
             .captures
             .iter()
@@ -760,17 +769,16 @@ impl MoveWork {
             .ok_or_else(|| unsupported(&entry.item.path, "Move directory authority missing."))?;
         let _permit = permit(&job.cancel, &entry.item.path)?;
         let outcome = capture.remove_empty_directory(&job.cancel)?;
-        if outcome.state == TransferSourceRemoval::DeletePending {
-            job.progress.source_delete_pending += 1;
-        }
-        if !outcome.durability_confirmed {
-            job.progress.source_removal_durability_unconfirmed += 1;
-        }
+        let removal = PendingRemoval {
+            state: outcome.state,
+            durability_confirmed: outcome.durability_confirmed,
+            confirmation: capture.take_removal_confirmation(),
+        };
         // Directory handles close with this frame before any subsequent traversal.
         self.captures
             .retain(|capture| capture.entry().identity != entry.identity);
         self.record_parents(job, &entry.item.path);
-        Ok(())
+        Ok(removal)
     }
     /// Logical proof reads retained for the current file, not cumulative retry I/O.
     pub(super) fn active_proof_credit(&self, policy: TransferVerification) -> Option<u64> {
@@ -971,12 +979,6 @@ impl MoveWork {
                     self.proofs[0].source_entry().item.metadata.size,
                     job.verification,
                 );
-                if state == TransferSourceRemoval::DeletePending {
-                    job.progress.source_delete_pending += 1;
-                }
-                if !durability_confirmed {
-                    job.progress.source_removal_durability_unconfirmed += 1;
-                }
                 let identity = self.proofs[0].source_entry().identity;
                 let destination = self
                     .published
@@ -987,6 +989,14 @@ impl MoveWork {
                     .iter()
                     .find(|capture| capture.entry().identity == identity)
                     .and_then(|capture| capture.take_stage_cleanup());
+                let removal = PendingRemoval {
+                    state,
+                    durability_confirmed,
+                    confirmation: self
+                        .finalizer
+                        .as_mut()
+                        .and_then(|finalizer| finalizer.take_removal_confirmation()),
+                };
                 // No source queries after disposition. Close EVERY source/DELETE
                 // owner before removing the empty transient directory or copying
                 // the next file. Destination proof owners also end here.
@@ -997,6 +1007,9 @@ impl MoveWork {
                 self.buffer = Vec::new();
                 self.phase = Phase::Copying;
                 self.active = None;
+                // Every handle on the source is closed: a removal Windows completes only
+                // now is confirmed (and counted) before its stage is removed.
+                let (state, durability_confirmed) = removal.count(&mut job.progress);
                 // The source is gone and its copy verified: what fails now leaves only
                 // an empty private folder, or the removal's durability, uncertain. The
                 // job asks whether to go on (a provider that omits the cleanup still
@@ -1049,6 +1062,7 @@ impl MoveWork {
         Ok(false)
     }
     pub(super) fn cleanup(&mut self, job: &mut Job) -> Vec<FsError> {
+        self.confirm_pending(&mut job.progress);
         self.failed_phase = None;
         self.retryable_failure = false;
         let mut errors: Vec<_> = self
@@ -1125,6 +1139,70 @@ impl MoveWork {
         errors
     }
 }
+/// A source removal whose disposition and durability are counted only once the job has
+/// dropped every handle it holds on the removed entry: a removal by delete disposition
+/// (Windows) leaves its name until then, so its confirmation can only run after that.
+pub(super) struct PendingRemoval {
+    state: TransferSourceRemoval,
+    durability_confirmed: bool,
+    confirmation: Option<Box<dyn TransferDurabilityConfirmation>>,
+}
+impl PendingRemoval {
+    /// Runs the provider's confirmation of a delete-pending removal, if it gave one, and
+    /// counts the removal as it then stands; returns its final state and durability.
+    /// Call only after the removed entry's source, capture and finalizer are dropped.
+    pub(super) fn count(self, progress: &mut CopyProgress) -> (TransferSourceRemoval, bool) {
+        let confirmed = self.state == TransferSourceRemoval::DeletePending
+            && self.confirmation.is_some_and(|confirmation| {
+                confirmation.confirm(&mut TransferDurabilityRound::default())
+            });
+        let (state, durability_confirmed) = if confirmed {
+            (TransferSourceRemoval::Unlinked, true)
+        } else {
+            (self.state, self.durability_confirmed)
+        };
+        if state == TransferSourceRemoval::DeletePending {
+            progress.source_delete_pending += 1;
+        }
+        if !durability_confirmed {
+            progress.source_removal_durability_unconfirmed += 1;
+        }
+        (state, durability_confirmed)
+    }
+}
+
+/// At most this many deferred native-rename confirmations wait for their round: each
+/// holds the handles of the folders its rename changed.
+const MAX_PENDING_CONFIRMATIONS: usize = 64;
+
+impl MoveWork {
+    /// Keeps the confirmation of a committed native rename for the next round
+    /// ([`Self::confirm_pending`]), which runs at once when the limit is reached.
+    pub(super) fn defer_confirmation(
+        &mut self,
+        confirmation: Box<dyn TransferDurabilityConfirmation>,
+        progress: &mut CopyProgress,
+    ) {
+        self.pending_confirmations.push(confirmation);
+        if self.pending_confirmations.len() >= MAX_PENDING_CONFIRMATIONS {
+            self.confirm_pending(progress);
+        }
+    }
+    /// Runs every deferred rename confirmation in one round, so that each folder they
+    /// changed is saved once for all of them, and counts each rename it cannot confirm.
+    /// Runs before the job removes a folder (a deferred confirmation can hold its handle,
+    /// and saving it once removed fails) and when the job ends, whatever its outcome:
+    /// the renames are committed.
+    pub(super) fn confirm_pending(&mut self, progress: &mut CopyProgress) {
+        let mut round = TransferDurabilityRound::default();
+        for confirmation in std::mem::take(&mut self.pending_confirmations) {
+            if !confirmation.confirm(&mut round) {
+                progress.source_removal_durability_unconfirmed += 1;
+            }
+        }
+    }
+}
+
 fn record_source(
     job: &mut Job,
     source: std::path::PathBuf,

@@ -96,6 +96,21 @@ pub trait TransferDirectoryLinkMoveCapture: Send + Sync {
         Ok(TransferNativeMoveOutcome::Unsupported)
     }
 
+    /// `try_native_move`, except that a provider may leave saving a committed rename to the
+    /// returned confirmation, which the engine runs later together with others
+    /// (`TransferDurabilityConfirmation`); a `Moved` outcome with one is counted by its
+    /// result alone. The default saves at once: it is `try_native_move` and none.
+    fn try_native_move_deferred(
+        &self,
+        destination: &dyn TransferDirectory,
+        name: &OsStr,
+        replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        cancel: &Cancellation,
+    ) -> Result<DeferredNativeMove, FsError> {
+        self.try_native_move(destination, name, replace, cancel)
+            .map(|outcome| (outcome, None))
+    }
+
     fn entry(&self) -> &TransferEntry;
 
     /// Verify the original link kind, identity, revision and parent binding.
@@ -148,6 +163,20 @@ pub trait TransferMoveCapture: Send + Sync {
     ) -> Result<TransferNativeMoveOutcome, FsError> {
         Ok(TransferNativeMoveOutcome::Unsupported)
     }
+    /// `try_native_move`, except that a provider may leave saving a committed rename to the
+    /// returned confirmation, which the engine runs later together with others
+    /// (`TransferDurabilityConfirmation`); a `Moved` outcome with one is counted by its
+    /// result alone. The default saves at once: it is `try_native_move` and none.
+    fn try_native_move_deferred(
+        &self,
+        destination: &dyn TransferDirectory,
+        name: &OsStr,
+        replace: Option<(Arc<dyn TransferTarget>, TransferReplacementPolicy)>,
+        cancel: &Cancellation,
+    ) -> Result<DeferredNativeMove, FsError> {
+        self.try_native_move(destination, name, replace, cancel)
+            .map(|outcome| (outcome, None))
+    }
     /// Remove only this held ordinary directory, after all children have completed.
     /// Recheck the no-follow identity/parent binding; the OS must enforce emptiness.
     /// No child deletion, path-following fallback or mutation on Drop is allowed.
@@ -156,6 +185,12 @@ pub trait TransferMoveCapture: Send + Sync {
         _cancel: &Cancellation,
     ) -> Result<TransferDirectoryRemoval, FsError> {
         Err(finalization_unsupported(&self.entry().item.path))
+    }
+    /// After `remove_empty_directory` reported `TransferSourceRemoval::DeletePending`:
+    /// the confirmation that completes it once the directory's handles are closed (see
+    /// `TransferDurabilityConfirmation`). Taken once; the default has none.
+    fn take_removal_confirmation(&self) -> Option<Box<dyn TransferDurabilityConfirmation>> {
+        None
     }
     fn entry(&self) -> &TransferEntry;
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
@@ -244,6 +279,47 @@ pub trait TransferMoveFinalizer: Send {
     /// the immutable job policy (full SHA-256 or size and sampled content).
     /// Idempotent actual mutation facts, including failures after removal.
     fn finalize(&mut self, cancel: &Cancellation) -> TransferMoveFinalizeOutcome;
+    /// After `finalize` reported a `TransferSourceRemoval::DeletePending` removal: the
+    /// confirmation that completes it once the source's handles are closed (see
+    /// `TransferDurabilityConfirmation`). Taken once; the default has none.
+    fn take_removal_confirmation(&mut self) -> Option<Box<dyn TransferDurabilityConfirmation>> {
+        None
+    }
+}
+
+/// A native Move's outcome and, when the provider left saving the rename for later, its
+/// confirmation (`try_native_move_deferred`).
+pub type DeferredNativeMove = (
+    TransferNativeMoveOutcome,
+    Option<Box<dyn TransferDurabilityConfirmation>>,
+);
+
+/// The part of a committed source change (a native rename, a removal) that a provider
+/// completes later: saving the folders it changed to disk and, for a removal by delete
+/// disposition, checking that its name is gone, which Windows does only when the handle
+/// that set the disposition closes. It is run once: a removal's after the engine dropped
+/// every source, capture and finalizer of the removed entry, a deferred rename's together
+/// with the job's other pending ones (before the job removes a folder, and at its end).
+/// The engine counts the change only then.
+pub trait TransferDurabilityConfirmation: Send {
+    /// True only when the change is saved: for a removal, its name is verifiably gone from
+    /// the folder that held it (it is then `Unlinked`) and that folder is saved. False
+    /// leaves the change unconfirmed (a removal stays `DeletePending`). Each folder is
+    /// saved at most once per `round`, whose confirmations all run after their changes.
+    fn confirm(self: Box<Self>, round: &mut TransferDurabilityRound) -> bool;
+}
+
+/// Confirmations the engine runs together, every one after the change it confirms was
+/// committed: a folder saved for one of them is saved for all of them.
+#[derive(Debug, Default)]
+pub struct TransferDurabilityRound {
+    saved: std::collections::HashMap<crate::TransferIdentity, bool>,
+}
+impl TransferDurabilityRound {
+    /// Whether `folder` is saved in this round: `save` runs for its first request only.
+    pub fn folder(&mut self, folder: crate::TransferIdentity, save: impl FnOnce() -> bool) -> bool {
+        *self.saved.entry(folder).or_insert_with(save)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,6 +327,8 @@ pub enum TransferSourceRemoval {
     Unlinked,
     /// Windows POSIX disposition accepted. Application DELETE owners must close to
     /// unlink the staged name; external readers can postpone physical storage release.
+    /// A provider can hand over a `TransferDurabilityConfirmation` that checks the
+    /// unlink once those owners are closed.
     DeletePending,
 }
 

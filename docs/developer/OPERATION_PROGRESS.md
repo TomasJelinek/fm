@@ -244,13 +244,18 @@ application delivery remain pending.
   "Source changes the system could not confirm as saved to disk: N") only when a step
   it takes to save that change to disk fails, never merely because the platform has no
   such step. Any such count gives the job a closure receipt, so it ends "Completed with
-  warnings" with an attention mark in Jobs. Linux syncs the folders a change touched;
-  Windows flushes the source and destination folders of each native rename, and a
-  filesystem that does not flush folders leaves nothing to report
-  ([Move durability on Windows](TRANSFERS.md#move-durability-on-windows)). A
-  same-volume Move on Windows therefore ends Completed (WIN-6). A Windows source
-  removal by delete disposition (a cross-volume Move, a folder a merge emptied) is
-  still counted as unconfirmed, and is noted as accepted by Windows.
+  warnings" with an attention mark in Jobs. Linux syncs the folders a change touched.
+  Windows flushes the source and destination folders of a Move's native renames, each
+  folder once for the renames the job saves together (before it removes a folder and
+  when it ends), and confirms a source removal by delete disposition (a cross-volume
+  Move's, a folder a merge emptied, a directory link's original) once the job's
+  handles on it are closed, its name is gone from its folder and that folder is
+  flushed; a filesystem that does not flush folders leaves nothing to report
+  ([Move durability on Windows](TRANSFERS.md#move-durability-on-windows)). A Move on
+  Windows, on one volume or across volumes, therefore ends Completed (WIN-6). A Windows
+  removal whose name is still there, or whose folder could not be flushed, is counted
+  as unconfirmed and noted as accepted by Windows ("Source removals accepted by
+  Windows: N"); both are then true.
 - Pause requests a safe backend checkpoint. Until acknowledged the UI says
   Pausing; it must not claim a native call has stopped. Resume and Cancel remain
   available while paused. Cancellation wakes paused waits and takes precedence.
