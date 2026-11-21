@@ -215,3 +215,135 @@ fn cancel_keeps_what_is_left_with_the_original_modes() {
     chmod(&protected, 0o755);
     chmod(&unreadable, 0o755);
 }
+
+#[test]
+fn a_folder_that_stays_and_cannot_get_its_mode_back_is_offered_by_name() {
+    if privileged() {
+        return;
+    }
+    let fixture = tempfile::tempdir().unwrap();
+    let (selected, protected, unreadable) = tree_with_an_unreadable_folder(fixture.path());
+    // The filesystem turns read-only before the write-protected folder, which stays with
+    // the skipped folder, gets its own mode back.
+    tree::FAIL_RESTORE.set(Some(rustix::io::Errno::ROFS));
+    let (result, offered) = delete_deciding(&selected, |_| DeleteFailureChoice::Skip);
+    let injected = tree::FAIL_RESTORE.take();
+    let left = mode(&protected);
+    chmod(&protected, 0o755);
+    chmod(&unreadable, 0o755);
+    assert_eq!(injected, None, "the folder's mode was set back");
+    assert_eq!(offered.len(), 2, "{offered:?}");
+    assert_eq!(offered[0].error.path, unreadable);
+    let restore = &offered[1];
+    assert_eq!(restore.error.path, protected);
+    assert!(restore.can_retry);
+    assert!(
+        restore.error.message.contains("0555") && restore.error.message.contains("keeps those"),
+        "{restore:?}"
+    );
+    assert_eq!(result.unwrap().skipped, 2);
+    // It keeps the owner write and search permission it got.
+    assert_eq!(left, 0o755);
+}
+
+/// A write-protected selected folder with an unreadable folder, which cannot be removed,
+/// and a file that can.
+fn write_protected_selection(root: &Path) -> (PathBuf, PathBuf) {
+    let selected = root.join("selected");
+    let unreadable = selected.join("unreadable");
+    fs::create_dir_all(&unreadable).unwrap();
+    fs::write(selected.join("gone.txt"), b"gone").unwrap();
+    chmod(&unreadable, 0o000);
+    chmod(&selected, 0o555);
+    (selected, unreadable)
+}
+
+/// The mode of `path`, or None where nothing is.
+fn mode_if_any(path: &Path) -> Option<u32> {
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions().mode() & 0o7777)
+}
+
+#[test]
+fn a_write_protected_selected_folder_that_keeps_skipped_items_returns_with_its_own_mode() {
+    if privileged() {
+        return;
+    }
+    let fixture = tempfile::tempdir().unwrap();
+    let (selected, unreadable) = write_protected_selection(fixture.path());
+    let (result, offered) = delete_deciding(&selected, |_| DeleteFailureChoice::Skip);
+    // Moving the folder back from staging needs owner write: its own mode returns after.
+    let left = mode_if_any(&selected);
+    let beside: Vec<_> = fs::read_dir(fixture.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    if left.is_some() {
+        chmod(&selected, 0o755);
+        chmod(&unreadable, 0o755);
+    }
+    assert_eq!(offered.len(), 1, "{offered:?}");
+    assert_eq!(result.unwrap().skipped, 1);
+    assert_eq!(left, Some(0o555));
+    assert_eq!(beside, [OsString::from("selected")]);
+    assert!(!selected.join("gone.txt").exists());
+}
+
+#[test]
+fn a_selected_folder_that_cannot_get_its_mode_back_is_offered_by_name() {
+    if privileged() {
+        return;
+    }
+    let fixture = tempfile::tempdir().unwrap();
+    let (selected, unreadable) = write_protected_selection(fixture.path());
+    tree::FAIL_RESTORE.set(Some(rustix::io::Errno::IO));
+    let (result, offered) = delete_deciding(&selected, |_| DeleteFailureChoice::Skip);
+    let injected = tree::FAIL_RESTORE.take();
+    let left = mode_if_any(&selected);
+    if left.is_some() {
+        chmod(&selected, 0o755);
+        chmod(&unreadable, 0o755);
+    }
+    assert_eq!(injected, None, "the folder's mode was set back");
+    assert_eq!(offered.len(), 2, "{offered:?}");
+    assert_eq!(offered[1].error.path, selected);
+    assert!(
+        offered[1].error.message.contains("0555"),
+        "{:?}",
+        offered[1]
+    );
+    // The folder's mode is not an entry left behind.
+    assert_eq!(result.unwrap().skipped, 1);
+    assert_eq!(left, Some(0o755));
+}
+
+#[test]
+fn a_set_group_id_folder_that_stays_keeps_the_bit() {
+    if privileged() {
+        return;
+    }
+    let fixture = tempfile::tempdir().unwrap();
+    let (selected, protected, unreadable) = tree_with_an_unreadable_folder(fixture.path());
+    // In the caller's own group the bit survives owner write and the mode set back.
+    chmod(&protected, 0o2555);
+    if mode(&protected) != 0o2555 {
+        chmod(&protected, 0o755);
+        chmod(&unreadable, 0o755);
+        eprintln!("SKIP: the folder's group is not the caller's, or the filesystem drops the bit");
+        return;
+    }
+    let (result, offered) = delete_deciding(&selected, |_| DeleteFailureChoice::Skip);
+    let left = mode(&protected);
+    chmod(&protected, 0o755);
+    chmod(&unreadable, 0o755);
+    assert_eq!(offered.len(), 1, "{offered:?}");
+    assert_eq!(result.unwrap().skipped, 1);
+    assert_eq!(left, 0o2555);
+    // Outside the folder's group a change would clear it: such a folder gets no owner
+    // write (`crate::ownership::keeps_set_group_id`), and the walk says why.
+    assert!(!crate::ownership::keeps_set_group_id(0o2555, 4242, |_| {
+        false
+    }));
+    assert!(tree::SET_GROUP_ID_KEPT.contains("set-group-ID"));
+}

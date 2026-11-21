@@ -316,7 +316,8 @@ the reserve and what other archive reads still need. Under protocol 3 the host r
 it through the cooperative cancellation acknowledgement (the session keeps serving its
 other users); under protocol 2 the refusal ends the exchange like any staging failure.
 Content of undeclared length is checked as it is appended, and so are spills of small
-stages. A refusal keeps the spool root, which works. The
+stages. A refusal keeps the spool root, which works, but the next mount chooses its
+root again while that volume stays at its reserve (see below). The
 parser sets no member-count or name-bytes limit. It retains the protocol's 64 KiB
 per-name limit, a 16 MiB bound on each buffered TAR long-name/long-link/PAX record,
 64 MiB XZ/Zstandard windows, a 256 MiB 7z LZMA/LZMA2 dictionary check (larger
@@ -373,7 +374,12 @@ discovery when an installed worker stages content (`Catalog::prepare_staging`), 
 first archive opened does not wait for the test spool; a mount that starts during that
 check waits for its choice instead of making its own. A spool that cannot be created,
 written or sized there makes the next mount choose again; a member refused for lack of
-space does not. A `<pid>` root serves only this process: every mount that uses it checks
+space does not. Each later mount queries the kept root's volume once. Only a volume with
+less than 64 MiB free above its reserve (or one that cannot be queried) makes it choose
+again as above, walking the candidates and creating their test spools: a candidate
+with room then takes over, or else the first usable one serves again, with the same
+claims where it is on the same volume. A `<pid>` root serves only this process: every
+mount that uses it checks
 it again, and it is removed after its last spool closes. A fixed shared name is never
 used.
 

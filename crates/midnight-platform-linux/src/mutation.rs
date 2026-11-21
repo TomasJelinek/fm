@@ -422,20 +422,46 @@ impl PreparedMutation for Prepared {
     }
 }
 
+/// What a deletion did to the permissions of the selected item to move it.
+enum Selected {
+    /// Nothing: it is not a folder the current user owns that lacks owner write or
+    /// search permission.
+    Unchanged,
+    /// The folder got both through this descriptor; its own mode, to give back.
+    Unprotected(File, rustix::fs::RawMode),
+    /// The folder lacks them but did not get them: a change of its mode would clear its
+    /// set-group-ID bit (`crate::ownership::keeps_set_group_id`).
+    KeptSetGroupId,
+}
+
 impl Prepared {
     /// A refusal by the folder that contains the item names that folder and says why.
-    /// Deleting never changes that folder, not even its permissions.
-    fn explain_refusal(&self, failure: FsError) -> FsError {
-        if failure.kind != ErrorKind::PermissionDenied
-            || accessat(
-                &*self.parent,
-                ".",
-                Access::WRITE_OK | Access::EXEC_OK,
-                AtFlags::EACCESS,
-            )
-            .is_ok()
-        {
+    /// Deleting never changes that folder, not even its permissions. A refused move of a
+    /// selected folder kept write-protected for its set-group-ID bit names that folder.
+    fn explain_refusal(&self, failure: FsError, selected: &Selected) -> FsError {
+        if failure.kind != ErrorKind::PermissionDenied {
             return failure;
+        }
+        if accessat(
+            &*self.parent,
+            ".",
+            Access::WRITE_OK | Access::EXEC_OK,
+            AtFlags::EACCESS,
+        )
+        .is_ok()
+        {
+            return match selected {
+                Selected::KeptSetGroupId => error(
+                    &self.item.path,
+                    ErrorKind::PermissionDenied,
+                    &format!(
+                        "This folder is write-protected, so it cannot be moved out of its \
+                         folder to delete it, and its permissions could not be changed: {}",
+                        tree::SET_GROUP_ID_KEPT
+                    ),
+                ),
+                _ => failure,
+            };
         }
         let owner = rustix::process::geteuid().as_raw();
         let message = if fstat(&*self.parent).is_ok_and(|stat| stat.st_uid == owner) {
@@ -464,28 +490,23 @@ impl Prepared {
         self.revalidate(cancel)?;
         // Moving a folder to another folder changes its `..` entry, which needs write
         // permission on the moved folder itself.
-        let unprotected = self.unprotect_selected_folder();
-        let restore = || {
-            if let Some((directory, mode)) = &unprotected {
-                let _ = rustix::fs::fchmod(directory, Mode::from_raw_mode(*mode));
-            }
-        };
+        let selected = self.unprotect_selected_folder();
         if mode == DeleteMode::Trash {
             // The folder keeps its own mode in the Trash.
-            let result = trash::move_entry(self, cancel, progress);
-            restore();
-            return result.map_err(|failure| self.explain_refusal(failure));
+            let result = trash::move_entry(self, cancel, progress)
+                .map_err(|failure| self.explain_refusal(failure, &selected));
+            return self.give_back(result, &selected, decide);
         }
         let staged = match Staged::create(self) {
             Ok(staged) => staged,
             Err(failure) => {
-                restore();
-                return Err(self.explain_refusal(failure));
+                let failure = self.explain_refusal(failure, &selected);
+                return self.give_back(Err(failure), &selected, decide);
             }
         };
         if let Err(failure) = staged.capture(self, cancel) {
-            restore();
-            return Err(self.explain_refusal(failure));
+            let failure = self.explain_refusal(failure, &selected);
+            return self.give_back(Err(failure), &selected, decide);
         }
         // The rest of the item is back under its name; staging was given up after it
         // could not be captured again.
@@ -510,53 +531,108 @@ impl Prepared {
                 Ok(choice)
             },
         );
-        // A selected folder that stays gets its own mode back.
-        if !matches!(result, Ok(0)) {
-            restore();
-        }
-        match result {
+        // A selected folder that stays gets its own mode back once it is where it stays
+        // (`give_back`): moving it back out of staging needs owner write too.
+        let outcome = match result {
             Err(failure) if abandoned => Err(failure),
             Err(failure) if released => Err(staged.abandon(self, failure, false)),
             Err(failure) => Err(staged.restore(self, failure)),
-            Ok(0) => Ok(DeleteCompletion {
-                residue: staged.cleanup().err(),
-                skipped: 0,
-            }),
-            Ok(skipped) => Ok(DeleteCompletion {
-                residue: staged.put_back(self)?,
-                skipped,
-            }),
+            Ok(0) => {
+                return Ok(DeleteCompletion {
+                    residue: staged.cleanup().err(),
+                    skipped: 0,
+                });
+            }
+            Ok(skipped) => staged
+                .put_back(self)
+                .map(|residue| DeleteCompletion { residue, skipped }),
+        };
+        self.give_back(outcome, &selected, decide)
+    }
+
+    /// Gives a selected folder that the deletion made writable its own mode back, now
+    /// that it is where it stays: in the Trash, or back under its name with what was
+    /// skipped. A failure names the folder. It is added to an outcome that failed; after
+    /// one that completed it is offered to `decide` like any other failure: Retry sets the
+    /// mode again, Skip leaves the folder with owner write and search permission, Cancel
+    /// ends the deletion (without a caller to decide, the failure ends it).
+    fn give_back(
+        &self,
+        outcome: Result<DeleteCompletion, FsError>,
+        selected: &Selected,
+        decide: &mut tree::Decide<'_>,
+    ) -> Result<DeleteCompletion, FsError> {
+        let Selected::Unprotected(directory, mode) = selected else {
+            return outcome;
+        };
+        let set_back = || tree::set_mode_back(directory, *mode, &self.item.path);
+        let done = match outcome {
+            Ok(done) => done,
+            Err(failure) => {
+                return Err(match set_back() {
+                    Ok(()) => failure,
+                    Err(issue) => tree::with_failure(failure, issue),
+                });
+            }
+        };
+        while let Err(failure) = set_back() {
+            match decide(DeleteEntryFailure {
+                error: failure,
+                can_retry: true,
+            })? {
+                DeleteFailureChoice::Retry => {}
+                DeleteFailureChoice::Skip => break,
+                DeleteFailureChoice::Cancel => {
+                    return Err(error(
+                        &self.item.path,
+                        ErrorKind::Interrupted,
+                        "operation cancelled; completed deletions remain",
+                    ));
+                }
+            }
         }
+        Ok(done)
     }
 
     /// The selected folder, when the current user owns it and it lacks owner write or
     /// search permission, gets both through a descriptor opened beneath its parent
-    /// without following links and checked against the selected identity; returns that
-    /// descriptor and the original mode. Anything else is left unchanged.
-    fn unprotect_selected_folder(&self) -> Option<(File, rustix::fs::RawMode)> {
+    /// without following links and checked against the selected identity, unless that
+    /// would clear its set-group-ID bit. Anything else is left unchanged.
+    fn unprotect_selected_folder(&self) -> Selected {
         if self.identity.kind != FileType::Directory {
-            return None;
+            return Selected::Unchanged;
         }
-        let directory = File::from(
-            openat2(
-                &*self.parent,
-                &self.name,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::BENEATH | ResolveFlags::NO_XDEV | ResolveFlags::NO_SYMLINKS,
-            )
-            .ok()?,
-        );
-        let stat = fstat(&directory).ok()?;
+        let Ok(directory) = openat2(
+            &*self.parent,
+            &self.name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::BENEATH | ResolveFlags::NO_XDEV | ResolveFlags::NO_SYMLINKS,
+        )
+        .map(File::from) else {
+            return Selected::Unchanged;
+        };
+        let Ok(stat) = fstat(&directory) else {
+            return Selected::Unchanged;
+        };
         let mode = stat.st_mode & 0o7777;
         if Identity::from_stat(&stat) != self.identity
             || stat.st_uid != rustix::process::geteuid().as_raw()
             || mode & 0o300 == 0o300
         {
-            return None;
+            return Selected::Unchanged;
         }
-        rustix::fs::fchmod(&directory, Mode::from_raw_mode(mode | 0o300)).ok()?;
-        Some((directory, mode))
+        if !crate::ownership::keeps_set_group_id(
+            mode,
+            stat.st_gid,
+            crate::ownership::caller_in_group,
+        ) {
+            return Selected::KeptSetGroupId;
+        }
+        match rustix::fs::fchmod(&directory, Mode::from_raw_mode(mode | 0o300)) {
+            Ok(()) => Selected::Unprotected(directory, mode),
+            Err(_) => Selected::Unchanged,
+        }
     }
 }
 

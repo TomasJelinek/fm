@@ -444,3 +444,14 @@ fn refused_directories_are_removed_only_while_empty_and_unreplaced() {
     assert!(remove_refused_directory(&parent, OsStr::new("file"), None).is_err());
     assert_eq!(fs::read(temp.path().join("file")).unwrap(), b"kept");
 }
+
+#[test]
+fn a_mode_change_keeps_set_group_id_only_for_a_member_of_the_folders_group() {
+    // The kernel clears the bit when the caller is not a member of the folder's group.
+    assert!(!keeps_set_group_id(0o2555, 4242, |_| false));
+    assert!(keeps_set_group_id(0o2555, 4242, |group| group == 4242));
+    // Without the bit there is nothing to lose.
+    assert!(keeps_set_group_id(0o555, 4242, |_| false));
+    // The caller is a member of its own effective group.
+    assert!(caller_in_group(rustix::process::getegid().as_raw()));
+}

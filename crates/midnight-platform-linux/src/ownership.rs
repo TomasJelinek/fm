@@ -238,6 +238,29 @@ fn private_writers_only(gid: u32, mode: u32, acl: impl FnOnce() -> bool) -> bool
     mode & 0o002 == 0 && (mode & 0o020 == 0 || (caller_private_group(gid) && !acl()))
 }
 
+/// Whether changing the mode of a folder whose permission bits are `mode` and whose
+/// group is `group` keeps its set-group-ID bit, which gives the folder's new entries its
+/// group. The kernel clears the bit when the caller is not a member of the folder's
+/// group (chmod(2)), both when a permission is added and when the mode is set back, so
+/// Move and Delete never change such a folder: it stays write-protected. `in_group`
+/// tells whether the caller is a member of a group (`caller_in_group`).
+pub(crate) fn keeps_set_group_id(
+    mode: u32,
+    group: u32,
+    in_group: impl FnOnce(u32) -> bool,
+) -> bool {
+    mode & 0o2000 == 0 || in_group(group)
+}
+
+/// Whether the caller is a member of `group` as the kernel counts it for the
+/// set-group-ID bit: its effective group or one of its supplementary groups. A list
+/// that cannot be read counts as not a member.
+pub(crate) fn caller_in_group(group: u32) -> bool {
+    rustix::process::getegid().as_raw() == group
+        || rustix::process::getgroups()
+            .is_ok_and(|groups| groups.iter().any(|member| member.as_raw() == group))
+}
+
 /// Whether `directory` may carry a POSIX access ACL. Only a missing attribute
 /// (ENODATA) or a filesystem without POSIX ACLs (EOPNOTSUPP) proves that it has
 /// none; any other failure counts as an ACL, which refuses group write.

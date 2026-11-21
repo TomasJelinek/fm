@@ -18,8 +18,6 @@ use std::os::fd::AsRawFd;
 
 /// The permission that adding or removing a folder's entries needs, besides search.
 const OWNER_WRITE: RawMode = 0o200;
-/// The bit that gives a folder's new entries the folder's group.
-const SET_GROUP_ID: RawMode = 0o2000;
 
 #[cfg(test)]
 thread_local! {
@@ -234,26 +232,24 @@ impl Outcome for TransferDirectoryLinkRemoval {
 }
 
 /// Why `path`, made writable with owner write for a change, kept it: its own `mode`
-/// could not be set again.
+/// could not be set again. Its kind is Other, whatever the system call reported, so it
+/// is never taken for a cancellation or a refusal of the change itself.
 fn restore_error(path: &Path, mode: RawMode, failure: rustix::io::Errno) -> FsError {
     let failure = io::Error::from(failure);
     move_error(
         path,
-        io::Error::new(
-            failure.kind(),
-            format!(
-                "This folder got owner write permission for a change of the Move, and \
-                 setting its own mode {mode:04o} again failed: {failure}. It keeps owner \
-                 write permission; remove it yourself if the folder should stay \
-                 write-protected."
-            ),
-        ),
+        io::Error::other(format!(
+            "This folder got owner write permission for a change of the Move, and setting \
+             its own mode {mode:04o} again failed: {failure}. It keeps owner write \
+             permission; remove it yourself if the folder should stay write-protected."
+        )),
     )
 }
 
 /// The permission bits of `folder` when it is a folder that the current user owns and
 /// that lacks owner write, and whose set-group-ID bit survives a change of its mode
-/// (`keeps_set_group_id`). Never for the superuser, whom permissions do not bind.
+/// (`crate::ownership::keeps_set_group_id`). Never for the superuser, whom permissions
+/// do not bind.
 pub(super) fn lacking_owner_write(folder: &File) -> Option<RawMode> {
     let caller = rustix::process::geteuid();
     if caller.is_root() {
@@ -264,29 +260,12 @@ pub(super) fn lacking_owner_write(folder: &File) -> Option<RawMode> {
     (FileType::from_raw_mode(stat.st_mode) == FileType::Directory
         && stat.st_uid == caller.as_raw()
         && mode & OWNER_WRITE == 0
-        && keeps_set_group_id(mode, stat.st_gid, caller_in_group))
+        && crate::ownership::keeps_set_group_id(
+            mode,
+            stat.st_gid,
+            crate::ownership::caller_in_group,
+        ))
     .then_some(mode)
-}
-
-/// Whether changing the mode of a folder with `mode` and group `group` keeps its
-/// set-group-ID bit. The kernel clears the bit when the caller is not a member of the
-/// folder's group (chmod(2)), both when owner write is added and when the mode is set
-/// back, so such a folder is never made writable: it stays write-protected.
-pub(super) fn keeps_set_group_id(
-    mode: RawMode,
-    group: u32,
-    in_group: impl FnOnce(u32) -> bool,
-) -> bool {
-    mode & SET_GROUP_ID == 0 || in_group(group)
-}
-
-/// Whether the caller is a member of `group` as the kernel counts it for that bit: its
-/// effective group or one of its supplementary groups. A list it cannot read counts as
-/// not a member.
-fn caller_in_group(group: u32) -> bool {
-    rustix::process::getegid().as_raw() == group
-        || rustix::process::getgroups()
-            .is_ok_and(|groups| groups.iter().any(|member| member.as_raw() == group))
 }
 
 /// `fchmod` refuses the path-only descriptor that a Move retains for a folder it moves.

@@ -303,8 +303,9 @@ fn the_spool_root_is_chosen_once_per_process_and_again_after_a_failure() {
         "one test spool checked the root, for both mounts"
     );
     // Content of undeclared length reaches the append (a declared length would be
-    // refused at its StageBegin). A full volume refuses it, but the root works: the next
-    // mount stages in it without choosing again.
+    // refused at its StageBegin). A volume that filled up after the mount opened refuses
+    // it, but the root works: the next mount, which finds room again, stages in it
+    // without choosing again.
     let op = read_op(1, 2);
     let begin = Message::StageBegin {
         request: 1,
@@ -318,7 +319,8 @@ fn the_spool_root_is_chosen_once_per_process_and_again_after_a_failure() {
         offset: 0,
         bytes: b"data".to_vec(),
     };
-    let mut refusing = cache.open(candidates, full).unwrap();
+    let mut refusing = cache.open(candidates, ample).unwrap();
+    refusing.set_space(full);
     refusing.set_memory(0, budget(0));
     let Some(Message::StageCreated { stage, .. }) = refusing.nested(&op, &begin).unwrap() else {
         panic!("the member stage was not created")
@@ -333,9 +335,10 @@ fn the_spool_root_is_chosen_once_per_process_and_again_after_a_failure() {
             .is_same(&first.root)
     );
     assert_eq!(walks.load(Ordering::Relaxed), 1);
-    // A spool that fails in the cached root, here because its volume cannot be queried,
-    // makes the next mount choose again.
-    let mut failing = cache.open(candidates, unreadable).unwrap();
+    // A spool that fails in the cached root, here because its volume can no longer be
+    // queried, makes the next mount choose again.
+    let mut failing = cache.open(candidates, ample).unwrap();
+    failing.set_space(unreadable);
     failing.set_memory(0, budget(0));
     let Some(Message::StageCreated { stage, .. }) = failing.nested(&op, &begin).unwrap() else {
         panic!("the member stage was not created")
@@ -431,8 +434,8 @@ fn a_root_checked_at_startup_spares_every_mount_the_check() {
         check_started
             .recv_timeout(Duration::from_secs(10))
             .expect("the startup check chose no root");
-        let mounting =
-            scope.spawn(|| cache.open(|| panic!("the mount checked a root"), no_volume_query));
+        // The mount queries the kept root's volume once: it has room.
+        let mounting = scope.spawn(|| cache.open(|| panic!("the mount checked a root"), ample));
         finish_check.send(()).unwrap();
         preparing.join().unwrap().unwrap();
         mounting.join().unwrap().unwrap()
@@ -443,14 +446,15 @@ fn a_root_checked_at_startup_spares_every_mount_the_check() {
         "only the startup check created a test spool"
     );
     // The first mount then creates no file and queries no volume for a small member.
+    mount.set_space(no_volume_query);
     mount.set_memory(MEMORY_STAGE_LIMIT, budget(1024 * KIB));
     let content = pattern(64 * KIB, 4);
     let lease = stage(&mut mount, (1, 2), &content, true, 16 * KIB).unwrap();
     assert_eq!(read_all(&lease), content);
     assert_eq!(mount.root.created_spools(), 1);
-    // A kept root is not checked again.
+    // A kept root whose volume has room is not checked again.
     cache
-        .prepare(|| panic!("a kept root was checked again"), no_volume_query)
+        .prepare(|| panic!("a kept root was checked again"), ample)
         .unwrap();
     assert_eq!(mount.root.created_spools(), 1);
 }

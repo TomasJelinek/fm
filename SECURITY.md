@@ -226,9 +226,16 @@ folder changes its `..` entry). The change goes through a descriptor opened bene
 the parent without following links or crossing mounts and checked against the
 traversal's identity, never through a path, so a link to a folder elsewhere never
 changes that folder. A folder that stays (it still holds skipped items, its removal
-failed, or the deletion stopped) gets its original mode back, and a folder moved to
-the Trash keeps its original mode. A read-only file needs nothing (unlink depends
-only on its folder). The folder that contains the selection, anything outside the
+failed, or the deletion stopped) gets its original mode back once it is where it
+stays (a selected folder after it has moved back out of staging, which needs the
+permission too), and a folder moved to the Trash keeps its original mode. If setting
+the mode back fails (the filesystem turned read-only or failed), the folder keeps
+owner write and search permission and the failure names it: it pauses the job like
+any other failure, or is added to the reason the deletion stopped. A folder with the
+set-group-ID bit whose group the user is not a member of is never changed, because the
+kernel would clear that bit with any change of its mode: it is reported as
+write-protected. A read-only file needs nothing (unlink depends only on its folder).
+The folder that contains the selection, anything outside the
 confirmed tree and anything owned by another user is never changed: a removal they
 refuse pauses the job with Retry, Skip, Skip all errors and Cancel, and says why
 ("write-protected" or "owned by another user"). On Windows, NTFS's POSIX delete

@@ -12,9 +12,14 @@
 //! through the descriptor this traversal opened and verified, before its entries are
 //! removed: deleting everything in it was confirmed. A folder that stays in the end
 //! (it still holds skipped items, its removal failed, or the deletion stopped) gets
-//! its original mode back. The folder that contains the selection, anything outside
-//! the selected tree and anything owned by another user is never changed, and links
-//! are never followed, so a link to a folder elsewhere never changes that folder.
+//! its original mode back; if that fails (the filesystem turned read-only or failed),
+//! the failure names the folder and is offered like any other (`Walk::restore`), or
+//! added to the reason the deletion stopped. A folder whose set-group-ID bit the kernel
+//! would clear with any change of its mode (the user is not a member of its group) is
+//! not changed and is reported as write-protected. The folder that contains the
+//! selection, anything outside the selected tree and anything owned by another user is
+//! never changed, and links are never followed, so a link to a folder elsewhere never
+//! changes that folder.
 //!
 //! A step that fails is offered to the caller (`Decide`): Retry repeats it, Skip
 //! leaves the entry and goes on, Cancel ends the deletion. When the folder itself
@@ -51,13 +56,61 @@ struct Frame {
 }
 
 impl Frame {
-    /// A folder that stays gets its original mode back.
-    fn keep(&self) {
+    /// Gives a folder that stays its original mode back. A failure leaves the folder
+    /// with owner write and search permission and names it; a later call tries again.
+    fn restore(&mut self) -> Result<(), FsError> {
         if let Some(mode) = self.original_mode {
-            let _ = fchmod(&*self.directory, Mode::from_raw_mode(mode));
+            set_mode_back(&self.directory, mode, &self.path)?;
+            self.original_mode = None;
         }
+        Ok(())
     }
 }
+
+#[cfg(test)]
+thread_local! {
+    /// The failure that the next `set_mode_back` of this thread reports instead of
+    /// changing the mode (tests of a filesystem that turned read-only).
+    pub(super) static FAIL_RESTORE: std::cell::Cell<Option<Errno>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Sets the mode of the folder `directory`, found at `path`, back to `mode`, which it had
+/// before a deletion added owner write and search permission. A failure names the folder
+/// and says what it keeps; its kind is Other, whatever the system call reported, so it
+/// is never taken for a cancellation or a refusal of the deletion itself.
+pub(super) fn set_mode_back(directory: &File, mode: RawMode, path: &Path) -> Result<(), FsError> {
+    #[cfg(test)]
+    if let Some(failure) = FAIL_RESTORE.take() {
+        return Err(restore_error(path, mode, failure));
+    }
+    fchmod(directory, Mode::from_raw_mode(mode))
+        .map_err(|failure| restore_error(path, mode, failure))
+}
+
+fn restore_error(path: &Path, mode: RawMode, failure: Errno) -> FsError {
+    error(
+        path,
+        ErrorKind::Other,
+        &format!(
+            "This folder got owner write and search permission so that its entries could be \
+             deleted, and setting its own mode {mode:04o} again failed: {}. It keeps those \
+             permissions; remove them yourself if the folder should stay protected.",
+            io::Error::from(failure)
+        ),
+    )
+}
+
+/// `failure`, followed by `issue`.
+pub(super) fn with_failure(mut failure: FsError, issue: FsError) -> FsError {
+    failure.message.push_str(&format!("; {issue}"));
+    failure
+}
+
+/// Why a folder of the selected tree that lacks owner write or search permission is not
+/// given them (`crate::ownership::keeps_set_group_id`).
+pub(super) const SET_GROUP_ID_KEPT: &str =
+    "a change would clear its set-group-ID bit, because you are not a member of its group";
 
 /// What the walk does after one entry of the current folder.
 enum Next {
@@ -119,11 +172,17 @@ pub(super) fn delete(
     };
     let mut stack = vec![root];
     let result = walk.run(&mut stack, progress);
-    // Folders still open when the deletion ended early stay, with their own modes.
-    for frame in stack.iter().rev() {
-        frame.keep();
-    }
-    result.map(|()| walk.skipped)
+    // Folders still open when the deletion ended early stay, with their own modes; a
+    // failure to give one back is added to the reason it ended. The walk returns Ok only
+    // once every folder was handled.
+    let unrestored: Vec<_> = stack
+        .iter_mut()
+        .rev()
+        .filter_map(|frame| frame.restore().err())
+        .collect();
+    result
+        .map(|()| walk.skipped)
+        .map_err(|failure| unrestored.into_iter().fold(failure, with_failure))
 }
 
 impl Walk<'_, '_> {
@@ -141,7 +200,7 @@ impl Walk<'_, '_> {
                     let failure = native_error(&frame.path, e);
                     self.retry(failure, false)?;
                     let frame = stack.pop().expect("nonempty stack");
-                    self.keep(frame, stack);
+                    self.keep(frame, stack)?;
                     continue;
                 }
                 None => {
@@ -159,7 +218,7 @@ impl Walk<'_, '_> {
                 Next::Descend(child) => stack.push(child),
                 Next::KeepFolder => {
                     let frame = stack.pop().expect("nonempty stack");
-                    self.keep(frame, stack);
+                    self.keep(frame, stack)?;
                 }
             }
         }
@@ -262,13 +321,12 @@ impl Walk<'_, '_> {
     /// Removes a folder whose entries were all handled, unless it keeps skipped ones.
     fn close(
         &mut self,
-        frame: Frame,
+        mut frame: Frame,
         stack: &mut Vec<Frame>,
         progress: &mut dyn FnMut(&Path),
     ) -> Result<(), FsError> {
         if frame.keeps_skipped {
-            self.keep(frame, stack);
-            return Ok(());
+            return self.keep(frame, stack);
         }
         loop {
             let failure = match unlink(
@@ -293,29 +351,45 @@ impl Walk<'_, '_> {
                 && let Some(parent) = stack.last()
                 && let Some(blocked) = self.blocked_folder(parent)
             {
-                frame.keep();
-                if self.retry(blocked, true)? {
+                // The folder has its own mode while the parent's failure waits for a
+                // decision; a failure to give it back is offered once the folder stays.
+                let restored = frame.restore();
+                let retry = self
+                    .retry(blocked, true)
+                    .map_err(|stop| restored.err().into_iter().fold(stop, with_failure))?;
+                if retry {
                     continue;
                 }
+                self.restore(&mut frame)?;
                 let parent = stack.pop().expect("a parent frame");
-                self.keep(parent, stack);
-                return Ok(());
+                return self.keep(parent, stack);
             }
             if self.retry(failure, true)? {
                 continue;
             }
-            self.keep(frame, stack);
-            return Ok(());
+            return self.keep(frame, stack);
         }
     }
 
-    /// A folder that stays: its original mode returns, and so does its parent's need
-    /// to stay.
-    fn keep(&mut self, frame: Frame, stack: &mut [Frame]) {
-        frame.keep();
+    /// A folder that stays: its original mode returns (`restore`), and so does its
+    /// parent's need to stay.
+    fn keep(&mut self, mut frame: Frame, stack: &mut [Frame]) -> Result<(), FsError> {
         if let Some(parent) = stack.last_mut() {
             parent.keeps_skipped = true;
         }
+        self.restore(&mut frame)
+    }
+
+    /// Gives a folder that stays its original mode back. A failure names the folder and
+    /// is offered like any other: Retry sets the mode again, Skip leaves the folder with
+    /// owner write and search permission, Cancel ends the deletion.
+    fn restore(&mut self, frame: &mut Frame) -> Result<(), FsError> {
+        while let Err(failure) = frame.restore() {
+            if !self.retry(failure, true)? {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// A failure to look up or remove `name` in `frame`. `None` to try again, or what
@@ -437,9 +511,17 @@ fn open_frame(
     let mode = stat.st_mode & 0o7777;
     let (original_mode, unprotect_error) =
         if stat.st_uid == owner && mode & OWNER_REMOVAL != OWNER_REMOVAL {
-            match fchmod(&directory, Mode::from_raw_mode(mode | OWNER_REMOVAL)) {
-                Ok(()) => (Some(mode), None),
-                Err(e) => (None, Some(io::Error::from(e).to_string())),
+            if !crate::ownership::keeps_set_group_id(
+                mode,
+                stat.st_gid,
+                crate::ownership::caller_in_group,
+            ) {
+                (None, Some(SET_GROUP_ID_KEPT.into()))
+            } else {
+                match fchmod(&directory, Mode::from_raw_mode(mode | OWNER_REMOVAL)) {
+                    Ok(()) => (Some(mode), None),
+                    Err(e) => (None, Some(io::Error::from(e).to_string())),
+                }
             }
         } else {
             (None, None)
@@ -447,10 +529,14 @@ fn open_frame(
     let entries = match Dir::read_from(&directory) {
         Ok(entries) => entries,
         Err(e) => {
-            if let Some(mode) = original_mode {
-                let _ = fchmod(&directory, Mode::from_raw_mode(mode));
-            }
-            return Err(native_error(path, e));
+            let failure = native_error(path, e);
+            return Err(match original_mode {
+                Some(mode) => match set_mode_back(&directory, mode, path) {
+                    Ok(()) => failure,
+                    Err(issue) => with_failure(failure, issue),
+                },
+                None => failure,
+            });
         }
     };
     Ok(Frame {

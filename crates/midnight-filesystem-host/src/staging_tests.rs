@@ -374,14 +374,28 @@ fn a_member_refused_for_space_keeps_the_process_spool_root() {
     static CACHE: RootCache = RootCache::new();
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("kept");
-    // Four bytes above the reserve take no eight-byte member, declared or appended.
-    ABOVE_RESERVE.set(4);
+    // A whole check interval above the reserve: the volume has room, but not for a
+    // member one byte larger, declared or not.
+    ABOVE_RESERVE.set(SPACE_CHECK_INTERVAL);
     let mut first = CACHE.open(|| vec![kept(&path)], fake_volume).unwrap();
     first.spool_files_only();
-    let error = first.nested(&read(1, 2), &member(1, 2, 8)).unwrap_err();
+    let large = SPACE_CHECK_INTERVAL + 1;
+    let error = first.nested(&read(1, 2), &member(1, 2, large)).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::StorageFull);
-    let error = first.admit_member(&member(2, 3, 8)).unwrap_err();
+    let error = first.admit_member(&member(2, 3, large)).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    // Nor for a chunk of undeclared length beside what another mount claimed: all but
+    // four bytes.
+    let mut other = CACHE
+        .open(
+            || panic!("a refused member made the process choose its root again"),
+            fake_volume,
+        )
+        .unwrap();
+    other.spool_files_only();
+    other
+        .admit_member(&member(1, 9, SPACE_CHECK_INTERVAL - 4))
+        .unwrap();
     let undeclared = Message::StageBegin {
         request: 3,
         purpose: StagePurpose::Member { entry: 4 },
@@ -408,6 +422,89 @@ fn a_member_refused_for_space_keeps_the_process_spool_root() {
         .unwrap();
     assert!(second.root.is_same(&first.root));
     assert_eq!(second.root.created_spools(), created);
+}
+
+/// Mounts of `cache` that choose among `roots`, counting how often they walk them.
+fn counting(
+    roots: Vec<SpoolRoot>,
+    walks: &std::cell::Cell<usize>,
+) -> impl FnOnce() -> Vec<SpoolRoot> {
+    move || {
+        walks.set(walks.get() + 1);
+        roots
+    }
+}
+
+#[test]
+fn a_kept_root_at_its_reserve_yields_to_a_candidate_with_room_at_the_next_mount() {
+    static CACHE: RootCache = RootCache::new();
+    let temp = tempfile::tempdir().unwrap();
+    let (path, own) = (
+        temp.path().join("kept"),
+        temp.path().join("archive-spool-7"),
+    );
+    let roots = || vec![kept(&path), per_process(&own)];
+    let walks = std::cell::Cell::new(0);
+    // The first mount finds room on the kept root's volume and keeps the root. When the
+    // next mount opens, that volume is at its reserve (one byte short of a check
+    // interval above it, also for the walk), while the per-process root has room.
+    VOLUMES.set(VecDeque::from([
+        Some(SPACE_CHECK_INTERVAL),
+        Some(SPACE_CHECK_INTERVAL - 1),
+        Some(SPACE_CHECK_INTERVAL - 1),
+        Some(SPACE_CHECK_INTERVAL),
+    ]));
+    let first = CACHE
+        .open(counting(roots(), &walks), volumes_in_turn)
+        .unwrap();
+    assert!(first.process_root.is_none());
+    let second = CACHE
+        .open(counting(roots(), &walks), volumes_in_turn)
+        .unwrap();
+    assert_eq!(walks.get(), 2);
+    assert!(
+        second.process_root.is_some(),
+        "the candidate with room serves"
+    );
+    assert!(own.is_dir());
+    assert!(
+        VOLUMES.with_borrow(VecDeque::is_empty),
+        "one query per root"
+    );
+    // Both roots are on one volume: the new choice counts the same claims.
+    assert!(Arc::ptr_eq(&first.claims, &second.claims));
+}
+
+#[test]
+fn a_kept_root_with_room_serves_the_next_mount_without_a_walk() {
+    static CACHE: RootCache = RootCache::new();
+    let temp = tempfile::tempdir().unwrap();
+    let (path, own) = (
+        temp.path().join("kept"),
+        temp.path().join("archive-spool-7"),
+    );
+    let roots = || vec![kept(&path), per_process(&own)];
+    let walks = std::cell::Cell::new(0);
+    // One query when the root is chosen, and one when the next mount opens.
+    VOLUMES.set(VecDeque::from([
+        Some(SPACE_CHECK_INTERVAL),
+        Some(SPACE_CHECK_INTERVAL),
+    ]));
+    let first = CACHE
+        .open(counting(roots(), &walks), volumes_in_turn)
+        .unwrap();
+    let second = CACHE
+        .open(counting(roots(), &walks), volumes_in_turn)
+        .unwrap();
+    assert_eq!(walks.get(), 1);
+    assert!(second.root.is_same(&first.root));
+    assert_eq!(
+        second.root.created_spools(),
+        1,
+        "only the first choice's test spool"
+    );
+    assert!(VOLUMES.with_borrow(VecDeque::is_empty));
+    assert!(!own.exists());
 }
 
 #[test]

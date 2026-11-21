@@ -121,8 +121,8 @@ impl Staging {
     /// Open this user's private spool root from the platform's per-user candidates. A
     /// root that cannot be verified or cannot hold an anonymous spool yields to the
     /// next, so one unusable location never disables staged archive reads. The choice
-    /// is made once per process and kept until a spool fails in it (`RootCache`); a
-    /// member refused for lack of space keeps it.
+    /// is made once per process and kept until a spool fails in it or a mount finds its
+    /// volume at its reserve (`RootCache`); a member refused for lack of space keeps it.
     pub(crate) fn open_private() -> io::Result<Self> {
         SHARED_ROOT.open(root::candidates, PrivateSpoolDirectory::space)
     }
@@ -153,9 +153,7 @@ impl Staging {
                         process_root,
                         ..staging
                     };
-                    if space(&staging.root)
-                        .is_ok_and(|volume| space_budget(volume) == SPACE_CHECK_INTERVAL)
-                    {
+                    if has_room(space, &staging.root) {
                         return Ok(staging);
                     }
                     fallback.get_or_insert(staging);
@@ -668,10 +666,12 @@ fn query_volume(query: SpaceQuery, root: &PrivateSpoolDirectory) -> io::Result<S
 /// for every later mount, so mounts neither walk the candidates nor create a test spool
 /// again. A spool that fails to be created, written or sized in it (`failed`) makes the
 /// next mount choose again; a member refused for lack of space does not, since the root
-/// works. A per-process root is never kept: its guard removes it once the last mount
-/// using it closes. Every mount it opens counts the space claimed on its root's volume
-/// with the others on that volume (`Volumes`), whichever root it chose and however often
-/// the root was chosen again.
+/// works. A mount that finds the kept root's volume at its reserve (less than one check
+/// interval above it) chooses again as well, so that a candidate with room serves, as
+/// `Staging::open_first` prefers. A per-process root is never kept: its guard removes it
+/// once the last mount using it closes. Every mount it opens counts the space claimed on
+/// its root's volume with the others on that volume (`Volumes`), whichever root it chose
+/// and however often the root was chosen again.
 pub(crate) struct RootCache {
     /// The kept root and the claims on its volume.
     root: Mutex<Option<(PrivateSpoolDirectory, Arc<space::Claims>)>>,
@@ -693,6 +693,15 @@ impl RootCache {
         space: SpaceQuery,
     ) -> io::Result<Staging> {
         let mut cached = self.root.lock().unwrap_or_else(PoisonError::into_inner);
+        // One query of the kept root's volume per mount. Only a volume at its reserve
+        // costs the walk and its test spools: the same root may serve again, with the
+        // same claims (`Volumes`), unless another candidate has room.
+        if cached
+            .as_ref()
+            .is_some_and(|(root, _)| !has_room(space, root))
+        {
+            *cached = None;
+        }
         let mut staging = match cached.as_ref() {
             Some((root, claims)) => Staging::in_directory(root.clone(), claims.clone(), space),
             None => {
@@ -789,6 +798,13 @@ fn pending_stage(
 /// `append_to_spool` also leaves out the space that other member stages claimed.
 fn space_budget(volume: SpoolSpace) -> u64 {
     space::above_reserve(volume).min(SPACE_CHECK_INTERVAL)
+}
+
+/// Whether the volume of `root` can take at least one check interval above its reserve:
+/// a volume that cannot, or cannot be queried, is at its reserve, where every member that
+/// needs a spool file is refused.
+fn has_room(space: SpaceQuery, root: &PrivateSpoolDirectory) -> bool {
+    space(root).is_ok_and(|volume| space_budget(volume) == SPACE_CHECK_INTERVAL)
 }
 fn invalid() -> io::Error {
     io::Error::new(

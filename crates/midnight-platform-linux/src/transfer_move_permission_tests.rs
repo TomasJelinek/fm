@@ -415,11 +415,11 @@ fn a_capture_whose_folder_cannot_get_its_mode_back_keeps_the_source_for_recovery
 
 #[test]
 fn a_set_group_id_folder_gets_owner_write_only_where_it_keeps_the_bit() {
-    // The kernel clears the bit when the caller is not a member of the folder's group,
-    // both when owner write is added and when the mode is set back.
-    assert!(!writable::keeps_set_group_id(0o2555, 4242, |_| false));
-    assert!(writable::keeps_set_group_id(0o2555, 4242, |group| group == 4242));
-    assert!(writable::keeps_set_group_id(0o555, 4242, |_| false));
+    // Outside the folder's group the kernel would clear the bit, both when owner write is
+    // added and when the mode is set back (`crate::ownership::keeps_set_group_id`).
+    assert!(!crate::ownership::keeps_set_group_id(0o2555, 4242, |_| {
+        false
+    }));
     if privileged() {
         return;
     }
