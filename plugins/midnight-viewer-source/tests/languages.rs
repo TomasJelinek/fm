@@ -408,8 +408,8 @@ fn semicolon_csv_columns_hold_on_the_first_page_and_a_resumed_one() {
     unstyled(&page.text, &page.spans, "Gadget");
     page.validate().unwrap();
 
-    // The first record is read after a byte order mark and decides against the decimal
-    // commas of the records after it.
+    // The records are read after a byte order mark, and their semicolons win over the
+    // decimal commas of the records after the first.
     let text = "\u{feff}a;b;c\r\n1,5;2,5;3,5\r\n";
     let page = source_page("export.CSV", text);
     for (token, role) in [
@@ -422,6 +422,22 @@ fn semicolon_csv_columns_hold_on_the_first_page_and_a_resumed_one() {
     }
     unstyled(&page.text, &page.spans, "1,5");
     page.validate().unwrap();
+
+    // A headerless export whose every field has a decimal comma.
+    let text = "1,50;2,50;3,50\r\n12,00;9,99;0,50\r\n";
+    let page = source_page("export.csv", text);
+    for (token, role) in [
+        ("2,50", STYLE_STRING),
+        ("3,50", STYLE_NUMBER),
+        ("9,99", STYLE_STRING),
+        ("0,50", STYLE_NUMBER),
+    ] {
+        styled(&page.text, &page.spans, token, role);
+    }
+    for first_column in ["1,50", "12,00"] {
+        unstyled(&page.text, &page.spans, first_column);
+    }
+    page.validate().unwrap();
 }
 
 #[test]
@@ -431,10 +447,34 @@ fn csv_and_tsv_extensions_route_to_their_profiles() {
     assert_ne!(csv, tsv);
     assert_eq!(syntax::detect("DATA.CSV", ""), Some(csv));
     assert_eq!(syntax::detect("data.Tsv", ""), Some(tsv));
-    // A `.csv` file's first record selects commas or semicolons; ties keep commas.
+    // A `.csv` file's records select commas or semicolons: the delimiter that splits them
+    // all alike, where decimal commas and commas in text never outvote semicolons;
+    // otherwise its first record, where ties keep commas.
     let semicolons =
         syntax::detect("prices.csv", "Name;Price\nWidget;1,50\n").expect("semicolon CSV profile");
     assert!(semicolons != csv && semicolons != tsv);
+    for prefix in [
+        // A headerless export: commas would split it into `1` / `5;2` / `5;3` / `5`.
+        "1,5;2,5;3,5\n",
+        "1,5;2,5;3,5\n4;5,25;6\n",
+        // A header with a comma in two of its three fields.
+        "Konto;Soll, EUR;Haben, EUR\n",
+        "Konto;Soll, EUR;Haben, EUR\n1000;1,50;0,00\n4000;0,00;12,50\n",
+    ] {
+        assert_eq!(
+            syntax::detect("export.csv", prefix),
+            Some(semicolons),
+            "{prefix:?}"
+        );
+    }
+    // A comma file with a semicolon in a quoted field.
+    assert_eq!(
+        syntax::detect(
+            "notes.csv",
+            "Name,Note\nWidget,\"red; large\"\nGadget,blue\n"
+        ),
+        Some(csv)
+    );
     assert_eq!(syntax::detect("data.csv", "a,b\n1;2;3\n"), Some(csv));
     assert_eq!(syntax::detect("data.csv", "a;b,c\n"), Some(csv));
     // TSV keeps its tabs, whatever its first line holds.

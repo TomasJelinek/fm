@@ -318,8 +318,10 @@ pub struct Config {
     /// (false) per panel: `set_tab_restore_overrides(explicit)`.
     pub explicit_paths: Option<[bool; 2]>,
     /// Opt-in: the application's own settings store (`LocalFileSystem`) instead of the
-    /// in-memory one, as production loads and saves preferences. Only in a staged process,
-    /// whose `XDG_CONFIG_HOME` is a private scratch profile.
+    /// in-memory one, as production loads and saves preferences. Only in a
+    /// `viewers_stage::run_private` child, whose settings folders (`XDG_CONFIG_HOME`;
+    /// Windows: `USERPROFILE`, `LOCALAPPDATA`) lie in its private folder: `App::start`
+    /// checks that they do.
     pub real_settings: bool,
 }
 
@@ -1089,6 +1091,56 @@ pub fn render(window: &MinimalSoftwareWindow) -> (usize, usize, Vec<slint::Rgb8P
     (width, height, pixels)
 }
 
+/// Whether the application's own settings store would stay inside this process's
+/// private folder, as `startup_paths` checks before it seeds the store: a
+/// `viewers_stage::run_private` child, whose parent gave it `<work>/staged/run` as
+/// `MIDNIGHT_ACCEPTANCE_RUN_DIR` and its profile below `<work>/staged`. The store lives
+/// in `$XDG_CONFIG_HOME/midnight-explorer` (`$HOME/.config` when that is not absolute);
+/// on Windows in the LocalAppData known folder, which resolves through `%USERPROFILE%`
+/// (`%USERPROFILE%\AppData\Local`), and `LOCALAPPDATA` names it to the other services.
+/// Every one of those folders must lie below `<work>/staged`; that they are merely set
+/// proves nothing (Windows always sets `USERPROFILE`).
+fn private_settings() -> Result<(), String> {
+    if std::env::var_os("MIDNIGHT_ACCEPTANCE_STAGED").is_none() {
+        return Err("this process is not staged".to_owned());
+    }
+    let absolute = |variable: &str| {
+        std::env::var_os(variable)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    // `viewers_stage::parent` names these two folders.
+    let staged = absolute("MIDNIGHT_ACCEPTANCE_RUN_DIR")
+        .filter(|run| run.file_name().is_some_and(|name| name == "run"))
+        .and_then(|run| run.parent().map(Path::to_path_buf))
+        .filter(|staged| staged.file_name().is_some_and(|name| name == "staged"))
+        .ok_or("MIDNIGHT_ACCEPTANCE_RUN_DIR is not the `<work>/staged/run` of a staged process")?;
+    #[cfg(unix)]
+    let folders = [(
+        "XDG_CONFIG_HOME (or $HOME/.config)",
+        absolute("XDG_CONFIG_HOME").or_else(|| absolute("HOME").map(|home| home.join(".config"))),
+    )];
+    #[cfg(not(unix))]
+    let folders = [
+        ("USERPROFILE", absolute("USERPROFILE")),
+        ("LOCALAPPDATA", absolute("LOCALAPPDATA")),
+    ];
+    for (variable, folder) in folders {
+        match folder {
+            Some(folder) if folder.starts_with(&staged) => {}
+            Some(folder) => {
+                return Err(format!(
+                    "{variable} {} is not below the private folder {}",
+                    folder.display(),
+                    staged.display()
+                ));
+            }
+            None => return Err(format!("{variable} is not an absolute folder")),
+        }
+    }
+    Ok(())
+}
+
 /// The settings service of a run: the application's own store (opt-in), the opt-in
 /// store shared across restarts, otherwise in-memory preferences whose saves are
 /// forgotten. Also which panels have a saved tab session the first read restores.
@@ -1104,19 +1156,9 @@ fn settings_service(
             .map(|tabs| tabs.validate().is_ok() && tabs.paths.get(tabs.active).is_some())
     };
     if config.real_settings {
-        // The real store writes `$XDG_CONFIG_HOME/midnight-explorer` (Windows: the
-        // LocalAppData known folder, `%USERPROFILE%\AppData\Local`): only a staged
-        // process has a private one.
-        let private = if cfg!(unix) {
-            "XDG_CONFIG_HOME"
-        } else {
-            "USERPROFILE"
-        };
-        assert!(
-            std::env::var_os("MIDNIGHT_ACCEPTANCE_STAGED").is_some()
-                && std::env::var_os(private).is_some(),
-            "Config::real_settings needs a staged process with a private {private}"
-        );
+        if let Err(problem) = private_settings() {
+            panic!("Config::real_settings needs a staged process with private settings: {problem}");
+        }
         // Read once before the start, as production's startup read does; the engine's
         // first load then reads the store again, asynchronously.
         let stored = SettingsService::load_preferences_for_acceptance(local.as_ref()).ok();

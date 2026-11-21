@@ -53,7 +53,7 @@ pub enum Language {
     Css,
     Makefile,
     Csv,
-    /// A `.csv` file whose first record is separated by semicolons.
+    /// A `.csv` file that Open found separated by semicolons (`csv::Dialect::of_csv`).
     CsvSemicolon,
     Tsv,
 }

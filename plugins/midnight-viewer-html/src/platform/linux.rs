@@ -36,11 +36,22 @@ pub(crate) fn window_info() -> cef::WindowInfo {
     cef::WindowInfo::default().set_as_windowless(0)
 }
 
-/// On Linux CEF reads a wheel delta as DIPs.
-pub(crate) fn wheel_units() -> super::WheelUnits {
-    super::WheelUnits {
-        per_dip: [1.0; 2],
-        quantum: [1; 2],
+/// On Linux CEF reads a wheel delta as DIPs: a unit is a DIP, on both axes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WheelScale;
+
+pub(crate) fn wheel_scales() -> [WheelScale; 2] {
+    [WheelScale; 2]
+}
+
+impl WheelScale {
+    /// `dips` whole DIPs, as as many units.
+    pub(crate) fn step(self, dips: i64) -> super::WheelStep {
+        let dips = dips.clamp(-super::MAX_WHEEL_DIPS, super::MAX_WHEEL_DIPS);
+        super::WheelStep {
+            units: dips as i32,
+            dips,
+        }
     }
 }
 

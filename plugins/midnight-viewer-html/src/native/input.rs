@@ -43,39 +43,68 @@ fn click_button(button: api::PointerButton) -> Option<(MouseButtonType, u32)> {
 /// glide's last DIP is not held back until the next wheel event.
 const WHOLE_DIP_TOLERANCE: f64 = 1e-3;
 
-/// CEF wheel units for physical `delta` pixels at `scale`: DIPs in the units the
-/// platform's CEF scrolls by (`platform::wheel_units`), sent in whole quanta that scroll
-/// whole DIPs, each axis keeping the remainder for the next event.
-fn wheel_units(remainder: &mut [f64; 2], delta: [f64; 2], scale: f64) -> [i32; 2] {
-    let units = crate::platform::wheel_units();
-    let delta = std::array::from_fn(|axis| delta[axis] / scale * units.per_dip[axis]);
-    wheel_quanta(remainder, delta, units.quantum)
+/// A wheel gesture ends when no wheel event follows for longer than this: longer than
+/// the host's whole glide of a notch (200 ms), sent one delta per frame, so neither a
+/// glide nor a short stall of this loop ends one early.
+const GESTURE_GAP: Duration = Duration::from_millis(250);
+
+/// The DIPs of the current wheel gesture that Chromium has not scrolled yet, per axis,
+/// and when the gesture's last event arrived.
+///
+/// Chromium scrolls whole DIPs of whole units ([`crate::platform::WheelScale::step`]):
+/// on Windows a unit is 5/18 DIP per wheel line, so above three lines some distances
+/// are no whole number of units. Each event therefore sends the units that scroll the
+/// most whole DIPs not past those due, one or more as soon as one DIP fits, and carries
+/// what Chromium will not scroll for them to the gesture's next event. At its end that
+/// rest, less than one unit's scroll, is dropped rather than added to the next gesture.
+#[derive(Debug, Default)]
+pub(super) struct WheelGesture {
+    remainder: [f64; 2],
+    last: Option<Instant>,
 }
 
-/// Converts physical wheel deltas to whole DIPs, keeping each axis' fractional
-/// remainder so precision-touchpad scrolling below one DIP per event accumulates.
-/// A reversed direction discards the opposite remainder.
-#[cfg(test)]
-fn wheel_steps(remainder: &mut [f64; 2], delta: [f64; 2], scale: f64) -> [i32; 2] {
-    wheel_quanta(remainder, delta.map(|value| value / scale), [1, 1])
-}
-
-/// Whole multiples of `quantum` of each axis' `delta` and remainder; the rest remains.
-/// A reversed direction discards the opposite remainder.
-fn wheel_quanta(remainder: &mut [f64; 2], delta: [f64; 2], quantum: [i32; 2]) -> [i32; 2] {
-    let mut steps = [0; 2];
-    for axis in 0..2 {
-        let value = delta[axis];
-        if value != 0.0 && remainder[axis] * value < 0.0 {
-            remainder[axis] = 0.0;
-        }
-        let total = remainder[axis] + value;
-        let quantum = f64::from(quantum[axis].max(1));
-        let whole = ((total + WHOLE_DIP_TOLERANCE.copysign(total)) / quantum).trunc() * quantum;
-        remainder[axis] = total - whole;
-        steps[axis] = whole as i32;
+impl WheelGesture {
+    /// The CEF units of one wheel event of physical `delta` pixels at `scale` that
+    /// arrived at `now`, across and down.
+    fn units(&mut self, delta: [f64; 2], scale: f64, now: Instant) -> [i32; 2] {
+        let scales = crate::platform::wheel_scales();
+        self.steps(delta.map(|value| value / scale), now, |axis, dips| {
+            scales[axis].step(dips)
+        })
     }
-    steps
+
+    /// The units of one event of `delta` DIPs per axis at `now`; `step` gives the units
+    /// on an axis that scroll the most whole DIPs not past a whole number of DIPs, and
+    /// that scroll. A reversed direction discards the opposite remainder.
+    fn steps(
+        &mut self,
+        delta: [f64; 2],
+        now: Instant,
+        step: impl Fn(usize, i64) -> crate::platform::WheelStep,
+    ) -> [i32; 2] {
+        if self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) > GESTURE_GAP)
+        {
+            self.remainder = [0.0; 2];
+        }
+        self.last = Some(now);
+        let bound = crate::platform::MAX_WHEEL_DIPS as f64;
+        std::array::from_fn(|axis| {
+            let value = delta[axis];
+            if !value.is_finite() {
+                return 0;
+            }
+            if value != 0.0 && self.remainder[axis] * value < 0.0 {
+                self.remainder[axis] = 0.0;
+            }
+            let due = (self.remainder[axis] + value).clamp(-bound, bound);
+            let whole = (due + WHOLE_DIP_TOLERANCE.copysign(due)).trunc() as i64;
+            let sent = step(axis, whole);
+            self.remainder[axis] = due - sent.dips as f64;
+            sent.units
+        })
+    }
 }
 
 /// CEF zoom level for an absolute zoom factor; each level scales by 1.2.
@@ -109,7 +138,7 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
             if let Ok(mut current) = doc.viewport.lock() { *current = viewport; }
             if let Ok(mut layers) = doc.layers.lock() { *layers = crate::surface::Layers::default(); }
             if let Ok(mut frame) = doc.output.frame.lock() { *frame = None; }
-            if let Ok(mut remainder) = doc.wheel_remainder.lock() { *remainder = [0.0; 2]; }
+            if let Ok(mut gesture) = doc.wheel_gesture.lock() { *gesture = WheelGesture::default(); }
             host.notify_screen_info_changed();
             host.was_resized();
         }
@@ -138,9 +167,9 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
             crate::trace::wheel(command.header.document, command.header.sequence);
             let mut event = mouse(wheel.x, wheel.y, wheel.modifiers, scale);
             event.modifiers |= doc.mouse_buttons.load(Ordering::Acquire) as u32;
-            let Ok(mut remainder) = doc.wheel_remainder.lock() else { return; };
-            let [x, y] = wheel_units(&mut remainder, [wheel.delta_x, wheel.delta_y], scale);
-            drop(remainder);
+            let Ok(mut gesture) = doc.wheel_gesture.lock() else { return; };
+            let [x, y] = gesture.units([wheel.delta_x, wheel.delta_y], scale, Instant::now());
+            drop(gesture);
             // CEF on Windows scrolls one axis per event, the vertical one when both move.
             if y != 0 {
                 host.send_mouse_wheel_event(Some(&event), 0, y);
@@ -261,41 +290,51 @@ mod tests {
         );
     }
 
-    /// A notch glided in 2.4-DIP frames, at 1.2 units per DIP in quanta of 6 units (five
-    /// DIPs, as on Windows at three lines): only whole quanta go out, and together they
-    /// are the notch's 72 units.
-    #[test]
-    fn a_glide_goes_out_in_whole_quanta_that_add_up_to_its_distance() {
-        let mut remainder = [0.0; 2];
-        let mut total = 0;
-        for _ in 0..25 {
-            let [_, units] = wheel_quanta(&mut remainder, [0.0, -2.4 * 1.2], [6, 6]);
-            assert_eq!(units % 6, 0, "{units}");
-            total += units;
+    use crate::platform::WheelStep;
+
+    /// The host's frame while it glides a notch.
+    const FRAME: Duration = Duration::from_millis(8);
+
+    /// Whole DIPs one to one, as CEF on Linux reads them.
+    fn dips(_: usize, dips: i64) -> WheelStep {
+        WheelStep {
+            units: dips as i32,
+            dips,
         }
-        assert_eq!(total, -72);
-        assert!(remainder[1].abs() < 1e-6);
+    }
+
+    /// Five wheel lines on Windows without CEF's `f32` rounding: a unit is 25/18 DIP and
+    /// Chromium scrolls the whole DIPs of an event's units, so 1, 2, 4, 5, 6, 8, … DIPs.
+    fn five_lines(_: usize, dips: i64) -> WheelStep {
+        let units = (18 * dips.abs() + 17) / 25;
+        WheelStep {
+            units: (dips.signum() * units) as i32,
+            dips: dips.signum() * (units * 25 / 18),
+        }
+    }
+
+    /// One event of physical `delta` pixels at `scale`, one frame after `gesture`'s last.
+    fn wheel_steps(gesture: &mut WheelGesture, delta: [f64; 2], scale: f64) -> [i32; 2] {
+        let now = gesture.last.map_or_else(Instant::now, |last| last + FRAME);
+        gesture.steps(delta.map(|value| value / scale), now, dips)
     }
 
     #[test]
     fn sub_dip_wheel_deltas_accumulate_and_reversal_restarts() {
-        let mut remainder = [0.0; 2];
+        let mut gesture = WheelGesture::default();
         // Eight quarter-DIP touchpad events used to be truncated to zero each.
         let total: i32 = (0..8)
-            .map(|_| wheel_steps(&mut remainder, [0.0, -0.25], 1.0)[1])
+            .map(|_| wheel_steps(&mut gesture, [0.0, -0.25], 1.0)[1])
             .sum();
         assert_eq!(total, -2);
-        assert_eq!(remainder, [0.0, 0.0]);
+        assert_eq!(gesture.remainder, [0.0, 0.0]);
         // Physical deltas at 150 % scale: 0.75 physical px = 0.5 DIP.
-        assert_eq!(wheel_steps(&mut remainder, [0.75, 0.0], 1.5), [0, 0]);
-        assert_eq!(wheel_steps(&mut remainder, [0.75, 0.0], 1.5), [1, 0]);
+        assert_eq!(wheel_steps(&mut gesture, [0.75, 0.0], 1.5), [0, 0]);
+        assert_eq!(wheel_steps(&mut gesture, [0.75, 0.0], 1.5), [1, 0]);
         // A reversed direction does not first consume the opposite remainder.
-        assert_eq!(wheel_steps(&mut remainder, [0.75, 0.0], 1.5), [0, 0]);
-        assert_eq!(wheel_steps(&mut remainder, [-1.5, 0.0], 1.5), [-1, 0]);
-        assert_eq!(
-            wheel_steps(&mut remainder, [120.0, -240.0], 1.0),
-            [120, -240]
-        );
+        assert_eq!(wheel_steps(&mut gesture, [0.75, 0.0], 1.5), [0, 0]);
+        assert_eq!(wheel_steps(&mut gesture, [-1.5, 0.0], 1.5), [-1, 0]);
+        assert_eq!(wheel_steps(&mut gesture, [120.0, -240.0], 1.0), [120, -240]);
     }
 
     #[test]
@@ -303,17 +342,117 @@ mod tests {
         // Ten frames of 0.1 px add up to 0.9999999999999999 in f64; at 2x, ten frames
         // of 0.6 physical px to 2.9999999999999996 DIP. Neither may stop a DIP short.
         for (frame, scale, expected) in [(-0.1, 1.0, -1), (0.6, 2.0, 3)] {
-            let mut remainder = [0.0; 2];
+            let mut gesture = WheelGesture::default();
             let total: i32 = (0..10)
-                .map(|_| wheel_steps(&mut remainder, [frame, 0.0], scale)[0])
+                .map(|_| wheel_steps(&mut gesture, [frame, 0.0], scale)[0])
                 .sum();
             assert_eq!(total, expected, "{frame} x 10 at {scale}x");
-            assert!(remainder[0].abs() < WHOLE_DIP_TOLERANCE);
+            assert!(gesture.remainder[0].abs() < WHOLE_DIP_TOLERANCE);
         }
         // A real fraction still waits for the rest of its DIP.
-        let mut remainder = [0.0; 2];
-        assert_eq!(wheel_steps(&mut remainder, [0.0, 0.998], 1.0), [0, 0]);
-        assert_eq!(wheel_steps(&mut remainder, [0.0, 0.002], 1.0), [0, 1]);
+        let mut gesture = WheelGesture::default();
+        assert_eq!(wheel_steps(&mut gesture, [0.0, 0.998], 1.0), [0, 0]);
+        assert_eq!(wheel_steps(&mut gesture, [0.0, 0.002], 1.0), [0, 1]);
+    }
+
+    #[test]
+    fn a_gesture_carries_what_chromium_does_not_scroll_and_drops_it_when_it_ends() {
+        let start = Instant::now();
+        let mut gesture = WheelGesture::default();
+        // At five lines 3 DIPs are two units, which scroll 2: the third DIP waits.
+        assert_eq!(gesture.steps([0.0, 3.0], start, five_lines), [0, 2]);
+        // In the same gesture it goes out with the next DIP, as two units again.
+        assert_eq!(gesture.steps([0.0, 1.0], start + FRAME, five_lines), [0, 2]);
+        // Less than one unit's scroll sends nothing yet.
+        assert_eq!(
+            gesture.steps([0.0, 0.5], start + 2 * FRAME, five_lines),
+            [0, 0]
+        );
+        // 3.5 DIPs: two units scroll 2, and 1.5 DIPs wait.
+        assert_eq!(
+            gesture.steps([0.0, 3.0], start + 3 * FRAME, five_lines),
+            [0, 2]
+        );
+        let last = start + 3 * FRAME;
+        // Within the gesture the next DIP would take them along: 2.5 DIPs, two units.
+        let mut carried = WheelGesture {
+            remainder: gesture.remainder,
+            last: gesture.last,
+        };
+        assert_eq!(
+            carried.steps([0.0, 1.0], last + GESTURE_GAP, five_lines),
+            [0, 2]
+        );
+        // After a longer pause the gesture has ended and they are dropped: one unit.
+        assert_eq!(
+            gesture.steps([0.0, 1.0], last + GESTURE_GAP + FRAME, five_lines),
+            [0, 1]
+        );
+        assert_eq!(gesture.remainder, [0.0, 0.0]);
+    }
+
+    /// The DIPs Chromium scrolls at `lines` wheel lines for a gesture of `deltas` DIPs,
+    /// one per frame, sent as the provider sends them.
+    #[cfg(windows)]
+    fn scrolled(lines: u32, deltas: &[f64]) -> i64 {
+        let scale = crate::platform::WheelScale::with_lines(lines);
+        let mut gesture = WheelGesture::default();
+        let start = Instant::now();
+        deltas
+            .iter()
+            .zip(0..)
+            .map(|(&delta, frame)| {
+                let now = start + FRAME * frame;
+                let [_, units] = gesture.steps([0.0, delta], now, |_, dips| scale.step(dips));
+                assert!(units >= 0, "{lines} lines: {units} units");
+                i64::from(scale.dips(units.unsigned_abs()))
+            })
+            .sum()
+    }
+
+    /// The host's notch is 60 DIPs. At five wheel lines it used to scroll 50 DIPs and at
+    /// seven 35, the rest waiting for the next gesture; touchpad glides jumped in steps
+    /// of 25 to 35 DIPs.
+    #[cfg(windows)]
+    #[test]
+    fn a_notch_scrolls_its_distance_within_one_chromium_step_at_any_line_count() {
+        let eased = |frame: f64| 60.0 * (1.0 - (1.0 - frame / 25.0).powi(2));
+        let gestures = [
+            ("at once", vec![60.0]),
+            ("in 25 frames of 2.4 DIPs", vec![2.4; 25]),
+            (
+                "eased over 25 frames",
+                (1..=25)
+                    .map(|frame| eased(f64::from(frame)) - eased(f64::from(frame - 1)))
+                    .collect(),
+            ),
+            (
+                "as a touchpad flick of 28 DIPs",
+                vec![0.7, 1.3, 2.9, 4.4, 6.1, 5.2, 3.3, 2.0, 1.1, 0.6, 0.4],
+            ),
+        ];
+        for lines in 1..=20 {
+            let scale = crate::platform::WheelScale::with_lines(lines);
+            // The most one unit more scrolls up to a notch: no gesture can come closer.
+            let mut gap = 1;
+            let mut units = 0;
+            while scale.dips(units) <= 60 {
+                gap = gap.max(scale.dips(units + 1) - scale.dips(units));
+                units += 1;
+            }
+            for (what, deltas) in &gestures {
+                let distance = deltas.iter().sum::<f64>().round() as i64;
+                let moved = scrolled(lines, deltas);
+                assert!(
+                    moved <= distance && moved > distance - i64::from(gap),
+                    "{lines} lines, {what}: {moved} of {distance} DIPs (one unit scrolls up to {gap})"
+                );
+            }
+        }
+        // At Windows' default of three lines every whole DIP is reachable.
+        for (what, deltas) in &gestures[..3] {
+            assert_eq!(scrolled(3, deltas), 60, "{what}");
+        }
     }
 
     #[test]

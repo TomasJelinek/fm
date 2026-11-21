@@ -518,23 +518,54 @@ fn semicolon_fields_take_the_role_of_their_column_and_keep_their_commas() {
 }
 
 #[test]
-fn csv_dialect_follows_the_first_record_and_ties_keep_the_comma() {
+fn csv_dialect_follows_the_consistent_delimiter_and_ties_keep_the_comma() {
     for (prefix, expected) in [
         ("", Dialect::Csv),
         ("name\n", Dialect::Csv),
         ("a,b,c\n", Dialect::Csv),
         ("Name;Price;Qty\r\nWidget;1,50;3\r\n", Dialect::Semicolon),
-        // Only the first record decides.
-        ("a,b\n1;2;3;4;5\n6;7;8;9;0\n", Dialect::Csv),
+        // The delimiter that splits every record alike wins, so the decimal commas of
+        // later records cannot outvote the semicolons.
         ("a;b\n1,5;2,5\n3,5;4,5\n", Dialect::Semicolon),
-        // Equal counts keep the comma; otherwise the larger count wins.
-        ("a;b,c\n", Dialect::Csv),
+        ("1,5;2,5;3,5\n10;2,25;7\n", Dialect::Semicolon),
+        (
+            "Konto;Soll, EUR;Haben, EUR\n1000;1,50;0\n",
+            Dialect::Semicolon,
+        ),
+        // A quoted field followed by text is no field of that delimiter.
+        (
+            "\"Doe, John\";42;1,5\n\"Roe, Jane\";7;2,5\n",
+            Dialect::Semicolon,
+        ),
+        // A comma file whose quoted fields hold semicolons.
+        (
+            "Name,Note\nWidget,\"red; large\"\nGadget,blue\n",
+            Dialect::Csv,
+        ),
+        ("id,note\n1,a;b\n2,c;d\n", Dialect::Csv),
+        // Both consistent: commas between digits or before a space are text, so a
+        // headerless export, a uniform one and a header with commas in it are
+        // semicolon-separated.
+        ("1,5;2,5;3,5\n", Dialect::Semicolon),
+        ("1,5;2,5;3,5", Dialect::Semicolon),
+        ("1,50;2,50;3,50\n12,00;9,99;0,50\n", Dialect::Semicolon),
+        ("Konto;Soll, EUR;Haben, EUR\n", Dialect::Semicolon),
+        (
+            "Konto;Soll, EUR;Haben, EUR\n1000;1,50;0,00\n4000;0,00;12,50\n",
+            Dialect::Semicolon,
+        ),
         ("Price, EUR;Qty;Note\n", Dialect::Semicolon),
+        // Otherwise the first record decides: equal counts keep the comma, else the
+        // larger count wins.
+        ("a;b,c\n", Dialect::Csv),
         ("a,b,c;d;e\n", Dialect::Csv),
+        ("Widget,\"red; large\"\n", Dialect::Csv),
+        ("a,b\n1;2;3;4;5\n6;7;8;9;0\n", Dialect::Csv),
         // Delimiters inside quotes count for neither, doubled quotes included.
         ("\"a;b;c\",d\n", Dialect::Csv),
         ("\"a,b,c\";d\n", Dialect::Semicolon),
         ("\"x \"\";\"\" y\",z\n", Dialect::Csv),
+        ("\"red; large\",Widget\n", Dialect::Csv),
         // A quoted line break continues the first record.
         ("\"line\none\";b;c\nx,y,z,w\n", Dialect::Semicolon),
         // A quote never closed hides the rest of the prefix.
@@ -543,9 +574,15 @@ fn csv_dialect_follows_the_first_record_and_ties_keep_the_comma() {
         ("5\" screen;10;3\n", Dialect::Semicolon),
         // A spreadsheet's separator line.
         ("sep=;\na,b,c\n", Dialect::Semicolon),
+        ("sep=;\n1,5;2,5\n3,5;4,5\n", Dialect::Semicolon),
         ("sep=,\na;b;c\n", Dialect::Csv),
-        // A bare CR ends the first record too.
+        // A bare CR ends a record too.
         ("a,b\rc;d;e\n", Dialect::Csv),
+        // Blank lines are no records, and a last record the prefix may have cut short
+        // does not count against the complete ones.
+        ("a;b;c\r\n\r\n1,5;2,5;3,5\r\n", Dialect::Semicolon),
+        ("a;b;c\n1,5;2,5;3,5\n4,5;5", Dialect::Semicolon),
+        ("id,qty\n1,5\n2,7\n3", Dialect::Csv),
     ] {
         assert_eq!(Dialect::of_csv(prefix), expected, "{prefix:?}");
     }

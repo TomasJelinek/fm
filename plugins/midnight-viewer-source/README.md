@@ -110,16 +110,24 @@ pass without buffering a field. Values are not typed or validated.
 
 A `.csv` file is separated by commas or by semicolons, as spreadsheets save CSV in
 locales whose decimal separator is the comma; semicolon files quote like comma files,
-and their commas are ordinary text. Open decides once, from the file's first record
-as far as Open reads it (the first 512 bytes of the file, without a byte order mark,
-at most four lines). That record is split once at semicolons and once at commas, each
-with RFC 4180 quoting, so a delimiter inside a quoted field counts for neither, and
-semicolons are chosen only when they give more fields. Equal counts, a record with
-neither delimiter and an empty file keep commas: `a;b,c` is comma-separated, while
-`Price, EUR;Qty;Note` and a spreadsheet's `sep=;` first line are semicolon-separated.
-Later records never change the choice, so their decimal commas stay inside fields and
-every page and checkpoint of the file splits at the same delimiter. `.tsv` files
-always split at tabs.
+and their commas are ordinary text. Open decides once, from the records it reads at
+the file's start (the first 512 bytes, without a byte order mark, at most four lines;
+blank lines are skipped, and a last record cut short counts only when it is the only
+one). As Python's `csv.Sniffer` does, it splits them once at semicolons and once at
+commas, each with RFC 4180 quoting, so a delimiter inside a quoted field counts for
+neither. A delimiter is consistent when it splits every record into the same number
+of fields, more than one, and no closing quote is followed by text. The one consistent
+delimiter wins, so the decimal commas of a semicolon file, which rarely come equally
+many in every record, never outvote its semicolons, and a comma file keeps commas
+when a quoted field holds a semicolon. When both are consistent and every comma lies
+between two digits or before a space (a decimal comma, a comma in text), semicolons
+win: a headerless `1,5;2,5;3,5` and a header `Konto;Soll, EUR;Haben, EUR` are
+semicolon-separated. Otherwise the first record decides: more fields at semicolons
+choose semicolons, while equal counts, a record with neither delimiter and an empty
+file keep commas. So `a;b,c` is comma-separated, while `Price, EUR;Qty;Note` and a
+spreadsheet's `sep=;` first line are semicolon-separated. The choice never changes
+later, so every page and checkpoint of the file splits at the same delimiter. `.tsv`
+files always split at tabs.
 
 Lua highlights keywords, numbers, short strings and comments, and matched-level
 long bracket strings/comments. Short-string escaped newlines and `\z` whitespace

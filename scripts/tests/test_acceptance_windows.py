@@ -4,7 +4,8 @@ private installation it runs the suite from.
 The run tests give the runner a stand-in test executable, the `py.exe` launcher, whose
 first argument (passed as a scenario name) is a script that records what it sees: the
 environment, the installation's folders and its access control list. No Cargo build
-runs.
+runs. They give the runner a private `USERPROFILE` below the test's temporary folder,
+so the installation it creates and removes never touches the real profile.
 """
 import json
 import os
@@ -38,6 +39,28 @@ record = {
 Path(os.environ["RECORD"]).write_text(json.dumps(record), encoding="utf-8")
 sys.exit(int(os.environ.get("RECORD_EXIT", "0")))
 '''
+# One PowerShell session that runs the runner in-process twice and then as a dry run,
+# recording its working directory and the variables the runner sets after each.
+IN_PROCESS = r'''
+$ErrorActionPreference = 'Stop'
+$names = @('TEMP', 'TMP', 'CARGO_HOME', 'RUSTUP_HOME', 'MIDNIGHT_ACCEPTANCE_PLUGINS',
+    'MIDNIGHT_ACCEPTANCE_STAGE_ROOT', 'MIDNIGHT_ACCEPTANCE_RUN_DIR')
+function Get-SessionState {
+    $variables = [ordered]@{}
+    foreach ($name in $names) { $variables[$name] = [Environment]::GetEnvironmentVariable($name) }
+    [ordered]@{ location = (Get-Location).Path; variables = $variables }
+}
+Set-Location -LiteralPath $env:START
+$steps = @([ordered]@{ step = 'before'; code = 0; state = Get-SessionState })
+foreach ($run in 1, 2) {
+    $env:RECORD = Join-Path $env:START "record-$run.json"
+    & $env:RUNNER --test-binary $env:LAUNCHER --run-dir $env:RUNS --only $env:RECORDER
+    $steps += [ordered]@{ step = "run $run"; code = $LASTEXITCODE; state = Get-SessionState }
+}
+& $env:RUNNER --dry-run
+$steps += [ordered]@{ step = 'dry run'; code = $LASTEXITCODE; state = Get-SessionState }
+ConvertTo-Json -InputObject $steps -Depth 5 | Set-Content -LiteralPath $env:REPORT -Encoding utf8
+'''
 
 
 @unittest.skipUnless(os.name == "nt" and PWSH, "Windows runner with PowerShell 7")
@@ -54,6 +77,19 @@ class AcceptanceRunnerTests(unittest.TestCase):
                                str(ROOT / "scripts/acceptance.ps1"), *arguments],
                               capture_output=True, text=True, timeout=120,
                               env=dict(os.environ, **(environment or {})))
+
+    def stub_plugins(self):
+        plugins = self.root / "plugins"
+        for package in ("viewers/basic", "filesystems/native.windows",
+                        "filesystems/network.windows", "thumbnailers/image"):
+            (plugins / package).mkdir(parents=True)
+            (plugins / package / "plugin.toml").write_text("name = 'stub'\n", encoding="utf-8")
+        return plugins
+
+    def private_profile(self):
+        profile = self.root / "profile"
+        profile.mkdir()
+        return profile
 
     def test_dry_run_prints_the_plan_without_creating_anything(self):
         before = set(Path(os.environ["USERPROFILE"]).glob("MidnightAcceptance-*"))
@@ -82,20 +118,17 @@ class AcceptanceRunnerTests(unittest.TestCase):
             with self.subTest(arguments=arguments):
                 result = self.run_script("--dry-run", *arguments)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertIn("Usage: scripts\\acceptance.ps1", result.stderr)
+                self.assertIn("Usage: pwsh -File scripts\\acceptance.ps1", result.stderr)
 
     def test_help_prints_usage(self):
         result = self.run_script("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Usage: scripts\\acceptance.ps1", result.stdout)
+        self.assertIn("Usage: pwsh -File scripts\\acceptance.ps1", result.stdout)
 
     @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
     def test_run_uses_an_owner_only_installation_and_removes_it(self):
-        plugins = self.root / "plugins"
-        for package in ("viewers/basic", "filesystems/native.windows",
-                        "filesystems/network.windows", "thumbnailers/image"):
-            (plugins / package).mkdir(parents=True)
-            (plugins / package / "plugin.toml").write_text("name = 'stub'\n", encoding="utf-8")
+        plugins = self.stub_plugins()
+        profile = self.private_profile()
         recorder = self.root / "recorder.py"
         recorder.write_text(RECORDER, encoding="utf-8")
         record = self.root / "record.json"
@@ -103,12 +136,13 @@ class AcceptanceRunnerTests(unittest.TestCase):
         runs.mkdir()
         result = self.run_script("--test-binary", LAUNCHER, "--plugins", str(plugins),
                                  "--run-dir", str(runs), "--only", str(recorder),
-                                 environment={"RECORD": str(record), "RECORD_EXIT": "1"})
+                                 environment={"RECORD": str(record), "RECORD_EXIT": "1",
+                                              "USERPROFILE": str(profile)})
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         seen = json.loads(record.read_text(encoding="utf-8"))
         installation = Path(seen["root"])
         self.assertTrue(installation.name.startswith("MidnightAcceptance-"), seen)
-        self.assertEqual(installation.parent, Path(os.environ["USERPROFILE"]))
+        self.assertEqual(installation.parent, profile)
         self.assertFalse(installation.exists(), "the private installation was not removed")
         self.assertEqual(Path(seen["packages"]), installation / "packages")
         # The test executable runs as a copy in the installation's bin folder.
@@ -126,6 +160,55 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertTrue(any("NT AUTHORITY\\SYSTEM" in entry for entry in entries), seen["acl"])
         self.assertTrue(any("BUILTIN\\Administrators" in entry for entry in entries), seen["acl"])
         self.assertIn("Plugin packages (filesystems): native.windows", result.stdout)
+
+    @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
+    def test_in_process_runs_restore_the_session_and_stage_the_packages_again(self):
+        # Run in-process, the runner used to leave MIDNIGHT_ACCEPTANCE_PLUGINS naming the
+        # removed installation's packages (the next run staged none), and TEMP, TMP,
+        # MIDNIGHT_ACCEPTANCE_RUN_DIR and the working directory changed.
+        plugins = self.stub_plugins()
+        profile = self.private_profile()
+        recorder = self.root / "recorder.py"
+        recorder.write_text(RECORDER, encoding="utf-8")
+        runs = self.root / "runs"
+        runs.mkdir()
+        start = self.root / "start"
+        start.mkdir()
+        temporary = self.root / "temp before"
+        temporary.mkdir()
+        report = self.root / "report.json"
+        environment = {name: value for name, value in os.environ.items() if name.upper() not in
+                       ("MIDNIGHT_ACCEPTANCE_STAGE_ROOT", "MIDNIGHT_ACCEPTANCE_RUN_DIR")}
+        environment.update({
+            "TEMP": str(temporary), "TMP": str(temporary),
+            "CARGO_HOME": "cargo home before", "RUSTUP_HOME": "rustup home before",
+            # Without --plugins the runner stages the packages this variable names.
+            "MIDNIGHT_ACCEPTANCE_PLUGINS": str(plugins),
+            "USERPROFILE": str(profile), "RECORD_EXIT": "0",
+            "START": str(start), "RUNNER": str(ROOT / "scripts/acceptance.ps1"),
+            "LAUNCHER": LAUNCHER, "RUNS": str(runs), "RECORDER": str(recorder),
+            "REPORT": str(report),
+        })
+        result = subprocess.run([PWSH, "-NoLogo", "-NoProfile", "-Command", IN_PROCESS],
+                                capture_output=True, text=True, timeout=240, env=environment)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        steps = json.loads(report.read_text(encoding="utf-8-sig"))
+        self.assertEqual([step["step"] for step in steps], ["before", "run 1", "run 2", "dry run"])
+        before = steps[0]["state"]
+        self.assertEqual(Path(before["location"]), start)
+        self.assertEqual(before["variables"]["MIDNIGHT_ACCEPTANCE_PLUGINS"], str(plugins))
+        self.assertIsNone(before["variables"]["MIDNIGHT_ACCEPTANCE_STAGE_ROOT"])
+        for step in steps[1:]:
+            with self.subTest(step=step["step"]):
+                self.assertEqual(step["code"], 0, result.stdout + result.stderr)
+                self.assertEqual(step["state"], before)
+        for run in (1, 2):
+            with self.subTest(run=run):
+                seen = json.loads((start / f"record-{run}.json").read_text(encoding="utf-8"))
+                self.assertEqual(seen["installed"], {"viewers": ["basic"], "filesystems": ["native.windows"],
+                                                     "thumbnailers": ["image"]})
+                self.assertEqual(Path(seen["root"]).parent, profile)
+                self.assertFalse(Path(seen["root"]).exists(), "the private installation was not removed")
 
 
 if __name__ == "__main__":

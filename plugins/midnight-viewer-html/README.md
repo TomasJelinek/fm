@@ -74,10 +74,17 @@ Space input, editable-field Space and explicit selection copy, textarea
 Enter/Shift+Enter, punctuation keys and a synthetic IME commit, layout zoom,
 fractional-DPI resize, and clean process exit; `chromium_applies_each_wheel_event_at_once`
 checks that one wheel event scrolls its whole distance in the next frame, stops at the
-top edge, and that a notch the host glides in 25 frames of 2.4 px scrolls its 60 px.
-On Windows 11 (21 November 2026, debug package of this checkout, three wheel lines) it
-first measured 100 px for a 120 px event; with the unit conversion below alone, the glide
-moved 47 of 60 px; with whole quanta it passes. It earlier ran on Linux X11. Editable
+top edge, and that a notch the host glides in 25 frames of 2.4 px scrolls its 60 px. It
+reads the machine's wheel setting as CEF does and expects what Chromium can scroll there:
+the closest distance not past 120 px for the single event, and for the glide 60 px or
+less by under one wheel unit's scroll (both exact at three lines and on Linux); with a
+notch set to scroll a page it does not run. On Windows 11 (21 November 2026, debug
+package of this checkout, three wheel lines) it first measured 100 px for a 120 px event;
+with the unit conversion below alone, the glide moved 47 of 60 px; with whole quanta it
+passed at three lines. With the per-event conversion below it passed again (21 November
+2026, Windows 11, three wheel lines, a debug package of this checkout's provider: 120 px
+and 60 px, 2.44 s); other wheel settings are covered by the provider's unit tests, not
+measured. It earlier ran on Linux X11. Editable
 steps wait for the copied selection rather than fixed delays, because frames carry no
 input acknowledgment.
 The final fixture passed in 2.29 seconds on the development Windows environment;
@@ -120,24 +127,36 @@ Windows virtual keys never come from a character's ASCII value: punctuation uses
 the US-layout OEM key of its physical key, letters follow the produced Latin letter
 (QWERTZ/AZERTY), numpad keys follow NumLock, and unknown keys are 0, so typed
 punctuation never acts as Delete, arrow or page commands. Mouse Back/Forward buttons are not forwarded as clicks, and
-focus loss ends a held button's capture. Fractional wheel deltas accumulate per
-document. Chromium runs with `disable-smooth-scrolling`: the host glides wheel notches
-and coasts touchpad flicks itself, one delta per frame, so Chromium applies each wheel
-event at once instead of easing it again over about 170 ms. The host's deltas are the
-distance to scroll, 60 px per notch as in the text viewer. On Linux CEF reads a delta as
-pixels. On Windows CEF reads it as `WHEEL_DELTA` units (120 per notch) and Chromium
-scrolls the system's wheel lines (characters across) of 100/3 px each, and drops the
-fraction of a pixel each event scrolls; the Windows adapter converts pixels to units by
-the current `SPI_GETWHEELSCROLLLINES`/`SPI_GETWHEELSCROLLCHARS` setting and sends whole
-quanta that scroll whole pixels (six units, 5 px, at the default three lines), keeping the
-rest for the next event. CEF on Windows scrolls one axis per event, so a delta on both
-axes goes out as two events. A "one screen at a time" setting cannot scroll by pixels;
-the adapter then uses the default three lines, and Chromium still scrolls by pages.
+focus loss ends a held button's capture. Chromium runs with `disable-smooth-scrolling`:
+the host glides wheel notches and coasts touchpad flicks itself, one delta per frame, so
+Chromium applies each wheel event at once instead of easing it again over about 170 ms.
+The host's deltas are the distance to scroll, 60 px per notch as in the text viewer.
+Chromium scrolls whole pixels of whole units. On Linux CEF reads a delta as pixels, so
+a unit is a pixel. On Windows CEF reads it as `WHEEL_DELTA` units (120 per notch) and
+Chromium scrolls the system's wheel lines (characters across) of 100/3 px each, computed
+in `f32`, and drops the fraction of a pixel each event scrolls: a unit is 5/18 px per
+line. The Windows adapter reads the current `SPI_GETWHEELSCROLLLINES`/
+`SPI_GETWHEELSCROLLCHARS` setting for every event, as CEF does, and models that
+arithmetic. Each event sends the fewest units that scroll the most whole pixels not past
+those due, one or more as soon as one pixel fits; what Chromium will not scroll for them,
+and the fraction of a pixel, is carried to the gesture's next event. A gesture ends when no wheel
+event follows for 250 ms (longer than a notch's 200 ms glide), and its rest, less than
+one unit's scroll, is dropped instead of moving the next gesture; a reversed direction
+drops it too. At three lines or fewer a unit is at most 5/6 px and every whole pixel is
+reachable, so a notch scrolls exactly 60 px. Above three lines not every distance is a
+whole number of units, and a gesture comes within one unit's scroll of its distance: a
+notch scrolls 59–60 px at five or seven lines and 58–60 px at ten (before, the adapter
+sent only units that scroll whole pixels, so 50, 35 and 50 px, with the rest waiting for
+the next gesture, and touchpad glides jumped in 25–35 px steps). CEF on Windows scrolls
+one axis per event, so a delta on both axes goes out as two events. A "one screen at a
+time" setting cannot scroll by pixels; the adapter then uses the default three lines, and
+Chromium still scrolls by pages.
 IME composition and commit pass CEF's required invalid replacement range.
 
 Unit tests (`cargo test ... --lib --bins --test policy_surface --test native_runtime`)
-passed on Windows on 21 November 2026: 109 passed, 1 ignored in the library, the
-platform tests included. Four resource and navigation tests had failed on Windows as on
+passed on Windows on 21 November 2026: 110 passed, 1 ignored in the library, the
+platform tests included (after the per-event wheel conversion; 109 before it), and 5 in
+`policy_surface`. Four resource and navigation tests had failed on Windows as on
 Linux because they read `ResourceRelease` from the control lane, while releases have
 their own lane since the output lanes were split; they now read the provider's output
 in order. This was a test defect, not an environment limit. Linux was not rerun on this

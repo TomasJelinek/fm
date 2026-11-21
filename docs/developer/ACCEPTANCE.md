@@ -81,7 +81,11 @@ a checkout's drive usually grants Authenticated Users write access, so stages be
 and the plugin packages in `packages\{viewers,filesystems,thumbnailers}` (network
 providers are left out); the runner sets `MIDNIGHT_ACCEPTANCE_PLUGINS` to `packages\`,
 `MIDNIGHT_ACCEPTANCE_STAGE_ROOT` to the folder itself and `TEMP`/`TMP` to `_build\tmp`,
-and removes the folder afterwards. Packages come from `<target>\<profile>` (a normal
+and removes the folder afterwards. When it ends, however it ends, it restores the
+working directory and every variable it set (also `MIDNIGHT_ACCEPTANCE_RUN_DIR`,
+`CARGO_HOME` and `RUSTUP_HOME`), so a run in-process (`& scripts\acceptance.ps1`)
+leaves the PowerShell session as it found it and the next run there stages the same
+packages. Packages come from `<target>\<profile>` (a normal
 `build.bat` build; `CARGO_TARGET_DIR` is honoured), from `--plugins DIR` with that
 layout, or with `--validation-packages` from what `scripts\validate.ps1` left in
 `_build\validate` (`viewer-packages`, `filesystem-packages` and
@@ -118,14 +122,27 @@ What differs on Windows, and why:
   entries cannot be reached (mode 0444 on a folder) has no equivalent (traverse checking
   is bypassed): `tools_compare_dirs` notes that part as not run.
 - Links: creating a symbolic link needs administrator rights or Developer Mode, so the
-  fixture's `links/` is empty. `files_links` uses directory junctions instead (`mklink
-  /J`, no privilege) against the Windows contract of "Follow directory links";
+  fixture's `links/` is empty. `files_links` and `tools_sizes` use directory junctions
+  instead (no privilege) against the Windows contract of "Follow directory links";
   `journeys_links_readonly` reports `SKIP` (its checks are Linux link and mode semantics).
+  `fixtures::junction` sets them natively with `FSCTL_SET_REPARSE_POINT`
+  (`tests/acceptance/junction_windows.rs`, the suite's one audited FFI call), as
+  SECURITY.md requires of test fixtures: no shell reads the paths, so `%`, `!`, `^` and
+  `&` in them are plain characters. Fixture generation first checks that on Windows: a
+  junction whose link and target names hold all of them and a non-ASCII letter must read
+  back as its target (the `cmd /c mklink /J` it replaced refused `%`, and the `/d` it ran
+  with does not turn off delayed expansion set in the registry, which changes `!`).
 - External programs: Windows has no `/bin/cp`, `touch`, `true` or `/bin/sh`, so the
   scenarios that configure editors, comparators and Custom Commands get stand-ins
-  (`tests/acceptance/tool.rs`): the test executable hard-linked or copied as `cp.exe`,
-  `touch.exe`, `true.exe` and `sh.exe` into the run's `work\.tools\`, which act as the
-  program their name says (`sh` runs only the suite's literal list script and `-c true`).
+  (`tests/acceptance/tool.rs`): the test executable as `cp.exe`, `touch.exe`, `true.exe`
+  and `sh.exe`, which act as the program their name says (`sh` runs only the suite's
+  literal list script and `-c true`). The executable is over 100 MB, and a hard link
+  needs its volume: run from the private installation (or a stage in it), the stand-ins
+  are hard links in a `.tools-<run>` folder beside it, which goes with the installation
+  or the stage. Only otherwise, or when such a link fails, do they go into the run's
+  `work\.tools\`, as hard links when the run folder shares the executable's volume and
+  as copies when not (the private installation lies below the user profile, usually on
+  another drive than the checkout's run folders, so every stand-in used to be a copy).
 - Hidden files: Windows hides by the hidden attribute, not by a dot-name, so the
   scenarios that hide dot-names give them that attribute too (`fixtures::hide`). The
   product's own `.midnight-recovery-*` folder gets no hidden attribute, so on Windows
@@ -204,8 +221,14 @@ enables that feature, and every dependency of the crate is optional behind it, s
   `required-features` are active, and lists `midnight-acceptance` among the excluded
   libraries of its `--lib`/`--doc` gates.
 - `cargo clippy --workspace --all-targets` skips the target as well. CI's check job
-  therefore lints it in a step of its own on both platforms:
-  `cargo clippy -p midnight-acceptance --features midnight-acceptance/acceptance --all-targets --locked -- -D warnings`.
+  therefore enables the feature in its one workspace Clippy step, on both platforms:
+  `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings`.
+  Every other package then resolves exactly as without the feature (checked with
+  `cargo tree --workspace -e normal,build,dev` for both targets), so the step checks
+  each dependency once. A separate `cargo clippy -p midnight-acceptance` step would
+  resolve features without the workspace's dev-dependencies (tokio without
+  `test-util`, other `regex-automata` and `tracing` features, on Linux other `x11rb`
+  ones) and check tokio and every crate above it a second time.
 
 A dedicated feature-gated target was chosen over `#[ignore]` because ignored tests
 still compile into a normal test binary (and `--include-ignored` would run them), and
@@ -239,8 +262,15 @@ Deliberate differences from the application, to keep runs hermetic and headless:
   like a restart on one profile. Its font list is fixed (`DejaVu Sans`, `DejaVu Sans
   Mono`, `DejaVu Serif`). `Config::real_settings` installs the application's own
   store (`LocalFileSystem`, as `run_window` does, without its save-until-shown gate)
-  instead; only a staged process may use it, since it reads and writes
-  `$XDG_CONFIG_HOME/midnight-explorer`, which is private there.
+  instead; only a staged private process (`viewers_stage::run_private`) may use it,
+  since it reads and writes `$XDG_CONFIG_HOME/midnight-explorer` (Windows: the
+  LocalAppData known folder, `%USERPROFILE%\AppData\Local\Midnight Explorer`), which is
+  private there. `App::start` checks that those folders (`XDG_CONFIG_HOME`, or
+  `$HOME/.config`; Windows: `USERPROFILE` and `LOCALAPPDATA`) lie below the process's
+  private `<work>/staged` folder, as `startup_paths` does before it seeds the store;
+  that the variables are merely set would prove nothing (Windows always sets
+  `USERPROFILE`). A LocalAppData known folder redirected in the registry to a path that
+  does not follow `%USERPROFILE%` is not detected.
 - The tab session: by default the presenter keeps its defaults and the first read
   restores the saved tabs of both panels. `Config::restore_tabs` starts as `run_window`
   does without paths (`set_tab_restore_overrides([false; 2])`), and

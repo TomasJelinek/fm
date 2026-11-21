@@ -723,11 +723,71 @@ fn ruler_offset(frame: &Frame) -> Option<u32> {
     })
 }
 
+/// The lines a wheel notch scrolls on this machine (`SPI_GETWHEELSCROLLLINES`), which CEF
+/// reads for every event; `None` when a notch scrolls a page or nothing.
+#[cfg(windows)]
+fn wheel_lines() -> Option<u32> {
+    const SPI_GETWHEELSCROLLLINES: u32 = 0x0068;
+    const WHEEL_PAGESCROLL: u32 = u32::MAX;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn SystemParametersInfoW(
+            action: u32,
+            parameter: u32,
+            value: *mut std::ffi::c_void,
+            ini: u32,
+        ) -> i32;
+    }
+    let mut lines = 0_u32;
+    // SAFETY: the action writes one u32 through the pointer, which outlives the call.
+    let read =
+        unsafe { SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, (&raw mut lines).cast(), 0) };
+    (read != 0 && lines != 0 && lines != WHEEL_PAGESCROLL).then_some(lines)
+}
+
+/// The whole DIPs Chromium scrolls for one wheel event of `units` on this machine: CEF
+/// on Windows reads `WHEEL_DELTA` units (120 per notch) of the current wheel lines,
+/// 100/3 DIPs each, in `f32`, and Chromium drops each event's fraction; on Linux a unit
+/// is a DIP. `None` when no distance can be expected (a notch scrolls a page).
+fn chromium_dips() -> Option<impl Fn(u32) -> u32> {
+    #[cfg(windows)]
+    {
+        let lines = wheel_lines()?;
+        Some(move |units: u32| (units as f32 / 120.0 * (lines as f32 * (100.0_f32 / 3.0))) as u32)
+    }
+    #[cfg(not(windows))]
+    {
+        Some(|units: u32| units)
+    }
+}
+
 /// The host glides wheel notches and coasts touchpad flicks itself, one delta per frame,
-/// so Chromium must apply each wheel event at once instead of animating it again.
+/// so Chromium must apply each wheel event at once instead of animating it again. The
+/// distances follow this machine's wheel setting: at Windows' default of three lines,
+/// and on Linux, every whole DIP is reachable and they are exact.
 #[test]
 #[ignore = "requires matching packaged CEF runtime and interactive Windows or Linux desktop"]
 fn chromium_applies_each_wheel_event_at_once() {
+    let Some(dips) = chromium_dips() else {
+        eprintln!("not run: a wheel notch scrolls a page or nothing on this machine");
+        return;
+    };
+    // The closest distance one event can scroll without passing `wanted`, which the
+    // provider sends; and the most one wheel unit more scrolls up to `wanted`, so that
+    // no gesture can come closer.
+    let closest = |wanted: u32| {
+        (0..)
+            .map(&dips)
+            .take_while(|&scrolled| scrolled <= wanted)
+            .last()
+            .unwrap_or(0)
+    };
+    let gap = |wanted: u32| {
+        (0..)
+            .take_while(|&units| dips(units) <= wanted)
+            .map(|units| dips(units + 1) - dips(units))
+            .fold(1, u32::max)
+    };
     let executable =
         std::env::var_os("MIDNIGHT_HTML_TEST_EXECUTABLE").expect("set packaged bootstrap path");
     let profile = std::path::PathBuf::from(
@@ -838,13 +898,15 @@ fn chromium_applies_each_wheel_event_at_once() {
             }),
         );
     };
-    // One event scrolls the whole distance in the next frame. Chromium's own wheel
-    // animation would show it in about ten frames over 170 ms instead.
+    // One event scrolls its whole distance in the next frame (as closely as this
+    // machine's wheel setting lets it). Chromium's own wheel animation would show it in
+    // about ten frames over 170 ms instead.
     wheel(&mut stdin, &mut sequence, -120.0);
     let down = settle(&mut stdin, &mut sequence);
+    let expected = closest(120);
     assert!(
-        !down.is_empty() && down.iter().all(|offset| *offset == 120),
-        "frames after one wheel event: {down:?}"
+        !down.is_empty() && down.iter().all(|offset| *offset == expected),
+        "frames after one wheel event: {down:?}, expected {expected} px"
     );
     // A wheel past the top stops at the edge.
     wheel(&mut stdin, &mut sequence, 240.0);
@@ -855,15 +917,18 @@ fn chromium_applies_each_wheel_event_at_once() {
     );
     // A notch arrives as the host glides it, one small delta per frame. Together they
     // scroll the notch's whole 60 px, as in the text viewer (on Windows, CEF scrolls a
-    // delta by the system's wheel lines; the provider converts its units).
+    // delta by the system's wheel lines; the provider converts its units), or less by
+    // less than one unit's scroll, which the gesture's end drops.
     for _ in 0..25 {
         wheel(&mut stdin, &mut sequence, -2.4);
     }
     let glide = settle(&mut stdin, &mut sequence);
-    assert_eq!(
-        glide.last(),
-        Some(&60),
-        "frames after a notch glide: {glide:?}"
+    let unit = gap(60);
+    assert!(
+        glide
+            .last()
+            .is_some_and(|offset| *offset <= 60 && *offset > 60 - unit),
+        "frames after a notch glide: {glide:?}, expected 60 px or less by under {unit} px"
     );
     send(&mut stdin, &mut sequence, CommandKind::Close);
     drop(stdin);

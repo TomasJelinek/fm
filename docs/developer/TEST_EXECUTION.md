@@ -116,8 +116,10 @@ tests, so `build.sh --validate` refuses Docker.
 ## Acceptance suite
 
 The opt-in end-to-end acceptance suite is not part of validation, and CI does not run
-it: CI's check job only lints it on Windows and Linux (Clippy with its feature), so
-its platform-specific code cannot stop compiling unnoticed.
+it: CI's check job lints it on Windows and Linux in its one workspace Clippy step,
+which enables the suite's feature (`cargo clippy --workspace --all-targets --locked
+--features midnight-acceptance/acceptance -- -D warnings`), so its platform-specific
+code cannot stop compiling unnoticed and no dependency is checked twice.
 `./build.sh --acceptance` (native or Docker backend) runs `scripts/acceptance.sh` after
 its build steps, and on Windows `pwsh -File scripts\acceptance.ps1` builds and runs it
 (`build.bat` has no acceptance step); the suite drives the real application with

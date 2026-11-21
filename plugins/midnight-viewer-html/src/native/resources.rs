@@ -186,7 +186,7 @@ pub(super) mod tests {
             requests: Mutex::new(Requests::default()),
             selection: Mutex::new(crate::selection::Selection::default()),
             mouse_buttons: AtomicU64::new(0),
-            wheel_remainder: Mutex::new([0.0; 2]),
+            wheel_gesture: Mutex::default(),
             host_shortcuts: false,
             navigation: Mutex::new(admission::Navigation::new(
                 1,

@@ -65,14 +65,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("pull_request:", on)
 
     def test_the_opt_in_acceptance_suite_is_checked_on_both_platforms(self):
-        # `--workspace --all-targets` skips a target whose required feature is off.
-        text = step(self.jobs["check"], "Clippy for the opt-in acceptance suite")
+        # `--workspace --all-targets` skips a target whose required feature is off, so
+        # the workspace step enables it. A separate `-p midnight-acceptance` step would
+        # resolve features without the workspace's dev-dependencies and check tokio and
+        # everything above it twice.
+        check = self.jobs["check"]
+        text = step(check, "Clippy")
         self.assertIn(
-            "cargo clippy -p midnight-acceptance --features midnight-acceptance/acceptance "
-            "--all-targets --locked -- -D warnings",
+            "cargo clippy --workspace --all-targets --locked "
+            "--features midnight-acceptance/acceptance -- -D warnings",
             text,
         )
         self.assertNotIn("if:", text)
+        commands = "\n".join(line for line in check.splitlines() if not line.lstrip().startswith("#"))
+        self.assertEqual(commands.count("cargo clippy"), 1, "one Clippy step, one feature resolution")
+        self.assertNotIn("-p midnight-acceptance", commands)
 
     def test_post_gate_steps_reuse_the_workspace_feature_selection(self):
         check = self.jobs["check"]

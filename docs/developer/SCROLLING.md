@@ -201,16 +201,18 @@ trace (`wheel_paint_elapsed_us`, wheel dispatch to the next view paint) stays at
 median of 2.3–4.4 ms and at most 17 ms, also on a long text page (3.3 ms median, 8.6 ms
 at most); the host therefore sends one delta per redraw without further coalescing.
 Ctrl+wheel still zooms to 110% after three notches, a horizontal or Shift wheel moves
-120 px sideways, and sixty 1 px events move 60 px. Windows was not measured: cefclient
-passes raw `WHEEL_DELTA` units there, so if CEF scales windowless wheel deltas by the
-system's scroll lines on Windows, the provider's Windows adapter needs a conversion.
+120 px sideways, and sixty 1 px events move 60 px. On Windows CEF reads `WHEEL_DELTA`
+units scaled by the system's wheel lines; the provider's Windows adapter converts
+(plugin README).
 
 Tests: `midnight-viewer-ui` `web_wheel_tests` (one, three and ten notches, a reversal
 and a horizontal notch sent frame by frame exactly as the text viewer scrolls, at 1x
 and 2x; the glide and momentum stop once the page stops painting, are not cut short
 before its first frame, and stop a second after a scroll that never paints began; X11
-lines; Ctrl+wheel unchanged); the provider's `wheel_steps` tests
-(sub-DIP accumulation, a glide's last DIP despite float rounding) and the opt-in
+lines; Ctrl+wheel unchanged); the provider's `native::input` tests (sub-DIP
+accumulation, a glide's last DIP despite float rounding, a gesture's rest carried and
+dropped at its end, a notch within one wheel unit's scroll at 1–20 lines on Windows)
+and the opt-in
 `native_runtime` `chromium_applies_each_wheel_event_at_once` (one event scrolls its
 whole distance in the next frame and stops at the top; it fails against the old
 provider with frames at 2, 7, 16, … 120 px).

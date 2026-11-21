@@ -77,27 +77,32 @@ unsafe extern "system" {
     fn SystemParametersInfoW(action: u32, parameter: u32, value: *mut c_void, ini: u32) -> i32;
 }
 
-/// CEF on Windows reads a wheel delta as `WHEEL_DELTA` units (120 per notch), which
-/// Chromium scrolls by the system's wheel characters across or lines down, 100/3 DIPs
-/// each (CEF's `TranslateWebWheelEvent`). As measured on Windows 11 at three lines, one
-/// unit per DIP moved a page only 5/6 of the host's distance, and a notch the host
-/// glides in 2.4-DIP frames moved 47 of 60 DIPs: Chromium drops the fraction of a pixel
-/// each event scrolls. The host's deltas are already the distance to scroll.
-pub(crate) fn wheel_units() -> super::WheelUnits {
+/// How CEF on Windows scrolls a wheel delta on one axis. It reads the delta as
+/// `WHEEL_DELTA` units (120 per notch), which Chromium scrolls by the system's wheel
+/// characters across or lines down, 100/3 DIPs each, computed in `f32` (CEF's
+/// `TranslateWebWheelEvent`), and Chromium drops the fraction of a DIP that each event
+/// scrolls. As measured on Windows 11 at three lines, one unit per DIP moved a page only
+/// 5/6 of the host's distance, and a notch the host glides in 2.4-DIP frames, sent in
+/// whole units, moved 47 of 60 DIPs. A unit scrolls 5/18 of a DIP per line, so above
+/// three lines not every whole number of DIPs is a whole number of units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WheelScale {
+    /// The lines (or characters) a notch scrolls.
+    lines: u32,
+}
+
+/// The current settings, across and down: CEF reads them for every event, and so does
+/// the provider.
+pub(crate) fn wheel_scales() -> [WheelScale; 2] {
     let read = |action| {
         let mut count = DEFAULT_SCROLL_COUNT;
         // SAFETY: both actions write one u32 through the pointer, which outlives the call.
         let read = unsafe { SystemParametersInfoW(action, 0, (&raw mut count).cast(), 0) };
         (read != 0).then_some(count)
     };
-    let [across, down] = [
-        scroll_count(read(SPI_GETWHEELSCROLLCHARS)),
-        scroll_count(read(SPI_GETWHEELSCROLLLINES)),
-    ];
-    super::WheelUnits {
-        per_dip: [units_per_dip(across), units_per_dip(down)],
-        quantum: [quantum(across), quantum(down)],
-    }
+    [SPI_GETWHEELSCROLLCHARS, SPI_GETWHEELSCROLLLINES].map(|action| WheelScale {
+        lines: scroll_count(read(action)),
+    })
 }
 
 /// The lines (or characters) a notch scrolls. None, or a setting that cannot scroll by
@@ -106,21 +111,52 @@ fn scroll_count(count: Option<u32>) -> u32 {
     count
         .filter(|count| *count != 0 && *count != WHEEL_PAGESCROLL)
         .unwrap_or(DEFAULT_SCROLL_COUNT)
+        .min(1 << 24)
 }
 
-/// CEF units per DIP when a notch scrolls `count` lines of 100/3 DIPs: 18/(5 count).
-fn units_per_dip(count: u32) -> f64 {
-    120.0 / (f64::from(count) * 100.0 / 3.0)
-}
-
-/// The fewest units that scroll whole DIPs: `u` units scroll `5 count u / 18` DIPs.
-fn quantum(count: u32) -> i32 {
-    let mut a = 18;
-    let mut b = 5 * count.min(1 << 24);
-    while b != 0 {
-        (a, b) = (b, a % b);
+impl WheelScale {
+    #[cfg(test)]
+    pub(crate) fn with_lines(lines: u32) -> Self {
+        Self {
+            lines: scroll_count(Some(lines)),
+        }
     }
-    (18 / a) as i32
+
+    /// The whole DIPs Chromium scrolls for one event of `units`, in CEF's `f32`
+    /// arithmetic: a quotient or product just below a whole DIP loses that DIP.
+    pub(crate) fn dips(self, units: u32) -> u32 {
+        let notches = units as f32 / 120.0;
+        let per_notch = self.lines as f32 * (100.0_f32 / 3.0);
+        // Truncates toward zero, as Chromium does; saturates far beyond any page.
+        (notches * per_notch) as u32
+    }
+
+    /// The fewest units that scroll the most whole DIPs not past `dips`, and that
+    /// scroll: `dips` exactly whenever some number of units scrolls it, which three lines
+    /// or fewer always allow. Zero units when not even one DIP fits, so an event never
+    /// carries units whose scroll Chromium would drop entirely (or, for a remainder,
+    /// would point the wrong way).
+    pub(crate) fn step(self, dips: i64) -> super::WheelStep {
+        let wanted = dips.unsigned_abs().min(super::MAX_WHEEL_DIPS as u64) as u32;
+        // From the exact rate of 5 lines / 18 DIPs per unit, then corrected for `f32`.
+        let rate = 5.0 * f64::from(self.lines) / 18.0;
+        let mut units = ((f64::from(wanted) + 1.0) / rate) as u32 + 1;
+        while units > 0 && self.dips(units) > wanted {
+            units -= 1;
+        }
+        while self.dips(units + 1) <= wanted {
+            units += 1;
+        }
+        let scrolled = self.dips(units);
+        while units > 0 && self.dips(units - 1) == scrolled {
+            units -= 1;
+        }
+        let sign = if dips < 0 { -1 } else { 1 };
+        super::WheelStep {
+            units: sign * units as i32,
+            dips: sign as i64 * i64::from(scrolled),
+        }
+    }
 }
 
 #[cfg(test)]

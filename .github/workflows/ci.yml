@@ -536,14 +536,16 @@ jobs:
       - name: Source size (Linux)
         if: runner.os == 'Linux'
         run: bash scripts/check-source-size.sh
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The opt-in end-to-end acceptance suite only builds with its feature, which no
-      # other package enables, so the workspace step above skips it. It is not run here
-      # (it drives the real application), but it is checked on both platforms, so
-      # that its platform-specific code cannot stop compiling unnoticed.
-      - name: Clippy for the opt-in acceptance suite
-        run: cargo clippy -p midnight-acceptance --features midnight-acceptance/acceptance --all-targets --locked -- -D warnings
+      # other package enables, so `--workspace --all-targets` alone would skip it. It is
+      # not run here (it drives the real application), but it is linted on both
+      # platforms with the workspace, so that its platform-specific code cannot stop
+      # compiling unnoticed. One step keeps one feature resolution: every other package
+      # resolves as without the feature, whereas `-p midnight-acceptance` alone would
+      # drop the workspace's dev-dependency features (tokio's `test-util`) and check
+      # tokio and everything above it a second time.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings
       - name: Test
         run: python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts
       # The steps below reuse the gates' workspace feature selection through

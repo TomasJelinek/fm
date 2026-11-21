@@ -1,7 +1,7 @@
 //! Bounded CSV and TSV colouring in the manner of Rainbow CSV: each field takes the role
 //! of its column, so the columns of long records stay easy to follow. Fields are never
 //! collected, typed or validated. A `.csv` file is separated by commas or semicolons,
-//! decided once from its first record ([`Dialect::of_csv`]).
+//! decided once from the records at its start ([`Dialect::of_csv`]).
 use midnight_plugin_sdk::api::viewer::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,15 +18,32 @@ pub(super) enum Dialect {
 }
 
 impl Dialect {
-    /// The dialect of a `.csv` file whose decoded text starts with `prefix`. Only the
-    /// first record decides, because later records of a semicolon file hold decimal
-    /// commas: it is split once at semicolons and once at commas, each with its own
-    /// RFC 4180 quoting, so a delimiter inside a quoted field counts for neither. More
-    /// fields at semicolons make the file semicolon-separated; a tie, a record with
-    /// neither delimiter and an empty prefix keep the comma of RFC 4180. A spreadsheet's
-    /// `sep=;` first line therefore selects semicolons too.
+    /// The dialect of a `.csv` file whose decoded text starts with `prefix`, the up to
+    /// four lines that Open reads. As Python's `csv.Sniffer` does, its records are split
+    /// once at semicolons and once at commas, each with its own RFC 4180 quoting, so a
+    /// delimiter inside a quoted field counts for neither ([`Split::of`]). A delimiter
+    /// is consistent when it splits every record into the same number of fields, more
+    /// than one, and no closing quote is followed by text.
+    ///
+    /// The one consistent delimiter wins: semicolon files leave their decimal commas
+    /// unquoted, so their records rarely hold equally many commas, and a comma file
+    /// rarely holds an unquoted semicolon in every record. When both are consistent and
+    /// every comma lies between two digits or before a space, as a decimal comma or a
+    /// comma in text does, semicolons win (`1,5;2,5;3,5`, `Konto;Soll, EUR;Haben, EUR`).
+    /// Otherwise the first record decides: more fields at semicolons make the file
+    /// semicolon-separated; a tie, a record with neither delimiter and an empty prefix
+    /// keep the comma of RFC 4180. A spreadsheet's `sep=;` first line, whose one
+    /// semicolon no later record repeats, therefore selects semicolons too.
     pub(super) fn of_csv(prefix: &str) -> Self {
-        if delimiters(prefix, b';') > delimiters(prefix, b',') {
+        let semicolons = Split::of(prefix, b';');
+        let commas = Split::of(prefix, b',');
+        let semicolon = match (semicolons.consistent, commas.consistent) {
+            (true, false) => true,
+            (false, true) => false,
+            (true, true) if commas.textual => true,
+            _ => semicolons.first > commas.first,
+        };
+        if semicolon {
             Self::Semicolon
         } else {
             Self::Csv
@@ -47,36 +64,111 @@ impl Dialect {
     }
 }
 
-/// The `delimiter`s that separate fields of the first record of `text`: the bytes before
-/// the first line break outside quotes, with the quoting that [`stream`] applies.
-fn delimiters(text: &str, delimiter: u8) -> usize {
-    let bytes = text.as_bytes();
-    let mut field = Field::Start;
-    let mut count = 0;
-    let mut at = 0;
-    while let Some(&byte) = bytes.get(at) {
-        at += 1;
-        if field == Field::Quoted {
-            if byte == b'"' {
-                // A doubled quote is content; a single one closes the field.
-                if bytes.get(at) == Some(&b'"') {
-                    at += 1;
-                } else {
-                    field = Field::Unquoted;
-                }
+/// How one delimiter splits the records at the start of a `.csv` file.
+struct Split {
+    /// Delimiters in the first record that is not blank.
+    first: usize,
+    /// Whether every record holds `first` delimiters, at least one, and no text after a
+    /// closing quote. Blank lines are skipped; a last record that the prefix may have
+    /// cut counts only when it is the only one.
+    consistent: bool,
+    /// Whether every delimiter of those records lies between two ASCII digits or before
+    /// a space.
+    textual: bool,
+}
+
+impl Split {
+    fn of(text: &str, delimiter: u8) -> Self {
+        let bytes = text.as_bytes();
+        let mut split = Self {
+            first: 0,
+            consistent: false,
+            textual: true,
+        };
+        let mut records = 0;
+        let mut at = 0;
+        while at < bytes.len() {
+            let start = at;
+            let record = Record::read(bytes, &mut at, delimiter);
+            if record.complete && at == start + 1 {
+                continue;
             }
-        } else if byte == delimiter {
-            count += 1;
-            field = Field::Start;
-        } else if matches!(byte, b'\n' | b'\r') {
-            break;
-        } else if byte == b'"' && field == Field::Start {
-            field = Field::Quoted;
-        } else {
-            field = Field::Unquoted;
+            if records > 0 && !record.complete {
+                break;
+            }
+            if records == 0 {
+                split.first = record.delimiters;
+                split.consistent = true;
+            }
+            records += 1;
+            split.consistent &=
+                record.delimiters == split.first && record.delimiters > 0 && !record.malformed;
+            split.textual &= record.textual;
         }
+        split
     }
-    count
+}
+
+/// One record of a prefix, split at `delimiter` with the quoting that [`stream`] applies.
+struct Record {
+    /// Delimiters outside quotes: one fewer than its fields.
+    delimiters: usize,
+    /// Whether each of them lies between two ASCII digits or before a space.
+    textual: bool,
+    /// Whether a closing quote is followed by text instead of the delimiter or a line
+    /// break.
+    malformed: bool,
+    /// Whether a line break outside quotes ends it, rather than the end of the prefix.
+    complete: bool,
+}
+
+impl Record {
+    /// The record that starts at `bytes[*at..]`; `*at` moves past its line break.
+    fn read(bytes: &[u8], at: &mut usize, delimiter: u8) -> Self {
+        let mut record = Self {
+            delimiters: 0,
+            textual: true,
+            malformed: false,
+            complete: false,
+        };
+        let digit = |index: Option<usize>| {
+            index
+                .and_then(|index| bytes.get(index))
+                .is_some_and(u8::is_ascii_digit)
+        };
+        let mut field = Field::Start;
+        while let Some(&byte) = bytes.get(*at) {
+            *at += 1;
+            if field == Field::Quoted {
+                if byte == b'"' {
+                    // A doubled quote is content; a single one closes the field.
+                    match bytes.get(*at) {
+                        Some(b'"') => *at += 1,
+                        next => {
+                            field = Field::Unquoted;
+                            record.malformed |= next.is_some_and(|&next| {
+                                next != delimiter && !matches!(next, b'\n' | b'\r')
+                            });
+                        }
+                    }
+                }
+            } else if byte == delimiter {
+                record.delimiters += 1;
+                // `*at` is past the delimiter: `*at - 2` precedes it, `*at` follows it.
+                record.textual &=
+                    bytes.get(*at) == Some(&b' ') || (digit(at.checked_sub(2)) && digit(Some(*at)));
+                field = Field::Start;
+            } else if matches!(byte, b'\n' | b'\r') {
+                record.complete = true;
+                break;
+            } else if byte == b'"' && field == Field::Start {
+                field = Field::Quoted;
+            } else {
+                field = Field::Unquoted;
+            }
+        }
+        record
+    }
 }
 
 /// Field roles by column, repeating after the last. The first column keeps the text
