@@ -247,7 +247,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertRegex(setup, r"uses: Swatinem/rust-cache@[0-9a-f]{40} # v\d+\.\d+\.\d+\n")
         self.assertIn('workspaces: ". -> _build"', setup)
         self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", setup)
-        self.assertIn("if: inputs.build-cache != 'true'\n      uses: actions/cache@v4", setup)
+        self.assertIn("if: inputs.build-cache != 'true'\n      uses: actions/cache@v6", setup)
+
+    def test_github_actions_run_on_node_24_with_one_version_each(self):
+        # Their Node 20 majors print deprecation notices and DeprecationWarnings on the
+        # hosted runners; these are the first majors that run on Node 24 by default.
+        node24 = {"checkout": 5, "cache": 5, "upload-artifact": 6, "download-artifact": 7}
+        texts = [self.text] + [path.read_text(encoding="utf-8")
+                               for path in sorted((ROOT / ".github/actions").glob("*/action.yml"))]
+        used = [(name, int(major)) for text in texts
+                for name, major in re.findall(r"uses: actions/([a-z-]+)@v(\d+)\n", text)]
+        self.assertEqual({name for name, _ in used}, set(node24))
+        for name, minimum in node24.items():
+            with self.subTest(action=name):
+                majors = {major for used_name, major in used if used_name == name}
+                self.assertEqual(len(majors), 1, f"one {name} version everywhere: {majors}")
+                self.assertGreaterEqual(majors.pop(), minimum)
 
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
     def test_workflow_and_local_actions_parse_with_a_consistent_structure(self):

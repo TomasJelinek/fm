@@ -30,7 +30,7 @@ jobs:
     steps:
       # cargo package inspects repository ignore files through libgit2, which
       # cannot lazily fetch blobs omitted by checkout's sparse clone.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/rust-setup
       - name: Prepare SDK release workspace
         run: |
@@ -53,7 +53,7 @@ jobs:
           bundle=$(printf '%s\n' "$output" | sed -n 's/^Public API\/SDK release bundle: //p' | tail -n 1)
           test -f "$bundle/.cargo/config.toml"
           echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: released-plugin-sdk
           include-hidden-files: true
@@ -76,14 +76,14 @@ jobs:
     timeout-minutes: 45
     steps:
       # These builds have no application or unpublished API/SDK source available.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /plugins/midnight-viewer-${{ matrix.plugin }}/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: released-plugin-sdk
           path: _build/released-sdk
@@ -125,7 +125,7 @@ jobs:
           fi
           cargo --config "$config" fetch --manifest-path "$plugin_root/Cargo.toml" --locked
           bash "$plugin_root/scripts/ci.sh" "$sdk" "$build"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: viewer-${{ runner.os }}-${{ matrix.plugin }}
           if-no-files-found: error
@@ -141,14 +141,14 @@ jobs:
     timeout-minutes: 30
     steps:
       # The fixture consumes only the released public SDK bundle.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /plugins/viewer-conformance/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: released-plugin-sdk
           path: _build/released-sdk
@@ -197,7 +197,7 @@ jobs:
     steps:
       # Keep all blobs for Cargo packaging; downstream plugin jobs remain sparse
       # and receive only their own sources plus the released public SDK bundle.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/rust-setup
       - name: Check public protocol workspaces
         shell: bash
@@ -223,7 +223,7 @@ jobs:
           bundle=$(printf '%s\n' "$output" | sed -n 's/^Public worker API\/SDK release bundle: //p' | tail -n 1)
           test -f "$bundle/.cargo/registry.toml"
           echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: released-worker-sdk
           include-hidden-files: true
@@ -240,7 +240,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -249,7 +249,7 @@ jobs:
             /vendor/image/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: released-worker-sdk
           path: _build/released-sdk
@@ -272,7 +272,7 @@ jobs:
             bash "$plugin/scripts/ci.sh" $sdk $build
           }
           if ($LASTEXITCODE -ne 0) { throw 'Independent raster viewer checks failed' }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: viewer-${{ runner.os }}-${{ matrix.plugin }}
           if-no-files-found: error
@@ -290,7 +290,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -299,7 +299,7 @@ jobs:
             /vendor/image/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: released-worker-sdk
           path: _build/released-sdk
@@ -332,14 +332,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /plugins/midnight-fs-archive/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: released-worker-sdk
           path: _build/released-sdk
@@ -376,12 +376,12 @@ jobs:
           $env:MIDNIGHT_ARCHIVE_FIXTURES = Join-Path $env:GITHUB_WORKSPACE '_build/archive-fixtures'
           cargo test --config $sdk --manifest-path "$plugin/Cargo.toml" --test worker_fixtures --locked --offline -- --ignored
           if ($LASTEXITCODE -ne 0) { throw 'Archive worker fixture export failed' }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: filesystem-${{ runner.os }}-archive
           if-no-files-found: error
           path: _build/archive-ci/package/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: archive-fixtures-${{ runner.os }}
           if-no-files-found: error
@@ -419,7 +419,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -473,7 +473,7 @@ jobs:
           foreach ($name in @('README.md','THIRD-PARTY.md')) {
             Copy-Item -LiteralPath "$plugin/$name" -Destination $package
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: filesystem-${{ runner.os }}-${{ matrix.provider }}
           if-no-files-found: error
@@ -495,7 +495,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_BUILD_JOBS: "4"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/private-test-installation
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites
@@ -559,7 +559,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_BUILD_JOBS: "4"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/private-test-installation
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites
@@ -689,7 +689,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/private-test-installation
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites

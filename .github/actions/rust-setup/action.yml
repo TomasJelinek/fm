@@ -27,7 +27,7 @@ runs:
         if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
     # Registry and Git downloads only; build outputs stay job-local.
     - if: inputs.build-cache != 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: |
           ~/.cargo/registry/index/
