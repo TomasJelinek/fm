@@ -55,7 +55,9 @@ export component ArchiveOptions inherits VerticalLayout {
     }
     HintedLineEdit {
         text <=> ArchiveOptionsView.filter; accessible-label: "Search archive associations";
-        placeholder-text: "Filter built-in extensions";
+        // Short enough to show whole at 320×200 with 24 px fonts in Linux's wider
+        // default font; the tooltip says what it matches.
+        placeholder-text: "Filter file types";
         hint: "Filter this format's built-in file types by extension or description. Matching ignores letter case.";
         edited => { ArchiveOptionsView.search(self.text); }
     }
