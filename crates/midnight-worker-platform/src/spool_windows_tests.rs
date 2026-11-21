@@ -16,8 +16,7 @@ fn private_spool_handle_is_not_inheritable() {
     assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
 }
 
-// `finish` does not flush, so only a write reaches the OS here; a failed flush is
-// covered by `failed_flush_cannot_be_retried_into_a_readable_spool`.
+// `finish` does not flush, so only a write reaches the OS here.
 #[test]
 fn actual_write_access_error_permanently_poisons_the_spool() {
     let temporary = tempfile::tempdir().unwrap();

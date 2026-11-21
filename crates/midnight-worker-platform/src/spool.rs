@@ -192,15 +192,7 @@ impl Spool {
     /// returns against the CRC-32 recorded when it was appended, so a failed or lost
     /// write-back is reported as a read error, never returned as content.
     pub fn finish(&mut self) -> io::Result<()> {
-        self.finish_with(|_| Ok(()))
-    }
-
-    fn finish_with(&mut self, flush: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
         self.require(State::Writing)?;
-        if let Err(error) = flush(&self.file) {
-            self.state = State::Failed;
-            return Err(error);
-        }
         // The last block is complete now, however short.
         if !self.length.is_multiple_of(BLOCK) {
             self.blocks.push(std::mem::take(&mut self.tail).finalize());

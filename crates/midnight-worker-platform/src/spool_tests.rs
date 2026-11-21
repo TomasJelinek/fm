@@ -21,21 +21,6 @@ fn partial_write_then_disk_full_permanently_blocks_sealing_and_reading() {
 }
 
 #[test]
-fn failed_flush_cannot_be_retried_into_a_readable_spool() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = PrivateSpoolDirectory::open(&temporary.path().join("private")).unwrap();
-    let mut spool = root.create().unwrap();
-    spool.append(0, b"data").unwrap();
-    assert!(
-        spool
-            .finish_with(|_| Err(io::ErrorKind::StorageFull.into()))
-            .is_err()
-    );
-    assert!(spool.finish().is_err());
-    assert!(spool.read_at(0, &mut [0; 4]).is_err());
-}
-
-#[test]
 fn the_free_space_reserve_is_the_larger_of_one_gibibyte_and_two_percent() {
     const GIB: u64 = 1 << 30;
     assert_eq!(free_space_reserve(0), GIB);
