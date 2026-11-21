@@ -1,0 +1,59 @@
+name: ci-time-attribution
+
+# Experiment only: the workspace gates without a build cache, by job count and linker.
+on:
+  push:
+    branches: [ci-time-attribution]
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  CARGO_REGISTRIES_MIDNIGHT_INDEX: https://midnight-explorer.invalid/api-index
+
+jobs:
+  gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, jobs: "2", linker: link}
+          - {os: windows-latest, jobs: "4", linker: link}
+          - {os: windows-latest, jobs: "4", linker: rust-lld}
+          - {os: ubuntu-24.04, jobs: "2", linker: default}
+          - {os: ubuntu-24.04, jobs: "4", linker: default}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: ${{ matrix.jobs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/private-test-installation
+      - name: Start resource sampler (experiment)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'resources.csv'
+          if ($IsWindows) {
+            Start-Process -FilePath python -ArgumentList '-B', 'scripts/ci-resource-sampler.py', 'sample', $log -WindowStyle Hidden
+          } else {
+            bash -c "nohup python3 -B scripts/ci-resource-sampler.py sample '$log' > /dev/null 2>&1 &"
+          }
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-build-prerequisites
+      - uses: ./.github/actions/rust-setup
+      - name: Select rust-lld
+        if: matrix.linker == 'rust-lld'
+        shell: pwsh
+        run: '"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
+      - name: Test
+        run: python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts
+      - name: Resource summary (experiment)
+        if: always()
+        shell: pwsh
+        run: |
+          python -B scripts/ci-resource-sampler.py report (Join-Path $env:RUNNER_TEMP 'resources.csv')
+          if (-not $IsWindows) { sudo dmesg | Select-String -Pattern 'out of memory|oom-kill|Killed process' }
