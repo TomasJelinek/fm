@@ -73,9 +73,21 @@ mod tests;
 /// Viewport requests that a test worker without a plugin session would have sent.
 #[cfg(test)]
 mod unsent {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     thread_local! {
         static REQUESTS: RefCell<Vec<super::messages::Viewport>> = const { RefCell::new(Vec::new()) };
+        /// The ID a simulated provider gives the next request, while one admits them.
+        static ADMIT: Cell<Option<u64>> = const { Cell::new(None) };
+        static ADMITTED: RefCell<Vec<(u64, super::messages::Viewport)>> = const { RefCell::new(Vec::new()) };
+        static WHOLE: Cell<bool> = const { Cell::new(false) };
+    }
+    /// Measurements only: read every request whole on this thread, as before
+    /// `Worker::overlap` read only the rows past the shown page.
+    pub(super) fn read_whole(whole: bool) {
+        WHOLE.set(whole);
+    }
+    pub(super) fn reads_whole() -> bool {
+        WHOLE.get()
     }
     pub(super) fn record(viewport: &super::messages::Viewport) {
         REQUESTS.with_borrow_mut(|requests| requests.push(viewport.clone()));
@@ -83,6 +95,27 @@ mod unsent {
     /// The requests recorded on this thread since the previous call, oldest first.
     pub(super) fn take() -> Vec<super::messages::Viewport> {
         REQUESTS.take()
+    }
+    /// Admit later requests on this thread as a plugin session does, numbered from
+    /// `first`; `None` stops.
+    pub(super) fn admit_from(first: Option<u64>) {
+        ADMIT.set(first);
+    }
+    /// A new request ID, while a simulated provider admits requests.
+    pub(super) fn next_id() -> Option<u64> {
+        let id = ADMIT.get()?;
+        ADMIT.set(id.checked_add(1));
+        Some(id)
+    }
+    /// The ID of `viewport`, just recorded, when a simulated provider admits it.
+    pub(super) fn admitted(viewport: &super::messages::Viewport) -> Option<u64> {
+        let id = next_id()?;
+        ADMITTED.with_borrow_mut(|admitted| admitted.push((id, viewport.clone())));
+        Some(id)
+    }
+    /// The viewport requests admitted since the previous call, oldest first.
+    pub(super) fn take_admitted() -> Vec<(u64, super::messages::Viewport)> {
+        ADMITTED.take()
     }
 }
 #[path = "worker_text.rs"]
@@ -792,6 +825,11 @@ impl Worker {
         self.continuation = None;
         // A new request replaces whatever edge an earlier reply left to continue at.
         self.seam = None;
+        // The rows the shown page holds are not read again (`worker_chain.rs`).
+        let (held, read) = match self.overlap(&viewport, position) {
+            Some((held, read)) => (Some(held), read),
+            None => (None, viewport.clone()),
+        };
         let Some(session) = &self.session else {
             #[cfg(test)]
             unsent::record(&viewport);
@@ -811,6 +849,14 @@ impl Worker {
                 );
             }
             // SOURCE_COMPLETION_OBSERVATION_V2_END admission_no_session
+            // A simulated provider admits the request as a session would.
+            #[cfg(test)]
+            if let Some(id) = unsent::admitted(&read) {
+                self.viewport_request = None;
+                self.viewport_admitted(id, viewport, position, held);
+            }
+            #[cfg(not(test))]
+            let _ = (held, read);
             return;
         };
         if let Some(previous) = self.viewport_request.take() {
@@ -833,29 +879,8 @@ impl Worker {
             // SOURCE_COMPLETION_OBSERVATION_V2_END admission_cancel_previous
         }
         let _ = scroll_trace::begin("request", viewport.source_anchor);
-        match session.viewport(viewport.clone()) {
-            Ok(id) => {
-                self.viewport_request = Some(id);
-                if let Some(sequence) = position {
-                    self.positions.requested(id, sequence);
-                    if self.mode == viewer::MODE_SOURCE
-                        && self.positions.source.is_none()
-                        && self
-                            .positions
-                            .target
-                            .is_some_and(|target| target.sequence == sequence)
-                    {
-                        self.positions.source =
-                            Some(crate::position_ack::SourceRecovery::new(viewport.clone()));
-                    }
-                }
-                if self.positions.source.is_none() {
-                    self.land_at_bottom = viewport.backwards;
-                    self.anchor = viewport.source_anchor;
-                }
-                self.chain_requested(id, &viewport);
-                self.source_requested(id, viewport);
-            }
+        match session.viewport(read) {
+            Ok(id) => self.viewport_admitted(id, viewport, position, held),
             Err(error) if !source_position => {
                 self.search_cursor.cancel_candidate();
                 self.error(error.to_string(), output);
@@ -883,6 +908,37 @@ impl Worker {
             );
         }
         // SOURCE_COMPLETION_OBSERVATION_V2_END admission_result
+    }
+
+    /// Track viewport request `id`, which the plugin session accepted, possibly as the read
+    /// of the part after the rows `held` of the shown page.
+    fn viewport_admitted(
+        &mut self,
+        id: u64,
+        viewport: messages::Viewport,
+        position: Option<u64>,
+        held: Option<viewer::TextPage>,
+    ) {
+        self.viewport_request = Some(id);
+        if let Some(sequence) = position {
+            self.positions.requested(id, sequence);
+            if self.mode == viewer::MODE_SOURCE
+                && self.positions.source.is_none()
+                && self
+                    .positions
+                    .target
+                    .is_some_and(|target| target.sequence == sequence)
+            {
+                self.positions.source =
+                    Some(crate::position_ack::SourceRecovery::new(viewport.clone()));
+            }
+        }
+        if self.positions.source.is_none() {
+            self.land_at_bottom = viewport.backwards;
+            self.anchor = viewport.source_anchor;
+        }
+        self.chain_requested_with(id, &viewport, held);
+        self.source_requested(id, viewport);
     }
 
     fn page_viewport(&mut self, anchor: u64, backwards: bool) -> messages::Viewport {

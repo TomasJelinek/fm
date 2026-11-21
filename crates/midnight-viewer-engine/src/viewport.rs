@@ -381,6 +381,7 @@ mod tests {
             before: start != 0,
             after: true,
             partial_line: false,
+            revision: 1,
         }
     }
 

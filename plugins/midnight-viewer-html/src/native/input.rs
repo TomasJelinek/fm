@@ -43,18 +43,35 @@ fn click_button(button: api::PointerButton) -> Option<(MouseButtonType, u32)> {
 /// glide's last DIP is not held back until the next wheel event.
 const WHOLE_DIP_TOLERANCE: f64 = 1e-3;
 
+/// CEF wheel units for physical `delta` pixels at `scale`: DIPs in the units the
+/// platform's CEF scrolls by (`platform::wheel_units`), sent in whole quanta that scroll
+/// whole DIPs, each axis keeping the remainder for the next event.
+fn wheel_units(remainder: &mut [f64; 2], delta: [f64; 2], scale: f64) -> [i32; 2] {
+    let units = crate::platform::wheel_units();
+    let delta = std::array::from_fn(|axis| delta[axis] / scale * units.per_dip[axis]);
+    wheel_quanta(remainder, delta, units.quantum)
+}
+
 /// Converts physical wheel deltas to whole DIPs, keeping each axis' fractional
 /// remainder so precision-touchpad scrolling below one DIP per event accumulates.
 /// A reversed direction discards the opposite remainder.
+#[cfg(test)]
 fn wheel_steps(remainder: &mut [f64; 2], delta: [f64; 2], scale: f64) -> [i32; 2] {
+    wheel_quanta(remainder, delta.map(|value| value / scale), [1, 1])
+}
+
+/// Whole multiples of `quantum` of each axis' `delta` and remainder; the rest remains.
+/// A reversed direction discards the opposite remainder.
+fn wheel_quanta(remainder: &mut [f64; 2], delta: [f64; 2], quantum: [i32; 2]) -> [i32; 2] {
     let mut steps = [0; 2];
     for axis in 0..2 {
-        let value = delta[axis] / scale;
+        let value = delta[axis];
         if value != 0.0 && remainder[axis] * value < 0.0 {
             remainder[axis] = 0.0;
         }
         let total = remainder[axis] + value;
-        let whole = (total + WHOLE_DIP_TOLERANCE.copysign(total)).trunc();
+        let quantum = f64::from(quantum[axis].max(1));
+        let whole = ((total + WHOLE_DIP_TOLERANCE.copysign(total)) / quantum).trunc() * quantum;
         remainder[axis] = total - whole;
         steps[axis] = whole as i32;
     }
@@ -122,10 +139,14 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
             let mut event = mouse(wheel.x, wheel.y, wheel.modifiers, scale);
             event.modifiers |= doc.mouse_buttons.load(Ordering::Acquire) as u32;
             let Ok(mut remainder) = doc.wheel_remainder.lock() else { return; };
-            let [x, y] = wheel_steps(&mut remainder, [wheel.delta_x, wheel.delta_y], scale);
+            let [x, y] = wheel_units(&mut remainder, [wheel.delta_x, wheel.delta_y], scale);
             drop(remainder);
-            if x != 0 || y != 0 {
-                host.send_mouse_wheel_event(Some(&event), x, y);
+            // CEF on Windows scrolls one axis per event, the vertical one when both move.
+            if y != 0 {
+                host.send_mouse_wheel_event(Some(&event), 0, y);
+            }
+            if x != 0 {
+                host.send_mouse_wheel_event(Some(&event), x, 0);
             }
         }
         api::CommandKind::Key(key) => {
@@ -238,6 +259,22 @@ mod tests {
             click_button(api::PointerButton::Right),
             Some((MouseButtonType::RIGHT, 64))
         );
+    }
+
+    /// A notch glided in 2.4-DIP frames, at 1.2 units per DIP in quanta of 6 units (five
+    /// DIPs, as on Windows at three lines): only whole quanta go out, and together they
+    /// are the notch's 72 units.
+    #[test]
+    fn a_glide_goes_out_in_whole_quanta_that_add_up_to_its_distance() {
+        let mut remainder = [0.0; 2];
+        let mut total = 0;
+        for _ in 0..25 {
+            let [_, units] = wheel_quanta(&mut remainder, [0.0, -2.4 * 1.2], [6, 6]);
+            assert_eq!(units % 6, 0, "{units}");
+            total += units;
+        }
+        assert_eq!(total, -72);
+        assert!(remainder[1].abs() < 1e-6);
     }
 
     #[test]

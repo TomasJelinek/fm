@@ -145,6 +145,16 @@ pub(super) fn captured_path(policy: &crate::policy::DocumentPolicy, url: &str) -
 pub(super) mod tests {
     use super::*;
 
+    /// The next event the provider writes, or `None` once every lane is empty. Resource
+    /// releases wait in their own lane after the FIFO controls (`output::Receiver::next`).
+    pub(in crate::native) fn written(
+        doc: &Document,
+        events: &mut crate::output::Receiver,
+    ) -> Option<api::EventKind> {
+        doc.output.finish();
+        events.next(&doc.output).map(|event| event.kind)
+    }
+
     pub(in crate::native) fn document() -> (Arc<Document>, crate::output::Receiver) {
         let (output, events) = crate::output::channel();
         let viewport = api::Viewport {
@@ -194,7 +204,7 @@ pub(super) mod tests {
 
     #[test]
     fn canceled_resolution_releases_late_resource_without_releasing_main_authority() {
-        let (doc, events) = document();
+        let (doc, mut events) = document();
         let stream = Arc::new(Mutex::new(Stream::new(&doc, None)));
         doc.requests
             .lock()
@@ -220,7 +230,7 @@ pub(super) mod tests {
             },
         );
         assert_eq!(
-            events.controls.try_recv().unwrap().kind,
+            written(&doc, &mut events).unwrap(),
             api::EventKind::ResourceRelease { resource: 42 }
         );
         reply(
@@ -246,7 +256,7 @@ pub(super) mod tests {
                 reason: "canceled".into(),
             },
         );
-        assert!(events.controls.try_recv().is_err());
+        assert!(written(&doc, &mut events).is_none());
     }
 
     pub(in crate::native) fn admitted(doc: &Arc<Document>) -> navigation::ResponseLease {
@@ -315,7 +325,7 @@ pub(super) mod tests {
 
     #[test]
     fn admitted_response_cursor_releases_once_at_eof_without_postallow_host_read() {
-        let (doc, events) = document();
+        let (doc, mut events) = document();
         let stream = Arc::new(Mutex::new(Stream::new(&doc, Some(admitted(&doc)))));
         let handler = CapturedResource::new(
             doc.clone(),
@@ -330,7 +340,7 @@ pub(super) mod tests {
         );
         assert_eq!(count, 2);
         assert_eq!(&bytes, b"ab");
-        assert!(events.controls.try_recv().is_err());
+        assert!(written(&doc, &mut events).is_none());
         assert_eq!(
             handler.read_response(bytes.as_mut_ptr(), 2, Some(&mut count), None),
             1
@@ -338,7 +348,7 @@ pub(super) mod tests {
         assert_eq!(count, 1);
         assert_eq!(bytes[0], b'c');
         assert_eq!(
-            events.controls.try_recv().unwrap().kind,
+            written(&doc, &mut events).unwrap(),
             api::EventKind::ResourceRelease { resource: 42 }
         );
         assert_eq!(
@@ -349,14 +359,14 @@ pub(super) mod tests {
         drop(handler);
         drop(stream);
         assert!(
-            events.controls.try_recv().is_err(),
+            written(&doc, &mut events).is_none(),
             "metadata must not release the lease twice"
         );
     }
 
     #[test]
     fn actual_response_owner_drop_unblocks_latest_only_after_serving_allocation_is_gone() {
-        let (doc, events) = document();
+        let (doc, mut events) = document();
         let stream = Stream::new(&doc, Some(admitted(&doc)));
         let now = Instant::now();
         let bound = admission::Binding {
@@ -379,7 +389,7 @@ pub(super) mod tests {
         }
         drop(stream);
         assert_eq!(
-            events.controls.try_recv().unwrap().kind,
+            written(&doc, &mut events).unwrap(),
             api::EventKind::ResourceRelease { resource: 42 }
         );
         assert_eq!(
@@ -390,7 +400,7 @@ pub(super) mod tests {
                 url: "b".into()
             })
         );
-        assert!(events.controls.try_recv().is_err());
+        assert!(written(&doc, &mut events).is_none());
     }
 }
 

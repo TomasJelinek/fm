@@ -115,7 +115,7 @@ fn bootstrap_root_is_a_single_admission_exception_not_a_root_whitelist() {
 
 #[test]
 fn exact_per_request_completion_releases_a_claim_before_body_handler_only_once() {
-    let (doc, events) = resources::tests::document();
+    let (doc, mut events) = resources::tests::document();
     let response = resources::tests::admitted(&doc);
     let request = RequestAdmission::Bound(Arc::new(BoundRequest {
         binding: admission::Binding {
@@ -132,21 +132,21 @@ fn exact_per_request_completion_releases_a_claim_before_body_handler_only_once()
     }));
     let duplicate = request.clone();
     request.completed(Some(78));
-    assert!(events.controls.try_recv().is_err());
+    assert!(resources::tests::written(&doc, &mut events).is_none());
     duplicate.completed(Some(77));
     assert_eq!(
-        events.controls.try_recv().unwrap().kind,
+        resources::tests::written(&doc, &mut events).unwrap(),
         api::EventKind::ResourceRelease { resource: 42 }
     );
     request.completed(Some(77));
     drop(duplicate);
     drop(request);
-    assert!(events.controls.try_recv().is_err());
+    assert!(resources::tests::written(&doc, &mut events).is_none());
 }
 
 #[test]
 fn ordinary_network_return_cancels_latest_but_preserves_allowed_before_io_claim() {
-    let (doc, events) = resources::tests::document();
+    let (doc, mut events) = resources::tests::document();
     let mut document = Arc::try_unwrap(doc).ok().unwrap();
     document.policy = crate::policy::DocumentPolicy::new(1, true, false).unwrap();
     let doc = Arc::new(document);
@@ -228,7 +228,7 @@ fn ordinary_network_return_cancels_latest_but_preserves_allowed_before_io_claim(
         "the superseded coalesced intent must not prepare after original return"
     );
     assert!(
-        events.controls.try_recv().is_err(),
+        resources::tests::written(&doc, &mut events).is_none(),
         "main authority is never a derived release"
     );
 }

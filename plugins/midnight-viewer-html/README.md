@@ -73,9 +73,13 @@ Find and Find Next, select-control popup composition/hide, browser-arbitrated
 Space input, editable-field Space and explicit selection copy, textarea
 Enter/Shift+Enter, punctuation keys and a synthetic IME commit, layout zoom,
 fractional-DPI resize, and clean process exit; `chromium_applies_each_wheel_event_at_once`
-checks that one wheel event scrolls its whole distance in the next frame and stops at
-the top edge (it ran on Linux X11 only). Editable steps wait for the copied
-selection rather than fixed delays, because frames carry no input acknowledgment.
+checks that one wheel event scrolls its whole distance in the next frame, stops at the
+top edge, and that a notch the host glides in 25 frames of 2.4 px scrolls its 60 px.
+On Windows 11 (21 November 2026, debug package of this checkout, three wheel lines) it
+first measured 100 px for a 120 px event; with the unit conversion below alone, the glide
+moved 47 of 60 px; with whole quanta it passes. It earlier ran on Linux X11. Editable
+steps wait for the copied selection rather than fixed delays, because frames carry no
+input acknowledgment.
 The final fixture passed in 2.29 seconds on the development Windows environment;
 on a loaded development machine CefShutdown alone took 10-12 seconds, so the
 fixture allows 30 seconds for the clean exit. Tests
@@ -119,8 +123,25 @@ punctuation never acts as Delete, arrow or page commands. Mouse Back/Forward but
 focus loss ends a held button's capture. Fractional wheel deltas accumulate per
 document. Chromium runs with `disable-smooth-scrolling`: the host glides wheel notches
 and coasts touchpad flicks itself, one delta per frame, so Chromium applies each wheel
-event at once instead of easing it again over about 170 ms. IME composition and
-commit pass CEF's required invalid replacement range.
+event at once instead of easing it again over about 170 ms. The host's deltas are the
+distance to scroll, 60 px per notch as in the text viewer. On Linux CEF reads a delta as
+pixels. On Windows CEF reads it as `WHEEL_DELTA` units (120 per notch) and Chromium
+scrolls the system's wheel lines (characters across) of 100/3 px each, and drops the
+fraction of a pixel each event scrolls; the Windows adapter converts pixels to units by
+the current `SPI_GETWHEELSCROLLLINES`/`SPI_GETWHEELSCROLLCHARS` setting and sends whole
+quanta that scroll whole pixels (six units, 5 px, at the default three lines), keeping the
+rest for the next event. CEF on Windows scrolls one axis per event, so a delta on both
+axes goes out as two events. A "one screen at a time" setting cannot scroll by pixels;
+the adapter then uses the default three lines, and Chromium still scrolls by pages.
+IME composition and commit pass CEF's required invalid replacement range.
+
+Unit tests (`cargo test ... --lib --bins --test policy_surface --test native_runtime`)
+passed on Windows on 21 November 2026: 109 passed, 1 ignored in the library, the
+platform tests included. Four resource and navigation tests had failed on Windows as on
+Linux because they read `ResourceRelease` from the control lane, while releases have
+their own lane since the output lanes were split; they now read the provider's output
+in order. This was a test defect, not an environment limit. Linux was not rerun on this
+host: its WSL has no Linux CEF SDK.
 
 ## Linux status
 

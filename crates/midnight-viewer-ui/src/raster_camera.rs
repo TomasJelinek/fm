@@ -19,6 +19,10 @@ pub(super) struct Camera {
     resume: bool,
     seeking: bool,
     pending_seek: Option<[f64; 2]>,
+    /// The worker painted this surface for a request's lookahead without reaching the
+    /// shown camera (a page refilled or restyled around the request): ask again for the
+    /// shown camera itself, without lookahead, so that its pixels cover the camera.
+    uncovered: bool,
 }
 
 impl Camera {
@@ -56,9 +60,19 @@ impl Camera {
         } else {
             clamp(info, self.origin)
         };
-        if (!changed && self.suspended) || !covered(info, origin) {
+        if !changed && self.suspended {
             return false;
         }
+        if !covered(info, origin) {
+            if !changed {
+                // Nothing else would ask again: the camera waits for these pixels.
+                self.uncovered = true;
+                self.last_request = None;
+                self.retry_pending = true;
+            }
+            return false;
+        }
+        self.uncovered = false;
         if changed {
             self.cancel();
             self.last_request = Some((origin, info.settled));
@@ -256,12 +270,16 @@ impl Camera {
         let info = self.info()?;
         let surface = info.surface;
         let settled = !self.seeking && !self.motion.active();
+        let uncovered = self.uncovered;
         let origin = clamp(
             info,
             std::array::from_fn(|axis| {
                 // Keep overlap even when a byte-limited page has very little spare height.
-                let lookahead =
-                    PREFETCH.min((info.coverage_max[axis] - info.coverage_min[axis]) / 2.0);
+                let lookahead = if uncovered {
+                    0.0
+                } else {
+                    PREFETCH.min((info.coverage_max[axis] - info.coverage_min[axis]) / 2.0)
+                };
                 self.pending_seek.unwrap_or(self.origin)[axis]
                     + (self.motion.pending()[axis] * self.scale[axis]).clamp(-lookahead, lookahead)
             }),

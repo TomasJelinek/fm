@@ -36,6 +36,14 @@ pub(crate) fn window_info() -> cef::WindowInfo {
     cef::WindowInfo::default().set_as_windowless(0)
 }
 
+/// On Linux CEF reads a wheel delta as DIPs.
+pub(crate) fn wheel_units() -> super::WheelUnits {
+    super::WheelUnits {
+        per_dip: [1.0; 2],
+        quantum: [1; 2],
+    }
+}
+
 pub(crate) fn native_key_code(key: &midnight_web_viewer_api::Key) -> i32 {
     // X11 virtual key conversion is explicit and separate from Windows implementation.
     // Wayland/xkb qualification remains a release gate for this platform adapter.

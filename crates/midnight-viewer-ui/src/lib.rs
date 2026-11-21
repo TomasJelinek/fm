@@ -29,6 +29,8 @@ mod pixel_delivery;
 mod pixel_preparation;
 mod preferences;
 mod raster_camera;
+#[cfg(test)]
+mod raster_frontier_tests;
 mod raster_motion;
 mod raster_presentation;
 #[cfg(test)]

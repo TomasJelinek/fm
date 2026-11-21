@@ -7,6 +7,11 @@
 //! loses travel, jumps and shows cut rows as lines. Such a reply is held back here, the
 //! contiguous next range is requested, and the joined page reaches the worker as the one
 //! reply to the original request: positions, motion and raster continuity are unchanged.
+//!
+//! A refill asks for the rows around the camera, and the shown page already holds most of
+//! them: the page moves a little each time the camera nears its edge. Such a request reads
+//! only the rows past the page's edge, and its reply is joined to the rows the page holds
+//! (`Worker::overlap`), as the reply to a byte-capped read is joined to the next range.
 use super::*;
 
 /// The most text one joined page holds, as much as one semantic document page.
@@ -29,6 +34,10 @@ pub(super) struct Chain {
     /// Ranges read so far; the last one added no byte when `stalled`.
     reads: u8,
     stalled: bool,
+    /// The request's first part came from the shown page (`Worker::overlap`).
+    seeded: bool,
+    /// The range read after that part did not continue it: read the whole request.
+    whole: bool,
 }
 
 #[derive(Default)]
@@ -37,6 +46,14 @@ pub(super) struct Chains(Vec<Chain>);
 /// Logical lines in `text`: the unit of a request's line budget.
 fn lines(text: &str) -> u32 {
     u32::try_from(text.bytes().filter(|byte| *byte == b'\n').count()).unwrap_or(u32::MAX)
+}
+
+/// Whether a joined page of `lines` rows and `bytes` bytes reads on for a request of
+/// `max_lines`: up to its line budget, within `JOIN_BYTES`. A backward page holds one
+/// newline less than its line budget: its last row runs up to the anchor. One missing
+/// line is enough.
+fn reads_on(lines: u32, bytes: usize, max_lines: u32) -> bool {
+    lines.saturating_add(1) < max_lines && bytes < JOIN_BYTES
 }
 
 /// Whether `second` continues `first`: the next source range of the same revision.
@@ -127,9 +144,24 @@ impl Chains {
 }
 
 impl Worker {
+    /// Whether the replies to this worker's viewport requests may need joining.
+    fn joins_replies(&self) -> bool {
+        !self.binary && matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
+    }
+
     /// Track a Text or Source viewport request whose reply may need joining.
     pub(super) fn chain_requested(&mut self, id: u64, viewport: &messages::Viewport) {
-        if self.binary || !matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE) {
+        self.chain_requested_with(id, viewport, None);
+    }
+
+    /// Track a request whose first part `held` came from the shown page (`overlap`).
+    pub(super) fn chain_requested_with(
+        &mut self,
+        id: u64,
+        viewport: &messages::Viewport,
+        held: Option<viewer::TextPage>,
+    ) {
+        if !self.joins_replies() {
             return;
         }
         self.retire_stale_chains();
@@ -137,11 +169,61 @@ impl Worker {
             logical: id,
             physical: id,
             viewport: viewport.clone(),
-            page: None,
+            seeded: held.is_some(),
+            page: held,
             cut_start: false,
             reads: 1,
             stalled: false,
+            whole: false,
         });
+    }
+
+    /// The part of the request `viewport` that the shown page holds, and the read of the
+    /// rest: the rows past the page's end, or before its start for a backward request. A
+    /// scrollbar position (`position`) keeps a whole read, which its recovery checks.
+    pub(super) fn overlap(
+        &self,
+        viewport: &messages::Viewport,
+        position: Option<u64>,
+    ) -> Option<(viewer::TextPage, messages::Viewport)> {
+        if position.is_some() || !self.joins_replies() {
+            return None;
+        }
+        #[cfg(test)]
+        if unsent::reads_whole() {
+            return None;
+        }
+        let page = self.page.as_ref()?;
+        let index = page
+            .anchors
+            .partition_point(|anchor| anchor.source_offset < viewport.source_anchor);
+        let anchor = page.anchors.get(index)?;
+        let at = anchor.text_offset as usize;
+        if anchor.source_offset != viewport.source_anchor || at == 0 || at >= page.text.len() {
+            return None;
+        }
+        let (held, source_anchor) = if viewport.backwards {
+            (page.before.then(|| page.text_range(0..at))??, page.start)
+        } else {
+            let end = page.text.len();
+            (page.after.then(|| page.text_range(at..end))??, page.end)
+        };
+        let lines = lines(&held.text);
+        // Only a page that its line budget ends, rather than `JOIN_BYTES`, is the same
+        // page whether it is read whole or after these rows. Longer rows read it whole.
+        let row = held.text.len() / usize::try_from(lines).ok()?.max(1);
+        if lines == 0 || row.saturating_mul(viewport.max_lines as usize) >= JOIN_BYTES {
+            return None;
+        }
+        reads_on(lines, held.text.len(), viewport.max_lines).then(|| {
+            let read = messages::Viewport {
+                source_anchor,
+                backwards: viewport.backwards,
+                max_bytes: viewport.max_bytes,
+                max_lines: viewport.max_lines - lines,
+            };
+            (held, read)
+        })
     }
 
     /// Whether `logical` is still a request the worker waits for.
@@ -185,6 +267,7 @@ impl Worker {
             return Vec::new();
         }
         match kind {
+            EventKind::TextPage(_) if self.chains.0[index].whole => Vec::new(),
             EventKind::TextPage(page) => {
                 let chain = &mut self.chains.0[index];
                 chain.stalled = page.source.length == 0;
@@ -202,6 +285,12 @@ impl Worker {
                         } else {
                             (previous, page)
                         };
+                        if !adjacent(&first, &second) && chain.seeded && chain.reads == 1 {
+                            // The rows read did not continue the shown page's: the
+                            // request is read whole once this range completes.
+                            chain.whole = true;
+                            return Vec::new();
+                        }
                         if !adjacent(&first, &second) {
                             // Not adjacent after all: the pages joined so far are the reply.
                             chain.page = Some(if chain.viewport.backwards {
@@ -221,6 +310,21 @@ impl Worker {
                 chain.page = Some(joined);
                 Vec::new()
             }
+            EventKind::Completed if self.chains.0[index].whole => {
+                let whole = self.chains.0[index].viewport.clone();
+                if let Some(physical) = self.chain_request(whole) {
+                    let chain = &mut self.chains.0[index];
+                    chain.physical = physical;
+                    chain.reads += 1;
+                    chain.seeded = false;
+                    chain.whole = false;
+                    chain.stalled = false;
+                    chain.page = None;
+                    return Vec::new();
+                }
+                self.chains.0[index].page = None;
+                self.finish_chain(index)
+            }
             EventKind::Completed => {
                 let next = {
                     let chain = &self.chains.0[index];
@@ -233,16 +337,14 @@ impl Worker {
                             page.has_after
                                 .then(|| page.source.offset + page.source.length)
                         }?;
-                        // A backward page holds one newline less than its line budget:
-                        // its last row runs up to the anchor. One missing line is enough.
-                        (held.saturating_add(1) < chain.viewport.max_lines
-                            && page.text.len() < JOIN_BYTES)
-                            .then(|| messages::Viewport {
+                        reads_on(held, page.text.len(), chain.viewport.max_lines).then(|| {
+                            messages::Viewport {
                                 source_anchor: anchor,
                                 backwards: chain.viewport.backwards,
                                 max_bytes: chain.viewport.max_bytes,
                                 max_lines: chain.viewport.max_lines - held,
-                            })
+                            }
+                        })
                     })
                 };
                 if let Some(next) = next
@@ -282,6 +384,9 @@ impl Worker {
         #[cfg(test)]
         {
             unsent::record(&next);
+            if let Some(id) = unsent::admitted(&next) {
+                return Some(id);
+            }
             let reads: u64 = self
                 .chains
                 .0

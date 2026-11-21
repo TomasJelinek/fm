@@ -33,6 +33,8 @@ pub(crate) struct Page {
     pub after: bool,
     /// The provider may have cropped either logical edge of this text packet.
     pub partial_line: bool,
+    /// The source revision the provider read this page from.
+    pub revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,7 +144,74 @@ impl Page {
             before: page.has_before,
             after: page.has_after,
             partial_line: page.partial_line,
+            revision: page.revision,
         }
+    }
+
+    /// The provider page that answers a read of `range`, a text range between two of this
+    /// text page's anchors: the same text, anchors and styles, as this page shows them.
+    /// A refill joins it to the rows it reads beyond (`worker_chain.rs`).
+    pub fn text_range(&self, range: std::ops::Range<usize>) -> Option<viewer::TextPage> {
+        if !self.tables.is_empty() || !self.document_blocks.is_empty() || range.is_empty() {
+            return None;
+        }
+        let first = self
+            .anchors
+            .binary_search_by_key(&range.start, |anchor| anchor.text_offset as usize)
+            .ok()?;
+        let last = self
+            .anchors
+            .binary_search_by_key(&range.end, |anchor| anchor.text_offset as usize)
+            .ok()?;
+        let text = self.text.get(range.clone())?;
+        let shift = u32::try_from(range.start).ok()?;
+        let flags = |span: &std::ops::Range<usize>| {
+            self.styles
+                .iter()
+                .find(|style| style.range == *span)
+                .map_or(0, |style| {
+                    u8::from(style.weight >= 700)
+                        | u8::from(style.italic) << 1
+                        | u8::from(style.underline) << 2
+                })
+        };
+        let spans = self
+            .roles
+            .iter()
+            .filter(|span| span.range.start < range.end && span.range.end > range.start)
+            .map(|span| viewer::Span {
+                start: (span.range.start.max(range.start) - range.start) as u32,
+                end: (span.range.end.min(range.end) - range.start) as u32,
+                role: span.role,
+                flags: flags(&span.range),
+            })
+            .collect();
+        let start = self.anchors[first].source_offset;
+        let end = self.anchors[last].source_offset;
+        let row_start = |at: usize| at == 0 || self.text[..at].ends_with('\n');
+        let after = range.end < self.text.len() || self.after;
+        Some(viewer::TextPage {
+            revision: self.revision,
+            source: viewer::SourceRange {
+                offset: start,
+                length: end - start,
+            },
+            text: text.to_owned(),
+            spans,
+            anchors: self.anchors[first..=last]
+                .iter()
+                .map(|anchor| viewer::Anchor {
+                    text_offset: anchor.text_offset - shift,
+                    source_offset: anchor.source_offset,
+                })
+                .collect(),
+            has_before: range.start > 0 || self.before,
+            has_after: after,
+            // Like the provider's flag, either cut edge; the page's own first row is
+            // never part of a range that starts inside it.
+            partial_line: (range.start > 0 && !row_start(range.start))
+                || (after && !text.ends_with('\n')),
+        })
     }
 
     pub fn binary(page: viewer::BinaryPage, bytes: &[u8]) -> Self {
@@ -193,6 +262,7 @@ impl Page {
             before: page.has_before,
             after: page.has_after,
             partial_line: false,
+            revision: page.revision,
         }
     }
 
@@ -285,6 +355,7 @@ impl Page {
             before: page.has_before,
             after: page.has_after,
             partial_line: false,
+            revision: page.revision,
         }
     }
 

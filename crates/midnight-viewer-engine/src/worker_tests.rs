@@ -25,8 +25,12 @@ mod source_continuity;
 
 #[path = "worker_chain_tests.rs"]
 mod chain;
+#[path = "worker_frontier_tests.rs"]
+mod frontier;
 #[path = "worker_nearest_edge_tests.rs"]
 mod nearest_edge;
+#[path = "worker_overlap_tests.rs"]
+mod overlap;
 #[path = "worker_seam_tests.rs"]
 mod seam;
 #[path = "worker_syntax_tests.rs"]
@@ -482,6 +486,7 @@ fn text_page(text: String) -> Page {
         before: true,
         after: true,
         partial_line: false,
+        revision: 1,
     }
 }
 

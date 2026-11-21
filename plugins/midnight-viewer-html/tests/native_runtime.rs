@@ -853,6 +853,18 @@ fn chromium_applies_each_wheel_event_at_once() {
         !up.is_empty() && up.iter().all(|offset| *offset == 0),
         "frames after a wheel past the top: {up:?}"
     );
+    // A notch arrives as the host glides it, one small delta per frame. Together they
+    // scroll the notch's whole 60 px, as in the text viewer (on Windows, CEF scrolls a
+    // delta by the system's wheel lines; the provider converts its units).
+    for _ in 0..25 {
+        wheel(&mut stdin, &mut sequence, -2.4);
+    }
+    let glide = settle(&mut stdin, &mut sequence);
+    assert_eq!(
+        glide.last(),
+        Some(&60),
+        "frames after a notch glide: {glide:?}"
+    );
     send(&mut stdin, &mut sequence, CommandKind::Close);
     drop(stdin);
     let status = wait_for_exit(child);

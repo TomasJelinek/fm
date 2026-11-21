@@ -64,3 +64,65 @@ pub(crate) fn native_key_code(key: &midnight_web_viewer_api::Key) -> i32 {
 pub(crate) fn protocol_output() -> std::io::Result<impl std::io::Write + Send + 'static> {
     Ok(std::io::stdout())
 }
+
+const SPI_GETWHEELSCROLLLINES: u32 = 0x0068;
+const SPI_GETWHEELSCROLLCHARS: u32 = 0x006C;
+/// `SPI_GETWHEELSCROLLLINES` when a notch scrolls a whole page.
+const WHEEL_PAGESCROLL: u32 = u32::MAX;
+/// Windows' defaults for both settings.
+const DEFAULT_SCROLL_COUNT: u32 = 3;
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn SystemParametersInfoW(action: u32, parameter: u32, value: *mut c_void, ini: u32) -> i32;
+}
+
+/// CEF on Windows reads a wheel delta as `WHEEL_DELTA` units (120 per notch), which
+/// Chromium scrolls by the system's wheel characters across or lines down, 100/3 DIPs
+/// each (CEF's `TranslateWebWheelEvent`). As measured on Windows 11 at three lines, one
+/// unit per DIP moved a page only 5/6 of the host's distance, and a notch the host
+/// glides in 2.4-DIP frames moved 47 of 60 DIPs: Chromium drops the fraction of a pixel
+/// each event scrolls. The host's deltas are already the distance to scroll.
+pub(crate) fn wheel_units() -> super::WheelUnits {
+    let read = |action| {
+        let mut count = DEFAULT_SCROLL_COUNT;
+        // SAFETY: both actions write one u32 through the pointer, which outlives the call.
+        let read = unsafe { SystemParametersInfoW(action, 0, (&raw mut count).cast(), 0) };
+        (read != 0).then_some(count)
+    };
+    let [across, down] = [
+        scroll_count(read(SPI_GETWHEELSCROLLCHARS)),
+        scroll_count(read(SPI_GETWHEELSCROLLLINES)),
+    ];
+    super::WheelUnits {
+        per_dip: [units_per_dip(across), units_per_dip(down)],
+        quantum: [quantum(across), quantum(down)],
+    }
+}
+
+/// The lines (or characters) a notch scrolls. None, or a setting that cannot scroll by
+/// pixels (no lines, or a page per notch), keeps Windows' default of three.
+fn scroll_count(count: Option<u32>) -> u32 {
+    count
+        .filter(|count| *count != 0 && *count != WHEEL_PAGESCROLL)
+        .unwrap_or(DEFAULT_SCROLL_COUNT)
+}
+
+/// CEF units per DIP when a notch scrolls `count` lines of 100/3 DIPs: 18/(5 count).
+fn units_per_dip(count: u32) -> f64 {
+    120.0 / (f64::from(count) * 100.0 / 3.0)
+}
+
+/// The fewest units that scroll whole DIPs: `u` units scroll `5 count u / 18` DIPs.
+fn quantum(count: u32) -> i32 {
+    let mut a = 18;
+    let mut b = 5 * count.min(1 << 24);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    (18 / a) as i32
+}
+
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;

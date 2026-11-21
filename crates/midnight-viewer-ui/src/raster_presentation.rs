@@ -73,6 +73,10 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
     let scale =
         std::array::from_fn(|axis| f64::from(info.viewport[axis]) / f64::from(viewport[axis]));
     if !state.camera.receive(info, scale) {
+        // Pixels that do not reach the shown camera leave it asking for itself again.
+        if state.camera.active() && !open.raster_redraw.running() {
+            open.raster_redraw.restart();
+        }
         return false;
     }
     // Source/Markdown controls appear with the first frame. Their smaller canvas

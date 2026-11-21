@@ -12,6 +12,13 @@ import { MediaControls, MediaControlsState } from "viewer-media-controls.slint";
 export { MediaControlsState }
 export struct ViewerRasterTile { image: image, x: float, y: float, width: float, height: float }
 
+// An icon-only action whose tooltip names it and its key. Declared once here: a Tooltip
+// written at each use would make the compiler copy the button and a popup into every use.
+component TippedActionButton inherits ActionButton {
+    in property <string> tip;
+    Tooltip { text: @markdown("\{root.tip}"); }
+}
+
 export component ViewerWindow inherits Window {
     title: root.caption;
     preferred-width: 1000px; preferred-height: 720px; min-width: 320px; min-height: 200px;
@@ -241,13 +248,13 @@ export component ViewerWindow inherits Window {
                             : @markdown("Network and JavaScript cannot be enabled for this preview."); }
                         toggled => { root.web-policy(root.web-network, self.checked); content-focus.focus(); } }
                     Rectangle { horizontal-stretch: 1; }
-                    ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "−"; min-width: 36px; max-width: 36px;
-                        accessible-label: "Zoom HTML out";
+                    TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "−"; min-width: 36px; max-width: 36px;
+                        accessible-label: "Zoom HTML out"; tip: "Zoom HTML out (Ctrl+-)";
                         clicked => { root.image-command(3); content-focus.focus(); } }
                     Text { text: "\{round(root.zoom-percent)}%"; color: Theme.text; vertical-alignment: center;
                         horizontal-alignment: center; min-width: 52px; max-width: 52px; }
-                    ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "+"; min-width: 36px; max-width: 36px;
-                        accessible-label: "Zoom HTML in";
+                    TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "+"; min-width: 36px; max-width: 36px;
+                        accessible-label: "Zoom HTML in"; tip: "Zoom HTML in (Ctrl++)";
                         clicked => { root.image-command(2); content-focus.focus(); } }
             }
             if root.typography-requested && !root.find-displaces-rows: HorizontalLayout {
@@ -519,10 +526,11 @@ export component ViewerWindow inherits Window {
                                 text: "1:1"; accessible-label: "Actual image pixels";
                                 clicked => { root.image-command(1); content-focus.focus(); }
                             }
-                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                            TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
                                 min-width: root.compact ? 26px : 0px;
                                 max-width: root.compact ? 26px : 1000000px;
                                 text: "−"; accessible-label: "Zoom image out";
+                                tip: "Zoom image out (Ctrl+-)";
                                 clicked => { root.image-command(3); content-focus.focus(); }
                             }
                             Text {
@@ -532,10 +540,11 @@ export component ViewerWindow inherits Window {
                                 color: Theme.text;
                                 vertical-alignment: center; horizontal-alignment: center;
                             }
-                            ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                            TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
                                 min-width: root.compact ? 26px : 0px;
                                 max-width: root.compact ? 26px : 1000000px;
                                 text: "+"; accessible-label: "Zoom image in";
+                                tip: "Zoom image in (Ctrl++)";
                                 clicked => { root.image-command(2); content-focus.focus(); }
                             }
                         }

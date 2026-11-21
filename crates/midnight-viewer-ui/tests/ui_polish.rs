@@ -1,6 +1,10 @@
 //! Toolbar regressions use actual widget bounds and pointer input.
 use i_slint_core::{
-    accessibility::AccessibleStringProperty, item_tree::ItemRc, window::WindowInner,
+    accessibility::AccessibleStringProperty,
+    item_tree::ItemRc,
+    items::StyledTextItem,
+    styled_text::get_raw_text,
+    window::{WindowInner, WindowKind},
 };
 use midnight_core::{ShortcutContext, ShortcutMap};
 use midnight_viewer_ui::{MediaControlsState, ViewerWindow};
@@ -134,6 +138,63 @@ fn type_query(window: &ViewerWindow, text: &str) {
     window
         .window()
         .dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+}
+
+/// The texts of the window's open tooltip popups.
+fn tooltip_texts(window: &ViewerWindow) -> Vec<String> {
+    fn styled_texts(item: ItemRc, texts: &mut Vec<String>) {
+        if let Some(text) = item.downcast::<StyledTextItem>() {
+            texts.push(get_raw_text(&text.as_pin_ref().text()).into_owned());
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            styled_texts(item, texts);
+        }
+    }
+    let roots: Vec<ItemRc> = WindowInner::from_pub(window.window())
+        .active_popups()
+        .iter()
+        .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+        .map(|popup| ItemRc::new_root(popup.component.clone()))
+        .collect();
+    let mut texts = Vec::new();
+    for root in roots {
+        styled_texts(root, &mut texts);
+    }
+    texts
+}
+
+/// Rests the pointer on the middle of `label`'s control until its tooltip opens (at most
+/// two seconds of the virtual clock) and returns the tooltip's texts; the pointer then
+/// leaves the window, which closes the tooltip.
+fn hover_tooltip(window: &ViewerWindow, label: &str, width: f32, height: f32) -> Vec<String> {
+    let item = control(window, label, width, height);
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    let position = slint::LogicalPosition::new(
+        origin.x + rect.size.width / 2.0,
+        origin.y + rect.size.height / 2.0,
+    );
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    let mut texts = Vec::new();
+    for _ in 0..125 {
+        CLOCK.with(|clock| clock.set(clock.get() + Duration::from_millis(16)));
+        slint::platform::update_timers_and_animations();
+        texts = tooltip_texts(window);
+        if !texts.is_empty() {
+            break;
+        }
+    }
+    window.window().dispatch_event(WindowEvent::PointerExited);
+    slint::platform::update_timers_and_animations();
+    assert!(
+        tooltip_texts(window).is_empty(),
+        "the {label} tooltip closes when the pointer leaves"
+    );
+    texts
 }
 
 #[test]
@@ -636,6 +697,55 @@ fn compact_pdf_keeps_large_page_counter_and_zoom_actions_clickable() {
     }
     assert_eq!(*turns.borrow(), [-1, 1].repeat(8));
     assert_eq!(*commands.borrow(), [0, 1, 3, 2].repeat(8));
+    window.hide().unwrap();
+}
+
+/// The image and HTML zoom buttons show only − and +. Resting the pointer on one opens a
+/// tooltip that names its action and its key, as the Find bar's buttons do, in the full
+/// and the compact toolbar.
+#[test]
+fn zoom_buttons_name_their_action_and_key_in_a_tooltip() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    window.show().unwrap();
+    let cases = [
+        (
+            "image",
+            [
+                ("Zoom image out", "Zoom image out (Ctrl+-)"),
+                ("Zoom image in", "Zoom image in (Ctrl++)"),
+            ],
+        ),
+        (
+            "html",
+            [
+                ("Zoom HTML out", "Zoom HTML out (Ctrl+-)"),
+                ("Zoom HTML in", "Zoom HTML in (Ctrl++)"),
+            ],
+        ),
+    ];
+    for (mode, buttons) in cases {
+        window.set_image_mode(mode == "image");
+        window.set_web_mode(mode == "html");
+        for (width, height) in [(1000, 720), (320, 200)] {
+            window.set_compact(width < 500);
+            draw(
+                &native,
+                &window,
+                width,
+                height,
+                &format!("{mode}-zoom-tooltips"),
+            );
+            for (label, tip) in buttons {
+                assert_eq!(
+                    hover_tooltip(&window, label, width as f32, height as f32),
+                    [tip],
+                    "{label} at {width}x{height}"
+                );
+            }
+        }
+    }
     window.hide().unwrap();
 }
 
