@@ -597,12 +597,12 @@ try {
     Add-Step @{ Id = 'filesystem-network'; Job = 'filesystem-libraries'; Title = 'Network filesystem plugin and package'
         Variables = @{ Provider = 'network'; PluginName = 'midnight-filesystem-network'
             Library = 'midnight_filesystem_network.dll'; Manifest = 'plugin.windows.toml' }; Body = $filesystemBody }
-    Add-Step @{ Id = 'test-install'; Job = 'check'; Title = 'Private test installation'; Local = { Install-TestPackages } }
-    Add-Step @{ Id = 'script-tests'; Job = 'check'; Title = 'Build script and packaging tests'; Needs = @('test-install'); Body = {
+    Add-Step @{ Id = 'test-install'; Job = 'scripts-and-lint'; Title = 'Private test installation'; Local = { Install-TestPackages } }
+    Add-Step @{ Id = 'script-tests'; Job = 'scripts-and-lint'; Title = 'Build script and packaging tests'; Needs = @('test-install'); Body = {
         & $Python -B -m unittest discover -s scripts/tests -v
         if ($LASTEXITCODE -ne 0) { throw 'Script tests failed' }
     } }
-    Add-Step @{ Id = 'decoder-native-tests'; Job = 'check'; Title = 'Shared image decoder native helper tests'; Body = {
+    Add-Step @{ Id = 'decoder-native-tests'; Job = 'scripts-and-lint'; Title = 'Shared image decoder native helper tests'; Body = {
         & $Python -B -m unittest discover -s plugins/image-decoder/native/tests -v
         if ($LASTEXITCODE -ne 0) { throw 'Native helper tests failed' }
     } }
@@ -613,10 +613,10 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "$test failed under $TestShell" }
         }
     }
-    Add-Step @{ Id = 'powershell-tests-7'; Job = 'check'; Title = 'Deployment and shortcut tests (PowerShell 7)'
+    Add-Step @{ Id = 'powershell-tests-7'; Job = 'scripts-and-lint'; Title = 'Deployment and shortcut tests (PowerShell 7)'
         Platform = 'windows'; Needs = @('test-install'); Variables = @{ TestShell = $Pwsh }; Body = $powerShellTests
         Prerequisite = { if (-not $Pwsh) { 'PowerShell 7 (pwsh.exe) is not installed' } } }
-    Add-Step @{ Id = 'powershell-tests-5'; Job = 'check'; Title = 'Deployment and shortcut tests (PowerShell 5.1)'
+    Add-Step @{ Id = 'powershell-tests-5'; Job = 'scripts-and-lint'; Title = 'Deployment and shortcut tests (PowerShell 5.1)'
         Platform = 'windows'; Needs = @('test-install'); Variables = @{ TestShell = $WindowsPowerShell }; Body = $powerShellTests }
     Add-Step @{ Id = 'workspace-tests'; Job = 'check'; Title = 'Test (workspace gates, doc tests included)'
         Needs = @('test-install'); Body = {

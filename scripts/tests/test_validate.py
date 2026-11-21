@@ -214,7 +214,8 @@ class ValidationPlanTests(unittest.TestCase):
         self.assertEqual(len(identifiers), len(set(identifiers)))
         jobs = [step[1] for step in linux if step[1] != "not in CI"]
         order = ["public-sdk", "public-worker-sdk", "viewers", "viewer-conformance", "image-viewer",
-                 "thumbnail-image", "archive-filesystem", "filesystem-libraries", "check", "release"]
+                 "thumbnail-image", "archive-filesystem", "filesystem-libraries", "scripts-and-lint", "check",
+                 "release"]
         self.assertEqual(sorted(set(jobs), key=order.index), order)
         self.assertEqual(jobs, sorted(jobs, key=order.index), "steps follow CI's job order")
 

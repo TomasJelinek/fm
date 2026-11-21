@@ -1,5 +1,14 @@
 name: Rust setup
-description: Install the rust-toolchain.toml toolchain explicitly and restore the Cargo download cache.
+description: >-
+  Install the rust-toolchain.toml toolchain explicitly and restore the Cargo download
+  cache, or with build-cache the root workspace's compiled dependencies as well.
+inputs:
+  build-cache:
+    description: >-
+      Cache the Cargo downloads and the compiled third-party dependencies in _build
+      (Swatinem/rust-cache; workspace crates are never cached). Pushes to main save a new
+      entry when the key changes; other runs only restore.
+    default: "false"
 runs:
   using: composite
   steps:
@@ -17,7 +26,8 @@ runs:
         rustup toolchain install $channel --profile $toolchainProfile @components
         if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
     # Registry and Git downloads only; build outputs stay job-local.
-    - uses: actions/cache@v4
+    - if: inputs.build-cache != 'true'
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry/index/
@@ -26,3 +36,12 @@ runs:
         key: cargo-${{ runner.os }}-${{ github.job }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
         restore-keys: |
           cargo-${{ runner.os }}-${{ github.job }}-
+    # The key covers the job, the rustc version and host, the Cargo manifests, lockfiles
+    # and configuration and the CARGO_*/RUST* environment; a miss restores the newest
+    # entry of the same job and OS. LGPL-3.0, used unmodified (docs/DEPENDENCY_POLICY.md).
+    - if: inputs.build-cache == 'true'
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        workspaces: ". -> _build"
+        cache-bin: "false"
+        save-if: ${{ github.ref == 'refs/heads/main' }}

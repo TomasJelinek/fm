@@ -540,11 +540,11 @@ add_step filesystem-native filesystem-libraries 'Native filesystem plugin and pa
 add_step filesystem-network filesystem-libraries 'Network filesystem plugin and package' body=filesystem_step \
     'variables=provider=network plugin_name=midnight-filesystem-network library=libmidnight_filesystem_network.so manifest=plugin.linux.toml' \
     prerequisite=prerequisite_gio
-add_step test-install check 'Private test installation'
-add_step script-tests check 'Build script and packaging tests' needs=test-install
-add_step decoder-native-tests check 'Shared image decoder native helper tests'
-add_step powershell-tests-7 check 'Deployment and shortcut tests (PowerShell 7)' platform=windows
-add_step powershell-tests-5 check 'Deployment and shortcut tests (PowerShell 5.1)' platform=windows
+add_step test-install scripts-and-lint 'Private test installation'
+add_step script-tests scripts-and-lint 'Build script and packaging tests' needs=test-install
+add_step decoder-native-tests scripts-and-lint 'Shared image decoder native helper tests'
+add_step powershell-tests-7 scripts-and-lint 'Deployment and shortcut tests (PowerShell 7)' platform=windows
+add_step powershell-tests-5 scripts-and-lint 'Deployment and shortcut tests (PowerShell 5.1)' platform=windows
 add_step workspace-tests check 'Test (workspace gates, doc tests included)' needs=test-install
 add_step trash-qualification check 'Qualify Linux cross-filesystem Trash'
 add_step bad-descriptor check 'Native viewer ABI rejection fixture'
