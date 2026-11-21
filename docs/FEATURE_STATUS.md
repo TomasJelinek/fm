@@ -1490,7 +1490,17 @@ cleanup or durability of a verified source removal, a moved directory link's
 original, a cleanup while a Skip is carried out) asks Skip, Skip all errors or
 Cancel instead of ending the job, never Retry; a capture that does not match, Move
 invariant failures and a failed restore during Skip still end it (engine tests;
-[Copy/Move audit](developer/OPERATION_PROGRESS.md)).
+[Copy/Move audit](developer/OPERATION_PROGRESS.md)). Skip keeps the moved tree's
+folders only when the entry left something in the source, not when only a removal's
+durability is uncertain (engine tests). On Windows a Move confirms what it changed
+(21 November): a native rename flushes the folders it changed, a Move's renames
+together, each folder once per round, and a removal by delete disposition (a
+cross-volume Move's file, an emptied folder, a moved directory link's original) is
+confirmed once the job's own handles on it are closed, its name looked up through the
+held folder and that folder then flushed, so such Moves end Completed; only a removal
+Windows has not completed, or a folder that cannot be flushed, warns (engine and
+platform tests, a real D: to C: Move; the acceptance run was not repeated;
+[Move durability on Windows](developer/TRANSFERS.md#move-durability-on-windows)).
 The 11 November retry correction retains one owned pre-copy stage across Move
 retries, keeps failed-cleanup paths in bounded history, and refuses a fresh
 metadata preparation attempt after cleanup failure. Ordinary recoverable errors

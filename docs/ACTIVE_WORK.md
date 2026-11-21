@@ -65,7 +65,8 @@ Handover items:
   Windows sharing violation in
   `reading_the_busy_copys_output_waits_for_it_with_its_reason` (`accfcc53`).
 - Archive limits: file lists hold any number of paths within their 4 MiB, only native
-  roots of one Copy, Move or drop are bounded (4,096), inline-tree captures take every
+  roots of one Copy or drop are bounded (4,096; a Move takes at most 64), inline-tree
+  captures take every
   row their projection selects, and an archive member claims its spool space before
   it is staged (`e835f4ec`).
 - Performance (`b3974c06`): archive panel rows 649 → 639 bytes per member, Linux
@@ -111,6 +112,46 @@ Handover items:
   fixed, refills of line-budget pages read only the rows past the shown page, the
   HTML viewer on Windows scrolls the host's distance per wheel notch, and the zoom
   buttons have tooltips (`6cd20942`).
+- UI polish gate, batch 3 (`5fc9d45e`): a running job's footer at 320×200 shows
+  glyph-only actions with tooltips, the Checksums Verify path is a themed field,
+  captions of the keyboard, Custom Commands, thumbnail and archive options wrap
+  instead of being cut, wrapping check boxes and colour swatches show hover, the
+  Network path bar's omitted parts have a tooltip, and the Windows gate's WIN-2 (the
+  command line's folder), WIN-3 (the path bar's fit), WIN-7 (Find's compact status)
+  and the minimum-size finding U-D08 (About, Hot Paths, a notice's Details) are fixed;
+  Jobs rows and transfer details count one in the singular. On Linux one caption was
+  still cut at 320×200 with 22–24 px fonts (Options › Archives' filter placeholder);
+  it is shorter since `32e79cf9`.
+- Windows Move durability (WIN-6): a same-volume native Move flushes the folders it
+  changed (`2597a6d8`); a cross-volume Move and a merge confirm each removal by delete
+  disposition once the job has closed its handles on the entry (looking the name up
+  through the held folder, then flushing that folder), and a Move saves its renames
+  together, each folder once per round (`8db2091a`). Such Moves end Completed; a
+  removal Windows has not completed, or a folder that cannot be flushed, still warns.
+- A paused transfer's current-file line stays in view under Details (WIN-1,
+  `cc8a952e`).
+- Final review of the handover's commits (four code reviewers and a documentation
+  reviewer, read-only): no critical or high findings. The medium and low findings are
+  fixed: semicolon CSV read by consistency, HTML wheel steps at any wheel setting,
+  one CI Clippy step, the acceptance script's environment and the harness's
+  junctions, stand-ins and settings guard (`e3bb01e2`); checksums (a mount point left
+  out without Include subfolders, Enter after Verify, Copy's reasons, folders named
+  like checksum files, singular counts), terminal commands of the other system and
+  their key bindings on import, faster hover and checksum tests (`153bd96f`); spool
+  claims counted per volume and the spool root's choice, Linux Move and Delete mode
+  restores and set-group-ID, a moved folder checked once, a root notice that held the
+  disk slot, xenfs, functionfs and gadgetfs, Windows Delete's Read-only restore
+  (`53def575`, `d6b7750a`); inline-tree Copy roots opened before staging, planned
+  folders rechecked by identity, Skip keeping only folders with leftovers
+  (`dbb1f07c`); the checksum listing pass, which opened every file a second time,
+  now describes files from their folder's listing and leaves out subfolders unopened
+  (20,000 files listed in 0.14–0.19 s instead of 2.4–3.1 s, `7ff14608`); the
+  documents (`42c09152`), and no machine, account, branch or checkout path in
+  tracked files (`df479453`, `5984bf66`, `08914523`).
+- Viewers: very long rows keep their whole scroll travel (`d0733dc7`): a page holds
+  at most what one layout places correctly (parley places byte offsets past 64 KiB of
+  a shaping run wrongly), and pages of rows too long for the window keep the retained
+  camera.
 
 CI runs 44828132118 (`3987d3c8`), 44837536773 (`c5c95186`), 44845219935
 (`9a41840c`) and 44851212423 (`985c8ec0`) passed every job on Windows and Linux. Run
@@ -118,21 +159,29 @@ CI runs 44828132118 (`3987d3c8`), 44837536773 (`c5c95186`), 44845219935
 Run 44853258726 (`accfcc53`) failed only in the Windows integration test that
 `c7185efe` fixes, and run 44861514459 (`c7185efe`, which contains `e835f4ec` to
 `c7185efe`) passed every job on Windows and Linux, as did runs 44865587302
-(`3d42cb1f`) and 44869629215 (`196a1a61`). Runs of commits that a newer push
-superseded were cancelled.
+(`3d42cb1f`), 44869629215 (`196a1a61`) and 44871872999 (`80e8f98a`). Run
+44872751062 (`4d788480`) failed only in Linux's acceptance Clippy step (two
+Windows-only fixture helpers unused on Unix; `f499e364`). Runs 44877701093
+(`5984bf66`) and 44881878957 (`08914523`) failed only in Linux's
+`options_caption_fit` (the archive filter placeholder; `32e79cf9`), and run
+44884116446 (`32e79cf9`) passed every job on Windows and Linux. Runs of commits that
+a newer push superseded were cancelled.
 
 On 21 November drive C: filled up: the WSL disk image (73 GB), which the agents'
 Linux build clones had grown, lives there, and WSL failed with I/O errors. The
 finished agents' clones were deleted inside WSL (71 to 55 GB used), but the image
-does not shrink by itself; moving it to D: (`wsl --manage Ubuntu-24.04 --move`) or
-compacting it needs the user. Until then no Linux check runs in WSL, and the Linux
-side of the commits from `80e8f98a` on is checked by CI only (the acceptance suite,
-which CI only lints, and the HTML viewer plugin, which CI does not build, not at
-all on Linux).
+does not shrink by itself; moving it to D: (`wsl --manage Ubuntu-24.04 --move <a
+folder on D:>`) or compacting it needs the user. Until then no Linux check runs in
+WSL: Linux code is type-checked and linted on Windows (Clippy for
+`x86_64-unknown-linux-gnu`, whose standard library the project toolchain now has;
+crates that need a Linux pkg-config sysroot, such as the UI's fontconfig, cannot be
+checked this way), and its tests from `80e8f98a` on run in CI only (the acceptance
+suite, which CI only lints, and the HTML viewer plugin, which CI does not build, not
+at all on Linux). The Windows acceptance suite cannot run either while C: is full:
+its private installation lives under the user profile, because the plugin host
+loads plugins only from a folder no other account can change.
 
-Still open from the handover, beside the work in progress (acceptance on Windows,
-Copy following links into other filesystems, item-level Skip in Move and Copy, the
-network path bar, the viewer's raster frontier, page reads and HTML wheel):
+Still open from the handover:
 
 - PERF-05, batching Copy's per-file folder sync, is designed but needs the
   Architect's approval of a core transfer API change.
@@ -142,19 +191,17 @@ network path bar, the viewer's raster frontier, page reads and HTML wheel):
   and needs an Architect decision.
 - A prepared Move item still takes its guard at preparation, so two Moves that meet,
   or a granted job renaming an item a waiting Move holds, can fail instead of waiting.
-- UI: a running Copy job's footer at Dark Touch 320×200 (stacked footer or glyph-only
-  actions, a decision), the Checksums Verify page's path field selection colours, and
-  single-line captions cut without "…" at 320×200 with fonts of 20–24 px in the
-  keyboard, Custom Commands, thumbnail and archive options.
 - The UI polish gate and the acceptance suites have not been run again since these
-  changes; the acceptance scenarios changed for all platforms need a Linux run
+  changes (Windows: C: is full; Linux: WSL needs C:): WIN-1, WIN-2, WIN-3, WIN-6,
+  WIN-7 and WIN-9 are fixed in source and not re-run, and the acceptance scenarios
+  changed for all platforms need a Linux run
   ([Linux reruns needed](developer/acceptance/windows.md#linux-reruns-needed)).
-- Windows acceptance defects in progress: every same-volume Windows Move ends
-  "Completed with warnings" (WIN-6), and a paused Windows Copy hides its current
-  file's progress (WIN-1). WIN-8 (copying 100,001 archive members out at about 100
-  files per second in a debug build) needs a release measurement.
-- Viewers: rows longer than about 1,200 bytes still lose some travel, and larger
-  plugin pages need a wire API change (Architect decisions).
+- WIN-8 (copying 100,001 archive members out at about 100 files per second in a debug
+  build) needs a release measurement.
+- Viewers: over unwrapped rows too long for one layout to fill the window, the window
+  shows blank space below the page's rows (one layout holds at most 64 KiB); the
+  renderer accepts other layouts over 64 KiB, whose positions past that are wrong;
+  larger plugin pages need a wire API change (an Architect decision).
 
 ### Integration follow-up — 20 November 2026
 
