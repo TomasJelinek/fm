@@ -103,10 +103,14 @@ own inside the tree you confirmed for deletion are made writable as they are emp
 so they no longer stop it; the folder that contains the selection and anything owned
 by another user are never changed. Copy, Move and Delete share one
 progress-window component, with a separate modeless window for each operation.
-The speed chart also shows overall completion; current-file writes have their own
-meter. Discovery precedes known totals, and Pause/Resume waits for safe backend
-checkpoints. While no time estimate is available, Copy/Move show their current
-activity instead (for example Copying... or Saving...) and Delete shows Calculating.
+The speed chart also shows overall completion; its scale follows the recent speed, so
+a brief peak is cut off at the top. A file that takes longer than two seconds shows
+its own percentage beside its name. Discovery precedes known totals (`Files: 12 of
+2,345 · Bytes: 1.5 MiB of 7.0 MiB` for Copy and Move, `Items deleted: 400 of 1,000`
+for Delete), and Pause/Resume waits for safe backend checkpoints. The time estimate
+averages the measured byte and item rates; once the totals are known, Calculating...
+stands in for it until a first rate is measured, and a paused job keeps it, as in
+`About 3 min (paused)`.
 X, Escape and Cancel operation first ask whether to cancel that exact job, with
 Continue as the default. Confirming requests cancellation, including cleanup of
 unpublished temporary files; Continue leaves the job and its progress window as they
@@ -123,7 +127,9 @@ panel's current folder; folder rows target that folder. Dragging a selected row 
 an unselected row targets that item. Native exchange with other applications uses
 Windows OLE or Linux X11/XWayland XDND. Native Wayland currently supports internal
 panel dragging only. Internal drops move on a proven same volume and otherwise
-copy; Ctrl forces Copy and Shift forces Move. Incoming native drops copy and
+copy; Ctrl forces Copy and Shift forces Move. A drag released less than 0.4 s after
+the button press is cancelled wherever it ends, and other applications receive a drag
+only once its press is that old. Incoming native drops copy and
 retain sources; copying out is performed by the receiving application.
 See [drag/drop controls](docs/KEYBOARD_SHORTCUTS.md)
 and the [native boundary](SECURITY.md#file-drag-and-drop).
@@ -765,8 +771,11 @@ editor scope and shortcuts reserved for later stages.
 - Ctrl+Tab: focus the command editor; press again to return to the active pane.
   Ctrl+Shift+Tab selects the previous folder tab. Captions follow the folder name;
   full paths are in tooltips. Tabs restore their order, paths and active position
-  after restart; explicit `--left`/`--right` arguments override that pane. Middle-click
-  also closes a tab. Tabs shrink uniformly before revealing scroll arrows.
+  after restart; explicit `--left`/`--right` arguments override that pane. Such a
+  start path is saved with the next change that saves preferences (a setting, a tab
+  or a panel's folder), not at startup: a start that changes nothing writes no
+  preferences, also not at exit. Middle-click also closes a tab. Tabs shrink
+  uniformly before revealing scroll arrows.
 - Ctrl+U: swap the complete panels while keeping their operations and active content.
   Drag the divider for unequal widths; double-click it to center the panels.
 - Ctrl+Shift+1–9: select a numbered tab. Tabs sit below the drive toolbar.

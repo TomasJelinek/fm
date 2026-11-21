@@ -105,7 +105,7 @@ settings file.
 
 A settings file exported on Linux can be imported on Windows, and the reverse.
 Paths are stored in each system's own form, and Midnight Explorer never turns a
-path of one system into a path of the other. On Windows, `/home/tom` would
+path of one system into a path of the other. On Windows, `/home/user` would
 otherwise mean that folder on the current drive. Instead:
 
 - **Hot paths** of the other system are kept but inactive. Manage Hot Paths and the

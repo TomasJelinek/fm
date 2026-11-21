@@ -213,10 +213,11 @@ Rename, new folder or saved list holds or queues for the whole namespace).
 current wait. While waiting, a Copy/Move shows Queued, Queued — waiting for
 earlier transfers, Waiting for disk capacity, Waiting for another job in the same
 folders to finish, or Waiting for another file operation. It shows Discovering only while
-its discovery is actually scanning and never shows Calculating (see ETA under
-[Verification and charts](#verification-and-charts); Delete differs there). Clear
-wait reasons on acquisition, cancel-request and terminal publication. Cancellation,
-pause and decision state take precedence over ordinary wait/discovery presentation.
+its discovery is actually scanning, and Time remaining: Calculating... only while its
+totals are known and it runs without an estimate yet (see ETA under
+[Verification and charts](#verification-and-charts)). Clear wait reasons on
+acquisition, cancel-request and terminal publication. Cancellation, pause and
+decision state take precedence over ordinary wait/discovery presentation.
 
 Each job retains one whole-job namespace share and its complete native scopes
 through actual provider destruction, plus one retained slot identity of the
@@ -306,7 +307,8 @@ jobs with peers. See the
 Backend `OperationDiscovery` snapshots distinguish NotStarted, Scanning, Complete
 and Unavailable. Discovery counts metadata only, including selected roots and
 regular-file logical lengths. A partial or unsupported count is never a percentage
-denominator. The discovery phase shows the growing item count and known bytes.
+denominator. The discovery phase shows the growing item count, and for Copy and Move
+the known bytes.
 
 Copy and cross-volume Move may use a separate bounded metadata prepass; execution
 continues to use the original captured identities and authoritative revalidation.
@@ -333,12 +335,21 @@ cancellation rescan republishes a terminal state, so each job reports it once.
 
 ## Verification and charts
 
-During readback the headline and per-file meter use `current_file_verified /
+During readback the per-file meter uses `current_file_verified /
 verification.readback_bytes(current_file_size)`: full SHA-256 uses file length;
 sampled mode uses distinct ranges up to 192 KiB. Empty or unknown budgets show
 state without a fabricated percentage. Outside readback the per-file byte meter
-describes written bytes. Move's SHA explanation applies only when copying is
-required; native rename reads no content and shows no hash percentage.
+describes written bytes. The headline does not follow the current file; it shows
+the whole job's completion (below). A file shows its own small bar beside its name,
+with its whole percent rounded down (`45%`, or `Verifying 30%` during readback;
+accessible label "Current file progress"), once its current attempt has run for 2
+seconds of active time (`current_file_active_millis`: pauses, waits and decisions
+hold it, and the next file or a Retry starts again from zero). Quicker files, steps
+other than writing and readback (such as Move proofs), empty or unknown sizes and
+ended jobs show no bar; a pause keeps it. Details add the
+current file's written bytes (`Current file written: X / Y bytes`) or, during
+readback, the verification chart. Move's SHA explanation applies only when copying
+is required; native rename reads no content and shows no hash percentage.
 
 `verification_pass_id` and `verification_throughput` belong to the same current
 copy as its size/copied/verified counters. Every new copy attempt or explicit
@@ -355,33 +366,74 @@ verification, including its paused view, and restores whole-job history outside
 that phase. The separate verification chart has a clear 0..100% byte scale;
 reading 100% does not establish digest success, publication or source removal.
 
-Whole-job completion remains independent and below 100 until backend success.
-Its speed history retains earlier peaks and starts at job time zero. Unknown
-totals remain indeterminate. Cumulative `verified_bytes` includes destination
-readback retries; `validation_bytes` contains additional Move proofs. Neither,
-nor their combined throughput, is a whole-job logical verification percentage.
-Do not use advisory remaining-work estimates as an unconditional denominator.
+Whole-job completion remains independent and below 100 until backend success: the
+headline's `N% complete` divides the bytes of the files already copied plus those
+written of the current file by the discovered byte total (items when the job has no
+byte total). Unknown totals remain indeterminate, and after a skipped or failed item
+the headline counts `N items completed` instead. Cumulative `verified_bytes` includes
+destination readback retries; `validation_bytes` contains additional Move proofs.
+Neither, nor their combined throughput, is a whole-job logical verification
+percentage. Do not use advisory remaining-work estimates as an unconditional
+denominator.
+
+Below the headline a Copy or Move shows its totals as they change, once discovery
+has them: `Files: 12 of 2,345 · Bytes: 1.5 MiB of 7.0 MiB` (a Move counts a file
+once its source is removed), `Bytes: 0 B (total size unknown)` when a link, special
+file or unknown size in the tree leaves the byte total unknown, `Files: 10 · Bytes:
+1.5 MiB` once the totals became unavailable, or `Selected items: 2 of 3` when only
+the selected items were counted. While discovery runs there is no totals line; the
+headline reads `Discovering: 2,345 items (7.0 MiB)` and counts on. A Delete counts
+items only: `Discovering: 1,000 items`, then `Items deleted: 400 of 1,000`
+(`Selected items moved to the Trash: 1 of 3` when only the selected items were
+counted).
+
+The speed chart covers the job from time zero, and older intervals merged into one
+keep their peak rates. Its vertical scale follows the recent sustained rate, not the
+history's peak (`sustained_scale` in `job_speed.rs`): the 90th percentile of the
+last minute's active samples (of the last 12 when fewer fall in that minute, as long
+histories merge samples into longer intervals), raised by any higher sample with a
+weight that halves every second after it, plus 10% headroom. A spike lifts the
+scale for a few seconds, after which the chart draws it clipped at the top edge.
+Pauses, waits and stalls are recorded as idle intervals and neither lower the scale
+nor age a peak, so it holds still through them.
 
 Logical committed bytes are separate from actual I/O counters. Retries and
 verification reads cannot inflate completion. Cross-volume Move keeps files in
 Items remaining until their source removal is confirmed, even when destination
 publication has already succeeded. ETA is an explicitly approximate
-presentation of remaining logical work and backend-measured rates. Copy/Move
-without an estimate show their current activity instead (for example Copying...,
-Saving... or Verifying current file...). Delete has no activity label: whenever it
-has no estimate (for example while Queued, before its discovery completes or a rate
-is measured, or after a failed item) it shows Time remaining: Calculating..., and
-its headline reads Discovering: N items until its discovery finishes, already
-showing 0 items while it is Queued and discovery has not started. While paused,
-both show Paused instead of an estimate.
+presentation of remaining logical work and backend-measured rates. The backend
+averages each rate over the job's activity time with an 8-second time constant (an
+interval's weight falls to about a third after 8 more seconds of activity) and
+publishes the averages once 1 second of activity has been measured; paused, waiting
+or deciding intervals without work are left out. Besides bytes it averages completed
+items as the window counts them: selected items, or files (a Move's once their source
+is removed) and completed folders for Copy and Move, and the items a Delete has
+deleted. A Copy/Move estimate weighs the remaining byte budget at the byte rate
+against the remaining items at the item rate, the more toward items the smaller the
+files that remain (equally at 1 MiB per remaining item); when only one of the two
+can be estimated, such as items without a byte budget, it uses that one. An estimate
+is shown only while discovery is complete without skipped or failed items and the
+job runs, a Copy/Move also without a wait. A paused job keeps its estimate, marked
+as in `About 3 min (paused)`, and resumes from the same averages. Without an
+estimate, a Copy/Move says Time remaining: Paused while
+paused, Discovering items... while its discovery scans, Calculating... while its
+totals are known and it runs without a wait, pause request or decision, and
+Unavailable otherwise (queued or waiting, pausing, deciding or cancelling, unknown
+totals, or after a skipped or failed item); its current activity (for example
+Copying..., Saving... or Verifying current file...) labels the speed chart until the
+chart has samples. A Delete shows its activity in that line instead (Queued —
+waiting to start, Awaiting confirmation, Preparing, Discovering items..., Deleting
+items... while its progress is indeterminate, Pausing..., Paused or Resuming...), and
+Time remaining: Calculating... while its progress is determinate and no rate has
+been measured. Its headline reads Discovering: N items only while discovery scans.
 The backend budgets writes and selected-policy readback for each discovered file:
 full length for SHA-256, or up to 192 KiB of disjoint samples. Cross-volume Move
 also includes source and destination proof reads both before and after source
 capture. Current retained copy/proof state reduces this budget; retry I/O does not
 become logical completion, and a repeated removal proof becomes outstanding again.
-Native rename and Delete use item rates. Metadata, sync and namespace work have no
-byte estimate, so the estimate may disappear again while those steps remain. ETA is
-not a guarantee against future stalls or conflicts. See the
+Native rename and Delete use item rates alone. Metadata, sync and namespace work
+have no byte estimate, so the estimate may disappear again while those steps remain.
+ETA is not a guarantee against future stalls or conflicts. See the
 [work-accounting evidence](../verification/2026-11-12-transfer-eta.md).
 
 Copy and byte-transfer Move display bytes/s (IEC units) with independent

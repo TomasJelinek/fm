@@ -193,7 +193,7 @@ and [`IDataObject::SetData` ownership](https://learn.microsoft.com/en-us/windows
 
 ## 2026-11-13: File tiles target the current folder
 
-The user confirmed that dragging `Pictures/www` into the opposite Screenshots
+The user confirmed that dragging `Pictures/<folder>` into the opposite Screenshots
 pane was rejected specifically over image tiles. Both paths were ordinary owned
 directories. The internal UI hit-test resolved a PNG tile to a row, then rejected
 it because only directory rows could be destinations. The existing backend sibling
@@ -238,3 +238,51 @@ automatic-shutdown smoke passed with owned empty folders and in-memory settings.
 Existing user processes were left running. These pointer tests use software UI
 event dispatch, not a measured physical desktop gesture. No Release build or
 dependency change ran, and no Windows native qualification is claimed here.
+
+## 2026-11-21: Drags released within 400 ms
+
+A drag from a panel that is released less than 400 ms after the mouse button press
+that started it (`MIN_DRAG_DURATION` in `crates/midnight-ui/src/presenter/drag_drop.rs`)
+is cancelled wherever it ends: nothing is copied or moved and no dialog opens, the
+prepared drag is cancelled, selection and cursor stay, and the source panel's status
+line says "Drag cancelled: released within 0.4 s" for about 4 seconds or until the
+next drag. A release at 400 ms or later drops as before. The drag bridge
+(`crates/midnight-ui/src/drag_bridge.rs`) hands a drag that has left the window to
+the operating system, and so to other applications, only once the press is 400 ms
+old; until then the window keeps the pointer, so a quicker release outside it is
+cancelled the same way.
+
+Run on Windows 11 (unoptimized `test` profile) on 21 November 2026, at commit
+`c5c95186` with no local source changes:
+
+```powershell
+cargo test -p midnight-ui --lib --locked --offline -- drag_bridge presenter::tests::drag_drop
+cargo test -p midnight-ui --test integration --locked --offline -- drag_integration::
+```
+
+| Run | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| Library: 9 `drag_bridge` and 14 `presenter::tests::drag_drop` tests | 23 | 0 | 0 |
+| Integration: `drag_integration::` | 14 | 0 | 0 |
+
+Four of these tests check the 400 ms rule on a test clock, each comparing a release
+1 ms before 400 ms with a drag that reaches 400 ms:
+
+- `presenter::tests::drag_drop::a_drop_sooner_than_the_minimum_drag_duration_cancels_and_one_at_it_proceeds`:
+  onto the other panel's folder row and its current folder, with automatic, Move
+  and Copy intents. The quick release sends no drop and no native drag, cancels the
+  prepared drag, keeps cursor and selection and notes it on the source panel only.
+- `drag_bridge::tests::a_drop_sooner_than_the_minimum_drag_duration_after_its_press_is_cancelled`:
+  the same through the window's pointer events; the note goes after 4 seconds.
+- `drag_bridge::tests::other_applications_get_a_drag_only_once_it_has_lasted_the_minimum_duration`:
+  a drag outside the window stays the window's until 400 ms; released before then,
+  it is cancelled and noted; otherwise the next poll starts the hand-off to the
+  operating system (which the test's software window cannot complete, so the bridge
+  then cancels the drag without the note).
+- `drag_integration::drops_sooner_than_the_minimum_drag_duration_on_the_other_panel_or_a_folder_are_cancelled`:
+  the integrated main window, onto a folder row and onto the other panel's empty
+  content.
+
+Logs: `_build/qa/g-ui-drag-lib.log` and `_build/qa/g-ui-drag-integration.log`.
+These tests dispatch software pointer events; no physical desktop gesture and no
+drag into another application was performed.

@@ -2330,7 +2330,7 @@ The registered private EXE is
 **102,327,296 bytes**, SHA256
 `937e9bfc9caeaf107845a8538fd871e0cf0534694ca91eb9c3a4c00b6b6f1cdd`.
 The real PE VERSIONINFO, icon and manifest checks pass: file/product version
-**0.2.0**, copyright **© 2026 Tomas Jelinek**.
+**0.2.0** and the copyright line of the project's license.
 
 App-build source is base `49312b42ff08027814dff8ce97f8d84e8a5929e4` plus
 **83 reviewed overlay paths**. The snapshot binds **3,650 shipping app inputs**;

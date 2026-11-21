@@ -129,7 +129,11 @@ a root-owned installation on shared computers. Install… writes the same profil
 script (one for every build of a source checkout), but runs no file of the installation
 as root; unlike the script it does not remove other files that define the profile by
 hand. Its paths may contain only letters, digits, spaces and `._+-@:`, and pass through no
-folder that users other than its owner can write to, as for the script. Without the
+folder that users other than its owner can write to, as for the script. Both accept a
+folder that its group can write to when that group is the owner's private group: the
+owner's primary group, named like the owner, which no other account in `/etc/passwd` has
+as its primary group and which lists no other member in `/etc/group`, as a umask of 002
+leaves the folders a user creates on Debian, Ubuntu or Fedora. Without the
 profile, and without Install…, the HTML viewer explains this instead of showing the page.
 It names the command for its installation only when the script is no link and it and
 every folder above it belong to root and only root can change them; otherwise (a

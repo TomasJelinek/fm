@@ -49,7 +49,15 @@ with a copy that the user can change. Installing the profile for a path that can
 changed without root extends that permission to any program placed there; the script
 refuses a path through a folder that users other than its owner can write to (even a
 sticky one such as `/tmp`), where another user could place a program at the viewer's path,
-now or once the installation is gone.
+now or once the installation is gone. A group-writable folder still counts as writable
+by its owner alone when its group is the owner's private group: the owner's primary
+group, named like the owner, which no other account in `/etc/passwd` has as its primary
+group and which lists no other member in `/etc/group` (as on distributions with user
+private groups and a umask of 002, such as Debian, Ubuntu and Fedora). Only those local
+files decide: a user known only to a directory service, or files that include one
+(lines starting with `+` or `-`), have no private group. **Install…** below applies the
+same rule (`scripts/install-html-viewer-apparmor.sh` and
+`crates/midnight-elevation/src/sandbox_profile_linux.rs`).
 
 The viewer can also install that profile itself, but only after an HTML document's
 browser was refused for exactly this reason (a typed refusal, never message text) and
@@ -581,9 +589,21 @@ Copy/Move intent and ordinary Move confirmation. This grants no archive writes.
 
 Copying is conservative on all storage classes in this milestone. Each copy job
 runs one native I/O step at a time, including source reads, destination writes and
-independent verification reads; independent jobs whose namespace footprints are
-disjoint run concurrently up to the configured disk-I/O limit. Cancellation
-retains capacity until the in-flight native call and cleanup actually return.
+independent verification reads; running jobs share the configured disk-I/O limit step
+by step. A Copy or Move starts at once unless the user chose **Wait for other
+operations to finish**: its namespace admission is an immediate check-and-claim of the
+job's own pins against the committed facts of the jobs already granted, never a wait
+for another job's turn. Only real overlaps wait, item by item: a selected item that a
+granted job claims or has deferred waits alone until its first change that no earlier
+job refuses, while the rest of the job goes on. A job waits as a whole only when a
+footprint it changes is unknown, when it would read what another job changes, or
+behind an older waiting job that shares an item. A followed directory keeps its own
+claim like any source, so another job's writes into it still wait; a link nested in it
+can lead elsewhere, and reads there are not protected against another job's writes (a
+followed source is never changed). A root a job only reads whose geometry is unknown
+(a followed link, a provider without native geometry) is left unclaimed instead of
+holding other jobs back, and reads through it are unprotected. Cancellation retains
+capacity until the in-flight native call and cleanup actually return.
 Future parallel streams within one Copy/Move job are permitted only when **both
 source and destination are positively identified as local SSDs**, with a shared
 physical-device scheduler. HDD, network, unknown or failed classification on either
@@ -821,7 +841,8 @@ reservations. Only fully completed, verified predecessors permit the mutation;
 failed, cancelled or skipped work requires review and a new confirmation. No
 blocking wait runs on the UI. Transfers hold a disk-I/O slot only while executing
 native steps, never while paused or waiting for a user decision or another job,
-and yield it to queued call-scoped reads between steps. Per-job cancellation,
+and yield it between steps to queued call-scoped reads and other transfers, so
+transfers sharing the limit interleave step by step. Per-job cancellation,
 phase progress and partial results must stay truthful; a completed write is not
 a completed verified copy.
 
@@ -1029,7 +1050,12 @@ on the thread-affine backend actor. Windows COM sources/targets are non-agile so
 calls remain in that actor's message-pumped STA. During DoDragDrop only, the actor
 attaches to the validated same-process window thread's input queue and detaches
 on every exit. Arming the exact drag token precedes releasing UI pointer capture;
-synthetic release callbacks cannot cancel that handoff.
+synthetic release callbacks cannot cancel that handoff. The drag bridge
+(`crates/midnight-ui/src/drag_bridge.rs`) hands an outgoing drag to the operating
+system, and so to other applications, only once the pointer has left the window and
+the press that started the drag is at least 400 ms old. Until then the window keeps
+the pointer, so a release sooner than 400 ms after the press, inside the window or
+outside it, cancels the drag and transfers nothing.
 
 Linux uses a verified worker-owned XDND proxy. The host window's XDND advertisement
 is removed while the proxy is installed, preventing normal legacy sources from

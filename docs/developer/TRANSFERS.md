@@ -231,8 +231,10 @@ existing progress. Engine-owned `Tracker` instances sample monotonic elapsed tim
 and actual cumulative counters every 250 ms. Each snapshot retains at most 240
 intervals spanning the whole operation. When full, adjacent intervals are combined
 and future intervals use the same coarser resolution. Original timestamps and
-per-series measured maxima survive, so early peaks remain visible and determine
-the vertical scale. Different series' peaks in a combined interval need not have
+per-series measured maxima survive, so early peaks remain visible; the vertical
+scale follows the recent sustained rate instead, so an older peak above it is
+drawn clipped ([operation progress](OPERATION_PROGRESS.md#verification-and-charts)).
+Different series' peaks in a combined interval need not have
 occurred simultaneously. Current labels remain the latest actual interval rates,
 not aggregated peaks. Each operation's progress window displays that job's chart;
 the Jobs ledger has none. The UI caches chart geometry per job by snapshot identity
@@ -262,7 +264,8 @@ existing session-only Jobs record and is not written to settings.
 
 The shared Slint chart appears in each operation progress window; Jobs is a
 ledger whose Open action reopens that operation or its retained details. Its horizontal scale contracts from time zero as the operation grows, and
-its vertical scale expands when a higher peak appears. The filled write/deletion
+its vertical scale rises with a higher peak and settles back to the recent sustained
+rate within seconds, which pauses and stalls do not lower. The filled write/deletion
 series, separate verification line and text labels adapt to the theme and dialog
 size. Existing queue, confirmation, cancellation,
 checksum and source-removal policies are unchanged. See the
@@ -282,9 +285,13 @@ recursive scan or byte budget.
 Logical credit uses completed publication/removal and the exact active copy/proof
 state. The After proof is outstanding again on an explicit removal Retry, including
 before its next `begin_validation` call resets the old proof counter. Cumulative
-I/O counters remain activity only. The UI divides remaining byte-work by the latest
-combined write/readback activity rate, suppressing unavailable, paused, failed or
-skipped estimates. Metadata/sync/namespace latency is unbudgeted; estimates remain
+I/O counters remain activity only. The UI divides remaining byte-work by the
+backend's averaged combined write/readback rate (an 8-second time constant over
+activity time) and blends it with the remaining items at the averaged item rate,
+the more toward items the smaller the files that remain
+([operation progress](OPERATION_PROGRESS.md#verification-and-charts)). It suppresses
+unavailable, failed or skipped estimates; a paused job keeps its estimate, marked
+paused. Metadata/sync/namespace latency is unbudgeted; estimates remain
 approximate. See [the budget evidence](../verification/2026-11-12-transfer-eta.md).
 
 ## Publication and recovery

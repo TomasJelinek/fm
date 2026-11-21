@@ -40,6 +40,19 @@ archive CRC checks do not replace that verification. The
 record the fixture sizes, cold-start limitation and regression coverage of that
 earlier in-memory design.
 
+Inside an archive the path bar shows the native folders that hold the archive as
+separate parts, as on a native path, then the archive's name and its folders, each a
+part of its own. A path too wide for the bar shows whole parts only: up to two
+leading parts (the root first), `...` for the omitted middle and as many of the last
+parts as fit. The archive's name (in an archive inside an archive, the innermost
+one's) and the current folder stay whole as long as both fit: the leading parts give
+way first, and in a still narrower bar the archive's name stands between two `...`
+markers, the second hiding its deeper folders, followed by as many of the last
+folders as fit. The current folder is shortened at its end only when it alone is too
+wide. Clicking `...` edits the whole path. Clicking a native folder's part leaves the
+archive for that folder, with the cursor on the folder or archive on the way back; a
+part inside the archive lists that archive folder.
+
 ## Associations
 
 Options → Archives has a format chooser for ZIP, 7-Zip, TAR, GZIP, XZ, Bzip2,

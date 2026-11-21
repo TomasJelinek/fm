@@ -28,4 +28,10 @@ The [routing design](superpowers/specs/2026-11-09-viewer-associations.md) descri
 validation, precedence and the separation between preferences and plugin capabilities.
 
 The Plugins page also lists installed filesystem and thumbnailer packages in
-separate tabs. Rescan all plugins refreshes all three catalogs from one action.
+separate tabs. Rescan all plugins refreshes all three catalogs from one action. Once
+every catalog has answered, a line beside the button says what the rescan found, even
+when nothing changed: for example `Rescanned: no plugins found.`, `Rescanned: found 1
+viewer plugin.` or `Rescanned: found 7 viewer, 2 filesystem, 3 archive and 2
+thumbnailer plugins; 3 packages are unavailable.`, or `Rescanned; some plugin lists
+could not be read.` when a catalog failed. Opening Options lists the plugins without
+such a line.

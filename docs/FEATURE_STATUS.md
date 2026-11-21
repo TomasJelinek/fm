@@ -1344,7 +1344,11 @@ is then refused (an unreadable or over-limit file list, failed admission, a chan
 destination or a file list the source does not deliver) is reported once on the
 status line, on Windows and on Linux X11 alike and in fixed texts; a Move-only offer
 or a drop that never showed Copy is refused silently
-([native boundary](../SECURITY.md#file-drag-and-drop)). Integrated component checks and debug deployment
+([native boundary](../SECURITY.md#file-drag-and-drop)). A drag released within 400 ms
+of the mouse button press is cancelled wherever it ends, and an outgoing drag reaches
+other applications only once the press is 400 ms old
+([21 November tests](verification/file-drag-drop.md#2026-11-21-drags-released-within-400-ms)).
+Integrated component checks and debug deployment
 are complete; an end-to-end drag from the final Slint app into a running Explorer
 window still needs separate native qualification.
 

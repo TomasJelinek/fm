@@ -42,7 +42,11 @@ opens a **Replace shortcut** dialog listing the affected commands. **Replace**
 removes that chord from those commands and assigns it to the selected command;
 other aliases and nonoverlapping contexts remain intact. **Cancel**, Escape or
 the default Enter response keep the existing assignments. Invalid or reserved
-shortcuts remain unavailable. **Restore command** restores one action; **Restore all
+shortcuts remain unavailable. **Restore command** restores one action. It is enabled
+only when that would change something: the command's saved shortcuts differ from what
+its defaults give beside the other commands, or a captured shortcut waits in **Press
+shortcut keys** (restoring discards it). When the defaults cannot return beside the
+other commands' shortcuts, it is enabled and says why. **Restore all
 defaults** asks before resetting the complete map. Tab or Escape records that key
 and leaves the capture field without running an application command.
 Changes preview immediately; **OK** saves them with the other preferences and
@@ -134,7 +138,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+G | Focus the path editor |
 | Alt+F1 / Alt+F2 | Open left / right volume choices |
 | . in the drive dropdown | As Other Panel: open the other panel's current folder |
-| Shift+drive letter | Switch volume on Windows, using its remembered path |
+| Shift+drive letter | Switch volume on Windows, using its remembered path; when no drive has that letter (always on Linux), the uppercase letter is typed into the filename search instead |
 | Ctrl+F1 / Ctrl+L | Read-only cached drive information; detailed backend-provided volume information is the requested replacement |
 | Ctrl+F2 | Attributes, times and filename-case editor for the captured selection |
 | Alt+2 | Switch the active pane to Brief view |
