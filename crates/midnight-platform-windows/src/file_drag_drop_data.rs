@@ -313,13 +313,10 @@ pub(super) fn read_files(data: &IDataObject) -> Result<FileClipboard, FsError> {
     // The lock remains held while the bounded decoder copies each lossless native path.
     let bytes = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), length) };
     // The shared decoder words its errors for the clipboard; one drop message names
-    // every condition it rejects.
-    let paths = crate::file_clipboard::decode_hdrop(bytes).map_err(|_| {
-        error(format!(
-            "The dropped file list is malformed, not Unicode, or longer than \
-             {MAX_FILE_CLIPBOARD_PATHS} items."
-        ))
-    })?;
+    // every condition it rejects. A list of any length within the 4 MiB above decodes;
+    // the drop request then bounds the roots one Copy takes (`MAX_NATIVE_TRANSFER_ROOTS`).
+    let paths = crate::file_clipboard::decode_hdrop(bytes)
+        .map_err(|_| error("The dropped file list is malformed or not Unicode."))?;
     Ok(FileClipboard {
         paths,
         intent: FileClipboardIntent::Copy,

@@ -279,9 +279,9 @@ no native performance or UI input-to-paint qualification.
 Ctrl+Shift+S uses the exact acknowledged tree selection: selected directories
 and native directory links, or every selectable folder in the current projection
 when there are no marks, including descendants in expanded branches. This means
-all projected rows, not just those inside the scroll viewport. One request admits
-at most 4,096 target folders; a larger request is refused with a resource-limit
-message, and the user can mark fewer folders. Hidden/collapsed
+all projected rows, not just those inside the scroll viewport. One request takes
+every such folder: its capture follows the projection's own bounds (10,000 rows and
+16 MiB), so no separate target limit refuses it. Hidden/collapsed
 descendants and context-only filter ancestors are excluded. A
 files-only selection does not fall back to all folders. Space captures the focused
 directory before its selection toggle, then advances the visible caret while the
@@ -532,8 +532,11 @@ intent. It retains provider ownership until the native write returns. No display
 path, member caption or extraction filename is interpreted as a native target.
 
 Four capture permits are shared with F5/F6, followed by the existing 16-request
-clipboard queue. The common capture admits at most 4,096 targets and 4 MiB of
-newly owned capture data; native clipboard payload limits also apply. Rejected,
+clipboard queue. The common capture admits as many targets as the projection holds
+(10,000 rows) and 16 MiB of newly owned capture data; each consumer keeps its own
+bound: Copy and Move take at most 4,096 native items (archive members are not
+counted), Delete 4,096 pinned roots, checksums and custom commands 4,096 items,
+metadata edits 256, and the clipboard 4 MiB of names. Rejected,
 canceled and stale captures are retired on backend workers, including queue
 refusal and pending engine-command destruction during shutdown. The presenter
 keeps one pending clipboard capture and retries outer command-channel pressure

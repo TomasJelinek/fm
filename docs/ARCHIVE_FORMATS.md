@@ -226,8 +226,16 @@ Opening stages the member through the enclosing archive's session: its worker de
 and verifies the whole member (lengths and CRCs, as for F3), and the host keeps the
 result as a private lease, in memory when it fits the 16 MiB stage limit and the
 shared 128 MiB staging budget, and otherwise in an anonymous private spool file under
-the same free-space reserve as every member. The inner archive gets a restricted worker
-of its own, which reads that lease through the ordinary bounded source broker. The
+the same free-space reserve as every member. Such a member's length is reserved on the
+spool volume before anything is staged: when it would not fit above the volume's
+reserve, beside what other archive reads in progress still need, opening it is refused
+at once, saying how much space it needs and how much there is
+(`This archive member needs 50.0 GiB of archive spool space, but the spool volume has
+only 20.0 GiB free above its reserve…`), and the panel stays in the enclosing folder,
+whose archive stays open (a protocol-2 worker cannot be refused without ending, as on
+any staging failure). F3 and F5 on such a member are refused the same way. The inner
+archive gets a restricted worker of its own, which reads that lease through the
+ordinary bounded source broker. The
 lease no longer depends on the enclosing mount's member cache or worker, and every read
 of the inner archive revalidates the enclosing chain down to the native file: a changed
 outer file makes the inner archive fail instead of serving old bytes. While a large
@@ -245,8 +253,9 @@ Limits:
   (each search opens one archive at a time), each worker with the usual 1 GiB
   memory limit.
 - No additional byte, expansion-ratio or member-count ceiling, consistent with the
-  limits above: decoded content is bounded by the spool volume's free-space reserve,
-  each level's index by its own worker's memory, and decoder windows and dictionaries
+  limits above: decoded content is bounded by the spool volume's free-space reserve
+  (checked before a member is staged, as above), each level's index by its own worker's
+  memory, and decoder windows and dictionaries
   by their usual bounds. Each level opens only on an explicit Enter, so an archive
   that contains itself is never unpacked recursively.
 - Member names stay opaque provider identities. No worker receives a path, the staged

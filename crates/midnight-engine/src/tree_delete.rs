@@ -80,6 +80,11 @@ impl Session {
         if cancel.is_cancelled() || request.cancel.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
+        // Preparation pins every root before the confirmation: refuse more roots than
+        // Delete pins at once here, before the user is asked, rather than after.
+        if capture.targets.len() > MAX_CAPTURED_DELETE_ROOTS {
+            return Err(ProviderError::ResourceLimited);
+        }
         self.last_request = request.request;
         Ok(TreeDeleteCapture {
             mode: request.mode,

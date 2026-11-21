@@ -288,21 +288,32 @@ fn hdrop(count: usize, wide: bool) -> Vec<u8> {
 fn ole_target_reports_a_file_list_it_cannot_read_instead_of_dropping_silently() {
     let f = DropFixture::new();
     let at = f.at(150, 50);
-    for (payload, case) in [
-        (hdrop(MAX_FILE_CLIPBOARD_PATHS + 1, true), "4097 paths"),
-        (hdrop(1, false), "ANSI list"),
-    ] {
-        let data = data::malformed_offer(payload);
-        // The cursor promises Copy for any CF_HDROP; only Drop decodes the list.
-        assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
-        assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
-        assert_eq!(
-            f.sink.take_rejected(),
-            ["The dropped file list is malformed, not Unicode, or longer than 4096 items."],
-            "{case}: the read failure must be reported in drop terms"
-        );
-    }
+    let data = data::malformed_offer(hdrop(1, false));
+    // The cursor promises Copy for any CF_HDROP; only Drop decodes the list.
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_NONE);
+    assert_eq!(
+        f.sink.take_rejected(),
+        ["The dropped file list is malformed or not Unicode."],
+        "an ANSI list: the read failure must be reported in drop terms"
+    );
     assert!(f.sink.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn ole_target_reads_a_list_of_any_length_within_its_bytes() {
+    // CF_HDROP has no item limit, and lists of more than 4,096 paths were once refused
+    // here. The engine's sink bounds the roots one Copy takes (`FileDropRequest`).
+    let f = DropFixture::new();
+    let at = f.at(150, 50);
+    let data = data::malformed_offer(hdrop(5000, true));
+    assert_eq!(f.enter(&data, DROPEFFECT_COPY, at), DROPEFFECT_COPY);
+    assert_eq!(f.drop_files(&data, 0, at), DROPEFFECT_COPY);
+    assert!(f.sink.take_rejected().is_empty());
+    let requests = f.sink.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].files.paths.len(), 5000);
+    assert_eq!(requests[0].files.paths[4999], Path::new("C:\\4999"));
 }
 
 #[test]

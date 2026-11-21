@@ -261,8 +261,9 @@ failure or cancellation. It revalidates retained provider contexts after the las
 resolution so a later resolution cannot silently revoke an earlier target.
 
 Each result retains its view, selection, ordered occurrence IDs, typed targets
-and registration leases. Admission permits at most 4,096 targets and 4 MiB of
-newly owned target/context metadata; shared view/provider allocations retain
+and registration leases. Admission permits as many targets as the projection holds
+(10,000 rows) and 16 MiB of newly owned target/context metadata, and each consumer
+keeps its own bound (Copy and Move take at most 4,096 native items); shared view/provider allocations retain
 their separate existing budgets. This does not impose a new OS path limit.
 Overlapping ancestors/descendants and aliases remain explicit occurrences;
 operation-specific preflight must resolve their semantics through provider

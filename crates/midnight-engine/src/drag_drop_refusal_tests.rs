@@ -288,7 +288,7 @@ impl FileDragDropSession for RefusingSession {
         if let Some(sink) = self.sink.take() {
             sink.reject(error(
                 io::ErrorKind::InvalidData,
-                "The dropped file list is malformed, not Unicode, or longer than 4096 items.",
+                "The dropped file list is malformed or not Unicode.",
             ));
         }
         self.pumps.send_modify(|pumps| *pumps += 1);
@@ -337,7 +337,7 @@ async fn refused_native_drop_reaches_the_ui_and_keeps_the_native_session() {
     .await
     .expect("the refused drop must reach the UI");
     assert_eq!(reported.kind, io::ErrorKind::InvalidData);
-    assert!(reported.message.contains("4096 items"));
+    assert!(reported.message.contains("malformed or not Unicode"));
     // A lost session is never pumped again; this one keeps running.
     let after = *pumped.borrow_and_update();
     let kept = tokio::time::timeout(Duration::from_secs(5), async {

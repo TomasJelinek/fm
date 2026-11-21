@@ -341,13 +341,10 @@ pub(super) fn drop_request(
     candidate: &Candidate,
 ) -> Result<FileDropRequest, FsError> {
     // The shared decoder words its errors for the clipboard; one drop message names
-    // every condition it rejects.
+    // every condition it rejects. A list of any length within its bytes decodes; core
+    // validation below bounds the roots one Copy takes (`MAX_NATIVE_TRANSFER_ROOTS`).
     let paths = crate::file_clipboard::decode_uris(bytes).map_err(|_| {
-        failure(format!(
-            "The dropped file list is empty, malformed, names non-local files, or is \
-             longer than {} items.",
-            midnight_core::MAX_FILE_CLIPBOARD_PATHS
-        ))
+        failure("The dropped file list is empty, malformed or names non-local files.")
     })?;
     let request = FileDropRequest {
         files: FileClipboard {

@@ -583,6 +583,33 @@ before native root/loaded-branch reconciliation. See the
 [tree transfer contract](TREE_PANEL.md#move-and-transfer-reconciliation) and
 [integration evidence](../verification/2026-11-10-tree-move.md).
 
+## Selection sizes
+
+A file list on the clipboard or in a drag and drop holds any number of paths. Its names
+are bounded instead, at most 4 MiB (`MAX_FILE_CLIPBOARD_BYTES`), which bounds the memory
+that a payload from another program can take. CF_HDROP and URI lists have no item limit,
+and since 21 November neither have the decoders, Ctrl+C, a drag to another application
+or the panel selection resolved for them (`file_targets::resolve_payload`); lists of
+more than 4,096 paths were refused before.
+
+One Copy, Move, Paste or drop of native items takes at most 4,096 of them
+(`MAX_NATIVE_TRANSFER_ROOTS`). Preparation opens every selected item and its parent
+folder (two handles; on Linux, two descriptors of the open-file limit), and the job keeps
+each one open and pinned until it is copied. A larger request is refused before anything
+is opened, saying why: F5/F6 and Paste (before any Move confirmation) with a message, a
+drop from another application with "no effect" and its reason, a drag between the panels
+with the no-drop cursor, and an inline-tree Copy or Move as unavailable. Archive members
+hold no native handle: a flat copy-out of archive members takes a selection of any size,
+and an inline-tree one every member its capture takes (`prepare_captured` counts only
+native roots). Content-only Move keeps its own limit of 64 roots.
+
+Inline-tree captures take every row their projection can select, within the projection's
+own bounds: 10,000 rows and 16 MiB of newly owned target memory
+(`TreeProjection::MAX_ROWS` and `MAX_BYTES`; 4,096 targets and 4 MiB until 21 November).
+Each consumer bounds what it holds per item: an inline-tree Delete pins at most 4,096
+roots before its confirmation; checksums, Custom Commands, Properties and system menus
+take 4,096 items; metadata edits take 256.
+
 ## Windows namespace pins
 
 The Windows adapter reports exact lookup keys only on NTFS volumes whose
@@ -859,3 +886,12 @@ metadata. Skips retain ancestors; failures/cancellation preserve unfinished
 sources and earlier completed moves. Remaining directory metadata preservation
 needs its own declared postorder capability. Physical storage reclamation and
 atomic tree snapshots remain outside the contract.
+
+Planned, not implemented: native selections larger than the 4,096 roots of
+[selection sizes](#selection-sizes) need roots that are opened one at a time. A job would
+keep the selected paths (or the captured selection) and only the identities of roots it
+has not opened yet, open each root just before it copies it and check that identity, and
+total its discovery root by root, so that open handles follow folder depth instead of
+selection size. The protection of later roots from earlier copies (`protected_roots`),
+duplicate and ancestor checks and the root count shown in progress then rely on those
+identities, captured in one pass that closes each root again.

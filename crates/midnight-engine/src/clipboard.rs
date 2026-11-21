@@ -7,7 +7,8 @@ use crate::{
 };
 use midnight_core::{
     Cancellation, ClipboardService, ClipboardSession, ClipboardWaker, DesktopActionResult,
-    DesktopRequestId, Event, FileClipboard, FileClipboardIntent, FsError, SelectedFiles,
+    DesktopRequestId, Event, FileClipboard, FileClipboardIntent, FsError,
+    MAX_NATIVE_TRANSFER_ROOTS, SelectedFiles,
 };
 use std::{
     io,
@@ -585,7 +586,8 @@ fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> 
             cancel.clone(),
         )),
         Action::Files(files, intent) => {
-            let paths = file_targets::resolve(
+            // The native file list holds any number of paths within its bytes.
+            let paths = file_targets::resolve_payload(
                 &files.selection,
                 &files.view,
                 files.fallback.as_deref(),
@@ -659,10 +661,7 @@ fn execute(id: DesktopRequestId, action: Prepared, session: &mut dyn ClipboardSe
             return Event::ClipboardFilesRead {
                 request: id,
                 destination,
-                result: session.read_files().and_then(|files| {
-                    files.validate()?;
-                    Ok(files)
-                }),
+                result: session.read_files().and_then(pasteable),
             };
         }
     };
@@ -700,8 +699,7 @@ fn read_captured(
         ));
     }
     check()?;
-    let files = session.read_files()?;
-    files.validate()?;
+    let files = pasteable(session.read_files()?)?;
     check()?;
     let current = source.resolve(global)?;
     current.validate()?;
@@ -752,6 +750,24 @@ fn publish_captured(
 }
 fn error(kind: io::ErrorKind, message: &str) -> FsError {
     FsError::from_io("clipboard", Path::new(""), io::Error::new(kind, message))
+}
+
+/// A file list read for Paste. The clipboard holds any number of paths within its bytes,
+/// but Paste copies or moves native roots, which stay open until each is copied: it takes
+/// at most `MAX_NATIVE_TRANSFER_ROOTS` of them, refused here before any confirmation.
+fn pasteable(files: FileClipboard) -> Result<FileClipboard, FsError> {
+    files.validate()?;
+    if files.paths.len() > MAX_NATIVE_TRANSFER_ROOTS {
+        return Err(error(
+            io::ErrorKind::InvalidInput,
+            &format!(
+                "Paste copies or moves at most {MAX_NATIVE_TRANSFER_ROOTS} items at once, \
+                 because each stays open until it is copied; the clipboard holds {}.",
+                files.paths.len()
+            ),
+        ));
+    }
+    Ok(files)
 }
 
 #[cfg(test)]

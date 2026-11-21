@@ -1,8 +1,6 @@
 //! Raw-byte local file URIs; desktop clipboard ownership stays off the application UI.
 
-use midnight_core::{
-    FileClipboard, FileClipboardIntent, FsError, MAX_FILE_CLIPBOARD_BYTES, MAX_FILE_CLIPBOARD_PATHS,
-};
+use midnight_core::{FileClipboard, FileClipboardIntent, FsError, MAX_FILE_CLIPBOARD_BYTES};
 use std::{
     ffi::OsString,
     io::{self, Read},
@@ -101,10 +99,9 @@ pub(crate) fn decode_uris(bytes: &[u8]) -> Result<Vec<PathBuf>, FsError> {
                 remaining = tail;
             }
         }
+        // The list's bytes bound how many paths it holds (checked above); URI lists have
+        // no item limit.
         paths.push(PathBuf::from(OsString::from_vec(raw)));
-        if paths.len() > MAX_FILE_CLIPBOARD_PATHS {
-            return Err(error("The file clipboard exceeds its item budget."));
-        }
     }
     let files = FileClipboard {
         paths,

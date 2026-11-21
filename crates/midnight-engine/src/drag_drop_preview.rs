@@ -231,6 +231,17 @@ pub(super) fn validate(
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
     files.validate()?;
+    // A drop between panes is a Copy or Move of native roots (`MAX_NATIVE_TRANSFER_ROOTS`):
+    // refuse a larger drag before opening each source to check it.
+    if files.paths.len() > MAX_NATIVE_TRANSFER_ROOTS {
+        return Err(error(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Copy and Move take at most {MAX_NATIVE_TRANSFER_ROOTS} items at once, because \
+                 each stays open until it is copied; drag fewer items at a time."
+            ),
+        ));
+    }
     let directory = service.prepare_transfer_destination(destination, cancel)?;
     for path in &files.paths {
         if cancel.is_cancelled() {

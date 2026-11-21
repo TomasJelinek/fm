@@ -297,7 +297,8 @@ fn resolve_source(
             "The dragged item is no longer visible.",
         ));
     }
-    let paths = file_targets::resolve(
+    // A drag offers a native file list: any number of paths within its bytes.
+    let paths = file_targets::resolve_payload(
         &files.selection,
         &files.view,
         files.fallback.as_deref(),

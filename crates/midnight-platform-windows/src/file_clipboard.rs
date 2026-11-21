@@ -1,8 +1,6 @@
 //! Lossless CF_HDROP and Preferred DropEffect, with a thread-owned clipboard window.
 
-use midnight_core::{
-    FileClipboard, FileClipboardIntent, FsError, MAX_FILE_CLIPBOARD_BYTES, MAX_FILE_CLIPBOARD_PATHS,
-};
+use midnight_core::{FileClipboard, FileClipboardIntent, FsError, MAX_FILE_CLIPBOARD_BYTES};
 use std::{
     ffi::OsString,
     io,
@@ -76,6 +74,7 @@ pub(crate) fn decode_hdrop(bytes: &[u8]) -> Result<Vec<PathBuf>, FsError> {
             "The clipboard does not contain a valid Unicode DROPFILES header.",
         ));
     }
+    // The allocation's bytes bound the list (checked above); CF_HDROP has no item limit.
     let mut paths = Vec::new();
     let mut name = Vec::new();
     let mut terminated = false;
@@ -92,11 +91,6 @@ pub(crate) fn decode_hdrop(bytes: &[u8]) -> Result<Vec<PathBuf>, FsError> {
             }
             paths.push(PathBuf::from(OsString::from_wide(&name)));
             name.clear();
-            if paths.len() > MAX_FILE_CLIPBOARD_PATHS {
-                return Err(error(
-                    "The file clipboard exceeds its 4096-item resource budget.",
-                ));
-            }
         } else {
             name.push(unit);
         }

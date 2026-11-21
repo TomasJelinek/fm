@@ -171,6 +171,29 @@ fn a_selection_of_more_than_4096_members_is_copied_one_root_at_a_time() {
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 4_097);
 }
 
+#[test]
+fn captured_archive_roots_beyond_the_native_root_bound_are_prepared() {
+    // An inline-tree copy-out of archive members prepares them as captured roots, which
+    // took at most 4,096 roots; only native roots, which stay open until copied, count.
+    let (mount, rows) = files(MAX_NATIVE_TRANSFER_ROOTS as u64 + 1);
+    let temp = destination();
+    let request = request(Arc::new(mount), &rows, temp.path());
+    let cancel = Cancellation::default();
+    let roots = resolve(&request, &cancel).unwrap();
+    assert!(roots.iter().all(|root| root.native_identity().is_none()));
+    let status = Arc::new(Mutex::new(initial(&request.clone().into())));
+    let service = midnight_platform::LocalFileSystem::new(None);
+    let job = worker::Job::prepare_sources(
+        temp.path().into(),
+        roots,
+        &service,
+        cancel,
+        status,
+        TransferMetadataPolicy::ContentOnly,
+    );
+    assert!(job.is_ok(), "{:?}", job.err().map(|error| error.message));
+}
+
 /// Stop is pressed as the folder's listing returns.
 #[derive(Debug)]
 struct Stopping {

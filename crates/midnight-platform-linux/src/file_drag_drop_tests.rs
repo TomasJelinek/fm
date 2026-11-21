@@ -38,7 +38,7 @@ impl FileDropSink for Sink {
 }
 
 /// The one fixed report for a dropped list that cannot be decoded.
-const REFUSED_LIST: &str = "The dropped file list is empty, malformed, names non-local files, or is longer than 4096 items.";
+const REFUSED_LIST: &str = "The dropped file list is empty, malformed or names non-local files.";
 /// The Windows target's fixed reports, and the one for an over-budget list.
 const CHANGED: &str = "The drop destination changed.";
 const MISSING: &str = "The drag source did not provide its file list.";
@@ -790,10 +790,6 @@ fn refused_drop_lists_are_reported_in_one_fixed_text_without_source_bytes() {
     let request = selection::drop_request(b"# list\r\nfile:///tmp/a%20b\r\n", &candidate).unwrap();
     assert_eq!(request.files.paths, [std::path::PathBuf::from("/tmp/a b")]);
     assert_eq!(request.targets_revision, 9);
-    let mut too_many = Vec::new();
-    for index in 0..=MAX_FILE_CLIPBOARD_PATHS {
-        too_many.extend_from_slice(format!("file:///tmp/{index}\n").as_bytes());
-    }
     for bytes in [
         b"".as_slice(),
         b"# comments only\n",
@@ -802,12 +798,32 @@ fn refused_drop_lists_are_reported_in_one_fixed_text_without_source_bytes() {
         b"file:///tmp/%ZZ-secret\n",
         b"file:///tmp/%00-secret\n",
         b"file:///tmp/unescaped secret\n",
-        too_many.as_slice(),
     ] {
         let refusal = selection::drop_request(bytes, &candidate).unwrap_err();
         assert_eq!(refusal.message, REFUSED_LIST);
         assert!(!refusal.to_string().contains("secret"), "{refusal}");
     }
+    // A URI list has no item limit and neither has its decoder (lists of more than
+    // 4,096 items were once refused here); one Copy takes at most the native roots it
+    // can hold open, and core validation says so.
+    let list = |count: usize| {
+        let mut bytes = Vec::new();
+        for index in 0..count {
+            bytes.extend_from_slice(format!("file:///tmp/secret-{index}\n").as_bytes());
+        }
+        bytes
+    };
+    let request = selection::drop_request(&list(MAX_NATIVE_TRANSFER_ROOTS), &candidate).unwrap();
+    assert_eq!(request.files.paths.len(), MAX_NATIVE_TRANSFER_ROOTS);
+    let refusal =
+        selection::drop_request(&list(MAX_NATIVE_TRANSFER_ROOTS + 1), &candidate).unwrap_err();
+    assert!(
+        refusal.message.starts_with(&format!(
+            "A drop copies at most {MAX_NATIVE_TRANSFER_ROOTS} items"
+        )),
+        "{refusal}"
+    );
+    assert!(!refusal.to_string().contains("secret"), "{refusal}");
 }
 
 #[test]

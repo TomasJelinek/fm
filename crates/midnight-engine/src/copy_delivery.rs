@@ -88,10 +88,12 @@ impl CopyOutbox {
         controls: Controls,
         cancel: Cancellation,
     ) -> Self {
-        // Public admission accepts at most 4096 roots. Root-completion notices
-        // are provider-free; one decision notice plus one spare fits after all
-        // roots even while initial UI delivery is blocked. Progress coalesces.
-        let (notices, receiver) = mpsc::channel(4098);
+        // Root-completion notices are provider-free. The notices of every root of a
+        // native job (at most MAX_NATIVE_TRANSFER_ROOTS) plus one decision notice and a
+        // spare fit even while initial UI delivery is blocked. An archive copy may take
+        // more roots: once the UI takes no notices it waits for room before announcing
+        // more (`send`), never dropping one. Progress coalesces.
+        let (notices, receiver) = mpsc::channel(MAX_NATIVE_TRANSFER_ROOTS + 2);
         Self {
             sender: Sender {
                 sender: outbox.sender,

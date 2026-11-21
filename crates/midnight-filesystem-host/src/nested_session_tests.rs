@@ -204,6 +204,90 @@ fn a_cancelled_stage_keeps_the_shared_worker_for_the_next_one() {
     assert_eq!(content.read_at(0, 8).unwrap(), b"inner");
 }
 
+/// A 100 GiB spool volume with eight bytes free above its 2 GiB reserve.
+fn eight_bytes_above_the_reserve(
+    _: &midnight_worker_platform::spool::PrivateSpoolDirectory,
+) -> io::Result<midnight_worker_platform::spool::SpoolSpace> {
+    Ok(midnight_worker_platform::spool::SpoolSpace {
+        available: (2 << 30) + 8,
+        total: 100 << 30,
+    })
+}
+impl Fixture {
+    fn on_a_small_volume(protocol: Protocol, replies: Vec<Message>) -> Self {
+        let fixture = Self::new(protocol, replies);
+        fixture
+            .mount
+            .staging
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .set_space(eight_bytes_above_the_reserve);
+        fixture
+    }
+}
+
+#[test]
+fn a_member_the_spool_volume_cannot_take_is_refused_before_staging_and_keeps_the_worker() {
+    // The worker begins a 13-byte member; the host refuses it at once through the
+    // cooperative cancellation acknowledgement, and the same worker stages the next one.
+    let mut replies = staged(1, 1, &[b"inner ", b"archive"]);
+    replies.truncate(1);
+    replies.push(Message::Failed {
+        request: 1,
+        code: api::ErrorCode::Cancelled,
+        message: "request canceled".into(),
+    });
+    // The refused member never had a stage, so the next one is the first.
+    replies.extend(staged(2, 1, &[b"inner"]));
+    let fixture = Fixture::on_a_small_volume(Protocol::V3, replies);
+    let progress = Mutex::new(Vec::new());
+    let error = fixture
+        .mount
+        .stage_member(2, &|| false, &|staged| {
+            progress.lock().unwrap().push(staged)
+        })
+        .unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::StorageFull);
+    assert!(
+        error
+            .message
+            .contains("needs 13 bytes of archive spool space, but the spool volume has only 8 bytes free above its reserve"),
+        "{error}"
+    );
+    assert!(progress.lock().unwrap().is_empty(), "nothing was staged");
+    assert!(!fixture.mount.supervision.stopped(), "the worker was ended");
+    assert!(fixture.sent().iter().any(|message| matches!(
+        message,
+        Message::Failed {
+            code: api::ErrorCode::Cancelled,
+            ..
+        }
+    )));
+    let content = fixture.mount.stage_member(2, &|| false, &|_| {}).unwrap();
+    assert_eq!(content.read_at(0, 8).unwrap(), b"inner");
+}
+
+#[test]
+fn a_protocol_2_worker_cannot_be_refused_cooperatively_so_the_refusal_ends_it() {
+    let fixture = Fixture::on_a_small_volume(Protocol::V2, staged(1, 1, &[b"inner ", b"archive"]));
+    let error = fixture
+        .mount
+        .stage_member(2, &|| false, &|_| {})
+        .unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::StorageFull);
+    assert!(error.message.contains("needs 13 bytes"), "{error}");
+    // Refused before anything was written, but the exchange cannot go on without it.
+    assert!(fixture.mount.supervision.stopped());
+    assert!(
+        !fixture
+            .sent()
+            .iter()
+            .any(|message| matches!(message, Message::Failed { .. }))
+    );
+}
+
 fn package() -> Package {
     Package {
         id: "midnight.fs.archive".into(),

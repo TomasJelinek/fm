@@ -196,6 +196,15 @@ impl FileDropRequest {
                 "Drag/drop supports copying only; source files are retained.",
             ));
         }
+        // A drop is a Copy of native roots: refused here, while the source still waits
+        // for its answer, rather than after the drop was accepted.
+        if self.files.paths.len() > crate::MAX_NATIVE_TRANSFER_ROOTS {
+            return Err(failure(&format!(
+                "A drop copies at most {} items at once, because each stays open until it \
+                 is copied; drop fewer items at a time.",
+                crate::MAX_NATIVE_TRANSFER_ROOTS
+            )));
+        }
         Ok(())
     }
 }

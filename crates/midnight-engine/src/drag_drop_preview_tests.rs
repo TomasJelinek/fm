@@ -252,6 +252,53 @@ async fn preview_reports_devices_and_modifiers_without_reserving_or_releasing_so
     }
 }
 
+/// A service that a refused drag must not reach: nothing is opened to check it.
+struct Unreachable;
+impl TransferService for Unreachable {
+    fn prepare_transfer_source(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        panic!("a dragged source was opened")
+    }
+    fn prepare_transfer_destination(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        panic!("the drop destination was opened")
+    }
+}
+
+#[test]
+fn a_drag_between_panels_beyond_the_native_root_bound_is_refused_before_opening_any() {
+    // A dragged file list takes any number of paths (more than 4,096 were refused as
+    // malformed); a drop between the panels copies or moves native roots, which one
+    // transfer holds open, so the hover check and the release refuse it at once.
+    let root = std::env::temp_dir();
+    let files = FileClipboard {
+        paths: (0..=MAX_NATIVE_TRANSFER_ROOTS)
+            .map(|index| root.join(format!("dragged-{index}")))
+            .collect(),
+        intent: FileClipboardIntent::Copy,
+    };
+    let error = validate(
+        &Unreachable,
+        &files,
+        &root.join("destination"),
+        &Cancellation::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::InvalidInput);
+    assert!(
+        error.message.contains(&format!(
+            "Copy and Move take at most {MAX_NATIVE_TRANSFER_ROOTS} items at once"
+        )),
+        "{error}"
+    );
+}
+
 #[tokio::test]
 async fn preview_rejects_source_itself_parent_self_copy_and_recursive_descendant() {
     let mut h = Harness::new(false).await;

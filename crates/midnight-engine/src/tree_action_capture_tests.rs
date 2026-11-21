@@ -322,7 +322,7 @@ impl MountedFilesystem for BatchMount {
         let index = u64::from_le_bytes(node.as_bytes().try_into().unwrap());
         let mut path = self.root.join(format!("item-{index:04}"));
         if call == self.large_at.load(Ordering::Relaxed) {
-            path.reserve(4 * 1024 * 1024);
+            path.reserve(action_capture::MAX_OWNED_BYTES);
         }
         Ok(ProviderTarget::Native(path))
     }
@@ -415,22 +415,78 @@ fn cancellation_before_during_and_after_last_resolution_releases_every_target() 
 }
 
 #[test]
-fn admission_accepts_4096_targets_and_rejects_4097_before_provider_resolution() {
-    for count in [4096, 4097] {
-        let (mut session, mount, _directory) = batch_fixture(count);
-        let selected = select(
-            &mut session,
-            TreeSelectionAction::Bulk(SelectionOperation::All),
-        );
-        let result = capture(&session, &selected, None, &Cancellation::default());
-        if count == 4096 {
-            assert_eq!(result.unwrap().targets.len(), count);
-            assert_eq!(mount.calls.load(Ordering::Relaxed), count);
-        } else {
-            assert!(matches!(result, Err(ProviderError::ResourceLimited)));
-            assert_eq!(mount.calls.load(Ordering::Relaxed), 0);
-        }
-    }
+fn admission_takes_every_selected_row_beyond_the_former_4096_targets() {
+    // Admission once refused more than 4,096 targets; it now takes whatever the
+    // projection can select, within the projection's own bounds.
+    const ROWS: usize = 6000;
+    let (mut session, mount, _directory) = batch_fixture(ROWS);
+    let selected = select(
+        &mut session,
+        TreeSelectionAction::Bulk(SelectionOperation::All),
+    );
+    assert_eq!(selected.selection.len(), ROWS);
+    let batch = capture(&session, &selected, None, &Cancellation::default()).unwrap();
+    assert_eq!(batch.targets.len(), ROWS);
+    assert_eq!(mount.calls.load(Ordering::Relaxed), ROWS);
+    const { assert!(ROWS <= action_capture::MAX_TARGETS) };
+}
+
+#[test]
+fn a_tree_transfer_takes_at_most_the_native_roots_one_copy_holds_open() {
+    // The capture takes the whole selection, but Copy and Move keep every native root
+    // open until it is copied: such a capture is refused before anything is prepared.
+    let count = midnight_core::MAX_NATIVE_TRANSFER_ROOTS + 1;
+    let (mut session, mount, _directory) = batch_fixture(count);
+    let selected = select(
+        &mut session,
+        TreeSelectionAction::Bulk(SelectionOperation::All),
+    );
+    let capacity = Arc::new(Semaphore::new(4));
+    let result = session.capture_transfer(
+        &midnight_core::TreeTransferRequest {
+            intent: midnight_core::TransferIntent::Copy,
+            view: selected.view.clone(),
+            request: TreeRequestId(1),
+            selection_revision: selected.selection_revision,
+            selection: selected.selection.clone(),
+            fallback: None,
+            cancel: Cancellation::default(),
+        },
+        &capacity,
+        &Cancellation::default(),
+    );
+    assert!(matches!(result, Err(ProviderError::ResourceLimited)));
+    assert_eq!(mount.calls.load(Ordering::Relaxed), count);
+    assert_eq!(capacity.available_permits(), 4);
+}
+
+#[test]
+fn a_tree_delete_takes_at_most_the_roots_it_pins_before_asking() {
+    // Delete pins every root before its confirmation: more roots than it pins at once are
+    // refused at the capture, as the capture's own count once did.
+    let (mut session, _mount, _directory) =
+        batch_fixture(midnight_core::MAX_CAPTURED_DELETE_ROOTS + 1);
+    let selected = select(
+        &mut session,
+        TreeSelectionAction::Bulk(SelectionOperation::All),
+    );
+    let capacity = Arc::new(Semaphore::new(4));
+    let result = session.capture_delete(
+        &midnight_core::TreeDeleteRequest {
+            scope: midnight_core::TreeClipboardScope::SelectionOrFallback,
+            mode: midnight_core::DeleteMode::Permanent,
+            view: selected.view.clone(),
+            request: TreeRequestId(1),
+            selection_revision: selected.selection_revision,
+            selection: selected.selection.clone(),
+            fallback: None,
+            cancel: Cancellation::default(),
+        },
+        &capacity,
+        &Cancellation::default(),
+    );
+    assert!(matches!(result, Err(ProviderError::ResourceLimited)));
+    assert_eq!(capacity.available_permits(), 4);
 }
 
 #[test]

@@ -400,13 +400,21 @@ impl Job {
         links: CopyLinkPolicy,
     ) -> Result<Self, FsError> {
         // Link-aware callers validate their options before entering preparation.
-        if roots.is_empty() || roots.len() > 4096 {
+        if roots.is_empty() {
             return Err(error(
                 &path,
                 io::ErrorKind::InvalidInput,
                 "Invalid captured Copy root count.",
             ));
         }
+        // Only native roots hold handles open until copied; archive members take any count.
+        super::input::check_native_roots(
+            &path,
+            roots
+                .iter()
+                .filter(|source| source.native_identity().is_some())
+                .count(),
+        )?;
         if metadata != TransferMetadataPolicy::ContentOnly {
             let paths = roots
                 .iter()

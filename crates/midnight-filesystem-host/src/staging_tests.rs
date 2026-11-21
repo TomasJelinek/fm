@@ -214,12 +214,23 @@ fn pending_length(staging: &Staging) -> u64 {
     staging.pending.as_ref().unwrap().1.spool.length()
 }
 
+/// A member stage whose length the worker does not declare: checked as it is appended.
+fn undeclared(request: u64, entry: u64) -> Message {
+    Message::StageBegin {
+        request,
+        purpose: StagePurpose::Member { entry },
+        expected_length: None,
+        max_length: 4,
+    }
+}
+
 #[test]
 fn staging_stops_before_the_spool_volume_reserve_and_writes_nothing() {
-    // Three bytes above the reserve cannot take a four-byte chunk.
+    // Three bytes above the reserve cannot take a four-byte chunk of content whose
+    // length was not declared up front.
     let (_temp, mut staging) = staging_on_fake_volume(3);
     let op = read(1, 2);
-    staging.nested(&op, &begin(1, 2)).unwrap();
+    staging.nested(&op, &undeclared(1, 2)).unwrap();
     let error = staging.nested(&op, &append(1, 1)).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::StorageFull);
     assert!(error.to_string().contains("free-space reserve"), "{error}");
@@ -227,9 +238,129 @@ fn staging_stops_before_the_spool_volume_reserve_and_writes_nothing() {
     assert_eq!(QUERIES.get(), 1);
     // The volume may fill exactly up to its reserve.
     let (_temp, mut staging) = staging_on_fake_volume(4);
-    staging.nested(&op, &begin(1, 2)).unwrap();
+    staging.nested(&op, &undeclared(1, 2)).unwrap();
     staging.nested(&op, &append(1, 1)).unwrap();
     assert_eq!(pending_length(&staging), 4);
+}
+
+#[test]
+fn a_member_that_does_not_fit_above_the_reserve_is_refused_before_anything_is_written() {
+    // A declared four-byte member on a volume with three bytes above its reserve is
+    // refused at its StageBegin, saying what it needs and what is free there, before a
+    // spool file exists or the stage counts a byte.
+    let (_temp, mut staging) = staging_on_fake_volume(3);
+    let op = read(1, 2);
+    let error = staging.nested(&op, &begin(1, 2)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    let message = error.to_string();
+    assert!(
+        message.contains("needs 4 bytes of archive spool space")
+            && message.contains("only 3 bytes free above its reserve (the larger of 1 GiB"),
+        "{message}"
+    );
+    assert!(staging.pending.is_none());
+    assert_eq!(staging.root.created_spools(), 0);
+    assert_eq!(staging.claims.claimed(), 0);
+    assert_eq!(QUERIES.get(), 1);
+    // A member that fits exactly is admitted; that one query also covers its appends,
+    // and the sealed stage keeps no claim.
+    let (_temp, mut staging) = staging_on_fake_volume(4);
+    assert_eq!(
+        stage_member(&mut staging, 1, 2, b"test")
+            .read(0, 4)
+            .unwrap(),
+        b"test"
+    );
+    assert_eq!(QUERIES.get(), 1);
+    assert_eq!(staging.claims.claimed(), 0);
+}
+
+#[test]
+fn space_claimed_by_a_stage_in_progress_is_not_promised_to_another() {
+    // Two mounts that stage in one spool root share its claims, as mounts of the
+    // process's cached root do. Twelve bytes are free above the reserve.
+    let (_temp, mut first) = staging_on_fake_volume(12);
+    let mut second = Staging::in_directory(first.root.clone(), first.claims.clone(), fake_volume);
+    second.spool_files_only();
+    let eight = |request, entry| Message::StageBegin {
+        request,
+        purpose: StagePurpose::Member { entry },
+        expected_length: Some(8),
+        max_length: 8,
+    };
+    let op = read(1, 2);
+    let Some(Message::StageCreated { stage, .. }) = first.nested(&op, &eight(1, 2)).unwrap() else {
+        panic!("the first member stage was not created")
+    };
+    assert_eq!(first.claims.claimed(), 8);
+    // Only four of the twelve bytes are not promised to the first stage.
+    let other = read(1, 3);
+    let error = second.nested(&other, &eight(1, 3)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    assert!(
+        error
+            .to_string()
+            .contains("8 bytes of which other archive reads in progress still need"),
+        "{error}"
+    );
+    // Appended bytes count in the volume's free space instead (this fake volume's free
+    // space stays the same, so four written bytes leave room for eight more).
+    first.nested(&op, &append(1, stage)).unwrap();
+    assert_eq!(first.claims.claimed(), 4);
+    second.nested(&other, &eight(1, 3)).unwrap();
+    assert_eq!(first.claims.claimed(), 12);
+    // An unannounced stage may use only what nobody claimed: nothing here.
+    let mut third = Staging::in_directory(first.root.clone(), first.claims.clone(), fake_volume);
+    third.spool_files_only();
+    let unclaimed = read(1, 4);
+    third.nested(&unclaimed, &undeclared(1, 4)).unwrap();
+    let error = third.nested(&unclaimed, &append(1, 1)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    // Abandoned and failed stages give their claims back.
+    first.abandon_member(1).unwrap();
+    assert_eq!(first.claims.claimed(), 8);
+    drop(second);
+    assert_eq!(first.claims.claimed(), 0);
+}
+
+#[test]
+fn an_admission_made_before_its_stage_begins_is_used_once_by_that_request() {
+    let (_temp, mut staging) = staging_on_fake_volume(4);
+    let op = read(1, 2);
+    staging.admit_member(&begin(1, 2)).unwrap();
+    assert_eq!((QUERIES.get(), staging.claims.claimed()), (1, 4));
+    // The StageBegin takes the admission instead of querying the volume again.
+    staging.nested(&op, &begin(1, 2)).unwrap();
+    assert_eq!((QUERIES.get(), staging.claims.claimed()), (1, 4));
+    staging.abandon_member(1).unwrap();
+    assert_eq!(staging.claims.claimed(), 0);
+    // An admission that its request did not use is returned before the next stage
+    // claims: the four bytes are free again for request 3.
+    staging.admit_member(&begin(2, 3)).unwrap();
+    assert_eq!(staging.claims.claimed(), 4);
+    staging.nested(&read(3, 3), &begin(3, 3)).unwrap();
+    assert_eq!((QUERIES.get(), staging.claims.claimed()), (3, 4));
+    staging.abandon_member(3).unwrap();
+    assert_eq!(staging.claims.claimed(), 0);
+    // A member that does not fit is refused by the admission itself.
+    let error = staging
+        .admit_member(&Message::StageBegin {
+            request: 4,
+            purpose: StagePurpose::Member { entry: 2 },
+            expected_length: Some(5),
+            max_length: 5,
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    assert!(staging.admitted.is_none());
+}
+
+#[test]
+fn spool_space_amounts_are_named_in_binary_units() {
+    assert_eq!(space::amount(1023), "1023 bytes");
+    assert_eq!(space::amount(1536), "1.5 KiB");
+    assert_eq!(space::amount(20 * GIB + GIB / 2), "20.5 GiB");
+    assert_eq!(space::amount(u64::MAX), "16384.0 PiB");
 }
 
 #[test]

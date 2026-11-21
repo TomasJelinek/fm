@@ -11,7 +11,7 @@ use std::{
 const MAX_PLAN_BYTES: usize = 8 * 1024 * 1024;
 /// Native pins (directories plus targets) held simultaneously by one plan. On
 /// Linux each pin is an open descriptor and the common soft `RLIMIT_NOFILE` is
-/// 1024, while a capture admits 4096 targets. Later pins record their captured
+/// 1024, while a command takes 4096 targets. Later pins record their captured
 /// identity/facts, are released at once, and are pinned again (then released)
 /// for every revalidation, so a large selection cannot exhaust descriptors.
 const MAX_HELD_PINS: usize = 256;

@@ -288,19 +288,25 @@ fn the_spool_root_is_chosen_once_per_process_and_again_after_a_failure() {
     let second = cache.open(candidates, ample).unwrap();
     assert_eq!(walks.load(Ordering::Relaxed), 1);
     assert!(first.root.is_same(&second.root));
+    assert!(
+        Arc::ptr_eq(&first.claims, &second.claims),
+        "mounts of one root share the space claimed in it"
+    );
     assert_eq!(
         first.root.created_spools(),
         1,
         "one test spool checked the root, for both mounts"
     );
     // A spool that cannot be written in the cached root makes the next mount choose again.
+    // (Content of undeclared length reaches the append; a declared length would be
+    // refused at its StageBegin, which forgets the root as well.)
     let mut failing = cache.open(candidates, full).unwrap();
     failing.set_memory(0, budget(0));
     let op = read_op(1, 2);
     let begin = Message::StageBegin {
         request: 1,
         purpose: StagePurpose::Member { entry: 2 },
-        expected_length: Some(4),
+        expected_length: None,
         max_length: 4,
     };
     let Some(Message::StageCreated { stage, .. }) = failing.nested(&op, &begin).unwrap() else {
@@ -319,6 +325,37 @@ fn the_spool_root_is_chosen_once_per_process_and_again_after_a_failure() {
     assert_eq!(walks.load(Ordering::Relaxed), 2);
     assert!(!third.root.is_same(&first.root));
     assert_eq!(third.root.created_spools(), 1);
+}
+
+#[test]
+fn a_member_refused_before_staging_makes_the_next_mount_choose_its_root_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache: &'static RootCache = Box::leak(Box::new(RootCache::new()));
+    let walks = AtomicUsize::new(0);
+    let candidates = || {
+        walks.fetch_add(1, Ordering::Relaxed);
+        vec![SpoolRoot {
+            path: temp.path().join("archive-spool"),
+            per_process: false,
+        }]
+    };
+    let mut refusing = cache.open(candidates, full).unwrap();
+    refusing.set_memory(0, budget(0));
+    let begin = Message::StageBegin {
+        request: 1,
+        purpose: StagePurpose::Member { entry: 2 },
+        expected_length: Some(4),
+        max_length: 4,
+    };
+    let error = refusing.nested(&read_op(1, 2), &begin).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    assert_eq!(
+        refusing.root.created_spools(),
+        1,
+        "only the root's test spool"
+    );
+    drop(cache.open(candidates, ample).unwrap());
+    assert_eq!(walks.load(Ordering::Relaxed), 2);
 }
 
 #[test]

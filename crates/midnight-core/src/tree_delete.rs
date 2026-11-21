@@ -2,7 +2,8 @@
 use crate::*;
 use std::{path::PathBuf, sync::Arc};
 
-/// Matches the common tree-action capture count bound.
+/// Native roots that one captured Delete takes at most: preparation pins every root (an
+/// open handle each) before the confirmation, until it is deleted.
 pub const MAX_CAPTURED_DELETE_ROOTS: usize = 4096;
 
 #[derive(Clone, Debug)]

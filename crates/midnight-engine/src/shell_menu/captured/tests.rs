@@ -101,9 +101,8 @@ async fn invalid_cancelled_or_revoked_menu_capture_never_becomes_fallback_or_nat
             2 => source.rejected = true,
             3 => source.intent = FileClipboardIntent::Move,
             4 => source.paths[1] = "relative".into(),
-            5 => {
-                source.paths = vec![std::env::temp_dir().join("same"); MAX_FILE_CLIPBOARD_PATHS + 1]
-            }
+            // One more item than a system menu takes (`ShellMenuRequest::validate`).
+            5 => source.paths = vec![std::env::temp_dir().join("same"); 4097],
             _ => controller.shutdown(),
         }
         controller

@@ -300,7 +300,18 @@ or expansion-ratio byte ceiling; free space on the host's private spool volume
 bounds decoded content. The host stops staging with a disk-full (`StorageFull`)
 error before that volume's free space falls below max(1 GiB, 2% of capacity); it
 queries the volume on each stage's first append and at least every 64 MiB, and
-writes by other programs between two queries are not counted. The
+writes by other programs between two queries are not counted. A member whose
+`StageBegin` declares a length above the 16 MiB memory stage limit (it goes to a spool
+file at once) first claims that many bytes of the volume's free space above the reserve
+(`staging_space.rs`): claims of stages still writing count against every later stage of
+the mounts that share the process's spool root, and each claim shrinks as its stage
+writes and ends with the stage. A member that does not fit is refused before its spool
+file exists, with a `StorageFull` error that names the space it needs, the space above
+the reserve and what other archive reads still need. Under protocol 3 the host refuses
+it through the cooperative cancellation acknowledgement (the session keeps serving its
+other users); under protocol 2 the refusal ends the exchange like any staging failure.
+Content of undeclared length is checked as it is appended, and so are spills of small
+stages. A refusal at the reserve makes the next mount choose its spool root again. The
 parser sets no member-count or name-bytes limit. It retains the protocol's 64 KiB
 per-name limit, a 16 MiB bound on each buffered TAR long-name/long-link/PAX record,
 64 MiB XZ/Zstandard windows, a 256 MiB 7z LZMA/LZMA2 dictionary check (larger
@@ -382,8 +393,10 @@ multi-volume archives, RAR and archive writing are unsupported.
 
 Archives inside archives need no worker change. `ArchiveMount::stage_member` asks the
 enclosing session for one ordinary member read (cooperatively cancellable, with
-progress at each `StageAck`) and keeps the sealed lease that the read publishes; the
-lease stays readable after the member cache evicts it and after that worker ends.
+progress at each `StageAck`, and refused before anything is staged when the member's
+declared length does not fit the spool volume, as above) and keeps the sealed lease
+that the read publishes; the lease stays readable after the member cache evicts it
+and after that worker ends.
 `Mount::open_nested` then starts another worker whose captured source is that lease
 (`CapturedFile::from_source`): it receives the usual `Open` with the member's length
 and reads it through `SourceRead`, and each read revalidates the enclosing chain down

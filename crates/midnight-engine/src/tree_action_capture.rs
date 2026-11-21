@@ -13,10 +13,15 @@ use std::{
     sync::Arc,
 };
 
-// Match existing clipboard, checksum and command capture counts. These are batch
-// admission budgets, not new panel-size or individual native path-length limits.
-const MAX_TARGETS: usize = 4096;
-const MAX_OWNED_BYTES: usize = 4 * 1024 * 1024;
+/// A capture takes every occurrence its projection can select: no more targets than the
+/// projection has rows (a selection never holds more), and no more newly owned target
+/// and context memory than the projection itself may hold. These follow the tree's own
+/// bounds rather than a count of their own (4,096 until 21 November 2026); they are not
+/// panel-size or native path-length limits. Each consumer still bounds what it holds per
+/// target: Copy and Move the native roots they keep open, Delete its pinned roots,
+/// checksums, Custom Commands and metadata edits their own targets.
+pub(super) const MAX_TARGETS: usize = TreeProjection::MAX_ROWS;
+pub(super) const MAX_OWNED_BYTES: usize = TreeProjection::MAX_BYTES;
 
 /// Exact display occurrences admitted together on a backend worker. Shared view,
 /// selection and provider buffers retain their existing tree/provider budgets;

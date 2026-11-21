@@ -75,6 +75,30 @@ fn rectangle_arithmetic_does_not_wrap_and_drop_requests_are_copy_only() {
     assert!(request.validate().is_err());
 }
 
+#[test]
+fn a_drop_takes_at_most_the_native_roots_one_copy_holds_open() {
+    let root = std::env::current_dir().unwrap();
+    let request = |count: usize| FileDropRequest {
+        files: FileClipboard {
+            paths: (0..count).map(|n| root.join(n.to_string())).collect(),
+            intent: FileClipboardIntent::Copy,
+        },
+        target: target(PaneId::Left, 0),
+        targets_revision: 1,
+    };
+    request(MAX_NATIVE_TRANSFER_ROOTS).validate().unwrap();
+    let error = request(MAX_NATIVE_TRANSFER_ROOTS + 1)
+        .validate()
+        .unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::InvalidInput);
+    assert!(
+        error.message.contains(&format!(
+            "A drop copies at most {MAX_NATIVE_TRANSFER_ROOTS} items at once"
+        )),
+        "{error}"
+    );
+}
+
 /// A sink written before rejection reports existed: admission and hover only.
 #[derive(Default)]
 struct AdmissionOnly {

@@ -141,6 +141,19 @@ impl Session {
                 }
             }
         }
+        // Native roots stay open from preparation until each is copied, so one transfer
+        // takes at most `MAX_NATIVE_TRANSFER_ROOTS` of them; archive members hold no
+        // native handle, and a capture may take as many of them as its projection shows.
+        let mut native = 0_usize;
+        for target in &capture.targets {
+            native += usize::from(matches!(
+                target.captured.target.value()?,
+                ProviderTarget::Native(_)
+            ));
+        }
+        if native > midnight_core::MAX_NATIVE_TRANSFER_ROOTS {
+            return Err(ProviderError::ResourceLimited);
+        }
         let metadata = capture.targets.iter().all(|target| {
             matches!(
                 target.captured.target.value(),

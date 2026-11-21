@@ -504,25 +504,46 @@ impl close::SupervisorProcess for ScriptedWorker {
         Ok(())
     }
 }
-/// A 100 GiB spool volume with exactly its 2 GiB reserve free.
-fn volume_at_reserve(
+thread_local! {
+    /// Queries of `volume_filling_up` on this test's thread.
+    static VOLUME_QUERIES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+/// A 100 GiB spool volume whose 2 GiB reserve has four bytes more free at the first
+/// query and none at later ones, as when another program fills it meanwhile.
+fn volume_filling_up(
     _: &midnight_worker_platform::spool::PrivateSpoolDirectory,
 ) -> io::Result<midnight_worker_platform::spool::SpoolSpace> {
+    let first = VOLUME_QUERIES.replace(VOLUME_QUERIES.get() + 1) == 0;
     Ok(midnight_worker_platform::spool::SpoolSpace {
-        available: 2 << 30,
+        available: (2 << 30) + if first { 4 } else { 0 },
         total: 100 << 30,
     })
 }
 
 #[test]
 fn a_member_refused_at_the_spool_reserve_ends_the_worker_and_teardown_frees_its_stage() {
-    let fixture = Fixture::new(Protocol::V3, vec![begin(1), append(1, 1)]);
+    // Content whose length the worker does not declare meets the reserve as it is
+    // appended: its first chunk fits, the second no longer does. (A declared length is
+    // refused before anything is staged: `nested_session_tests`.)
+    let undeclared = Message::StageBegin {
+        request: 1,
+        purpose: api::StagePurpose::Member { entry: 2 },
+        expected_length: None,
+        max_length: 8,
+    };
+    let second = Message::StageAppend {
+        request: 1,
+        stage: 1,
+        offset: 4,
+        bytes: b"more".to_vec(),
+    };
+    let fixture = Fixture::new(Protocol::V3, vec![undeclared, append(1, 1), second]);
     {
         let mut staging = fixture.mount.staging.lock().unwrap();
         let staging = staging.as_mut().unwrap();
         // Only content in a spool file meets the volume's reserve.
         staging.spool_files_only();
-        staging.set_space(volume_at_reserve);
+        staging.set_space(volume_filling_up);
     }
     let error = fixture
         .mount

@@ -636,6 +636,9 @@ impl Mount {
         }
         let mut canceled_safely = false;
         let mut cancel_sent = false;
+        // A member stage that the spool volume cannot take, refused through the
+        // cooperative cancellation acknowledgement (`Staging::admit_member`).
+        let mut refused = None;
         self.ensure_active(cancel, cancelled).map_err(fail)?;
         self.validate()
             .inspect_err(|error| self.supervision.request_stop(Stop::failed(&error.message)))?;
@@ -700,16 +703,29 @@ impl Mount {
                     self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
                         .ok_or_else(ended)?.abandon_member(request).map_err(fail)?;
                     canceled_safely = true;
-                    return Err(interrupted());
+                    // The worker gave the refused member up and serves the mount on.
+                    return Err(refused.take().map_or_else(interrupted, fail));
                 }
                 if let Some(cooperative) = cooperative {
                     let checkpoint = self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
                         .ok_or_else(ended)?.cancellation_checkpoint(&operation, &reply).map_err(fail)?;
-                    if checkpoint && cooperative() {
+                    let cancelling = checkpoint && cooperative();
+                    // A member stage that does not fit the spool volume is refused before
+                    // it writes anything, keeping the worker for the mount's other users.
+                    if checkpoint && !cancelling {
+                        refused = self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
+                            .ok_or_else(ended)?.admit_member(&reply).err();
+                    }
+                    if cancelling || refused.is_some() {
                         self.validate()?;
                         self.ensure_active(cancel, cancelled).map_err(fail)?;
+                        let message = if cancelling {
+                            "Preview read cancelled"
+                        } else {
+                            "Archive spool space is insufficient"
+                        };
                         api::write_message_with_protocol(&mut channel.input, self.protocol,
-                            &Message::Failed { request, code: api::ErrorCode::Cancelled, message: "Preview read cancelled".into() }).map_err(fail)?;
+                            &Message::Failed { request, code: api::ErrorCode::Cancelled, message: message.into() }).map_err(fail)?;
                         cancel_sent = true;
                         continue;
                     }

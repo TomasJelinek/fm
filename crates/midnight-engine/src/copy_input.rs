@@ -3,6 +3,9 @@ use super::*;
 use std::path::PathBuf;
 
 #[cfg(test)]
+#[path = "copy_root_bound_tests.rs"]
+mod root_bound_tests;
+#[cfg(test)]
 #[path = "copy_start_policy_tests.rs"]
 mod start_policy_tests;
 
@@ -154,6 +157,27 @@ impl From<SelectedCopyRequest> for CopyInput {
             sources: Sources::Selection(request.files),
         }
     }
+}
+
+/// Native roots stay open from preparation until each is copied, and every root is pinned
+/// when the job starts: one Copy or Move takes at most `MAX_NATIVE_TRANSFER_ROOTS` of them.
+/// A file list of any length reaches here (the clipboard, a drop, a panel selection).
+pub(super) fn check_native_roots(
+    destination: &std::path::Path,
+    count: usize,
+) -> Result<(), FsError> {
+    if count > MAX_NATIVE_TRANSFER_ROOTS {
+        return Err(error(
+            destination,
+            io::ErrorKind::InvalidInput,
+            &format!(
+                "Copy and Move take at most {MAX_NATIVE_TRANSFER_ROOTS} items at once, because \
+                 each stays open until it is copied; these are {count}. Copy fewer items at a \
+                 time, or their folder."
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn metadata_id(request: &MetadataTransferRequest) -> OperationId {
@@ -363,6 +387,7 @@ impl CopyInput {
         };
         if let Some(files) = clipboard {
             files.validate()?;
+            check_native_roots(&self.destination, files.paths.len())?;
             if files.intent == FileClipboardIntent::Move && self.intent == TransferIntent::Copy {
                 return Err(error(
                     &self.destination,
@@ -442,15 +467,19 @@ impl CopyInput {
             }
             Sources::Paths(files) => files,
             Sources::SharedPaths(files) => Arc::unwrap_or_clone(files),
-            Sources::Selection(files) => FileClipboard {
-                paths: crate::file_targets::resolve(
+            Sources::Selection(files) => {
+                let paths = crate::file_targets::resolve_payload(
                     &files.selection,
                     &files.view,
                     files.fallback.as_deref(),
                     cancel,
-                )?,
-                intent: FileClipboardIntent::Copy,
-            },
+                )?;
+                check_native_roots(&self.destination, paths.len())?;
+                FileClipboard {
+                    paths,
+                    intent: FileClipboardIntent::Copy,
+                }
+            }
             Sources::Archive(request) => {
                 let sources = super::archive_source::resolve(&request, cancel)?;
                 return Ok(Resolved::Archive {

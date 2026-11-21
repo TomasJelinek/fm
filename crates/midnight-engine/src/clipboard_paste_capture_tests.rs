@@ -35,6 +35,8 @@ struct Native {
     on_open: Option<Cancellation>,
     on_read: Option<Cancellation>,
     reads: Arc<AtomicUsize>,
+    /// Paths that the native clipboard holds.
+    copied: usize,
 }
 impl ClipboardService for Native {
     fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
@@ -46,6 +48,7 @@ impl ClipboardService for Native {
             on_open: None,
             on_read: self.on_read.clone(),
             reads: self.reads.clone(),
+            copied: self.copied,
         }))
     }
 }
@@ -63,7 +66,9 @@ impl ClipboardSession for Native {
             cancel.cancel();
         }
         Ok(FileClipboard {
-            paths: vec![std::env::temp_dir().join("copied 文档.txt")],
+            paths: (0..self.copied)
+                .map(|index| std::env::temp_dir().join(format!("copied 文档 {index}.txt")))
+                .collect(),
             intent: FileClipboardIntent::Copy,
         })
     }
@@ -74,6 +79,16 @@ async fn read(
     invalid_intent: bool,
     cancel_on_open: bool,
     revoke_on_read: bool,
+) -> (Event, usize, std::thread::ThreadId) {
+    read_copied(count, invalid_intent, cancel_on_open, revoke_on_read, 1).await
+}
+
+async fn read_copied(
+    count: usize,
+    invalid_intent: bool,
+    cancel_on_open: bool,
+    revoke_on_read: bool,
+    copied: usize,
 ) -> (Event, usize, std::thread::ThreadId) {
     let request_cancel = Cancellation::default();
     let revoked = Cancellation::default();
@@ -99,6 +114,7 @@ async fn read(
         on_open: cancel_on_open.then(|| request_cancel.clone()),
         on_read: revoke_on_read.then_some(revoked),
         reads: reads.clone(),
+        copied,
     };
     let (sender, mut events) = mpsc::channel(1);
     let (_owner, mut controller) = Controller::testing(
@@ -149,6 +165,34 @@ async fn captured_paste_refuses_ambiguous_intent_and_cancelled_destination_befor
             Event::ClipboardFilesRead { result: Err(_), .. }
         ));
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn paste_refuses_more_native_roots_than_one_copy_holds_open_as_it_reads_them() {
+    // The clipboard holds a list of any length (more than 4,096 paths were refused as
+    // unreadable); Paste copies or moves native roots and says at once that it takes at
+    // most MAX_NATIVE_TRANSFER_ROOTS, before any Move confirmation.
+    let (event, reads, _) =
+        read_copied(1, false, false, false, MAX_NATIVE_TRANSFER_ROOTS + 1).await;
+    assert_eq!(reads, 1);
+    let Event::ClipboardFilesRead {
+        result: Err(error), ..
+    } = event
+    else {
+        panic!("a paste beyond the native root bound was read")
+    };
+    assert!(
+        error.message.contains(&format!(
+            "Paste copies or moves at most {MAX_NATIVE_TRANSFER_ROOTS} items at once"
+        )),
+        "{error}"
+    );
+    let (event, _, _) = read_copied(1, false, false, false, MAX_NATIVE_TRANSFER_ROOTS).await;
+    assert!(matches!(
+        event,
+        Event::ClipboardFilesRead { result: Ok(files), .. }
+            if files.paths.len() == MAX_NATIVE_TRANSFER_ROOTS
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

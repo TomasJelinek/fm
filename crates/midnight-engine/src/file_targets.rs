@@ -1,12 +1,44 @@
 //! Bounded expansion of a captured selection. Never call on the UI thread.
-use midnight_core::{Cancellation, DirectoryIndex, FsError, SelectionSnapshot};
+use midnight_core::{
+    Cancellation, DirectoryIndex, FsError, MAX_FILE_CLIPBOARD_BYTES, SelectionSnapshot,
+};
 use std::path::{Component, Path, PathBuf};
 
+/// Items that a menu, dialog, Custom Command or checksum takes from one panel selection:
+/// each holds something per item (a shell item, a dialog entry, an argument, a hash).
+pub(crate) const MAX_ITEMS: usize = 4096;
+// The refusal in `resolve_within` names this bound.
+const _: () = assert!(MAX_ITEMS == 4096);
+
+/// The selected paths in display order, at most `MAX_ITEMS` of them, for consumers that
+/// hold something per item. Native paths take at most `MAX_FILE_CLIPBOARD_BYTES`.
 pub(crate) fn resolve(
     selection: &SelectionSnapshot,
     view: &DirectoryIndex,
     fallback: Option<&Path>,
     cancel: &Cancellation,
+) -> Result<Vec<PathBuf>, FsError> {
+    resolve_within(selection, view, fallback, cancel, Some(MAX_ITEMS))
+}
+
+/// The selected paths in display order for a native file list (the clipboard, a drag
+/// source, a Copy or Move that bounds its roots itself): any number of them, within the
+/// list's `MAX_FILE_CLIPBOARD_BYTES` of names, which also bound this copy of them.
+pub(crate) fn resolve_payload(
+    selection: &SelectionSnapshot,
+    view: &DirectoryIndex,
+    fallback: Option<&Path>,
+    cancel: &Cancellation,
+) -> Result<Vec<PathBuf>, FsError> {
+    resolve_within(selection, view, fallback, cancel, None)
+}
+
+fn resolve_within(
+    selection: &SelectionSnapshot,
+    view: &DirectoryIndex,
+    fallback: Option<&Path>,
+    cancel: &Cancellation,
+    items: Option<usize>,
 ) -> Result<Vec<PathBuf>, FsError> {
     use std::io;
     let failure = |kind, message| {
@@ -35,10 +67,17 @@ pub(crate) fn resolve(
         }
         let raw = path.as_os_str().as_encoded_bytes();
         bytes = bytes.saturating_add(raw.len());
-        if paths.len() >= 4096 || bytes > 4 * 1024 * 1024 || raw.contains(&0) {
+        if items.is_some_and(|items| paths.len() >= items) {
             return Err(failure(
                 io::ErrorKind::InvalidInput,
-                "File selection exceeds its clipboard/menu resource budget or contains NUL.",
+                "This action takes at most 4096 selected items at once.",
+            ));
+        }
+        if bytes > MAX_FILE_CLIPBOARD_BYTES || raw.contains(&0) {
+            return Err(failure(
+                io::ErrorKind::InvalidInput,
+                "The selected names exceed the 4 MiB that a file list holds, or one \
+                 contains NUL.",
             ));
         }
         paths.push((position, path.to_owned()));
@@ -174,6 +213,10 @@ mod tests {
         bits[64] = 1;
         let selected = SelectionSnapshot::from_bits(large.clone(), bits).unwrap();
         assert!(resolve(&selected, &large, None, &Cancellation::default()).is_err());
+        // A native file list takes them all: only its names' bytes bound it.
+        let all = resolve_payload(&selected, &large, None, &Cancellation::default()).unwrap();
+        assert_eq!(all.len(), 4097);
+        assert_eq!(all[4096], PathBuf::from("file-4096"));
         let cancelled = Cancellation::default();
         cancelled.cancel();
         assert!(

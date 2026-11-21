@@ -226,7 +226,6 @@ fn invalid_capture_payloads_and_changed_intent_are_rejected_whole() {
         vec![],
         vec!["relative".into()],
         vec![root.join("bad\0name")],
-        vec![root.join("same"); MAX_FILE_CLIPBOARD_PATHS + 1],
         vec![root.join("x".repeat(MAX_FILE_CLIPBOARD_BYTES + 1))],
     ] {
         let source = Source::new(paths, Arc::new(Probe::default()));

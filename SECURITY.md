@@ -574,8 +574,10 @@ exercised by automated tests; see the
 Ctrl+C publishes lossless native paths; Ctrl+V captures the destination path and
 queues verified copying. Native identities are opened and pinned when that job
 starts. An external rename before then is not a snapshot of the original namespace.
-Clipboard payloads are untrusted: at most 4096 paths and 4MiB, with whole-request
-rejection of malformed/NUL/relative data. No shell command parses a filename.
+Clipboard payloads are untrusted: at most 4 MiB of names, any number of paths, with
+whole-request rejection of malformed/NUL/relative data. Paste, Copy, Move and drops
+take at most 4,096 native items at once, because each stays open until it is copied;
+larger requests are refused with that reason before anything starts. No shell command parses a filename.
 Adopted native trees capture the exact acknowledged projection and selection,
 or the focused occurrence when no items are marked. Parent/context rows never
 grant clipboard authority. Copy/Cut share four capture permits with F5/F6, retain
@@ -1028,7 +1030,7 @@ latest undelivered refusal, outside the bounded event queue, and reports it once
 UI accepts events again, unless the drop window has closed by then. Linux X11 drops
 report the same kinds of refusal, in fixed texts (the Windows ones for a changed
 destination and a missing file list), once per drop that showed the Copy status: an
-undecodable or over-4,096-item file list, an over-4 MiB transfer, a failed validation
+undecodable file list, a drop of more than 4,096 items, an over-4 MiB transfer, a failed validation
 or admission, a destination change (at XdndDrop the drop goes to the panel target now
 at the last position, as on Windows, and is refused when there is none; while the list
 is read, only a republish of the same folder keeps it), and a source that does not
@@ -1043,7 +1045,8 @@ CancelCopy that could arrive before the job exists. Transient native grab failur
 must not permanently disable a healthy session or revive an ended gesture.
 
 Payloads retain raw UTF-16 on Windows and raw filename bytes through X11 URI
-encoding. The existing 4,096-path / 4 MiB payload limits apply; malformed and
+encoding. Payloads hold at most 4 MiB of names, and a drop copies at most 4,096
+native items; malformed and
 non-local URI lists are rejected as a whole. Native serialization/admission never
 canonicalizes paths or probes filesystem objects on the UI thread. The copy worker
 performs its normal identity and containment checks. Dragging leaves clipboard
@@ -1162,7 +1165,11 @@ fields and conservative physical-device classifications.
   that volume's free space falls below max(1 GiB, 2% of capacity), so a
   decompression bomb cannot fill the spool volume. The host queries the volume on
   each stage's first append and at least every 64 MiB; writes by other programs
-  between two queries are not counted.
+  between two queries are not counted. A member whose declared length needs a spool
+  file claims that space when its staging begins, beside the space that stagings still
+  in progress have claimed: one that would not fit above the reserve is refused before
+  anything is written, and under protocol 3 the refusal keeps the enclosing worker and
+  session (an archive inside an archive stays at its enclosing folder).
   Decoder dictionaries/windows, buffered metadata records, the raw 7z next header
   (an eighth of the worker's memory) and retained verified 7z siblings have
   explicit bounds inside the 1 GiB worker memory limit; the metadata index (no
