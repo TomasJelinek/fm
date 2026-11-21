@@ -478,40 +478,29 @@ jobs:
           if-no-files-found: error
           path: _build/filesystem-library/package/
 
-  check:
-    needs: [viewers, image-viewer, archive-filesystem, filesystem-libraries]
+  # Formatting, Clippy and the build-script tests use no plugin package; in their own
+  # job they run beside the plugin jobs and the workspace tests instead of before them.
+  scripts-and-lint:
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    timeout-minutes: 60
     env:
-      # The full generated UI suite otherwise fills the hosted runner disk.
+      # As in the check job, so that both build their dependencies alike.
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_INCREMENTAL: "0"
-      CARGO_BUILD_JOBS: "2"
+      CARGO_BUILD_JOBS: "4"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: viewer-${{ runner.os }}-*
-          merge-multiple: true
-          path: _build/viewer-packages
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: filesystem-${{ runner.os }}-*
-          merge-multiple: true
-          path: _build/filesystem-packages
-      - uses: actions/download-artifact@v4
-        with:
-          name: archive-fixtures-${{ runner.os }}
-          path: _build/archive-fixtures
       - uses: ./.github/actions/private-test-installation
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites
       - uses: ./.github/actions/rust-setup
+        with:
+          build-cache: "true"
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build script and packaging tests
@@ -546,6 +535,36 @@ jobs:
       # tokio and everything above it a second time.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings
+
+  # The workspace tests start at once; only the qualification steps after them wait
+  # for this run's plugin packages (the plugin-packages action).
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read
+    env:
+      # Debug information and incremental output would only cost build time and disk
+      # here (with debug information the generated UI suite once filled the runner disk).
+      # Four jobs match the runner's four CPUs and fit its 16 GB
+      # (docs/verification/2026-11-21-ci-time.md).
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/private-test-installation
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-build-prerequisites
+      - uses: ./.github/actions/rust-setup
+        with:
+          build-cache: "true"
       - name: Test
         run: python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts
       # The steps below reuse the gates' workspace feature selection through
@@ -567,6 +586,10 @@ jobs:
           $library = if ($IsWindows) { 'midnight_host_bad_descriptor.dll' } else { 'libmidnight_host_bad_descriptor.so' }
           $path = Join-Path $env:GITHUB_WORKSPACE "_build/bad-viewer-descriptor/debug/$library"
           "HOST_BAD_PLUGIN=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: ./.github/actions/plugin-packages
+        with:
+          runner-label: ${{ matrix.os }}
+          archive-fixtures: "true"
       # The non-ignored tests of every target below already ran in the workspace gates.
       - name: Native viewer open, viewport, search and quiescent close
         run: python -B scripts/ci-workspace-tests.py run midnight-plugin-host lib --ignored
@@ -650,35 +673,33 @@ jobs:
             env -u WAYLAND_DISPLAY MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1 "$executable" \
             clipboard::tests::x11_ file_clipboard::x11::tests:: --ignored --test-threads=1
 
-  # The fat-LTO release build runs beside the test job instead of after it.
+  # The fat-LTO release build runs beside the test job instead of after it, and like it
+  # waits for the plugin packages only before its smoke test.
   release:
-    needs: [viewers, image-viewer, archive-filesystem, filesystem-libraries]
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
     env:
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: viewer-${{ runner.os }}-*
-          merge-multiple: true
-          path: _build/viewer-packages
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: filesystem-${{ runner.os }}-*
-          merge-multiple: true
-          path: _build/filesystem-packages
       - uses: ./.github/actions/private-test-installation
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-build-prerequisites
       - uses: ./.github/actions/rust-setup
+        with:
+          build-cache: "true"
       - name: Optimized release build
         run: cargo build -p midnight-explorer -p midnight-elevation --release --locked
+      - uses: ./.github/actions/plugin-packages
+        with:
+          runner-label: ${{ matrix.os }}
       - name: Release filesystem smoke test
         shell: pwsh
         run: |

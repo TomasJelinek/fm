@@ -22,6 +22,19 @@ def jobs(text):
             for index, match in enumerate(names)}
 
 
+def action(name):
+    """The text of a local composite action."""
+    return (ROOT / ".github/actions" / name / "action.yml").read_text(encoding="utf-8")
+
+
+def uses(job, reference):
+    """The text of the job's one step that uses this action."""
+    steps = [text for text in re.split(r"\n      - ", job) if re.match(rf"(?:if: .*\n\s*)?uses: {re.escape(reference)}\n", text)]
+    if len(steps) != 1:
+        raise AssertionError(f"Expected one step using {reference!r}, found {len(steps)}")
+    return steps[0]
+
+
 def step(job, name):
     """The text of the job's step with this exact name."""
     steps = [text for text in re.split(r"\n      - ", job) if re.match(rf"(?:if: .*\n\s*)?name: {re.escape(name)}\n", text)]
@@ -69,17 +82,19 @@ class WorkflowTests(unittest.TestCase):
         # the workspace step enables it. A separate `-p midnight-acceptance` step would
         # resolve features without the workspace's dev-dependencies and check tokio and
         # everything above it twice.
-        check = self.jobs["check"]
-        text = step(check, "Clippy")
+        lint = self.jobs["scripts-and-lint"]
+        self.assertIn("os: [windows-latest, ubuntu-24.04]", lint)
+        text = step(lint, "Clippy")
         self.assertIn(
             "cargo clippy --workspace --all-targets --locked "
             "--features midnight-acceptance/acceptance -- -D warnings",
             text,
         )
         self.assertNotIn("if:", text)
-        commands = "\n".join(line for line in check.splitlines() if not line.lstrip().startswith("#"))
-        self.assertEqual(commands.count("cargo clippy"), 1, "one Clippy step, one feature resolution")
-        self.assertNotIn("-p midnight-acceptance", commands)
+        commands = [line for line in self.text.splitlines() if not line.lstrip().startswith("#")]
+        root = [line for line in commands if "cargo clippy" in line and "--manifest-path" not in line]
+        self.assertEqual(len(root), 1, "one root-workspace Clippy step, one feature resolution")
+        self.assertNotIn("-p midnight-acceptance", "\n".join(commands))
 
     def test_post_gate_steps_reuse_the_workspace_feature_selection(self):
         check = self.jobs["check"]
@@ -127,7 +142,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('--test worker_fixtures --locked --offline -- --ignored', archive)
         self.assertIn("name: archive-fixtures-${{ runner.os }}", archive)
         check = self.jobs["check"]
-        self.assertIn("name: archive-fixtures-${{ runner.os }}", check)
+        self.assertIn('archive-fixtures: "true"', uses(check, "./.github/actions/plugin-packages"))
+        self.assertIn("name: archive-fixtures-${{ runner.os }}", action("plugin-packages"))
         text = step(check, "Installed archive worker streaming, all formats, cooperative cancellation and package discovery")
         for variable in ("ARCHIVE_CAPTURE_INSTALLATION", "MIDNIGHT_ARCHIVE_FIXTURES", "MIDNIGHT_ARCHIVE_TEST_ZIP"):
             self.assertIn(f"$env:{variable} = ", text)
@@ -137,6 +153,101 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn(f"run midnight-filesystem-host {selection}", text)
         nested = step(check, "Restricted archive workers open archives inside archives")
         self.assertIn("run midnight-filesystem-host test:nested_worker --ignored --test-threads=1", nested)
+
+    def test_workspace_jobs_start_at_once_and_wait_for_plugin_packages_only_before_using_them(self):
+        # The plugin jobs take up to about 11 minutes; check and release build meanwhile.
+        for name in ("scripts-and-lint", "check", "release"):
+            with self.subTest(job=name):
+                job = self.jobs[name]
+                self.assertNotIn("\n    needs:", job)
+                self.assertNotIn("actions/download-artifact", job, "only through plugin-packages")
+        for name, build in (("check", "Test"), ("release", "Optimized release build")):
+            with self.subTest(job=name):
+                job = self.jobs[name]
+                self.assertIn("runner-label: ${{ matrix.os }}", uses(job, "./.github/actions/plugin-packages"))
+                packages = job.index("uses: ./.github/actions/plugin-packages")
+                self.assertLess(job.index("uses: ./.github/actions/private-test-installation"), job.index(f"name: {build}\n"))
+                self.assertLess(job.index(f"name: {build}\n"), packages)
+                # Steps after the action may use the packages; none before it may.
+                before = job[:packages]
+                for value in ("HOST_TEST_PLUGIN", "MIDNIGHT_VIEWER_TEST_INSTALL", "MIDNIGHT_NATIVE_TEST_INSTALLATION",
+                              "ARCHIVE_WORKER", "ARCHIVE_TEST_INSTALL_ROOT", "_build/viewer-packages",
+                              "_build/filesystem-packages", "_build/archive-fixtures", "--ignored", "--smoke-test"):
+                    self.assertNotIn(value, before)
+        self.assertIn("--smoke-test", self.jobs["release"].split("uses: ./.github/actions/plugin-packages", 1)[1])
+        # The early action creates only the protected root; plugin-packages installs into it.
+        early = action("private-test-installation")
+        self.assertIn("HOST_TEST_INSTALL_ROOT=", early)
+        self.assertNotIn("_build/viewer-packages", early)
+        installing = action("plugin-packages")
+        for variable in ("HOST_TEST_PLUGIN", "MIDNIGHT_VIEWER_TEST_INSTALL", "MIDNIGHT_NATIVE_TEST_INSTALLATION",
+                         "MIDNIGHT_IMAGE_VIEWER_TEST_APPLICATION", "MIDNIGHT_PDF_VIEWER_TEST_APPLICATION",
+                         "ARCHIVE_WORKER", "ARCHIVE_TEST_INSTALL_ROOT"):
+            self.assertIn(f'"{variable}=', installing)
+
+    def test_plugin_packages_wait_for_every_artifact_that_their_downloads_select(self):
+        packages = action("plugin-packages")
+        def matrix(job, key):
+            values = re.search(rf"^        {key}: \[([^\]]*)\]$", self.jobs[job], re.MULTILINE).group(1)
+            return {value.strip() for value in values.split(",")}
+        def listed(prefix):
+            names = re.search(rf"@\(([^)]*) \| ForEach-Object {{ \"{prefix}-\$os-\$_\" }}\)", packages).group(1)
+            return set(re.findall(r"'([^']+)'", names))
+        self.assertEqual(listed("viewer"), matrix("viewers", "plugin") | matrix("image-viewer", "plugin"))
+        providers = set(re.findall(r"^            provider: (\S+)$", self.jobs["filesystem-libraries"], re.MULTILINE))
+        self.assertEqual(listed("filesystem"), providers | {"archive"})
+        self.assertIn('$names += "archive-fixtures-$os"', packages)
+        # The jobs that upload these artifacts are the producers whose failure ends the wait.
+        producers = {name for name, job in self.jobs.items()
+                     if re.search(r"name: (viewer|filesystem|archive-fixtures)-\$\{\{ runner\.os \}\}", job)}
+        self.assertEqual(set(re.findall(r"--producer (\S+)", packages)), producers)
+        for name in producers:
+            with self.subTest(producer=name):
+                # Legs are matched by the job name "<job> (<os>, ...)" and the runner label.
+                self.assertRegex(self.jobs[name], r"matrix:\n        (os:|include:\n          - os:)")
+                self.assertIn("runs-on: ${{ matrix.os }}", self.jobs[name])
+                self.assertNotRegex(self.jobs[name], r"(?m)^    name:", "a job name replaces the matrix values")
+        for pattern in ("pattern: viewer-${{ runner.os }}-*", "pattern: filesystem-${{ runner.os }}-*"):
+            self.assertIn(pattern, packages)
+        self.assertLess(packages.index("scripts/ci-wait-for-artifacts.py"), packages.index("actions/download-artifact"))
+        self.assertIn("GH_TOKEN: ${{ github.token }}", packages)
+
+    def test_only_the_waiting_jobs_may_read_the_runs_jobs_and_artifacts(self):
+        permissions = self.text.split("\npermissions:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(permissions.strip(), "contents: read")
+        for name, job in self.jobs.items():
+            with self.subTest(job=name):
+                if "uses: ./.github/actions/plugin-packages" in job:
+                    self.assertIn("    permissions:\n      contents: read\n      actions: read\n", job)
+                else:
+                    self.assertNotIn("\n    permissions:", job)
+
+    def test_tests_and_clippy_build_alike_with_four_jobs_and_the_default_linker(self):
+        def environment(job):
+            block = re.search(r"\n    env:\n((?:      .*\n)+)", self.jobs[job]).group(1)
+            return [line.strip() for line in block.splitlines() if not line.strip().startswith("#")]
+        check = environment("check")
+        for setting in ('CARGO_PROFILE_DEV_DEBUG: "0"', 'CARGO_PROFILE_TEST_DEBUG: "0"',
+                        'CARGO_INCREMENTAL: "0"', 'CARGO_BUILD_JOBS: "4"'):
+            self.assertIn(setting, check)
+        # Same settings, so the two jobs' dependency caches hold the same builds.
+        self.assertEqual(environment("scripts-and-lint"), check)
+        # rust-lld made no measurable difference on the hosted runners; release builds
+        # keep the MSVC linker in any case (docs/verification/2026-11-21-ci-time.md).
+        self.assertNotIn("LINKER", self.text)
+        config = (ROOT / ".cargo/config.toml").read_text(encoding="utf-8")
+        self.assertNotIn("linker", config)
+
+    def test_only_root_workspace_jobs_cache_build_output_and_only_main_saves_it(self):
+        for name, job in self.jobs.items():
+            with self.subTest(job=name):
+                cached = 'build-cache: "true"' in job
+                self.assertEqual(cached, name in ("scripts-and-lint", "check", "release"))
+        setup = action("rust-setup")
+        self.assertRegex(setup, r"uses: Swatinem/rust-cache@[0-9a-f]{40} # v\d+\.\d+\.\d+\n")
+        self.assertIn('workspaces: ". -> _build"', setup)
+        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", setup)
+        self.assertIn("if: inputs.build-cache != 'true'\n      uses: actions/cache@v4", setup)
 
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
     def test_workflow_and_local_actions_parse_with_a_consistent_structure(self):

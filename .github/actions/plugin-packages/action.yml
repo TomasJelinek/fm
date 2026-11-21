@@ -1,0 +1,89 @@
+name: Plugin packages
+description: >-
+  Wait until this run's plugin jobs have uploaded the runner OS's viewer and filesystem
+  packages, download them to _build/ and install them into the protected root that the
+  private-test-installation action created. The job needs `actions: read`.
+inputs:
+  runner-label:
+    description: The job's runs-on label (matrix.os); producer jobs of that label are watched.
+    required: true
+  archive-fixtures:
+    description: Also download the archive job's exported worker fixtures to _build/archive-fixtures.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Wait for this run's plugin packages
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RUNNER_LABEL: ${{ inputs.runner-label }}
+        ARCHIVE_FIXTURES: ${{ inputs.archive-fixtures }}
+      run: |
+        # Every artifact that the pattern downloads below select, so that none starts with
+        # a partial set: the viewers and image-viewer legs, archive-filesystem and the
+        # filesystem-libraries legs of this OS (scripts/tests/test_ci_workflow.py).
+        $os = $env:RUNNER_OS
+        $names = @('basic', 'source', 'markdown', 'image', 'pdf' | ForEach-Object { "viewer-$os-$_" }) +
+          @('archive', 'native', 'network' | ForEach-Object { "filesystem-$os-$_" })
+        if ($env:ARCHIVE_FIXTURES -eq 'true') { $names += "archive-fixtures-$os" }
+        python -B scripts/ci-wait-for-artifacts.py --label $env:RUNNER_LABEL `
+          --producer viewers --producer image-viewer --producer archive-filesystem `
+          --producer filesystem-libraries @names
+        if ($LASTEXITCODE -ne 0) { throw 'The plugin packages of this run are unavailable' }
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: viewer-${{ runner.os }}-*
+        merge-multiple: true
+        path: _build/viewer-packages
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: filesystem-${{ runner.os }}-*
+        merge-multiple: true
+        path: _build/filesystem-packages
+    - if: inputs.archive-fixtures == 'true'
+      uses: actions/download-artifact@v4
+      with:
+        name: archive-fixtures-${{ runner.os }}
+        path: _build/archive-fixtures
+    - name: Install the packages into the private test installation
+      shell: pwsh
+      run: |
+        $testRoot = $env:HOST_TEST_INSTALL_ROOT
+        if (-not $testRoot -or -not (Test-Path -LiteralPath $testRoot -PathType Container)) {
+          throw 'Run the private-test-installation action first'
+        }
+        $library = if ($IsWindows) { 'midnight_viewer_basic.dll' } else { 'libmidnight_viewer_basic.so' }
+        $plugin = Join-Path $env:GITHUB_WORKSPACE "_build/viewer-packages/midnight-viewer-basic/$library"
+        "HOST_TEST_PLUGIN=$plugin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        # Private modes: directories and worker executables 700, other files 600.
+        function Protect-Tree([string]$Root, [string[]]$Executables) {
+          if ($IsWindows) { return }
+          find $Root -type d -exec chmod 700 '{}' '+'
+          if ($LASTEXITCODE -ne 0) { throw "Private installation permissions failed: $Root" }
+          find $Root -type f -exec chmod 600 '{}' '+'
+          if ($LASTEXITCODE -ne 0) { throw "Private installation permissions failed: $Root" }
+          foreach ($name in $Executables) {
+            find $Root -type f -name $name -exec chmod 700 '{}' '+'
+            if ($LASTEXITCODE -ne 0) { throw "Private installation permissions failed: $Root" }
+          }
+        }
+        $installedViewers = Join-Path $testRoot 'viewers'
+        Copy-Item -LiteralPath '_build/viewer-packages' -Destination $installedViewers -Recurse
+        Protect-Tree $installedViewers @('midnight-viewer-image', 'midnight-viewer-pdf')
+        "MIDNIGHT_VIEWER_TEST_INSTALL=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $installedFilesystems = Join-Path $testRoot 'filesystems'
+        Copy-Item -LiteralPath '_build/filesystem-packages' -Destination $installedFilesystems -Recurse
+        Protect-Tree $installedFilesystems @('midnight-fs-archive')
+        "MIDNIGHT_NATIVE_TEST_INSTALLATION=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $testApplication = Join-Path $testRoot 'midnight-explorer.exe'
+        "MIDNIGHT_IMAGE_VIEWER_TEST_APPLICATION=$testApplication" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "MIDNIGHT_PDF_VIEWER_TEST_APPLICATION=$testApplication" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        $archiveExecutable = if ($IsWindows) { 'midnight-fs-archive.exe' } else { 'midnight-fs-archive' }
+        $archiveWorker = Join-Path $env:GITHUB_WORKSPACE "_build/filesystem-packages/archive/$archiveExecutable"
+        if (-not $IsWindows) {
+          chmod 700 -- $archiveWorker
+          if ($LASTEXITCODE -ne 0) { throw 'Archive worker executable permissions failed' }
+        }
+        "ARCHIVE_WORKER=$archiveWorker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "ARCHIVE_TEST_INSTALL_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
