@@ -16,6 +16,7 @@ pub use fonts::{fixed_pitch_family, installed_families, is_generic_family, monos
 mod glyphs;
 mod options;
 mod raster;
+mod runs;
 mod scroll_anchors;
 mod selection;
 mod source_map;
@@ -104,12 +105,29 @@ impl TextRenderer {
         self.layout_with_styles(text, options, spans, &[])
     }
 
+    /// Lays out `text` with paint `spans` and typography `styles`. A layout longer than
+    /// 64 KiB, tabs expanded, is shaped in runs of at most 64 KiB, so carets, hit tests and
+    /// selections stay exact up to [`MAX_TEXT_BYTES`]. Inputs over their budgets fail with
+    /// [`LayoutError::LimitExceeded`].
     pub fn layout_with_styles(
         &mut self,
         text: &str,
         options: &TextOptions<'_>,
         spans: &[ColorSpan],
         styles: &[StyleSpan],
+    ) -> Result<TextPage, LayoutError> {
+        self.layout_with_runs(text, options, spans, styles, runs::RUN_BYTES)
+    }
+
+    /// [`Self::layout_with_styles`] with shaping runs of at most `run_bytes`
+    /// laid-out bytes (see `runs`).
+    fn layout_with_runs(
+        &mut self,
+        text: &str,
+        options: &TextOptions<'_>,
+        spans: &[ColorSpan],
+        styles: &[StyleSpan],
+        run_bytes: usize,
     ) -> Result<TextPage, LayoutError> {
         validate_input(text, options.size, options.scale, spans)?;
         if options
@@ -133,6 +151,7 @@ impl TextRenderer {
             return Err(LayoutError::LimitExceeded);
         }
         let (shaped, source_map) = SourceMap::prepare(text, options.tab_width)?;
+        let pieces = runs::alternate_pieces(&shaped, run_bytes)?;
         let mut builder = self
             .layouts
             // Page-local baseline rounding changes the spacing pattern when
@@ -199,6 +218,10 @@ impl TextRenderer {
             if !range.is_empty() {
                 builder.push(StyleProperty::Brush(span.color), range);
             }
+        }
+        let features = runs::alternate_features(options.tabular_numbers);
+        for piece in pieces {
+            builder.push(StyleProperty::FontFeatures(features.into()), piece);
         }
         let mut layout = builder.build(&shaped);
         layout.break_all_lines(options.wrap_width);

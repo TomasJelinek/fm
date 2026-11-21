@@ -1,10 +1,9 @@
-//! Travel over rows too long for one page to hold the window's rows and its guards: the
-//! co-simulation of `worker_frontier_tests.rs`, in which the real worker shows rows of
-//! 1200, 2400 and 8000 bytes, or a file mixing them with short rows, from a simulated basic
-//! or Source viewer that answers one frame later. One page is one layout, at most 64 KiB
-//! (`worker_chain.rs`): 54 rows of 1200 bytes, 27 of 2400 and 8 of 8000, while a 720-pixel
-//! window shows 44 rows (76 with its guards). Every gesture must still move its whole
-//! distance, wrapped or not.
+//! Travel over long rows: the co-simulation of `worker_frontier_tests.rs`, in which the
+//! real worker shows rows of 1200, 2400 and 8000 bytes, or a file mixing them with short
+//! rows, from a simulated basic or Source viewer that answers one frame later. One page is
+//! one layout of at most 120 KiB (`viewport::PAGE_BYTES`): the 76 rows of 1200 bytes its
+//! line budget asks for, 51 of 2400 and 15 of 8000, while a 720-pixel window shows 44 rows
+//! (76 with its guards). Every gesture must still move its whole distance, wrapped or not.
 use super::frontier::{Engine, NOTCH, Window, rest, rows, settle, try_gesture};
 use super::*;
 use std::fmt::Write as _;
@@ -114,26 +113,75 @@ fn keeps_travel(name: &str, source: &str, landing: Option<f64>) {
     assert!(report.is_empty(), "{name}: {report:#?}");
 }
 
-/// 54 rows fill a page, more than the window's 44 but fewer than its 76 with guards. Text
-/// pages of the basic viewer's 8 KiB ranges reached 73,584 bytes, past what one layout
-/// places right: the caret of each backward refill's last row fell a row low, and every
-/// PageUp stopped three rows (49 px) short.
+/// Text pages of the basic viewer's 8 KiB ranges reached 73,584 bytes, past what one layout
+/// then placed right: the caret of each backward refill's last row fell a row low, and
+/// every PageUp stopped three rows (49 px) short.
 #[test]
 fn rows_of_1200_bytes_keep_every_gesture_s_travel() {
     keeps_travel("1200-byte rows", &rows(1_500_000 / 1200, 1200), Some(0.002));
 }
 
-/// 27 rows fill a page, fewer than the window shows: the page left the retained camera,
-/// whose relative scrolling clamped each step to the next page's top. PageDown moved 27
-/// rows (443 px) in Source and 3 in Text, and an arrow key one row.
+/// 27 rows filled a page of 64 KiB, fewer than the window shows: the page left the
+/// retained camera, whose relative scrolling clamped each step to the next page's top.
+/// PageDown moved 27 rows (443 px) in Source and 3 in Text, and an arrow key one row.
 #[test]
 fn rows_of_2400_bytes_keep_every_gesture_s_travel() {
     keeps_travel("2400-byte rows", &rows(1_500_000 / 2400, 2400), Some(0.002));
 }
 
-/// Eight rows fill a page, and PageDown moved at most those eight (131 px), in Text one row
-/// or none. A Source position lands on a whole row (`source_minimum_origin`): two rows are
-/// 0.4 % of this file.
+/// A page of 120 KiB holds 51 rows of 2400 bytes, more than the window's 44. With pages of
+/// 64 KiB (27 rows), 245 to 489 of the window's 720 pixels stayed blank below the page's
+/// rows at rest. The camera may still pass a page's rows until the next refill
+/// (`viewport::camera_span`): at rest, by less than a tenth of the window.
+#[test]
+fn rows_of_2400_bytes_fill_the_window_at_rest() {
+    let source = rows(1_500_000 / 2400, 2400);
+    let screen = f64::from(SIZE.height);
+    for mode in [viewer::MODE_TEXT, viewer::MODE_SOURCE] {
+        let mut engine = Engine::open(source.clone(), mode, SIZE, 1);
+        let mut window = Window::default();
+        rest(&mut engine, &mut window);
+        window.seek(&mut engine, 0.5);
+        assert!(
+            settle(&mut engine, &mut window),
+            "mode {mode}: the position rests"
+        );
+        let mut blank = vec![blank_below_rows(&engine)];
+        for (inputs, repeat) in [
+            (vec![(screen, true)], 4),
+            (vec![(NOTCH, false); 5], 4),
+            (vec![(ARROW, true); 20], 1),
+            (vec![(-screen, true)], 4),
+        ] {
+            for _ in 0..repeat {
+                let moved = try_gesture(&mut engine, &mut window, &inputs, false);
+                assert!(moved.is_some(), "mode {mode}: a gesture rests");
+                blank.push(blank_below_rows(&engine));
+            }
+        }
+        assert!(
+            blank.iter().all(|pixels| *pixels < screen / 10.0),
+            "mode {mode}: blank pixels below the rows at rest {blank:?}"
+        );
+    }
+}
+
+/// Pixels of the window below the shown page's rows while the file goes on.
+fn blank_below_rows(engine: &Engine) -> f64 {
+    let worker = &engine.worker;
+    let (Some(page), Some(shaped)) = (&worker.page, &worker.shaped) else {
+        return f64::INFINITY;
+    };
+    if !page.after {
+        return 0.0;
+    }
+    let window = f64::from(worker.geometry.height) * f64::from(worker.geometry.scale);
+    (f64::from(worker.origin[1]) + window - f64::from(shaped.height())).max(0.0)
+}
+
+/// Eight rows filled a page of 64 KiB, and PageDown moved at most those eight (131 px), in
+/// Text one row or none; a page of 120 KiB holds fifteen. A Source position lands on a
+/// whole row (`source_minimum_origin`): two rows are 0.4 % of this file.
 #[test]
 fn rows_of_8000_bytes_keep_every_gesture_s_travel() {
     keeps_travel("8000-byte rows", &rows(4_000_000 / 8000, 8000), Some(0.004));

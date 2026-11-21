@@ -13,14 +13,14 @@
 //! only the rows past the page's edge, and its reply is joined to the rows the page holds
 //! (`Worker::overlap`), as the reply to a byte-capped read is joined to the next range.
 //!
-//! A joined page is one text layout and stays within what one layout takes (`fit`): its
-//! renderer keeps a glyph cluster's offset inside its shaping run in 16 bits (parley 0.11,
-//! `ClusterData::text_offset`), and uniformly styled text is one run, so every byte past
-//! 64 KiB of a page would map to the wrong glyph. The caret of offset 72,000 of a 73,200-byte
-//! page lay on the page's end, a row too low, and refills placed on it lost travel.
+//! A joined page is one text layout and stays within the page's budget (`fit`). Before the
+//! renderer bounded its shaping runs, whose glyph clusters keep their offset in 16 bits
+//! (parley 0.11, `ClusterData::text_offset`), every byte past 64 KiB of a page mapped to the
+//! wrong glyph: the caret of offset 72,000 of a 73,200-byte page lay on the page's end, a
+//! row too low, and refills placed on it lost travel.
 use super::*;
 
-/// The most bytes one joined page lays out, tabs expanded: one shaping run's 16-bit offsets.
+/// The most bytes one joined page lays out, tabs expanded (`viewport::PAGE_BYTES`).
 pub(super) const JOIN_BYTES: usize = crate::viewport::PAGE_BYTES;
 /// The most color spans one layout takes (`midnight_viewer_render`'s span limit).
 pub(super) const JOIN_SPANS: usize = crate::viewport::PAGE_SPANS;

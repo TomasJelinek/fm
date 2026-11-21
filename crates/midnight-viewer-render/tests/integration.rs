@@ -15,6 +15,7 @@ mod document_tables;
 mod github_heading_pixels;
 mod github_table_metrics;
 mod layout;
+mod long_layouts;
 mod monospace;
 mod options;
 mod raster;

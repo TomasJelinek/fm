@@ -303,15 +303,15 @@ fn adjacent_text_pages_join_and_a_cut_first_row_is_dropped() {
     assert!(!cut && kept.text == line.text);
 }
 
-/// One joined page is one layout, and its renderer places no byte past 64 KiB of a shaping
-/// run right: a forward chain over 1200-byte rows read nine 8176-byte ranges, 73,584 bytes,
-/// and the caret of its last rows fell on the page's end. Its last read now takes only the
-/// room left, tabs counted at their widest, and the page's last whole row lies where the
-/// rows above it end.
+/// One joined page is one layout. Before the renderer bounded its shaping runs, a forward
+/// chain over 1200-byte rows read nine 8176-byte ranges, 73,584 bytes, and the caret of its
+/// last rows fell on the page's end. A chain's last read takes only the room left, tabs
+/// counted at their widest, and the last whole row of a full page, past 64 KiB, lies where
+/// the rows above it end.
 #[test]
 fn a_joined_page_fills_one_layout_and_places_its_last_row() {
     for tab in [false, true] {
-        let source: String = rows(400, Some(1200))
+        let source: String = rows(400, Some(2400))
             .lines()
             .map(|row| {
                 let row = if tab {

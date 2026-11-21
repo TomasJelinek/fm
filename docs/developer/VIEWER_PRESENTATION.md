@@ -150,7 +150,7 @@ The basic and Source plugins answer a Text or Source viewport with at most about
 One anchor per character and the wire item budget limit a reply to about 13,000
 characters, so larger plugin pages are not possible within the current API. The engine
 joins byte-capped replies up to the request's line budget, in at most 16 reads and one
-text layout: 64 KiB laid out, a tab counted at its widest (four bytes), and 4,096 styled
+text layout: 120 KiB laid out, a tab counted at its widest (four bytes), and 4,096 styled
 spans (`worker_chain.rs`; see below). A retained refill asks for the rows around the
 camera, and the shown page already holds most of them: the page moves a little each time
 the camera nears its edge. Such a request reads only the rows past the shown page's edge
@@ -181,13 +181,15 @@ reads every request whole for "before". Text and Source gave the same counts up 
 Bursts take 112 frames before and after; twenty Down presses read 5 → 2 times over
 500-byte rows and 16 → 2 over 830-byte rows. Opening reads are unchanged (1 read for
 60-byte rows, 8 for 830-byte rows), no short file reads more, and every gesture still
-moves its whole distance. The rerun after the long-row change below gave every count of
-this table again, in Text and Source.
+moves its whole distance. The reruns after the long-row change, the renderer's bounded
+shaping runs and the pages of 120 KiB below gave every count of this table again, in Text
+and Source.
 
 **Rows longer than a page holds.** A joined page is one text layout, and the renderer's
 layout (parley 0.11) keeps a glyph cluster's offset inside its shaping run in 16 bits
-(`ClusterData::text_offset`); uniformly styled text is one shaping run, so no byte past
-64 KiB of a page had the right caret, hit test or line range. The chain read on until a
+(`ClusterData::text_offset`); uniformly styled text was one shaping run until the renderer
+bounded its runs (below), so no byte past 64 KiB of a page had the right caret, hit test or
+line range. The chain read on until a
 page reached 64 KiB, and Text pages of the basic viewer's 8,176-byte ranges grew to 73,584
 bytes: the caret of offset 72,000 of a 73,200-byte page lay on the page's end, a row too
 low. A backward refill restores the camera on the last row of its page, so each one
@@ -200,11 +202,11 @@ back to the file start: PageUp over 1200-byte rows jumped 24,359 px. Refills pla
 rows past 64 KiB anchored at their page's start instead (24 times over 2400-byte rows),
 and new surfaces arrived while the window still moved, which drops its remaining gesture:
 PageUp over 2400-byte rows stopped after 148 to 247 of 720 px. Reading on until a page
-fills the window would make pages longer than 64 KiB too (44 rows of 2400 bytes are
-105 KB). A joined page now stays within one layout (`fit`): a chained read asks only for
-the room left, and a reply is cut at an anchor to fit. 54 rows of 1200 bytes fill a
-page, 27 of 2400 and 8 of 8000, while a 720-pixel window shows 44 rows, 76 with its
-guards.
+fills the window made pages longer than 64 KiB too (44 rows of 2400 bytes are 105 KB). A
+joined page now stays within one layout (`fit`): a chained read asks only for the room
+left, and a reply is cut at an anchor to fit. With pages of 64 KiB, 54 rows of 1200 bytes
+filled a page, 27 of 2400 and 8 of 8000, while a 720-pixel window shows 44 rows, 76 with
+its guards; pages now hold 120 KiB (below).
 
 A page whose rows did not fill the window left the retained camera, and the relative
 scrolling that took over clamped each step to the next page's top: PageDown over
@@ -213,7 +215,7 @@ page that barely filled it let its camera move a few pixels, too few for the gua
 refill keeps above the camera: no refill advanced, or the camera stopped between two
 pages that each covered one side of it. A page whose rows are too long for it to hold the
 window and a guard on each side (its bytes or styled spans over those pixels would exceed
-a page's 64 KiB or 4,096) now keeps the retained camera and lets it move at least a guard
+a page's 120 KiB or 4,096) now keeps the retained camera and lets it move at least a guard
 (256 logical pixels), as far as its last row's top and past its first row, while the
 window shows blank space below the page's rows; a refill keeps the rest of the page
 below the camera (`viewport::camera_span`). A page that ends the file keeps its end at the window's bottom
@@ -242,10 +244,11 @@ measurement gives, before (the code of 21 November) → after:
 | 2400 bytes | 36 (Text) or 32 reads, all short → 55, 385 KiB, 82 frames | 180 or 160, short → 36, 175 KiB | 180 or 160, short → 12, 72 KiB | 36 or 32, short → 58, 409 KiB |
 | 8000 bytes | not measured → 169, 1321 KiB, 210 frames | → 74, 578 KiB, 123 frames | → 35, 273 KiB | → 202, 1395 KiB |
 
-Text and Source read the same after; no gesture stops short. A page holds at most 64 KiB
-of laid-out text and 4,096 spans, with one 16-byte anchor per character (at most 1 MiB);
-a chain holds one such page besides the shown one, and pages grew to 73,584 bytes before.
-Joins, cuts and layouts stay on the viewer worker, and the window's camera is unchanged.
+Text and Source read the same after; no gesture stops short. A page then held at most
+64 KiB of laid-out text and 4,096 spans, with one 16-byte anchor per character (at most
+1 MiB); a chain holds one such page besides the shown one, and pages grew to 73,584 bytes
+before. Joins, cuts and layouts stay on the viewer worker, and the window's camera is
+unchanged.
 
 A scrollbar position lands within 0.2 % of the released thumb over rows of 1200 and 2400
 bytes and within 0.4 % over 8000-byte rows, where Source places its camera on a whole row
@@ -254,6 +257,67 @@ this change: its first read estimates the target from the shown page's density, 
 correction read is allowed (`refine_position`). A piece of a row longer than one layout,
 without a row break, keeps the viewport path: such a row shows as pieces, one per line,
 which these tests do not cover.
+
+**Layouts longer than one shaping run.** The renderer bounds the shaping runs of every
+layout itself (`midnight-viewer-render`, `runs.rs`), so every layout it accepts, up to
+256 KiB with tabs expanded (`MAX_TEXT_BYTES`), has the right caret, hit test, selection
+and line range: Markdown and document blocks, whose text adds separators, tab-expanded
+text and every other caller included. Parley starts a run where the font features change,
+and a shaper drops a feature whose value is zero before it looks the feature up
+(harfrust's `ot_map`, as in HarfBuzz), so every other piece of a layout longer than 64 KiB
+gets the disabled feature `"MRUN" off` besides its own, and its glyphs and advances stay
+those of one run. A piece ends at the last line start within 64 KiB, where shaping never
+joins glyphs. Only a line longer than 64 KiB is cut inside, after its last whitespace that
+fits, else at its last grapheme-cluster boundary, where a kerning pair or ligature across
+the cut can be lost. One grapheme cluster longer than 64 KiB is cut between two of its
+characters: its carets stay right, and parley, which counts a cluster's glyphs in 8 bits
+(`ClusterData::glyph_len`), draws such a cluster wrong anyway. Layouts up to 64 KiB are
+unchanged. Verified on Windows, 21 November 2026:
+`tests/long_layouts.rs` compares the caret, a hit test one pixel into the character and a
+three-byte selection at bytes past 65,536 with the same row laid out alone, over 100,000
+bytes of 100-byte rows, unwrapped and wrapped at 300 px, and over 4,000 tabbed rows whose
+52,000 bytes lay out as 88,000. All three failed before: the caret of byte 65,500 lay at
+y 20,000 (the text's end) instead of 13,100, and with tabs that of byte 38,727 at 80,000
+instead of 59,580. `runs_tests.rs` lays out six texts (Latin kerning and ligatures, Arabic
+and Hebrew with digits, combining marks and emoji sequences, CJK with Hangul and
+Devanagari, tabs with CRLF, Unicode line separators) in three typographies, one with paint
+and style spans, cut at every line start, and finds every glyph, line metric, caret, hit
+test, selection rectangle and pixel equal to those of one run; turning kerning and
+ligatures off in the cut pieces instead fails it. Monospace Latin cut after its spaces is
+equal too. Cuts at line starts cost no measurable time: 4,095 lines of 73,710 bytes laid
+out in 13.1 ms without them and 13.2 ms with them. One 256 KiB line, whose cuts scan its
+grapheme clusters, took 30.4 ms without cuts and 32.2 ms with them (release build, medians
+of nine in the quietest of three interleaved rounds while other builds ran; the other
+rounds varied by up to a fifth either way).
+
+**Pages of 120 KiB.** With bounded runs, a joined page lays out up to 120 KiB
+(`viewport::PAGE_BYTES`): fifteen plugin reads of 8 KiB, so the last of a chain's sixteen
+takes the room left. 51 rows of 2400 bytes fill a page instead of 27, more than the 44 a
+720-pixel window shows. At rest after a seek to the middle and the measurement's gestures,
+0 to 12 px of the window stayed blank below the page's rows instead of 245 to 489 px, in
+Text and Source (`rows_of_2400_bytes_fill_the_window_at_rest`, which fails with pages of
+64 KiB). The camera may still pass a page's rows by up to a guard before the next refill
+(`viewport::camera_span`). Pages of 1200-byte rows end at their line budget (76 rows).
+Rows of 8000 bytes still leave most of the window blank: a page holds 15 of them (8
+before), about 250 of the window's 720 px. A page holding the window and a guard below it
+would take 144 KB of 2400-byte rows, more than sixteen reads hold. The measurement, pages
+of 64 KiB → 120 KiB (Text; Source counts the same except opening, 8 → 12 reads over
+1200-byte rows and 8 → 15 over longer ones):
+
+| Rows | Open or seek | Four PageDown | Four bursts of five notches | Twenty Down | Four PageUp |
+| --- | --- | --- | --- | --- | --- |
+| 1200 bytes | 9 reads, 11 frames → 12, 14 | 34, 201 KiB, 62 frames → 28, 205 KiB, 52 frames | 32, 86 KiB → 19, 86 KiB | 8, 39 KiB, 26 frames → 3, 22 KiB, 24 frames | 35, 213 KiB, 63 frames → 27, 194 KiB, 50 frames |
+| 2400 bytes | 9, 11 → 16, 18 | 55, 385 KiB, 82 frames → 57, 399 KiB, 85 frames | 36, 175 KiB → 36, 171 KiB | 12, 72 KiB, 25 frames → 12, 77 KiB, 26 frames | 58, 409 KiB, 86 frames → 59, 411 KiB, 87 frames |
+| 8000 bytes | 9, 11 → 16, 18 | 169, 1321 KiB, 210 frames → 162, 1263 KiB, 190 frames | 74, 578 KiB, 123 frames → 78, 609 KiB, 139 frames | 35, 273 KiB, 46 frames → 34, 265 KiB, 43 frames | 202, 1395 KiB, 247 frames → 187, 1390 KiB, 217 frames |
+
+Rows of up to 830 bytes read exactly as before, and the long-row tests above pass with
+these pages, as do the chain tests (`a_joined_page_fills_one_layout_and_places_its_last_row`
+now joins 2400-byte rows, whose full page passes 64 KiB). Pages of 128 KiB measured alike
+but end at the sixteenth read, not at the layout's room. A page's layout grows with it: 64 KiB of
+2400-byte rows take about 8 ms in a release build, 128 KiB about 16 ms, on the viewer
+worker. A page's anchors take up to 1.9 MiB (16 bytes per character) instead of 1 MiB, and
+a chain holds one page besides the shown one. Source pages of densely highlighted long rows
+can still end at the 4,096-span budget before their bytes do.
 
 A frame of the shown surface whose pixels do not reach the camera the window shows is
 refused. This happens when the engine pages or restyles for the camera a request asked
