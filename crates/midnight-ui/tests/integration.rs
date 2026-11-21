@@ -146,6 +146,7 @@ mod panel_warning_details;
 mod parent_entry_icon;
 mod parent_focus;
 mod path_bar_file;
+mod path_bar_file_windows;
 mod path_bar_fit;
 mod path_elision;
 mod path_paste_ui;

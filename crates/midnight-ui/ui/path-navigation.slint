@@ -226,7 +226,7 @@ export component PathNavigation inherits Rectangle {
                 accessible-role: button; accessible-label: "Edit folder path";
                 accessible-action-default => { root.focus-editor(); }
                 edit-area := TouchArea { mouse-cursor: MouseCursor.text; clicked => { root.focus-editor(); } }
-                Tip { text: ShortcutHints.hint("Enter a folder path", "panel.path") + ". Enter opens it; Escape cancels."; }
+                Tip { text: ShortcutHints.hint("Enter a folder or file path", "panel.path") + ". Enter opens the folder, or the file's folder with the cursor on the file; Escape cancels."; }
             }
         }
     }

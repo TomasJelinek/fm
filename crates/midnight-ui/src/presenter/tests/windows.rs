@@ -211,3 +211,42 @@ fn a_known_unc_share_does_not_depend_on_discovery_plugin_availability() {
         );
     }
 }
+
+#[test]
+fn a_file_typed_in_other_letter_case_gets_the_cursor_under_its_listed_name() {
+    use super::typed_paths::{file_entry, note, redirected};
+    let folder = test_root().join("Složka");
+    let typed = folder.join("ČTI MĚ.TXT");
+    let listed = folder.join("čti mě.txt");
+    let mut p = Presenter::new(test_root().join("start"), "right".into());
+    let navigation = redirected(&mut p, &typed);
+    finish(
+        &mut p,
+        PaneId::Left,
+        navigation,
+        vec![
+            file_entry(1, folder.join("a.txt")),
+            file_entry(2, listed.clone()),
+        ],
+    );
+    assert_eq!(p.panes[0].cursor, Some(EntryId(2)));
+    assert!(note(&p).is_none());
+    assert_eq!(p.panel_details(PaneId::Left)[0].value, "čti mě.txt");
+
+    // A folder that keeps letter case apart can list two such names: neither is chosen,
+    // and the status line names the typed file.
+    let mut p = Presenter::new(test_root().join("start"), "right".into());
+    let navigation = redirected(&mut p, &typed);
+    finish(
+        &mut p,
+        PaneId::Left,
+        navigation,
+        vec![
+            file_entry(1, listed),
+            file_entry(2, folder.join("Čti Mě.txt")),
+        ],
+    );
+    assert!(p.panes[0].parent_cursor);
+    let note = note(&p).expect("the status line says why the file is not shown");
+    assert_eq!(note.value, "ČTI MĚ.TXT is not listed here");
+}

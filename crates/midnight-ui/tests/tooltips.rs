@@ -456,6 +456,17 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             let button = find(root(&window), label, AccessibleRole::Button).remove(0);
             hover(&window, &native, &time, &mut pixels, center(&button), hint);
         }
+        // The blank end of a path bar edits the path, a folder's or a file's.
+        let edit = find(root(&window), "Edit folder path", AccessibleRole::Button).remove(0);
+        hover(
+            &window,
+            &native,
+            &time,
+            &mut pixels,
+            center(&edit),
+            "Enter a folder or file path (Ctrl+G). Enter opens the folder, or the file's \
+             folder with the cursor on the file; Escape cancels.",
+        );
         window.window().dispatch_event(WindowEvent::PointerExited);
         window.set_active_pane(0);
         window.invoke_focus_files();
@@ -463,7 +474,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         draw(&native, &mut pixels);
         assert!(!find(root(&window), "Folder path", AccessibleRole::TextInput).is_empty());
         let folder_hint = format!(
-            "Folder path: {}\n{}{}\nEdit and press Enter to open a folder. Focus path editor (Ctrl+G)",
+            "Folder path: {}\n{}{}\nEdit and press Enter to open a folder, or a file's folder with the cursor on the file. Focus path editor (Ctrl+G)",
             window.get_left_path(),
             window.get_left_status(),
             if window.get_left_loading() {

@@ -628,7 +628,7 @@ export component FilePane inherits Rectangle {
                         text-size: root.minimal ? min(24px, Theme.font-size) : Theme.font-size;
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
                         path: root.path; parts: root.path-parts; anchor: root.path-anchor;
-                        hint: "Folder path: " + root.path + "\n" + root.status + (root.loading-feedback ? "\nReading folder…" : "") + "\nEdit and press Enter to open a folder. " + ShortcutHints.hint("Focus path editor", "panel.path");
+                        hint: "Folder path: " + root.path + "\n" + root.status + (root.loading-feedback ? "\nReading folder…" : "") + "\nEdit and press Enter to open a folder, or a file's folder with the cursor on the file. " + ShortcutHints.hint("Focus path editor", "panel.path");
                         navigate(path) => { root.activate(); root.navigate(path); root.focus-list(); }
                         selected-part(identity) => { root.activate(); root.path-part(identity); root.focus-list(); }
                         copy-part(identity) => { root.activate(); root.path-copy(identity); }

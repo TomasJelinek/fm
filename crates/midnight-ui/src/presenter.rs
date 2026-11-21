@@ -1378,7 +1378,10 @@ impl Presenter {
                     .then_some(request.wanted_cursor.as_ref())
                     .flatten()
                     .and_then(|path| index.by_path.get(path))
-                    .copied();
+                    .copied()
+                    .or_else(|| {
+                        path_target::listed_file_target(&mut p.file_target, &request, &entries)
+                    });
                 let cursor = wanted_cursor
                     .or_else(|| {
                         source_cursor

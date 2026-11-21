@@ -201,3 +201,24 @@ fn submitting_unchanged_lossy_path_text_reuses_the_original_raw_path() {
         })
     );
 }
+
+#[test]
+fn a_file_typed_in_other_letter_case_names_no_listed_entry() {
+    use super::finish;
+    use super::typed_paths::{file_entry, note, redirected};
+    use crate::Presenter;
+    use midnight_core::PaneId;
+    let folder = test_root().join("složka");
+    let typed = folder.join("ČTI MĚ.TXT");
+    let mut p = Presenter::new(test_root().join("start"), "right".into());
+    let navigation = redirected(&mut p, &typed);
+    finish(
+        &mut p,
+        PaneId::Left,
+        navigation,
+        vec![file_entry(1, folder.join("čti mě.txt"))],
+    );
+    assert!(p.panes[0].parent_cursor);
+    let note = note(&p).expect("the status line says why the file is not shown");
+    assert_eq!(note.value, "ČTI MĚ.TXT is not listed here");
+}

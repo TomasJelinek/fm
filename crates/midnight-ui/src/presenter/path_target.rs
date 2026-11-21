@@ -6,6 +6,14 @@
 //! status line and says why.
 use super::*;
 
+// Whether a typed name names a listed entry in other letter case.
+#[cfg(windows)]
+#[path = "name_case_windows.rs"]
+mod name_case;
+#[cfg(unix)]
+#[path = "name_case_unix.rs"]
+mod name_case;
+
 /// A file that the path bar named: the listing that shows its folder, and whether the
 /// backend found it hidden.
 pub(crate) struct FileTarget {
@@ -30,6 +38,24 @@ pub(super) fn typed_path(text: &str) -> &str {
             })
         })
         .unwrap_or(text)
+}
+
+/// The entry of the listing that `request` committed that the path bar's file names
+/// when no entry has its exact path: on Windows, whose folders ignore letter case, the
+/// one entry whose name is the typed one in other letter case (`name_case`); on Linux
+/// none. The file then goes by its listed name, which the status line names too; with
+/// no such entry, or two or more, the status line names the typed file.
+pub(super) fn listed_file_target(
+    target: &mut Option<FileTarget>,
+    request: &Request,
+    entries: &[Entry],
+) -> Option<EntryId> {
+    let target = target
+        .as_mut()
+        .filter(|target| target.navigation == request.navigation && !request.cursor_touched)?;
+    let entry = name_case::case_variant(entries, target.path.file_name()?)?;
+    target.path = entry.path.clone();
+    Some(entry.id)
 }
 
 impl Presenter {
@@ -186,13 +212,13 @@ impl Presenter {
                     "shows them",
                 ),
             ),
-            // Removed meanwhile, or (on a filesystem that ignores letter case) typed
-            // with other letters than the folder lists: the name is matched exactly.
+            // Removed meanwhile, or on Windows typed in a letter case that more than one
+            // listed name has (a folder whose names keep letter case apart).
             None => (
                 "unlisted",
                 format!("{name} is not listed here"),
-                "The folder lists no file of exactly this name: it was removed, or its \
-                 letters differ in case."
+                "The folder lists no file of exactly this name: it was removed, or more \
+                 than one name differs from it only in letter case."
                     .into(),
             ),
         };

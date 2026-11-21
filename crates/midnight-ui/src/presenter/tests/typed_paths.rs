@@ -11,7 +11,7 @@ fn fixture() -> (PathBuf, PathBuf) {
     (folder, file)
 }
 
-fn file_entry(id: u64, path: PathBuf) -> Entry {
+pub(super) fn file_entry(id: u64, path: PathBuf) -> Entry {
     Entry::new(EntryId(id), path, EntryKind::File)
 }
 
@@ -73,10 +73,19 @@ fn type_path(p: &mut Presenter, typed: &str, path: &Path) -> NavigationId {
     listing_of(&sent, path).unwrap_or_else(|| panic!("{typed}: {sent:?}"))
 }
 
-fn note(p: &Presenter) -> Option<panel_details::PanelDetail> {
+pub(super) fn note(p: &Presenter) -> Option<panel_details::PanelDetail> {
     p.panel_details(PaneId::Left)
         .into_iter()
         .find(|detail| detail.label == "Not shown")
+}
+
+/// Type the path of the file `typed` in the left path bar and answer that it names a
+/// file: the listing of its folder that the panel then requests.
+pub(super) fn redirected(p: &mut Presenter, typed: &Path) -> NavigationId {
+    let navigation = type_path(p, text(typed), typed);
+    let ((), sent) =
+        sending(|send| p.apply_with_sender(not_a_folder(navigation, typed, false), send));
+    listing_of(&sent, typed.parent().unwrap()).expect("the file's folder is listed")
 }
 
 #[test]

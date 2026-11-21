@@ -22,15 +22,21 @@ before the failure; only the path editor's request, while still pending, then li
 the folder with the file as its focus hint. Other navigations keep their failure and
 recovery, and a missing path its error. A final separator does not make a file's
 path a folder's, as Paste ends every path with one. A file that the panel's own
-listing shows gets the cursor without a navigation. While the panel does not show
-the file, a note leads the panel's status line and says why: hidden files are not
-shown, the panel filter leaves it out, or the folder lists no file of exactly that
-name (names are matched exactly, so on Windows a name typed in other letter case is
-not found). An inline tree, a quick search or search results are left as by any
-navigation; the unchanged text of an archive folder and Network locations keep their
-routes. Tests: presenter `typed_paths` and one search-results case in
-`find_feed_tests`, the engine's `not_a_folder` unit and `navigation_not_a_folder`
-integration tests, and the UI integration module `path_bar_file`.
+listing shows gets the cursor without a navigation. A Windows folder ignores letter
+case, so when its listing has no entry of exactly the typed name, the one entry whose
+name differs only in letter case (simple uppercase mapping of each UTF-16 unit, as
+NTFS compares names) gets the cursor and the file goes by that name; with two or more
+such entries (a folder that keeps letter case apart) none is chosen. Linux names match
+exactly. While the panel does not show the file, a note leads the panel's status line
+and says why: hidden files are not shown, the panel filter leaves it out, or the
+folder does not list it under that name. An inline tree, a quick search or search
+results are left as by any navigation; the unchanged text of an archive folder and
+Network locations keep their routes. The editor's tooltips say that a file's path
+opens the file's folder with the cursor on the file. Tests: presenter `typed_paths`,
+one search-results case in `find_feed_tests` and the platform cases in the presenter's
+`windows`/`unix` tests and `name_case_windows`; the engine's `not_a_folder` unit and
+`navigation_not_a_folder` integration tests; the UI integration modules
+`path_bar_file` and `path_bar_file_windows`, and `tooltips`.
 
 Clipboard text is read by the existing bounded backend worker, with a 4 MiB
 encoded-payload resource policy. This is not a path-length restriction. Invalid
