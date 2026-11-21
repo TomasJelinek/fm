@@ -149,9 +149,11 @@ Handover items:
   documents (`42c09152`), and no machine, account, branch or checkout path in
   tracked files (`df479453`, `5984bf66`, `08914523`).
 - Viewers: very long rows keep their whole scroll travel (`d0733dc7`): a page holds
-  at most what one layout places correctly (parley places byte offsets past 64 KiB of
-  a shaping run wrongly), and pages of rows too long for the window keep the retained
-  camera.
+  at most what one layout places correctly, and pages of rows too long for the window
+  keep the retained camera. The renderer then cut every layout longer than 64 KiB into
+  shaping runs, because parley keeps a cluster's offset in its run in 16 bits, without
+  changing a glyph, caret or pixel; long-row pages hold 120 KiB since, and 2400-byte
+  rows fill the window at rest (`ffa6f3fe`).
 
 CI runs 44828132118 (`3987d3c8`), 44837536773 (`c5c95186`), 44845219935
 (`9a41840c`) and 44851212423 (`985c8ec0`) passed every job on Windows and Linux. Run
@@ -196,12 +198,18 @@ Still open from the handover:
   WIN-7 and WIN-9 are fixed in source and not re-run, and the acceptance scenarios
   changed for all platforms need a Linux run
   ([Linux reruns needed](developer/acceptance/windows.md#linux-reruns-needed)).
-- WIN-8 (copying 100,001 archive members out at about 100 files per second in a debug
-  build) needs a release measurement.
-- Viewers: over unwrapped rows too long for one layout to fill the window, the window
-  shows blank space below the page's rows (one layout holds at most 64 KiB); the
-  renderer accepts other layouts over 64 KiB, whose positions past that are wrong;
-  larger plugin pages need a wire API change (an Architect decision).
+- WIN-8, copying 100,001 archive members out: the Windows namespace pins' ancestry
+  checks are batched (121 → 44 ancestor opens per file; release 97–132 → 133–183
+  files/s, median 931 → 562 s, on a machine shared with builds), so a release build
+  meets the scenario's 600 s on a moderately loaded machine but not under full load.
+  Further steps, each an Architect decision: one namespace change per file instead of
+  two (a job-private staging folder), a cheaper proof of a held ancestry, fewer archive
+  source validations per member and fewer blocking-task hops per file
+  ([Windows acceptance record](developer/acceptance/windows.md)).
+- Viewers: unwrapped rows longer than about 2,800 bytes still leave blank space below
+  a page's rows at rest in a window of 44 rows (a page holds 120 KiB and at most 16
+  plugin reads; 8000-byte rows fill 15 rows), and larger plugin pages need a wire API
+  change (an Architect decision).
 
 ### Integration follow-up — 20 November 2026
 

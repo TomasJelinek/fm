@@ -1,6 +1,8 @@
 //! Pooled metadata-only directory authority and explicitly qualified native lookup rules.
 use super::*;
+use midnight_platform_common::transfer_namespace::current_transfer_namespace_refresh_batch;
 use std::{
+    cell::RefCell,
     fs::OpenOptions,
     mem::size_of,
     os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
@@ -72,6 +74,79 @@ type Pool<T> = Mutex<HashMap<TransferIdentity, Weak<T>>>;
 static ANCHORS: OnceLock<Pool<Anchor>> = OnceLock::new();
 static PARENTS: OnceLock<Pool<Parent>> = OnceLock::new();
 static VOLUMES: OnceLock<Pool<Volume>> = OnceLock::new();
+
+/// What this thread's current refresh batch (`TransferNamespaceRefreshBatch`) has already
+/// checked. A batch changes no names, so a check that held once in it holds for the rest
+/// of it: the pins and the stage or output of one change share their folders' ancestry,
+/// and checking each of them would otherwise open every ancestor again. An external rename
+/// during a batch is seen by the next batch, as by a check that ran just before the rename.
+/// The weak references keep each checked allocation's address unique while it is recorded
+/// without keeping its handle open.
+#[derive(Default)]
+struct BatchChecks {
+    batch: u64,
+    /// Anchors whose held handle still had the pinned identity.
+    anchors: Vec<Weak<Anchor>>,
+    /// Child and parent anchors whose name binding was checked.
+    edges: Vec<(Weak<Anchor>, Weak<Anchor>)>,
+    /// Roots whose volume path still opened them.
+    roots: Vec<Weak<Anchor>>,
+    /// Folders whose lookup rules were read, the volume they were read through and the
+    /// rules found.
+    modes: Vec<(Weak<Anchor>, Option<Weak<Volume>>, LookupMode)>,
+    /// Folders that a binding's recorded path still opened, with that path.
+    paths: Vec<(Weak<Anchor>, PathBuf)>,
+}
+/// A batch rarely spans more than a few folders; checks beyond this are made each time.
+const MAX_BATCH_CHECKS: usize = 256;
+
+thread_local! {
+    static BATCH_CHECKS: RefCell<BatchChecks> = RefCell::default();
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Native ancestor-binding opens made by `Parent::validate` on this thread, for tests.
+    pub(super) static EDGE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `check` on this thread's record of its current refresh batch; None outside a batch.
+/// The record of an earlier batch is discarded first.
+fn batch_checks<T>(check: impl FnOnce(&mut BatchChecks) -> T) -> Option<T> {
+    let batch = current_transfer_namespace_refresh_batch()?;
+    BATCH_CHECKS.with(|checks| {
+        let mut checks = checks.borrow_mut();
+        if checks.batch != batch {
+            *checks = BatchChecks {
+                batch,
+                ..BatchChecks::default()
+            };
+        }
+        Some(check(&mut checks))
+    })
+}
+
+/// Record a check that held in the current batch, if there is one and it has room.
+fn remember<T>(list: impl FnOnce(&mut BatchChecks) -> &mut Vec<T>, entry: T) {
+    batch_checks(|checks| {
+        let list = list(checks);
+        if list.len() < MAX_BATCH_CHECKS {
+            list.push(entry);
+        }
+    });
+}
+
+fn same(recorded: &Weak<Anchor>, anchor: &Arc<Anchor>) -> bool {
+    std::ptr::eq(recorded.as_ptr(), Arc::as_ptr(anchor))
+}
+
+fn same_volume(recorded: &Option<Weak<Volume>>, volume: Option<&Arc<Volume>>) -> bool {
+    match (recorded, volume) {
+        (None, None) => true,
+        (Some(recorded), Some(volume)) => std::ptr::eq(recorded.as_ptr(), Arc::as_ptr(volume)),
+        _ => false,
+    }
+}
 
 fn metadata_directory(path: &Path) -> Result<File, FsError> {
     let file = OpenOptions::new()
@@ -202,26 +277,51 @@ impl Parent {
     pub(super) fn file(&self) -> &File {
         &self.anchor.file
     }
+    /// The ancestor bindings that a check of this folder opens.
+    #[cfg(test)]
+    pub(super) fn edges(&self) -> usize {
+        self.chain.len() - 1
+    }
     pub(super) fn physical(&self) -> &Path {
         &self.anchor.physical
     }
+    /// Check the whole pinned ancestry: each held anchor's identity, each ancestor's name
+    /// binding in its parent, the root's volume path and this folder's lookup rules.
+    /// Within a refresh batch each of these checks is made once (`BatchChecks`).
     pub(super) fn validate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         for anchor in &self.chain {
             checked(cancel, &anchor.physical)?;
+            let known =
+                batch_checks(|checks| checks.anchors.iter().any(|recorded| same(recorded, anchor)));
+            if known == Some(true) {
+                continue;
+            }
             if identity(&anchor.file, &anchor.physical)? != anchor.identity {
                 return Err(invalid(
                     &anchor.physical,
                     "pinned namespace ancestor changed",
                 ));
             }
+            remember(|checks| &mut checks.anchors, Arc::downgrade(anchor));
         }
         for edge in self.chain.windows(2) {
             let child = &edge[0];
             let parent = &edge[1];
+            let known = batch_checks(|checks| {
+                checks
+                    .edges
+                    .iter()
+                    .any(|(recorded, above)| same(recorded, child) && same(above, parent))
+            });
+            if known == Some(true) {
+                continue;
+            }
             let name = child
                 .physical
                 .file_name()
                 .ok_or_else(|| invalid(&child.physical, "native namespace edge has no basename"))?;
+            #[cfg(test)]
+            EDGE_PROBES.with(|probes| probes.set(probes.get() + 1));
             let visible = native::open_relative(
                 &parent.file,
                 name,
@@ -237,24 +337,80 @@ impl Parent {
                     "original namespace ancestor binding changed",
                 ));
             }
+            remember(
+                |checks| &mut checks.edges,
+                (Arc::downgrade(child), Arc::downgrade(parent)),
+            );
         }
         let root = self
             .chain
             .last()
             .ok_or_else(|| invalid(self.physical(), "missing root"))?;
-        let visible = metadata_directory(&root.physical)?;
-        if identity(&visible, &root.physical)? != root.identity {
-            return Err(invalid(
-                &root.physical,
-                "native namespace root binding changed",
-            ));
+        let known = batch_checks(|checks| checks.roots.iter().any(|recorded| same(recorded, root)));
+        if known != Some(true) {
+            let visible = metadata_directory(&root.physical)?;
+            if identity(&visible, &root.physical)? != root.identity {
+                return Err(invalid(
+                    &root.physical,
+                    "native namespace root binding changed",
+                ));
+            }
+            remember(|checks| &mut checks.roots, Arc::downgrade(root));
         }
-        if lookup_mode(self.file(), self.volume.as_deref()) != self.mode {
+        let recorded = batch_checks(|checks| {
+            checks
+                .modes
+                .iter()
+                .find(|(folder, volume, _)| {
+                    same(folder, &self.anchor) && same_volume(volume, self.volume.as_ref())
+                })
+                .map(|(_, _, mode)| *mode)
+        })
+        .flatten();
+        let mode = match recorded {
+            Some(mode) => mode,
+            None => {
+                let mode = lookup_mode(self.file(), self.volume.as_deref());
+                remember(
+                    |checks| &mut checks.modes,
+                    (
+                        Arc::downgrade(&self.anchor),
+                        self.volume.as_ref().map(Arc::downgrade),
+                        mode,
+                    ),
+                );
+                mode
+            }
+        };
+        if mode != self.mode {
             return Err(invalid(
                 self.physical(),
                 "native case or short-name rules changed",
             ));
         }
+        Ok(())
+    }
+
+    /// The display path that a binding recorded for this folder still opens it. Within a
+    /// refresh batch each path is opened once (`BatchChecks`).
+    pub(super) fn check_path(&self, path: &Path) -> Result<(), FsError> {
+        let known = batch_checks(|checks| {
+            checks
+                .paths
+                .iter()
+                .any(|(recorded, checked)| same(recorded, &self.anchor) && checked == path)
+        });
+        if known == Some(true) {
+            return Ok(());
+        }
+        let visible = native::open_parent(path).map_err(|e| error(path, e))?;
+        if identity(&visible, path)? != self.snapshot.identity {
+            return Err(invalid(path, "original pinned parent binding changed"));
+        }
+        remember(
+            |checks| &mut checks.paths,
+            (Arc::downgrade(&self.anchor), path.to_owned()),
+        );
         Ok(())
     }
 }

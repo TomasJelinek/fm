@@ -6,8 +6,8 @@ use midnight_core::{
     TransferNamespaceScope,
 };
 use midnight_platform_common::transfer_namespace::{
-    TransferNamespaceChange, TransferNamespaceChanges, current_transfer_namespace_changes,
-    with_transfer_namespace_change,
+    TransferNamespaceChange, TransferNamespaceChanges, TransferNamespaceRefreshBatch,
+    current_transfer_namespace_changes, with_transfer_namespace_change,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -922,15 +922,7 @@ impl TransferNamespacePin for Pin {
                 continue;
             }
             binding.parent.validate(cancel)?;
-            let visible_parent = native::open_parent(&binding.parent_path)
-                .map_err(|e| error(&binding.parent_path, e))?;
-            if identity(&visible_parent, &binding.parent_path)? != binding.parent.snapshot.identity
-            {
-                return Err(invalid(
-                    &binding.parent_path,
-                    "original pinned parent binding changed",
-                ));
-            }
+            binding.parent.check_path(&binding.parent_path)?;
             let path = binding.parent_path.join(&binding.name);
             match native::open_relative(
                 binding.parent.file(),
@@ -1153,6 +1145,8 @@ impl Mutation<'_> {
         if self.job.is_none() {
             return Ok(());
         }
+        // Announcement only: nothing changes a name in this batch (`parent::BatchChecks`).
+        let _batch = TransferNamespaceRefreshBatch::begin();
         let binding = self.held_binding(source, cancel)?;
         let path = binding.parent_path.join(&binding.name);
         self.announce(&[binding], false, &path, cancel)
@@ -1168,6 +1162,8 @@ impl Mutation<'_> {
         if self.job.is_none() {
             return Ok(());
         }
+        // Announcement only: nothing changes a name in this batch (`parent::BatchChecks`).
+        let _batch = TransferNamespaceRefreshBatch::begin();
         let old = self.held_binding(source, cancel)?;
         let path = parent::physical_path(parent_file).map_err(|e| error(Path::new(""), e))?;
         let directory = parent::capture(parent_file, &path, cancel)?;
@@ -1210,6 +1206,9 @@ impl Mutation<'_> {
         let Some(job) = self.job.clone() else {
             return create();
         };
+        // The binding checks and the announcement up to the native creation are one
+        // refresh batch: nothing changes a name before it (`parent::BatchChecks`).
+        let batch = TransferNamespaceRefreshBatch::begin();
         let directory = parent::capture(parent_file, parent_path, cancel).map_err(as_io)?;
         directory.validate(cancel).map_err(as_io)?;
         let prospective = binding(directory, parent_path, name, cancel).map_err(as_io)?;
@@ -1240,6 +1239,7 @@ impl Mutation<'_> {
             // every pin it accepts until the turn finishes, so this address stays unique.
             self.announced.insert(key);
         }
+        drop(batch);
         let file = create()?;
         match identity(&file, &parent_path.join(name)) {
             Ok(object) => job.created(Binding {
@@ -1281,6 +1281,8 @@ impl Mutation<'_> {
         let Some(job) = self.job.clone() else {
             return destination::recovery::rename_into_untracked(source, parent_file, name);
         };
+        // One refresh batch up to the native rename, as for a creation.
+        let batch = TransferNamespaceRefreshBatch::begin();
         let old = self.held_binding(source, cancel).map_err(as_io)?;
         let path = parent::physical_path(parent_file)?;
         let directory = parent::capture(parent_file, &path, cancel).map_err(as_io)?;
@@ -1298,6 +1300,7 @@ impl Mutation<'_> {
             original: false,
             delete_pending: false,
         };
+        drop(batch);
         destination::recovery::rename_into_untracked(source, parent_file, name)?;
         match destination::recovery::Revision::of(source, &new.parent_path.join(name)) {
             Ok(revision) => new.revision = Some(revision),
@@ -1316,6 +1319,8 @@ impl Mutation<'_> {
         let Some(job) = self.job.clone() else {
             return remove();
         };
+        // One refresh batch up to the native removal, as for a creation.
+        let batch = TransferNamespaceRefreshBatch::begin();
         let old = self.held_binding(source, cancel).map_err(as_io)?;
         self.announce(
             std::slice::from_ref(&old),
@@ -1325,6 +1330,7 @@ impl Mutation<'_> {
         )
         .map_err(as_io)?;
         let directory = source.metadata()?.is_dir();
+        drop(batch);
         remove()?;
         job.removed(&old, directory);
         Ok(())
@@ -1334,3 +1340,7 @@ impl Mutation<'_> {
 #[cfg(test)]
 #[path = "transfer_namespace_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transfer_namespace_batch_tests.rs"]
+mod batch_tests;

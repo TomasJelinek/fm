@@ -796,6 +796,21 @@ output's object identity no longer takes part in peer admission: another job tha
 reaches the same object through a different hard-link name is not excluded by it,
 because this job never touches that object again.
 
+Before a change the adapter checks the folder it changes: each held ancestor's
+identity, each ancestor's name in its parent, the volume root's path and the folder's
+case and 8.3 rules; a pin's refresh checks the same for the folder of each of its
+bindings, and that the binding's recorded path still opens its folder. These checks
+open one handle per ancestor level, so the adapter makes each of them once per refresh
+batch (`TransferNamespaceRefreshBatch`, `transfer_namespace_parent.rs`), as the Linux
+adapter walks an ancestry once per batch: the binding checks and the announcement of a
+change up to its native operation are one batch, and the host's refresh of the pins
+the change touched is another. A batch changes no names; an external rename during a
+batch is seen by the next batch, as by a check that ran just before the rename, and a
+check that fails is never kept. A copied file's stage creation and publication thus
+check the destination's ancestry four times instead of eleven (44 instead of 121
+ancestor opens for a folder 12 levels deep; WIN-8 in the
+[Windows acceptance record](acceptance/windows.md)).
+
 A turn reserves each pin at most once. The pin of a private directory that the turn
 creates (a Move stage or a `.midnight-recovery-*` directory) is reserved before the
 directory exists and then also covers the renames into and out of it and its removal
