@@ -101,8 +101,15 @@ fn malformed_duplicate_and_cross_version_commands_fail_instead_of_dropping_confi
 #[test]
 fn terminal_source_and_explicit_scalar_declarations_round_trip_without_template_interpretation() {
     let mut command = command();
+    // A shell this system's terminal runs: the other system's is kept inactive on
+    // import (`settings::foreign` tests), so it would not round-trip as an active command.
+    let shell = if cfg!(windows) {
+        ShellFlavor::PowerShell
+    } else {
+        ShellFlavor::Posix
+    };
     command.invocation = UserCommandInvocation::Terminal {
-        shell: ShellFlavor::PowerShell,
+        shell,
         script: "'${literal.source}' ; $env:ME_FILE_PATH".into(),
         variables: vec![
             UserCommandVariable::ActivePath,
