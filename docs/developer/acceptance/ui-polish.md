@@ -99,50 +99,50 @@ tooltips). Combinations are those of the scenario's matrix.
 
 | ID | Surface and state | Scenario | S | I |
 | --- | --- | --- | --- | --- |
-| U-S01 | Main window, cursor on a file | `ui_review`, `ui_themes`, `ui_polish_dialogs` | FAIL U-D06, U-D09, U-D10, U-D12 | FAIL U-D06, U-D10 |
-| U-S02 | Main window, marked rows and the cursor | `ui_review`, `ui_themes` | FAIL U-D09, U-D10, U-D12 | NOT YET WRITTEN (static only) |
-| U-S03 | Main window, filename search | `ui_review`, `ui_themes` | FAIL U-D09, U-D10; rerun (occlusion fix) | NOT YET WRITTEN (static only) |
-| U-S04 | Main menu (F10) | `ui_review`, `ui_themes` | FAIL U-D02 | NOT YET WRITTEN |
+| U-S01 | Main window, cursor on a file | `ui_review`, `ui_themes`, `ui_polish_dialogs` | PASS (Linux; the "/review" path segment flagged at Dark Touch 320×200 was a gate defect, fixed by the Linux harness patch, run `20261121-170455`) | PASS |
+| U-S02 | Main window, marked rows and the cursor | `ui_review`, `ui_themes` | PASS (Linux; the same path-segment gate defect as U-S01) | NOT YET WRITTEN (static only) |
+| U-S03 | Main window, filename search | `ui_review`, `ui_themes` | PASS (Linux) | NOT YET WRITTEN (static only) |
+| U-S04 | Main menu (F10) | `ui_review`, `ui_themes` | PASS (Linux) | NOT YET WRITTEN |
 | U-S05 | User menu (F9) | `ui_review`, `ui_themes` | PASS | NOT YET WRITTEN |
 | U-S06 | Volume choices (Alt+F1) | `ui_review`, `ui_themes` | PASS | NOT YET WRITTEN |
-| U-S07 | Options, every page | `ui_review`, `options_visual`, `ui_polish_dialogs` (General) | FAIL U-D02, U-D19, U-D08 (minimum size) | FAIL U-D04, U-D05 |
-| U-S08 | Copy (F5) | `ui_review`, `ui_themes`, `ui_polish_dialogs` | FAIL U-D02, U-D07 | FAIL U-D03, U-D05 |
-| U-S09 | Move (F6) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02, U-D07 | FAIL U-D03, U-D05 |
-| U-S10 | Delete to Trash (F8) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D03, U-D05 |
-| U-S11 | Permanent delete (Shift+F8) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D03, U-D05 |
-| U-S12 | Rename (F2) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02, U-D07 | FAIL U-D03, U-D05 |
-| U-S13 | Create directory (F7) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D03; Enter rerun (U-D21) |
-| U-S14 | New empty file (Shift+F4) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D03; Enter rerun (U-D21) |
-| U-S15 | Compare directories (Ctrl+F10) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D04, U-D05, U-D15 |
-| U-S16 | Panel filter (Ctrl+F12) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D04, U-D05 |
-| U-S17 | Make File List (Ctrl+M) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D04, U-D05 |
-| U-S18 | Attributes and its Times page (Ctrl+F2) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02, U-D19 | FAIL U-D04 |
-| U-S19 | Hot Paths | `ui_review`, `ui_polish_dialogs` | FAIL U-D02, U-D11 | FAIL U-D04 |
-| U-S20 | About, About and Licenses tabs, a license's detail view | `ui_review`, `ui_polish_dialogs` | FAIL U-D02, U-D08 (minimum size) | FAIL U-D04 |
-| U-S21 | Drive information (Ctrl+F1) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D04 |
-| U-S22 | Properties (Alt+Enter) | `ui_review`, `ui_polish_dialogs` | FAIL U-D02 | FAIL U-D04 |
-| U-S23 | Error notice with a long path, details shown | `ui_review`, `ui_themes`, `ui_polish_dialogs` | FAIL U-D02, U-D08 (minimum size) | FAIL U-D04 |
-| U-S24 | Find (Alt+F7) | `ui_review`, `ui_themes`, `ui_polish_dialogs` | FAIL U-D16; rerun (header scroll and caption fixes) | FAIL U-D16 |
-| U-S25 | Checksums (Ctrl+F8) | `ui_review`, `ui_polish_dialogs` | PASS (after the segmented-button fix; rerun) | FAIL U-D15, U-D17 |
-| U-S26 | Help (F1) | `ui_review`, `ui_polish_dialogs` | FAIL U-D01 | FAIL U-D01, U-D04 |
-| U-S27 | Jobs, empty | `ui_review`, `ui_polish_dialogs` | PASS | FAIL U-D04, U-D14, U-D18 |
-| U-S28 | Copy job paused, details shown | `ui_polish_jobs` | PASS | FAIL U-D04 |
-| U-S29 | Copy job waiting for another job | `ui_polish_jobs` | FAIL U-D13 (minimum size, progress part) | not checked |
+| U-S07 | Options, every page | `ui_review`, `options_visual`, `ui_polish_dialogs` (General) | PASS (Linux) | PASS (Linux) |
+| U-S08 | Copy (F5) | `ui_review`, `ui_themes`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S09 | Move (F6) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S10 | Delete to Trash (F8) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S11 | Permanent delete (Shift+F8) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S12 | Rename (F2) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S13 | Create directory (F7) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S14 | New empty file (Shift+F4) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S15 | Compare directories (Ctrl+F10) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S16 | Panel filter (Ctrl+F12) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S17 | Make File List (Ctrl+M) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S18 | Attributes and its Times page (Ctrl+F2) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S19 | Hot Paths | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S20 | About, About and Licenses tabs, a license's detail view | `ui_review`, `ui_polish_dialogs` | PASS (Linux, 320×200 included) | PASS (Linux) |
+| U-S21 | Drive information (Ctrl+F1) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S22 | Properties (Alt+Enter) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S23 | Error notice with a long path, details shown | `ui_review`, `ui_themes`, `ui_polish_dialogs` | PASS (Linux, 320×200 included) | PASS (Linux) |
+| U-S24 | Find (Alt+F7) | `ui_review`, `ui_themes`, `ui_polish_dialogs` | FAIL U-D22 (Dark Touch 320×200: uneven button spacing in the footer). Also flagged at Blue Desktop 320×200: the results' "Path" heading, cut where the table scrolls sideways (a gate defect: the heading's own box holds it; the harness owner's pending change exempts it) | PASS (Linux) |
+| U-S25 | Checksums (Ctrl+F8) | `ui_review`, `ui_polish_dialogs` | FAIL U-D22 (Blue Desktop 320×200: "Save…" half outside the footer's scroller) | PASS (Linux) |
+| U-S26 | Help (F1) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
+| U-S27 | Jobs, empty | `ui_review`, `ui_polish_dialogs` | PASS | PASS (Linux, run `20261121-164146` with the Linux harness patch; in run `20261121-144246` the gate clicked the disabled Clear all finished, a gate defect) |
+| U-S28 | Copy job paused, details shown | `ui_polish_jobs` | PASS | PASS (Linux) |
+| U-S29 | Copy job waiting for another job | `ui_polish_jobs` | PASS (Linux, minimum size included) | not checked |
 | U-S30 | Copy job running | `ui_polish_jobs` | PASS | not checked |
-| U-S31 | Copy job asking whether to cancel | `ui_polish_jobs` | PASS | not checked |
-| U-S32 | Copy job cancelled | `ui_polish_jobs` | PASS | PASS (no notice or extra window after the job ended or its window closed) |
+| U-S31 | Copy job asking whether to cancel | `ui_polish_jobs` | PASS (Linux: Blue Desktop in run `20261121-144246`; Dark Touch not reached, see "Runs") | not checked |
+| U-S32 | Copy job cancelled | `ui_polish_jobs` | PASS (Linux: Blue Desktop; Dark Touch not reached) | PASS (no notice or extra window after the job ended or its window closed) |
 | U-S33 | Copy job completed | `ui_polish_jobs` | closes itself when done | – |
-| U-S34 | Copy job completed with errors (3 and 40), details shown | `ui_polish_jobs` | FAIL U-D13 (minimum size, outcome part) | FAIL U-D04 |
-| U-S35 | Copy job with notes | `ui_polish_jobs` | NOT YET RUN (opened from Jobs since the last run) | – |
-| U-S36 | Name conflict decision window | `ui_polish_jobs` | PASS (no own × any more) | FAIL U-D04 |
-| U-S37 | Failure decision window (Retry, Skip, Skip all, Cancel job) | `ui_polish_jobs` | FAIL U-D13 (minimum size, decision window) | FAIL U-D04 |
-| U-S38 | Jobs listing finished jobs | `ui_polish_jobs` | PASS | FAIL U-D04, U-D18 |
-| U-S39 | Viewer: text, all selected | `ui_polish_viewers` | NOT YET RUN | – |
-| U-S40 | Viewer: source, all selected | `ui_polish_viewers` | NOT YET RUN | – |
-| U-S41 | Viewer: image | `ui_polish_viewers` | NOT YET RUN | – |
-| U-S42 | Viewer: Markdown | `ui_polish_viewers` | NOT YET RUN | – |
-| U-S43 | Viewer: hex, all selected | `ui_polish_viewers` | NOT YET RUN | – |
-| U-S44 | Comparator: two texts with differences | `ui_polish_viewers` | NOT YET RUN | – |
+| U-S34 | Copy job completed with errors (3 and 40), details shown | `ui_polish_jobs` | PASS (Linux, minimum size included) | PASS (Linux) |
+| U-S35 | Copy job with notes | `ui_polish_jobs` | PASS (Linux) | – |
+| U-S36 | Name conflict decision window | `ui_polish_jobs` | PASS (no own × any more) | PASS (Linux) |
+| U-S37 | Failure decision window (Retry, Skip, Skip all, Cancel job) | `ui_polish_jobs` | PASS (Linux, minimum size included) | PASS (Linux) |
+| U-S38 | Jobs listing finished jobs | `ui_polish_jobs` | PASS | PASS (Linux) |
+| U-S39 | Viewer: text, all selected | `ui_polish_viewers` | PASS (Linux) | – |
+| U-S40 | Viewer: source, all selected | `ui_polish_viewers` | PASS (Linux) | – |
+| U-S41 | Viewer: image | `ui_polish_viewers` | PASS (Linux; WIN-9's zoom buttons have their tooltips) | – |
+| U-S42 | Viewer: Markdown | `ui_polish_viewers` | PASS (Linux) | – |
+| U-S43 | Viewer: hex, all selected | `ui_polish_viewers` | PASS (Linux) | – |
+| U-S44 | Comparator: two texts with differences | `ui_polish_viewers` | PASS (Linux) | – |
 
 Not covered yet: the Find window's other pages (advanced options, folders, syntax help,
 details, results, Feed to panel), the Checksums window's Verify page and results, the
@@ -159,7 +159,7 @@ None. A finding the product cannot avoid would be listed here with its reason (a
 
 | Surface | Check | Reason |
 | --- | --- | --- |
-| Decision windows (`…/decision/…`) | U-K01 | The decision windows' own close button is being removed (backend change in progress). |
+| Decision windows (`…/decision/…`) | U-K01 | The decision windows' own close button is being removed (backend change in progress). On Linux (run `20261121-144246`) the decision windows raised no U-K01 flag, and `files_transfer_errors`' matching pending check ("the framed decision window has no × of its own") passes: the mark can go. |
 
 ## Product defects
 
@@ -188,8 +188,13 @@ All reported to the coordinator with their shots (run folders below `_build/acce
 | U-D19 | Icon-only buttons without tooltip: Attributes › Times date and time pickers, Options › Colors "Choose Foreground/Background" and "Discard changes". | U-K08 | 20261120-143600 `ui_review/Blue-Desktop-Normal-x1-times.png`, `…-options-08.png` |
 | U-D20 | The command line's working folder is cut without ellipsis at Touch 960×600 and 320×200 (to confirm with the wheel probe). | U-K03 | 20261120-143600 `ui_review/Dark-Touch-Small-x1-main.png` |
 | U-D21 | Create dir / New file: Enter with the empty name gives no feedback (the gate now types a name first; to confirm). | U-K27 | 20261120-144625 `ui_polish_dialogs/dialogs-mkdir.png` |
+| U-D22 | Found on Linux (run `20261121-144246`, again in `20261121-164146` and `20261121-170455`): at the minimum size (320×200) a footer action sits half outside the footer's scroller, under the dismiss button, although `DialogFooter` says a dialog leaves out an optional action that would not fit "so that no button sits half outside the scroller": Checksums' "Save…" shows 36 of its 42 px caption (Blue Desktop; `checksum-window.slint` keeps it below 460 px as "Save…"), and Find's View shows a sliver beside Close, which the gate reads as uneven spacing ("Find\|Go to file 8px", "Go to file\|Close 19px", Dark Touch; at Blue Desktop "Vi" shows). | U-K20, U-K12 | `_build/acceptance-linux/20261121-144246/shots/ui_review/Blue-Desktop-Min-x1-checksums.png`, `Dark-Touch-Min-x1-find.png`, `Blue-Desktop-Min-x1-find.png` |
 
 U-D01–U-D12 were sent in the first batch and U-D13–U-D21 in the second (21 November).
+The Linux gate runs of 21 November (below) raised none of U-D01–U-D21, nor WIN-2, WIN-3
+or WIN-9 of [windows.md](windows.md): the fixes listed next hold on Linux at every
+combination of the default matrix and in `ui_themes`, `ui_polish_dialogs`,
+`ui_polish_jobs`, `ui_polish_viewers` and `options_visual`.
 
 Fixed in source on 21 November, with `midnight-ui` tests that fail on the earlier
 source; the gate itself has not been run again:
@@ -358,9 +363,9 @@ Linux check job: `dialog_polish` (10 tests) in runs 44851212423 (`985c8ec0`) and
 (11), `tool_window_polish` (5) and `native_job_windows` `minimum_size` (3) and
 `jobs_actions` (1) in run 44865587302. The layout tests measure with the platform's own
 fonts, and the captions they check wrap, elide or shrink to glyphs by design rather
-than by Windows metrics. The gate has not been run again on Linux since any batch
-(the Windows gate runs are in [windows.md](windows.md#results)), so the surfaces
-above keep their recorded results until it is.
+than by Windows metrics. The gate ran again on Linux on 21 November with all three batches in the build
+(commit 3f6fff8a; "Runs" below; the Windows gate runs are in
+[windows.md](windows.md#results)), and the surfaces above carry those results.
 
 ## Runs
 
@@ -375,11 +380,26 @@ children keep their executable), `--scale smoke`, plugins from a complete plugin
 | 20261120-143647 | `ui_polish_jobs` | FAIL: 45 flags (U-D04, U-D13, U-D18; path-label elision fixed since) | 249 s |
 | 20261120-144625 | `ui_polish_dialogs` | FAIL: 115 flags (U-D02–U-D06, U-D10, U-D14–U-D17, U-D21) | 901 s |
 
-Not run on Linux yet: `ui_themes`, `ui_polish_viewers`, `options_visual` in its gate
-form, and `ui_matrix_full` (estimated 2.5 h). On Windows `ui_themes` and
-`options_visual` passed, `ui_polish_viewers` failed (WIN-9) and `ui_matrix_full`
-reported SKIP (it runs only with `--all-themes`)
-([Windows results](windows.md#results)). Expected default gate time after the matrix
-rebalance and fail-fast waits: about 45 minutes in all (`ui_review` 10–12 min,
-`ui_themes` about 6 min, `ui_polish_dialogs` 15 min, `ui_polish_jobs` 4 min,
-`ui_polish_viewers` 5 min, `ui_polish_checks` 4 min, `options_visual` 2 min).
+Linux runs of 21 November: commit 3f6fff8a, WSL 2 (Ubuntu 24.04), smoke scale, debug
+test build, every plugin package built from that commit, the whole suite in one run
+(reports in `_build/acceptance-linux/<run>/`). Runs `20261121-164146` and
+`20261121-170455` add the Linux harness patch (committed with this record); `20261121-170455` also seeded network previews on for its
+thumbnail experiment, which no gate scenario uses.
+
+| Run | Scenario | Result | Time |
+| --- | --- | --- | --- |
+| 20261121-144246 | `ui_polish_checks` | PASS: every red case flagged, corrected twins clean | 189 s |
+| 20261121-144246 | `ui_review` | FAIL: 5 flags, all at 320×200: U-D22 (2: Checksums' "Save…", Find's footer spacing), the Find results' "Path" heading cut where the table scrolls sideways (gate defect; the harness owner's pending change exempts it), and the "/review" path segment at Dark Touch on `main` and `main-marked` (gate defect: its path exemption missed the segment's bidirectional isolates) | 250 s |
+| 20261121-144246 | `ui_themes` | PASS (210 screenshots) | 271 s |
+| 20261121-144246 | `ui_polish_dialogs` | FAIL: 1 flag, Jobs' Clear all finished "changes nothing observable": a gate defect (with every finished job clean, Clear finished without errors empties the list, and the reopened Jobs rightly disables Clear all finished, which the gate still clicked) | 609 s |
+| 20261121-144246 | `ui_polish_jobs` | FAIL: 1 flag, "job step failed: Dark-Touch/long copy": Slint panicked (`i-slint-core` 1.18.1 `window.rs:781`, `component()` of a dropped component) when the harness used the copy's window after the 1–2 MiB copy had ended and closed it; a harness race, not a product result | 173 s |
+| 20261121-144246 | `ui_polish_viewers` | PASS (WIN-9 fixed) | 33 s |
+| 20261121-144246 | `options_visual` | PASS | 29 s |
+| 20261121-144246 | `ui_matrix_full` | SKIP: runs with `--all-themes` only | 0 s |
+| 20261121-164146 | `ui_polish_dialogs` | PASS (21 surfaces checked interactively) | 615 s |
+| 20261121-164146 | `ui_polish_jobs` | PASS, but the cancel question and the cancelled window were not reached in either look: the copy ended first (the harness's long copy needs a larger file) | 183 s |
+| 20261121-170455 | `ui_review` | FAIL: 3 flags (U-D22 twice, the "Path" heading); the path-segment flags are gone | 262 s |
+
+On Windows `ui_themes` and `options_visual` passed, `ui_polish_viewers` failed (WIN-9)
+and `ui_matrix_full` reported SKIP ([Windows results](windows.md#results)).
+`ui_matrix_full` (estimated 2.5 h) has not run on either platform.

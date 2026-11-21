@@ -791,6 +791,26 @@ fn locate(app: &mut App, target: &Target, button: &ButtonRef) -> Option<(ItemRc,
     None
 }
 
+/// Whether `button` can still be pressed in the freshly reopened surface. A button that
+/// clears a list comes after the buttons it would empty the list for, and an earlier one
+/// can leave it nothing to do: with every finished job clean, Jobs' Clear finished without
+/// errors empties the list, and the reopened Jobs disables Clear all finished.
+fn still_enabled(app: &mut App, surface: &mut Surface<'_>, button: &ButtonRef) -> bool {
+    let Ok(target) = (surface.open)(app) else {
+        return true;
+    };
+    let window = target.window(app);
+    let enabled = dialog_root(window, &target).is_none_or(|root| {
+        gate::nodes(window, &root)
+            .iter()
+            .filter(|node| node.role == button.role && node.label == button.label && !node.active)
+            .nth(button.occurrence)
+            .is_none_or(|node| !node.disabled)
+    });
+    (surface.reset)(app);
+    enabled
+}
+
 /// Open the surface fresh and measure one action (a click on `button`, or Enter):
 /// returns the evidence of an effect and, after a dismissal, unexpected surfaces.
 fn act(
@@ -952,6 +972,13 @@ pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
             {
                 outcome.notes.push(format!(
                     "exempt ({reason}): {}: button {:?} not clicked",
+                    surface.name, button.label
+                ));
+                continue;
+            }
+            if button.label.starts_with("Clear") && !still_enabled(app, surface, &button) {
+                outcome.notes.push(format!(
+                    "{}: button {:?} is disabled once the buttons before it ran: not clicked",
                     surface.name, button.label
                 ));
                 continue;

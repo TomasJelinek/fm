@@ -33,7 +33,7 @@ combinations. Helpers of these scenarios are in
 | P-3 | At the narrowest split (286 px) seven-character names were elided (46 of 55 px) while Size, Modified and Time kept about 120 px: the name did not get the width first. Fixed; the check passes. | V-12 |
 | P-4 | An empty folder showed only `..`: the empty-folder message never appeared because `..` counts as a row, and listings emptied by hidden files or a filter did not say so. Decided and fixed: the message appears below `..`, with a distinct message when everything is hidden or filtered. | N-35, N-36 |
 | P-5 | Fixed; the check passes. Select by mask accepted the invalid masks `a\|b\|c` (two `\|`) and `*.txt\|` (nothing after `\|`): the dialog closes, nothing is marked and no reason was shown anywhere. | S-07 |
-| P-6 | Inside an archive the path bar is cut at its end ("…/staged/r…"), hiding the archive's name and the folders inside it, while native folders show whole segments with one middle marker. | N-45 |
+| P-6 | Inside an archive the path bar is cut at its end ("…/staged/r…"), hiding the archive's name and the folders inside it, while native folders show whole segments with one middle marker. Fixed; the check passes (Linux run `20261121-144246`). | N-45 |
 
 ## Startup and navigation
 
@@ -52,7 +52,7 @@ combinations. Helpers of these scenarios are in
 | N-11 | Ctrl+PageDown enters a folder and never opens a file | `panels_paths` › keys | PASS |
 | N-12 | Ctrl+Backspace, Shift+Backspace and Ctrl+Backslash open the filesystem root | `files_navigation`; `panels_paths` › keys | PASS |
 | N-44 | Shift+Backspace goes to the focused panel's root: left and right deep folders (focused by Tab and by a click), after a search ended with Escape, in a second tab (the first stays), and inside an archive to the archive's own root | `panels_root_keys` | PASS |
-| N-45 | Inside an archive the path bar shows the archive's and the current folder's names whole (a native folder is the control) | `panels_root_keys` › path bar | FAIL: P-6 |
+| N-45 | Inside an archive the path bar shows the archive's and the current folder's names whole (a native folder is the control) | `panels_root_keys` › path bar | PASS (P-6 fixed) |
 | N-13 | A double click opens a folder; on `..` goes up with the cursor on the folder left | `panels_paths` › keys | PASS |
 | N-14 | Tab and Shift+Tab switch the active panel and its keyboard focus | `panels_paths` › keys | PASS |
 | N-15 | Ctrl+G opens a typed path | `files_navigation`; `panels_paths` | PASS |
@@ -100,7 +100,7 @@ combinations. Helpers of these scenarios are in
 | T-08 | A panel stops at 32 tabs: + disabled with its reason, Ctrl+T adds nothing | `panels_tabs` › many tabs | PASS |
 | T-09 | The right panel's tabs are its own | `panels_tabs` › second tabs | PASS |
 | T-10 | F7, Shift+F4 and F2 in a second tab act on that tab's folder, in both panels | `panels_tabs` › second tabs | PASS |
-| T-11 | Tabs and the active tab come back after a restart | `panels_tabs` › restart | PENDING: the harness's `Config::restore_tabs` start is not confirmed yet |
+| T-11 | Tabs and the active tab come back after a restart | `panels_tabs` › restart | PENDING: the harness's `Config::restore_tabs` start is not confirmed yet (still so in the Linux run `20261121-144246`) |
 
 ## View, columns, sorting and layout
 
@@ -196,7 +196,7 @@ combinations. Helpers of these scenarios are in
 | --- | --- | --- | --- |
 | W-01 | While the folder churns: rows keep identity, cursor and marks stay, no loading state | `files_busy_folder` | PASS |
 | W-02 | A rename and a copy finished meanwhile are listed within 1.5 s | `files_busy_folder` | PASS |
-| W-03 | F7 and Shift+F4 while busy: done, listed at once, nothing left open; Ctrl+F2 while busy | `panels_busy_ops` | F7/Shift+F4 PASS; Ctrl+F2 FAIL (test error, not a product bug: with two files marked, Ctrl+F2 rightly acts on the marked files, 2 done; the check expected the focused file). The check expects the marked files since 21 November; not re-run on Linux (Windows: [windows.md](windows.md)) |
+| W-03 | F7 and Shift+F4 while busy: done, listed at once, nothing left open; Ctrl+F2 while busy | `panels_busy_ops` | PASS (Linux run `20261121-144246`: Ctrl+F2 on the two marked files, as the check expects since 21 November; F7 and Shift+F4 listed 45 and 47 ms after their reports). The earlier FAIL was a test error, not a product bug |
 | W-04 | Once quiet the listing equals the disk | `files_busy_folder`; `panels_busy_ops` | PASS |
 
 ## Create, rename, attributes and times
@@ -215,8 +215,8 @@ combinations. Helpers of these scenarios are in
 | O-10 | Now fills date, time and offset and ticks the row; Apply sets that moment | `panels_times` | PASS |
 | O-11 | Escape closes a picker only; the next Escape closes the editor without applying | `panels_times` | PASS |
 | O-12 | Ctrl+F7 opens the Case page; lowercase renames the file | `panels_times` | PASS |
-| O-13 | Keys typed right after F2's Enter wait until the new name is listed, then act from it | `files_rename` › held keys | PENDING: written and compiling, not run yet |
-| O-14 | Include subfolders sets the time on a folder and everything below it; Back to editing keeps the draft | `panels_times` › Include subfolders | PENDING: written and compiling, not run yet |
+| O-13 | Keys typed right after F2's Enter wait until the new name is listed, then act from it | `files_rename` › held keys | PASS (Linux run `20261121-144246`) |
+| O-14 | Include subfolders sets the time on a folder and everything below it; Back to editing keeps the draft | `panels_times` › Include subfolders | PASS (Linux run `20261121-144246`) |
 
 ## Folder sizes, Hot Paths and Make File List
 
@@ -260,22 +260,35 @@ combinations. Helpers of these scenarios are in
 
 ## Latest recorded run
 
-Host run of 2026-11-20 on the coordinated build of 16:05 (debug test profile), smoke
-scale, with the complete plugin set of that build for the staged `panels_root_keys`:
-32 scenarios, 29 passed, 1 pending (`panels_tabs`: the tab restore waits for the
-harness), 2 failed (`panels_busy_ops`: the test error noted at W-03; `panels_root_keys`:
-P-6). `startup_paths` belongs to the harness owner and passed in the same run.
+Linux run `20261121-144246` of commit 3f6fff8a (WSL 2, Ubuntu 24.04 on ext4, debug test
+profile, smoke scale, every plugin package built from that commit for the staged
+`panels_root_keys`; every scenario of the suite ran; report in
+`_build/acceptance-linux/20261121-144246/`): 32 scenarios, 31 passed, 1 pending
+(`panels_tabs`: the tab restore waits for the harness). `startup_paths` belongs to the
+harness owner and passed in the same run (6.0 s).
 
 | Scenario | Status | Duration |
 | --- | --- | --- |
-| `startup`, `navigation`, `create_rename`, `tree_expand_all`, `folder_sizes`, `files_rename`, `files_create`, `files_attributes`, `files_selection`, `files_sorting`, `files_filter_search`, `files_navigation`, `files_tabs`, `files_hot_paths`, `files_file_list`, `files_tree_ops`, `files_busy_folder`, `tools_folder_sizes` | PASS | 2–69 s each (`navigation` 69 s) |
-| `panels_dialogs` | PASS | 145 s |
-| `panels_notices`, `panels_times`, `panels_view_sort`, `panels_paths`, `panels_search_filter`, `panels_tree_keys`, `panels_selection_more`, `panels_hot_digits`, `panels_file_list` | PASS | 8–42 s each |
-| `panels_tabs` | PENDING (T-11) | 34 s |
-| `panels_busy_ops` | FAIL (W-03, test error) | 17 s |
-| `panels_root_keys` | FAIL (P-6) | 33 s |
+| `startup`, `navigation`, `create_rename`, `tree_expand_all`, `folder_sizes`, `files_rename`, `files_create`, `files_attributes`, `files_selection`, `files_sorting`, `files_filter_search`, `files_navigation`, `files_tabs`, `files_hot_paths`, `files_file_list`, `files_tree_ops`, `files_busy_folder`, `tools_folder_sizes` | PASS | 0.8–31 s each (`navigation` 31.3 s) |
+| `panels_dialogs` | PASS | 84.7 s |
+| `panels_notices`, `panels_times`, `panels_view_sort`, `panels_paths`, `panels_search_filter`, `panels_tree_keys`, `panels_selection_more`, `panels_hot_digits`, `panels_file_list` | PASS | 3.7–29.5 s each |
+| `panels_tabs` | PENDING (T-11) | 16.6 s |
+| `panels_busy_ops` | PASS (W-03) | 8.7 s |
+| `panels_root_keys` | PASS (P-6 fixed) | 12.6 s |
 
-Commands (from the checkout; `<target>` is the shared Cargo target directory):
+The earlier host run of 2026-11-20 (coordinated build of 16:05): 29 passed, 1 pending
+(`panels_tabs`), 2 failed (`panels_busy_ops`, the W-03 test error; `panels_root_keys`,
+P-6).
+
+Commands of the Linux run (from the checkout, after `./build.sh debug`; the run was started
+in a delegated systemd user scope, `systemd-run --user --scope -p Delegate=yes`, so that
+the HTML viewer's browser finds a cgroup-v2 delegation):
+
+```text
+MIDNIGHT_ACCEPTANCE_RUN_DIR=<checkout>/_build/acceptance bash scripts/acceptance.sh debug --scale smoke
+```
+
+The 2026-11-20 host run ran the built executable directly:
 
 ```text
 cargo test -p midnight-acceptance --locked --features midnight-acceptance/acceptance --test acceptance --no-run
@@ -286,5 +299,5 @@ MIDNIGHT_ACCEPTANCE_RUN_DIR=<absolute run folder> MIDNIGHT_ACCEPTANCE_PLUGINS=<c
   files_busy_folder
 ```
 
-Written after that run and compiling, not run yet: `files_rename` › held keys (O-13) and
-`panels_times` › Include subfolders (O-14).
+`files_rename` › held keys (O-13) and `panels_times` › Include subfolders (O-14), written
+after that run, passed in the Linux run.

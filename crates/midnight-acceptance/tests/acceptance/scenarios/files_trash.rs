@@ -114,7 +114,7 @@ fn trashed(trash: &Path) -> Vec<Trashed> {
 }
 
 /// The Trash entry whose `.trashinfo` names `original`, checked against the format.
-fn entry_for(trash: &Path, original: &Path) -> Result<PathBuf, String> {
+pub(super) fn entry_for(trash: &Path, original: &Path) -> Result<PathBuf, String> {
     let wanted = original.as_os_str().as_encoded_bytes();
     let entries = trashed(trash);
     let entry = entries
@@ -417,10 +417,12 @@ fn run(context: &mut Context) -> Result<(), String> {
     let (start, ended) = support::delete_with(&mut app, false)?;
     let result = match ended {
         DeleteEnd::Asked(window) => {
+            // A Delete failure's Skip all is "Skip all errors" (decision_windows.rs): it
+            // covers every later failure of the Delete, not one error type.
             let clicked = support::answer_delete(
                 &mut app,
                 &window,
-                &["Skip all", "Skip all this error type"],
+                &["Skip all", "Skip all errors", "Skip all this error type"],
             );
             match (clicked, support::wait_delete(&mut app, start)) {
                 (Err(error), DeleteEnd::Asked(window)) => {

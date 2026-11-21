@@ -17,24 +17,24 @@ Run them with `bash scripts/acceptance.sh --only find`. `find_archives` and
 `find_viewers` stage the installed plugin packages (`MIDNIGHT_ACCEPTANCE_PLUGINS`, see
 ACCEPTANCE.md); without them they fail at staging, not skip.
 
-Last runs: 2026-11-20 on Linux, smoke scale, debug test build, with the archive and viewer plugin packages built from this tree that day (no archive entry limits). `find_result_actions`, `find_feed_panel` and `find_layout` are from the last run; the other scenarios from earlier runs the same day.
+Last run: the Linux run `20261121-144246` of commit 3f6fff8a (WSL 2, Ubuntu 24.04 on ext4, smoke scale, debug test build, every plugin package built from that commit, no archive entry limits; every scenario of the suite ran; report in `_build/acceptance-linux/20261121-144246/`). Statuses are from that run unless another is named. Earlier: 2026-11-20 on Linux, smoke scale, with the plugin packages built from the tree of that day.
 
 ## Scenarios
 
 | Scenario | Covers | Status | Seconds |
 | --- | --- | --- | --- |
-| `find_by_mask` | Alt+F7, a mask search, Go to file | PASS | 4 |
-| `tools_find_criteria` | masks, Regex, Expression, content, Identical files, column widths | PASS | 23 |
-| `tools_find_folders_help` | search folders, syntax help, status details | PASS | 8 |
-| `tools_find_results` | 10,000 results, Stop, Feed to panel operations, no archive provider | PASS | 52 |
-| `find_query_syntax` | masks, Regex and Expression in depth; content encodings; Modified within; Identical files | PASS | 33 |
-| `find_roots_windows` | several search folders; ways to open Find; four windows; two searches at once; Escape and Close | PASS | 30 |
-| `find_result_actions` | sorting, collation, Go to file, View/Edit/Open, stale results, Stop, scrolling | FAIL (Stop: the new searched-folder check looked for the bare path; corrected, not rerun) | 58 |
-| `find_feed_panel` | Feed to panel: list, marks, keys, refusals, viewers, file operations, right panel | PASS | 57 |
-| `find_budgets` | folder depth, content per file, result count with a group, duplicate candidates | PASS | 22 |
-| `find_layout` | Blue, Dark and Touch at preferred, narrow and compact sizes; column drags; path tails | FAIL (a narrow window: the sideways step found the Name header already out of view; Touch compact: the idle status under the results, not yet analysed). Both analysed on Windows on 21 November: the sideways step now finds the headers where they are (Windows run 20261121-042048: the narrow checks hold), and Touch compact fails with FIND-COMPACT-STATUS-HIDDEN (F-L04) | 18 |
-| `find_archives` | Search inside archives through the installed plugin, many and large archives, Stop, visited entries | PASS | 74 |
-| `find_viewers` | viewer windows from the results and from a fed list | PASS | 22 |
+| `find_by_mask` | Alt+F7, a mask search, Go to file | PASS | 1.9 |
+| `tools_find_criteria` | masks, Regex, Expression, content, Identical files, column widths | PASS | 34 |
+| `tools_find_folders_help` | search folders, syntax help, status details | PASS | 6.9 |
+| `tools_find_results` | 10,000 results, Stop, Feed to panel operations, no archive provider | PASS | 28 |
+| `find_query_syntax` | masks, Regex and Expression in depth; content encodings; Modified within; Identical files | PASS | 72 |
+| `find_roots_windows` | several search folders; ways to open Find; four windows; two searches at once; Escape and Close | PASS | 41 |
+| `find_result_actions` | sorting, collation, Go to file, View/Edit/Open, stale results, Stop, scrolling | PASS (the corrected Stop check held: "Cancelled · 20 found" 147 ms after Stop) | 71 |
+| `find_feed_panel` | Feed to panel: list, marks, keys, refusals, viewers, file operations, right panel | PASS | 55 |
+| `find_budgets` | folder depth, content per file, result count with a group, duplicate candidates | PASS | 11 |
+| `find_layout` | Blue, Dark and Touch at preferred, narrow and compact sizes; column drags; path tails | FAIL: FIND-COMPACT-STATUS-OVERLAP (Touch compact, 700×340). Every size checked before it held (Blue and Dark preferred and narrow, Touch preferred, Blue compact), the sideways column step too; the scenario stopped at Touch compact's layout check, so F-L04's after-search check did not run there | 14 |
+| `find_archives` | Search inside archives through the installed plugin, many and large archives, Stop, visited entries | PASS (also at full scale, run `20261121-171419`, 75 s) | 48 |
+| `find_viewers` | viewer windows from the results and from a fed list | PASS | 7.9 |
 
 ## Findings
 
@@ -45,8 +45,9 @@ that verified it.
 | --- | --- | --- | --- |
 | FIND-FEED-SELECT-FILES | In a fed list, Ctrl+A (select files only) adds the files to the marks and keeps a marked folder marked; in a panel it replaces the marks with the files | `find_feed_panel` › marks | Fixed: the check passed in the last run |
 | FIND-FEED-INVERT | In a fed list, Ctrl+I (invert files only) also unmarks a marked folder; in a panel it keeps folder marks | `find_feed_panel` › marks | Fixed: the check passed in the last run |
-| FIND-LAYOUT-NARROW-LABEL | A narrow Find window drew the "Search folders" label with no height | `find_layout` › a narrow window | Fixed: the narrow layout checks pass; the check fails later, on its sideways step. |
+| FIND-LAYOUT-NARROW-LABEL | A narrow Find window drew the "Search folders" label with no height | `find_layout` › a narrow window | Fixed: the narrow layout checks and the sideways step pass (Linux run `20261121-144246`) |
 | FIND-RESULTS-PATH-TAIL | A shortened Path cell in the results cuts the end of the path, hiding the last folder; the fed list keeps it | `find_layout` › shortened result paths | Fixed: the check passed in the last run |
+| FIND-COMPACT-STATUS-OVERLAP | Found on Linux in run `20261121-144246`, in the fix of FIND-COMPACT-STATUS-HIDDEN (F-L04, WIN-7). In a Find window under 360 px high with text over 20 px (Touch, 700×340) the idle status line, pinned to the query area's last line, overlaps the bottom of the scrolled query form by 11 px: "Fewer options" and "Feed to panel" by 216×11 and 212×11 px, and the button's border runs through the status text ("Ready · 0 found · 0 examined"). An empty band of about the same height stays above the form at the query area's top. Suspected cause: `query-scroll` (`find-window.slint`, about line 181) sets `height: parent.height - root.query-status-height` but no `y`, so Slint centres it in the query area and moves it down by half the status line's height; the status line is placed at `y: parent.height - self.height`. The `midnight-ui` test `find_compact_status` checks that the status line is in view, not that the form ends above it. | `find_layout` › Touch compact: layout clean | Open: `_build/acceptance-linux/20261121-144246/shots/find_layout/touch-700x340.png` |
 
 ## Opening Find and its windows
 
@@ -138,7 +139,7 @@ that verified it.
 | F-S04 | Name order equals the panels' collation | `find_result_actions` | same names, same order | PASS |
 | F-S05 | Large result lists; the 10,000 results | `tools_find_results` | every entry of `many/`; 10,000 rows | PASS |
 | F-S06 | Every column resized by dragging; a drag never sorts; the width is kept for the next search | `tools_find_criteria`, `find_layout` | widths; order; arrow | PASS |
-| F-S07 | Keys in the results; Left and Right scroll sideways | `find_result_actions`, `find_layout` | selected row; header position | PASS in `find_result_actions`; the sideways part: PENDING on Linux (the Name header was already out of view before Right; the check was adjusted on 21 November and held on Windows in run 20261121-042048, [windows.md](windows.md)) |
+| F-S07 | Keys in the results; Left and Right scroll sideways | `find_result_actions`, `find_layout` | selected row; header position | PASS (the sideways part with the check adjusted on 21 November; also held on Windows in run 20261121-042048, [windows.md](windows.md)) |
 | F-S08 | Go to file by Enter, double click and button, for files and folders; the window stays open | `find_result_actions`, `find_by_mask` | panel folder and cursor | PASS |
 | F-S09 | Open on a folder goes to it | `find_result_actions` | panel folder and cursor | PASS |
 | F-S10 | View, F3 and Alt+F3 open the selected file in a viewer (Markdown rendered, or its source) | `find_viewers`, `find_result_actions` | the viewer's text and mode; the request's file and plain-text choice | PASS |
@@ -156,10 +157,10 @@ that verified it.
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| F-T01 | Stop cancels; what was found is kept and sorted; Feed to panel enabled again | `find_result_actions`, `tools_find_results` | Cancelled · 20 found, rows e00…e19 | PASS (the Stop check failed only on F-T04) |
-| F-T02 | Feed to panel is disabled before a search and while one runs | `find_result_actions` | button state | PASS (the Stop check failed only on F-T04) |
-| F-T03 | A new search replaces the results | `find_result_actions` | rows e00…e09 | PASS (the Stop check failed only on F-T04) |
-| F-T04 | While a search runs the window names the folder it is reading; the name goes when the search ends | `find_result_actions` | a text naming the folder of the long reads while Searching, none after Stop | PENDING: the window shows "Scanning: <folder>"; the check looked for the bare path and is corrected, not rerun |
+| F-T01 | Stop cancels; what was found is kept and sorted; Feed to panel enabled again | `find_result_actions`, `tools_find_results` | Cancelled · 20 found, rows e00…e19 | PASS |
+| F-T02 | Feed to panel is disabled before a search and while one runs | `find_result_actions` | button state | PASS |
+| F-T03 | A new search replaces the results | `find_result_actions` | rows e00…e09 | PASS |
+| F-T04 | While a search runs the window names the folder it is reading; the name goes when the search ends | `find_result_actions` | a text naming the folder of the long reads while Searching, none after Stop | PASS (the corrected check: "Scanning: <folder>") |
 
 ## Budgets
 
@@ -203,7 +204,7 @@ that verified it.
 | F-F02 | Cursor keys | `find_feed_panel` | cursor after Down, End, Up, Home, Page Down, Page Up | PASS |
 | F-F03 | Alt+Right and Ctrl+R do nothing in the list | `find_feed_panel` | list unchanged, no notice | PASS |
 | F-F04 | Insert and Space mark; the status counts and sums | `find_feed_panel` | marks, cursor, status | PASS |
-| F-F05 | Ctrl+Shift+A, Ctrl+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I with the keys' panel meaning; keypad * like Ctrl+I | `find_feed_panel` | marks after each key from a known state | PASS (20 November). Since 21 November keypad * works as in a panel (also folders when Select by mask last had Include folders); the scenario's default (Include folders off) still holds. The folders case is checked since 21 November (`find_feed.rs`, committed in 4d788480): not run on Linux; PASS on Windows in run 20261121-024756 ([Windows results](windows.md#results)) |
+| F-F05 | Ctrl+Shift+A, Ctrl+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I with the keys' panel meaning; keypad * like Ctrl+I | `find_feed_panel` | marks after each key from a known state | PASS, the folders case included (keypad * as Ctrl+Shift+I once Select by mask last had Include folders, `find_feed.rs` since 4d788480); also PASS on Windows in run 20261121-024756 ([Windows results](windows.md#results)) |
 | F-F06 | Ctrl+click, Shift+click, Alt+Down and Alt+Up | `find_feed_panel` | marks and cursor | PASS |
 | F-F07 | Enter, Ctrl+Page Down and a double click go to a file or open a folder | `find_feed_panel` | panel folder and cursor; list closed | PASS |
 | F-F08 | Backspace, Alt+Left, Ctrl+Backspace, Shift+Backspace and Back to folder leave the list; Ctrl+G navigates away; Tab keeps it | `find_feed_panel` | the folder shown equals the disk | PASS |
@@ -224,8 +225,8 @@ that verified it.
 | --- | --- | --- | --- | --- |
 | F-L01 | No clipped or overlapping controls in Blue, Dark and Touch (24 px text) at the preferred, a narrow and a compact size | `find_layout` | the UI review's layout checks | PASS |
 | F-L02 | Narrow: Remove under Add; Browse… and OK under the typed path | `find_layout` | control positions | PASS |
-| F-L03 | Compact: the field is "Query"; a running search hides the query area; the idle status shows under the results | `find_layout` | label; field hidden; status under the results and in view | PASS |
-| F-L04 | Compact with text over 20 px: the idle status moves into the query area and shows there | `find_layout` | status position; a status line in view after the search | FAIL (FIND-COMPACT-STATUS-HIDDEN, analysed on Windows on 21 November): the status line is in the query area, as FIND.md says, but at its end, scrolled out of the short query area's view, so the user does not see how the search ended. The earlier "under the results" reading was a check defect: it placed the line by window coordinates, where a line scrolled out below the query area lies below the list; it now goes by the area that clips the line. Windows run 20261121-042048, `find_layout/touch-700x340-idle.png` ([windows.md](windows.md)); not re-run on Linux. Fixed in source on 21 November: the status is pinned to the query area's last line (`midnight-ui` test `find_compact_status`) |
+| F-L03 | Compact: the field is "Query"; a running search hides the query area; the idle status shows under the results | `find_layout` | label; field hidden; status under the results and in view | PASS (Blue compact) |
+| F-L04 | Compact with text over 20 px: the idle status moves into the query area and shows there | `find_layout` | status position; a status line in view after the search | FAIL: FIND-COMPACT-STATUS-OVERLAP (Linux run `20261121-144246`, Touch 700×340): the fix pinned the status to the query area's last line, where it is shown before the search, but it overlaps the scrolled form's last row by 11 px, and the layout check stopped the scenario before the after-search check. Before the fix (FIND-COMPACT-STATUS-HIDDEN, analysed on Windows on 21 November) the line was at the end of the scrolled form, out of view; the earlier "under the results" reading was a check defect (window coordinates instead of the clipping area). Windows run 20261121-042048, `find_layout/touch-700x340-idle.png` ([windows.md](windows.md)) |
 | F-L05 | A shortened Path cell keeps the last folder, as the fed list's Folder cells and other shortened paths do | `find_layout` | every shortened Path cell at 560 px shows its `/folder` tail | PASS |
 
 ## Not offered by Find

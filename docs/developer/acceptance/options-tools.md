@@ -184,7 +184,7 @@ besides the action's own effect fails it.
 | O-J07 | Close and Escape close Jobs | `tools_notices_jobs` | window gone | PASS |
 | O-N01 | A folder notice: title, reason, folder box | `tools_notices_jobs` | texts | PASS |
 | O-N02 | Details expands, Hide details collapses | `tools_notices_jobs` | details text, button caption | PASS |
-| O-N03 | Copy details reaches the clipboard | `tools_notices_jobs` | command sent; "Copied to clipboard" | FAIL on 20 November: the copied report lacked the reason the notice shows (finding O-5). Fixed in source on 21 November (Copy details starts with the title, reason and folder): not re-run on Linux; PASS on Windows in run 20261121-040741 ([Windows results](windows.md#results)) |
+| O-N03 | Copy details reaches the clipboard | `tools_notices_jobs` | command sent; "Copied to clipboard" | PASS on Linux in run `20261121-144246` and on Windows in run 20261121-040741 ([Windows results](windows.md#results)): Copy details starts with the title, reason and folder (finding O-5, of 20 November, fixed) |
 | O-N04 | Close, Escape and the header's close button close it; no other notice follows | `tools_notices_jobs` | notice token for one second | PASS |
 | O-N05 | A very long folder path: dialog inside the window, Close in view, the path box scrolls to its end | `tools_notices_jobs` | rectangles; wheel scrolling | PASS |
 
@@ -206,7 +206,7 @@ besides the action's own effect fails it.
 | O-1 | On Linux, Shift+letter outside a filename search is taken by the Windows drive-letter action, finds no drive and is swallowed: typing an uppercase letter starts no search (during a search the same key is typed). | `shortcuts_catalog`, scope probe "Shift+R" |
 | O-2 | A click on an unavailable (disabled) F-key cell of the footer takes the keyboard focus from the file list, so arrow keys and typing reach no panel until the list is clicked; enabled cells give the focus back. | `shortcuts_footer` |
 | O-3 | About › Licenses: each row's "›" open mark and its click area lie in the row's last 26 px, under the list's 14 px overlay scrollbar; a click in the middle of the mark does nothing, only its left edge opens the library. | `about_box` |
-| O-5 | A folder notice's Copy details copies the title, folder and raw error but not the reason the dialog shows ("Access to this folder was denied."), although its hint promises the complete message. | `tools_notices_jobs` |
+| O-5 | A folder notice's Copy details copies the title, folder and raw error but not the reason the dialog shows ("Access to this folder was denied."), although its hint promises the complete message. Fixed: the check passes on Linux (run `20261121-144246`) and Windows (O-N03). | `tools_notices_jobs` |
 | O-4 | Options buttons that are enabled but change nothing: Keyboard › Clear with nothing captured, Keyboard › Restore command for a command at its defaults, Colors › Discard changes without changes, Plugins › Rescan all plugins (no feedback without plugins). | `options_buttons` |
 
 ## Host runs
@@ -231,3 +231,4 @@ _build/<target>/debug/deps/acceptance-<hash> --scale smoke <scenario>...`
 | 2026-11-20 15:21 | `tools_checksum_algorithms` with the results' copy checks (clipboard text) | PASS (43.4 s) |
 | 2026-11-20 15:21 | `shortcuts_catalog`, `shortcuts_footer` with the fixes for O-1 and O-2 | PASS (350.8, 81.6 s) |
 | 2026-11-20 15:21 | `tools_notices_jobs` with the clipboard text checks | FAIL: O-5 only (22.7 s) |
+| `20261121-144246` (Linux, commit 3f6fff8a, WSL 2 Ubuntu 24.04, every scenario of the suite; report in `_build/acceptance-linux/20261121-144246/`) | every scenario of this record: `checksums`, `tools_checksum_algorithms`, `tools_checksum_manifests`, `tools_checksum_large_stop`, `tools_help_drive_info`, `tools_main_menu`, the ten `options_*` page scenarios, `options_buttons`, `options_themes`, `shortcuts_catalog`, `shortcuts_footer`, `shortcuts_hints`, `about_box`, `tools_user_menu`, `tools_notices_jobs` | all PASS (4.6, 8.1, 6.5, 2.1, 2.1, 75.4; 6.3–26.4 for the pages; 45.6, 21.1, 224.8, 46.2, 11.2, 10.8, 8.6, 13.7 s). O-5 is fixed (O-N03) |

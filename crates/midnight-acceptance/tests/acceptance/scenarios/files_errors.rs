@@ -671,8 +671,13 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
         support::decision_window(app).is_some()
             || support::job(app, start).is_some_and(|job| job.state.is_terminal())
     });
-    let offered = support::decision_window(&app)
-        .map(|window| inspect::labels(window.window(), AccessibleRole::Button));
+    // Size the question like a desktop dialog before reading its buttons, as
+    // `wait_decision` does for the other questions here: unsized, the window shows only
+    // "Decide later", so an offered Skip would go unseen.
+    let offered = support::decision_window(&app).is_some().then(|| {
+        let window = support::wait_decision(&mut app, "the unreadable folder's question");
+        inspect::labels(window.window(), AccessibleRole::Button)
+    });
     let skippable = offered
         .as_ref()
         .is_some_and(|labels| labels.iter().any(|label| label == "Skip"));

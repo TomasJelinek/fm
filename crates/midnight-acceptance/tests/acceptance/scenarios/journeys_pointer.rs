@@ -423,9 +423,12 @@ fn steps(
                 other => Err(format!("{:?}", other.map(|progress| progress.state))),
             },
         );
+        // A trashed entry is named "<label>-midnight-<unique>", with its original path
+        // in its .trashinfo: find it by that path, as `files_trash` does.
         journey.check(
             "the file is in the Trash and gone from its folder",
-            journey::holds(&trash.join("files/b-two.txt"), "two new\n")
+            super::files_trash::entry_for(trash, &home.join("b-two.txt"))
+                .and_then(|entry| journey::holds(&entry, "two new\n"))
                 .and_then(|()| journey::absent(&home.join("b-two.txt"))),
         );
         journey.step("a click on b-two.txt, footer F8, Move to Trash: the file is in the Trash");

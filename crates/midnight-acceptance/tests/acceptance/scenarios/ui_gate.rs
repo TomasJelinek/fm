@@ -1167,8 +1167,12 @@ fn controls_overlap(nodes: &[Node], issues: &mut Vec<Issue>) {
 }
 
 /// A file system path: elided in the middle by design (`inspect::check_layout`'s rule).
+/// Path bar segments are wrapped in bidirectional isolates (U+2066 … U+2069), which are
+/// not part of the path.
 fn looks_like_path(text: &str) -> bool {
-    let text = text.trim_start_matches(['…', '.']);
+    let text = text.trim_start_matches([
+        '…', '.', '\u{2066}', '\u{2067}', '\u{2068}', '\u{200e}', '\u{200f}',
+    ]);
     let bytes = text.as_bytes();
     text.starts_with('/')
         || text.starts_with('~')
