@@ -15,7 +15,7 @@ use midnight_core::{
     TransferNamespacePin, TransferNamespaceProbe, TransferNamespaceScope,
 };
 use midnight_platform_common::transfer_namespace::{
-    TransferNamespaceChange, TransferNamespaceChanges,
+    TransferNamespaceChange, TransferNamespaceChanges, TransferNamespaceRefreshBatch,
 };
 use midnight_work_budget::{Gate, Permit};
 use std::{
@@ -1676,6 +1676,8 @@ impl ProbeBatch {
             }
             pins
         };
+        // One batch: an adapter walks an ancestry shared by several pins once.
+        let _batch = TransferNamespaceRefreshBatch::begin();
         let mut facts = Vec::with_capacity(pins.len());
         for (root, alias, pin) in &pins {
             let probe = match &pin.pin {

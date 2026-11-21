@@ -194,8 +194,8 @@ many a folder lists or how long their names are in total: the archive's index li
 in its worker, whose 1 GiB of memory holds about nine million TAR, two million 7z or
 one and a half million ZIP members, and panels, F5 copy-out, folder sizes and Find
 all take a folder of any size; F5 also copies a selection of any size. A panel
-showing an archive folder holds about 650 bytes per member in the application (about
-620 MiB for a million members). An
+showing an archive folder holds about 640 bytes per member in the application (about
+610 MiB for a million members). An
 archive that needs more than its worker has says that the worker ran out of memory;
 the worker SDK grants no worker more than 1 GiB, so this is the remaining limit
 (protocol-1 workers keep their legacy limits, including a 64 MiB source). A source

@@ -281,11 +281,14 @@ memory bounds an archive's index instead: measured at about 105 bytes per TAR
 member, 420 per 7z member and 690 per ZIP member at peak (a million members), 1 GiB
 holds about nine million TAR, two million 7z or one and a half million ZIP members.
 That 1 GiB, the worker SDK's maximum, is the remaining limit. In the application
-process a listed folder costs per member about 187 bytes for the host's rows, 649
-for a panel listing (its rows, collation keys and index) and 321 for the tree
+process a listed folder costs per member about 186 bytes for the host's rows, 639
+for a panel listing (its rows, collation keys and index) and 339 for the tree
 provider's capture (a million 16-byte names: `archive_folder_memory_per_member` in
 `crates/midnight-engine/src/providers/archive_tests.rs`), so a panel showing a folder
-of a million members holds about 620 MiB.
+of a million members holds about 610 MiB. That test uses stand-in collation keys; a
+real Linux en_US key of a 16-character name takes 108 bytes (312 before the keys'
+variable-length code of 21 November), about 192 bytes less per member
+([transfer and listing performance](../verification/2026-11-21-transfer-and-listing-performance.md)).
 The idle supervisor waits without polling; it observes startup cancellation every
 10 ms only while that exchange is active. A failed `release_on_worker` retains its
 host reference instead of dropping it. Once every host reference of a session whose

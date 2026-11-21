@@ -916,6 +916,96 @@ fn source_pin_rejects_replacement_and_content_revision_changes() {
     assert!(pin.refresh(&cancel).is_err());
 }
 
+/// Each ancestor of `path` up to `/`, opened by its own path: identity and mount ID read
+/// by separate calls, as the walk read them before it took one statx per level.
+fn opened_ancestry(path: &Path) -> Vec<(TransferIdentity, u64)> {
+    path.ancestors()
+        .map(|ancestor| {
+            let folder = File::from(openat(CWD, ancestor, PATH_DIRECTORY, Mode::empty()).unwrap());
+            (
+                identity(&folder, ancestor).unwrap(),
+                native_location::mount(&folder, ancestor).unwrap().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn ancestry_key_lists_each_live_ancestor_identity_and_mount_up_to_the_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let nested = root.join("a/b/c");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir(root.join("x")).unwrap();
+    let folder = File::open(&nested).unwrap();
+    let cancel = Cancellation::default();
+    let Some(key) = parent_key(&folder, &nested, &cancel).unwrap() else {
+        eprintln!("SKIP ancestry key: the temporary directory is not on a qualified filesystem");
+        return;
+    };
+    assert_eq!(key.chain, opened_ancestry(&nested));
+    let (id, mount) = binding(&folder, &nested).unwrap();
+    assert_eq!(id, identity(&folder, &nested).unwrap());
+    assert_eq!(mount, native_location::mount(&folder, &nested).unwrap());
+    // The walk follows the retained folder's live "..", not its former path.
+    std::fs::rename(root.join("a/b"), root.join("x/b")).unwrap();
+    let moved = parent_key(&folder, &nested, &cancel).unwrap().unwrap();
+    assert_eq!(moved.chain, opened_ancestry(&root.join("x/b/c")));
+    assert!(moved != key);
+    assert_eq!(moved.chain[..2], key.chain[..2]);
+    assert_eq!(moved.domain, key.domain);
+}
+
+#[test]
+fn a_refresh_batch_walks_an_ancestry_that_its_pins_share_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = directory(temp.path());
+    let cancel = Cancellation::default();
+    let first = parent
+        .native_child_namespace_scope(OsStr::new("first"), EntryKind::File, &cancel)
+        .unwrap()
+        .unwrap();
+    let second = parent
+        .native_child_namespace_scope(OsStr::new("second"), EntryKind::File, &cancel)
+        .unwrap()
+        .unwrap();
+    if !matches!(first.refresh(&cancel), Ok(TransferNamespaceProbe::Known(_))) {
+        eprintln!("SKIP refresh batch: the temporary directory is not on a qualified filesystem");
+        return;
+    }
+    let walks = || WALKS.with(std::cell::Cell::get);
+    // Refreshes both pins; the walks they took and the parent facts they reported.
+    let refresh_both = || {
+        let before = walks();
+        let facts = [known(first.as_ref()), known(second.as_ref())];
+        let parents =
+            facts.map(|facts| (facts[0].parent.identity, facts[0].parent.ancestors.to_vec()));
+        (walks() - before, parents)
+    };
+    let (unbatched, parents) = refresh_both();
+    assert_eq!(unbatched, 2, "each refresh outside a batch walks");
+    assert!(current_transfer_namespace_refresh_batch().is_none());
+    {
+        let _batch = TransferNamespaceRefreshBatch::begin();
+        let batch = current_transfer_namespace_refresh_batch();
+        assert!(batch.is_some());
+        let (batched, batched_parents) = refresh_both();
+        assert_eq!(batched, 1, "one walk for the shared parent");
+        assert_eq!(batched_parents, parents);
+        assert_eq!(refresh_both().0, 0, "the batch remembers the walk");
+        {
+            let _nested = TransferNamespaceRefreshBatch::begin();
+            assert_ne!(current_transfer_namespace_refresh_batch(), batch);
+            assert_eq!(refresh_both().0, 1, "a nested batch walks for itself");
+        }
+        assert_eq!(current_transfer_namespace_refresh_batch(), batch);
+    }
+    assert!(current_transfer_namespace_refresh_batch().is_none());
+    assert_eq!(refresh_both().0, 2, "an ended batch is forgotten");
+    let _later = TransferNamespaceRefreshBatch::begin();
+    assert_eq!(refresh_both().0, 1, "a later batch walks again");
+}
+
 #[test]
 fn moved_parent_with_decoy_does_not_adopt_a_new_binding() {
     let temp = tempfile::tempdir().unwrap();

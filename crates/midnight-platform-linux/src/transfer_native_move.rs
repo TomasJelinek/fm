@@ -32,7 +32,7 @@ pub(super) fn attempt_with(
         replace,
         cancel,
         (before_capture, before_publish),
-        sync_native,
+        sync_directories,
     )
 }
 
@@ -43,7 +43,7 @@ fn execute(
     replace: Replacement,
     cancel: &Cancellation,
     hooks: (impl FnOnce(), impl FnOnce()),
-    sync: impl FnOnce(&Capture, &destination::Directory, &destination::Directory) -> Result<(), FsError>,
+    sync: impl FnOnce(&[&destination::Directory]) -> Result<(), FsError>,
 ) -> Result<TransferNativeMoveOutcome, FsError> {
     namespace::change(cancel, |mut change| {
         let mut retained = capture.native.lock().unwrap_or_else(|e| e.into_inner());
@@ -56,7 +56,7 @@ fn execute(
             replace,
             cancel,
             hooks,
-            |stage, target| sync(capture, stage, target),
+            sync,
             &mut change,
         )?;
         if terminal(&result) {
@@ -81,7 +81,7 @@ pub(super) fn attempt_link(
             replace,
             cancel,
             (|| {}, || {}),
-            |stage, target| sync_locations(parent, stage, target),
+            sync_directories,
             &mut change,
         )
     })
@@ -185,7 +185,7 @@ fn execute_in(
     replace: Replacement,
     cancel: &Cancellation,
     hooks: (impl FnOnce(), impl FnOnce()),
-    sync: impl FnOnce(&destination::Directory, &destination::Directory) -> Result<(), FsError>,
+    sync: impl FnOnce(&[&destination::Directory]) -> Result<(), FsError>,
     change: &mut namespace::Change<'_>,
 ) -> Result<TransferNativeMoveOutcome, FsError> {
     let (before_capture, before_publish) = hooks;
@@ -531,7 +531,7 @@ fn committed(
     name: &OsStr,
     stage: destination::Directory,
     replaced: Option<(TransferIdentity, destination::recovery::Revision)>,
-    sync: impl FnOnce(&destination::Directory, &destination::Directory) -> Result<(), FsError>,
+    sync: impl FnOnce(&[&destination::Directory]) -> Result<(), FsError>,
     change: &mut namespace::Change<'_>,
 ) -> TransferNativeMoveOutcome {
     let path = target.path().join(name);
@@ -586,7 +586,7 @@ fn committed(
                 path,
                 identity: observed_identity,
             });
-            if let Err(failure) = sync(&stage, target) {
+            if let Err(failure) = sync(&[&stage, source.parent(), target]) {
                 error = combined(error, "saving the moved link", failure);
             }
             if let Err(failure) = clean_stage(source, stage, change, &mut recovery) {
@@ -604,15 +604,12 @@ fn committed(
             error,
         };
     }
-    let mut failure = sync(&stage, target).err();
-    if replaced.is_none()
-        && let Err(cleanup) = clean_stage(source, stage, change, &mut recovery)
-    {
-        failure = Some(match failure {
-            Some(error) => combined(error, "empty staging cleanup", cleanup),
-            None => cleanup,
-        });
-    }
+    let failure = if replaced.is_some() {
+        // The stage keeps the displaced entry as recovery data.
+        sync(&[&stage, source.parent(), target]).err()
+    } else {
+        synced_after_stage_removal(source, target, stage, sync, change, &mut recovery)
+    };
     if let Some(error) = failure {
         return TransferNativeMoveOutcome::RecoveryRequired {
             destination,
@@ -649,20 +646,43 @@ fn clean_stage(
     }
 }
 
-fn sync_native(
-    capture: &Capture,
-    stage: &destination::Directory,
+/// Removes the empty stage of a published Move first, then syncs the source and target
+/// folders once each: one journal commit covers the capture, the publication and the
+/// removal, where syncing the stage, both folders and then the source folder again
+/// after the removal took two. A stage that is not removed (it is no longer empty, for
+/// example) is synced with both folders and reported, as before.
+fn synced_after_stage_removal(
+    source: MoveSource<'_>,
     target: &destination::Directory,
-) -> Result<(), FsError> {
-    sync_locations(&capture.parent, stage, target)
+    stage: destination::Directory,
+    sync: impl FnOnce(&[&destination::Directory]) -> Result<(), FsError>,
+    change: &mut namespace::Change<'_>,
+    recovery: &mut Vec<TransferRecovery>,
+) -> Option<FsError> {
+    use destination::recovery::StageRemovalError;
+    let (synced, cleanup) = match source.parent().remove_empty_stage_unsynced(stage, change) {
+        Ok(()) => return sync(&[source.parent(), target]).err(),
+        // An unsynced removal does not sync, so it never reports this; the stage is gone.
+        Err(StageRemovalError::Unsynced(cleanup)) => (sync(&[source.parent(), target]), cleanup),
+        Err(StageRemovalError::Retained(cleanup, stage)) => {
+            if source.is_link() {
+                recovery.push(TransferRecovery {
+                    path: stage.path().to_owned(),
+                    identity: Some(stage.identity()),
+                });
+            }
+            (sync(&[&stage, source.parent(), target]), cleanup)
+        }
+    };
+    Some(match synced {
+        Ok(()) => cleanup,
+        Err(error) => combined(error, "empty staging cleanup", cleanup),
+    })
 }
 
-fn sync_locations(
-    parent: &destination::Directory,
-    stage: &destination::Directory,
-    target: &destination::Directory,
-) -> Result<(), FsError> {
-    sync_each([stage, parent, target], |directory| {
+/// Syncs every folder, the later ones too after a failure, and returns the first failure.
+fn sync_directories(directories: &[&destination::Directory]) -> Result<(), FsError> {
+    sync_each(directories, |directory| {
         directory
             .native_file()
             .sync_all()
@@ -671,7 +691,7 @@ fn sync_locations(
 }
 
 fn sync_each(
-    directories: [&destination::Directory; 3],
+    directories: &[&destination::Directory],
     mut synchronize: impl FnMut(&destination::Directory) -> Result<(), FsError>,
 ) -> Result<(), FsError> {
     let mut first = None;

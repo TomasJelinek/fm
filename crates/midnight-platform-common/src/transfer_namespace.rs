@@ -61,6 +61,44 @@ pub fn current_transfer_namespace_changes() -> Option<Arc<dyn TransferNamespaceC
     CURRENT.with(|current| current.borrow().clone())
 }
 
+thread_local! {
+    static REFRESH_BATCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+static REFRESH_BATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One batch of namespace pin refreshes on this thread, such as a host refreshing every
+/// pin that a change touched, or an adapter reserving the pins of one announcement. A
+/// batch contains no namespace change, so an adapter may check an ancestry that several
+/// of its pins share once for the whole batch instead of once per pin. The batch ends
+/// when this drops, on the thread that began it; a nested batch is a separate batch and
+/// must end first (keep each guard in a scope, as `let _batch = ...begin();`).
+pub struct TransferNamespaceRefreshBatch {
+    previous: u64,
+    _thread: std::marker::PhantomData<*const ()>,
+}
+
+impl TransferNamespaceRefreshBatch {
+    pub fn begin() -> Self {
+        let batch = REFRESH_BATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        Self {
+            previous: REFRESH_BATCH.with(|current| current.replace(batch)),
+            _thread: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for TransferNamespaceRefreshBatch {
+    fn drop(&mut self) {
+        REFRESH_BATCH.with(|current| current.set(self.previous));
+    }
+}
+
+/// The number of the refresh batch running on this thread, unique to that batch (see
+/// `TransferNamespaceRefreshBatch`).
+pub fn current_transfer_namespace_refresh_batch() -> Option<u64> {
+    REFRESH_BATCH.with(|current| Some(current.get()).filter(|batch| *batch != 0))
+}
+
 /// Native commit and registry refresh are separate outcomes. A refresh failure cannot turn
 /// an already published file or completed native rename into a pre-commit native failure.
 /// The installed adapter records a refresh failure before returning it to its host.

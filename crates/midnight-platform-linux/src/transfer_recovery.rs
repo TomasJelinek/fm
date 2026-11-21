@@ -422,6 +422,25 @@ impl Directory {
         stage: Self,
         change: &mut namespace::Change<'_>,
     ) -> Result<(), StageRemovalError> {
+        self.remove_empty_stage_syncing(stage, change, true)
+    }
+
+    /// `remove_empty_stage_checked` without syncing this directory, for a caller that
+    /// syncs it right after together with other folders; never `Unsynced`.
+    pub(in crate::transfer) fn remove_empty_stage_unsynced(
+        &self,
+        stage: Self,
+        change: &mut namespace::Change<'_>,
+    ) -> Result<(), StageRemovalError> {
+        self.remove_empty_stage_syncing(stage, change, false)
+    }
+
+    fn remove_empty_stage_syncing(
+        &self,
+        stage: Self,
+        change: &mut namespace::Change<'_>,
+        sync: bool,
+    ) -> Result<(), StageRemovalError> {
         let cleanup = Cancellation::default();
         let removed = self.stage_name(&stage, &cleanup).and_then(|name| {
             // The parent is held and protected; the private random name is checked
@@ -453,10 +472,13 @@ impl Directory {
         // the missing parent, and it releases its handle of the stage first: that handle
         // would keep the stage's own retirement below from certifying its close.
         stage.namespace.parent_removed();
-        let synced = self
-            .file
-            .sync_all()
-            .map_err(|e| StageRemovalError::Unsynced(error(&stage.path, e)));
+        let synced = if sync {
+            self.file
+                .sync_all()
+                .map_err(|e| StageRemovalError::Unsynced(error(&stage.path, e)))
+        } else {
+            Ok(())
+        };
         let Directory { file, .. } = stage;
         let closed = match Arc::try_unwrap(file) {
             Ok(file) => {

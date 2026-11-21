@@ -95,6 +95,11 @@ name changes; it stops with its Retry/Skip/Cancel decision. (Rename and the meta
 editor's case change wait such a refusal out for about one second.)
 `native_entries_moved` and items/s express this work separately from copied bytes.
 Committed errors retain their recovery facts and cannot replay a source transfer.
+On Linux a published native Move removes its empty stage first and then syncs the
+source and target folders once each (two folder fsyncs, one ext4 journal commit). A
+stage that cannot be removed is synced with both folders and the Move reports it as
+needing recovery; a replacement's stage, which keeps the displaced entry as recovery
+data, is synced with both folders.
 The [current policy and API design](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md)
 supersedes earlier unconditional SHA-256 and same-volume-copy descriptions below;
 full-hash proof discussions describe the default mode, and sampled proofs retain
@@ -741,6 +746,15 @@ and where others change names unseen, and any filesystem that does not answer
 `FS_IOC_GETFLAGS`. As on Windows, an `Unknown` binding sends the turn to the host's
 opaque lane with its full refresh of the job's pins: transfers there exclude each other
 instead of running side by side, and Copy and Move still work.
+
+A key lists the identity and mount of its folder and of each ancestor up to the
+mount's root, read with one `statx` per level. The engine refreshes the pins that one
+change touches as one refresh batch (`TransferNamespaceRefreshBatch` in
+`midnight-platform-common`, a guard of the refreshing thread), and the announcement
+of a change reserves its pins in one. A batch makes no namespace change, so the Linux
+adapter walks the ancestry of a folder that several pins of the batch share once (it
+remembers up to 64 folders per batch). An external rename of an ancestor during a
+batch is seen by the next batch, as by a walk that ran just before the rename.
 
 The Linux namespace unit tests create their fixtures in the temporary folder
 (`TMPDIR`), which must therefore lie on a qualified mount; below a bind-mounted folder,

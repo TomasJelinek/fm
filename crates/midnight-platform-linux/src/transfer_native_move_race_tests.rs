@@ -209,9 +209,9 @@ fn native_sync_error_preserves_committed_move_and_displaced_bytes_without_replay
         Some((expected, TransferReplacementPolicy::RecoverableCurrentEntry)),
         &cancel,
         (|| {}, || {}),
-        |_, _, target| {
+        |directories: &[&destination::Directory]| {
             Err(error(
-                target.path(),
+                directories[directories.len() - 1].path(),
                 io::Error::new(
                     io::ErrorKind::StorageFull,
                     "injected directory sync failure",
@@ -248,7 +248,7 @@ fn native_sync_failure_still_attempts_all_directory_syncs_and_retains_first_erro
     let (_temp, capture, _) = fixture();
     let mut attempts = 0;
     let error = sync_each(
-        [&capture.parent, &capture.parent, &capture.parent],
+        &[&capture.parent, &capture.parent, &capture.parent],
         |directory| {
             attempts += 1;
             Err(error(
@@ -260,4 +260,193 @@ fn native_sync_failure_still_attempts_all_directory_syncs_and_retains_first_erro
     .unwrap_err();
     assert_eq!(attempts, 3);
     assert_eq!(error.message, "failure 1");
+}
+
+/// The private `.midnight-move-*` stages in `folder`.
+fn stages(folder: &Path) -> Vec<PathBuf> {
+    fs::read_dir(folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".midnight-move-"))
+        })
+        .collect()
+}
+
+#[test]
+fn published_move_removes_its_empty_stage_before_syncing_each_folder_once() {
+    let (temp, capture, target) = fixture();
+    let mut synced = Vec::new();
+    let outcome = execute(
+        &capture,
+        &*target,
+        OsStr::new("item"),
+        None,
+        &Cancellation::default(),
+        (|| {}, || {}),
+        |directories: &[&destination::Directory]| {
+            let identities: Vec<_> = directories.iter().map(|folder| folder.identity()).collect();
+            synced.push((identities, stages(temp.path()).len()));
+            sync_directories(directories)
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(outcome, TransferNativeMoveOutcome::Moved {
+            durability_confirmed: true, ref recovery, ..
+        } if recovery.is_empty()),
+        "{outcome:?}"
+    );
+    // One sync of the source and target folders, after the stage was removed.
+    assert_eq!(
+        synced,
+        [(vec![capture.parent.identity(), target.identity()], 0)]
+    );
+    assert_eq!(
+        fs::read(target.path().join("item")).unwrap(),
+        b"selected source"
+    );
+    assert!(!temp.path().join("source").exists());
+}
+
+#[test]
+fn failed_folder_sync_after_stage_removal_reports_the_published_move_for_recovery() {
+    let (temp, capture, target) = fixture();
+    let outcome = execute(
+        &capture,
+        &*target,
+        OsStr::new("item"),
+        None,
+        &Cancellation::default(),
+        (|| {}, || {}),
+        |directories: &[&destination::Directory]| {
+            Err(error(
+                directories[0].path(),
+                io::Error::new(
+                    io::ErrorKind::StorageFull,
+                    "injected directory sync failure",
+                ),
+            ))
+        },
+    )
+    .unwrap();
+    let TransferNativeMoveOutcome::RecoveryRequired {
+        destination: Some(path),
+        recovery,
+        error,
+    } = outcome
+    else {
+        panic!("the published Move lost its durability failure: {outcome:?}")
+    };
+    assert!(recovery.is_empty());
+    assert_eq!(error.kind, io::ErrorKind::StorageFull);
+    assert_eq!(fs::read(path).unwrap(), b"selected source");
+    assert!(stages(temp.path()).is_empty());
+    assert!(!temp.path().join("source").exists());
+}
+
+#[test]
+fn a_stage_that_is_no_longer_empty_is_synced_with_both_folders_and_reported() {
+    let (temp, capture, target) = fixture();
+    let mut synced = Vec::new();
+    let outcome = execute(
+        &capture,
+        &*target,
+        OsStr::new("item"),
+        None,
+        &Cancellation::default(),
+        (
+            || {},
+            || fs::write(stages(temp.path())[0].join("intruder"), b"another program").unwrap(),
+        ),
+        |directories: &[&destination::Directory]| {
+            synced.push(
+                directories
+                    .iter()
+                    .map(|folder| folder.identity())
+                    .collect::<Vec<_>>(),
+            );
+            sync_directories(directories)
+        },
+    )
+    .unwrap();
+    let TransferNativeMoveOutcome::RecoveryRequired {
+        destination: Some(path),
+        recovery,
+        error,
+    } = outcome
+    else {
+        panic!("a retained stage must be reported: {outcome:?}")
+    };
+    assert!(
+        recovery.is_empty(),
+        "an ordinary Move reports its stage in the error"
+    );
+    assert!(!error.message.is_empty());
+    assert_eq!(fs::read(path).unwrap(), b"selected source");
+    let stage = stages(temp.path()).remove(0);
+    assert_eq!(
+        fs::read(stage.join("intruder")).unwrap(),
+        b"another program"
+    );
+    let stage_identity = identity(&File::open(&stage).unwrap(), &stage).unwrap();
+    assert_eq!(
+        synced,
+        [vec![
+            stage_identity,
+            capture.parent.identity(),
+            target.identity()
+        ]]
+    );
+}
+
+#[test]
+fn replacing_move_syncs_the_stage_holding_the_displaced_entry_with_both_folders() {
+    let (temp, capture, target) = fixture();
+    let cancel = Cancellation::default();
+    fs::write(target.path().join("item"), b"old destination").unwrap();
+    let expected = target
+        .prepare_target(OsStr::new("item"), &cancel)
+        .unwrap()
+        .unwrap();
+    let mut synced = Vec::new();
+    let outcome = execute(
+        &capture,
+        &*target,
+        OsStr::new("item"),
+        Some((expected, TransferReplacementPolicy::RecoverableCurrentEntry)),
+        &cancel,
+        (|| {}, || {}),
+        |directories: &[&destination::Directory]| {
+            synced.push(
+                directories
+                    .iter()
+                    .map(|folder| folder.identity())
+                    .collect::<Vec<_>>(),
+            );
+            sync_directories(directories)
+        },
+    )
+    .unwrap();
+    let TransferNativeMoveOutcome::Moved {
+        recovery,
+        durability_confirmed: true,
+        ..
+    } = outcome
+    else {
+        panic!("unexpected outcome: {outcome:?}")
+    };
+    assert_eq!(fs::read(&recovery[0].path).unwrap(), b"old destination");
+    let stage = recovery[0].path.parent().unwrap();
+    let stage_identity = identity(&File::open(stage).unwrap(), stage).unwrap();
+    assert_eq!(
+        synced,
+        [vec![
+            stage_identity,
+            capture.parent.identity(),
+            target.identity()
+        ]]
+    );
+    assert_eq!(stages(temp.path()), [stage.to_owned()]);
 }

@@ -30,6 +30,9 @@ ties. Sort keys are session data and are never persisted or treated as identity.
 Windows byte keys remain opaque, including internal zero bytes. Linux wchar
 weights are encoded in native comparison order, including the terminator, so
 byte comparison agrees with `wcscmp` across supported wchar representations.
+Each weight takes an order-preserving, prefix-free code of one to five bytes (one
+byte below 127, two below 30,847), so the en_US key of a 16-character name takes 108
+bytes instead of four bytes per weight (312).
 
 Validation covers Czech h/ch/i contraction and accents using native locale
 objects, direct-native case ordering, raw-name fallback, ascending/descending

@@ -5,7 +5,8 @@ use midnight_core::{
     TransferNamespaceScope,
 };
 use midnight_platform_common::transfer_namespace::{
-    TransferNamespaceChange, TransferNamespaceChanges, current_transfer_namespace_changes,
+    TransferNamespaceChange, TransferNamespaceChanges, TransferNamespaceRefreshBatch,
+    current_transfer_namespace_changes, current_transfer_namespace_refresh_batch,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -195,12 +196,73 @@ fn xfs_ascii_ci(file: &File) -> Option<bool> {
     Some(flags & XFS_FSOP_GEOM_FLAGS_DIRV2CI != 0)
 }
 
+/// The ancestry keys walked in this thread's current refresh batch, by the walked folder's
+/// identity and mount: a batch changes no names, so a folder's key is the same for every
+/// pin of the batch bound in it.
+#[derive(Default)]
+struct BatchAncestries {
+    batch: u64,
+    keys: Vec<((TransferIdentity, u64), Option<ParentKey>)>,
+}
+/// A batch rarely spans more than a few folders; later ones are walked each time.
+const MAX_BATCH_ANCESTRIES: usize = 64;
+
+thread_local! {
+    static BATCH_ANCESTRIES: std::cell::RefCell<BatchAncestries> =
+        std::cell::RefCell::default();
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Ancestry walks on this thread, for tests.
+    static WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn parent_key(
     file: &File,
     path: &Path,
     cancel: &Cancellation,
 ) -> Result<Option<ParentKey>, FsError> {
     checked(cancel, path)?;
+    let start = binding(file, path)?;
+    let (Some(batch), (id, Some(mount))) = (current_transfer_namespace_refresh_batch(), start)
+    else {
+        return walk_ancestry(file, start, path, cancel);
+    };
+    let folder = (id, mount);
+    let known = BATCH_ANCESTRIES.with(|known| {
+        let known = known.borrow();
+        (known.batch == batch)
+            .then(|| known.keys.iter().find(|(walked, _)| *walked == folder))
+            .flatten()
+            .map(|(_, key)| key.clone())
+    });
+    if let Some(key) = known {
+        return Ok(key);
+    }
+    let key = walk_ancestry(file, start, path, cancel)?;
+    BATCH_ANCESTRIES.with(|known| {
+        let mut known = known.borrow_mut();
+        if known.batch != batch {
+            known.batch = batch;
+            known.keys.clear();
+        }
+        if known.keys.len() < MAX_BATCH_ANCESTRIES {
+            known.keys.push((folder, key.clone()));
+        }
+    });
+    Ok(key)
+}
+
+/// `parent_key` of the folder `file`, whose `binding` is `start`.
+fn walk_ancestry(
+    file: &File,
+    start: (TransferIdentity, Option<u64>),
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<Option<ParentKey>, FsError> {
+    #[cfg(test)]
+    WALKS.with(|walks| walks.set(walks.get() + 1));
     let filesystem = rustix::fs::fstatfs(file)
         .map_err(|e| error(path, e.into()))?
         .f_type as u64;
@@ -222,32 +284,66 @@ fn parent_key(
     if !qualified {
         return Ok(None);
     }
+    let (id, Some(mount)) = start else {
+        return Ok(None);
+    };
+    // One statx per level: each folder's identity and mount were read when it was
+    // opened as the level below's "..", and its open descriptor keeps both.
+    let mut level = (id, mount);
     let mut chain = Vec::new();
-    let mut cursor = File::from(
-        openat(file, ".", PATH_DIRECTORY, Mode::empty()).map_err(|e| error(path, e.into()))?,
-    );
+    let mut cursor = None::<File>;
     for _ in 0..MAX_ANCESTORS {
         checked(cancel, path)?;
-        let id = identity(&cursor, path)?;
-        let Some(mount) = native_location::mount(&cursor, path)? else {
-            return Ok(None);
-        };
-        chain.push((id, mount));
+        chain.push(level);
         let parent = File::from(
-            openat(&cursor, "..", PATH_DIRECTORY, Mode::empty())
-                .map_err(|e| error(path, e.into()))?,
+            openat(
+                cursor.as_ref().unwrap_or(file),
+                "..",
+                PATH_DIRECTORY,
+                Mode::empty(),
+            )
+            .map_err(|e| error(path, e.into()))?,
         );
-        let Some(parent_mount) = native_location::mount(&parent, path)? else {
+        let (parent_id, Some(parent_mount)) = binding(&parent, path)? else {
             return Ok(None);
         };
-        if identity(&parent, path)? == id && parent_mount == mount {
+        if (parent_id, parent_mount) == level {
             let mut domain = b"linux-byte-lookup-v1".to_vec();
             domain.extend_from_slice(&filesystem.to_le_bytes());
             return Ok(Some(ParentKey { chain, domain }));
         }
-        cursor = parent;
+        level = (parent_id, parent_mount);
+        cursor = Some(parent);
     }
     Ok(None)
+}
+
+/// A folder's identity, exactly as `identity` reads it, and its mount ID (`None` where
+/// the kernel reports none, as `native_location::mount`), in one statx call.
+fn binding(file: &File, path: &Path) -> Result<(TransferIdentity, Option<u64>), FsError> {
+    use rustix::fs::{AtFlags, StatxFlags, statx};
+    match statx(
+        file,
+        "",
+        AtFlags::EMPTY_PATH,
+        StatxFlags::INO | StatxFlags::MNT_ID,
+    ) {
+        Ok(stat) => {
+            let mut object = [0; 16];
+            object[..8].copy_from_slice(&stat.stx_ino.to_le_bytes());
+            let identity = TransferIdentity {
+                // As the standard library's metadata derives `dev()` from statx.
+                device: rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor),
+                object,
+            };
+            let mount = (stat.stx_mask & StatxFlags::MNT_ID.bits() != 0).then_some(stat.stx_mnt_id);
+            Ok((identity, mount))
+        }
+        Err(rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP) => {
+            Ok((identity(file, path)?, None))
+        }
+        Err(failure) => Err(error(path, failure.into())),
+    }
 }
 
 fn pooled_parent(
@@ -567,11 +663,9 @@ impl Pin {
                 Err(e) => return Err(error(parent_path, e.into())),
             },
         };
+        let parent_binding = binding(parent, parent_path)?;
         let pooled = if let Some(visible) = visible {
-            if identity(&visible, parent_path)? != identity(parent, parent_path)?
-                || native_location::mount(&visible, parent_path)?
-                    != native_location::mount(parent, parent_path)?
-            {
+            if binding(&visible, parent_path)? != parent_binding {
                 return Err(invalid(
                     parent_path,
                     "namespace parent binding changed during capture",
@@ -585,7 +679,7 @@ impl Pin {
             || Arc::new(parent_path.to_owned()),
             |parent| parent.spelling(parent_path),
         );
-        let parent_identity = identity(parent, &parent_path)?;
+        let parent_identity = parent_binding.0;
         Ok(Arc::new(Self {
             _bindings: bindings,
             parent_path,
@@ -643,8 +737,8 @@ impl TransferNamespacePin for Pin {
                 .map_err(|e| error(&self.parent_path, e.into()))?,
             ),
         };
-        if identity(&visible, &self.parent_path)? != self.parent_identity
-            || native_location::mount(&visible, &self.parent_path)? != Some(parent.key.chain[0].1)
+        if binding(&visible, &self.parent_path)?
+            != (self.parent_identity, Some(parent.key.chain[0].1))
             || parent_key(&parent.file, &self.parent_path, cancel)?.as_ref() != Some(&parent.key)
         {
             return Err(invalid(
@@ -978,6 +1072,9 @@ impl Bindings {
             // fast turn without reporting this binding.
             return change.incomplete(path, cancel);
         }
+        // This walk and the host's refreshes of the pins reserved below are one batch:
+        // nothing changes a name before the announcement returns.
+        let _batch = TransferNamespaceRefreshBatch::begin();
         let key = parent_key(parent, path, cancel)?;
         let Some(key) = key.filter(|key| {
             self.registry_key

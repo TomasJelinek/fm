@@ -64,7 +64,7 @@ pub struct Entry {
 
 // Listings hold, clone and sort 100,000+ rows. Rare per-row payloads belong behind a
 // pointer; review any growth (Windows 32-byte paths are the largest supported layout).
-const _: () = assert!(std::mem::size_of::<Entry>() <= 248);
+const _: () = assert!(std::mem::size_of::<Entry>() <= 240);
 
 /// Built by a background worker so UI identity lookups never scan a full listing.
 #[derive(Clone, Debug, Default)]
@@ -101,11 +101,13 @@ impl DirectoryIndex {
         index
     }
 
-    /// An empty index for a backend projection built row by row with `push`.
+    /// An empty index for a backend projection built row by row with `push`. The
+    /// native-path map is reserved when the first native path arrives, so archive and
+    /// Network Neighborhood listings reserve none.
     pub fn with_capacity(rows: usize) -> Self {
         Self {
             by_id: HashMap::with_capacity(rows),
-            by_path: HashMap::with_capacity(rows),
+            by_path: HashMap::new(),
             directory_bits: Vec::with_capacity(rows.div_ceil(64)),
             file_sizes: Vec::with_capacity(rows),
             column_samples: crate::MetadataColumnSamples::default(),
@@ -124,6 +126,11 @@ impl DirectoryIndex {
         let row = self.file_sizes.len();
         let mut unique = self.by_id.insert(entry.id, row).is_none();
         if let Some(path) = entry.native_path() {
+            if self.by_path.capacity() == 0 {
+                // The rows `with_capacity` expected from here on.
+                self.by_path
+                    .reserve(self.file_sizes.capacity().saturating_sub(row));
+            }
             unique &= self.by_path.insert(path.to_owned(), entry.id).is_none();
         }
         if row.is_multiple_of(64) {
@@ -386,6 +393,45 @@ mod tests {
         assert!(!complete.by_path.contains_key(&PathBuf::new()));
         assert!(complete.is_directory(EntryId(0)) && complete.is_directory(EntryId(1)));
         assert!(!complete.is_directory(EntryId(2)));
+    }
+
+    #[test]
+    fn native_path_map_is_reserved_only_when_a_native_path_arrives() {
+        let mut provider_rows = DirectoryIndex::with_capacity(100);
+        for row in 0..100 {
+            assert!(provider_rows.push(&network(row, &row.to_le_bytes())));
+        }
+        assert_eq!(provider_rows.by_path.capacity(), 0);
+        assert_eq!(provider_rows.by_id.len(), 100);
+
+        let mut mixed = DirectoryIndex::with_capacity(100);
+        for row in 0..3 {
+            assert!(mixed.push(&network(row, &row.to_le_bytes())));
+        }
+        assert_eq!(mixed.by_path.capacity(), 0);
+        assert!(mixed.push(&entry(3, "native-3", EntryKind::File, Some(3))));
+        let reserved = mixed.by_path.capacity();
+        assert!(
+            reserved >= 97,
+            "the remaining rows are reserved at once: {reserved}"
+        );
+        for row in 4..100 {
+            let name = format!("native-{row}");
+            assert!(mixed.push(&entry(row, &name, EntryKind::File, None)));
+        }
+        assert_eq!(
+            mixed.by_path.capacity(),
+            reserved,
+            "no growth after the reservation"
+        );
+        assert_eq!(mixed.by_path.len(), 97);
+
+        let mut unsized_index = DirectoryIndex::default();
+        assert!(unsized_index.push(&entry(1, "native", EntryKind::File, None)));
+        assert_eq!(
+            unsized_index.by_path.get(&PathBuf::from("native")),
+            Some(&EntryId(1))
+        );
     }
 
     #[test]
