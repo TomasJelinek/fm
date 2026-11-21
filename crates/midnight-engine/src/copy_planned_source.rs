@@ -302,6 +302,10 @@ impl TransferSource for Source {
             active.source.seek_for_validation(offset, cancel)
         })
     }
+    fn open_for_reading(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0
+            .with_active(cancel, |active| active.source.open_for_reading(cancel))
+    }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         self.0
             .with_active(cancel, |active| active.source.read_chunk(buffer, cancel))

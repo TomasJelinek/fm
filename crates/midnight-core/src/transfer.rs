@@ -448,6 +448,13 @@ pub trait TransferSource: Send {
         self.native_identity()
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
+    /// Takes now what reading this source needs. A source prepared without its read guard
+    /// (a Windows Copy item, which holds no handle while its job waits) opens it here, so a
+    /// source that cannot be opened fails before anything is created for it in the
+    /// destination. Other sources hold their guard from preparation on.
+    fn open_for_reading(&self, _cancel: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError>;
     /// Whether a failed read can be repositioned on this exact retained source.
     /// Forward-only/virtual streams must leave this disabled unless they implement

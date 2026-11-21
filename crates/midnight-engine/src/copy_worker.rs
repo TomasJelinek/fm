@@ -1313,6 +1313,11 @@ impl Job {
             self.reject_followed_ancestor(work)?;
         }
         let source = work.source.as_ref().expect("unstarted entry source");
+        // A source prepared without its read guard opens it now, before anything is
+        // created for it in the destination: one that cannot be opened (another program
+        // holds it without sharing) leaves no stage or folder behind while its question
+        // waits, and Retry comes back here.
+        source.open_for_reading(&self.cancel)?;
         match source.entry().item.kind {
             EntryKind::Directory => {
                 if self.move_work.is_some()

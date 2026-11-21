@@ -132,8 +132,9 @@ providers without native change times.
 
 A same-length rewrite that restores the modification time differs from the pinned
 revision only in its change time, so these Copy and Move checks no longer detect it.
-On Windows, a Copy source denies write sharing from its first read on (before that,
-while its job waits, a write is detected only through these fields; see
+On Windows, a Copy source denies write sharing from when its job opens it to read it,
+before the copy is staged (before that, while its job waits, a write is detected only
+through these fields; see
 [Windows sharing](#windows-sharing-while-a-job-waits-and-runs)) and a Move source from
 its preparation; Linux Move removal keeps its read lease; a replaced conflict target
 stays in recovery.
@@ -686,8 +687,12 @@ attribute handle, which shares everything, and the identity, kind, metadata and 
 revision it observed through an attribute-only handle. That first use opens the guarded
 source on the same name in the held folder, and refuses another object, a link put in its
 place, or another revision of a file (`source identity changed`, `source content
-changed`). A cloud placeholder is therefore opened through its filter, and may hydrate,
-only once the job reads it; a filter that cannot supply it fails that read, not the
+changed`). When the job reaches the item, it opens the source
+(`TransferSource::open_for_reading`) before it creates the item's stage or folder in the
+destination: an item that another program holds without sharing fails (`os error 32`)
+with its Retry question while the destination has nothing of it, and Retry opens it
+again. A cloud placeholder is therefore opened through its filter, and may hydrate, only
+once the job reaches it; a filter that cannot supply it fails that item, not the
 preparation. A directory-link item keeps its guarded capture from preparation on.
 
 While a job copies, discovers or moves a folder, and while it follows a directory link into

@@ -260,6 +260,9 @@ impl TransferSource for Source {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         self.inner.revalidate(cancel)
     }
+    fn open_for_reading(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.inner.open_for_reading(cancel)
+    }
     fn discover(
         &self,
         cancel: &Cancellation,

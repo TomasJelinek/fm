@@ -113,6 +113,36 @@ fn a_prepared_file_refuses_nothing_until_it_is_read() {
 }
 
 #[test]
+fn opening_a_prepared_file_for_reading_takes_its_guard_or_fails_as_a_read_would() {
+    // Endpoint protection may briefly hold the freshly written fixture (TEST-04).
+    rerun_on_fresh_fixture_hold(|| -> io::Result<()> {
+        let temp = build_temp("prepared-root-");
+        let file = temp.path().join("copied.bin");
+        fs::write(&file, b"original content").unwrap();
+        let cancel = Cancellation::default();
+        let source = crate::WindowsFileSystem::new(None)
+            .prepare_transfer_source(&file, &cancel)
+            .unwrap();
+        // Another program holds the file without sharing: the open fails as the first
+        // read would, so Copy asks before it creates anything in the destination.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&file)?;
+        let refused = source.open_for_reading(&cancel).unwrap_err();
+        assert!(refused.message.ends_with("(os error 32)"), "{refused:?}");
+        drop(held);
+        // Once it is released, the open takes the guard a read takes, once.
+        source.open_for_reading(&cancel).unwrap();
+        let writer = open_writer(&file).unwrap_err();
+        assert_eq!(writer.raw_os_error(), Some(SHARING_VIOLATION), "{writer:?}");
+        source.open_for_reading(&cancel).unwrap();
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
 fn a_prepared_root_refuses_another_object_or_file_revision_when_first_used() {
     let temp = build_temp("prepared-root-");
     let service = crate::WindowsFileSystem::new(None);

@@ -237,6 +237,9 @@ impl TransferSource for Prepared {
             None => self.revalidate_prepared(cancel),
         }
     }
+    fn open_for_reading(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.with_active(cancel, |_| Ok(()))
+    }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         self.with_active(cancel, |source| source.read_chunk(buffer, cancel))
     }

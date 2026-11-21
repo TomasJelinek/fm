@@ -343,13 +343,22 @@ async fn reading_the_busy_output_waits(case: &Busy, mut h: Harness) {
     h.controller.cancel(OperationId(1));
     assert_eq!(h.terminal(1).await.state, CopyOperationState::Cancelled);
     let done = h.terminal(2).await;
-    assert!(
-        matches!(
-            done.state,
-            CopyOperationState::Completed | CopyOperationState::CompletedWithErrors
-        ),
-        "{done:?}"
-    );
+    match done.state {
+        // Where lookups are not qualified, the waiting copy copies what the folder holds.
+        CopyOperationState::Completed | CopyOperationState::CompletedWithErrors => {}
+        // Elsewhere it planned the folder before the busy copy wrote into it: it reports
+        // the changed folder and refuses it before it creates anything for it.
+        CopyOperationState::Failed => {
+            assert!(
+                done.errors
+                    .iter()
+                    .all(|error| error.message.contains("Planned native source changed")),
+                "{done:?}"
+            );
+            assert!(!destination.join("many").exists(), "{done:?}");
+        }
+        _ => panic!("{done:?}"),
+    }
     h.close().await;
 }
 
