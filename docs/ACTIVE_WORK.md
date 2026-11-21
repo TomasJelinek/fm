@@ -1,4 +1,4 @@
-# Active work and requirements evidence — 20 November 2026
+# Active work and requirements evidence — 21 November 2026
 
 <a id="active-work-and-requirements-evidence--13-november-2026"></a>
 <a id="active-work-and-requirements-evidence--15-november-2026"></a>
@@ -6,6 +6,7 @@
 <a id="active-work-and-requirements-evidence--17-november-2026"></a>
 <a id="active-work-and-requirements-evidence--18-november-2026"></a>
 <a id="active-work-and-requirements-evidence--19-november-2026"></a>
+<a id="active-work-and-requirements-evidence--20-november-2026"></a>
 
 This is the current implementation/acceptance ledger alongside
 [Feature status](FEATURE_STATUS.md) and the preserved
@@ -20,6 +21,107 @@ code or a green subset into complete qualification.
 **ACTIVE — explicitly resumed by the user on 15 November 2026:** implement all
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.
+
+### Handover implementation — 21 November 2026
+
+The user's 20 November handover listed undone work (half-done items, product work
+not started, acceptance, documentation, earlier follow-ups), a viewer TODO and open
+bugs. This checkpoint integrates what was finished on 20 and 21 November. Windows
+work was built and tested on Windows; Linux code was built and tested in WSL
+(Ubuntu 24.04, ext4). Each commit message lists its exact tests; a commit's tests ran
+on exactly that change (an isolated checkout of the parent plus the change) unless it
+says otherwise.
+
+The user's requests of 20 November:
+
+- Checksums: Ctrl+F8 opens Calculate with a target and SHA-256 only (`4004145f`), the
+  result columns resize by their header separators (`b70f551a`), every file is listed
+  before any is read and each result shows as it finishes (`21fc78fa`), Copy writes the
+  saved checksum file's format (`57680e2d`), a selected folder contributes its own
+  files without Include subfolders (`2340d0f6`, `4328654b`), the hotkey sweep requires
+  the ready Calculate page (`77e5a1a7`), and the second page is named Verify
+  (`dea6681d`). These came from a feature session's branch.
+- The About box sky runs at a sixth of its speed at the same frame rate (`c5c95186`).
+- Options: OK and Cancel stay on one row while they fit beside the footer actions, and
+  the list of settings kept after an import shows whole at the end of the General page
+  (`89c2f693`); a settings file exported on the other operating system imports with
+  that system's paths kept as inactive data (`494d9a67`).
+
+Handover items:
+
+- The documentation owner list (`aaa6e579`).
+- Windows Delete asks about each entry it cannot remove and handles Read-only on
+  filesystems without POSIX delete; Copy pauses on one unreadable child instead of the
+  whole folder (`9a41840c`).
+- A notice's Copy details include its reason (O-5), the fed-list count reads
+  correctly (J-1), select masks are checked by the backend before they are applied or
+  saved, keypad * in fed lists, and Resolve for waiting Delete questions on Jobs rows
+  (`fdc81466`).
+- Viewers: in short windows Find takes the typography row's place, CSV files may use
+  semicolons, and the reported selected-text contrast was refuted (312 checks with the
+  real renderer; the readings were antialiased edges) (`a56d0a4b`).
+- UI polish gate, batch 1: the main window (`ca79fc6d`) and the dialogs (`985c8ec0`).
+- A waiting Copy holds no handle on what it will read, which fixes the intermittent
+  Windows sharing violation in
+  `reading_the_busy_copys_output_waits_for_it_with_its_reason` (`accfcc53`).
+- Archive limits: file lists hold any number of paths within their 4 MiB, only native
+  roots of one Copy, Move or drop are bounded (4,096), inline-tree captures take every
+  row their projection selects, and an archive member claims its spool space before
+  it is staged (`e835f4ec`).
+- Performance (`b3974c06`): archive panel rows 649 → 639 bytes per member, Linux
+  collation keys about a third of their former size, a native Move on Linux syncs two
+  folders instead of four, and ancestry walks take one `statx` per level and run once
+  per folder in a refresh batch
+  ([transfer and listing performance](verification/2026-11-21-transfer-and-listing-performance.md)).
+  Copy's per-file folder sync is designed only (PERF-05).
+- The command icon publication and the worker store release their file locks
+  explicitly (`32068fda`): a child process starting on another thread shares the
+  open lock file until it executes, so closing it alone left the lock held. This was
+  the rare `icon_snapshot` test failure seen in WSL.
+- The spool's unused flush hook and its test are removed (`e6396e83`).
+- A waiting Copy opens each item before it creates the item's stage or folder in the
+  destination (`c7185efe`), so a file another program holds without sharing leaves
+  nothing there while its Retry question waits. CI run 44853258726 found this in
+  `real_sharing_violation_retry_succeeds_only_after_exclusive_handle_is_released`:
+  `accfcc53` had moved the open to the first read, after the stage existed. Its
+  isolated check had run the engine library only; checks of engine changes now also
+  run its integration tests.
+- UI polish gate, batch 2 (`93e7f43a`): Find's column headings, missing tooltips, the
+  command line's folder, Enter with an empty name, the remaining key routers, themed
+  selection in Make File List and Compare directories, Options at 320×200, job
+  windows at their minimum size, Enter in Compare directories and Checksums, and
+  focus in Checksums, dialog tabs and Jobs; see the
+  [UI polish record](developer/acceptance/ui-polish.md).
+- A Linux size-warnings test compares the report file's length too, so a file that
+  reuses its descriptor and inode after it is closed no longer looks like it
+  (`d7d65be9`).
+
+CI runs 44828132118 (`3987d3c8`), 44837536773 (`c5c95186`), 44845219935
+(`9a41840c`) and 44851212423 (`985c8ec0`) passed every job on Windows and Linux. Run
+44841450903 (`aaa6e579`) failed only in the Windows engine test that `accfcc53` fixes.
+Run 44853258726 (`accfcc53`) failed only in the Windows integration test that
+`c7185efe` fixes, and run 44861514459 (`c7185efe`, which contains `e835f4ec` to
+`c7185efe`) passed every job on Windows and Linux. Runs of commits that a newer push
+superseded were cancelled.
+
+Still open from the handover, beside the work in progress (acceptance on Windows,
+Copy following links into other filesystems, item-level Skip in Move and Copy, the
+network path bar, the viewer's raster frontier, page reads and HTML wheel):
+
+- PERF-05, batching Copy's per-file folder sync, is designed but needs the
+  Architect's approval of a core transfer API change.
+- Copying more than 4,096 selected native items at once, by opening each root just
+  before it is copied so that open handles follow folder depth instead of selection
+  size, is planned ([current limits](developer/TRANSFERS.md#current-limits-and-next-stage))
+  and needs an Architect decision.
+- A prepared Move item still takes its guard at preparation, so two Moves that meet,
+  or a granted job renaming an item a waiting Move holds, can fail instead of waiting.
+- UI: a running Copy job's footer at Dark Touch 320×200 (stacked footer or glyph-only
+  actions, a decision), the Checksums Verify page's path field selection colours, and
+  single-line captions cut without "…" at 320×200 with fonts of 20–24 px in the
+  keyboard, Custom Commands, thumbnail and archive options.
+- The UI polish gate and the acceptance suites have not been run again since these
+  changes.
 
 ### Integration follow-up — 20 November 2026
 
@@ -55,8 +157,8 @@ configuration. Unless an item says otherwise, a fix changes only tests.
   `real_sandboxed_worker_lists_archives_of_millions_of_members`, a manual
   measurement that the batch added and that needs generated archives
   ([installed archive worker qualification](developer/TEST_EXECUTION.md#installed-archive-worker-qualification)).
-- Export/Import configuration (`9e4e2040`, from session branch
-  `claude/happy-chatelet-19acfa`), with the Options footer fix `440f9537`: the new
+- Export/Import configuration (`9e4e2040`, from a feature session's branch), with
+  the Options footer fix `440f9537`: the new
   footer buttons pushed OK under Cancel at 320×200 with a 32 px font, so a click on
   OK hit Cancel and Escape reached no handler. Where the footer has no room, the
   buttons now show icons only or move to the end of the General page
